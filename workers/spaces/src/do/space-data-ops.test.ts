@@ -3,6 +3,7 @@ import { mintInternalToken } from "@naelao/http";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, spaceArchiveKeyringFromBindings, spaceArchiveKeyVersion } from "./space-backup.js";
 import { SpaceDO } from "./SpaceDO.js";
+import { WorkspaceCoordinatorDO } from "../../../agents/src/workspace/WorkspaceCoordinatorDO.js";
 
 function mockR2() {
   const objects = new Map<string, { bytes: Uint8Array; etag: string; httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> }>();
@@ -32,7 +33,7 @@ function mockR2() {
     failNextWriteForKey(key: string) { failPutKey = key; },
     failMultipartPart(partNumber: number) { failPart = partNumber; },
     uploadedPartCount() { return uploadedParts; },
-    async put(key: string, value: Uint8Array, options?: { onlyIf?: { etagDoesNotMatch?: string }; httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> }) { if (failNext) { failNext = false; throw new Error("simulated R2 outage"); } if (failPutKey === key) { failPutKey = null; throw new Error("simulated keyed R2 outage"); } if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null; const bytes = new Uint8Array(value); const etag = options?.onlyIf ? `restored-etag-${bytes.byteLength}-${key}` : `etag-${bytes.byteLength}-${key}`; objects.set(key, { bytes, etag, ...(options?.httpMetadata ? { httpMetadata: { ...options.httpMetadata } } : {}), ...(options?.customMetadata ? { customMetadata: { ...options.customMetadata } } : {}) }); return { etag }; },
+    async put(key: string, value: Uint8Array | string | ArrayBuffer, options?: { onlyIf?: { etagDoesNotMatch?: string }; httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> }) { if (failNext) { failNext = false; throw new Error("simulated R2 outage"); } if (failPutKey === key) { failPutKey = null; throw new Error("simulated keyed R2 outage"); } if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null; const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value instanceof Uint8Array ? new Uint8Array(value) : new Uint8Array(value); const etag = options?.onlyIf ? `restored-etag-${bytes.byteLength}-${key}` : `etag-${bytes.byteLength}-${key}`; objects.set(key, { bytes, etag, ...(options?.httpMetadata ? { httpMetadata: { ...options.httpMetadata } } : {}), ...(options?.customMetadata ? { customMetadata: { ...options.customMetadata } } : {}) }); return { etag }; },
     async createMultipartUpload(key: string) { const uploadId = crypto.randomUUID(); uploads.set(uploadId, { key, parts: new Map() }); return multipart(key, uploadId); },
     resumeMultipartUpload(key: string, uploadId: string) { return multipart(key, uploadId); },
     async get(key: string) { const entry = objects.get(key); return entry && { etag: entry.etag, size: entry.bytes.byteLength, ...(entry.httpMetadata ? { httpMetadata: entry.httpMetadata } : {}), ...(entry.customMetadata ? { customMetadata: entry.customMetadata } : {}), arrayBuffer: async () => entry.bytes.slice().buffer }; },
@@ -45,6 +46,29 @@ function mockR2() {
       return { objects: selected.map(([key, value]) => ({ key, etag: value.etag, size: value.bytes.byteLength })), truncated: next < matching.length, cursor: next < matching.length ? String(next) : undefined };
     },
   };
+}
+
+class WorkspaceStorage {
+  values = new Map<string, unknown>();
+  alarm: number | null = null;
+  async get<T>(key: string): Promise<T | undefined> { return this.values.get(key) as T | undefined; }
+  async put(key: string, value: unknown): Promise<void> { this.values.set(key, structuredClone(value)); }
+  async delete(key: string | string[]): Promise<boolean> {
+    if (Array.isArray(key)) { let deleted = false; for (const item of key) deleted = this.values.delete(item) || deleted; return deleted; }
+    return this.values.delete(key);
+  }
+  async list<T>({ prefix = "", startAfter, limit = 1000 }: { prefix?: string; startAfter?: string; limit?: number } = {}): Promise<Map<string, T>> {
+    return new Map([...this.values.entries()].filter(([key]) => key.startsWith(prefix) && (!startAfter || key > startAfter))
+      .sort(([left], [right]) => left.localeCompare(right)).slice(0, limit) as Array<[string, T]>);
+  }
+  async transaction<T>(callback: (transaction: this) => Promise<T>): Promise<T> { return callback(this); }
+  async getAlarm(): Promise<number | null> { return this.alarm; }
+  async setAlarm(at: number | Date): Promise<void> { this.alarm = at instanceof Date ? at.getTime() : at; }
+  async deleteAlarm(): Promise<void> { this.alarm = null; }
+}
+
+function workspaceCoordinator(storage: WorkspaceStorage, r2: ReturnType<typeof mockR2>, secret: string): WorkspaceCoordinatorDO {
+  return new WorkspaceCoordinatorDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
 }
 
 describe("SpaceDO owner data operations", () => {
@@ -162,7 +186,8 @@ describe("SpaceDO owner data operations", () => {
 
   it("inserts restored active event triggers disabled and records the safety action before owner reactivation", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
+      AGENTS_WORKER: { async fetch() { return Response.json({ present: false }); } } as unknown as Fetcher } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
@@ -199,7 +224,8 @@ describe("SpaceDO owner data operations", () => {
 
   it("previews exact merge inserts and skips without mutating current rows, then persists the applied outcome", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
+      AGENTS_WORKER: { async fetch() { return Response.json({ present: false }); } } as unknown as Fetcher } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
@@ -312,6 +338,108 @@ describe("SpaceDO owner data operations", () => {
     expect(r2.objects.get(key)).toMatchObject({ httpMetadata: { contentType: "text/plain", cacheControl: "private, max-age=60", cacheExpiry: new Date("2027-01-02T03:04:05.000Z") }, customMetadata: { uploadedBy: "owner-a" } });
     expect(r2.objects.has(otherSpaceKey)).toBe(true);
     expect(storage.sql.exec<{ status: string; restored_object_count: number }>("SELECT status,restored_object_count FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]).toEqual({ status: "completed", restored_object_count: 10 });
+  });
+
+  it("archives project coordinator heads and restores them through an authenticated retryable bridge", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    const workspaceScope = { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", jurisdiction: "global" as const };
+    let coordinator = workspaceCoordinator(new WorkspaceStorage(), r2, secret);
+    const coordinatorCall = async (target: WorkspaceCoordinatorDO, path: string, body: unknown) => target.fetch(new Request(`https://workspace${path}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a",
+        "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") }, body: JSON.stringify(body),
+    }));
+    const agentsWorker = { async fetch(request: Request) {
+      const body = await request.json() as Record<string, unknown>;
+      const path = new URL(request.url).pathname;
+      if (path.endsWith("/archive/export")) {
+        const response = await coordinatorCall(coordinator, "/v1/archive/export", { scope: body.scope });
+        if (!response.ok) return response;
+        const result = await response.json() as { present: boolean; snapshot?: { policyGeneration: number; branches: Array<{ head: Record<string, unknown>; base: unknown }> }; objectReferences?: unknown[] };
+        if (!result.present || !result.snapshot) return Response.json({ present: false });
+        const branches = result.snapshot.branches.map(item => {
+          const { scope: _scope, ...head } = item.head;
+          return { head, base: item.base };
+        });
+        return Response.json({ present: true, snapshot: { version: 1, projectId: workspaceScope.projectId,
+          jurisdiction: workspaceScope.jurisdiction, policyGeneration: result.snapshot.policyGeneration, branches }, objectReferences: result.objectReferences });
+      }
+      if (path.endsWith("/archive/restore")) {
+        const snapshot = body.snapshot as { policyGeneration: number; branches: Array<{ head: Record<string, unknown>; base: unknown }> };
+        const restoredSnapshot = { version: 1, scope: { tenantId: "tenant-a", spaceId: body.spaceId, projectId: body.projectId, jurisdiction: body.jurisdiction },
+          policyGeneration: snapshot.policyGeneration, branches: snapshot.branches.map(item => ({ head: { ...item.head, version: 1, scope: {
+            tenantId: "tenant-a", spaceId: body.spaceId, projectId: body.projectId, jurisdiction: body.jurisdiction,
+          } }, base: item.base })) };
+        return coordinatorCall(coordinator, "/v1/archive/restore", { snapshot: restoredSnapshot, restoreId: body.restoreId });
+      }
+      return Response.json({ error_code: "not_found" }, { status: 404 });
+    } } as unknown as Fetcher;
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never, AGENTS_WORKER: agentsWorker } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers,
+      body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name) VALUES(?,?,?)", "project-a", "space-a", "Project A");
+
+    const committed = new TextEncoder().encode("committed canonical project workspace");
+    const hash = await crypto.subtle.digest("SHA-256", committed).then(digest => [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join(""));
+    const contentKey = `workspace-v1/tenant-a/space-a/project-a/global/content/${hash}`;
+    await r2.put(contentKey, committed);
+    expect((await coordinatorCall(coordinator, "/v1/initialize", { scope: workspaceScope, branch: "main", entries: [
+      { path: "src/main.ts", sha256: hash, size: committed.byteLength, executable: false, objectKey: contentKey },
+    ] })).status).toBe(200);
+    expect((await coordinatorCall(coordinator, "/v1/branch", { scope: workspaceScope, sourceBranch: "main", branch: "runs/agent-a" })).status).toBe(200);
+
+    const coordinatorExport = await coordinatorCall(coordinator, "/v1/archive/export", { scope: workspaceScope });
+    expect(coordinatorExport.status, JSON.stringify(await coordinatorExport.clone().json())).toBe(200);
+    const exported = await post({ action: "export", request_id: "project-workspace-archive" });
+    expect(exported.status, JSON.stringify(await exported.clone().json())).toBe(201);
+    const { archive_id: archiveId } = await exported.json() as { archive_id: string };
+    const archiveKey = `space-archives/tenant-a/space-a/${archiveId}.enc`;
+    const archived = await decodeSpaceArchive(r2.objects.get(archiveKey)!.bytes, secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId });
+    expect(archived.workspaceSnapshots).toHaveLength(1);
+    expect(archived.workspaceSnapshots?.[0]).toMatchObject({ projectId: "project-a", jurisdiction: "global", branches: [
+      { head: { branch: "main", revision: 1 } }, { head: { branch: "runs/agent-a", revision: 1 }, base: { parentBranch: "main", revision: 1 } },
+    ] });
+    const workspaceReferences = archived.objectReferences.filter(ref => ref.key.startsWith("workspace-v1/"));
+    expect(workspaceReferences.length).toBeGreaterThanOrEqual(2);
+    for (const ref of workspaceReferences) await r2.delete(ref.key);
+
+    const conflictStorage = new WorkspaceStorage();
+    let different = new WorkspaceCoordinatorDO({ storage: conflictStorage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const differentBytes = new TextEncoder().encode("concurrent current project head");
+    const differentHash = await crypto.subtle.digest("SHA-256", differentBytes).then(digest => [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join(""));
+    const differentKey = `workspace-v1/tenant-a/space-a/project-a/global/content/${differentHash}`;
+    await r2.put(differentKey, differentBytes);
+    await coordinatorCall(different, "/v1/initialize", { scope: workspaceScope, branch: "main", entries: [
+      { path: "src/current.ts", sha256: differentHash, size: differentBytes.byteLength, executable: false, objectKey: differentKey },
+    ] });
+    const currentHeadResponse = await different.fetch(new Request("https://workspace/v1/head?branch=main", { headers: {
+      "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"),
+    } }));
+    const currentHeadBeforeRestore = await currentHeadResponse.json();
+    coordinator = different;
+    const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
+    expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json() as { preview_id: string; workspace_restore_count: number; object_restore_required_count: number };
+    expect(preview).toMatchObject({ workspace_restore_count: 1, object_restore_required_count: workspaceReferences.length });
+    const rejected = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
+    expect(rejected.status).toBe(409);
+    expect(storage.sql.exec<{ status: string }>("SELECT status FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]?.status).toBe("partial");
+    const currentHead = await different.fetch(new Request("https://workspace/v1/head?branch=main", { headers: {
+      "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"),
+    } }));
+    expect(await currentHead.json()).toEqual(currentHeadBeforeRestore);
+
+    coordinator = workspaceCoordinator(new WorkspaceStorage(), r2, secret);
+    const restored = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
+    expect(restored.status, JSON.stringify(await restored.clone().json())).toBe(200);
+    expect(await restored.json()).toMatchObject({ restored_workspace_count: 1 });
+    const restoredHead = await coordinator.fetch(new Request("https://workspace/v1/head?branch=runs%2Fagent-a", { headers: {
+      "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"),
+    } }));
+    expect(await restoredHead.json()).toMatchObject({ head: { revision: 1 }, branchBase: { parentBranch: "main", revision: 1 } });
+    expect(storage.sql.exec<{ status: string }>("SELECT status FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]?.status).toBe("completed");
   });
 
   it("retries a failed archive write with the same request and archive identity", async () => {

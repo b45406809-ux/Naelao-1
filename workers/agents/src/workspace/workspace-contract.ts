@@ -26,6 +26,19 @@ export type WorkspaceHead = {
   publicationId: string | null;
   updatedAt: string;
 };
+export type WorkspaceArchiveBranch = {
+  head: WorkspaceHead;
+  /** The immutable three-way merge base required when this branch is reopened. */
+  base: { parentBranch: string; revision: number; manifestHash: string } | null;
+};
+export type WorkspaceArchiveSnapshot = {
+  version: 1;
+  scope: WorkspaceScope;
+  policyGeneration: number;
+  /** Current committed heads only; active sessions, staging and older history are excluded. */
+  branches: WorkspaceArchiveBranch[];
+};
+export type WorkspaceArchiveObjectReference = { key: string; etag: string; size: number };
 export type WorkspaceConflict = {
   path: string;
   expectedHash: string | null;

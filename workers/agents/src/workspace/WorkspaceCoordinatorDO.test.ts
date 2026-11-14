@@ -41,7 +41,7 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
   const r2: Record<string, (...args: never[]) => unknown> = {
     async get(key: string) {
       const bytes = objects.get(key);
-      return bytes ? { size: bytes.byteLength, httpMetadata: metadata.get(key) ?? {}, async arrayBuffer() { return bytes.slice().buffer; } } : null;
+      return bytes ? { etag: testEtag(key, bytes), size: bytes.byteLength, httpMetadata: metadata.get(key) ?? {}, async arrayBuffer() { return bytes.slice().buffer; } } : null;
     },
     async put(key: string, value: string | ArrayBuffer | ArrayBufferView | ReadableStream, options?: { onlyIf?: { etagDoesNotMatch?: string }; httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> }) {
       if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null;
@@ -51,13 +51,13 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
       if (options?.customMetadata) customMetadata.set(key, options.customMetadata);
       return { key, size: bytes.byteLength };
     },
-    async head(key: string) { const bytes = objects.get(key); return bytes ? { key, size: bytes.byteLength } : null; },
+    async head(key: string) { const bytes = objects.get(key); return bytes ? { key, etag: testEtag(key, bytes), size: bytes.byteLength } : null; },
     async list({ prefix, cursor, limit = 1000 }: { prefix: string; cursor?: string; limit?: number }) {
       const after = cursor ? atob(cursor.slice("opaque:".length)) : "";
       const matching = [...objects.keys()].filter(key => key.startsWith(prefix) && (!after || key > after)).sort();
       const selected = matching.slice(0, limit);
       const truncated = matching.length > selected.length;
-      return { objects: selected.map(key => ({ key, uploaded: new Date(0), size: objects.get(key)!.byteLength, httpMetadata: metadata.get(key) ?? {}, customMetadata: customMetadata.get(key) ?? {} })), truncated, cursor: truncated && selected.length ? `opaque:${btoa(selected.at(-1)!)}` : undefined };
+      return { objects: selected.map(key => ({ key, etag: testEtag(key, objects.get(key)!), uploaded: new Date(0), size: objects.get(key)!.byteLength, httpMetadata: metadata.get(key) ?? {}, customMetadata: customMetadata.get(key) ?? {} })), truncated, cursor: truncated && selected.length ? `opaque:${btoa(selected.at(-1)!)}` : undefined };
     },
     async delete(keys: string | string[]) { for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key); },
   };
@@ -115,6 +115,12 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
     runtimeResponseWasCancelled: () => runtimeResponseCancelled };
 }
 
+function testEtag(key: string, bytes: Uint8Array): string {
+  let checksum = 2166136261;
+  for (const byte of bytes) checksum = Math.imul(checksum ^ byte, 16777619) >>> 0;
+  return `test-${checksum.toString(16)}-${key}`;
+}
+
 const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
 function liveEvidence(generation: number, overrides: Record<string, unknown> = {}) {
   return {
@@ -137,6 +143,60 @@ async function call(instance: WorkspaceCoordinatorDO, path: string, body?: unkno
 }
 
 describe("WorkspaceCoordinatorDO checked publication", () => {
+  it("archives current committed branch heads, merge bases and referenced bytes, then restores idempotently", async () => {
+    const source = setup();
+    const bytes = new TextEncoder().encode("committed workspace bytes");
+    const hash = await sha256Hex(bytes);
+    const contentKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${hash}`;
+    source.objects.set(contentKey, bytes);
+    source.objects.set(`workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${"f".repeat(64)}`, new TextEncoder().encode("orphaned CAS object"));
+    source.objects.set(`workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/staging/uncommitted`, new TextEncoder().encode("staged bytes"));
+    expect((await call(source.instance, "/v1/initialize", { scope, branch: "main", entries: [
+      { path: "docs/committed.txt", sha256: hash, size: bytes.byteLength, executable: false, objectKey: contentKey },
+    ] })).status).toBe(200);
+    expect((await call(source.instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/agent-a" })).status).toBe(200);
+    const opened = await call(source.instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 });
+    expect(opened.status).toBe(200); // Active sessions are not part of a committed snapshot.
+
+    const exported = await call(source.instance, "/v1/archive/export", { scope });
+    expect(exported.status).toBe(200);
+    const archive = await exported.json() as { present: boolean; snapshot: { version: 1; scope: typeof scope; policyGeneration: number; branches: Array<{ head: { branch: string }; base: unknown }> }; objectReferences: Array<{ key: string }> };
+    expect(archive.present).toBe(true);
+    expect(archive.snapshot.branches.map(item => item.head.branch).sort()).toEqual(["main", "runs/agent-a"]);
+    expect(archive.snapshot.branches.find(item => item.head.branch === "runs/agent-a")?.base).toEqual({ parentBranch: "main", revision: 1, manifestHash: expect.any(String) });
+    expect(archive.objectReferences.map(ref => ref.key)).toContain(contentKey);
+    expect(archive.objectReferences.some(ref => ref.key.includes("/staging/") || ref.key.endsWith("/" + "f".repeat(64)))).toBe(false);
+    expect(JSON.stringify(archive.snapshot)).not.toContain("session:");
+
+    const destination = setup();
+    for (const ref of archive.objectReferences) destination.objects.set(ref.key, source.objects.get(ref.key)!.slice());
+    const restored = await call(destination.instance, "/v1/archive/restore", { snapshot: archive.snapshot, restoreId: "restore.archive.1" });
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ restored: true, replay: false, branchCount: 2 });
+    expect(await destination.storage.get("workspace_read_policy")).toMatchObject({ mode: "coordinator" });
+    expect(await (await call(destination.instance, "/v1/head?branch=runs%2Fagent-a")).json()).toMatchObject({
+      head: { revision: 1 }, branchBase: { parentBranch: "main", revision: 1 },
+    });
+    const replay = await call(destination.instance, "/v1/archive/restore", { snapshot: archive.snapshot, restoreId: "restore.archive.1" });
+    expect(await replay.json()).toMatchObject({ restored: true, replay: true, branchCount: 2 });
+
+    const active = await call(destination.instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 2 });
+    expect(active.status).toBe(200);
+    const blocked = await call(destination.instance, "/v1/archive/restore", { snapshot: archive.snapshot, restoreId: "restore.archive.active" });
+    expect(blocked.status).toBe(423);
+    expect(await blocked.json()).toMatchObject({ error_code: "workspace_archive_active_sessions" });
+  });
+
+  it("keeps archive export behind the project erasure tombstone", async () => {
+    const { instance } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    expect((await call(instance, "/v1/erase/admission", { scope, confirm: true })).status).toBe(200);
+    expect((await call(instance, "/v1/erase", { scope, confirm: true })).status).toBe(200);
+    const exported = await call(instance, "/v1/archive/export", { scope });
+    expect(exported.status).toBe(410);
+    expect(await exported.json()).toMatchObject({ error_code: "workspace_erased" });
+  });
+
   it("routes runtime-control calls to the scope-partitioned durable control object", async () => {
     let objectName = "";
     let routedRequest: Request | undefined;

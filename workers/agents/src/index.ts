@@ -12,7 +12,7 @@ export { WorkspaceCoordinatorDO };
 import { LiveRuntimeControlDO } from "./workspace/LiveRuntimeControlDO.js";
 export { LiveRuntimeControlDO };
 import { workspaceCoordinatorRequest, workspaceScopeErased, type WorkspaceCoordinatorBindings } from "./workspace/workspace-client.js";
-import { validateWorkspaceBranch, validateWorkspaceContentType, validateWorkspacePath, validateWorkspaceScope } from "./workspace/workspace-contract.js";
+import { validateWorkspaceBranch, validateWorkspaceContentType, validateWorkspacePath, validateWorkspaceScope, type WorkspaceArchiveObjectReference, type WorkspaceArchiveSnapshot, type WorkspaceScope } from "./workspace/workspace-contract.js";
 import { handleWorkspaceCompatRead } from "./workspace/workspace-compat-route.js";
 import { handleWorkspaceCheckedPublish } from "./workspace/workspace-checked-publish-route.js";
 import { handleWorkspaceInitialize } from "./workspace/workspace-initialize-route.js";
@@ -844,6 +844,108 @@ app.post("/internal/workspaces/migration-status", async (c) => {
   catch { return c.json({ error_code: "invalid_workspace_scope" }, 400); }
   if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId) return c.json({ error_code: "invalid_workspace_scope" }, 400);
   const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/migration/status", {});
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+app.post("/internal/workspaces/archive/export", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_archive_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId) return c.json({ error_code: "invalid_workspace_scope" }, 400);
+  const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/archive/export", { body: { scope: body.scope } });
+  if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  const result = await readBoundedResponseJson<{ present?: unknown; snapshot?: WorkspaceArchiveSnapshot; objectReferences?: WorkspaceArchiveObjectReference[] }>(response, 8 * 1024 * 1024).catch(() => null);
+  if (!result || result.present !== true) return result?.present === false ? c.json({ present: false }, 200, { "cache-control": "no-store" }) : c.json({ error_code: "workspace_archive_export_invalid" }, 503);
+  const source = result.snapshot;
+  const scope = body.scope;
+  const sameScope = source?.scope?.tenantId === scope.tenantId && source.scope.spaceId === scope.spaceId &&
+    source.scope.projectId === scope.projectId && source.scope.jurisdiction === scope.jurisdiction;
+  if (!source || source.version !== 1 || !sameScope || !Number.isSafeInteger(source.policyGeneration) ||
+      !Array.isArray(source.branches) || source.branches.length < 1 || source.branches.length > 1000 || !Array.isArray(result.objectReferences) || result.objectReferences.length > 5000) {
+    return c.json({ error_code: "workspace_archive_export_invalid" }, 503);
+  }
+  const prefix = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/`;
+  const refs = new Set<string>();
+  for (const ref of result.objectReferences) {
+    if (!ref || typeof ref.key !== "string" || !ref.key.startsWith(prefix) || typeof ref.etag !== "string" || !ref.etag || ref.etag.length > 512 ||
+        !Number.isSafeInteger(ref.size) || ref.size < 0 || refs.has(ref.key)) return c.json({ error_code: "workspace_archive_export_invalid" }, 503);
+    refs.add(ref.key);
+  }
+  const branchNames = new Set<string>();
+  if (source.branches.some(item => {
+    const head = item?.head;
+    if (!head || head.version !== 1 || head.scope?.tenantId !== scope.tenantId || head.scope.spaceId !== scope.spaceId ||
+        head.scope.projectId !== scope.projectId || head.scope.jurisdiction !== scope.jurisdiction || !validateWorkspaceBranch(head.branch) ||
+        branchNames.has(head.branch) || !Number.isSafeInteger(head.revision) || Number(head.revision) < 1 || !/^[a-f0-9]{64}$/.test(head.manifestHash) ||
+        (head.parentRevision !== null && (!Number.isSafeInteger(head.parentRevision) || Number(head.parentRevision) < 1)) ||
+        (head.publicationId !== null && (typeof head.publicationId !== "string" || head.publicationId.length > 160)) ||
+        typeof head.updatedAt !== "string" || !Number.isFinite(Date.parse(head.updatedAt))) return true;
+    branchNames.add(head.branch);
+    const base = item.base;
+    return base !== null && (!base || typeof base !== "object" || !validateWorkspaceBranch(base.parentBranch) || base.parentBranch === head.branch ||
+      !Number.isSafeInteger(base.revision) || Number(base.revision) < 1 || !/^[a-f0-9]{64}$/.test(base.manifestHash));
+  }) || !branchNames.has("main") || source.branches.some(item => item.base && !branchNames.has(item.base.parentBranch))) {
+    return c.json({ error_code: "workspace_archive_export_invalid" }, 503);
+  }
+  const snapshot = {
+    version: 1 as const,
+    projectId: scope.projectId,
+    jurisdiction: scope.jurisdiction,
+    policyGeneration: source.policyGeneration,
+    branches: source.branches.map(({ head, base }) => ({
+      head: { version: 1 as const, branch: head.branch, revision: head.revision, manifestHash: head.manifestHash,
+        parentRevision: head.parentRevision, publicationId: head.publicationId, updatedAt: head.updatedAt },
+      base,
+    })),
+  };
+  return c.json({ present: true, snapshot, objectReferences: result.objectReferences }, 200, { "cache-control": "no-store" });
+});
+app.post("/internal/workspaces/archive/restore", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { spaceId?: unknown; projectId?: unknown; jurisdiction?: unknown; snapshot?: unknown; restoreId?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_archive_snapshot" }, 400); }
+  if (typeof body.spaceId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.spaceId) ||
+      typeof body.projectId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.projectId) ||
+      (body.jurisdiction !== "global" && body.jurisdiction !== "eu") || !body.snapshot || typeof body.snapshot !== "object" || Array.isArray(body.snapshot) ||
+      typeof body.restoreId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.restoreId)) return c.json({ error_code: "invalid_workspace_archive_snapshot" }, 400);
+  const scope: WorkspaceScope = { tenantId, spaceId: body.spaceId, projectId: body.projectId, jurisdiction: body.jurisdiction as "global" | "eu" };
+  const candidate = body.snapshot as { version?: unknown; projectId?: unknown; jurisdiction?: unknown; policyGeneration?: unknown; branches?: unknown };
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scope.spaceId) || candidate.version !== 1 || candidate.projectId !== body.projectId ||
+      candidate.jurisdiction !== body.jurisdiction || !Number.isSafeInteger(candidate.policyGeneration) || !Array.isArray(candidate.branches) ||
+      candidate.branches.length < 1 || candidate.branches.length > 1000 || candidate.branches.some(item => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return true;
+        const record = item as Record<string, unknown>, head = record.head;
+        if (!head || typeof head !== "object" || Array.isArray(head)) return true;
+        const value = head as Record<string, unknown>;
+        if (value.version !== 1 || !validateWorkspaceBranch(value.branch) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 ||
+            typeof value.manifestHash !== "string" || !/^[a-f0-9]{64}$/.test(value.manifestHash) ||
+            (value.parentRevision !== null && (!Number.isSafeInteger(value.parentRevision) || Number(value.parentRevision) < 1)) ||
+            (value.publicationId !== null && (typeof value.publicationId !== "string" || value.publicationId.length > 160)) ||
+            typeof value.updatedAt !== "string" || !Number.isFinite(Date.parse(value.updatedAt))) return true;
+        const base = record.base;
+        if (base === null) return false;
+        if (!base || typeof base !== "object" || Array.isArray(base)) return true;
+        const baseRecord = base as Record<string, unknown>;
+        return !validateWorkspaceBranch(baseRecord.parentBranch) || baseRecord.parentBranch === value.branch ||
+          !Number.isSafeInteger(baseRecord.revision) || Number(baseRecord.revision) < 1 || typeof baseRecord.manifestHash !== "string" || !/^[a-f0-9]{64}$/.test(baseRecord.manifestHash);
+      })) {
+    return c.json({ error_code: "invalid_workspace_archive_snapshot" }, 400);
+  }
+  const snapshot: WorkspaceArchiveSnapshot = {
+    version: 1, scope, policyGeneration: Number(candidate.policyGeneration),
+    branches: (candidate.branches as Array<Record<string, unknown>>).map(item => {
+      const head = item.head as Record<string, unknown>;
+      return { head: { version: 1, scope, branch: head.branch as string, revision: Number(head.revision), manifestHash: head.manifestHash as string,
+        parentRevision: head.parentRevision as number | null, publicationId: head.publicationId as string | null, updatedAt: head.updatedAt as string },
+        base: item.base as WorkspaceArchiveSnapshot["branches"][number]["base"] };
+    }),
+  };
+  const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/archive/restore", {
+    body: { snapshot, restoreId: body.restoreId },
+  });
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
 app.post("/internal/workspaces/migration-restore", async c => {

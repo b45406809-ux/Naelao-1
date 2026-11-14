@@ -10,6 +10,9 @@ import {
   validateWorkspaceEntry,
   validateWorkspacePath,
   validateWorkspaceScope,
+  type WorkspaceArchiveBranch,
+  type WorkspaceArchiveObjectReference,
+  type WorkspaceArchiveSnapshot,
   type WorkspaceConsistencyMode,
   type WorkspaceEntry,
   type WorkspaceHead,
@@ -158,6 +161,8 @@ const MAX_MIGRATION_FILES = 10_000;
 const MAX_MIGRATION_BYTES = 64 * 1024 * 1024;
 const MAX_MIGRATION_BRANCHES = 200;
 const MAX_MIGRATION_ALL_BRANCH_BYTES = 512 * 1024 * 1024;
+const MAX_ARCHIVE_BRANCHES = 1000;
+const MAX_ARCHIVE_OBJECT_REFERENCES = 5000;
 const LIVE_CHECKPOINT_BATCH_SIZE = 20;
 const MAX_LIVE_RUNTIME_CONTROL_RESPONSE_BYTES = 30 * 1024 * 1024;
 const STAGING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -376,6 +381,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (await this.ctx.storage.get<WorkspaceScope>("scope")) await this.scheduleAlarmAt(Date.now() + WORKSPACE_MAINTENANCE_INTERVAL_MS);
     const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
     if (migration && migration.status !== "verified" && url.pathname !== "/v1/migration/status" && url.pathname !== "/v1/migration/import") return fail("workspace_migration_barrier_active", 423);
+    if (request.method === "POST" && url.pathname === "/v1/archive/export") return this.exportArchiveSnapshot(body!, tenantId);
+    if (request.method === "POST" && url.pathname === "/v1/archive/restore") return this.restoreArchiveSnapshot(body!, tenantId);
     if (request.method === "POST" && ["/v1/initialize", "/v1/open", "/v1/renew", "/v1/branch", "/v1/merge", "/v1/checkpoint", "/v1/stage", "/v1/handoff", "/v1/close", "/v1/revoke", "/v1/subscriptions/ack", "/v1/live-checkpoint/request"].includes(url.pathname)) {
       const policy = await this.getReadPolicy();
       const canInitialize = url.pathname === "/v1/initialize" && policy.mode === "legacy" &&
@@ -413,6 +420,170 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (request.method === "POST" && url.pathname === "/v1/revoke") return this.revoke(body!);
     if (request.method === "POST" && url.pathname === "/v1/live-checkpoint/request") return this.requestLiveCheckpoint(body!);
     return fail("not_found", 404);
+  }
+
+  private async exportArchiveSnapshot(body: Record<string, unknown>, tenantId: string): Promise<Response> {
+    if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId) return fail("invalid_workspace_scope", 403);
+    const scope = body.scope;
+    const knownScope = await this.ctx.storage.get<WorkspaceScope>("scope");
+    if (!knownScope) return json({ present: false });
+    if (knownScope.tenantId !== scope.tenantId || knownScope.spaceId !== scope.spaceId || knownScope.projectId !== scope.projectId || knownScope.jurisdiction !== scope.jurisdiction) return fail("workspace_scope_mismatch", 403);
+    const policy = await this.getReadPolicy();
+    if (policy.mode !== "coordinator") return fail("workspace_archive_policy_not_canonical", 423);
+    if (await this.contentGcLocked()) return fail("workspace_gc_in_progress", 423);
+    const headsBefore = await this.ctx.storage.list<WorkspaceHead>({ prefix: "head:", limit: MAX_ARCHIVE_BRANCHES + 1 });
+    if (headsBefore.size > MAX_ARCHIVE_BRANCHES) return fail("workspace_archive_branch_limit_exceeded", 413);
+    const branches: WorkspaceArchiveBranch[] = [];
+    const references = new Map<string, WorkspaceArchiveObjectReference>();
+    const addReference = async (key: string, expectedSize?: number): Promise<Response | null> => {
+      const object = await this.env.SCRIPTS_R2!.head(key);
+      if (!object || typeof object.etag !== "string" || !object.etag || !Number.isSafeInteger(object.size) || object.size < 0 ||
+          (expectedSize !== undefined && object.size !== expectedSize)) return fail("workspace_archive_object_unavailable", 503);
+      references.set(key, { key, etag: object.etag, size: object.size });
+      return references.size > MAX_ARCHIVE_OBJECT_REFERENCES ? fail("workspace_archive_object_limit_exceeded", 413) : null;
+    };
+    const addManifest = async (head: WorkspaceHead): Promise<Response | null> => {
+      let entries: WorkspaceEntry[];
+      try { entries = await this.readManifestEntries(head); }
+      catch { return fail("workspace_archive_manifest_unavailable", 503); }
+      if (!Array.isArray(entries) || !entries.every(validateWorkspaceEntry) || new Set(entries.map(entry => entry.path)).size !== entries.length ||
+          await sha256Hex(new TextEncoder().encode(canonicalManifest(entries))) !== head.manifestHash) return fail("workspace_archive_manifest_invalid", 503);
+      const invalidContent = await this.verifyEntries(scope, entries);
+      if (invalidContent) return fail("workspace_archive_content_unavailable", 503);
+      const manifestRef = await addReference(manifestKey(scope, head.manifestHash));
+      if (manifestRef) return manifestRef;
+      for (const entry of entries) {
+        const contentRef = await addReference(entry.objectKey, entry.size);
+        if (contentRef) return contentRef;
+      }
+      return null;
+    };
+
+    for (const [key, head] of headsBefore) {
+      const branch = key.slice("head:".length);
+      if (!validateWorkspaceBranch(branch) || head.branch !== branch || head.version !== 1 || JSON.stringify(head.scope) !== JSON.stringify(scope)) return fail("workspace_archive_head_invalid", 503);
+      const failedManifest = await addManifest(head);
+      if (failedManifest) return failedManifest;
+      const storedBase = branch === "main" ? undefined : await this.ctx.storage.get<{ parentBranch: string; revision: number; manifestHash: string }>(branchBaseKey(branch));
+      let base: WorkspaceArchiveBranch["base"] = null;
+      if (storedBase) {
+        if (!validateWorkspaceBranch(storedBase.parentBranch) || storedBase.parentBranch === branch || !Number.isSafeInteger(storedBase.revision) || storedBase.revision < 1 || !HASH.test(storedBase.manifestHash)) return fail("workspace_archive_branch_base_invalid", 503);
+        base = { ...storedBase };
+        const baseHead: WorkspaceHead = { ...head, branch: storedBase.parentBranch, revision: storedBase.revision, manifestHash: storedBase.manifestHash };
+        const failedBase = await addManifest(baseHead);
+        if (failedBase) return failedBase;
+      }
+      branches.push({ head, base });
+    }
+    if (!headsBefore.size) return json({ present: false });
+    if (!branches.some(branch => branch.head.branch === "main")) return fail("workspace_archive_main_head_missing", 503);
+    const headsAfter = await this.ctx.storage.list<WorkspaceHead>({ prefix: "head:", limit: MAX_ARCHIVE_BRANCHES + 1 });
+    if (policy.generation !== (await this.getReadPolicy()).generation || JSON.stringify([...headsBefore]) !== JSON.stringify([...headsAfter])) return fail("workspace_archive_changed_during_export", 409);
+    const snapshot: WorkspaceArchiveSnapshot = { version: 1, scope, policyGeneration: policy.generation, branches };
+    return json({ present: true, snapshot, objectReferences: [...references.values()] });
+  }
+
+  private async restoreArchiveSnapshot(body: Record<string, unknown>, tenantId: string): Promise<Response> {
+    const candidate = body.snapshot as Partial<WorkspaceArchiveSnapshot> | undefined;
+    const restoreId = body.restoreId;
+    if (typeof restoreId !== "string" || !ID.test(restoreId) || !candidate || candidate.version !== 1 ||
+        !validateWorkspaceScope(candidate.scope) || candidate.scope.tenantId !== tenantId || !Number.isSafeInteger(candidate.policyGeneration) ||
+        Number(candidate.policyGeneration) < 0 || !Array.isArray(candidate.branches) || candidate.branches.length < 1 || candidate.branches.length > MAX_ARCHIVE_BRANCHES) {
+      return fail("workspace_archive_snapshot_invalid");
+    }
+    const snapshot = candidate as WorkspaceArchiveSnapshot;
+    const scope = snapshot.scope;
+    const priorScope = await this.ctx.storage.get<WorkspaceScope>("scope");
+    if (priorScope && (priorScope.tenantId !== scope.tenantId || priorScope.spaceId !== scope.spaceId || priorScope.projectId !== scope.projectId || priorScope.jurisdiction !== scope.jurisdiction)) return fail("workspace_scope_mismatch", 403);
+    if (snapshot.branches.some(item => !item || typeof item !== "object" || !item.head || typeof item.head !== "object" || typeof item.head.branch !== "string")) return fail("workspace_archive_head_invalid");
+    const branches = [...snapshot.branches].sort((left, right) => left.head.branch.localeCompare(right.head.branch));
+    const branchNames = new Set<string>();
+    for (const item of branches) {
+      const head = item?.head;
+      if (!head || !validateWorkspaceBranch(head.branch) || branchNames.has(head.branch) || head.version !== 1 ||
+          head.scope?.tenantId !== scope.tenantId || head.scope.spaceId !== scope.spaceId || head.scope.projectId !== scope.projectId || head.scope.jurisdiction !== scope.jurisdiction || !Number.isSafeInteger(head.revision) || head.revision < 1 ||
+          !HASH.test(head.manifestHash) || (head.parentRevision !== null && (!Number.isSafeInteger(head.parentRevision) || head.parentRevision < 1)) ||
+          (head.publicationId !== null && (typeof head.publicationId !== "string" || head.publicationId.length > 160)) ||
+          typeof head.updatedAt !== "string" || !Number.isFinite(Date.parse(head.updatedAt))) return fail("workspace_archive_head_invalid");
+      branchNames.add(head.branch);
+      if (item.base !== null) {
+        const base = item.base;
+        if (!base || !validateWorkspaceBranch(base.parentBranch) || base.parentBranch === head.branch || !Number.isSafeInteger(base.revision) ||
+            base.revision < 1 || !HASH.test(base.manifestHash)) return fail("workspace_archive_branch_base_invalid");
+      }
+    }
+    if (!branchNames.has("main") || branches.some(item => item.base && !branchNames.has(item.base.parentBranch))) return fail("workspace_archive_branch_inventory_invalid");
+    const main = branches.find(item => item.head.branch === "main")!.head;
+    for (const item of branches) {
+      const manifests = [item.head, ...(item.base ? [{ ...item.head, branch: item.base.parentBranch, revision: item.base.revision, manifestHash: item.base.manifestHash }] : [])];
+      for (const head of manifests) {
+        let entries: WorkspaceEntry[];
+        try { entries = await this.readManifestEntries(head); }
+        catch { return fail("workspace_archive_manifest_unavailable", 409); }
+        if (!Array.isArray(entries) || !entries.every(validateWorkspaceEntry) || new Set(entries.map(entry => entry.path)).size !== entries.length ||
+            await sha256Hex(new TextEncoder().encode(canonicalManifest(entries))) !== head.manifestHash) return fail("workspace_archive_manifest_invalid", 422);
+        const invalidContent = await this.verifyEntries(scope, entries);
+        if (invalidContent) return fail("workspace_archive_content_unavailable", 409);
+      }
+    }
+    const snapshotHash = await sha256Hex(new TextEncoder().encode(JSON.stringify(snapshot)));
+    const priorReceipt = await this.ctx.storage.get<{ snapshotHash: string }>(`workspace_archive_restore:${restoreId}`);
+    if (priorReceipt) return priorReceipt.snapshotHash === snapshotHash
+      ? json({ restored: true, replay: true, branchCount: branches.length }) : fail("workspace_archive_restore_id_conflict", 409);
+
+    const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
+    const policy = await this.getReadPolicy();
+    const alias = await this.ctx.storage.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+    if ((migration && migration.status !== "verified") || policy.mode === "shadow" || (alias && policy.mode !== "coordinator")) return fail("workspace_archive_restore_policy_blocked", 423);
+    if (await this.contentGcLocked()) return fail("workspace_gc_in_progress", 423);
+    const sessionRecords = await this.ctx.storage.list<Session>({ prefix: "session:", limit: 1001 });
+    if (sessionRecords.size > 1000) return fail("workspace_archive_session_scan_limit_exceeded", 413);
+    if ([...sessionRecords.values()].some(session => session.status === "active")) return fail("workspace_archive_active_sessions", 423);
+
+    const result = await this.ctx.storage.transaction(async tx => {
+      if (await tx.get<boolean>("erased") || await tx.get<WorkspaceErasureAdmission>("workspace_erasure_admission")) return { error: "workspace_erased" as const };
+      const gc = await tx.get<ContentGcState>("content_gc");
+      if (gc && gc.lockUntil > Date.now()) return { error: "workspace_gc_in_progress" as const };
+      const currentMigration = await tx.get<WorkspaceMigration>("project_migration");
+      if (currentMigration && currentMigration.status !== "verified") return { error: "workspace_migration_barrier_active" as const };
+      const currentPolicy = await tx.get<WorkspaceReadPolicy>("workspace_read_policy");
+      if (currentPolicy?.mode === "shadow" || (currentPolicy && currentPolicy.generation !== policy.generation)) return { error: "workspace_archive_restore_policy_changed" as const };
+      const currentSessions = await tx.list<Session>({ prefix: "session:", limit: 1001 });
+      if (currentSessions.size > 1000 || [...currentSessions.values()].some(session => session.status === "active")) return { error: "workspace_archive_active_sessions" as const };
+      const currentAlias = await tx.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+      if (currentAlias && (await tx.get<WorkspaceReadPolicy>("workspace_read_policy"))?.mode !== "coordinator") return { error: "workspace_archive_restore_policy_blocked" as const };
+      const currentScope = await tx.get<WorkspaceScope>("scope");
+      if (currentScope && (currentScope.tenantId !== scope.tenantId || currentScope.spaceId !== scope.spaceId || currentScope.projectId !== scope.projectId || currentScope.jurisdiction !== scope.jurisdiction)) return { error: "workspace_scope_mismatch" as const };
+      const currentMain = await tx.get<WorkspaceHead>(headKey("main"));
+      const currentHeads = await tx.list<WorkspaceHead>({ prefix: "head:", limit: MAX_ARCHIVE_BRANCHES + 1 });
+      if (currentHeads.size > MAX_ARCHIVE_BRANCHES || (!currentMain && currentHeads.size > 0)) return { error: "workspace_archive_head_conflict" as const };
+      if (currentMain && (currentMain.revision !== main.revision || currentMain.manifestHash !== main.manifestHash)) return { error: "workspace_archive_head_conflict" as const };
+      for (const item of branches) {
+        const current = await tx.get<WorkspaceHead>(headKey(item.head.branch));
+        if (current && (current.revision !== item.head.revision || current.manifestHash !== item.head.manifestHash)) return { error: "workspace_archive_head_conflict" as const };
+        const currentBase = await tx.get<{ parentBranch: string; revision: number; manifestHash: string }>(branchBaseKey(item.head.branch));
+        if (currentBase && JSON.stringify(currentBase) !== JSON.stringify(item.base)) return { error: "workspace_archive_branch_base_conflict" as const };
+      }
+      await tx.put("scope", scope);
+      for (const item of branches) {
+        const current = await tx.get<WorkspaceHead>(headKey(item.head.branch));
+        if (!current) await tx.put(headKey(item.head.branch), item.head);
+        if (item.base && !(await tx.get(branchBaseKey(item.head.branch)))) await tx.put(branchBaseKey(item.head.branch), item.base);
+        const retainedKey = retainedRevisionKey(item.head.branch, item.head.revision);
+        if (!(await tx.get(retainedKey))) await tx.put(retainedKey, { branch: item.head.branch, revision: item.head.revision, manifestHash: item.head.manifestHash, createdAt: item.head.updatedAt } satisfies RetainedRevision);
+        const eventKey = revisionEventKey(item.head.branch, item.head.revision);
+        if (!(await tx.get(eventKey))) await tx.put(eventKey, { branch: item.head.branch, revision: item.head.revision, publicationId: item.head.publicationId, changedPaths: [], updatedAt: item.head.updatedAt } satisfies RevisionEvent);
+      }
+      if (!currentPolicy || currentPolicy.mode === "legacy") {
+        const at = new Date().toISOString();
+        await tx.put("workspace_read_policy", { mode: "coordinator", generation: Math.max((currentPolicy?.generation ?? 0) + 1, snapshot.policyGeneration + 1), migrationId: null, updatedAt: at } satisfies WorkspaceReadPolicy);
+      }
+      await tx.put(`workspace_archive_restore:${restoreId}`, { snapshotHash, archiveGeneration: snapshot.policyGeneration, restoredAt: new Date().toISOString() });
+      return { restored: true as const, replay: false as const };
+    });
+    if ("error" in result) return fail(result.error, result.error === "workspace_scope_mismatch" ? 403 : result.error.includes("conflict") ? 409 : 423);
+    await this.ctx.storage.setAlarm(Date.now() + WORKSPACE_MAINTENANCE_INTERVAL_MS);
+    return json({ restored: true, replay: false, branchCount: branches.length });
   }
 
   private async validateScope(scopeValue: unknown, branchValue: unknown, tenantId: string): Promise<{ scope: WorkspaceScope; branch: string } | Response> {

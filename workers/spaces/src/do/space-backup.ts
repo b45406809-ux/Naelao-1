@@ -9,9 +9,30 @@ export interface SpaceArchivePayload {
   tableRows: Record<string, Array<Record<string, unknown>>>;
   rowCounts: Record<string, number>;
   objectReferences: Array<{ key: string; etag: string; size: number }>;
+  /** Committed project workspace heads and merge bases from WorkspaceCoordinatorDO. */
+  workspaceSnapshots?: SpaceArchiveWorkspaceSnapshot[];
   /** Absent only in legacy archives written before object-byte capture was added. */
   objectSnapshots?: SpaceArchiveObjectSnapshot[];
   selectionFingerprint?: string;
+}
+
+export interface SpaceArchiveWorkspaceSnapshot {
+  version: 1;
+  projectId: string;
+  jurisdiction: "global" | "eu";
+  policyGeneration: number;
+  branches: Array<{
+    head: {
+      version: 1;
+      branch: string;
+      revision: number;
+      manifestHash: string;
+      parentRevision: number | null;
+      publicationId: string | null;
+      updatedAt: string;
+    };
+    base: { parentBranch: string; revision: number; manifestHash: string } | null;
+  }>;
 }
 
 export interface SpaceArchiveObjectSnapshot {
