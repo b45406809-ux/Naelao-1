@@ -16,30 +16,30 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P05 signed knowledge/action requirements)
+## Latest checkpoint — 2026-11-14 (P04 durable Space R2 coverage)
 
-Code `3007890d7df2f51d51ff23954281bcfbe9270e96` is pushed to `origin/Mcbt5s-Backup-2` on
-`autonomous-managed-services-20261111`. SpaceBlueprint now carries bounded, validated knowledge and
-host-action requirement references. Foundry authors them from the active trusted package candidates;
-the server checks exact pinned version/digest and manifest declarations before signing the artifact.
-Activation preview shows availability and blockers, requires explicit owner/admin review, and stores a
-durable actor/time/requirements-digest receipt. Declarations do not grant collection access, provider
-connections or action authority. P05 remains PARTIAL: Space/Project collection selection and binding,
-per-action grants/revocation, provider connection scope, broader lifecycle, full cost and live journey
-acceptance are still open.
+Source commit `c310ae03669e4110196f59f0116672818e557883` is pushed to
+`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. Full Space archives now include
+the Space Assistant workspace, learned skill-library files and all four persisted agent configuration
+files, in addition to project/shared workspace and Space extension data. Existing archive size/object
+caps, tenant/Space binding, checksum verification, partial retry and no-overwrite restore semantics
+remain unchanged. The agent config, assistant file and learned-script callers are reachable today.
 
-Local evidence: Agent SDK focused tests **8/8**, Spaces focused authoring/activation/package/runtime/
-migration tests **68/68**, Agent SDK/Spaces/Shell typechecks, and `git diff --check`. These are local
-tests and static checks; no browser, deployed Worker/D1, provider or live customer acceptance ran.
-No live credential blocked this work. P01 SQLite rehearsal remains local; P02 still fails closed on
-shared/unresolved resource IDs and absent operator receipts. Keep rollouts disabled and preserve
-intentionally untracked `infra/scripts/__pycache__/`.
+Local evidence: `workers/spaces/src/do/space-data-ops.test.ts` **11/11**, Spaces typecheck and
+`git diff --check`. These are local SQLite/R2-mock checks; no isolated restore, deployed D1/DO/R2,
+jurisdiction or live RPO/RTO acceptance ran. P04 remains PARTIAL: archive does not yet capture
+WorkspaceCoordinatorDO state or jurisdiction-scoped canonical `workspace-v1` manifests/content,
+Agents Worker D1, provider/runtime state, or task-scoped communication/attachment objects. The latter
+have separate 30-day retention and erasure paths. Retention/RPO/RTO and legal/key/jurisdiction policy
+remain open; these are not credential blockers. P01/P02 retain their actual resource/receipt gates.
+Preserve intentionally untracked `infra/scripts/__pycache__/`; keep all rollouts disabled.
 
-Exact next action: continue P04 disaster recovery by comparing the current archive's captured D1/DO
-records and R2 object prefixes with their write callers. Implement the next missing enumerable local
-coverage path with checksum, partial-retry and non-overwrite tests; leave snapshot limits and merge
-semantics unchanged until a policy decision supports changing them. Then continue P01–P24 and
-S2–S9/U01–U12, keeping provider/live acceptance separate from local evidence.
+Exact next action: trace how the current project workspace's committed main/branch heads, manifests
+and content are persisted in WorkspaceCoordinatorDO, confirm its per-project jurisdiction binding and
+existing generation/erasure fences, then implement a bounded authenticated archive-export/restore
+contract through the reachable Agents/Space owner export path. It must export live committed content
+only, avoid active sessions, staging and orphaned CAS data, preserve tombstone replay and no-overwrite
+semantics, and keep existing archive caps. Continue P01–P24 and S2–S9/U01–U12 after that slice.
 
 ## Previous checkpoint — 2026-11-14 (signed template coordination defaults)
 

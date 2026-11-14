@@ -1,27 +1,29 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P05 signed knowledge/action requirements)
+## Active continuation — 2026-11-14 (P04 durable Space R2 coverage)
 
-Code `3007890d7df2f51d51ff23954281bcfbe9270e96` is pushed to
-`origin/Mcbt5s-Backup-2`. SpaceBlueprint now carries bounded knowledge and host-action references.
-Foundry authors from active trusted package candidates; Spaces validates exact pinned version/digest
-and signed manifest declarations before export. Activation preview displays availability and blockers,
-requires explicit owner/admin review, and persists a durable actor/time/requirements-digest receipt.
-Declarations do not grant collection access, connections or action authority. This closes only the
-signed-requirement/review slice; P05 remains PARTIAL for Space/Project collection binding, per-action
-grants/revocation, provider connection scope, broader lifecycle, full cost and live acceptance.
+Source commit `c310ae03669e4110196f59f0116672818e557883` is pushed to
+`origin/Mcbt5s-Backup-2`. Full Space archive enumeration now includes persisted agent configuration,
+the Space Assistant file workspace and learned skill-library objects. The existing local recovery
+test proves their encrypted snapshot inclusion and restoration through checksum-verified partial retry
+without overwriting a concurrent conflicting object. Archive caps and additive merge remain unchanged.
 
-Local evidence: Agent SDK focused tests **8/8**; Spaces authoring, activation, candidate, runtime and
-migration suites **68/68**; Agent SDK/Spaces/Shell typechecks; `git diff --check`. No browser, deployed
-Worker/D1, provider or live customer acceptance ran. No credentials blocked this source work. P01
-fresh SQLite rehearsal is local only; P02 remains fail-closed on shared/unresolved resource IDs and
-missing operator receipts. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+Local evidence: Space archive suite **11/11**, Spaces typecheck and `git diff --check`. No deployed
+restore or live acceptance ran. P04 is PARTIAL: jurisdiction-scoped canonical project
+WorkspaceCoordinatorDO heads/manifests/content, other service D1/DO state, provider/runtime stores,
+RPO/RTO, retention/legal/key policy and isolated recovery are not covered. Temporary channel/email
+attachments and private communications bodies remain under independent retention/erasure paths.
+P05 signed requirement references/review are still only one implemented slice of guided setup;
+collection/action/provider scopes remain open. P01/P02 actual resource binding and receipt evidence
+gates remain. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: continue P04 disaster recovery by mapping archived D1/DO records and R2 object
-prefixes to current write callers; implement the next missing enumerable local coverage path with
-checksum, partial-retry and non-overwrite verification. Preserve archive limits and merge semantics
-until retention/RPO/RTO policy is approved. Continue P01–P24 and S2–S9/U01–U12.
+Exact next action: add bounded, authenticated WorkspaceCoordinatorDO backup/restore of committed
+project branch heads, manifests and referenced content through the owner Space archive flow. First
+verify per-project jurisdiction, generation/erasure fencing, retention and current checked-publish
+semantics; exclude active sessions, staging and orphaned content. Preserve archive caps and
+no-overwrite restore, and test interrupted retry plus tombstone isolation. Then continue P01–P24 and
+S2–S9/U01–U12.
 
 ## Previous continuation — 2026-11-14 (template coordination defaults completed locally)
 
@@ -1139,7 +1141,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. `db5a915e` adds a fresh-install in-memory SQLite rehearsal across all 247 migrations and repairs the safe 0164 skip prerequisite for 0229; tests pass 20/20 and run in both preflights. Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. |
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector. The preflight clears map freshness but still rejects a shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
-| P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
+| P04 | PARTIAL | Bounded encrypted archives now include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, with checksum-verified partial retry and no-overwrite restore (`c310ae03`). `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin export caller. Jurisdiction-scoped WorkspaceCoordinatorDO heads/manifests/content, other service D1/DO state, private inbound communications/attachments, archive limits, key/legal/retention policy, RPO/RTO and isolated/live recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
 | P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, scoped text handles, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle, verified rates/total cost, media access and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, cost observations and dated host-catalog list-rate estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn behind owner policy, exact option-label routing and synthetic installed-handler test; Telnyx remains DTMF-only. Existing release/installation binding and phone response validator remain authoritative. This is not streaming or an AI voice agent. Customer lifecycle, voice catalogs/quality tests, managed billing, invoices and live provider/region acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
@@ -1171,7 +1173,10 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
 2. Preserve the explicit P03 grace/restriction and P20 refund/author-accounting decisions as open
    product contracts; advance only independent code while they are unresolved.
 3. P04's bounded object-byte capture, checksum restore and durable partial retry path are implemented
-   in pushed code `937fbdd5`; the focused SQLite/R2-mock suite passes **9/9**. P03/P20 independent
+   in pushed code `937fbdd5`; `c310ae03` adds the currently omitted durable Space assistant workspace,
+   learned skills and agent config prefixes, with focused SQLite/R2-mock coverage **11/11**. The
+   next P04 code gap is a jurisdiction-bound WorkspaceCoordinatorDO committed-state archive and
+   restore path; its heads/manifests/content are not in the SpaceDO export. P03/P20 independent
    customer/creator status callers are implemented in pushed code `41996f29`; grace/restriction and
    refund/dispute/payout policies plus authenticated operator identity remain unresolved. The
    managed-services ledger reconciles S2–S9/U01–U12, including supported U11/U12 caller audits; do not
@@ -1183,7 +1188,8 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    review/migration/recovery paths exist. Foundry visual setup and durable conformance/publication
    recovery are implemented locally. §10.3's owner/admin policy gate is complete in `4c458a9e`; the
    assistant read caller and fresh pre-planning context are complete in `a6c3233a`, `d9733888` and
-   `96c3da48`. Implement the active P05 connection-reference action from the top of this ledger. P22's
+   `96c3da48`. The P05 signed requirement/review slice in `3007890d` is complete; collection/action
+   grants and provider scope remain open as genuine authority-contract gaps. P22's
    independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
    retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary

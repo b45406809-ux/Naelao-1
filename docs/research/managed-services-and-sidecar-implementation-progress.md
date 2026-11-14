@@ -1,29 +1,32 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P05 signed knowledge/action requirements)
+## Active continuation — 2026-11-14 (P04 durable Space R2 coverage)
 
-Code `3007890d7df2f51d51ff23954281bcfbe9270e96` is pushed to
-`origin/Mcbt5s-Backup-2`. SpaceBlueprint now carries bounded, SDK-validated knowledge and host-action
-requirement references. Foundry authors them from active trusted package candidates; the Spaces export
-route checks each reference against the exact pinned version, manifest digest and package declaration
-before signing. Target activation preview reports availability/blockers, requires explicit owner/admin
-review, and persists a durable actor/time/requirements-digest receipt. These references do not grant
-collection access, provider connections or action authority.
+Source commit `c310ae03669e4110196f59f0116672818e557883` is pushed to
+`origin/Mcbt5s-Backup-2`. Full Space archives now enumerate `spaces/{space}/agents/`, `workspace/` and
+`scripts/`, preserving the current tenant/Space R2 envelope and existing limits. This covers persisted
+agent config, Space Assistant files and the learned skill library through their current R2 callers.
+The existing SQLite/R2-mock recovery test now exercises all four agent files plus assistant and skill
+objects, checksum-verified partial retry, a concurrent conflicting object, exact restored bytes, and
+foreign-Space exclusion.
 
-Local evidence: Agent SDK focused tests **8/8**; Spaces authoring, activation, package-candidate,
-runtime and migration suites **68/68**; Agent SDK/Spaces/Shell typechecks; `git diff --check`. No
-browser, deployed Worker/D1, provider or live customer acceptance ran. P05 remains PARTIAL: collection
-selection/binding and per-action grants/revocation lack a Space-scope contract; provider connection
-scope, broader lifecycle, verified total cost, media access and live acceptance remain. P01 migration
-rehearsal is local only. P02 remains fail-closed on shared/unresolved resource IDs and missing operator
-receipts. No credentials blocked this implementation; rollouts stay disabled and preserve
+Local evidence: `workers/spaces/src/do/space-data-ops.test.ts` **11/11**, Spaces typecheck, and
+`git diff --check`. No isolated restore, deployed D1/DO/R2, jurisdiction or live RPO/RTO acceptance
+ran. P04 remains PARTIAL: WorkspaceCoordinatorDO's canonical `workspace-v1` heads/manifests/content
+are not archived, nor are Agents Worker D1 or provider/runtime state. `email-inbound/`,
+`channel-inbound/` and `communications/` objects remain in their independent 30-day retention and
+erasure lifecycle and are not copied into Space archives. Legal/retention/RPO/RTO and regional
+recovery policy remain unresolved; no credential blocked this source work. P01/P02 retain the actual
+resource and operator-receipt gates. Rollouts remain disabled; preserve
 `infra/scripts/__pycache__/`.
 
-Exact next action: continue P04 by mapping archived D1/DO records and R2 object prefixes to current
-write callers, then implement the next missing enumerable local coverage path with checksum, partial-
-retry and non-overwrite verification. Preserve archive size and merge semantics until retention/RPO/
-RTO policy is approved. Continue S2–S9/U01–U12 and all other P01–P24 code gaps.
+Exact next action: trace current WorkspaceCoordinatorDO committed main/branch heads, manifests and
+R2 content; confirm the existing per-project jurisdiction, generation and erasure fences, then add a
+bounded authenticated export/restore contract reachable through Agents and the Space owner archive.
+Export committed content only (no active sessions, staging or orphaned CAS), replay tombstones before
+reads, retain no-overwrite and existing archive caps, then add retry/isolation tests. Continue P01–P24
+and S2–S9/U01–U12.
 
 ## Previous continuation — 2026-11-14 (signed template coordination defaults)
 
