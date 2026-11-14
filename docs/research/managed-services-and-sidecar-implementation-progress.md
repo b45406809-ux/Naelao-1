@@ -1,16 +1,31 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P03/P12 tenant-bound dunning dispatch; S4/MS12 settings)
+## Active checkpoint — 2026-11-14 (P06 and §10 source reconciliation; P03/P12 and S4)
 
 S4/MS12 code `b26852c3ea17d24d3fabba4a4c6bc735abaeb932` and runbook/ledger checkpoint `1044097a0c67382b4d969c08873b0020af2d417b` are pushed to `origin/Mcbt5s-Backup-2`. Migration 0250 adds project-scoped, versioned restart-recipe metadata and actor-attributed audit. Owner/admin CAS routes, authenticated Router reachability and a Shell editor are present. Values are bounded and reject shell/secret-shaped inputs; execution/health verification remain explicitly unsupported. P01 now pins 250 migrations; fresh SQLite rehearsal, release manifest/runner suites and validators pass locally as recorded below.
 
 P03/P12 code `ca9aead9f8dca0ef77e66b154ee39d40368489d4` is pushed. Product-user dunning dispatch now verifies that the current product tenant matches `billing_dunning_outbox.tenant_id` before queueing; mismatched or missing ownership remains deferred and cannot cross tenant scope. This complements the existing stable outbox/workflow IDs, current-subscription recheck and notification receipts without changing billing policy.
 
+The prior keypad-microapp action is already implemented in pushed source. `bounded-phone-menu` has
+installation settings, owner dashboard, exact active-line synthetic test selection, signed-release
+status and masked call history. Existing focused evidence is recorded in the platform progress
+ledger. First-party listing remains gated on Naelao publisher identity, key custody/signing, canonical
+artifact distribution and catalog policy; do not fabricate a publisher listing. Shared-Space proposal
+approval is advisory: current tests assert `access_granted: false`, unchanged project membership and
+an advisory-only published fact; use-request resolution also leaves access ungranted. The Space panel
+discloses that a request does not authorize project or service access.
+
 Local evidence: dunning outbox/dispatch/status tests **13/13**, Billing typecheck, Workflows queue/recovery tests **13/13**, and `git diff --check`. For S4: profile/route tests **9/9**, Agents typecheck, Shell typecheck and inert editor test **1/1**, Router route test **4/4** and typecheck. P01: full fresh SQLite migration rehearsal **1/1** through 0250, release manifest/runner suites **38/38**, release/deployment validators pass. All are local/mocked checks; no provider, remote D1, deployment, browser or live acceptance ran.
 
 P02 still requires actual per-environment resource ownership/IDs, fresh read-only receipts and operator-attested D1 baselines. P03/P12 still lack approved grace/restriction/escalation and retry-cadence policy plus live delivery acceptance. S4/MS12 still lacks the accepted runtime adapter, U05 observation producer, U06 writer admission/drain/reconnect/handoff contract, encrypted private-state byte fallback, recipe execution and physical snapshot purge. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: build the customer-facing signed keypad-extension microapp on the existing installation settings, owner phone dashboard and test-only simulation contracts. Keep simulation synthetic, preserve Twilio-only speech and Telnyx DTMF limits, and leave provider provisioning/streaming unavailable. Then continue the remaining guided-template setup, voice-dashboard and shared-Space coordination requirements plus S3–S9/U01–U12. Fetch and safely integrate remote advances before every push.
+Exact next action: extend the signed Space-shared package update flow to support a narrowly scoped,
+owner-confirmed permission/capability expansion. Keep publisher, package configuration, provider
+connections, shared-drive grants and dependencies unchanged in this slice; bind the exact authority
+diff and candidate artifact/manifest to the review token and durable receipt, keep the install paused,
+and add regression coverage for stale/revoked releases and concurrent review. Then continue S3–S9/
+U01–U12 and the remaining guided-template, voice and Shared-Space requirements. Keep rollouts
+disabled and fetch/safely integrate remote advances before every push.
 
 ## Previous checkpoint — 2026-11-14 (P05 activation handoff; P04 restore safety next)
 
