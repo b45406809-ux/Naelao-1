@@ -16,7 +16,33 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
+## Latest checkpoint — 2026-11-14 (P04 archive grant safety; P05 handoff)
+
+P04/P05 recovery safety code `75feeabb` is pushed to `origin/Mcbt5s-Backup-2`. Full Space archives
+omit owner-managed `local_grants`, `extension_shared_filesystem_grants` and
+`extension_project_knowledge_grants`. Restore strips those rows from legacy archives, reports exact
+per-table counts in the preview and persisted restore receipt, and continues restoring unrelated
+state. Owners must reapprove those permissions. The archive UI and runbook disclose this behavior.
+
+Local evidence: Space data-operations/archive tests **15/15**, Shell archive panel tests **2/2**,
+Spaces and Shell typechecks, and `git diff --check` pass. These are local SQLite/Worker/UI checks; no
+deployed R2/D1, browser, isolated recovery drill, provider or live acceptance ran. Rollouts remain
+disabled; preserve `infra/scripts/__pycache__/`.
+
+P05 guided Project Knowledge activation handoff `e9be8aee` and missing-Project-ID recovery fix
+`38f50b41` remain pushed. Valid activation Project IDs open the owner publish/grant UI; malformed or
+missing IDs show recovery guidance; no access is granted automatically. P05 remains PARTIAL for
+broader guided lifecycle/cost, shared provider connection authority/payer/revocation semantics and
+live acceptance.
+
+Exact next action: inspect the P04 archive merge path specifically for stale active Space extension
+installations. Determine whether restoring archived `extension_instances` or signed installation
+manifests can revive an installation removed after export; if so, preserve the archive's package data
+but require fresh owner activation before any restored handler can run. Add a regression spanning
+export, uninstall, restore and runtime admission. Then continue the next independent requirement in
+both active plans. Fetch and safely integrate remote advances before every push.
+
+## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
 
 Guided activation handoff code `e9be8aee` and its missing-Project-ID recovery fix `38f50b41` are
 pushed to `origin/Mcbt5s-Backup-2`. When the signed activation preview requires owner-published

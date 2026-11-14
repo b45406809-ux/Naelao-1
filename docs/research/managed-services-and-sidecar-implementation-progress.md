@@ -1,6 +1,34 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P05 activation handoff; P04 restore safety next)
+## Active checkpoint — 2026-11-14 (P04 archive grant safety; P05 activation handoff)
+
+Code `75feeabb` is pushed to `origin/Mcbt5s-Backup-2`. Full archives omit owner-managed local-machine,
+Space-shared filesystem and Project Knowledge grant rows. Legacy archives are still usable: restore
+strips those rows, reports per-table omitted counts in preview and the durable restore receipt, and
+continues with other data. Owners must reapprove the permissions after recovery. Archive UI and
+`docs/space-data-retention-and-backup.md` state these boundaries.
+
+P05 handoff `e9be8aee` plus missing-Project-ID recovery `38f50b41` remain pushed. Signed activation
+that requires owner-published external Knowledge links to every validated created Project. The
+Project page guides the owner to publish a signed-package-declared collection and explicitly grant
+that current publication; activation never grants access.
+
+Local evidence: Space data-operations/archive tests **15/15**, Shell archive panel tests **2/2**,
+Spaces/Shell typechecks and `git diff --check`. The global pnpm wrapper cannot reconcile dependencies
+in this no-TTY shell, so existing local binaries ran the checks. No deployed R2/D1, browser, isolated
+recovery drill, provider or live acceptance ran. P04 remains PARTIAL for other service stores,
+retention/key/jurisdiction policy and isolated/deployed drills; P05 remains PARTIAL for broader
+guided lifecycle/cost, shared provider-connection authority/payer/revocation semantics and live
+acceptance. S2–S9/U01–U12 status remains as recorded below. Keep rollouts disabled and preserve
+`infra/scripts/__pycache__/`.
+
+Exact next action: inspect whether Space archive restore can revive `extension_instances` or signed
+installation manifests after uninstall. If it can, keep archive package bytes recoverable but require
+fresh owner activation before a restored handler can execute; add an export/uninstall/restore/runtime
+admission regression. Then continue the next independent code gap in both plans. Fetch and safely
+integrate before every push.
+
+## Previous checkpoint — 2026-11-14 (P05 activation handoff; P04 restore safety next)
 
 P05 guided Project Knowledge handoff commits `e9be8aee` and `38f50b41` are pushed to
 `origin/Mcbt5s-Backup-2`. Signed activation that requires owner-published external Knowledge now links
