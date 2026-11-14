@@ -23,6 +23,9 @@ describe("dogfooded enterprise extensions", () => {
     expect(foundry).toContain("Add setup field");
     expect(foundry).toContain("Setup contract preview");
     expect(foundry).toContain("Customer form preview");
+    expect(foundry).toContain("Assistant channel availability defaults");
+    expect(foundry).toContain("collectAssistantChannelDefaults");
+    expect(foundry).toContain("do not connect accounts");
     expect(foundry).toContain("setup-form-preview");
     expect(foundry).toContain("setup-preview-locale");
     expect(foundry).toContain("updateCustomerPreviewValues");

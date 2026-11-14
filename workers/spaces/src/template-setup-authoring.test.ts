@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type SpaceBlueprint, validateBlueprintSetupSchema } from "@naelao/agent-sdk";
-import { attachBlueprintSetupFields } from "./template-setup-authoring.js";
+import { attachBlueprintAssistantChannelDefaults, attachBlueprintSetupFields } from "./template-setup-authoring.js";
 import spacesWorker from "./index.js";
 
 const sourceBlueprint = (): SpaceBlueprint => ({
@@ -56,6 +56,19 @@ describe("visual Template setup authoring export", () => {
     expect(authored.setupSchemaVersion).toBe(2);
   });
 
+  it("attaches only validated availability and phone-prompt defaults, never account provisioning", () => {
+    const source = sourceBlueprint();
+    const defaults = { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" as const },
+      projectAssistants: { enabled: { email: false } } };
+    const authored = attachBlueprintAssistantChannelDefaults(source, defaults);
+    expect(authored.assistantChannels).toEqual(defaults);
+    expect(source.assistantChannels).toBeUndefined();
+    expect(() => attachBlueprintAssistantChannelDefaults(source, { spaceAssistant: { enabled: { unknown: true } } })).toThrow();
+    expect(() => attachBlueprintAssistantChannelDefaults(source, { emailProvisioning: { spaceAssistant: {
+      provider: "agentmail", defaultMode: "naelao_managed", provisionOnCreate: true,
+    } } })).toThrow("blueprint_assistant_channel_provisioning_not_authorable");
+  });
+
   it("rejects secrets, unknown exported projects, malformed fields and unbounded field lists", () => {
     const source = sourceBlueprint();
     expect(() => attachBlueprintSetupFields(source, { projectId: "support", schemaVersion: 1,
@@ -72,13 +85,16 @@ describe("visual Template setup authoring export", () => {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-studio",
         "x-naelao-user-id": "owner-studio", "x-naelao-role": "owner" },
       body: JSON.stringify({ projectId: "support", requiredExtensions: [], name: "Support", description: "Support template",
-        setupSchemaVersion: 2, setupFields, stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
+        setupSchemaVersion: 2, setupFields,
+        assistantChannels: { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" }, projectAssistants: { enabled: { email: false } } },
+        stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
     }), h.env);
     expect(response.status, await response.clone().text()).toBe(202);
     expect(h.spaceRequests).toHaveLength(1);
     expect(h.jobs).toHaveLength(1);
     const payload = JSON.parse(h.writes[0]!.text) as { blueprint: SpaceBlueprint };
     expect(payload.blueprint).toMatchObject({ setupSchemaVersion: 2, projects: [{ id: "support", setupFields }],
+      assistantChannels: { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" }, projectAssistants: { enabled: { email: false } } },
       metadata: { stateDeltaSuite: { fixtures: expect.arrayContaining([expect.objectContaining({ id: "fixture-0" })]) } } });
   });
 
@@ -93,6 +109,19 @@ describe("visual Template setup authoring export", () => {
     const invalid = await request("owner", [{ id: "api_key", type: "text", label: "API key" }]);
     expect(invalid.status).toBe(422);
     expect(await invalid.json()).toMatchObject({ error_code: "blueprint_setup_schema_invalid" });
+    expect(h.writes).toHaveLength(0);
+    expect(h.jobs).toHaveLength(0);
+  });
+
+  it("rejects invalid channel defaults and provisioning directives before storing an artifact", async () => {
+    const h = exportHarness();
+    const request = (assistantChannels: unknown) => spacesWorker.fetch(new Request("https://spaces.test/spaces/space-studio/export-template", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-studio",
+        "x-naelao-user-id": "owner-studio", "x-naelao-role": "owner" },
+      body: JSON.stringify({ projectId: "support", assistantChannels, stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
+    }), h.env);
+    expect((await request({ spaceAssistant: { enabled: { fax: true } } })).status).toBe(422);
+    expect((await request({ emailProvisioning: { spaceAssistant: { provider: "agentmail", defaultMode: "naelao_managed", provisionOnCreate: true } } })).status).toBe(422);
     expect(h.writes).toHaveLength(0);
     expect(h.jobs).toHaveLength(0);
   });

@@ -1,4 +1,4 @@
-import { validateBlueprintSetupSchema, type BlueprintSetupField, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateAssistantChannelDefaults, validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type BlueprintSetupField, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 /** Attach one author's visual setup form to the exact exported project and validate it with the same
  * SDK contract used by activation. Caller-provided schemas remain data; no executable form logic is accepted. */
@@ -20,5 +20,18 @@ export function attachBlueprintSetupFields(
   const groups = validateBlueprintSetupSchema(blueprint);
   if (groups.length !== 1 || groups[0]?.project_id !== input.projectId)
     throw new Error("blueprint_setup_schema_invalid");
+  return blueprint;
+}
+
+/** Template channel declarations are availability preferences only. Account selection,
+ * provisioning and spend remain per installation and are never accepted from this authoring path. */
+export function attachBlueprintAssistantChannelDefaults(
+  source: SpaceBlueprint,
+  input: unknown,
+): SpaceBlueprint {
+  const checked = validateAssistantChannelDefaults(input);
+  if (checked.emailProvisioning !== undefined) throw new Error("blueprint_assistant_channel_provisioning_not_authorable");
+  const blueprint = structuredClone(source);
+  blueprint.assistantChannels = checked as Pick<AssistantChannelTemplateDefaults, "spaceAssistant" | "projectAssistants">;
   return blueprint;
 }
