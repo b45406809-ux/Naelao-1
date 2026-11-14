@@ -16,45 +16,33 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P03/P12 Product-user dunning status pushed)
+## Latest checkpoint — 2026-11-14 (P05 generated-project lifecycle handoff; pushed)
 
-P03/P12 code commit `39c0b9e4a0b1599132e7c0d72dba9e4d4fa2d040` is pushed to
-`origin/Mcbt5s-Backup-2`; the pre-push fetch confirmed remote tip `5c604e60` with no advance.
+P05 code `53ff1c61a316bfa36a37432aa2f9c1eae37bbf2` is pushed to
+`origin/Mcbt5s-Backup-2` after fetching remote `60c5505b` with no advance. Owner/admin Template
+status now links only validated generated Project IDs into the matching Space and links to that
+Space's extension manager. It states that this screen cannot uninstall the template or remove
+Projects/extensions/provider connections/licenses/charges, and that it cannot infer those items are
+active. It performs no cleanup or billing mutation.
 
-P03/P12 customer status is implemented locally across the durable notification record, authenticated
-Billing → Spaces → Router path, and Product Shell personal settings. Migration 0252 scopes non-PII
-provider outcomes to the exact product, end user and subscription. Before a queued notice is sent,
-Notifications rechecks the current active product, user, exact `past_due` subscription, provider event
-version and verified recipient; stale work is acknowledged without sending. The status API derives the
-caller from verified product-session claims and exposes only that user's subscription state and recent
-provider acceptance outcomes. Account erasure removes scoped attempt records. Staging/production
-schema probes and required-schema manifests include 0252.
+P03/P12 code `39c0b9e4a0b1599132e7c0d72dba9e4d4fa2d040` remains pushed; P04's restore-tombstone
+fence has no open local code gap. `SpaceDO.fetch` rejects every request except the exact erasure receipt
+when its durable tombstone exists; `space-data-ops.test.ts` proves archive restore preview returns 410
+after erasure. P04 still lacks other-service stores, approved retention/key/jurisdiction/RPO-RTO policy
+and isolated/deployed drills. P01/P02 still lack verified remote baselines, separated resources,
+ownership and read-only receipts. U06 still lacks an upstream writer-admission/drain/flush/handoff
+contract; this is not a credential blocker. Local verification for P05: Shell typecheck and focused
+project-ID link test **1/1**, `git diff --check`. No browser, deployment, provider or user acceptance
+ran. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-Local evidence: Billing tests **12/12** and typecheck; Notifications SQL/queue tests **14/14** and
-typecheck; Spaces status/erasure tests **7/7** and typecheck; Router authorization/routing tests
-**53/53** and typecheck; DunningWorkflow tests **2/2** and typecheck; Shell typecheck; release runner
-**20/20**; manifest validation confirms **252** migrations through `0252_product_user_dunning_status_scope`;
-deployment-manifest validation, deployment validator tests **14/14**, and `git diff --check` pass.
-No browser, deployed database, live email/provider acceptance, Cloudflare inventory or deployment was
-used. P03/P12 remain PARTIAL for grace/restriction/escalation and retry cadence policy, inbox delivery,
-and live acceptance. P01/P02 inventory/evidence gates remain unchanged. U06 remains blocked on an
-unsupported pinned-runtime admission/drain/flush/handoff contract, not credentials; do not invent an
-adapter. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
-
-P04 restore fencing is verified with no remaining independent tombstone code gap: `SpaceDO.fetch`
-checks `space_erasure_tombstones` before dispatching every request except the idempotent erasure receipt,
-so archive preview/apply is fenced at the Durable Object boundary. `space-data-ops.test.ts` exports an
-archive, erases the Space, then proves later restore returns 410 while the tombstone remains durable.
-P04 still lacks other-service backup coverage, approved retention/key/jurisdiction and RPO/RTO policy,
-and isolated/deployed recovery drills.
-
-Exact next action: improve the existing owner-only P05 template status view with direct links to each
-validated generated Project and a clear retained-resource disclosure: this panel cannot remove generated
-Projects, required extensions, provider connections, licenses, or recurring charges. Keep this review
-read-only; do not add an uninstall mutation while cleanup, license and provider-charge semantics remain
-unresolved. Add no claim that listed resources or charges are currently active. Then continue the next
-independent P05/P06/S3–S9/U01–U12 code gap. Keep rollouts disabled; do not deploy, purchase, or create
-resources.
+Exact next action: add a bounded, owner-initiated synthetic scenario suite to the signed
+`bounded-phone-menu` dashboard. Run call-start, valid/invalid DTMF and eligible Twilio speech cases
+against the exact active installed handler and selected line via the existing `/api/phone-simulate`
+path. Compare actual host-validated responses with the saved-settings preview, clearly mark every
+result synthetic, and ensure no carrier request or call session is created. Keep speech disabled for
+Telnyx/ineligible lines and keep the sample distinct from a conversational voice agent. Then continue
+P05 lifecycle, P06 and remaining S3–S9/U01–U12/P01–P24 code. Fetch before each push; never force-push,
+deploy or enable rollouts.
 
 ## Previous checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 

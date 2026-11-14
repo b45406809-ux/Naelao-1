@@ -1,40 +1,29 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P03/P12 customer dunning status pushed)
+## Active checkpoint — 2026-11-14 (P05 generated-project lifecycle handoff; pushed)
 
-Code commit `39c0b9e4a0b1599132e7c0d72dba9e4d4fa2d040` is pushed to
-`origin/Mcbt5s-Backup-2`; the pre-push fetch confirmed remote tip `5c604e60` with no advance. The
-cross-service slice exposes each Product user only their own subscription and recent
-non-PII provider acceptance outcomes. Migration 0252 adds exact product/end-user/provider/subscription
-scope to dunning attempts. The workflow carries the provider event version; Notifications rechecks
-active product/user/subscription state and verified recipient before sending and conditionally records
-outcomes only for the same active subscription. Spaces derives the user from the verified product
-session, Billing returns a bounded status without provider identifiers or recipients, Router exposes
-the exact product-session route, and Product Shell personal settings provides the caller. Erasure also
-removes these scoped records. Both deployment probes and schema manifests require 0252.
+Code `53ff1c61a316bfa36a37432aa2f9c1eae37bbf2` is pushed to `origin/Mcbt5s-Backup-2`; the fetch
+before push confirmed remote `60c5505b` with no advance. Owner/admin Template status links only safe,
+validated generated Project IDs into the selected Space and links to its extension manager. It states
+that this view cannot uninstall the template or remove generated Projects, required extensions,
+provider connections, licenses, or charges; their active state is unknown here. No destructive action
+or billing change is available.
 
-Verification: Billing **12/12** + typecheck; Notifications **14/14** + typecheck; Spaces **7/7** +
-typecheck; Router **53/53** + typecheck; DunningWorkflow **2/2** + typecheck; Shell typecheck; release
-runner **20/20**; manifest validation **252 migrations** through `0252_product_user_dunning_status_scope`;
-deployment validator tests **14/14**, manifest validation and `git diff --check` pass. These are local
-checks only. No browser, deployed database, live email/provider acceptance, Cloudflare inventory or
-deployment was exercised. P03/P12 remain PARTIAL for grace/restriction/escalation and retry-cadence
-policy, inbox delivery, and live acceptance. P01/P02 remain fail-closed on external resource evidence.
-U06 is blocked by an unsupported pinned-runtime admission/drain/flush/handoff contract, not credentials.
-Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+Local evidence: helper test **1/1**, Shell typecheck and `git diff --check`. No browser, deployment,
+provider, or live customer acceptance ran. P05 remains PARTIAL for the actual broader update/uninstall
+lifecycle and unresolved cleanup/accounting contracts, Space-wide provider authority, full rates, and
+live acceptance. P04 restore tombstone enforcement is already implemented and tested; the new focused
+source check found no separate gap. Other-service archive coverage, approved retention/key/jurisdiction,
+RPO/RTO and isolated/deployed recovery remain open. P01/P02 resource inventory gates and the U06
+unsupported runtime contract remain as recorded. Keep rollouts disabled; preserve untracked
+`infra/scripts/__pycache__/`.
 
-P04 restore fencing is present in the actual `SpaceDO.fetch` path: every route except the exact
-idempotent erasure receipt returns 410 when the durable `space_erasure_tombstones` table contains this
-Space. `space-data-ops.test.ts` exports an archive, erases the Space and proves restore preview is then
-rejected. No additional tombstone code is needed. P04 remains PARTIAL for backups of other service
-stores, private inbound data, approved retention/key/jurisdiction policy, RPO/RTO and isolated/deployed
-recovery drills.
-
-Exact next action: improve the owner-only P05 template status view with direct links to validated
-generated Project IDs and the target Space's extension manager, plus a read-only disclosure that the
-view cannot uninstall the template or remove Projects, extensions, provider connections, licenses or
-charges. Do not imply the listed resources are active or add cleanup mutations while their product
-semantics remain unresolved. Then continue the next independently codeable P05/P06 or S3–S9/U01–U12 gap.
+Exact next action: extend the signed `bounded-phone-menu` dashboard with an owner-triggered synthetic
+scenario suite. Invoke call-start, valid/invalid DTMF and only policy-eligible Twilio speech through the
+existing exact-installation `/api/phone-simulate` path; compare host-validated output to the saved
+settings preview, disclose each result as synthetic and prove no carrier call/session is created. Keep
+Telnyx speech unsupported and the package bounded as an IVR. Then continue the next independent P05/P06
+or S3–S9/U01–U12/P01–P24 code gap. Fetch and integrate remote advances before every push.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 
@@ -1593,7 +1582,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Versioned platform/Product-user outboxes and deterministic Workflow dispatch remain. Migration 0252 scopes Product-user dunning provider outcomes to the exact product/end user/subscription; Notifications rechecks active tenancy, current `past_due` status, provider event version and verified recipient before sending. The authenticated Spaces/Router/Shell caller exposes only the current user’s subscription and recent non-PII provider outcomes; erasure deletes the scoped receipts. Current local verification: Billing **12/12**, Notifications **14/14**, Router **53/53**, Spaces **7/7**, plus affected typechecks. Grace/restriction/escalation and retry-cadence policy, inbox delivery and live acceptance remain. |
 | P04 | PARTIAL | Bounded encrypted Space archives capture supported SpaceDO state, workspace/extension objects and WorkspaceCoordinatorDO heads. New format-v2 capture is capped at 16 MiB/object and 64 MiB aggregate; restore is additive and checksum-verified. `75feeabb` excludes owner-managed grants from new archives and strips/reports them from legacy restore. `452345fd` proves uninstall status survives restore and runtime admission stays denied. `501b1526` pauses only restored active tasks for human review, clears stale leases, records preview/receipt counts, rejects blocked/terminal claims, preserves current and terminal rows; archive tests **17/17**, task coordination **5/5**, Shell archive panel **2/2**, Spaces/Shell typechecks. | Other service D1/DO/provider/runtime state, private inbound communications, approved retention/key/jurisdiction policy, RPO/RTO and isolated/deployed recovery remain open. |
-| P05 | PARTIAL | Signed SpaceBlueprint knowledge/action requirements, trusted candidate review, setup drafts and durable activation/recovery are local. Migration 137 persists default-empty per-Project Knowledge grants for Space-shared channels. `e9be8aee`/`38f50b41` route successful activation to each validated Project publish/grant UI; missing IDs have a recovery path and no grants are automatic. `75feeabb` prevents grant resurrection during archive restore. Text and owner-approved bounded image access, model-credit scenarios and earlier setup features remain as recorded. | Activation review does not yet carry selected collections into migration 137; the next task is an explicit owner selection revalidated at commit/retry. Space-wide provider connection authority, payer/beneficiary/revocation semantics, broader guided lifecycle/cost and deployed/live acceptance remain. |
+| P05 | PARTIAL | Signed SpaceBlueprint knowledge/action requirements, trusted candidate review, setup drafts, durable activation/recovery, and owner-selected Knowledge intent carried to each created Project are local. Migration 137 stores default-empty per-Project grants; activation never writes a grant, and the owner saves through the publication-checked grant API. `75feeabb` prevents grant resurrection during archive restore. The current owner/admin status handoff links validated generated Projects and Space extensions, and discloses that no template uninstall/resource/billing cleanup occurs there (`53ff1c61`). | Actual broader update/uninstall lifecycle, cleanup/retained license/provider-charge semantics, Space-wide provider authority/payer/revocation contract, complete verified rates and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Code `ce252033` adds exact binding selection for synthetic tests where one installation serves multiple lines. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Code `7e218ae2` adds persisted Twilio-only `man`/`woman` `<Say>` style with bounded SDK/host validation and synthetic preview; Telnyx retains provider default and its host rejects style keys. Twilio `price` remains delayed connectivity-only API evidence, not an invoice. The bounded IVR is not a conversational voice-agent product. First-party listing requires Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
@@ -1647,7 +1636,8 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    assistant read caller and fresh pre-planning context are complete in `a6c3233a`, `d9733888` and
    `96c3da48`. The P05 signed requirement/review slice in `3007890d` is complete; `6d189f45` closes
    direct default-empty per-Project collection grants for Space-shared channels. The guided activation
-   handoff still does not apply those choices, and Space-wide provider scope remains a genuine
+   handoff now carries the choices to the created Projects as pending intent; the owner still saves a
+   grant through the publication-checked migration-137 API. Space-wide provider scope remains a genuine
    authority-contract gap. P22's
    independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
    retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.

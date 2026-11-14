@@ -1,43 +1,34 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P03/P12 Product-user dunning status pushed)
+## Active checkpoint — 2026-11-14 (P05 generated-project lifecycle handoff; pushed)
 
-P03/P12 code commit `39c0b9e4a0b1599132e7c0d72dba9e4d4fa2d040` is pushed to
-`origin/Mcbt5s-Backup-2`; the pre-push fetch confirmed remote tip `5c604e60` with no advance. Migration
-0252 adds product/end-user/provider/subscription scope to dunning provider-attempt records. Workflow
-messages carry the exact subscription and provider event version. Notifications checks the active
-product, tenant, user, current `past_due` subscription, event version and verified current email before
-sending; it persists outcomes only if the exact account/subscription still exists. Spaces derives the
-request identity from the verified product session and calls Billing using tenant HMAC. Router exposes
-the exact customer-status path only through its product-session allowlist. Product Shell personal
-settings displays only the signed-in user's subscription and recent non-PII email-provider outcomes.
-Erasure removes scoped receipts and retries cleanup after prior anonymization. Both deploy schema
-probes and required-schema manifests include migration 0252.
+Code `53ff1c61a316bfa36a37432aa2f9c1eae37bbf2` is pushed to `origin/Mcbt5s-Backup-2`; the
+pre-push fetch confirmed remote tip `60c5505b` with no advance. The owner/admin Template status modal
+links validated generated Project IDs after setting the target Space active and links to the Space's
+extension manager. It discloses that template uninstall/resource or billing cleanup is unavailable in
+this view, that Projects/extensions/provider connections/licenses/charges may need separate review,
+and that the current listing cannot establish whether any is active. It performs no mutation.
 
-Local evidence: Billing **12/12** and typecheck; Notifications **14/14** including D1 SQL and typecheck;
-Spaces **7/7** including status and erasure, plus typecheck; Router **53/53** authorization/routing and
-typecheck; DunningWorkflow **2/2** and typecheck; Shell typecheck; release runner **20/20**; release
-manifest validates **252** migrations through `0252_product_user_dunning_status_scope`; deployment
-manifest validator and tests **14/14**; `git diff --check`. No deployed database, browser, email inbox,
-provider, Cloudflare inventory, or live acceptance was exercised. P03/P12 remain PARTIAL for approved
-grace/restriction/escalation and retry-cadence policy, real inbox delivery, and deployed/live acceptance.
-P01/P02 retain their external account/resource and operator-receipt gates. U06 remains an unsupported
-pinned-runtime contract (writer admission, drain/flush and generation-bound handoff), not a credentials
-gap; no adapter was fabricated. Rollouts remain disabled; preserve untracked
-`infra/scripts/__pycache__/`.
+Verification: focused Shell helper test **1/1**, Shell `tsc --noEmit`, and `git diff --check` pass. No
+browser, deployment, provider, or live customer acceptance ran. P05 remains PARTIAL for broader
+installation lifecycle, approved uninstall/cleanup and license/provider-charge semantics, Space-wide
+provider connection authority, complete verified rates, and live acceptance.
 
-P04 restore fencing was checked at the actual SpaceDO dispatch boundary. Before any route except the
-idempotent erasure-receipt DELETE, `SpaceDO.fetch` checks the durable `space_erasure_tombstones` table
-and returns 410. `workers/spaces/src/do/space-data-ops.test.ts` creates an archive, performs erasure,
-then verifies restore preview is rejected while the R2 archive remains for the workflow's cleanup
-sweep. No new restore-tombstone code change is warranted. P04 remains PARTIAL for other service stores,
-private inbound data, approved retention/key/jurisdiction policy, RPO/RTO and isolated/deployed drills.
+P03/P12 status code `39c0b9e4` is pushed and locally verified as recorded below. The P04 restore audit
+found the durable tombstone fence in `SpaceDO.fetch` before route dispatch; the `space-data-ops.test.ts`
+case proves archive preview returns 410 after erasure. No additional tombstone code is warranted.
+P04 remains PARTIAL for other service stores, private inbound data, approved retention/key/jurisdiction
+policy, RPO/RTO, and isolated/deployed drills. P01/P02 external inventory and receipt gates remain.
+U06 remains an unsupported pinned-runtime writer/drain/flush/handoff contract, not a credentials block.
+Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: implement the owner-facing P05 retained-resource handoff in the existing template
-status modal: link validated generated Project IDs to their Space Projects, link to the Space extension
-manager, and disclose that this view has no template uninstall or provider/license/charge cleanup action.
-Keep it read-only and do not infer active resources from template IDs. Then continue the next independent
-uncoded platform or S3–S9/U01–U12 requirement.
+Exact next action: add owner-initiated synthetic scenario checks to the signed `bounded-phone-menu`
+dashboard using the current `/api/phone-simulate` route. For the exact selected active installation and
+line, run call start and DTMF 1/2/invalid cases; add speech cases only for Twilio lines whose owner
+policy allows speech. Compare host-validated results to preview expectations based on saved settings,
+show per-case synthetic outcomes, and do not create a carrier request or call session. Keep this bounded
+IVR distinct from the unimplemented conversational voice-agent lifecycle. Then continue other
+independent P05/P06/S3–S9/U01–U12/P01–P24 gaps.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 
