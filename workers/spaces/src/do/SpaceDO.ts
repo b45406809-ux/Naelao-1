@@ -47,6 +47,8 @@ import { summarizeExtensionForActivation } from "../extension-activation-summary
 import { SPACE_SHARED_PACKAGE_CAPABILITIES } from "../shared-extension-package-policy.js";
 import { supportsVersionOnlySpaceSharedCodeUpdate } from "../extension-update-contract.js";
 
+type ExtensionRequirementsReviewReceipt = { reviewed_by: string; reviewed_at: string; requirements_sha256: string };
+
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
 }
@@ -2732,6 +2734,11 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_space_coordination_use_requests_recent
       ON space_coordination_use_requests(tenant_id,space_id,status,created_at,request_id);`,
   },
+  {
+    version: 132,
+    description: "persist owner review of signed Space Template knowledge and action requirements",
+    up: `ALTER TABLE space_blueprint_installations ADD COLUMN extension_requirements_review_json TEXT;`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -4415,17 +4422,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
       }
       if (method === "POST" && url.pathname === "/blueprints/instantiate") {
-        const body = await request.json<{ blueprint?: SpaceBlueprint; target_space_id?: string; activation_key?: string; setup_values?: unknown; listing_id?: string | null }>();
+        const body = await request.json<{ blueprint?: SpaceBlueprint; target_space_id?: string; activation_key?: string; setup_values?: unknown; listing_id?: string | null; extension_requirements_review?: unknown }>();
         if (!body.blueprint || !body.target_space_id) return Response.json({ error: "blueprint and target_space_id are required" }, { status: 400 });
         if (body.activation_key && body.activation_key !== body.blueprint.id) return Response.json({ error_code: "blueprint_activation_key_mismatch" }, { status: 400 });
         if (body.listing_id !== undefined && body.listing_id !== null && (typeof body.listing_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.listing_id)))
           return Response.json({ error_code: "blueprint_listing_id_invalid" }, { status: 400 });
+        const hasExtensionRequirements = (body.blueprint.extensionRequirements?.knowledge?.length ?? 0) > 0 || (body.blueprint.extensionRequirements?.actions?.length ?? 0) > 0;
+        if (hasExtensionRequirements) {
+          const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+          if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+            return Response.json({ error_code: "forbidden" }, { status: 403 });
+          if (!body.extension_requirements_review || typeof body.extension_requirements_review !== "object" || Array.isArray(body.extension_requirements_review))
+            return Response.json({ error_code: "blueprint_extension_requirements_review_required" }, { status: 400 });
+        }
         try {
-          const result = await this.instantiateBlueprintOnce(body.blueprint, body.target_space_id, request.headers.get("x-naelao-tenant-id") ?? "", body.setup_values ?? {}, body.listing_id ?? null);
+          const result = await this.instantiateBlueprintOnce(body.blueprint, body.target_space_id, request.headers.get("x-naelao-tenant-id") ?? "", body.setup_values ?? {}, body.listing_id ?? null,
+            body.extension_requirements_review);
           return Response.json(result, { status: result.alreadyInstalled ? 200 : 201 });
         } catch (error) {
           const code = error instanceof Error ? error.message : "blueprint_install_failed";
-          const status = code === "blueprint_activation_artifact_changed" || code === "blueprint_activation_listing_changed" || code === "blueprint_setup_values_changed" || code === "blueprint_install_in_progress" ? 409
+          const status = code === "blueprint_activation_artifact_changed" || code === "blueprint_activation_listing_changed" || code === "blueprint_setup_values_changed" || code === "blueprint_install_in_progress" || code === "blueprint_extension_requirements_review_conflict" ? 409
             : /setup/i.test(code) ? 400 : 503;
           return Response.json({ error_code: code }, { status });
         }
@@ -5543,12 +5559,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   /** Serialize host activation retries per target Space and exact blueprint artifact. */
-  private async instantiateBlueprintOnce(blueprint: SpaceBlueprint, targetSpaceId: string, tenantId = "", rawSetupValues: unknown = {}, listingId: string | null = null): Promise<{ projectIds: string[]; taskCount: number; fileCount: number; alreadyInstalled?: boolean }> {
+  private async instantiateBlueprintOnce(blueprint: SpaceBlueprint, targetSpaceId: string, tenantId = "", rawSetupValues: unknown = {}, listingId: string | null = null,
+    rawExtensionRequirementsReview?: unknown): Promise<{ projectIds: string[]; taskCount: number; fileCount: number; alreadyInstalled?: boolean }> {
     const setupSchema = validateBlueprintSetupSchema(blueprint);
     const setupSchemaJson = JSON.stringify(setupSchema);
     const setupValues = validateBlueprintSetupValues(blueprint, rawSetupValues);
     const setupValuesJson = JSON.stringify(setupValues);
     const artifactHash = await sha256Hex(JSON.stringify(blueprint));
+    const hasExtensionRequirements = (blueprint.extensionRequirements?.knowledge?.length ?? 0) > 0 || (blueprint.extensionRequirements?.actions?.length ?? 0) > 0;
+    let extensionRequirementsReview: ExtensionRequirementsReviewReceipt | null = null;
+    if (hasExtensionRequirements) {
+      if (!rawExtensionRequirementsReview || typeof rawExtensionRequirementsReview !== "object" || Array.isArray(rawExtensionRequirementsReview))
+        throw new Error("blueprint_extension_requirements_review_required");
+      const review = rawExtensionRequirementsReview as Record<string, unknown>;
+      if (Object.keys(review).some(key => key !== "reviewed_by" && key !== "reviewed_at")
+        || typeof review.reviewed_by !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(review.reviewed_by)
+        || typeof review.reviewed_at !== "string" || !Number.isFinite(Date.parse(review.reviewed_at))
+        || new Date(review.reviewed_at).toISOString() !== review.reviewed_at)
+        throw new Error("blueprint_extension_requirements_review_invalid");
+      extensionRequirementsReview = { reviewed_by: review.reviewed_by, reviewed_at: review.reviewed_at,
+        requirements_sha256: await sha256Hex(JSON.stringify(blueprint.extensionRequirements)) };
+    } else if (rawExtensionRequirementsReview !== undefined) throw new Error("blueprint_extension_requirements_review_invalid");
+    const extensionRequirementsReviewJson = extensionRequirementsReview ? JSON.stringify(extensionRequirementsReview) : null;
     const clearSetupDraft = () => {
       if (tenantId) this.ctx.storage.sql.exec("DELETE FROM space_template_setup_drafts WHERE tenant_id=? AND space_id=? AND blueprint_id=?", tenantId, targetSpaceId, blueprint.id);
     };
@@ -5563,12 +5595,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       setupSchemaJson, blueprint.setupSchemaVersion ?? null, new Date().toISOString(), targetSpaceId, blueprint.id, artifactHash, record.status, setupValuesJson).rowsWritten;
       if (backfilled !== 1) throw new Error("blueprint_setup_schema_changed");
     };
-    const existing = queryOne<{ artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string; result_json: string | null; error_code: string | null; listing_id: string | null }>(this.ctx.storage.sql as never,
-      "SELECT artifact_sha256,setup_values_json,setup_schema_json,status,result_json,error_code,listing_id FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
+    const existing = queryOne<{ artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string; result_json: string | null; error_code: string | null; listing_id: string | null; extension_requirements_review_json: string | null }>(this.ctx.storage.sql as never,
+      "SELECT artifact_sha256,setup_values_json,setup_schema_json,status,result_json,error_code,listing_id,extension_requirements_review_json FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
     if (existing) {
       if (existing.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
       if (existing.listing_id !== null && existing.listing_id !== listingId) throw new Error("blueprint_activation_listing_changed");
       if (JSON.stringify(JSON.parse(existing.setup_values_json ?? "{}")) !== setupValuesJson) throw new Error("blueprint_setup_values_changed");
+      if (hasExtensionRequirements) {
+        let priorReview: typeof extensionRequirementsReview;
+        try { priorReview = JSON.parse(existing.extension_requirements_review_json ?? "null") as typeof extensionRequirementsReview; } catch { priorReview = null; }
+        if (!priorReview || !extensionRequirementsReview || priorReview.reviewed_by !== extensionRequirementsReview.reviewed_by
+          || priorReview.requirements_sha256 !== extensionRequirementsReview.requirements_sha256)
+          throw new Error("blueprint_extension_requirements_review_conflict");
+        extensionRequirementsReview = priorReview;
+      }
       ensureExistingSchema(existing);
       if (existing.status === "installed" && existing.result_json) {
         clearSetupDraft();
@@ -5580,17 +5620,25 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = new Date().toISOString();
     let acquired = false;
     this.ctx.storage.transactionSync(() => {
-      acquired = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO space_blueprint_installations(space_id,blueprint_id,artifact_sha256,required_extensions_json,setup_values_json,setup_schema_json,setup_schema_version,listing_id,setup_revision,status,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,?,1,'installing',?,?)`, targetSpaceId, blueprint.id, artifactHash,
+      acquired = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO space_blueprint_installations(space_id,blueprint_id,artifact_sha256,required_extensions_json,setup_values_json,setup_schema_json,setup_schema_version,listing_id,setup_revision,status,created_at,updated_at,extension_requirements_review_json)
+        VALUES(?,?,?,?,?,?,?,?,1,'installing',?,?,?)`, targetSpaceId, blueprint.id, artifactHash,
         JSON.stringify([...new Set(blueprint.requiredExtensions ?? [])].sort()), setupValuesJson, setupSchemaJson,
-        blueprint.setupSchemaVersion ?? null, listingId, now, now).rowsWritten === 1;
+        blueprint.setupSchemaVersion ?? null, listingId, now, now, extensionRequirementsReviewJson).rowsWritten === 1;
     });
     if (!acquired) {
-      const concurrent = queryOne<{ artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string; result_json: string | null; listing_id: string | null }>(this.ctx.storage.sql as never,
-        "SELECT artifact_sha256,setup_values_json,setup_schema_json,status,result_json,listing_id FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
+      const concurrent = queryOne<{ artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string; result_json: string | null; listing_id: string | null; extension_requirements_review_json: string | null }>(this.ctx.storage.sql as never,
+        "SELECT artifact_sha256,setup_values_json,setup_schema_json,status,result_json,listing_id,extension_requirements_review_json FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
       if (concurrent?.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
       if (concurrent?.listing_id !== null && concurrent?.listing_id !== listingId) throw new Error("blueprint_activation_listing_changed");
       if (JSON.stringify(JSON.parse(concurrent.setup_values_json ?? "{}")) !== setupValuesJson) throw new Error("blueprint_setup_values_changed");
+      if (hasExtensionRequirements) {
+        let priorReview: typeof extensionRequirementsReview;
+        try { priorReview = JSON.parse(concurrent.extension_requirements_review_json ?? "null") as typeof extensionRequirementsReview; } catch { priorReview = null; }
+        if (!priorReview || !extensionRequirementsReview || priorReview.reviewed_by !== extensionRequirementsReview.reviewed_by
+          || priorReview.requirements_sha256 !== extensionRequirementsReview.requirements_sha256)
+          throw new Error("blueprint_extension_requirements_review_conflict");
+        extensionRequirementsReview = priorReview;
+      }
       ensureExistingSchema(concurrent);
       if (concurrent?.status === "installed" && concurrent.result_json) {
         clearSetupDraft();
@@ -5598,11 +5646,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       throw new Error("blueprint_install_in_progress");
     }
-    const claim = queryOne<{ artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string; result_json: string | null; error_code: string | null; listing_id: string | null }>(this.ctx.storage.sql as never,
-      "SELECT artifact_sha256,setup_values_json,setup_schema_json,status,result_json,error_code,listing_id FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
+    const claim = queryOne<{ artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string; result_json: string | null; error_code: string | null; listing_id: string | null; extension_requirements_review_json: string | null }>(this.ctx.storage.sql as never,
+      "SELECT artifact_sha256,setup_values_json,setup_schema_json,status,result_json,error_code,listing_id,extension_requirements_review_json FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
     if (!claim || claim.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
     if (claim.listing_id !== null && claim.listing_id !== listingId) throw new Error("blueprint_activation_listing_changed");
     if (JSON.stringify(JSON.parse(claim.setup_values_json ?? "{}")) !== setupValuesJson) throw new Error("blueprint_setup_values_changed");
+    if (hasExtensionRequirements) {
+      let priorReview: typeof extensionRequirementsReview;
+      try { priorReview = JSON.parse(claim.extension_requirements_review_json ?? "null") as typeof extensionRequirementsReview; } catch { priorReview = null; }
+      if (!priorReview || !extensionRequirementsReview || priorReview.reviewed_by !== extensionRequirementsReview.reviewed_by
+        || priorReview.requirements_sha256 !== extensionRequirementsReview.requirements_sha256)
+        throw new Error("blueprint_extension_requirements_review_conflict");
+      extensionRequirementsReview = priorReview;
+    }
     ensureExistingSchema(claim);
     if (claim.status !== "installing" || claim.result_json) {
       if (claim.status === "installed" && claim.result_json) {
@@ -13234,9 +13290,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const rows = queryAll<{
       blueprint_id: string; artifact_sha256: string; listing_id: string | null; setup_schema_version: number | null;
       setup_revision: number; required_extensions_json: string; status: string; result_json: string | null;
-      error_code: string | null; created_at: string; updated_at: string;
+      error_code: string | null; created_at: string; updated_at: string; extension_requirements_review_json: string | null;
     }>(this.ctx.storage.sql as never,
-    `SELECT blueprint_id,artifact_sha256,listing_id,setup_schema_version,setup_revision,required_extensions_json,status,result_json,error_code,created_at,updated_at
+    `SELECT blueprint_id,artifact_sha256,listing_id,setup_schema_version,setup_revision,required_extensions_json,status,result_json,error_code,created_at,updated_at,extension_requirements_review_json
        FROM space_blueprint_installations WHERE space_id=? ORDER BY created_at DESC,blueprint_id LIMIT 100`, spaceId);
     const installations = rows.map(row => {
       let requiredExtensionIds: string[] = [], projectIds: string[] = [];
@@ -13248,9 +13304,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const parsed = JSON.parse(row.result_json ?? "null") as { projectIds?: unknown } | null;
         if (Array.isArray(parsed?.projectIds)) projectIds = parsed.projectIds.filter((value): value is string => typeof value === "string").slice(0, 256);
       } catch { /* The install result is optional diagnostic data, never a reason to hide status. */ }
+      let extensionRequirementsReview: { reviewed_by: string; reviewed_at: string; requirements_sha256: string } | null = null;
+      try {
+        const parsed = JSON.parse(row.extension_requirements_review_json ?? "null") as Partial<ExtensionRequirementsReviewReceipt> | null;
+        if (parsed && typeof parsed.reviewed_by === "string" && typeof parsed.reviewed_at === "string"
+          && typeof parsed.requirements_sha256 === "string" && /^[a-f0-9]{64}$/.test(parsed.requirements_sha256))
+          extensionRequirementsReview = { reviewed_by: parsed.reviewed_by, reviewed_at: parsed.reviewed_at, requirements_sha256: parsed.requirements_sha256 };
+      } catch { /* Older installs have no requirement review receipt. */ }
       return { blueprint_id: row.blueprint_id, artifact_sha256: row.artifact_sha256, listing_id: row.listing_id,
         setup_schema_version: row.setup_schema_version, setup_revision: row.setup_revision,
         required_extension_ids: requiredExtensionIds, project_ids: projectIds, status: row.status,
+        ...(extensionRequirementsReview ? { extension_requirements_review: extensionRequirementsReview } : {}),
         error_code: row.error_code, created_at: row.created_at, updated_at: row.updated_at };
     });
     return Response.json({ installations }, { headers: { "cache-control": "private, no-store" } });

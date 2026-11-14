@@ -103,7 +103,7 @@ export default function SpacesPage() {
   const [creating, setCreating] = React.useState(false);
   const [createError, setCreateError] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
-  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; applyCoordinationDefault?: boolean; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
+  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; applyCoordinationDefault?: boolean; extensionRequirementsReviewed?: boolean; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
   const [dependencyImports, setDependencyImports] = React.useState<Record<string, TemplateDependencyImportProgress>>({});
   const [dependencyImportBusy, setDependencyImportBusy] = React.useState<string | null>(null);
   const [setupValues, setSetupValues] = React.useState<SpaceTemplateSetupValues>({});
@@ -343,7 +343,7 @@ export default function SpacesPage() {
           const preview = await previewSpaceTemplateActivation(created.id, fork.space_type_id, creds);
           await loadTemplateSetupDraft(created.id, fork.space_type_id, preview, true);
           setDependencyImports({});
-          setActivationReview({ spaceId: created.id, blueprintId: fork.space_type_id, preview, applyCoordinationDefault: false });
+          setActivationReview({ spaceId: created.id, blueprintId: fork.space_type_id, preview, applyCoordinationDefault: false, extensionRequirementsReviewed: false });
           setCreatedSpaceId(created.id);
           setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
           await refresh();
@@ -372,6 +372,8 @@ export default function SpacesPage() {
 
   async function confirmTemplateActivation() {
     if (!creds || !activationReview || !activationReview.preview.ready || activatingTemplate) return;
+    const hasExtensionRequirements = activationReview.preview.extension_requirements.knowledge.length > 0 || activationReview.preview.extension_requirements.actions.length > 0;
+    if (hasExtensionRequirements && activationReview.extensionRequirementsReviewed !== true) return;
     setActivatingTemplate(true); setCreateError(null);
     try {
       const approvedSharedFilesystem = Object.fromEntries(Object.entries(activationReview.filesystemGrantSelections ?? {}).flatMap(([extensionId, paths]) => {
@@ -391,7 +393,7 @@ export default function SpacesPage() {
         return [[extensionId, grants]];
       }));
       await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem, setupValues,
-        activationReview.applyCoordinationDefault === true);
+        activationReview.applyCoordinationDefault === true, hasExtensionRequirements && activationReview.extensionRequirementsReviewed === true);
       setCreateOpen(false);
       window.location.assign(`/p/${product.slug}/spaces/${activationReview.spaceId}?next=settings`);
     } catch (error) { setCreateError(`Template was not activated: ${error instanceof Error ? error.message : "activation failed"}`); }
@@ -481,7 +483,7 @@ export default function SpacesPage() {
     } catch (error) { installError = error; }
     try {
       const preview = await previewSpaceTemplateActivation(activationReview.spaceId, activationReview.blueprintId, creds);
-      setActivationReview(current => current && current.spaceId === activationReview.spaceId ? { ...current, preview } : current);
+      setActivationReview(current => current && current.spaceId === activationReview.spaceId ? { ...current, preview, extensionRequirementsReviewed: false } : current);
       const refreshed = preview.dependencies.find(item => item.extension_id === extensionId);
       const exactPinActive = refreshed?.status === "installed" && refreshed.available_version === dependency.required_version
         && (dependency.required_digest === undefined || refreshed.available_digest === dependency.required_digest);
@@ -510,7 +512,7 @@ export default function SpacesPage() {
       const preview = await previewSpaceTemplateActivation(activationReview.spaceId, activationReview.blueprintId, creds, usage);
       setSetupValues(current => rebaseSetupValues(current, preview));
       await loadTemplateSetupDraft(activationReview.spaceId, activationReview.blueprintId, preview, false);
-      setActivationReview({ ...activationReview, preview });
+      setActivationReview({ ...activationReview, preview, extensionRequirementsReviewed: false });
       setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
     } catch (error) { setCreateError(`Could not refresh dependency status: ${error instanceof Error ? error.message : "preview failed"}`); }
     finally { setRefreshingPreview(false); }
@@ -523,7 +525,7 @@ export default function SpacesPage() {
       const preview = await previewSpaceTemplateActivation(space.id, space.pending_blueprint_id, creds);
       await loadTemplateSetupDraft(space.id, space.pending_blueprint_id, preview, true);
       setDependencyImports({});
-      setActivationReview({ spaceId: space.id, blueprintId: space.pending_blueprint_id, preview });
+      setActivationReview({ spaceId: space.id, blueprintId: space.pending_blueprint_id, preview, extensionRequirementsReviewed: false });
       setCreatedSpaceId(space.id);
       setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
       setCreateOpen(true);
@@ -547,7 +549,7 @@ export default function SpacesPage() {
     void previewSpaceTemplateActivation(pending.id, pending.pending_blueprint_id, creds).then(preview => {
       void loadTemplateSetupDraft(pending.id, pending.pending_blueprint_id!, preview, true).then(() => {
         setDependencyImports({});
-        setActivationReview({ spaceId: pending.id, blueprintId: pending.pending_blueprint_id!, preview });
+        setActivationReview({ spaceId: pending.id, blueprintId: pending.pending_blueprint_id!, preview, extensionRequirementsReviewed: false });
         setCreatedSpaceId(pending.id);
         setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
         setCreateOpen(true);
@@ -718,7 +720,8 @@ export default function SpacesPage() {
         {activationReview.preview.setup_fields.length > 0 && <Button variant="secondary" onClick={() => void saveCurrentTemplateDraft()} disabled={savingSetupDraft}>
           {savingSetupDraft ? "Saving draft…" : setupDraftNeedsReplacement ? "Replace saved draft" : "Save setup for later"}
         </Button>}
-        <Button onClick={() => void confirmTemplateActivation()} disabled={!activationReview.preview.ready || activatingTemplate}>{activatingTemplate ? "Installing…" : "Approve and install"}</Button>
+        <Button onClick={() => void confirmTemplateActivation()} disabled={!activationReview.preview.ready || activatingTemplate
+          || (activationReview.preview.extension_requirements.knowledge.length + activationReview.preview.extension_requirements.actions.length > 0 && activationReview.extensionRequirementsReviewed !== true)}>{activatingTemplate ? "Installing…" : "Approve and install"}</Button>
       </> : createdSpaceId ? <Button onClick={() => window.location.assign(`/p/${product.slug}/spaces/${createdSpaceId}`)}>Open Space</Button> : <><Button variant="secondary" type="button" onClick={() => setCreateOpen(false)}>Cancel</Button><Button onClick={() => void handleCreate()} disabled={creating || !newSpaceName.trim()}>{creating ? "Creating…" : "Create Space"}</Button></>}>
         <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={{ fontSize: 12 }}>Name<FormInput autoFocus maxLength={100} placeholder="What is this Space for?" value={newSpaceName} onChange={(event) => setNewSpaceName(event.target.value)} required /></label>
@@ -897,6 +900,21 @@ export default function SpacesPage() {
             {activationReview.preview.extension_connections.length ? <ul>{activationReview.preview.extension_connections.map(connection => <li key={`${connection.extension_id}:${connection.connection_id}`}>
               {connection.extension_id} · {connection.provider}/{connection.connection_id}: {connection.required ? "required" : "optional"} · {connection.required ? "Space-wide provider connection is not supported yet" : "optional provider connection is also unsupported for Space-wide extensions"} — {connection.purpose}
             </li>)}</ul> : <p>None declared</p>}
+            {(activationReview.preview.extension_requirements.knowledge.length > 0 || activationReview.preview.extension_requirements.actions.length > 0) && <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
+              <strong>Signed package knowledge and action requirements</strong>
+              <p style={{ margin: "4px 0", color: "var(--text3)" }}>These references are checked against the exact trusted package declarations. They do not create collection grants, provider connections, or additional permissions. Space Template to Project Knowledge selection is not available yet; external channel search continues to require the package's existing owner-published collection policy.</p>
+              {activationReview.preview.extension_requirements.knowledge.length > 0 && <><strong>Knowledge</strong><ul>{activationReview.preview.extension_requirements.knowledge.map(item => <li key={`${item.extension_id}:${item.knowledge_id}`}>
+                {item.extension_id} · {item.knowledge_id} · {item.access} · {item.status}{item.required ? " · required" : " · optional"} — {item.purpose}{item.package_purpose ? ` (package: ${item.package_purpose})` : ""}
+              </li>)}</ul></>}
+              {activationReview.preview.extension_requirements.actions.length > 0 && <><strong>Actions</strong><ul>{activationReview.preview.extension_requirements.actions.map(item => <li key={`${item.extension_id}:${item.primitive_id}:${item.scope}:${item.resource}:${item.action}`}>
+                {item.extension_id} · {item.primitive_id} · {item.scope}:{item.resource}:{item.action} · {item.status}{item.required ? " · required" : " · optional"} — {item.purpose}
+              </li>)}</ul></>}
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <input type="checkbox" checked={activationReview.extensionRequirementsReviewed === true}
+                  onChange={event => setActivationReview(current => current ? { ...current, extensionRequirementsReviewed: event.target.checked } : current)} />
+                <span>I reviewed these exact signed package requirements. This confirmation records template setup review and does not grant permissions or knowledge access.</span>
+              </label>
+            </section>}
             <strong>Template evaluation</strong>
             <p>{activationReview.preview.evaluation.passed}/{activationReview.preview.evaluation.total} checks passed · {activationReview.preview.evaluation.evidence} · issued {new Date(activationReview.preview.evaluation.issued_at).toLocaleDateString()}</p>
             <strong>Cost review · {activationReview.preview.cost_estimate.status === "partial" ? "partial" : "unavailable"}</strong>
@@ -935,6 +953,7 @@ export default function SpacesPage() {
                 <dt>Artifact SHA-256</dt><dd style={{ margin: 0, fontFamily: "monospace" }}>{record.artifact_sha256}</dd>
                 <dt>Marketplace listing</dt><dd style={{ margin: 0 }}>{record.listing_id ?? "Unknown for this legacy installation"}</dd>
                 <dt>Setup schema / revision</dt><dd style={{ margin: 0 }}>{record.setup_schema_version ?? "Not recorded"} / {record.setup_revision}</dd>
+                {record.extension_requirements_review && <><dt>Knowledge/action review</dt><dd style={{ margin: 0 }}>Reviewed by {record.extension_requirements_review.reviewed_by} on {new Date(record.extension_requirements_review.reviewed_at).toLocaleString()} · requirements SHA-256 {record.extension_requirements_review.requirements_sha256}</dd></>}
                 <dt>Latest source check</dt><dd style={{ margin: 0 }}>
                   {record.source_update?.status === "current" ? "Installed source is current" :
                     record.source_update?.status === "update_available" ? "A newer signed listing is available for review" :

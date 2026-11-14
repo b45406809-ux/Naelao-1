@@ -441,6 +441,7 @@ describe("signed Space-shared extension packages", () => {
     expect(await response.json()).toMatchObject({ extensions: [{ id: "ext_customer_voice", name: "voice_dashboard", version: "1.2.0",
       manifest_sha256: await digestExtensionManifest(manifest), publisher_id: "pub_voice", publisher_key_id: "a".repeat(64),
       permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements,
+      knowledge: [], actions: [],
       features: [{ kind: "canvas", id: "voice_dashboard" }, { kind: "channel", id: "phone_handler", provider: "phone" }] }] });
 
     const denied = await spacesWorker.fetch(await signedRequest(path, "GET", undefined, "member"), h.env);
@@ -449,6 +450,34 @@ describe("signed Space-shared extension packages", () => {
     const hidden = await spacesWorker.fetch(await signedRequest(path), revoked.env);
     expect(hidden.status).toBe(200);
     expect(await hidden.json()).toEqual({ extensions: [] });
+  });
+
+  it("returns exact declared knowledge and permission references for the Foundry authoring picker", async () => {
+    const h = harness();
+    const sourceBundle = manifest.bundle!;
+    const candidateManifest = structuredClone(manifest) as unknown as Record<string, unknown>;
+    delete candidateManifest.channels;
+    candidateManifest.bundle = { ...sourceBundle,
+      primitives: sourceBundle.primitives.map(primitive => primitive.kind === "canvas"
+        ? { ...primitive, permissions: [{ scope: "SPACE_SHARED", actions: ["read"], resource: "customer-faq" }] }
+        : primitive.kind === "channel" ? { ...primitive, knowledgeCollections: ["public_faq"] } : primitive),
+      knowledge: [{ id: "public_faq", purpose: "Answer approved external FAQ questions", access: "owner_published_external" }],
+    };
+    const withRequirements = validateExtensionManifest(candidateManifest, { gatekeeperCapabilities: manifest.capabilityRequirements });
+    const digest = await digestExtensionManifest(withRequirements), originalFetch = h.spaceStub.fetch;
+    h.spaceStub.fetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/extensions") return Response.json({ extensions: [{ manifest: withRequirements }] });
+      if (path === "/extension-package-catalog") return Response.json({ releases: [{ extension_id: withRequirements.id,
+        version: withRequirements.bundle!.version, manifest_sha256: digest, permissions: withRequirements.declaredPermissions,
+        capabilities: withRequirements.capabilityRequirements, features: [{ kind: "canvas", id: "voice_dashboard" }],
+        name: "voice_dashboard", publisher: { id: "pub_voice", key_id: "a".repeat(64) } }] });
+      return originalFetch(request);
+    });
+    const response = await spacesWorker.fetch(await signedRequest("/spaces/space-a/template-extension-candidates"), h.env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ extensions: [{ knowledge: [{ id: "public_faq", access: "owner_published_external" }],
+      actions: [{ primitive_id: "voice_dashboard", scope: "SPACE_SHARED", resource: "customer-faq", action: "read" }] }] });
   });
 
   it("hides and refuses a package after its configured publisher key is revoked", async () => {

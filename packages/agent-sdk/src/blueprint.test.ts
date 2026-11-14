@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { instantiateBlueprint } from "./blueprint.js";
+import { instantiateBlueprint, validateBlueprintExtensionRequirements } from "./blueprint.js";
 import type { SpaceBlueprint } from "./types.js";
 
 const valid: SpaceBlueprint = { id: "bp", schemaVersion: "2.0", metadata: {}, templateCategory: "venture", requiredExtensions: [], requiredCredentials: [], projects: [{ name: "App", kind: "DualPane", templateMode: "cowork_studio", viewports: {}, systemPrompt: "Build safely", initialTasks: [{ title: "Start" }], starterFiles: [{ path: "/workspace/src/index.ts", content: "export {};" }] }] };
@@ -24,5 +24,16 @@ describe("blueprint compiler", () => {
     expect(() => instantiateBlueprint({ ...valid, requiredExtensionVersions: { ext_undeclared: "1.0.0" } }, "space")).toThrow("Invalid required extension version");
     expect(() => instantiateBlueprint({ ...valid, requiredExtensions: ["ext_demo"], requiredExtensionVersions: { ext_demo: "latest" } }, "space")).toThrow("Invalid required extension version");
     expect(instantiateBlueprint({ ...valid, requiredExtensions: ["ext_demo"], requiredExtensionVersions: { ext_demo: "1.2.3" } }, "space").requiredExtensionVersions).toEqual({ ext_demo: "1.2.3" });
+  });
+  it("validates signed knowledge and action references against declared extension dependencies", () => {
+    const requirements = { knowledge: [{ extensionId: "ext_support", knowledgeId: "public_faq", purpose: "Answer published FAQ", access: "owner_published_external" as const, required: true }],
+      actions: [{ extensionId: "ext_support", primitiveId: "booking", scope: "PROJECT_BOUND" as const, resource: "calendar.events", action: "execute" as const, purpose: "Create approved bookings", required: true }] };
+    const compiled = instantiateBlueprint({ ...valid, requiredExtensions: ["ext_support"], extensionRequirements: requirements }, "space");
+    expect(compiled.extensionRequirements).toEqual(requirements);
+    expect(() => validateBlueprintExtensionRequirements(requirements, [])).toThrow("Invalid knowledge requirement");
+    expect(() => validateBlueprintExtensionRequirements({ ...requirements, knowledge: [requirements.knowledge[0], requirements.knowledge[0]] }, ["ext_support"]))
+      .toThrow("Duplicate knowledge requirement");
+    expect(() => validateBlueprintExtensionRequirements({ ...requirements, privileged: true }, ["ext_support"]))
+      .toThrow("Invalid extension requirements");
   });
 });

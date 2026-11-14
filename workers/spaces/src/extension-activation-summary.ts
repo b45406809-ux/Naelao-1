@@ -8,6 +8,7 @@ export interface ExtensionActivationSummary {
     id: string;
     capabilities: string[];
     permissions: string[];
+    permission_grants: Array<{ scope: string; resource: string; action: string }>;
     tools?: string[];
     scope?: string;
     provider?: string;
@@ -23,7 +24,7 @@ export interface ExtensionActivationSummary {
   background_jobs: Array<{ id: string; schedule?: string; memory_scope: string }>;
   widgets: Array<{ event: string; component: string }>;
   connections: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
-  knowledge: Array<{ purpose: string; access: string }>;
+  knowledge: Array<{ id: string; purpose: string; access: string }>;
   shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
   approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
   worker_roles: Array<{
@@ -43,6 +44,8 @@ export function summarizeExtensionForActivation(manifest: ExtensionManifest): Ex
       id: primitive.id,
       capabilities: [...new Set(primitive.capabilityRequirements)].sort(),
       permissions: primitive.permissions.flatMap(permission => permission.actions.map(action => `${permission.scope}:${permission.resource}:${action}`)).sort(),
+      permission_grants: primitive.permissions.flatMap(permission => permission.actions.map(action => ({ scope: permission.scope, resource: permission.resource, action })))
+        .sort((a, b) => `${a.scope}:${a.resource}:${a.action}`.localeCompare(`${b.scope}:${b.resource}:${b.action}`)),
       ...("toolNames" in primitive ? { tools: [...primitive.toolNames].sort() } : {}),
       ...("scope" in primitive ? { scope: primitive.scope } : {}),
       ...("provider" in primitive ? { provider: primitive.provider } : {}),
@@ -59,8 +62,8 @@ export function summarizeExtensionForActivation(manifest: ExtensionManifest): Ex
     widgets: (manifest.widgetSubscriptions ?? []).map(({ event, component }) => ({ event, component })).sort((a, b) => `${a.event}:${a.component}`.localeCompare(`${b.event}:${b.component}`)),
     connections: (bundle?.connections ?? []).map(({ id, provider, purpose, required }) => ({ id, provider, purpose, required }))
       .sort((a, b) => `${a.provider}:${a.id}`.localeCompare(`${b.provider}:${b.id}`)),
-    knowledge: (bundle?.knowledge ?? []).map(({ purpose, access }) => ({ purpose, access }))
-      .sort((a, b) => `${a.access}:${a.purpose}`.localeCompare(`${b.access}:${b.purpose}`)),
+    knowledge: (bundle?.knowledge ?? []).map(({ id, purpose, access }) => ({ id, purpose, access }))
+      .sort((a, b) => `${a.id}:${a.access}`.localeCompare(`${b.id}:${b.access}`)),
     shared_filesystem: (manifest.shared_filesystem ?? []).map(({ path, access }) => ({ path, access })).sort((a, b) => a.path.localeCompare(b.path)),
     worker_roles: (bundle?.workerRoles ?? []).map(({ id, execution, invocation, primitiveIds, gadgetActions }) => ({ id, execution, invocation,
       primitive_ids: [...primitiveIds].sort(),

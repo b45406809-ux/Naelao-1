@@ -64,7 +64,7 @@ import { summarizeExtensionForActivation, type ExtensionActivationSummary } from
 import { applyPublisherKeyRegistry, extensionReleaseAccessExpansion, isTrustedPublisherRelease, retainActivePublisherInstallations, type PublisherTaggedRelease } from "./extension-release-trust.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES, SPACE_SHARED_PACKAGE_PERMISSIONS } from "./shared-extension-package-policy.js";
 import { supportsVersionOnlySpaceSharedCodeUpdate } from "./extension-update-contract.js";
-import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
+import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -677,11 +677,14 @@ app.get("/spaces/:spaceId/template-extension-candidates", async c => {
     name?: unknown; permissions?: unknown; capabilities?: unknown; features?: unknown; publisher?: { id?: unknown; key_id?: unknown } }> }>(catalogResponse, 2 * 1024 * 1024).catch(() => null);
   if (!installed || !catalog || !Array.isArray(installed.extensions) || !Array.isArray(catalog.releases))
     return c.json({ error_code: "template_extension_candidates_unavailable" }, 503);
-  const installedDigests = new Map<string, string>();
+  const installedDigests = new Map<string, string>(), installedManifests = new Map<string, ReturnType<typeof validateExtensionManifest>>();
   for (const entry of installed.extensions) {
     try {
       const manifest = validateExtensionManifest(entry.manifest);
-      if (manifest.id && manifest.bundle?.version) installedDigests.set(manifest.id, await digestExtensionManifest(manifest));
+      if (manifest.id && manifest.bundle?.version) {
+        installedDigests.set(manifest.id, await digestExtensionManifest(manifest));
+        installedManifests.set(manifest.id, manifest);
+      }
     } catch { /* invalid installed manifests cannot become template dependencies */ }
   }
   const candidates = catalog.releases.filter(release => {
@@ -694,21 +697,28 @@ app.get("/spaces/:spaceId/template-extension-candidates", async c => {
   });
   const activeKeys = await activePublisherKeyIds(c.env, tenantId, spaceId,
     candidates.flatMap(release => typeof release.publisher?.key_id === "string" ? [release.publisher.key_id] : []));
-  const extensions = candidates.filter(release => activeKeys.has(release.publisher!.key_id as string)).map(release => ({
-    id: release.extension_id as string, name: typeof release.name === "string" ? release.name.slice(0, 120) : release.extension_id as string,
-    version: release.version as string, manifest_sha256: release.manifest_sha256 as string,
-    publisher_id: release.publisher!.id as string, publisher_key_id: release.publisher!.key_id as string,
-    permissions: Array.isArray(release.permissions) ? release.permissions.filter((item): item is string => typeof item === "string").slice(0, 128) : [],
-    capabilities: Array.isArray(release.capabilities) ? release.capabilities.filter((item): item is string => typeof item === "string").slice(0, 128) : [],
-    features: Array.isArray(release.features) ? release.features.flatMap(item => {
-      if (!item || typeof item !== "object") return [];
-      const feature = item as Record<string, unknown>;
-      if (!["command", "workflow", "canvas", "gadget", "channel", "container"].includes(String(feature.kind))
-        || typeof feature.id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(feature.id)) return [];
-      return [{ kind: String(feature.kind), id: feature.id, ...(typeof feature.name === "string" ? { name: feature.name.slice(0, 100) } : {}),
-        ...(typeof feature.provider === "string" ? { provider: feature.provider.slice(0, 80) } : {}) }];
-    }).slice(0, 128) : [],
-  })).sort((a, b) => a.id.localeCompare(b.id));
+  const extensions = candidates.filter(release => activeKeys.has(release.publisher!.key_id as string)).map(release => {
+    const extensionId = release.extension_id as string, manifest = installedManifests.get(extensionId);
+    return {
+      id: extensionId, name: typeof release.name === "string" ? release.name.slice(0, 120) : extensionId,
+      version: release.version as string, manifest_sha256: release.manifest_sha256 as string,
+      publisher_id: release.publisher!.id as string, publisher_key_id: release.publisher!.key_id as string,
+      permissions: Array.isArray(release.permissions) ? release.permissions.filter((item): item is string => typeof item === "string").slice(0, 128) : [],
+      capabilities: Array.isArray(release.capabilities) ? release.capabilities.filter((item): item is string => typeof item === "string").slice(0, 128) : [],
+      features: Array.isArray(release.features) ? release.features.flatMap(item => {
+        if (!item || typeof item !== "object") return [];
+        const feature = item as Record<string, unknown>;
+        if (!["command", "workflow", "canvas", "gadget", "channel", "container"].includes(String(feature.kind))
+          || typeof feature.id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(feature.id)) return [];
+        return [{ kind: String(feature.kind), id: feature.id, ...(typeof feature.name === "string" ? { name: feature.name.slice(0, 100) } : {}),
+          ...(typeof feature.provider === "string" ? { provider: feature.provider.slice(0, 80) } : {}) }];
+      }).slice(0, 128) : [],
+      knowledge: (manifest?.bundle?.knowledge ?? []).map(({ id, purpose, access }) => ({ id, purpose, access })),
+      actions: (manifest?.bundle?.primitives ?? []).flatMap(primitive => primitive.permissions.flatMap(permission => permission.actions.map(action => ({
+        primitive_id: primitive.id, scope: permission.scope, resource: permission.resource, action,
+      })))).slice(0, 256),
+    };
+  }).sort((a, b) => a.id.localeCompare(b.id));
   return c.json({ extensions }, 200, { "cache-control": "private, no-store" });
 });
 
@@ -738,7 +748,7 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Blueprint storage not configured" }, 503);
-  const exportOptions = await c.req.json<{ requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
+  const exportOptions = await c.req.json<{ requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; extensionRequirements?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; extensionRequirements?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
   if (exportOptions.requestId !== undefined && (typeof exportOptions.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(exportOptions.requestId))) return c.json({ error_code: "invalid_export_request_id" }, 400);
   const requestId = exportOptions.requestId;
   const requestPayload = { ...exportOptions };
@@ -807,6 +817,15 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   if (exportOptions.coordinationDefaults !== undefined) {
     try { rawBlueprint = attachBlueprintCoordinationDefaults(rawBlueprint, exportOptions.coordinationDefaults); }
     catch { return c.json({ error_code: "blueprint_coordination_defaults_invalid" }, 422); }
+  }
+  if (exportOptions.extensionRequirements !== undefined) {
+    try { rawBlueprint = attachBlueprintExtensionRequirements(rawBlueprint, exportOptions.extensionRequirements); }
+    catch { return c.json({ error_code: "blueprint_extension_requirements_invalid" }, 422); }
+  }
+  if (rawBlueprint.extensionRequirements) {
+    const requirementValidation = await validateBlueprintExtensionRequirementPins(c.env.SPACE_DO.get(sourceId), rawBlueprint);
+    if (requirementValidation === "unavailable") return c.json({ error_code: "blueprint_extension_requirement_manifest_unavailable" }, 503);
+    if (requirementValidation !== "valid") return c.json({ error_code: "blueprint_extension_requirement_manifest_mismatch" }, 422);
   }
   if (exportOptions.stateDeltaSuite) rawBlueprint.metadata.stateDeltaSuite = exportOptions.stateDeltaSuite;
   for (const project of rawBlueprint.projects) {
@@ -1448,9 +1467,11 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const selectedListing = selectedTemplateListingId(owned.config_json ?? null);
   if (selectedListing.kind === "invalid") return c.json({ error_code: "template_listing_selection_invalid" }, 409);
   const listingId = selectedListing.kind === "selected" ? selectedListing.listingId : null;
-  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown }));
+  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; extension_requirements_reviewed?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; extension_requirements_reviewed?: unknown }));
   if (requestBody.apply_coordination_default !== undefined && typeof requestBody.apply_coordination_default !== "boolean")
     return c.json({ error_code: "coordination_default_confirmation_invalid" }, 400);
+  if (requestBody.extension_requirements_reviewed !== undefined && typeof requestBody.extension_requirements_reviewed !== "boolean")
+    return c.json({ error_code: "extension_requirements_confirmation_invalid" }, 400);
   const storedValue = await loadCertifiedBlueprint(c.env, tenantId, c.req.param("blueprintId"));
   if (!storedValue) throw notFound("Blueprint");
   const certifiedBlueprint = storedValue.blueprint;
@@ -1463,6 +1484,9 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     "state-delta",
   )) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
   const blueprint = certifiedBlueprint!;
+  const hasExtensionRequirements = (blueprint.extensionRequirements?.knowledge?.length ?? 0) > 0 || (blueprint.extensionRequirements?.actions?.length ?? 0) > 0;
+  if (hasExtensionRequirements && requestBody.extension_requirements_reviewed !== true)
+    return c.json({ error_code: "extension_requirements_confirmation_required" }, 400);
   if (requestBody.apply_coordination_default === true && blueprint.coordinationDefaults === undefined)
     return c.json({ error_code: "coordination_default_not_declared" }, 400);
   let setupValues: BlueprintSetupValues;
@@ -1553,7 +1577,8 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   }
   const response = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/blueprints/instantiate", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
-      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id, listing_id: listingId, setup_values: setupValues }),
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id, listing_id: listingId, setup_values: setupValues,
+        ...(hasExtensionRequirements ? { extension_requirements_review: { reviewed_by: identity.userId, reviewed_at: new Date().toISOString() } } : {}) }),
   }));
   if (!response.ok) {
     const rollbackFailures = await rollbackNewDependencies();
@@ -3649,6 +3674,54 @@ async function blueprintPublisherTrust(
   const active = await activePublisherKeyIds(env, tenantId, spaceId,
     releases.flatMap(release => release.publisher?.keyId ? [release.publisher.keyId] : []));
   return releases.every(release => isTrustedPublisherRelease(release, active)) ? "trusted" : "untrusted";
+}
+
+/** A signed template may describe only capabilities present in its exact, trusted dependency pins. */
+async function validateBlueprintExtensionRequirementPins(
+  stub: Fetcher,
+  blueprint: SpaceBlueprint,
+): Promise<"valid" | "invalid" | "unavailable"> {
+  const requirements = blueprint.extensionRequirements;
+  if (!requirements) return "valid";
+  const referencedIds = [...new Set([
+    ...(requirements.knowledge ?? []).map(requirement => requirement.extensionId),
+    ...(requirements.actions ?? []).map(requirement => requirement.extensionId),
+  ])];
+  if (!referencedIds.length) return "invalid";
+  for (const extensionId of referencedIds) {
+    if (!(blueprint.requiredExtensions ?? []).includes(extensionId)
+      || !blueprint.requiredExtensionVersions?.[extensionId]
+      || !blueprint.requiredExtensionDigests?.[extensionId]) return "invalid";
+  }
+  const response = await stub.fetch(new Request("http://space-do/extensions"));
+  if (!response.ok) return "unavailable";
+  const installed = await readBoundedResponseJson<{ extensions?: Array<{ manifest?: unknown }> }>(response, 2 * 1024 * 1024).catch(() => null);
+  if (!installed || !Array.isArray(installed.extensions)) return "unavailable";
+  const manifests = new Map<string, ReturnType<typeof validateExtensionManifest>>();
+  for (const item of installed.extensions) {
+    try {
+      const manifest = validateExtensionManifest(item.manifest);
+      if (manifest.id && referencedIds.includes(manifest.id)) manifests.set(manifest.id, manifest);
+    } catch { /* Invalid installed manifests cannot satisfy a signed template requirement. */ }
+  }
+  for (const extensionId of referencedIds) {
+    const manifest = manifests.get(extensionId);
+    if (!manifest?.bundle
+      || manifest.bundle.version !== blueprint.requiredExtensionVersions?.[extensionId]
+      || await digestExtensionManifest(manifest) !== blueprint.requiredExtensionDigests?.[extensionId]) return "invalid";
+    for (const requirement of requirements.knowledge ?? []) {
+      if (requirement.extensionId !== extensionId) continue;
+      if (!(manifest.bundle.knowledge ?? []).some(item => item.id === requirement.knowledgeId && item.access === requirement.access))
+        return "invalid";
+    }
+    for (const requirement of requirements.actions ?? []) {
+      if (requirement.extensionId !== extensionId) continue;
+      const primitive = manifest.bundle.primitives.find(item => item.id === requirement.primitiveId);
+      if (!primitive?.permissions.some(permission => permission.scope === requirement.scope
+        && permission.resource === requirement.resource && permission.actions.includes(requirement.action))) return "invalid";
+    }
+  }
+  return "valid";
 }
 
 app.post("/internal/spaces/:spaceId/widget-event-subscribers", async c => {

@@ -260,6 +260,29 @@ export interface BlueprintSetupMigration {
   operations: BlueprintSetupMigrationOperation[];
 }
 
+/** Signed references to capabilities already declared by an exact required extension package.
+ * They are for owner review only and never create a grant or broaden a package's authority. */
+export interface BlueprintExtensionKnowledgeRequirement {
+  extensionId: string;
+  knowledgeId: string;
+  purpose: string;
+  access: "member_only" | "owner_published_external";
+  required: boolean;
+}
+export interface BlueprintExtensionActionRequirement {
+  extensionId: string;
+  primitiveId: string;
+  scope: GadgetScope;
+  resource: string;
+  action: PermissionAction;
+  purpose: string;
+  required: boolean;
+}
+export interface BlueprintExtensionRequirements {
+  knowledge?: BlueprintExtensionKnowledgeRequirement[];
+  actions?: BlueprintExtensionActionRequirement[];
+}
+
 /** Version 1 is a primitive form; version 2 adds bounded localization and one equality condition. */
 export type BlueprintSetupField =
   | ({ id: string; type: "text"; label: string; helpText?: string; required?: boolean; defaultValue?: string; minLength?: number; maxLength?: number } & { localization?: BlueprintSetupFieldLocalization; visibleWhen?: BlueprintSetupVisibilityCondition })
@@ -275,6 +298,8 @@ export interface SpaceBlueprint {
   assistantChannels?: import("./assistant-channels.js").AssistantChannelTemplateDefaults;
   /** Suggested initial Space coordination policy; member visibility still needs target-owner approval. */
   coordinationDefaults?: { memberFactsEnabled: boolean };
+  /** Owner-reviewed references into exact signed dependency declarations; not runtime grants. */
+  extensionRequirements?: BlueprintExtensionRequirements;
   id: string;
   schemaVersion: "2.0";
   metadata: Record<string, unknown> & { name?: string; exportedAt?: string };

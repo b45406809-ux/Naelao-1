@@ -23,6 +23,25 @@ const blueprint = (overrides: Partial<SpaceBlueprint> = {}): SpaceBlueprint => {
 };
 
 describe("Space Template activation preview", () => {
+  it("checks signed knowledge and action requirements against the exact trusted dependency declaration", () => {
+    const artifact = blueprint({ requiredExtensions: ["ext_support"], requiredCredentials: [], extensionRequirements: {
+      knowledge: [{ extensionId: "ext_support", knowledgeId: "public_faq", purpose: "Answer approved questions", access: "owner_published_external", required: true }],
+      actions: [{ extensionId: "ext_support", primitiveId: "booking", scope: "PROJECT_BOUND", resource: "calendar.events", action: "execute", purpose: "Book approved appointments", required: true }],
+    } });
+    const summary = { knowledge: [{ id: "public_faq", purpose: "Published FAQ answers", access: "owner_published_external" }],
+      primitives: [{ id: "booking", permission_grants: [{ scope: "PROJECT_BOUND", resource: "calendar.events", action: "execute" }] }] } as never;
+    const ready = previewBlueprintActivation(artifact, new Map([["ext_support", { version: "1.0.0", digest: "a".repeat(64), status: "active", summary }]]), new Map());
+    expect(ready).toMatchObject({ ready: true, extension_requirements: {
+      knowledge: [{ knowledge_id: "public_faq", status: "available", package_purpose: "Published FAQ answers" }],
+      actions: [{ primitive_id: "booking", status: "available" }],
+    } });
+    const missing = previewBlueprintActivation(artifact, new Map([["ext_support", { version: "1.0.0", digest: "a".repeat(64), status: "active", summary: { knowledge: [], primitives: [] } as never }]]), new Map());
+    expect(missing).toMatchObject({ ready: false, blockers: [
+      "required_blueprint_knowledge_unavailable:ext_support:public_faq",
+      "required_blueprint_action_unavailable:ext_support:booking:execute",
+    ] });
+  });
+
   it("exposes a signed coordination suggestion without applying it", () => {
     const preview = previewBlueprintActivation(blueprint({ requiredExtensions: [], requiredCredentials: [],
       coordinationDefaults: { memberFactsEnabled: true } }), new Map(), new Map());
@@ -360,6 +379,30 @@ describe("Space Template activation preview", () => {
     const stagedActivation = await worker.fetch(new Request(`https://spaces/spaces/space-a/blueprints/${artifact.id}/activate`, { method: "POST", headers }), env, {} as ExecutionContext);
     expect(stagedActivation.status).toBe(422);
     expect(instantiateCalls).toBe(0);
+  });
+
+  it("requires explicit owner review of signed extension requirements before template activation side effects", async () => {
+    const secret = "extension-requirements-review-route-secret";
+    const artifact = blueprint({ id: "tpl_review_required", projects: [], requiredExtensions: ["ext_support"], requiredCredentials: [], extensionRequirements: {
+      knowledge: [{ extensionId: "ext_support", knowledgeId: "public_faq", purpose: "Answer approved questions", access: "owner_published_external", required: true }],
+    } });
+    const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `review-${index}` })) };
+    const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-review");
+    if (!certificate) throw new Error("test_certificate_not_issued");
+    let spaceDoCalls = 0;
+    const env = { PLATFORM_SECRET: secret,
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "space-review", config_json: "{}" }) }) }) },
+      SCRIPTS_R2: { get: async () => ({ json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) }) },
+      SPACE_DO: { idFromName: () => "space-review-do", get: () => ({ fetch: async () => { spaceDoCalls++; return Response.json({ installations: [] }); } }) },
+    } as never;
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-review", "x-naelao-user-id": "owner-review",
+      "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-review") };
+    const response = await worker.fetch(new Request(`https://spaces/spaces/space-review/blueprints/${artifact.id}/activate`, {
+      method: "POST", headers, body: JSON.stringify({ extension_requirements_reviewed: false }),
+    }), env, {} as ExecutionContext);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error_code: "extension_requirements_confirmation_required" });
+    expect(spaceDoCalls).toBe(0);
   });
 
   it("matches guided-install pricing to the exact selected listing and reports paid costs without inventing a total", async () => {

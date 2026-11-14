@@ -23,6 +23,10 @@ export interface BlueprintActivationPreview {
   coordination_defaults: { memberFactsEnabled: boolean } | null;
   dependencies: BlueprintActivationDependency[];
   extension_connections: Array<{ extension_id: string; connection_id: string; provider: string; purpose: string; required: boolean; status: "unsupported" | "optional_unsupported" }>;
+  extension_requirements: {
+    knowledge: Array<{ extension_id: string; knowledge_id: string; purpose: string; access: "member_only" | "owner_published_external"; required: boolean; status: "available" | "unavailable"; package_purpose?: string }>;
+    actions: Array<{ extension_id: string; primitive_id: string; scope: string; resource: string; action: string; purpose: string; required: boolean; status: "available" | "unavailable" }>;
+  };
   runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted"; project_slots_required?: number; project_slots_limit?: number; resources?: { cpu_cores: number; memory_mb: number } }>;
   setup_credentials: Array<{
     name: string;
@@ -129,6 +133,26 @@ export function previewBlueprintActivation(
   })));
   for (const connection of extension_connections) if (connection.required)
     blockers.push(`required_space_extension_connection_unsupported:${connection.extension_id}:${connection.connection_id}`);
+  const extensionRequirements = blueprint.extensionRequirements;
+  const extensionById = new Map(dependencies.map(dependency => [dependency.extension_id, dependency]));
+  const knowledgeRequirements = (extensionRequirements?.knowledge ?? []).map(requirement => {
+    const dependency = extensionById.get(requirement.extensionId);
+    const declaration = dependency?.summary?.knowledge?.find(item => item.id === requirement.knowledgeId && item.access === requirement.access);
+    const status = declaration ? "available" as const : "unavailable" as const;
+    if (requirement.required && !declaration) blockers.push(`required_blueprint_knowledge_unavailable:${requirement.extensionId}:${requirement.knowledgeId}`);
+    return { extension_id: requirement.extensionId, knowledge_id: requirement.knowledgeId, purpose: requirement.purpose,
+      access: requirement.access, required: requirement.required, status, ...(declaration ? { package_purpose: declaration.purpose } : {}) };
+  });
+  const actionRequirements = (extensionRequirements?.actions ?? []).map(requirement => {
+    const dependency = extensionById.get(requirement.extensionId);
+    const primitive = dependency?.summary?.primitives.find(item => item.id === requirement.primitiveId);
+    const declaration = primitive?.permission_grants?.some(grant => grant.scope === requirement.scope
+      && grant.resource === requirement.resource && grant.action === requirement.action);
+    const status = declaration ? "available" as const : "unavailable" as const;
+    if (requirement.required && !declaration) blockers.push(`required_blueprint_action_unavailable:${requirement.extensionId}:${requirement.primitiveId}:${requirement.action}`);
+    return { extension_id: requirement.extensionId, primitive_id: requirement.primitiveId, scope: requirement.scope,
+      resource: requirement.resource, action: requirement.action, purpose: requirement.purpose, required: requirement.required, status };
+  });
   const runtime_requirements = blueprint.projects.flatMap(project => (project.runtimeRequirements ?? []).map(requirement => {
     const project_id = project.id ?? project.name;
     const key = `${project_id}:${requirement.id}`;
@@ -154,6 +178,7 @@ export function previewBlueprintActivation(
     coordination_defaults: blueprint.coordinationDefaults ? { ...blueprint.coordinationDefaults } : null,
     dependencies,
     extension_connections,
+    extension_requirements: { knowledge: knowledgeRequirements, actions: actionRequirements },
     runtime_requirements,
     setup_credentials: (blueprint.requiredCredentials ?? []).map(
       ({ name, description, required }) => ({ name, description, required })

@@ -1,4 +1,4 @@
-import { validateAssistantChannelDefaults, validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type BlueprintSetupField, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateAssistantChannelDefaults, validateBlueprintExtensionRequirements, validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type BlueprintSetupField, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 /** Attach one author's visual setup form to the exact exported project and validate it with the same
  * SDK contract used by activation. Caller-provided schemas remain data; no executable form logic is accepted. */
@@ -58,5 +58,14 @@ export function attachBlueprintCoordinationDefaults(source: SpaceBlueprint, inpu
     throw new Error("blueprint_coordination_defaults_invalid");
   const blueprint = structuredClone(source);
   blueprint.coordinationDefaults = { memberFactsEnabled: raw.memberFactsEnabled };
+  return blueprint;
+}
+
+/** Attach signed references to exact dependency knowledge/actions for owner review. These entries
+ * cannot grant access; activation compares them with the trusted package manifest and the package's
+ * existing host-enforced permissions/publication rules. */
+export function attachBlueprintExtensionRequirements(source: SpaceBlueprint, input: unknown): SpaceBlueprint {
+  const blueprint = structuredClone(source);
+  blueprint.extensionRequirements = validateBlueprintExtensionRequirements(input, blueprint.requiredExtensions ?? []);
   return blueprint;
 }

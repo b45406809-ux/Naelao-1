@@ -39,6 +39,9 @@ describe("Foundry dogfood Space Template", () => {
     expect(canvas).toContain("coordination-member-facts");
     expect(canvas).toContain("coordinationDefaults");
     expect(canvas).toContain("coordination_member_facts");
+    expect(canvas).toContain("extension-requirements");
+    expect(canvas).toContain("collectExtensionRequirements");
+    expect(canvas).toContain("extension_requirements");
     const scripts = [...canvas.matchAll(/<script>([\s\S]*?)<\/script>/g)];
     expect(scripts).toHaveLength(1);
     expect(() => new Function(scripts[0]![1]!)).not.toThrow();

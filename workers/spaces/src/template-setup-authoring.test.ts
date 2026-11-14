@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { type SpaceBlueprint, validateBlueprintSetupSchema } from "@naelao/agent-sdk";
-import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
+import { digestExtensionManifest, type SpaceBlueprint, validateBlueprintSetupSchema, validateExtensionManifest } from "@naelao/agent-sdk";
+import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 import spacesWorker from "./index.js";
 
 const sourceBlueprint = (): SpaceBlueprint => ({
@@ -25,6 +25,16 @@ const setupFields = [
     localization: { label: { en: "Contact email", es: "Correo de contacto" } } },
 ];
 
+const requirementManifest = validateExtensionManifest({
+  id: "ext_support", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"], gadgets: [], daemons: [], commands: [],
+  bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_support", version: "1.0.0",
+    knowledge: [{ id: "public_faq", purpose: "Answer published FAQ questions", access: "owner_published_external" }],
+    primitives: [{ schemaVersion: "1.0", kind: "canvas", id: "booking", version: "1.0.0",
+      permissions: [{ scope: "PROJECT_BOUND", actions: ["execute"], resource: "calendar.events" }], capabilityRequirements: [], lifecycle: {},
+      component: "./booking.html", layout: "CanvasMount", dynamicPage: false }],
+  },
+});
+
 function exportHarness() {
   const blueprint = sourceBlueprint(), writes: Array<{ key: string; text: string }> = [], jobs: unknown[] = [], spaceRequests: Request[] = [];
   const exportRequests = new Map<string, { id: string; artifact_key: string; request_sha256: string }>(), artifacts = new Map<string, string>(), workflows = new Map<string, unknown>();
@@ -45,9 +55,14 @@ function exportHarness() {
         }
         return { success: true, meta: { changes: 1 } };
       },
+      all: async () => ({ results: [{ key_id: "a".repeat(64) }] }),
     }) }) },
     SPACE_DO: { idFromName: () => "space-studio-do", get: () => ({ fetch: async (request: Request) => {
       spaceRequests.push(request);
+      const path = new URL(request.url).pathname;
+      if (path === "/extensions" && request.method === "GET") return Response.json({ extensions: [{ manifest: requirementManifest }] });
+      if (path === "/extension-releases") return Response.json({ releases: [{ version: "1.0.0", signatureValid: true,
+        publisher: { keyId: "a".repeat(64) } }] });
       const body = await request.clone().json() as { project_id?: string; project_ids?: string[] };
       const selected = body.project_ids ? new Set(body.project_ids) : body.project_id ? new Set([body.project_id]) : null;
       return Response.json(selected ? { ...blueprint, projects: blueprint.projects.filter(project => selected.has(project.id!)) } : blueprint);
@@ -116,6 +131,18 @@ describe("visual Template setup authoring export", () => {
     expect(() => attachBlueprintCoordinationDefaults(source, { memberFactsEnabled: false, revealProjects: true })).toThrow("blueprint_coordination_defaults_invalid");
   });
 
+  it("authors only exact dependency knowledge and action references", () => {
+    const source = sourceBlueprint();
+    source.requiredExtensions = ["ext_support"];
+    const requirements = { knowledge: [{ extensionId: "ext_support", knowledgeId: "public_faq", purpose: "Answer public FAQ questions", access: "owner_published_external" as const, required: true }],
+      actions: [{ extensionId: "ext_support", primitiveId: "booking", scope: "PROJECT_BOUND" as const, resource: "calendar.events", action: "execute" as const, purpose: "Create an approved booking", required: true }] };
+    const authored = attachBlueprintExtensionRequirements(source, requirements);
+    expect(authored.extensionRequirements).toEqual(requirements);
+    expect(source.extensionRequirements).toBeUndefined();
+    expect(() => attachBlueprintExtensionRequirements(source, { knowledge: [{ ...requirements.knowledge[0], extensionId: "ext_other" }] }))
+      .toThrow("Invalid knowledge requirement");
+  });
+
   it("rejects secrets, unknown exported projects, malformed fields and unbounded field lists", () => {
     const source = sourceBlueprint();
     expect(() => attachBlueprintSetupFields(source, { projectId: "support", schemaVersion: 1,
@@ -128,6 +155,11 @@ describe("visual Template setup authoring export", () => {
 
   it("sends the visual declarations through owner export, SDK validation and conformance artifact storage", async () => {
     const h = exportHarness();
+    h.blueprint.requiredExtensions = ["ext_support"];
+    h.blueprint.requiredExtensionVersions = { ext_support: "1.0.0" };
+    h.blueprint.requiredExtensionDigests = { ext_support: await digestExtensionManifest(requirementManifest) };
+    const extensionRequirements = { knowledge: [{ extensionId: "ext_support", knowledgeId: "public_faq", purpose: "Answer public FAQ questions", access: "owner_published_external", required: true }],
+      actions: [{ extensionId: "ext_support", primitiveId: "booking", scope: "PROJECT_BOUND", resource: "calendar.events", action: "execute", purpose: "Create an approved booking", required: true }] };
     const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-studio/export-template", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-studio",
         "x-naelao-user-id": "owner-studio", "x-naelao-role": "owner" },
@@ -135,16 +167,39 @@ describe("visual Template setup authoring export", () => {
         setupSchemaVersion: 2, setupFields,
         assistantChannels: { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" }, projectAssistants: { enabled: { email: false } } },
         coordinationDefaults: { memberFactsEnabled: true },
+        extensionRequirements,
         stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
     }), h.env);
     expect(response.status, await response.clone().text()).toBe(202);
-    expect(h.spaceRequests).toHaveLength(1);
+    expect(h.spaceRequests.map(request => new URL(request.url).pathname)).toEqual([
+      "/blueprints/export", "/extension-releases", "/extensions",
+    ]);
     expect(h.jobs).toHaveLength(1);
     const payload = JSON.parse(h.writes[0]!.text) as { blueprint: SpaceBlueprint };
     expect(payload.blueprint).toMatchObject({ setupSchemaVersion: 2, projects: expect.arrayContaining([expect.objectContaining({ id: "support", setupFields })]),
       assistantChannels: { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" }, projectAssistants: { enabled: { email: false } } },
       coordinationDefaults: { memberFactsEnabled: true },
+      extensionRequirements,
       metadata: { stateDeltaSuite: { fixtures: expect.arrayContaining([expect.objectContaining({ id: "fixture-0" })]) } } });
+  });
+
+  it("rejects requirement references absent from the exact pinned package manifest", async () => {
+    const h = exportHarness();
+    h.blueprint.requiredExtensions = ["ext_support"];
+    h.blueprint.requiredExtensionVersions = { ext_support: "1.0.0" };
+    h.blueprint.requiredExtensionDigests = { ext_support: await digestExtensionManifest(requirementManifest) };
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-studio/export-template", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-studio",
+        "x-naelao-user-id": "owner-studio", "x-naelao-role": "owner" },
+      body: JSON.stringify({ projectId: "support", name: "Support", description: "Support template",
+        extensionRequirements: { knowledge: [{ extensionId: "ext_support", knowledgeId: "not_declared", purpose: "Answer FAQs",
+          access: "owner_published_external", required: false }] },
+        stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
+    }), h.env);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error_code: "blueprint_extension_requirement_manifest_mismatch" });
+    expect(h.writes).toHaveLength(0);
+    expect(h.jobs).toHaveLength(0);
   });
 
   it("exports multiple selected projects and their separate setup groups through owner validation", async () => {

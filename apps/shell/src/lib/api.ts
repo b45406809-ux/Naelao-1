@@ -2777,9 +2777,9 @@ export function applySpaceTemplateSetupUpdate(spaceId: string, blueprintId: stri
   });
 }
 export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials,
-  approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}, setupValues: SpaceTemplateSetupValues = {}, applyCoordinationDefault = false): Promise<unknown> {
+  approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}, setupValues: SpaceTemplateSetupValues = {}, applyCoordinationDefault = false, confirmExtensionRequirements = false): Promise<unknown> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, {
-    method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, setup_values: setupValues, apply_coordination_default: applyCoordinationDefault }),
+    method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, setup_values: setupValues, apply_coordination_default: applyCoordinationDefault, extension_requirements_reviewed: confirmExtensionRequirements }),
   });
 }
 export interface SpaceTemplateSetupDraftSnapshot {
@@ -2808,6 +2808,7 @@ export interface SpaceTemplateInstallationRecord {
   required_extension_ids: string[];
   project_ids: string[];
   status: "installing" | "installed" | "failed";
+  extension_requirements_review?: { reviewed_by: string; reviewed_at: string; requirements_sha256: string };
   error_code: string | null;
   created_at: string;
   updated_at: string;
@@ -2837,17 +2838,21 @@ export interface SpaceTemplateActivationPreview {
   setup_fields: Array<{ project_id: string; project_name: string; fields: import("@naelao/agent-sdk").BlueprintSetupField[] }>;
   assistant_channel_defaults: Pick<import("@naelao/agent-sdk").AssistantChannelTemplateDefaults, "spaceAssistant" | "projectAssistants"> | null;
   dependencies: Array<{ extension_id: string; status: "installed" | "version_unpinned" | "disabled" | "not_active" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string; summary?: {
-    primitives: Array<{ kind: string; id: string; capabilities: string[]; permissions: string[]; tools?: string[]; scope?: string; provider?: string; inbound_events?: string[]; outbound_events?: string[]; resources?: { cpu_cores: number; memory_mb: number; timeout_seconds: number }; network_policy?: string; gadget_reads?: Array<{ gadget_id: string; tables: string[] }> }>;
+    primitives: Array<{ kind: string; id: string; capabilities: string[]; permissions: string[]; permission_grants?: Array<{ scope: string; resource: string; action: string }>; tools?: string[]; scope?: string; provider?: string; inbound_events?: string[]; outbound_events?: string[]; resources?: { cpu_cores: number; memory_mb: number; timeout_seconds: number }; network_policy?: string; gadget_reads?: Array<{ gadget_id: string; tables: string[] }> }>;
     capabilities: string[]; permissions: string[];
     commands: string[]; background_jobs: Array<{ id: string; schedule?: string; memory_scope: string }>;
     widgets: Array<{ event: string; component: string }>;
     connections: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
-    knowledge: Array<{ purpose: string; access: string }>;
+    knowledge: Array<{ id: string; purpose: string; access: string }>;
     shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
     approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
     worker_roles: Array<{ id: string; execution: string; invocation: string; primitive_ids: string[]; gadget_actions: Array<{ gadget_id: string; operations: string[]; tables: string[] }> }>;
   } }>;
   extension_connections: Array<{ extension_id: string; connection_id: string; provider: string; purpose: string; required: boolean; status: "unsupported" | "optional_unsupported" }>;
+  extension_requirements: {
+    knowledge: Array<{ extension_id: string; knowledge_id: string; purpose: string; access: "member_only" | "owner_published_external"; required: boolean; status: "available" | "unavailable"; package_purpose?: string }>;
+    actions: Array<{ extension_id: string; primitive_id: string; scope: string; resource: string; action: string; purpose: string; required: boolean; status: "available" | "unavailable" }>;
+  };
   runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted"; project_slots_required?: number; project_slots_limit?: number; resources?: { cpu_cores: number; memory_mb: number } }>;
   setup_credentials: Array<{ name: string; description: string; required: boolean }>;
   blockers: string[]; requires_human_activation: true; installs_or_grants_applied: false;
