@@ -1455,6 +1455,21 @@ api.all("/spaces/:spaceId/assistant-communications", async c => proxyTo(c.env.AG
 api.all("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
+// Project runtime profiles, artifact receipts, and workspace retention are Agents-owned D1/DO
+// surfaces. They must be registered before `/spaces/*`; otherwise the generic catch-all sends the
+// Shell's profile and retention callers to Spaces, where these paths are not implemented.
+api.post("/spaces/:spaceId/projects/:projectId/runtime-installations/:installationId/containers/:containerId/profile/reset", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/projects/:projectId/runtime-installations/:installationId/containers/:containerId/:action", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/projects/:projectId/workspace-retention", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
 // The external channel inbox is Agents-owned; channel installation, removal, and session cleanup
 // remain on Spaces. Keep the exact inbox subtree ahead of the general Spaces project proxy.
 api.all("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/*", async (c) =>
