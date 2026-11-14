@@ -1,29 +1,29 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P04 restore grants; P05 guided activation)
+## Active checkpoint — 2026-11-14 (P04 task replay safety)
 
-Code `75feeabb` is pushed to `origin/Mcbt5s-Backup-2`. Full Space archives now omit owner-managed
-local-machine, Space-shared filesystem and Project Knowledge grants. Restore strips these grant rows
-from legacy archives and reports exact table counts in both preview and durable restore receipt while
-preserving unrelated recoverable rows. Owners reapprove the permissions after restore. The archive
-panel and runbook disclose this behavior.
+Code `501b1526` is pushed to `origin/Mcbt5s-Backup-2`. Archive restore pauses only newly inserted
+pending/in-progress tasks for human review, clears stale leases, records preview and actual counts,
+and rejects unsafe claims. Existing destination state and archived terminal states are preserved. The
+Shell archive UI shows the restore behavior. Earlier grant-restore safety `75feeabb`, extension
+uninstall restore regression `452345fd`, and P05 guided Knowledge handoff `e9be8aee`/`38f50b41` remain
+pushed.
 
-P05 activation handoff commits `e9be8aee` and `38f50b41` are pushed. When a signed SpaceBlueprint
-requires owner-published external Knowledge, successful activation links to each validated created
-Project. The Project page guides publication of a collection declared by the active package and an
-explicit grant. Invalid/missing Project IDs show recovery guidance; activation creates no grant.
+Local evidence: archive/data-operations **17/17**, task coordination **5/5**, Shell archive panel **2/2**,
+Spaces/Shell typechecks and `git diff --check`. These are local SQLite/Worker/UI checks only; no
+browser, deployed R2/D1, isolated restore drill, provider or live acceptance ran. P04 remains PARTIAL
+for other service stores, private inbound communications, retention/key/jurisdiction policy, RPO/RTO
+and deployed recovery. P05 remains PARTIAL for general package lifecycle, complete cost and setup,
+Space-wide provider connection authority/payer/revocation semantics and live acceptance. P01/P02 and
+P03/P20 external/policy gates remain as recorded below. Rollouts stay disabled; preserve
+`infra/scripts/__pycache__/`.
 
-Local evidence: Space archive/data-operations tests **15/15**, Shell archive panel tests **2/2**,
-Spaces/Shell typechecks and `git diff --check`. No deployed D1/R2, browser, isolated recovery drill,
-provider or live multi-user acceptance ran. P04 remains PARTIAL for other service stores, retention,
-key/jurisdiction policy and deployed recovery. P05 remains PARTIAL for other setup/cost/lifecycle gaps,
-shared provider connection authority/payer/revocation semantics and live acceptance. Rollouts remain
-disabled; preserve `infra/scripts/__pycache__/`.
-
-Exact next action: inspect P04 restore for resurrection of an uninstalled Space extension. Verify
-whether an archive can reinsert active `extension_instances`/signed manifests after uninstall; if so,
-preserve archive data while requiring explicit fresh owner activation before runtime admission. Add an
-export/uninstall/restore/runtime regression, then continue other independent gaps.
+Exact next action: continue S4/MS12 with an owner/admin-authorized, versioned project-main service
+restart-recipe registry, bounded schema validation, durable audit, a reachable API and Shell editor.
+Keep recipes inert until a supported runtime adapter can execute and verify them; add no secrets and do
+not claim process recovery. Test scope, validation, revision conflicts and disabled-runtime UI, then
+continue S4/S5 implementation gaps before the later voice and shared-Space work. Fetch and safely
+integrate before every push.
 
 ## Previous checkpoint — 2026-11-14 (P05 Project Knowledge activation handoff)
 
@@ -1279,12 +1279,15 @@ new-version chunks alongside old chunks, verifies the replacement manifest, swit
 pointer, and then removes old-key chunks. Partial relational restore remains an additive merge; R2
 writes and SQLite cannot be atomic together.
 
-Local evidence: Space archive codec plus SpaceDO data-ops **20/20**, ArchiveKeyRotationPanel **2/2**,
-Spaces/Shell TypeScript checks, and `git diff --check`. Coverage includes v1 decoding, v2 corruption,
-interrupted chunk upload/retry, missing-object restore, and key rotation with old chunks removed only
-after pointer replacement. These are local Worker/SQLite/R2 mocks; no deployed recovery drill or live
-R2 durability/retention acceptance ran. P04 remains PARTIAL for other service stores, private inbound
-data, approved retention/key/jurisdiction policy, RPO/RTO, and isolated/deployed recovery.
+Local evidence: format-v1/v2 codec, corruption, interrupted upload/retry, missing-object restore,
+key rotation and archive tests are recorded in the historical checkpoints. The current archive suite
+passes **17/17**, including revoked-grant omission, extension uninstall preservation, and active-task
+replay prevention; task coordination **5/5**, Shell archive panel **2/2**, Spaces/Shell typechecks and
+`git diff --check` pass. Restore preserves current destination rows and terminal task statuses, while
+newly inserted pending/in-progress tasks are blocked, leases cleared and counts persisted. These are
+local Worker/SQLite/R2 mocks; no deployed recovery drill or live R2 durability/retention acceptance
+ran. P04 remains PARTIAL for other service stores, private inbound data, approved retention/key/
+jurisdiction policy, RPO/RTO, and isolated/deployed recovery.
 
 ### P11/P12 — checkout and dunning contracts: local behavior reconciled
 
@@ -1527,7 +1530,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. `db5a915e` added a fresh-install in-memory SQLite rehearsal and repaired the safe 0164 skip prerequisite for 0229. The current manifest pins 249 migrations through `0249_project_main_runtime_budget_reservations`; fresh SQLite rehearsal passes **20/20** and release/deployment manifest validators pass **18/18**. Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. |
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
-| P04 | PARTIAL | Bounded encrypted Space archives capture supported SpaceDO state, workspace/extension objects and WorkspaceCoordinatorDO heads. New format-v2 object capture is capped at 16 MiB/object and 64 MiB aggregate; restore is additive, checksum-verified and keeps external event triggers disabled. Code `75feeabb` excludes local-machine, Space-shared filesystem and Project Knowledge grants from new archives and strips/reports those rows from legacy restores. | Other service D1/DO/provider/runtime state, private inbound communications, approved retention/key/jurisdiction policy, RPO/RTO and isolated/deployed recovery remain open. |
+| P04 | PARTIAL | Bounded encrypted Space archives capture supported SpaceDO state, workspace/extension objects and WorkspaceCoordinatorDO heads. New format-v2 capture is capped at 16 MiB/object and 64 MiB aggregate; restore is additive and checksum-verified. `75feeabb` excludes owner-managed grants from new archives and strips/reports them from legacy restore. `452345fd` proves uninstall status survives restore and runtime admission stays denied. `501b1526` pauses only restored active tasks for human review, clears stale leases, records preview/receipt counts, rejects blocked/terminal claims, preserves current and terminal rows; archive tests **17/17**, task coordination **5/5**, Shell archive panel **2/2**, Spaces/Shell typechecks. | Other service D1/DO/provider/runtime state, private inbound communications, approved retention/key/jurisdiction policy, RPO/RTO and isolated/deployed recovery remain open. |
 | P05 | PARTIAL | Signed SpaceBlueprint knowledge/action requirements, trusted candidate review, setup drafts and durable activation/recovery are local. Migration 137 persists default-empty per-Project Knowledge grants for Space-shared channels. `e9be8aee`/`38f50b41` route successful activation to each validated Project publish/grant UI; missing IDs have a recovery path and no grants are automatic. `75feeabb` prevents grant resurrection during archive restore. Text and owner-approved bounded image access, model-credit scenarios and earlier setup features remain as recorded. | Space-wide provider connection authority, payer/beneficiary/revocation semantics, broader guided lifecycle/cost and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Code `ce252033` adds exact binding selection for synthetic tests where one installation serves multiple lines. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Twilio `price` is delayed connectivity-only API evidence, not an invoice; Telnyx remains DTMF-only. The bounded IVR is not a conversational voice-agent product. First-party listing requires Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |

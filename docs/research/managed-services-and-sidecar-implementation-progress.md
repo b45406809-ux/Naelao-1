@@ -1,32 +1,28 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P04 archive grant safety; P05 activation handoff)
+## Active checkpoint — 2026-11-14 (P04 task replay safety)
 
-Code `75feeabb` is pushed to `origin/Mcbt5s-Backup-2`. Full archives omit owner-managed local-machine,
-Space-shared filesystem and Project Knowledge grant rows. Legacy archives are still usable: restore
-strips those rows, reports per-table omitted counts in preview and the durable restore receipt, and
-continues with other data. Owners must reapprove the permissions after recovery. Archive UI and
-`docs/space-data-retention-and-backup.md` state these boundaries.
+Code `501b1526` is pushed to `origin/Mcbt5s-Backup-2` from
+`autonomous-managed-services-20261111`. Space archive restore pauses only newly inserted pending or
+in-progress tasks as `blocked` / `REQUIRES_HUMAN_INTERVENTION`, clears stale claimant and lease fields,
+and records expected/actual counts in preview and durable restore receipt. The lease endpoint rejects
+blocked/intervention-required and terminal tasks. Existing destination rows and terminal archived
+rows are preserved. Shell preview and apply messages disclose the behavior.
 
-P05 handoff `e9be8aee` plus missing-Project-ID recovery `38f50b41` remain pushed. Signed activation
-that requires owner-published external Knowledge links to every validated created Project. The
-Project page guides the owner to publish a signed-package-declared collection and explicitly grant
-that current publication; activation never grants access.
-
-Local evidence: Space data-operations/archive tests **15/15**, Shell archive panel tests **2/2**,
-Spaces/Shell typechecks and `git diff --check`. The global pnpm wrapper cannot reconcile dependencies
-in this no-TTY shell, so existing local binaries ran the checks. No deployed R2/D1, browser, isolated
-recovery drill, provider or live acceptance ran. P04 remains PARTIAL for other service stores,
-retention/key/jurisdiction policy and isolated/deployed drills; P05 remains PARTIAL for broader
-guided lifecycle/cost, shared provider-connection authority/payer/revocation semantics and live
-acceptance. S2–S9/U01–U12 status remains as recorded below. Keep rollouts disabled and preserve
+Local evidence: Space data-operations/archive **17/17**, task coordination **5/5**, Shell archive panel
+**2/2**, Spaces/Shell typechecks and `git diff --check`. These use local SQLite/Worker/R2 mocks. No
+browser, deployed D1/R2, isolated recovery drill or provider/live acceptance ran. P04 remains PARTIAL
+for other service stores, private inbound communications, retention/key/jurisdiction policy, RPO/RTO
+and deployed recovery. P01/P02 remain local and fail-closed for operator baselines, distinct real
+resources, ownership receipts and isolation. P03/P20 policy decisions remain open. S2–S9/U01–U12 and
+P01–P24 status stays in the reconciled matrices; rollouts remain disabled. Preserve
 `infra/scripts/__pycache__/`.
 
-Exact next action: inspect whether Space archive restore can revive `extension_instances` or signed
-installation manifests after uninstall. If it can, keep archive package bytes recoverable but require
-fresh owner activation before a restored handler can execute; add an export/uninstall/restore/runtime
-admission regression. Then continue the next independent code gap in both plans. Fetch and safely
-integrate before every push.
+Exact next action: continue S4/MS12 by adding an owner/admin-authorized, versioned project-main service
+restart-recipe registry, bounded validation, durable audit, a reachable API and Shell editor. Keep
+recipes inert until the runtime adapter can safely execute and verify them; add no credentials and do
+not claim process recovery. Cover scope, validation, revision conflicts and disabled-runtime UI, then
+continue the next S4/S5 gaps in dependency order. Fetch and safely integrate before each push.
 
 ## Previous checkpoint — 2026-11-14 (P05 activation handoff; P04 restore safety next)
 

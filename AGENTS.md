@@ -16,31 +16,36 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P04 archive grant safety; P05 handoff)
+## Latest checkpoint — 2026-11-14 (P04 task replay safety)
 
-P04/P05 recovery safety code `75feeabb` is pushed to `origin/Mcbt5s-Backup-2`. Full Space archives
-omit owner-managed `local_grants`, `extension_shared_filesystem_grants` and
-`extension_project_knowledge_grants`. Restore strips those rows from legacy archives, reports exact
-per-table counts in the preview and persisted restore receipt, and continues restoring unrelated
-state. Owners must reapprove those permissions. The archive UI and runbook disclose this behavior.
+Code `501b1526` is pushed to `origin/Mcbt5s-Backup-2` from
+`autonomous-managed-services-20261111`. Space archive restore now converts only newly inserted
+`pending`/`in_progress` tasks to `blocked` with `REQUIRES_HUMAN_INTERVENTION`, clears archived claimant
+and lease values, and records the preview estimate and actual count in the durable restore receipt.
+The task lease route rejects blocked/intervention-required and terminal tasks. Existing destination
+rows and archived terminal states remain intact. The owner archive preview and completion notice
+explain this safety action.
 
-Local evidence: Space data-operations/archive tests **15/15**, Shell archive panel tests **2/2**,
-Spaces and Shell typechecks, and `git diff --check` pass. These are local SQLite/Worker/UI checks; no
-deployed R2/D1, browser, isolated recovery drill, provider or live acceptance ran. Rollouts remain
-disabled; preserve `infra/scripts/__pycache__/`.
+Verification: Space data-operations/archive **17/17**, task coordination **5/5**, Shell archive panel
+**2/2**, Spaces and Shell typechecks, and `git diff --check` pass. Tests use local SQLite/Worker/R2
+mocks; no browser, deployed D1/R2, isolated recovery drill, provider or live acceptance ran. Earlier
+P04 grant-restore safety `75feeabb` and uninstall-preservation regression `452345fd` remain pushed.
+P04 stays PARTIAL for other service state, private inbound communications, retention/key/jurisdiction
+policy, RPO/RTO, and isolated/deployed recovery. P05's handoff commits `e9be8aee` and `38f50b41` remain
+pushed; provider-scope and broader lifecycle/cost gaps remain. Keep rollouts disabled and preserve
+`infra/scripts/__pycache__/`.
 
-P05 guided Project Knowledge activation handoff `e9be8aee` and missing-Project-ID recovery fix
-`38f50b41` remain pushed. Valid activation Project IDs open the owner publish/grant UI; malformed or
-missing IDs show recovery guidance; no access is granted automatically. P05 remains PARTIAL for
-broader guided lifecycle/cost, shared provider connection authority/payer/revocation semantics and
-live acceptance.
+Exact next action: continue S4/MS12 by adding an owner/admin-authorized, versioned project-main service
+restart-recipe registry with bounded schema, durable audit, a reachable API and Shell editor. Treat
+recipes as inert configuration until the supported runtime adapter can execute and verify them; do not
+add secrets or claim process recovery. Test scope, validation, revision conflicts and disabled-runtime
+presentation. Then continue the next S4/S5 implementation gaps in dependency order. Fetch before each
+checkpoint push and never force-push.
 
-Exact next action: inspect the P04 archive merge path specifically for stale active Space extension
-installations. Determine whether restoring archived `extension_instances` or signed installation
-manifests can revive an installation removed after export; if so, preserve the archive's package data
-but require fresh owner activation before any restored handler can run. Add a regression spanning
-export, uninstall, restore and runtime admission. Then continue the next independent requirement in
-both active plans. Fetch and safely integrate remote advances before every push.
+The user has authorized coherent checkpoint commits and pushes to `origin/Mcbt5s-Backup-2`. After
+meaningful verified slices, fetch that branch, safely integrate any advance, commit the checkpoint,
+and push without force. Do not deploy, purchase services, or enable rollouts; preserve all untracked
+work, including `infra/scripts/__pycache__/`.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
 
