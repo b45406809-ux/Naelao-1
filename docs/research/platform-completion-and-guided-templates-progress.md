@@ -1,7 +1,31 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P05 Foundry authoring draft recovery)
+## Active continuation — 2026-11-14 (P05 expected-usage refresh)
+
+Code `236a2e2b88c6b4063e970101e8fe318a971b90f1` is pushed. The owner activation preview now
+refreshes customer-entered expected interactions 350 ms after changes, and generation fencing keeps
+out-of-order responses from replacing newer results. Empty values clear the projection; partial or
+out-of-range values are surfaced. The result remains projected interaction volume, not billable units,
+and total operating cost remains unknown. Local evidence: Shell helper tests **3/3**, Shell typecheck,
+and `git diff --check`. No browser/deployment/provider/live acceptance ran.
+
+Foundry draft recovery `56b23a31` is pushed: project selection, setup declarations, channel preferences,
+dependency IDs and conformance inputs resume from bounded Space-scoped storage; customer-preview
+values are not persisted and dependency IDs are refreshed through the owner-only trusted candidate
+API. P05 remains PARTIAL for durable conformance/published-product recovery, knowledge/action
+authoring without a template/runtime contract, provider setup, broad lifecycle, verified rates and live
+acceptance. P06 remains PARTIAL for conversational voice lifecycle/streaming, managed billing/invoices
+and provider/region acceptance. Rollouts remain disabled; preserve untracked
+`infra/scripts/__pycache__/`.
+
+Exact next action: persist Foundry's host-issued conformance job ID/status with its authoring draft,
+recheck via `blueprint.status` after reload, and save published listing identity only after signed
+graduation success. Reconcile ambiguous responses before retry to avoid duplicate export/publish
+effects; add reload/recovery checks. Then continue uncoded P05/P06 and S3–S9/U01–U12.
+
+
+## Previous checkpoint — 2026-11-14 (P05 Foundry authoring draft recovery; completed)
 
 Code `56b23a31354519845834d4fb6b6bcf390e280cee` is pushed. Foundry now persists/restores a bounded
 versioned authoring draft in its existing Space-scoped extension Gadget; this includes selected same-
@@ -20,10 +44,7 @@ entire installed package and do not grant per-action authority. P06 remains PART
 voice lifecycle/streaming, managed billing/invoice reconciliation and provider/region acceptance.
 Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
 
-Exact next action: make the owner activation-review expected-usage projection refresh automatically
-when conversations/interactions change, using debounce and stale-response fencing. Keep it labeled
-as projected interaction volume with total operating cost unknown. Add checks for invalid input and
-out-of-order requests, then continue uncoded P05/P06 and S3–S9/U01–U12.
+That next action is complete in `236a2e2b`; resume from the active checkpoint above.
 
 
 ## Previous checkpoint — 2026-11-14 (P05 multi-project guided setup; completed)
@@ -968,7 +989,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; all current targets resolve. Tests pass 11/11. The preflight still rejects 13 shared-resource findings, one unresolved `naelao-calls` owner and 158 missing read-only receipts; actual resource separation/ownership and deployed isolation remain external evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
-| P05 | PARTIAL | `50dd1fa4` adds customer-form preview; `bf55151a` adds multi-project setup groups; `ed924c83`/`55d67648` add current trusted dependency selection and package feature disclosure; `56b23a31` persists/restores a bounded Space-scoped authoring draft, excluding local preview values and rechecking saved dependencies. Foundry package `1.2.0` adds the draft migration. `5e0c6501` adds owner-approved scoped text handles. `536853b9`/`b646ec16` connect guided activation to exact-pin dependency import; `edf08814` resumes install after reload. `a75c0862` adds provider cleanup; `c1c5e0d4` adds Telegram/WhatsApp setup compensation. Knowledge/action authoring has no matching SpaceBlueprint/runtime contract; full provider setup, broader lifecycle, verified rates, image/audio/binary extension reads and deployed/live acceptance remain. |
+| P05 | PARTIAL | `50dd1fa4` adds customer-form preview; `bf55151a` multi-project setup groups; `ed924c83`/`55d67648` trusted dependency selection and package feature disclosure; `56b23a31` persists/restores bounded Space-scoped authoring drafts and rechecks selected dependencies; `236a2e2b` refreshes the activation usage projection with debounce and stale-response fencing while total cost stays unknown. Foundry package `1.2.0` adds the draft migration. `5e0c6501` adds owner-approved scoped text handles. `536853b9`/`b646ec16` connect activation to exact-pin dependency import; `edf08814` resumes install after reload. `a75c0862` adds provider cleanup; `c1c5e0d4` Telegram/WhatsApp setup compensation. Durable conformance/published-product state after reload remains uncoded. Knowledge/action authoring has no matching SpaceBlueprint/runtime contract; full provider setup, broad lifecycle, verified rates, image/audio/binary extension reads and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. `b2140aaf` adds a draft-only simulated call/DTMF preview; `b2d4ac0f` pins calls to the admitted installation/handler and groups owner history by that pin; `4c42012b` exposes the exact signed release and active publisher-key identity in the owner phone dashboard. Customer voice lifecycle, public streaming, managed billing, invoice reconciliation and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |

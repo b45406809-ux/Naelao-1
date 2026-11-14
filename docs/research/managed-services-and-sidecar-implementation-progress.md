@@ -1,30 +1,31 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (joint mission; Foundry draft recovery)
+## Active continuation — 2026-11-14 (joint mission; P05 usage estimate refresh)
 
-P05 code `56b23a31354519845834d4fb6b6bcf390e280cee` is pushed to `origin/Mcbt5s-Backup-2`. It adds
-Space-scoped persisted Foundry authoring drafts with a 48 KiB bound, schema version, restore-time
-shape checks, and revalidation of selected dependency IDs against current owner-authorized trusted
-releases. It resumes project groups, setup fields, channel defaults and conformance inputs; local
-preview values are excluded. Foundry catalog release `1.2.0` adds the draft column and the Foundry
-Space template pins its current manifest digest. Local evidence: Agent SDK **5/5**, Spaces extension
-runtime/install **27/27**, SDK/Spaces typechecks, embedded Canvas script syntax, and `git diff --check`.
-These are local checks only; no browser, deployed Space, provider or live acceptance ran. The prior
-dependency-candidate action is complete in `ed924c83`; package feature metadata followed in
-`55d67648`.
+P05 code `236a2e2b88c6b4063e970101e8fe318a971b90f1` is pushed to `origin/Mcbt5s-Backup-2`. The
+Space owner activation-review caller now refreshes expected interaction volume 350 ms after input
+changes, cancels scheduled requests on change/close, and rejects stale responses. Empty values clear
+the projection. Shared validation covers integer bounds and partial inputs. Local evidence: Shell
+helper tests **3/3**, Shell typecheck, and `git diff --check`. No browser, deployment, provider, or
+live acceptance ran. Cost remains unknown: interactions are not billable units and no total is
+estimated.
 
-P05 remains partial for action/knowledge authoring without a corresponding template/runtime contract,
-provider setup, broader lifecycle, verified full rates and live acceptance. P06 remains partial for
-customer voice lifecycle/streaming, managed billing/invoices and live/region acceptance. S2 is local
-for supported lanes; S3–S9/U01–U12 retain their row-specific code and contract gaps in the matrix.
-U05/U06 remain unsupported runtime contracts, not credential blockers. Keep rollout disabled and
-preserve untracked `infra/scripts/__pycache__/`.
+The prior Foundry authoring draft code `56b23a31354519845834d4fb6b6bcf390e280cee` is pushed too.
+It persists a bounded versioned draft and rechecks selected dependencies against current trusted
+releases; P05 multi-project setup and dependency feature inventory are complete locally in
+`bf55151a`, `ed924c83`, and `55d67648`. P05 remains partial for durable conformance/publish recovery,
+knowledge/action schema/runtime, full provider setup/lifecycle and verified rates. P06 remains partial
+for customer voice lifecycle/streaming, managed billing/invoices and provider/region acceptance. S2
+is implemented locally for supported lanes; S3–S9/U01–U12 keep the code and platform contract gaps in
+their requirement matrix. U05/U06 are unsupported runtime contracts, not credential blockers. Keep
+rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
-Exact next action: make customer-entered expected-usage estimates refresh automatically as inputs
-change in the existing owner activation-review caller, with debounce and stale-response fencing; keep
-total operating cost explicitly unknown and verify invalid and overlapping requests. Then proceed to
-the next independent P05/P06 or S3–S9/U01–U12 code gap.
+Exact next action: add reload recovery to the Foundry conformance and graduation caller. Persist each
+host-issued job ID/status with the authoring draft, recheck through `blueprint.status`, and store the
+published listing identity only after the signed graduation call succeeds. Reconcile ambiguous
+responses from existing host status before retrying, and test reload/no duplicate behavior. Then
+continue remaining P05/P06 and S3–S9/U01–U12 gaps.
 
 
 ## Previous checkpoint — 2026-11-14 (P06 phone routing readiness; completed)
