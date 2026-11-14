@@ -3,88 +3,17 @@
 
 ## Current checkpoint — 2026-11-14
 
-P07 code `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1` is pushed to
-`origin/Mcbt5s-Backup-2`. The bridge can publish owner-declared per-model modality, context and
-tool-call profiles for its installed model IDs. Private worker selection resolves the exact selected
-machine through the authenticated Space authority route, requires the current actor/project inference
-grant, and selects only a matching declared profile. Private routing does not query OpenRouter or
-fall back to a cloud model. These declarations are not independently verified quality evidence;
-custom model selection and deployed/provider acceptance remain open, so P07 is PARTIAL.
+P07 code `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1` is pushed. The bridge publishes owner-declared modality, context and tool-call profiles for exact installed local model IDs. Private worker selection resolves the selected machine through the authenticated Space authority route, requires the current actor/project inference grant, and selects only a matching profile. It does not query OpenRouter or fall back to cloud. Profiles do not verify model quality; custom-model selection and deployed/provider acceptance remain, so P07 is PARTIAL.
 
-Fresh local verification: Agents routing/tunnel tests **23/23**, SDK tunnel protocol **2/2**, bridge
-model-discovery **2/2**, Agents/SDK/Spaces/Bridge typechecks, SDK and bridge builds, and
-`git diff --check`. U12 source-to-caller reconciliation confirms the shared staging script, Agents
-build, two CI callers and prior Docker dry-run; local build wiring is implemented, while a future CI
-event and deployed image parity remain unverified. The MS07 summary below is corrected: MS07e already
-implements source-aware Assistant/AgentMail inbox search with independent cursors. Keep
-`infra/scripts/__pycache__/` untracked and preserved; rollouts remain disabled.
+P01 code `60c5f03b30aac5241a379b0c59bbf343ed0186b1` makes the deployment manifest validator require each environment's selected migration phase to invoke `release_migrations.py` with the matching baseline, database ID and Wrangler, followed by a remote D1 schema probe. Current workflows comply. Local evidence: P07 Agents routing/tunnel **23/23**, SDK protocol **2/2**, bridge discovery **2/2**, Agents/SDK/Spaces/Bridge typechecks and SDK/bridge builds; P01 deployment-manifest **10/10**, release-migrations **15/15**, deployment/release manifest validators and `git diff --check`. The inventory contains 242 migrations and requires schema `0242_extension_provider_cleanup_operation_kinds`. No remote D1, deployment or live acceptance occurred. Operator-attested staging/production baselines, isolated migration rehearsal and deployed health remain open.
 
-Managed S2 is IMPLEMENTED_LOCAL only for supported lanes. S3–S9/U01–U12 remain open at the matrix's
-specific provider, runtime-contract, product-policy, consumer-persistence and live-evidence gaps;
-this checkpoint does not claim mission completion. U05's trusted runtime producer and U06's writer
-admission/drain/flush/handoff contract remain unsupported, not credential blockers. Exact next action:
-trace the production migration caller against the P01 durable release runner and required-schema
-gate, close any current source-backed bypass, then proceed to P02 environment isolation. No deployment,
-purchase or live acceptance occurred.
+Setup checkpoint `c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff` adds migration 0242 and retryable exact-generation setup compensation for Telegram/WhatsApp; local evidence was Agents **23/23**, Spaces uninstall **3/3**, release migrations **15/15**, affected typechecks and manifest validation. U11 checkpoint `88457f406f6d8e57c3c87880d7f43746c9d3a9e4` rotates cost-alert sweeps and rechecks project-owner access before push delivery; local evidence was Agents **19/19**, Billing **22/22**, Agents typecheck and `git diff --check`. Provider calls were mocked; no D1 migration, live provider, invoice or deployment acceptance occurred.
 
-Setup recovery is pushed as `c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff`. Migration 0242 adds a setup
-operation kind and partial unique indexes for unresolved setup by installed connection and provider
-account. Telegram/WhatsApp persist exact credential-generation intent before vault writes/provider
-mutation, leave local routes inactive until acceptance, and atomically commit active state plus the
-completed setup receipt. Rejection, ambiguous outcome or DB commit failure removes local access and
-compensates from that generation; unconfirmed cleanup keeps credentials and remains owner-retryable.
+P02 code `174f092c84fc1acec599da839e6f9a4b8c566dd6` adds same-environment Worker ownership checks for cross-script Durable Object bindings; all current source targets resolve. Local resource-inventory tests **11/11** pass. The preflight correctly remains blocked by 13 shared mutable-resource findings, one unresolved `naelao-calls` owner, and 158 missing read-only receipts; it also requires the account ID and fresh observation timestamp. No external resource was queried, created or changed.
 
-U11 code `88457f406f6d8e57c3c87880d7f43746c9d3a9e4` is also pushed. Cost-alert sweeps now rotate by
-last evaluation state rather than rescanning the first bounded page forever. Push delivery includes
-`project_id` in its saved receipt read and rechecks the same project-owner authority used by the
-owner-configured budget path; revoked project ownership suppresses delivery. The previous org/Space
-owner/admin checks remain.
+U12 staging-script/build/CI wiring is implemented locally; future CI event execution and deployed-image parity are unverified. MS07's summary is corrected: MS07e already implements source-aware Assistant/AgentMail search with independent cursors. S2 remains local only for supported lanes; S3–S9/U01–U12 remain open at the specific runtime/provider contracts, policies, external consumer persistence, cost feeds and live evidence in the matrix. U05/U06 gaps are unsupported runtime contracts, not credential blockers. Keep `infra/scripts/__pycache__/` preserved and rollout flags disabled.
 
-Local verification: setup Agents tests **23/23**, Agents/Spaces/Shell typechecks, Spaces uninstall
-**3/3**, release migrations **15/15** with local SQLite replay through 0242 and provider-account
-uniqueness, manifest validators; U11 Agents cost/observation/reconciliation/capability tests **19/19**,
-Billing reservation/settlement tests **22/22**, Agents typecheck, and `git diff --check`. Provider
-calls were mocked. No D1 migration, deployment, live provider or invoice acceptance ran. Keep the
-existing untracked Python cache and all rollout flags disabled.
-
-Setup compensation is IMPLEMENTED_LOCAL for Telegram/WhatsApp; P05/P10/P23 remain PARTIAL for other
-provider journeys, broader update/uninstall effects, token revocation, policy/retention and deployed
-acceptance. U11 is IMPLEMENTED_LOCAL for supported settlement, cost, threshold and push-alert paths.
-Invoices and Cloudflare billed-idle/CPU-size feeds lack supported source APIs/receipts; the dashboard
-is not invoice reconciliation and thresholds do not enforce spend. The earlier U12 reconciliation
-action is complete and recorded at the top of this checkpoint; its CI-event and deployed-image
-evidence limits remain. Resume from the active action at the top of this record. Preserve
-`infra/scripts/__pycache__/`.
-
-Platform P08 code `87374fc2da4ae44a4c361ea145109308782571e5` is pushed to
-`origin/Mcbt5s-Backup-2`; it implements separately owner-gated, task-scoped video-frame questions
-with fixed frame/time limits and shared daily AI-call quota. Verification and live-evidence limits are
-in the platform ledger and `AGENTS.md`. This does not change the managed-services row statuses.
-
-Code `d208ec02cdc047b455759d6887ed69e3abc680aa` is pushed to `origin/Mcbt5s-Backup-2` after fetch
-confirmed the remote was an ancestor. It adds atomic metadata-only coordination publish/amend/revoke
-events, an owner/admin paged history API and a Settings history view; fact labels/descriptions are not
-stored in the events. Optional expiry and owner/admin actor metadata remain in `f0d38035` and
-`e8f77f7f`. Local evidence: SDK coordination **4/4**, Spaces coordination/route/migration **20/20**,
-SDK/Spaces/Shell typechecks and `git diff --check`; no deployed or live multi-user acceptance.
-
-S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 remain PARTIAL at their ledgered code,
-platform, policy/feed or live-evidence gaps; U05/U06 runtime producers/contracts are not credential
-gates. Code `e97a2841` and `fbfac9caa26913bc18ac9871b8a3215dea9d3642` remain pushed: the human
-Space-shared page shows runtime and dependency metadata, and the assistant inventory returns valid
-active project packages after actor/project-grant checks. Local verification is recorded above.
-
-Managed S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain at their ledgered
-PARTIAL code, runtime, policy/feed and live-evidence gaps. Platform §10 remains PARTIAL; maintenance
-proposal/delegation authority and allowed actions still need a product contract. P05/P10/P23 remain
-PARTIAL while provider setup recovery and broader lifecycle effects are uncoded; credential-generation
-cleanup is implemented, but no provider setup success is claimed. Exact next action: persist a pending
-operation with immutable credential names before Telegram `setWebhook` or WhatsApp `subscribed_apps`;
-write the active connection only after provider acceptance; on rejection/ambiguity remove local routes,
-compensate from that saved operation and preserve credentials while cleanup is unconfirmed. Connect
-that outcome to the owner retry view. Then work the next uncoded requirements in both ledgers. Keep
-rollouts disabled and preserve the Python cache.
-
+Exact next action: implement P11's missing paid-plan price receipt by tracing the signed purchase webhook to the existing subscription/entitlement records; persist exact provider, variant, amount, currency and provider event identity idempotently, without changing access or refund policy. Keep the P02 resource preflight fail-closed and proceed only with read-only receipts supplied through the authorized inventory process.
 ## Prior checkpoint details
 
 ### Earlier continuation (2026-11-13; P24 package import and reload recovery pushed)

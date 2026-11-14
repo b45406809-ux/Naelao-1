@@ -3,71 +3,13 @@
 
 ## Active checkpoint — 2026-11-14
 
-P07 code `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1` is pushed to
-`origin/Mcbt5s-Backup-2`. The bridge can report owner-declared modality/context/tool profiles for
-installed local models; the Agents selector resolves the exact authorized machine and current
-inference grant, then chooses a matching private model without cloud discovery or fallback. Local
-checks passed: Agents routing/tunnel **23/23**, SDK protocol **2/2**, bridge discovery **2/2**,
-Agents/SDK/Spaces/Bridge typechecks, SDK/bridge builds and `git diff --check`. These are local tests;
-no deployment or provider acceptance ran. Profiles are declarations, not verified model-quality
-evidence. P07 remains PARTIAL for custom-model capability selection and deployed/provider acceptance.
+P07 code `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1` adds owner-declared capability profiles for exact local model IDs and capability-aware selection behind exact machine and current inference-grant checks. Private runs do not discover or fall back to cloud models. Local evidence: Agents routing/tunnel **23/23**, SDK protocol **2/2**, bridge discovery **2/2**, affected typechecks and SDK/bridge builds. Profiles are not quality evidence; custom-model selection and live acceptance remain, so P07 is PARTIAL.
 
-Managed U12 was reconciled against the pinned staging script, its Agents build and both CI callers;
-local build wiring is present, but no new CI event or deployed-image parity was verified. MS07's old
-summary was stale: MS07e already provides source-aware combined inbox search with independent cursors.
-Exact next action: verify that the production deployment migration caller invokes the P01 durable
-release runner and required-schema gate; fix any source-backed bypass, then continue P02 resource
-isolation. Preserve all local work and the untracked cache; keep rollouts disabled.
+P01 code `60c5f03b30aac5241a379b0c59bbf343ed0186b1` makes workflow validation require the manifest-selected migration phase to invoke the durable runner with its environment-specific baseline and run a remote D1 schema probe afterward. Current staging and production workflows comply. Local evidence: deployment-manifest **10/10**, release-migrations **15/15**, deployment/release manifest validators; inventory has 242 migrations and requires `0242_extension_provider_cleanup_operation_kinds`. Operator-attested baselines, remote D1, isolated rehearsal, data recovery and deployed health remain unverified; P01 is PARTIAL.
 
-Setup recovery is pushed in `c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff`; U11 alert caller fixes are
-pushed in `88457f406f6d8e57c3c87880d7f43746c9d3a9e4`, both on `origin/Mcbt5s-Backup-2`. Telegram and
-WhatsApp setup now persist exact-generation intent before credentials/provider mutation, activate
-local access only after provider acceptance, and retain retryable owner-visible compensation when
-cleanup is unconfirmed. U11 cost-alert sweeps now rotate through bounded pages and push alerts
-recheck exact project-owner access before delivery. These are local Worker/SQLite paths only.
+Managed U12 local staging/build/CI wiring is present; future CI execution and deployed-image parity are unverified. The managed ledger's MS07 summary is corrected by MS07e's combined Assistant/AgentMail search. P02 code `174f092c84fc1acec599da839e6f9a4b8c566dd6` adds same-environment Worker ownership checks for cross-script Durable Object bindings; every current target resolves. Local resource-inventory tests **11/11** pass. The preflight still fails closed on 13 shared-resource findings, unresolved `naelao-calls` ownership, 158 missing read-only receipts, and missing account/timestamp evidence. No external resource was queried or changed. Exact next action: implement P11's missing paid-plan price receipt by tracing signed checkout events to existing subscription/entitlement state and persisting provider, variant, amount, currency and event identity idempotently; do not change access/refund policy. Keep P02 blocked until the authorized read-only receipts and ownership evidence are supplied. Preserve the untracked cache and keep rollouts disabled.
 
-Verification: setup Agents tests **23/23**, Spaces uninstall **3/3**, Agents/Spaces/Shell typechecks,
-release migration tests **15/15** through migration 0242; U11 Agents suites **19/19**, Billing
-reservation/settlement **22/22**, Agents typecheck, manifest validators and `git diff --check`. No D1
-migration, deployment, provider call acceptance or invoice acceptance ran. `infra/scripts/__pycache__/`
-remains preserved; all rollouts stay disabled.
-
-P05/P10/P23 remain PARTIAL for broader provider journeys, update/uninstall effects, token revocation,
-retention and live acceptance. P01/P02 still need real environment resource IDs/ownership, read-only
-receipts and operator-attested D1 baselines. P03/P20 grace/restriction and refund/access/author
-accounting remain unresolved product contracts. This earlier sequence note is superseded by the
-active checkpoint above: the current S4–S9/U01–U12 matrix and caller evidence have been reconciled,
-and remaining managed-service runtime/provider/policy gaps are recorded as unsupported contracts,
-decisions or live-evidence gates. Continue at P01 as specified above, then proceed through P02,
-commercial recovery, guided templates, voice and Shared-Space requirements in dependency order.
-
-Pushed code `d208ec02cdc047b455759d6887ed69e3abc680aa` adds atomic metadata-only coordination audit
-events for publish/amend/revoke, owner/admin-only paged reads and a Settings history view. Expiry
-(`f0d38035`) and owner/admin actor metadata (`e8f77f7f`) remain implemented. Local checks: SDK
-coordination **4/4**, Spaces coordination/route/migration **20/20**, SDK/Spaces/Shell typechecks and
-`git diff --check`; these are local Worker/SQLite checks, with no deployed multi-user acceptance.
-
-Code `e97a2841` and `fbfac9caa26913bc18ac9871b8a3215dea9d3642` are pushed after fetch and ancestry checks. The member-authorized Space-shared extension page shows runtime primitive, installation ID/key, version, scope, status and declared exact dependency pins. The assistant's project-grant-checked inventory now returns every valid active project-bound/shared package, including those without workflows, while excluding Space-shared, other-project and malformed records. Local evidence: Agents workflow inventory **4/4**, Spaces extension-settings **3/3**, Agents/Spaces/Shell typechecks and `git diff --check`; no deployed or live acceptance.
-
-P08 code `87374fc2da4ae44a4c361ea145109308782571e5` is pushed to `origin/Mcbt5s-Backup-2` after
-fetching and confirming the previous remote tip was an ancestor. It adds a distinct default-off owner
-setting and reachable `attachment.describe_video` caller. The host accepts only exact task-owned
-MP4/WebM/QuickTime/Matroska attachments in a non-air-gapped Space with egress allowed; the isolated
-MediaSandbox extracts at most JPEG frames sampled at 0/10/20 seconds from the first 30 seconds. Input
-is capped at 6 MiB, each frame at 1 MiB and 20 MP, output at three frames/5 MiB, and frame calls reserve
-atomically from the existing 20-call rolling Space-day OCR/visual-analysis quota. UI and planner
-disclose sampled-only coverage and unknown per-video image cost. Local evidence: Agents tests **69/69**,
-SDK tests **36/36**, Agents/SDK/Shell typechecks, container syntax, `git diff --check`, and a local
-FFmpeg 2-second clip check (one frame at 0s; no frames at 10s/20s). No deployed Container, Workers AI
-billing, or live provider acceptance ran. P08 remains PARTIAL until deployed/provider acceptance; keep
-the setting off and rollouts disabled.
-
-§10 remains PARTIAL for collaboration posture/private-project authority, delegated maintenance
-proposals, singleton reservations/concurrency and broad non-disclosure acceptance. Project
-settings/lifecycle changes are manager-authorized; assistant proposal authority and allowable
-delegated actions need a product contract and remain unchanged. Continue without inventing those
-policies; keep rollouts disabled.
-
+Setup recovery `c1c5e0d4` and U11 alert delivery `88457f40` remain pushed and locally verified in the managed ledger. Telegram/WhatsApp setup compensation is implemented for those supported journeys; cost alerts rotate through bounded sweeps and recheck project ownership. These are mocked/local paths, not provider or invoice acceptance.
 ## Previous checkpoint details
 
 Earlier continuation (2026-11-13): code `536853b9` connects signed same-tenant dependency import to
@@ -891,11 +833,11 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 
 | Requirement | Current status | Reconciled state |
 | --- | --- | --- |
-| P01 | PARTIAL | Release runner, manifest and promotion health gates are local; operator-attested D1 baselines and isolated/deployed acceptance remain. |
-| P02 | PARTIAL | Resource inventory/preflight is local and fail-closed; 158 receipts, actual separation and `naelao-calls` ownership are absent. |
+| P01 | PARTIAL | Release runner, manifest and promotion health gates are local. Code `60c5f03b` makes validation require the manifest-selected migration phase to invoke the environment-specific runner/baseline and remote D1 probe. Operator-attested D1 baselines, isolated rehearsal, rollback/data recovery and deployed/live acceptance remain. |
+| P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; all current targets resolve. Tests pass 11/11. The preflight still rejects 13 shared-resource findings, one unresolved `naelao-calls` owner and 158 missing read-only receipts; actual resource separation/ownership and deployed isolation remain external evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
-| P05 | PARTIAL | Code `5e0c6501` adds owner-approved scoped text handles. Codes `536853b9`/`b646ec16` connect guided activation to exact-pin signed dependency import; `edf08814` resumes after reload. `a75c0862` adds durable, owner-retryable provider cleanup on direct disconnect and channel-package uninstall. Binary/image/audio extension reads, provider setup recovery, broader customer/update journeys, verified rates and deployed/live acceptance remain. |
+| P05 | PARTIAL | Code `5e0c6501` adds owner-approved scoped text handles. Codes `536853b9`/`b646ec16` connect guided activation to exact-pin signed dependency import; `edf08814` resumes after reload. `a75c0862` adds durable provider cleanup on direct disconnect and channel-package uninstall; `c1c5e0d4` adds setup compensation for Telegram/WhatsApp. Binary/image/audio extension reads, other provider setup journeys, broader customer/update journeys, verified rates and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Code `b2140aaf` adds a draft-only simulated call/DTMF preview; code `b2d4ac0f` pins calls to the admitted installation/handler and groups the owner history by that pin. The customer voice package lifecycle, public streaming, managed voice billing, invoice reconciliation and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |
