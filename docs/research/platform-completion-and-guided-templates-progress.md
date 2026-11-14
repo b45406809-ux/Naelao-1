@@ -3,6 +3,22 @@
 
 ## Active checkpoint — 2026-11-14
 
+P07 code `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1` is pushed to
+`origin/Mcbt5s-Backup-2`. The bridge can report owner-declared modality/context/tool profiles for
+installed local models; the Agents selector resolves the exact authorized machine and current
+inference grant, then chooses a matching private model without cloud discovery or fallback. Local
+checks passed: Agents routing/tunnel **23/23**, SDK protocol **2/2**, bridge discovery **2/2**,
+Agents/SDK/Spaces/Bridge typechecks, SDK/bridge builds and `git diff --check`. These are local tests;
+no deployment or provider acceptance ran. Profiles are declarations, not verified model-quality
+evidence. P07 remains PARTIAL for custom-model capability selection and deployed/provider acceptance.
+
+Managed U12 was reconciled against the pinned staging script, its Agents build and both CI callers;
+local build wiring is present, but no new CI event or deployed-image parity was verified. MS07's old
+summary was stale: MS07e already provides source-aware combined inbox search with independent cursors.
+Exact next action: verify that the production deployment migration caller invokes the P01 durable
+release runner and required-schema gate; fix any source-backed bypass, then continue P02 resource
+isolation. Preserve all local work and the untracked cache; keep rollouts disabled.
+
 Setup recovery is pushed in `c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff`; U11 alert caller fixes are
 pushed in `88457f406f6d8e57c3c87880d7f43746c9d3a9e4`, both on `origin/Mcbt5s-Backup-2`. Telegram and
 WhatsApp setup now persist exact-generation intent before credentials/provider mutation, activate
@@ -19,9 +35,11 @@ remains preserved; all rollouts stay disabled.
 P05/P10/P23 remain PARTIAL for broader provider journeys, update/uninstall effects, token revocation,
 retention and live acceptance. P01/P02 still need real environment resource IDs/ownership, read-only
 receipts and operator-attested D1 baselines. P03/P20 grace/restriction and refund/access/author
-accounting remain unresolved product contracts. Resume after managed U12 and S4–S9/U01–U12 from
-platform P01/P02 release/environment safety; then continue commercial recovery, guided templates,
-voice and Shared-Space requirements in their dependency order.
+accounting remain unresolved product contracts. This earlier sequence note is superseded by the
+active checkpoint above: the current S4–S9/U01–U12 matrix and caller evidence have been reconciled,
+and remaining managed-service runtime/provider/policy gaps are recorded as unsupported contracts,
+decisions or live-evidence gates. Continue at P01 as specified above, then proceed through P02,
+commercial recovery, guided templates, voice and Shared-Space requirements in dependency order.
 
 Pushed code `d208ec02cdc047b455759d6887ed69e3abc680aa` adds atomic metadata-only coordination audit
 events for publish/amend/revoke, owner/admin-only paged reads and a Settings history view. Expiry
@@ -879,7 +897,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
 | P05 | PARTIAL | Code `5e0c6501` adds owner-approved scoped text handles. Codes `536853b9`/`b646ec16` connect guided activation to exact-pin signed dependency import; `edf08814` resumes after reload. `a75c0862` adds durable, owner-retryable provider cleanup on direct disconnect and channel-package uninstall. Binary/image/audio extension reads, provider setup recovery, broader customer/update journeys, verified rates and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Code `b2140aaf` adds a draft-only simulated call/DTMF preview; code `b2d4ac0f` pins calls to the admitted installation/handler and groups the owner history by that pin. The customer voice package lifecycle, public streaming, managed voice billing, invoice reconciliation and live provider acceptance remain unavailable. |
-| P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
+| P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
 | P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. Gadget/schema/data migration recovery, broader rollback/version selection, authority/dependency expansion, connection/price changes, scanning/retention and live acceptance remain. |

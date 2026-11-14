@@ -3,6 +3,30 @@
 
 ## Current checkpoint — 2026-11-14
 
+P07 code `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1` is pushed to
+`origin/Mcbt5s-Backup-2`. The bridge can publish owner-declared per-model modality, context and
+tool-call profiles for its installed model IDs. Private worker selection resolves the exact selected
+machine through the authenticated Space authority route, requires the current actor/project inference
+grant, and selects only a matching declared profile. Private routing does not query OpenRouter or
+fall back to a cloud model. These declarations are not independently verified quality evidence;
+custom model selection and deployed/provider acceptance remain open, so P07 is PARTIAL.
+
+Fresh local verification: Agents routing/tunnel tests **23/23**, SDK tunnel protocol **2/2**, bridge
+model-discovery **2/2**, Agents/SDK/Spaces/Bridge typechecks, SDK and bridge builds, and
+`git diff --check`. U12 source-to-caller reconciliation confirms the shared staging script, Agents
+build, two CI callers and prior Docker dry-run; local build wiring is implemented, while a future CI
+event and deployed image parity remain unverified. The MS07 summary below is corrected: MS07e already
+implements source-aware Assistant/AgentMail inbox search with independent cursors. Keep
+`infra/scripts/__pycache__/` untracked and preserved; rollouts remain disabled.
+
+Managed S2 is IMPLEMENTED_LOCAL only for supported lanes. S3–S9/U01–U12 remain open at the matrix's
+specific provider, runtime-contract, product-policy, consumer-persistence and live-evidence gaps;
+this checkpoint does not claim mission completion. U05's trusted runtime producer and U06's writer
+admission/drain/flush/handoff contract remain unsupported, not credential blockers. Exact next action:
+trace the production migration caller against the P01 durable release runner and required-schema
+gate, close any current source-backed bypass, then proceed to P02 environment isolation. No deployment,
+purchase or live acceptance occurred.
+
 Setup recovery is pushed as `c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff`. Migration 0242 adds a setup
 operation kind and partial unique indexes for unresolved setup by installed connection and provider
 account. Telegram/WhatsApp persist exact credential-generation intent before vault writes/provider
@@ -27,10 +51,10 @@ Setup compensation is IMPLEMENTED_LOCAL for Telegram/WhatsApp; P05/P10/P23 remai
 provider journeys, broader update/uninstall effects, token revocation, policy/retention and deployed
 acceptance. U11 is IMPLEMENTED_LOCAL for supported settlement, cost, threshold and push-alert paths.
 Invoices and Cloudflare billed-idle/CPU-size feeds lack supported source APIs/receipts; the dashboard
-is not invoice reconciliation and thresholds do not enforce spend. Exact next action: reconcile U12's
-build scripts, staged dependency versions, CI callers and typecheck evidence with the current plan;
-close a source-backed code gap if present, then finish remaining S4–S9/U01–U12 gaps. Continue platform
-P01/P02 after the managed-services audit. Preserve `infra/scripts/__pycache__/`.
+is not invoice reconciliation and thresholds do not enforce spend. The earlier U12 reconciliation
+action is complete and recorded at the top of this checkpoint; its CI-event and deployed-image
+evidence limits remain. Resume from the active action at the top of this record. Preserve
+`infra/scripts/__pycache__/`.
 
 Platform P08 code `87374fc2da4ae44a4c361ea145109308782571e5` is pushed to
 `origin/Mcbt5s-Backup-2`; it implements separately owner-gated, task-scoped video-frame questions
@@ -989,7 +1013,7 @@ For every row add atomic child IDs as needed, evidence paths, exact checks/resul
 | MS04 | §8 provisioning/revocation/cleanup and operation reconciliation | IN_PROGRESS: AgentMail and Agent37 lifecycle operations are journaled; Telnyx BYO paid ordering now has a durable operation journal. Other providers and generic cleanup remain. See MS04a–c. |
 | MS05 | §§9–11 verification, rollout, telemetry, economics and decisions | IN_PROGRESS: evidence-backed local gates and operator cost imports exist; live provider costs, approved price/budget policy and deployed acceptance remain. See MS05a–c. |
 | MS06 | §12 provider dashboard, consented AgentPort discovery/linking, providers | IN_PROGRESS: owner-scoped dashboard, AgentMail account actions and durable retryable AgentPort link repair exist; provider-wide sync and payer selection remain. See MS06a–d. |
-| MS07 | §13 Cloudflare email and Naelao inbox | PARTIAL: reachable Assistant and AgentMail inboxes each support source-local search, paging and authorized reads; they remain separate. A source-aware combined search with independent cursors remains the exact next implementation; cross-provider persistence and Cloudflare live ingress are not claimed. See MS07a–d. |
+| MS07 | §13 Cloudflare email and Naelao inbox | PARTIAL: Assistant and AgentMail source-local search, paging and authorized reads are combined by MS07e using source/scope-tagged results and independent cursors; no message content or cross-source record is persisted. Cross-provider durable session/content storage and Cloudflare Email live ingress remain unclaimed. See MS07a–e. |
 | MS08 | §§4,9,12,15 AgentMail, Telnyx, Higgsfield, Agent37, Modal and channels | IN_PROGRESS: AgentMail and Agent37 callers exist; Telnyx BYO order/release exists. Managed Telnyx ordering, Modal/Higgsfield production callers and provider/channel approvals remain. See MS08a–e. |
 | MS09 | §14 managed credits and Coinbase candidate | IN_PROGRESS: organization quota and scoped agent mandates use Billing's existing ledger; Coinbase wallet/settlement is unsupported and not built. See MS09a–c. |
 | MS10 | §§12,15–16 channels, SDK/MCP, grants, sessions, shared routing | IN_PROGRESS: AgentMail AgentPort events have explicit owner-selected assistant routing, pause/revision, stable session and run ID. Universal external consumer/session binding remains. See MS10a–c. |
