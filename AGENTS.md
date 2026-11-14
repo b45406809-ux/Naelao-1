@@ -16,24 +16,26 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (multi-line signed phone-handler simulation)
+## Latest checkpoint — 2026-11-14 (multi-line signed phone operations view)
 
-Code `ce252033` adds exact line selection to the bounded phone-menu's installed-handler simulator.
-The owner-only package dashboard shows only active lines for the current signed installation; a
-selected binding ID is revalidated against fresh Space/installation/provider/status state before the
-test handler runs. The one-line legacy call remains supported; ambiguous requests without an exact
-binding fail closed. The result names the selected provider/binding without exposing a number. Local
-evidence: Agent SDK **5/5**, Spaces route **18/18**, SDK and Spaces typechecks, `git diff --check`.
-Vitest/TypeScript were run through installed binaries because pnpm's dependency bootstrap stopped
-before tests on its non-TTY modules-directory guard. These checks are local; no browser, carrier,
-deployment or live acceptance ran. Tests create no call/session; speech remains Twilio-only and owner
-enabled. Code is committed locally and awaits the next safe push.
+Code `ce252033` adds exact line selection to the bounded phone-menu's installed-handler simulator;
+`be8a13df` carries each call's binding ID through the owner-only per-installation response and labels
+history with that binding's provider, masked number hint and current line state. Selection and history
+are checked against the current signed installation and current binding records; an absent line is
+reported as no longer assigned. Caller IDs remain masked, and missing provider prices remain unknown.
+Local evidence after both changes: Agent SDK **5/5**, Spaces route **18/18**, SDK/Spaces typechecks,
+`git diff --check`. Vitest/TypeScript used installed binaries because pnpm's dependency bootstrap
+stopped before tests on its non-TTY modules-directory guard. No browser, carrier, deployment or live
+acceptance ran. Synthetic tests create no call/session; speech remains Twilio-only and owner-enabled.
+Code is committed locally and awaits the next safe push.
 
-Exact next action: include the exact line identity with each owner-visible per-installation call-history
-row and show its masked provider/number hint in the bounded phone-menu dashboard. Revalidate call
-records against the current installation and active binding, keep caller IDs masked, and leave missing
-provider prices as unknown. Then continue the next uncoded S3–S9/U01–U12/P01–P24 item. Fetch before
-push and preserve concurrent remote commits.
+Exact next action: extend the owner-reviewed signed-package update flow to support a narrowly bounded
+Space-shared Gadget schema update using the SDK's existing additive DDL/migration contract. Bind the
+preview/apply receipt to the exact installation and source/candidate release digests; pause and drain
+runtime work first; reuse the per-installation MicroApp migration journal for idempotent retries; keep
+destructive or data-loss operations rejected. Add focused preview, interruption, concurrency and
+replay tests, then continue P01/P02, P03/P20 and remaining S3–S9/U01–U12/P01–P24 gaps in dependency
+order. Fetch before push and preserve concurrent remote commits.
 
 ## Previous checkpoint — 2026-11-14 (signed template coordination-default handoff)
 

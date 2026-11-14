@@ -1,29 +1,32 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (multi-line signed phone-handler simulation)
+## Active continuation — 2026-11-14 (multi-line signed phone operations view)
 
-Code `ce252033` extends the owner-only signed phone-menu dashboard to test an exact active line when
-one installation serves several lines. The Space route accepts an opaque binding ID, rechecks it
-against fresh active line state for the exact signed installation and provider, then invokes the
-synthetic handler. A single-line request without an ID remains compatible; a missing or ambiguous
-selection fails closed. The response identifies only the binding ID/provider, not the phone number.
-Local evidence: Agent SDK dashboard/handler **5/5**, Spaces gadget route **18/18**, SDK/Spaces
-typechecks and `git diff --check`. These tests ran via installed Vitest/TypeScript binaries because
-pnpm's non-TTY dependency bootstrap aborted before test execution. No browser, carrier, deployment or
-live acceptance ran; no call or session is created, and speech remains Twilio-only with owner policy.
-Code is committed locally; the next push will include this checkpoint and its progress record.
+Codes `ce252033` and `be8a13df` extend the owner-only signed phone-menu dashboard. Owners can select
+one exact active binding when an installation has multiple assigned lines; the Space route rechecks
+the binding against current tenant/Space, installation, provider and active state before invoking the
+synthetic handler. Single-line requests remain compatible, ambiguous requests fail closed, and the
+response names the selected binding/provider without exposing a number. The per-installation call
+history now carries each event's exact binding and renders only the matching line's provider, masked
+number hint and current status. Caller IDs remain masked; costs remain unknown until a final report.
+Local evidence after both changes: Agent SDK **5/5**, Spaces gadget route **18/18**, SDK/Spaces
+typechecks and `git diff --check`. Tests ran through installed Vitest/TypeScript binaries because the
+pnpm non-TTY dependency bootstrap aborted before execution. No browser, carrier, deployment or live
+acceptance ran; simulation creates no call/session and speech stays Twilio-only under owner policy.
 
-P06's bounded IVR now supports multi-line installation tests, while first-party release publication,
-conversational voice, streaming, provisioning, full invoice reconciliation and live provider acceptance
-remain open. S6 still lacks generic provider identity/content/command callers and external-consumer
-durable acceptance. P01/P02 resource receipts/baselines, P03/P20 policy, and U05/U06 runtime contracts
-remain the named independent gates; no rollout is enabled.
+P06 remains PARTIAL for first-party publication/signing/distribution, conversational voice, streaming,
+provider provisioning, complete invoice reconciliation, full lifecycle and live acceptance. S6 still
+lacks generic provider identity/content/command callers and external-consumer durable acceptance.
+P01/P02 resource receipts/baselines, P03/P20 policy, and U05/U06 runtime contracts remain separate
+gates; no rollout is enabled.
 
-Exact next action: attach each owner-visible per-installation call-history row to its exact binding and
-display only that line's provider and masked number hint. Recheck calls against the active installation
-and line, keep caller IDs masked and unknown prices unknown, and test both providers. Then continue the
-remaining S3–S9/U01–U12 and P01–P24 implementation queue. Fetch and safely integrate before push.
+Exact next action: extend the owner-reviewed signed-package update flow to a narrow Space-shared Gadget
+schema update using the SDK's existing additive DDL contract. Bind preview/apply and receipts to exact
+installation and source/candidate release digests; pause/drain runtime work; reuse the per-installation
+MicroApp migration journal for idempotent retries; reject destructive changes. Add preview,
+interruption, concurrency and replay checks, then continue release/environment and commercial/recovery
+gaps plus remaining S3–S9/U01–U12/P01–P24 work in dependency order. Fetch before each push.
 
 ## Previous continuation — 2026-11-14 (signed template coordination-default handoff)
 

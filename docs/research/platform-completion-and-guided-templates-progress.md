@@ -1,22 +1,23 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (multi-line signed phone-handler simulation)
+## Active continuation — 2026-11-14 (multi-line signed phone operations view)
 
-Local code commit `ce252033` extends the owner-only signed phone-menu dashboard to test one exact
-active line when an installation is assigned to multiple lines. The route rechecks the supplied
-binding ID against fresh active tenant/Space/installation/provider state before calling the synthetic
-handler; omitted IDs remain supported only when exactly one line matches. The result identifies the
-provider and binding ID without exposing a number. Local evidence: Agent SDK **5/5**, Spaces route
-**18/18**, SDK/Spaces typechecks and `git diff --check`. Tests ran with installed binaries because
-pnpm's non-TTY dependency bootstrap aborted before execution. No browser, carrier, deployed or live
-acceptance ran. This adds no call/session; owner-enabled speech remains Twilio-only. Fetch and push
-this code checkpoint with the accompanying updated records.
+Codes `ce252033` and `be8a13df` let an owner select a current active binding for the exact signed
+phone-menu installation and carry that binding through a synthetic handler test. The route verifies
+the selection against current line/installation/provider state and keeps the single-line path backward
+compatible. Call history also carries its binding and shows the matching provider, masked number hint
+and current line state. Local evidence: Agent SDK **5/5**, Spaces route **18/18**, SDK/Spaces
+typechecks and `git diff --check`. Tests used installed binaries after pnpm's non-TTY bootstrap aborted
+before execution. No browser, carrier, deployment or live acceptance ran. Caller IDs remain masked;
+synthetic calls create no session; speech remains owner-enabled Twilio-only.
 
-Exact next action: show each call-history record's exact line using a binding-to-masked-line map
-scoped to the current signed installation; add focused Telnyx/Twilio route and dashboard checks. Keep
-caller IDs masked and costs unknown until a final provider report exists. Then continue guided-template
-P05/P10 and S3–S9/U01–U12/P01–P24 gaps without repeating completed audits.
+Exact next action: implement an owner-reviewed Space-shared Gadget schema update path that reuses the
+SDK's existing additive SQL migration contract. Preview exact schema changes for one installation,
+bind apply authorization/receipt to source and candidate signed release digests, pause/drain work, and
+use the MicroApp migration journal to recover idempotently. Reject destructive SQL; test authorization,
+multi-instance isolation, interruption, concurrency and replay. Then continue P01/P02, commercial and
+recovery gates, guided setup and S3–S9/U01–U12/P01–P24 code without repeating completed audits.
 
 ## Previous continuation — 2026-11-14 (signed template coordination-default handoff)
 
