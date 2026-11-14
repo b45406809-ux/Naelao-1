@@ -12,7 +12,35 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-14 (shared-Space assistant context)
+## Latest checkpoint — 2026-11-14 (shared-Space collaboration requests)
+
+Code `e46ea4f44c64bd41bbc1a87a81867a4ea1394f83` is pushed to `origin/Mcbt5s-Backup-2` on
+`autonomous-managed-services-20261111`. Members can request contact about an active, member-visible
+coordination fact after confirming that owners/admins will see their account identifier. The SpaceDO
+stores one pending request per requester/fact, scopes member reads to the requester, provides a
+bounded admin queue, fences owner/admin resolution by revision, and returns `access_granted: false`;
+this workflow never grants project or service access. Local evidence: SDK coordination **4/4**,
+Spaces coordination/route/migration **30/30**, Agent SDK/Spaces/Shell typechecks, SDK build, and
+`git diff --check`. These are local/mock checks; no browser or deployed multi-user acceptance ran.
+The untracked `infra/scripts/__pycache__/` is preserved.
+
+P05 connection handoff was traced across signed channel requirements, activation preview, UserPort,
+AgentPort and provider runtime callers. Current UserPort aliases authorize MCP tools/actions; signed
+channel requirements reference provider connections bound to active project installations. Space
+Template dependencies install `SPACE_SHARED` and have no compatible provider-connection lifecycle.
+Required connection dependencies remain explicit activation blockers and optional ones remain
+unsupported. This is an uncoded scope/runtime contract, not a credentials blocker. Do not reinterpret
+MCP alias IDs as provider connections, accept secrets in template fields, or loosen project isolation.
+P05/P06 remain partial; S2 remains local for supported lanes; S3–S9/U01–U12 remain at the row-specific
+gaps in the progress ledgers. U05 candidate/observation producers and U06's runtime adapter contract
+remain absent; U09's source work is already present. All rollouts remain disabled.
+
+Exact next action: trace P24's current publisher-revocation receipt through the installed-package
+owner views and implement a scoped, durable owner-visible compromise/revocation notice if the current
+callers lack one. Recheck publisher trust at display and action time; do not repeat U09 or the completed
+Space coordination audit. Then continue independent P05, P06 and S3–S9/U01–U12 code gaps.
+
+## Previous checkpoint — 2026-11-14 (shared-Space assistant context)
 
 Code commits `d973388858a854f740de959e578120530a3c598c` and
 `96c3da48f103c3515afe5e0ddbc8c44e6d47a166` are pushed to `origin/Mcbt5s-Backup-2` on
@@ -27,12 +55,9 @@ runtime-observation producers remain absent. U06 remains gated on undocumented w
 reconnect/handoff semantics. U09's project-main registry and branch/generation fencing are already
 source-present; do not repeat that audit. Preserve `infra/scripts/__pycache__/`.
 
-Exact next action: implement a guided-template extension connection review for an existing
-UserPort-owned connection reference. Trace the current signed `ExtensionConnectionRequirement`,
-UserPort authorization and installation/runtime call path; persist only an opaque scoped reference,
-enforce owner/grant checks when selected and used, and keep unsupported providers blocked. Do not
-accept provider secrets in template fields, provision from package metadata, or claim live provider
-support. Update both ledgers after the implementation checkpoint. Keep every rollout disabled.
+That recorded next action has been completed as a source trace and corrected in the latest checkpoint
+above: current UserPort MCP aliases cannot satisfy signed channel-provider connection requirements.
+The mismatch remains uncoded pending a safe provider/installation scope contract.
 
 ## Prior checkpoint — 2026-11-14 (Space coordination disclosure policy)
 

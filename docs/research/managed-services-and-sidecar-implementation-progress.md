@@ -1,7 +1,37 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (shared-Space assistant context)
+## Active continuation — 2026-11-14 (shared-Space requests; P05 scope trace)
+
+Code commit `e46ea4f44c64bd41bbc1a87a81867a4ea1394f83` is pushed to
+`origin/Mcbt5s-Backup-2`. Members can request contact about an active member-visible coordination
+fact after explicitly sharing their account identifier with Space owners/admins. The SpaceDO
+deduplicates pending requests per requester/fact, returns only each member's own requests, gives
+owners/admins a bounded queue with requester identity, and uses revision-fenced review. Both create
+and review responses assert `access_granted: false`; no project/service permission is granted. Local
+evidence: Agent SDK coordination **4/4**, Spaces coordination/route/migration **30/30**, Agent
+SDK/Spaces/Shell typechecks, SDK build and `git diff --check`. No browser or deployed multi-user
+acceptance ran. Preserve the untracked `infra/scripts/__pycache__/`.
+This fact-level contact request complements the existing published-project Blackboard request-to-use
+flow; it does not replace it, grant membership, or deliver a notification.
+
+The active P05 connection-reference trace is complete. UserPort aliases expose MCP tools/actions via
+AgentPort; they are not provider credentials/references for a signed channel primitive. Signed
+`ExtensionConnectionRequirement` values bind to active project installations, while Space Template
+dependencies install as `SPACE_SHARED` and have no compatible provider-connection lifecycle.
+Activation correctly blocks required unsupported connections and labels optional ones unsupported.
+This is an uncoded provider/installation scope contract, not a credential blocker. P05 and P06 remain
+PARTIAL; S2 is IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain at the detailed code,
+contract, decision and acceptance gaps below. U05 still lacks candidate/reservation and trusted
+runtime-observation producers; U06 lacks the pinned runtime adapter/drain/flush/handoff contract; U09
+source work is complete and will not be repeated. Rollouts remain disabled.
+
+Exact next action: trace P24's publisher-revocation receipt through the installed-package owner views
+and implement a scoped, durable owner-visible compromise/revocation notice if those callers lack one.
+Recheck publisher trust at display and action time. Then continue independent P05/P06 and S3–S9/U01–U12
+code gaps; do not repeat completed audits without new source evidence.
+
+## Previous checkpoint — 2026-11-14 (shared-Space assistant context)
 
 Code commits `d973388858a854f740de959e578120530a3c598c` and
 `96c3da48f103c3515afe5e0ddbc8c44e6d47a166` are pushed to `origin/Mcbt5s-Backup-2` on
@@ -21,12 +51,8 @@ repeat its source audit. P05's standalone SpaceBlueprint knowledge/action contra
 because a declaration alone cannot grant host authority. Keep rollouts disabled and preserve
 `infra/scripts/__pycache__/`.
 
-Exact next action: implement guided-template selection of an existing UserPort-owned extension
-connection reference. Trace `ExtensionConnectionRequirement` through the signed activation preview,
-UserPort grants and extension runtime; persist only an opaque installation-scoped reference and
-recheck authorization at use. Do not accept provider credentials in template fields, provision
-based on metadata, or claim unsupported provider/live behavior. Continue S3–S9/U01–U12 and the
-platform plan after this caller slice.
+That recorded action is complete as a source trace; the latest checkpoint above records why current
+UserPort MCP references cannot safely satisfy project-bound channel-provider connections.
 
 ## Previous checkpoint — 2026-11-14 (joint mission; coordination policy pushed)
 
