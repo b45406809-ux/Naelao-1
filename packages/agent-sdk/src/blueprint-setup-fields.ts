@@ -17,7 +17,7 @@ const MAX_TEXT_LENGTH = 2_000;
 const MAX_VALUE_BYTES = 16 * 1024;
 const MAX_LOCALE_MAP_SIZE = 12;
 const ID_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
-const PROJECT_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const LOCALE_PATTERN = /^[a-z]{2,3}(?:-[A-Z]{2})?$/;
 const SECRET_WORDING = /(?:password|passphrase|secret|credential|\btoken\b|api[\s_-]*key|private[\s_-]*key|access[\s_-]*key|connection[\s_-]*string)/i;
 

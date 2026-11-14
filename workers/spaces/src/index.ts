@@ -64,7 +64,7 @@ import { summarizeExtensionForActivation, type ExtensionActivationSummary } from
 import { applyPublisherKeyRegistry, extensionReleaseAccessExpansion, isTrustedPublisherRelease, retainActivePublisherInstallations, type PublisherTaggedRelease } from "./extension-release-trust.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES, SPACE_SHARED_PACKAGE_PERMISSIONS } from "./shared-extension-package-policy.js";
 import { supportsVersionOnlySpaceSharedCodeUpdate } from "./extension-update-contract.js";
-import { attachBlueprintAssistantChannelDefaults, attachBlueprintSetupFields } from "./template-setup-authoring.js";
+import { attachBlueprintAssistantChannelDefaults, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -667,14 +667,17 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Blueprint storage not configured" }, 503);
-  const exportOptions = await c.req.json<{ projectId?: string; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; assistantChannels?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { projectId?: string; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; assistantChannels?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
+  const exportOptions = await c.req.json<{ projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
   if (exportOptions.projectId !== undefined && (typeof exportOptions.projectId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(exportOptions.projectId))) return c.json({ error_code: "invalid_project_id" }, 400);
+  if (exportOptions.projectIds !== undefined && (exportOptions.projectId !== undefined || !Array.isArray(exportOptions.projectIds) || exportOptions.projectIds.length < 1 || exportOptions.projectIds.length > 64
+    || exportOptions.projectIds.some(id => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) || new Set(exportOptions.projectIds).size !== exportOptions.projectIds.length)) return c.json({ error_code: "invalid_project_ids" }, 400);
+  if (exportOptions.setupFields !== undefined && exportOptions.setupFieldsByProject !== undefined) return c.json({ error_code: "blueprint_setup_schema_invalid" }, 422);
   if (exportOptions.requiredExtensions !== undefined && (!Array.isArray(exportOptions.requiredExtensions) || exportOptions.requiredExtensions.length > 128 || exportOptions.requiredExtensions.some(id => typeof id !== "string" || !/^ext_[a-z0-9_-]{2,62}$/.test(id)))) return c.json({ error_code: "invalid_required_extensions" }, 400);
   if (exportOptions.requiredExtensionVersions !== undefined && (!exportOptions.requiredExtensionVersions || typeof exportOptions.requiredExtensionVersions !== "object" || Array.isArray(exportOptions.requiredExtensionVersions) || Object.keys(exportOptions.requiredExtensionVersions).length > 128 || Object.entries(exportOptions.requiredExtensionVersions).some(([id, version]) => !/^ext_[a-z0-9_-]{2,62}$/.test(id) || typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)))) return c.json({ error_code: "invalid_required_extension_versions" }, 400);
   const sourceId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
   const rawResponse = await c.env.SPACE_DO.get(sourceId).fetch(new Request("http://space-do/blueprints/export", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ space_id: spaceId,
-      ...(exportOptions.projectId ? { project_id: exportOptions.projectId } : {}), ...(exportOptions.requiredExtensions ? { required_extensions: exportOptions.requiredExtensions } : {}),
+      ...(exportOptions.projectId ? { project_id: exportOptions.projectId } : {}), ...(exportOptions.projectIds ? { project_ids: exportOptions.projectIds } : {}), ...(exportOptions.requiredExtensions ? { required_extensions: exportOptions.requiredExtensions } : {}),
       ...(exportOptions.requiredExtensionVersions ? { required_extension_versions: exportOptions.requiredExtensionVersions } : {}),
       ...(exportOptions.name ? { name: exportOptions.name } : {}), ...(exportOptions.description ? { description: exportOptions.description } : {}),
       ...(exportOptions.templateCategory ? { template_category: exportOptions.templateCategory } : {}) }),
@@ -684,12 +687,22 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const publisherTrust = await blueprintPublisherTrust(c.env, c.env.SPACE_DO.get(sourceId), tenantId, spaceId, rawBlueprint);
   if (publisherTrust === "unavailable") return c.json({ error_code: "extension_release_trust_unavailable" }, 503);
   if (publisherTrust !== "trusted") return c.json({ error_code: "extension_release_publisher_untrusted" }, 409);
-  if (exportOptions.setupSchemaVersion !== undefined || exportOptions.setupFields !== undefined) {
+  if (exportOptions.setupFields !== undefined || exportOptions.setupSchemaVersion !== undefined && exportOptions.setupFieldsByProject === undefined) {
     try {
       rawBlueprint = attachBlueprintSetupFields(rawBlueprint, {
         projectId: exportOptions.projectId,
         schemaVersion: exportOptions.setupSchemaVersion,
         fields: exportOptions.setupFields,
+      });
+    } catch {
+      return c.json({ error_code: "blueprint_setup_schema_invalid" }, 422);
+    }
+  }
+  if (exportOptions.setupFieldsByProject !== undefined) {
+    try {
+      rawBlueprint = attachBlueprintSetupFieldGroups(rawBlueprint, {
+        schemaVersion: exportOptions.setupSchemaVersion,
+        fieldsByProject: exportOptions.setupFieldsByProject,
       });
     } catch {
       return c.json({ error_code: "blueprint_setup_schema_invalid" }, 422);

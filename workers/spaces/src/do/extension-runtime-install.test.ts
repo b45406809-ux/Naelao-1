@@ -210,6 +210,10 @@ describe("runtime extension installation", () => {
     const template = await space.exportBlueprint("space", { projectId: "project-b", requiredExtensions: ["ext_pinned"], requiredExtensionVersions: { ext_pinned: "1.0.0" } });
     expect(template.requiredExtensionVersions).toEqual({ ext_pinned: "1.0.0" });
     expect(template.requiredExtensionDigests?.ext_pinned).toMatch(/^[a-f0-9]{64}$/);
+    const multiProjectTemplate = await space.exportBlueprint("space", { projectIds: ["project-a", "project-b"], requiredExtensions: [] });
+    expect(multiProjectTemplate.projects.map(project => project.id)).toEqual(["project-a", "project-b"]);
+    await expect(space.exportBlueprint("space", { projectIds: ["project-a", "missing-project"] })).rejects.toThrow("project_not_found");
+    await expect(space.exportBlueprint("space", { projectIds: ["project-a", "project-a"] })).rejects.toThrow("invalid_project_ids");
     await expect(space.exportBlueprint("space", { projectId: "project-b", requiredExtensions: ["ext_pinned"], requiredExtensionVersions: { ext_pinned: "3.0.0" } }))
       .rejects.toThrow("required_extension_release_unavailable");
     const unavailable = await space.fetch(new Request("http://space/blueprints/export", { method: "POST", headers: { "content-type": "application/json" },

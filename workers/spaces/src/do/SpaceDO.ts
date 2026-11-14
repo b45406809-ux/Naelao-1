@@ -4103,11 +4103,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return Response.json({preferences:resolveAssistantChannels(isProject?"project_assistant":"space_assistant",isProject?template.projectAssistants:template.spaceAssistant,projectTemplate,projectDefaults,overrides),overrides:overrides??{},emailProvisioning,emailProvisioningOverride:emailUserOverride??null,templateDefaults:template});
       }
       if (method === "POST" && url.pathname === "/blueprints/export") {
-        const body = await request.json<{ space_id?: string; project_id?: string; required_extensions?: string[]; required_extension_versions?: Record<string, string>; name?: string; description?: string; template_category?: string }>();
+        const body = await request.json<{ space_id?: string; project_id?: string; project_ids?: string[]; required_extensions?: string[]; required_extension_versions?: Record<string, string>; name?: string; description?: string; template_category?: string }>();
         if (!body.space_id) return Response.json({ error: "space_id is required" }, { status: 400 });
         try {
           return Response.json(await this.exportBlueprint(body.space_id, {
-            ...(body.project_id ? { projectId: body.project_id } : {}), ...(body.required_extensions ? { requiredExtensions: body.required_extensions } : {}),
+            ...(body.project_id ? { projectId: body.project_id } : {}), ...(body.project_ids ? { projectIds: body.project_ids } : {}), ...(body.required_extensions ? { requiredExtensions: body.required_extensions } : {}),
             ...(body.required_extension_versions ? { requiredExtensionVersions: body.required_extension_versions } : {}),
             ...(body.name ? { name: body.name } : {}), ...(body.description ? { description: body.description } : {}),
             ...(body.template_category ? { templateCategory: body.template_category } : {}),
@@ -5150,12 +5150,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   /** Produce the raw portable representation. The public worker always scrubs it before R2. */
-  async exportBlueprint(spaceId: string, options: { projectId?: string; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string } = {}): Promise<SpaceBlueprint> {
+  async exportBlueprint(spaceId: string, options: { projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string } = {}): Promise<SpaceBlueprint> {
     this.ensureInit();
+    if (options.projectId !== undefined && options.projectIds !== undefined) throw new Error("invalid_project_selection");
+    if (options.projectId !== undefined && (typeof options.projectId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(options.projectId))) throw new Error("invalid_project_id");
+    if (options.projectIds !== undefined && (!Array.isArray(options.projectIds) || options.projectIds.length < 1 || options.projectIds.length > 64
+      || options.projectIds.some(id => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) || new Set(options.projectIds).size !== options.projectIds.length))
+      throw new Error("invalid_project_ids");
     if (options.projectId) {
       const project = queryOne<{ id: string }>(this.ctx.storage.sql as never,
         "SELECT id FROM projects WHERE id=? AND space_id=? AND status!='archived'", options.projectId, spaceId);
       if (!project) throw new Error("project_not_found");
+    }
+    if (options.projectIds) {
+      const placeholders = options.projectIds.map(() => "?").join(",");
+      const selected = queryAll<{ id: string }>(this.ctx.storage.sql as never,
+        `SELECT id FROM projects WHERE space_id=? AND status!='archived' AND id IN (${placeholders})`, spaceId, ...options.projectIds);
+      if (selected.length !== options.projectIds.length) throw new Error("project_not_found");
     }
     if (options.requiredExtensions && (!Array.isArray(options.requiredExtensions) || options.requiredExtensions.length > 128 ||
       options.requiredExtensions.some(id => typeof id !== "string" || !/^ext_[a-z0-9_-]{2,62}$/.test(id)))) throw new Error("invalid_required_extensions");
@@ -5164,12 +5175,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (options.name !== undefined && (typeof options.name !== "string" || !options.name.trim() || options.name.length > 160)) throw new Error("invalid_blueprint_name");
     if (options.description !== undefined && (typeof options.description !== "string" || options.description.length > 2000)) throw new Error("invalid_blueprint_description");
     if (options.templateCategory !== undefined && !/^[a-z][a-z0-9_-]{1,63}$/.test(options.templateCategory)) throw new Error("invalid_template_category");
+    const projectSelection = options.projectIds
+      ? `AND id IN (${options.projectIds.map(() => "?").join(",")})`
+      : options.projectId ? "AND id=?" : "";
+    const projectParameters = options.projectIds ?? (options.projectId ? [options.projectId] : []);
     const projects = queryAll<{
       id: string; name: string; kind: string; template_mode: TemplateMode; viewport_config: string; default_agent_id: string | null; execution_ceiling: number; channel_config: string; artifact_linter_policy: string;
     }>(this.ctx.storage.sql as never,
       `SELECT id, name, kind, template_mode, viewport_config, default_agent_id, execution_ceiling, channel_config, artifact_linter_policy FROM projects
-       WHERE space_id = ? AND status != 'archived' ${options.projectId ? "AND id=?" : ""} ORDER BY created_at, id`,
-      ...(options.projectId ? [spaceId, options.projectId] : [spaceId]));
+       WHERE space_id = ? AND status != 'archived' ${projectSelection} ORDER BY created_at, id`,
+      spaceId, ...projectParameters);
     const exportedProjects = await Promise.all(projects.map(async (project) => {
       const agent = project.default_agent_id ? queryOne<{ config_json: string }>(this.ctx.storage.sql as never,
         "SELECT config_json FROM agent_definitions WHERE id = ? AND space_id = ?", project.default_agent_id, spaceId) : null;
@@ -5202,7 +5217,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       try { extensionDigests.set(item.extension_id, await digestExtensionManifest(JSON.parse(item.manifest_json) as ExtensionManifest)); }
       catch { /* malformed legacy rows are not promoted into a pin */ }
     }
-    const requestedExtensions = options.projectId ? (options.requiredExtensions ?? []) : (options.requiredExtensions ?? [...availableExtensions]);
+    const hasProjectSelection = options.projectId !== undefined || options.projectIds !== undefined;
+    const requestedExtensions = hasProjectSelection ? (options.requiredExtensions ?? []) : (options.requiredExtensions ?? [...availableExtensions]);
     if (requestedExtensions.some(id => !availableExtensions.has(id))) throw new Error("required_extension_not_installed");
     const selectedExtensionIds = new Set(requestedExtensions);
     if (Object.keys(options.requiredExtensionVersions ?? {}).some(id => !selectedExtensionIds.has(id))) throw new Error("required_extension_version_not_selected");

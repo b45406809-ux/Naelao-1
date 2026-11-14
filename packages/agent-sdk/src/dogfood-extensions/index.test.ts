@@ -30,7 +30,9 @@ describe("dogfooded enterprise extensions", () => {
     expect(foundry).toContain("setup-preview-locale");
     expect(foundry).toContain("updateCustomerPreviewValues");
     expect(foundry).not.toContain(".innerHTML");
-    expect(foundry).toContain("setupSchemaVersion,setupFields");
+    expect(foundry).toContain("projectIds,requiredExtensions,requiredExtensionVersions");
+    expect(foundry).toContain("setupSchemaVersion,setupFieldsByProject");
+    expect(foundry).toContain("setup-project-select");
     expect(foundry).toContain("blueprint.export");
     expect(foundry.toLowerCase()).toContain("provider credentials");
     const foundryScript = foundry.match(/<script>([\s\S]*?)<\/script>/)?.[1];
