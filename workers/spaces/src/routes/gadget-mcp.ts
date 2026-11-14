@@ -7,7 +7,9 @@ import { mintInternalToken, readBoundedRequestBytes, readBoundedRequestText, rea
 const MAX_GADGET_REQUEST_BYTES = 1024 * 1024;
 const MAX_CANVAS_GADGET_RESPONSE_BYTES = 512 * 1024;
 
-export type SharedRuntimeStatus = { error: string | null; managed: boolean; installationId?: string };
+export type SharedRuntimeStatus = { error: string | null; managed: boolean; installationId?: string; extensionId?: string;
+  releaseVersion?: string; publisherId?: string; publisherKeyId?: string; phoneChannel?: boolean;
+  phoneDashboardAllowed?: boolean; phoneSimulationAllowed?: boolean };
 export async function sharedExtensionRuntimeError(env: Env, tenantId: string, spaceId: string, appId: string): Promise<SharedRuntimeStatus> {
   if (!env.SPACE_DO) return { error: null, managed: false };
   try {
@@ -15,16 +17,29 @@ export async function sharedExtensionRuntimeError(env: Env, tenantId: string, sp
     const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, app_id: appId });
     const response = await env.SPACE_DO.get(actor).fetch(new Request(`http://space-do/space-shared-extension-runtime?${query}`));
     if (!response.ok) return { error: "space_extension_runtime_unavailable", managed: true };
-    const runtime = await response.json() as { managed?: unknown; active?: unknown; releaseValid?: unknown; dependenciesResolved?: unknown; publisherKeyId?: unknown; installationId?: unknown };
+    const runtime = await readBoundedResponseJson<{ managed?: unknown; active?: unknown; releaseValid?: unknown; dependenciesResolved?: unknown;
+      publisherId?: unknown; publisherKeyId?: unknown; installationId?: unknown; extensionId?: unknown; releaseVersion?: unknown;
+      phoneChannel?: unknown; phoneDashboardAllowed?: unknown; phoneSimulationAllowed?: unknown }>(response, 16 * 1024);
     if (runtime.managed !== true) return { error: null, managed: false };
     if (runtime.dependenciesResolved === false) return { error: "space_extension_dependency_unavailable", managed: true };
     if (runtime.active !== true || runtime.releaseValid !== true) return { error: "space_extension_release_invalid", managed: true };
     if (typeof runtime.publisherKeyId === "string") {
+      if (typeof runtime.publisherId !== "string" || !/^pub_[a-z0-9_-]{1,48}$/.test(runtime.publisherId)
+        || !/^[a-f0-9]{64}$/.test(runtime.publisherKeyId)) return { error: "space_extension_publisher_revoked", managed: true };
       const publisher = await env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
-        WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, spaceId, runtime.publisherKeyId).first();
+        WHERE tenant_id=? AND space_id=? AND publisher_id=? AND key_id=? AND status='active'`)
+        .bind(tenantId, spaceId, runtime.publisherId, runtime.publisherKeyId).first();
       if (!publisher) return { error: "space_extension_publisher_revoked", managed: true };
     }
-    return { error: null, managed: true, ...(typeof runtime.installationId === "string" ? { installationId: runtime.installationId } : {}) };
+    return { error: null, managed: true,
+      ...(typeof runtime.installationId === "string" ? { installationId: runtime.installationId } : {}),
+      ...(typeof runtime.extensionId === "string" ? { extensionId: runtime.extensionId } : {}),
+      ...(typeof runtime.releaseVersion === "string" ? { releaseVersion: runtime.releaseVersion } : {}),
+      ...(typeof runtime.publisherId === "string" ? { publisherId: runtime.publisherId } : {}),
+      ...(typeof runtime.publisherKeyId === "string" ? { publisherKeyId: runtime.publisherKeyId } : {}),
+      ...(typeof runtime.phoneChannel === "boolean" ? { phoneChannel: runtime.phoneChannel } : {}),
+      ...(typeof runtime.phoneDashboardAllowed === "boolean" ? { phoneDashboardAllowed: runtime.phoneDashboardAllowed } : {}),
+      ...(typeof runtime.phoneSimulationAllowed === "boolean" ? { phoneSimulationAllowed: runtime.phoneSimulationAllowed } : {}) };
   } catch { return { error: "space_extension_runtime_unavailable", managed: true }; }
 }
 
@@ -193,19 +208,12 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!owned) return c.json({ error_code: "not_found" }, 404);
     const runtime = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
     if (runtime.error) return c.json({ error_code: runtime.error }, 503);
+    if (!runtime.managed || runtime.phoneChannel !== true || runtime.phoneDashboardAllowed !== true
+      || !runtime.installationId || !runtime.extensionId || !runtime.releaseVersion
+      || !runtime.publisherId || !runtime.publisherKeyId) return c.json({ error_code: "phone_dashboard_not_declared" }, 404);
     if (!c.env.SPACE_DO || !c.env.AGENTS_WORKER) return c.json({ error_code: "phone_dashboard_unavailable" }, 503);
 
     try {
-      const spaceIdForDo = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
-      const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, app_id: appId });
-      const runtimeResponse = await c.env.SPACE_DO.get(spaceIdForDo).fetch(new Request(`http://space-do/space-shared-extension-runtime?${query}`));
-      if (!runtimeResponse.ok) return c.json({ error_code: "phone_dashboard_unavailable" }, 503);
-      const runtime = await readBoundedResponseJson<{ managed?: unknown; active?: unknown; releaseValid?: unknown; installationId?: unknown;
-        phoneChannel?: unknown; phoneDashboardAllowed?: unknown }>(runtimeResponse, 16 * 1024);
-      if (runtime.managed !== true || runtime.active !== true || runtime.releaseValid !== true
-        || runtime.phoneChannel !== true || runtime.phoneDashboardAllowed !== true
-        || typeof runtime.installationId !== "string") return c.json({ error_code: "phone_dashboard_not_declared" }, 404);
-
       const phoneStatus = await c.env.AGENTS_WORKER.fetch(new Request(
         `http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?action=phone-status`,
         { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": role,
@@ -243,6 +251,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
         handler_status: typeof line.handler_status === "string" ? line.handler_status : "unassigned",
         number_hint: typeof line.phone_number === "string" && line.phone_number.length >= 4 ? `•••• ${line.phone_number.slice(-4)}` : null }));
       return new Response(JSON.stringify({ installation_status: safeLines.some(line => line.handler_status === "active") ? "assigned" : "not_assigned",
+        signed_release: { extension_id: runtime.extensionId, version: runtime.releaseVersion, publisher_id: runtime.publisherId,
+          publisher_key_id: runtime.publisherKeyId, publisher_key_status: "active" },
         lines: safeLines, recent_telnyx_calls: recentCalls,
         cost_disclosure: "Telnyx reports are provider API observations, not invoices or customer charges." }),
         { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });

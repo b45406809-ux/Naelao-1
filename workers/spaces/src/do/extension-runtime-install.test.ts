@@ -678,7 +678,8 @@ describe("runtime extension installation", () => {
       .then(response => response.json())).toMatchObject({ apps: [{ app_id: "dashboard", extension_id: "ext_shared_package", status: "active", release_version: "1.0.0" }] });
     const runtime = () => space.fetch(new Request("http://space/space-shared-extension-runtime?tenant_id=tenant&space_id=space&app_id=dashboard"));
     expect(await runtime().then(response => response.json())).toMatchObject({ managed: true, active: true, releaseValid: true,
-      publisherKeyId: "a".repeat(64), installationId, extensionId: "ext_shared_package", phoneChannel: true,
+      publisherKeyId: "a".repeat(64), publisherId: "pub_example", releaseVersion: "1.0.0",
+      installationId, extensionId: "ext_shared_package", phoneChannel: true,
       phoneDashboardAllowed: true, phoneSimulationAllowed: true });
     storage.sql.exec("UPDATE extension_releases SET publisher_revoked_at='revoked' WHERE extension_id='ext_shared_package' AND version='1.0.0'");
     expect(await runtime().then(response => response.json())).toMatchObject({ managed: true, active: false, releaseValid: false });

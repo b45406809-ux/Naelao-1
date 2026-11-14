@@ -12657,6 +12657,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ managed: true, active: releaseValid && dependenciesResolved, releaseValid, dependenciesResolved,
         ...(release.publisher_key_id ? { publisherKeyId: release.publisher_key_id } : {}),
         ...(releaseValid ? { installationId: row.instance_id, extensionId: row.extension_id, phoneChannel,
+          releaseVersion: row.release_version, publisherId: release.publisher_id ?? undefined,
           phoneDashboardAllowed, phoneSimulationAllowed } : {}) });
     }
     return Response.json({ managed: false, active: false, releaseValid: false });

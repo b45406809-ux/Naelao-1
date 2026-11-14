@@ -121,7 +121,7 @@ describe("gadget MCP host adapter", () => {
   it("blocks a signed Space-shared microapp after its publisher key is revoked", async () => {
     const actorFetch = vi.fn(async () => Response.json({ html: true }));
     const spaceStub = { fetch: async (request: Request) => new URL(request.url).pathname === "/space-shared-extension-runtime"
-      ? Response.json({ managed: true, active: true, releaseValid: true, publisherKeyId: "a".repeat(64) })
+      ? Response.json({ managed: true, active: true, releaseValid: true, publisherId: "pub_example", publisherKeyId: "a".repeat(64) })
       : Response.json({ error_code: "unexpected_route" }, { status: 404 }) };
     const prepare = vi.fn((query: string) => ({ bind: () => ({ first: async () => query.includes("extension_publisher_keys") ? null : { 1: 1 } }) }));
     const app = testApp(); registerGadgetMcpRoutes(app as never);
@@ -167,7 +167,8 @@ describe("gadget MCP host adapter", () => {
   });
 
   it("returns only owner-authorized phone state and Telnyx calls for the signed app installation", async () => {
-    const runtime = { managed: true, active: true, releaseValid: true, installationId: "install-a", phoneChannel: true, phoneDashboardAllowed: true };
+    const runtime = { managed: true, active: true, releaseValid: true, installationId: "install-a", extensionId: "ext_phone_menu",
+      releaseVersion: "1.2.0", publisherId: "pub_phone", publisherKeyId: "a".repeat(64), phoneChannel: true, phoneDashboardAllowed: true };
     const spaceFetch = vi.fn(async () => Response.json(runtime));
     const agentsFetch = vi.fn(async (request: Request) => {
       expect(request.method).toBe("GET");
@@ -186,7 +187,10 @@ describe("gadget MCP host adapter", () => {
     });
     const app = testApp(); registerGadgetMcpRoutes(app as never);
     const env = { PLATFORM_SECRET: "test-secret",
-      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...params: unknown[]) => ({ first: async () => {
+        if (query.includes("extension_publisher_keys")) expect(params).toEqual(["t", "s", "pub_phone", "a".repeat(64)]);
+        return { 1: 1 };
+      } }) }) },
       SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: spaceFetch }) },
       AGENTS_WORKER: { fetch: agentsFetch },
     } as never;
@@ -196,7 +200,8 @@ describe("gadget MCP host adapter", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     const result = await response.json();
-    expect(result).toEqual({ installation_status: "assigned", lines: [
+    expect(result).toEqual({ installation_status: "assigned", signed_release: { extension_id: "ext_phone_menu", version: "1.2.0",
+      publisher_id: "pub_phone", publisher_key_id: "a".repeat(64), publisher_key_status: "active" }, lines: [
       { provider: "telnyx", status: "active", handler_status: "active", number_hint: "•••• 0123" },
     ], recent_telnyx_calls: [expect.objectContaining({ state: "ended", turn_count: 2, caller_hint: "•••• 0199",
       cost_report: { status: "reported", provider_cost_micros: 123456, currency: "USD", leg_count: 1 } })],
@@ -233,7 +238,7 @@ describe("gadget MCP host adapter", () => {
       headers: await auth("foreign", { "x-naelao-user-id": "space-owner", "x-naelao-role": "owner" }),
     }, isolatedEnv);
     expect(foreignTenant.status).toBe(404);
-    expect(spaceFetch).toHaveBeenCalledTimes(5); // The foreign tenant is stopped before any runtime lookup.
+    expect(spaceFetch).toHaveBeenCalledTimes(3); // The foreign tenant is stopped before any runtime lookup.
     expect(agentsFetch).toHaveBeenCalledOnce();
   });
 
