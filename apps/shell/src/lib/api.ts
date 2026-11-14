@@ -2146,6 +2146,7 @@ export async function saveExtensionSlackRoutes(spaceId: string, projectId: strin
 
 export interface ExtensionProviderRevocationAttempt {
   operation_id: string;
+  operation_kind: "cleanup" | "setup";
   installation_id: string;
   connection_id: string;
   provider: string;
@@ -2323,6 +2324,7 @@ export async function removeChannelExtension(spaceId: string, projectId: string,
 
 export interface ExtensionProviderRevocationOutcome {
   operation_id: string;
+  operation_kind: "cleanup" | "setup";
   installation_id: string;
   connection_id: string;
   provider: string;

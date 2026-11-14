@@ -5427,8 +5427,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
     if (result.result?.url && result.result.url !== webhookUrl) return c.json({ error_code: "telegram_webhook_already_configured" }, 409);
   } catch { return c.json({ error_code: "telegram_webhook_status_unavailable" }, 503); }
   const collision = await c.env.PLATFORM_DB.prepare(`SELECT installation_id FROM extension_provider_connections
-    WHERE tenant_id=? AND space_id=? AND provider='telegram' AND account_id=? AND status='active' AND NOT (installation_id=? AND connection_id=?) LIMIT 1`)
-    .bind(tenantId, spaceId, botId, installationId, connectionId).first();
+    WHERE provider='telegram' AND account_id=? AND status='active' AND NOT (tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?) LIMIT 1`)
+    .bind(botId, tenantId, spaceId, installationId, connectionId).first();
   if (collision) return c.json({ error_code: "telegram_bot_already_connected" }, 409);
   const handler = await c.env.SCRIPTS_R2?.get(`spaces/${spaceId}/extensions/${installation.manifest.bundle?.id}/${installation.manifest.bundle?.version}/${channel.handlerScript.replace(/^\.\//, "")}`);
   if (!handler || handler.size > 262_144) return c.json({ error_code: "extension_handler_unavailable" }, 409);
@@ -5437,35 +5437,103 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   const credentialName = extensionConnectionCredentialName(installationId, connectionId, generation, "telegram");
   const secretName = extensionTelegramWebhookCredentialName(installationId, connectionId, generation);
   const webhookSecret = randomTelegramWebhookSecret();
-  const prior = await c.env.PLATFORM_DB.prepare(`SELECT credential_name,webhook_secret_name FROM extension_provider_connections
+  const prior = await c.env.PLATFORM_DB.prepare(`SELECT provider,status,account_id,credential_name,webhook_secret_name,routing_keys_json FROM extension_provider_connections
     WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`).bind(tenantId, spaceId, installationId, connectionId)
-    .first<{ credential_name: string; webhook_secret_name: string | null }>();
-  const tokenStored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, name: credentialName, value: botToken, description: `Telegram bot credential for extension ${installationId}/${connectionId}` });
-  if (!tokenStored.ok) return c.json({ error_code: "credential_store_failed" }, 502);
-  const secretStored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, name: secretName, value: webhookSecret, description: `Telegram webhook secret for extension ${installationId}/${connectionId}` });
-  if (!secretStored.ok) { await deleteConnectorCredentialByName(c.env, tenantId, spaceId, credentialName); return c.json({ error_code: "credential_store_failed" }, 502); }
-  const now = new Date().toISOString();
-  try {
-    await c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,webhook_secret_name,handler_sha256,granted_scopes_json,status,connected_by,connected_at,last_verified_at,revoked_at,updated_at)
-      VALUES(?,?,?,?,?,'telegram',?,?,?,?,?,'[]','active',?,?,?,NULL,?) ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO UPDATE SET
+    .first<{ provider: string; status: string; account_id: string; credential_name: string; webhook_secret_name: string | null; routing_keys_json: string }>();
+  if (prior?.status === "active") return c.json({ error_code: "extension_connection_already_active" }, 409);
+  const pendingAccountSetup = await c.env.PLATFORM_DB.prepare(`SELECT operation_id FROM extension_provider_cleanup_operations
+    WHERE provider='telegram' AND account_id=? AND operation_kind='setup' AND status='pending' LIMIT 1`)
+    .bind(botId).first();
+  if (pendingAccountSetup) return c.json({ error_code: "extension_connection_setup_in_progress" }, 409);
+  const priorCleanup = prior?.credential_name
+    ? await c.env.PLATFORM_DB.prepare(`SELECT operation_id,status FROM extension_provider_cleanup_operations
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND credential_name=? LIMIT 1`)
+      .bind(tenantId, spaceId, projectId, prior.credential_name).first<{ operation_id: string; status: string }>()
+    : null;
+  const setupOperationId = crypto.randomUUID();
+  const priorCleanupOperationId = prior?.credential_name && prior.credential_name !== credentialName && !priorCleanup ? crypto.randomUUID() : null;
+  const preparedAt = new Date().toISOString();
+  const setupStatements = [
+    c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_cleanup_operations
+      (operation_id,tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,requested_by,credential_name,webhook_secret_name,routing_keys_json,status,attempt_count,action_code,created_at,updated_at,operation_kind)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,'pending',0,'provider_setup_unstarted',?,?,'setup'
+      WHERE NOT EXISTS (SELECT 1 FROM extension_provider_connections WHERE provider='telegram' AND account_id=? AND status='active'
+        AND NOT (tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?))`)
+      .bind(setupOperationId, tenantId, spaceId, projectId, installationId, connectionId, "telegram", botId, userId, credentialName, secretName, "[]",
+        preparedAt, preparedAt, botId, tenantId, spaceId, installationId, connectionId),
+    c.env.PLATFORM_DB.prepare(`DELETE FROM extension_provider_routes WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?
+      AND EXISTS (SELECT 1 FROM extension_provider_cleanup_operations WHERE operation_id=? AND operation_kind='setup' AND status='pending')`)
+      .bind(tenantId, spaceId, installationId, connectionId, setupOperationId),
+    c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,webhook_secret_name,handler_sha256,granted_scopes_json,status,connected_by,connected_at,last_verified_at,revoked_at,updated_at)
+      SELECT ?,?,?,?,?, 'telegram',?,?,?,?,?,'[]','error',?,?,?,NULL,?
+      WHERE EXISTS (SELECT 1 FROM extension_provider_cleanup_operations WHERE operation_id=? AND operation_kind='setup' AND status='pending')
+      ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO UPDATE SET
       project_id=excluded.project_id,account_id=excluded.account_id,account_label=excluded.account_label,credential_name=excluded.credential_name,
-      webhook_secret_name=excluded.webhook_secret_name,handler_sha256=excluded.handler_sha256,granted_scopes_json='[]',status='active',connected_by=excluded.connected_by,
+      webhook_secret_name=excluded.webhook_secret_name,handler_sha256=excluded.handler_sha256,granted_scopes_json='[]',status='error',connected_by=excluded.connected_by,
       connected_at=excluded.connected_at,last_verified_at=excluded.last_verified_at,revoked_at=NULL,updated_at=excluded.updated_at`)
-      .bind(tenantId, spaceId, projectId, installationId, connectionId, botId, `@${username}`.slice(0, 120), credentialName, secretName, handlerSha256, userId, now, now, now).run();
-  } catch { await deleteConnectorCredentialByName(c.env, tenantId, spaceId, credentialName); await deleteConnectorCredentialByName(c.env, tenantId, spaceId, secretName); return c.json({ error_code: "telegram_bot_already_connected" }, 409); }
+      .bind(tenantId, spaceId, projectId, installationId, connectionId, botId, `@${username}`.slice(0, 120), credentialName, secretName, handlerSha256, userId, preparedAt, preparedAt, preparedAt, setupOperationId),
+  ];
+  if (priorCleanupOperationId && prior) setupStatements.push(c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_cleanup_operations
+      (operation_id,tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,requested_by,credential_name,webhook_secret_name,routing_keys_json,status,attempt_count,created_at,updated_at)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,'pending',0,?,? WHERE EXISTS
+        (SELECT 1 FROM extension_provider_cleanup_operations WHERE operation_id=? AND operation_kind='setup' AND status='pending')`)
+    .bind(priorCleanupOperationId, tenantId, spaceId, projectId, installationId, connectionId, prior.provider, prior.account_id, userId,
+      prior.credential_name, prior.webhook_secret_name, prior.routing_keys_json, preparedAt, preparedAt, setupOperationId));
+  try {
+    const results = await c.env.PLATFORM_DB.batch(setupStatements);
+    if (results[0]?.meta?.changes === 0 || results[2]?.meta?.changes === 0) return c.json({ error_code: "provider_setup_conflict" }, 409);
+  }
+  catch { return c.json({ error_code: "provider_setup_state_unavailable" }, 503); }
+  const operationInput = { tenantId, spaceId, projectId, installationId, connectionId, provider: "telegram", operationId: setupOperationId, credentialName };
+  const tokenStored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, name: credentialName, value: botToken, description: `Telegram bot credential for extension ${installationId}/${connectionId}` }).catch(() => ({ ok: false }));
+  if (!tokenStored.ok) {
+    await abandonSavedExtensionProviderSetup(c.env, operationInput);
+    return c.json({ error_code: "credential_store_failed" }, 502);
+  }
+  const secretStored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, name: secretName, value: webhookSecret, description: `Telegram webhook secret for extension ${installationId}/${connectionId}` }).catch(() => ({ ok: false }));
+  if (!secretStored.ok) {
+    await abandonSavedExtensionProviderSetup(c.env, operationInput);
+    return c.json({ error_code: "credential_store_failed" }, 502);
+  }
+  const setupStartedAt = new Date().toISOString();
+  try {
+    const marked = await c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_cleanup_operations SET action_code='provider_setup_in_flight',last_error_code='provider_setup_outcome_unknown',attempt_count=attempt_count+1,last_attempt_at=?,updated_at=?
+      WHERE tenant_id=? AND space_id=? AND project_id=? AND operation_id=? AND operation_kind='setup' AND status='pending' AND action_code='provider_setup_unstarted'`)
+      .bind(setupStartedAt, setupStartedAt, tenantId, spaceId, projectId, setupOperationId).run();
+    if (marked.meta?.changes === 0) throw new Error("setup_operation_not_pending");
+  } catch {
+    await abandonSavedExtensionProviderSetup(c.env, operationInput);
+    return c.json({ error_code: "provider_setup_state_unavailable" }, 503);
+  }
   try {
     const response = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ url: webhookUrl, secret_token: webhookSecret, allowed_updates: ["message"], drop_pending_updates: false }), signal: AbortSignal.timeout(10_000) });
     const result = await readBoundedProviderJson(response) as { ok?: boolean; description?: string };
     if (!result.ok) throw new Error("set_webhook_rejected");
   } catch {
-    await c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='error',updated_at=? WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`)
-      .bind(new Date().toISOString(), tenantId, spaceId, installationId, connectionId).run();
-    await deleteConnectorCredentialByName(c.env, tenantId, spaceId, credentialName); await deleteConnectorCredentialByName(c.env, tenantId, spaceId, secretName);
+    await abandonSavedExtensionProviderSetup(c.env, { ...operationInput, providerActionMayHaveOccurred: true });
     return c.json({ error_code: "telegram_webhook_registration_failed" }, 502);
   }
-  if (prior?.credential_name && prior.credential_name !== credentialName) await deleteConnectorCredentialByName(c.env, tenantId, spaceId, prior.credential_name);
-  if (prior?.webhook_secret_name && prior.webhook_secret_name !== secretName) await deleteConnectorCredentialByName(c.env, tenantId, spaceId, prior.webhook_secret_name);
+  const committedAt = new Date().toISOString();
+  try {
+    const commitResults = await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='active',connected_at=?,last_verified_at=?,updated_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND credential_name=? AND status='error'`)
+        .bind(committedAt, committedAt, committedAt, tenantId, spaceId, projectId, installationId, connectionId, credentialName),
+      c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_cleanup_operations SET status='complete',action_code='provider_setup_committed',last_error_code=NULL,updated_at=?,completed_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND operation_id=? AND operation_kind='setup' AND status='pending' AND action_code='provider_setup_in_flight'
+          AND EXISTS (SELECT 1 FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND credential_name=? AND status='active')`)
+        .bind(committedAt, committedAt, tenantId, spaceId, projectId, setupOperationId, tenantId, spaceId, projectId, installationId, connectionId, credentialName),
+    ]);
+    if (commitResults[0]?.meta?.changes === 0 || commitResults[1]?.meta?.changes === 0) throw new Error("provider_setup_commit_conflict");
+  } catch {
+    await abandonSavedExtensionProviderSetup(c.env, { ...operationInput, providerActionMayHaveOccurred: true });
+    return c.json({ error_code: "provider_setup_commit_failed" }, 503);
+  }
+  if (priorCleanupOperationId) {
+    try { await attemptSavedExtensionProviderRevocation(c.env, { tenantId, spaceId, projectId, operationId: priorCleanupOperationId }); }
+    catch { /* the exact prior-generation cleanup remains visible in the owner retry list */ }
+  }
   return c.json({ connected: true, account_label: `@${username}` }, 201);
 });
 
@@ -5509,28 +5577,97 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   const handlerSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await handler.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
   const generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const credentialName = extensionConnectionCredentialName(installationId, connectionId, generation, "whatsapp");
-  const prior = await c.env.PLATFORM_DB.prepare(`SELECT credential_name FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`)
-    .bind(tenantId, spaceId, installationId, connectionId).first<{ credential_name: string }>();
-  const stored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, name: credentialName, value: accessToken, description: `WhatsApp access token for extension ${installationId}/${connectionId}` });
-  if (!stored.ok) return c.json({ error_code: "credential_store_failed" }, 502);
+  const prior = await c.env.PLATFORM_DB.prepare(`SELECT provider,status,account_id,credential_name,webhook_secret_name,routing_keys_json FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`)
+    .bind(tenantId, spaceId, installationId, connectionId)
+    .first<{ provider: string; status: string; account_id: string; credential_name: string; webhook_secret_name: string | null; routing_keys_json: string }>();
+  if (prior?.status === "active") return c.json({ error_code: "extension_connection_already_active" }, 409);
+  const pendingAccountSetup = await c.env.PLATFORM_DB.prepare(`SELECT operation_id FROM extension_provider_cleanup_operations
+    WHERE provider='whatsapp' AND account_id=? AND operation_kind='setup' AND status='pending' LIMIT 1`)
+    .bind(wabaId).first();
+  if (pendingAccountSetup) return c.json({ error_code: "extension_connection_setup_in_progress" }, 409);
+  const priorCleanup = prior?.credential_name
+    ? await c.env.PLATFORM_DB.prepare(`SELECT operation_id,status FROM extension_provider_cleanup_operations
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND credential_name=? LIMIT 1`)
+      .bind(tenantId, spaceId, projectId, prior.credential_name).first<{ operation_id: string; status: string }>()
+    : null;
+  const setupOperationId = crypto.randomUUID();
+  const priorCleanupOperationId = prior?.credential_name && prior.credential_name !== credentialName && !priorCleanup ? crypto.randomUUID() : null;
+  const preparedAt = new Date().toISOString();
+  const setupStatements = [
+    c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_cleanup_operations
+      (operation_id,tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,requested_by,credential_name,webhook_secret_name,routing_keys_json,status,attempt_count,action_code,created_at,updated_at,operation_kind)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,'pending',0,'provider_setup_unstarted',?,?,'setup'
+      WHERE NOT EXISTS (SELECT 1 FROM extension_provider_cleanup_operations WHERE provider='whatsapp' AND account_id=? AND operation_kind='setup' AND status='pending')`)
+      .bind(setupOperationId, tenantId, spaceId, projectId, installationId, connectionId, "whatsapp", wabaId, userId, credentialName, null, JSON.stringify([wabaId]),
+        preparedAt, preparedAt, wabaId),
+    c.env.PLATFORM_DB.prepare(`DELETE FROM extension_provider_routes WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?
+      AND EXISTS (SELECT 1 FROM extension_provider_cleanup_operations WHERE operation_id=? AND operation_kind='setup' AND status='pending')`)
+      .bind(tenantId, spaceId, installationId, connectionId, setupOperationId),
+    c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,handler_sha256,routing_keys_json,granted_scopes_json,status,connected_by,connected_at,last_verified_at,revoked_at,updated_at)
+      SELECT ?,?,?,?,?, 'whatsapp',?,?,?,?,?,?,'error',?,?,?,NULL,?
+      WHERE EXISTS (SELECT 1 FROM extension_provider_cleanup_operations WHERE operation_id=? AND operation_kind='setup' AND status='pending')
+      ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO UPDATE SET
+      project_id=excluded.project_id,account_id=excluded.account_id,account_label=excluded.account_label,credential_name=excluded.credential_name,handler_sha256=excluded.handler_sha256,
+      routing_keys_json=excluded.routing_keys_json,granted_scopes_json=excluded.granted_scopes_json,status='error',connected_by=excluded.connected_by,connected_at=excluded.connected_at,last_verified_at=excluded.last_verified_at,revoked_at=NULL,updated_at=excluded.updated_at`)
+      .bind(tenantId, spaceId, projectId, installationId, connectionId, phoneNumberId, accountLabel, credentialName, handlerSha256, JSON.stringify([wabaId]), JSON.stringify(scopes), userId, preparedAt, preparedAt, preparedAt, setupOperationId),
+  ];
+  if (priorCleanupOperationId && prior) setupStatements.push(c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_cleanup_operations
+      (operation_id,tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,requested_by,credential_name,webhook_secret_name,routing_keys_json,status,attempt_count,created_at,updated_at)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,'pending',0,?,? WHERE EXISTS
+        (SELECT 1 FROM extension_provider_cleanup_operations WHERE operation_id=? AND operation_kind='setup' AND status='pending')`)
+    .bind(priorCleanupOperationId, tenantId, spaceId, projectId, installationId, connectionId, prior.provider, prior.account_id, userId,
+      prior.credential_name, prior.webhook_secret_name, prior.routing_keys_json, preparedAt, preparedAt, setupOperationId));
+  try {
+    const results = await c.env.PLATFORM_DB.batch(setupStatements);
+    if (results[0]?.meta?.changes === 0 || results[2]?.meta?.changes === 0) return c.json({ error_code: "provider_setup_conflict" }, 409);
+  }
+  catch { return c.json({ error_code: "provider_setup_state_unavailable" }, 503); }
+  const operationInput = { tenantId, spaceId, projectId, installationId, connectionId, provider: "whatsapp", operationId: setupOperationId, credentialName };
+  const stored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, name: credentialName, value: accessToken, description: `WhatsApp access token for extension ${installationId}/${connectionId}` }).catch(() => ({ ok: false }));
+  if (!stored.ok) {
+    await abandonSavedExtensionProviderSetup(c.env, operationInput);
+    return c.json({ error_code: "credential_store_failed" }, 502);
+  }
+  const setupStartedAt = new Date().toISOString();
+  try {
+    const marked = await c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_cleanup_operations SET action_code='provider_setup_in_flight',last_error_code='provider_setup_outcome_unknown',attempt_count=attempt_count+1,last_attempt_at=?,updated_at=?
+      WHERE tenant_id=? AND space_id=? AND project_id=? AND operation_id=? AND operation_kind='setup' AND status='pending' AND action_code='provider_setup_unstarted'`)
+      .bind(setupStartedAt, setupStartedAt, tenantId, spaceId, projectId, setupOperationId).run();
+    if (marked.meta?.changes === 0) throw new Error("setup_operation_not_pending");
+  } catch {
+    await abandonSavedExtensionProviderSetup(c.env, operationInput);
+    return c.json({ error_code: "provider_setup_state_unavailable" }, 503);
+  }
   try {
     const subscribeResponse = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(wabaId)}/subscribed_apps`, { method: "POST",
       headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10_000) });
     const subscription = await readBoundedProviderJson(subscribeResponse).catch(() => ({} as { success?: boolean })) as { success?: boolean };
     if (!subscribeResponse.ok || subscription.success !== true) throw new Error("subscription_rejected");
   } catch {
-    await deleteConnectorCredentialByName(c.env, tenantId, spaceId, credentialName);
+    await abandonSavedExtensionProviderSetup(c.env, { ...operationInput, providerActionMayHaveOccurred: true });
     return c.json({ error_code: "whatsapp_webhook_subscription_failed" }, 502);
   }
-  const now = new Date().toISOString();
+  const committedAt = new Date().toISOString();
   try {
-    await c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,handler_sha256,routing_keys_json,granted_scopes_json,status,connected_by,connected_at,last_verified_at,revoked_at,updated_at)
-      VALUES(?,?,?,?,?,'whatsapp',?,?,?, ?,?, ?, 'active',?,?,?,NULL,?) ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO UPDATE SET
-      project_id=excluded.project_id,account_id=excluded.account_id,account_label=excluded.account_label,credential_name=excluded.credential_name,handler_sha256=excluded.handler_sha256,
-      routing_keys_json=excluded.routing_keys_json,granted_scopes_json=excluded.granted_scopes_json,status='active',connected_by=excluded.connected_by,connected_at=excluded.connected_at,last_verified_at=excluded.last_verified_at,revoked_at=NULL,updated_at=excluded.updated_at`)
-      .bind(tenantId, spaceId, projectId, installationId, connectionId, phoneNumberId, accountLabel, credentialName, handlerSha256, JSON.stringify([wabaId]), JSON.stringify(scopes), userId, now, now, now).run();
-  } catch { await deleteConnectorCredentialByName(c.env, tenantId, spaceId, credentialName); return c.json({ error_code: "whatsapp_phone_number_already_connected" }, 409); }
-  if (prior?.credential_name && prior.credential_name !== credentialName) await deleteConnectorCredentialByName(c.env, tenantId, spaceId, prior.credential_name);
+    const commitResults = await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='active',connected_at=?,last_verified_at=?,updated_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND credential_name=? AND status='error'`)
+        .bind(committedAt, committedAt, committedAt, tenantId, spaceId, projectId, installationId, connectionId, credentialName),
+      c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_cleanup_operations SET status='complete',action_code='provider_setup_committed',last_error_code=NULL,updated_at=?,completed_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND operation_id=? AND operation_kind='setup' AND status='pending' AND action_code='provider_setup_in_flight'
+          AND EXISTS (SELECT 1 FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND credential_name=? AND status='active')`)
+        .bind(committedAt, committedAt, tenantId, spaceId, projectId, setupOperationId, tenantId, spaceId, projectId, installationId, connectionId, credentialName),
+    ]);
+    if (commitResults[0]?.meta?.changes === 0 || commitResults[1]?.meta?.changes === 0) throw new Error("provider_setup_commit_conflict");
+  } catch {
+    await abandonSavedExtensionProviderSetup(c.env, { ...operationInput, providerActionMayHaveOccurred: true });
+    return c.json({ error_code: "provider_setup_commit_failed" }, 503);
+  }
+  if (priorCleanupOperationId) {
+    try { await attemptSavedExtensionProviderRevocation(c.env, { tenantId, spaceId, projectId, operationId: priorCleanupOperationId }); }
+    catch { /* the exact prior-generation cleanup remains visible in the owner retry list */ }
+  }
   return c.json({ connected: true, account_label: accountLabel, webhook_url: `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/channels/whatsapp/extensions` }, 201);
 });
 
@@ -5560,7 +5697,7 @@ app.delete("/spaces/:spaceId/projects/:projectId/extensions/:installationId/conn
   try {
     providerRevocation = await attemptSavedExtensionProviderRevocation(c.env, { tenantId, spaceId, projectId, operationId });
   } catch {
-    providerRevocation = { operation_id: operationId, installation_id: installationId, connection_id: connectionId, provider: row.provider,
+    providerRevocation = { operation_id: operationId, operation_kind: "cleanup", installation_id: installationId, connection_id: connectionId, provider: row.provider,
       status: "pending", action_code: null, last_error_code: "provider_cleanup_processing_failed" };
   }
   return c.json({ removed: true, providerRevocation });
@@ -8432,14 +8569,16 @@ app.post("/internal/workflow-extensions/compile", async c => {
 
 async function attemptSavedExtensionProviderRevocation(env: AgentsEnv, input: {
   tenantId: string; spaceId: string; projectId: string; operationId: string;
-}): Promise<{ operation_id: string; installation_id: string; connection_id: string; provider: string; status: string; action_code: string | null; last_error_code: string | null }> {
-  const operation = await env.PLATFORM_DB.prepare(`SELECT operation_id,installation_id,connection_id,provider,account_id,credential_name,webhook_secret_name,routing_keys_json,status,action_code,last_error_code
+}): Promise<{ operation_id: string; operation_kind: string; installation_id: string; connection_id: string; provider: string; status: string; action_code: string | null; last_error_code: string | null }> {
+  const operation = await env.PLATFORM_DB.prepare(`SELECT operation_id,operation_kind,installation_id,connection_id,provider,account_id,credential_name,webhook_secret_name,routing_keys_json,status,action_code,last_error_code,last_attempt_at,updated_at
     FROM extension_provider_cleanup_operations WHERE tenant_id=? AND space_id=? AND project_id=? AND operation_id=?`)
     .bind(input.tenantId, input.spaceId, input.projectId, input.operationId)
-    .first<{ operation_id: string; installation_id: string; connection_id: string; provider: string; account_id: string; credential_name: string;
-      webhook_secret_name: string | null; routing_keys_json: string; status: string; action_code: string | null; last_error_code: string | null }>();
+    .first<{ operation_id: string; operation_kind: string; installation_id: string; connection_id: string; provider: string; account_id: string; credential_name: string;
+      webhook_secret_name: string | null; routing_keys_json: string; status: string; action_code: string | null; last_error_code: string | null;
+      last_attempt_at: string | null; updated_at: string }>();
   if (!operation) throw new Error("provider_cleanup_operation_not_found");
   const result = (status: string, actionCode: string | null, errorCode: string | null) => ({ operation_id: operation.operation_id,
+    operation_kind: operation.operation_kind,
     installation_id: operation.installation_id, connection_id: operation.connection_id, provider: operation.provider,
     status, action_code: actionCode, last_error_code: errorCode });
   const cleanupCredentials = async () => {
@@ -8447,10 +8586,29 @@ async function attemptSavedExtensionProviderRevocation(env: AgentsEnv, input: {
     const webhookDeleted = !operation.webhook_secret_name || await deleteConnectorCredentialByName(env, input.tenantId, input.spaceId, operation.webhook_secret_name);
     return credentialDeleted && webhookDeleted;
   };
-  if (operation.status !== "pending" && !(operation.status === "complete" || operation.status === "not_supported")) {
-    return result(operation.status, operation.action_code, operation.last_error_code);
-  }
   if (operation.status !== "pending") return result(operation.status, operation.action_code, operation.last_error_code);
+  const setupAgeMs = Date.now() - Date.parse(operation.last_attempt_at ?? operation.updated_at);
+  if (operation.operation_kind === "setup" && setupAgeMs < 60_000
+    && ((operation.action_code === "provider_setup_unstarted" && !operation.last_error_code)
+      || (operation.action_code === "provider_setup_in_flight" && operation.last_error_code === "provider_setup_outcome_unknown"))) {
+    return result("pending", "provider_setup_in_progress", "provider_setup_in_flight");
+  }
+  if (operation.operation_kind === "setup" && operation.action_code === "provider_setup_unstarted") {
+    try {
+      if (!await cleanupCredentials()) throw new Error("credential_cleanup_pending");
+      const finishedAt = new Date().toISOString();
+      await env.PLATFORM_DB.prepare(`UPDATE extension_provider_cleanup_operations SET status='complete',action_code='provider_setup_cancelled',last_error_code=NULL,updated_at=?,completed_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND operation_id=? AND operation_kind='setup' AND status='pending' AND action_code='provider_setup_unstarted'`)
+        .bind(finishedAt, finishedAt, input.tenantId, input.spaceId, input.projectId, input.operationId).run();
+      return result("complete", "provider_setup_cancelled", null);
+    } catch {
+      const failedAt = new Date().toISOString();
+      await env.PLATFORM_DB.prepare(`UPDATE extension_provider_cleanup_operations SET last_error_code='credential_cleanup_pending',updated_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND operation_id=? AND operation_kind='setup' AND status='pending'`)
+        .bind(failedAt, input.tenantId, input.spaceId, input.projectId, input.operationId).run();
+      return result("pending", "provider_setup_unstarted", "credential_cleanup_pending");
+    }
+  }
   if (operation.last_error_code === "credential_cleanup_pending" && operation.action_code) {
     const completedStatus = ["slack_token_revoked", "shared_whatsapp_subscription_retained", "shared_telegram_webhook_retained"].includes(operation.action_code)
       ? "complete" : "not_supported";
@@ -8478,19 +8636,34 @@ async function attemptSavedExtensionProviderRevocation(env: AgentsEnv, input: {
   let whatsappAccountStillUsed = false;
   if (operation.provider === "whatsapp" && whatsappBusinessAccountId) {
     const activeRows = await env.PLATFORM_DB.prepare(`SELECT routing_keys_json FROM extension_provider_connections
-      WHERE tenant_id=? AND space_id=? AND provider='whatsapp' AND status='active'`)
-      .bind(input.tenantId, input.spaceId).all<{ routing_keys_json: string }>();
+      WHERE provider='whatsapp' AND status='active'`)
+      .all<{ routing_keys_json: string }>();
     whatsappAccountStillUsed = (activeRows.results ?? []).some(active => {
       try { return (JSON.parse(active.routing_keys_json) as unknown[]).includes(whatsappBusinessAccountId); }
       catch { return false; }
     });
+    if (!whatsappAccountStillUsed) {
+      const pendingSetups = await env.PLATFORM_DB.prepare(`SELECT operation_id,routing_keys_json FROM extension_provider_cleanup_operations
+        WHERE provider='whatsapp' AND operation_kind='setup' AND status='pending' AND operation_id!=?`)
+        .bind(input.operationId).all<{ operation_id: string; routing_keys_json: string }>();
+      whatsappAccountStillUsed = (pendingSetups.results ?? []).some(pending => {
+        try { return (JSON.parse(pending.routing_keys_json) as unknown[]).includes(whatsappBusinessAccountId); }
+        catch { return false; }
+      });
+    }
   }
   let telegramBotStillUsed = false;
   if (operation.provider === "telegram" && operation.account_id) {
     const activeRows = await env.PLATFORM_DB.prepare(`SELECT connection_id FROM extension_provider_connections
-      WHERE tenant_id=? AND space_id=? AND provider='telegram' AND account_id=? AND status='active'`)
-      .bind(input.tenantId, input.spaceId, operation.account_id).all<{ connection_id: string }>();
+      WHERE provider='telegram' AND account_id=? AND status='active'`)
+      .bind(operation.account_id).all<{ connection_id: string }>();
     telegramBotStillUsed = (activeRows.results ?? []).length > 0;
+    if (!telegramBotStillUsed) {
+      const pendingSetups = await env.PLATFORM_DB.prepare(`SELECT operation_id FROM extension_provider_cleanup_operations
+        WHERE provider='telegram' AND account_id=? AND operation_kind='setup' AND status='pending' AND operation_id!=?`)
+        .bind(operation.account_id, input.operationId).all<{ operation_id: string }>();
+      telegramBotStillUsed = (pendingSetups.results ?? []).length > 0;
+    }
   }
   const providerSupported = ["slack", "telegram", "whatsapp"].includes(operation.provider);
   let token: string | null = null;
@@ -8501,7 +8674,7 @@ async function attemptSavedExtensionProviderRevocation(env: AgentsEnv, input: {
   const outcome = await revokeExtensionProviderAccess({
     provider: operation.provider, token, egressDenied: providerSupported && await isSpaceNetworkEgressDenied(env.PLATFORM_DB, input.spaceId),
     ...(whatsappBusinessAccountId ? { whatsappBusinessAccountId } : {}),
-    ...(env.WHATSAPP_GRAPH_API_VERSION ? { whatsappApiVersion: env.WHATSAPP_GRAPH_API_VERSION } : {}),
+    ...(operation.provider === "whatsapp" ? { whatsappApiVersion: env.WHATSAPP_GRAPH_API_VERSION ?? "v26.0" } : {}),
     whatsappAccountStillUsed,
     telegramBotStillUsed,
   });
@@ -8524,6 +8697,38 @@ async function attemptSavedExtensionProviderRevocation(env: AgentsEnv, input: {
   return result(outcome.status, outcome.actionCode ?? null, outcome.errorCode ?? null);
 }
 
+async function abandonSavedExtensionProviderSetup(env: AgentsEnv, input: {
+  tenantId: string; spaceId: string; projectId: string; installationId: string; connectionId: string; provider: string; operationId: string; credentialName: string;
+  providerActionMayHaveOccurred?: boolean;
+}): Promise<{ operation_id: string; operation_kind: string; installation_id: string; connection_id: string; provider: string; status: string; action_code: string | null; last_error_code: string | null }> {
+  const revokedAt = new Date().toISOString();
+  const operationStateUpdate = input.providerActionMayHaveOccurred
+    ? env.PLATFORM_DB.prepare(`UPDATE extension_provider_cleanup_operations SET action_code='provider_setup_compensation_required',last_error_code='provider_setup_outcome_unknown',updated_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND operation_id=? AND operation_kind='setup' AND status='pending'`)
+      .bind(revokedAt, input.tenantId, input.spaceId, input.projectId, input.operationId)
+    : env.PLATFORM_DB.prepare(`UPDATE extension_provider_cleanup_operations SET action_code='provider_setup_unstarted',last_error_code='provider_setup_cancelled',updated_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND operation_id=? AND operation_kind='setup' AND status='pending'`)
+      .bind(revokedAt, input.tenantId, input.spaceId, input.projectId, input.operationId);
+  try {
+    await env.PLATFORM_DB.batch([
+      env.PLATFORM_DB.prepare(`DELETE FROM extension_provider_routes WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`)
+        .bind(input.tenantId, input.spaceId, input.installationId, input.connectionId),
+      env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='revoked',revoked_at=?,updated_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND credential_name=? AND status IN ('error','active')`)
+        .bind(revokedAt, revokedAt, input.tenantId, input.spaceId, input.projectId, input.installationId, input.connectionId, input.credentialName),
+      operationStateUpdate,
+    ]);
+  } catch { /* the pre-side-effect row is already inactive; leave its durable operation for retry */ }
+  try {
+    return await attemptSavedExtensionProviderRevocation(env, {
+      tenantId: input.tenantId, spaceId: input.spaceId, projectId: input.projectId, operationId: input.operationId,
+    });
+  } catch {
+    return { operation_id: input.operationId, operation_kind: "setup", installation_id: input.installationId, connection_id: input.connectionId,
+      provider: input.provider, status: "pending", action_code: null, last_error_code: "provider_cleanup_processing_failed" };
+  }
+}
+
 app.post("/internal/channel-extensions/provider-revocations", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
@@ -8534,23 +8739,25 @@ app.post("/internal/channel-extensions/provider-revocations", async c => {
   if (body.action === "retry") {
     if (!body.operationId) return c.json({ error_code: "provider_revocation_scope_invalid" }, 400);
     try {
-      await attemptSavedExtensionProviderRevocation(c.env, {
+      const attempted = await attemptSavedExtensionProviderRevocation(c.env, {
         tenantId, spaceId: body.spaceId, projectId: body.projectId, operationId: body.operationId,
       });
-      const persisted = await c.env.PLATFORM_DB.prepare(`SELECT operation_id,installation_id,connection_id,provider,status,attempt_count,last_attempt_at,action_code,last_error_code,updated_at
+      const persisted = await c.env.PLATFORM_DB.prepare(`SELECT operation_id,operation_kind,installation_id,connection_id,provider,status,attempt_count,last_attempt_at,action_code,last_error_code,updated_at
         FROM extension_provider_cleanup_operations WHERE tenant_id=? AND space_id=? AND project_id=? AND operation_id=?`)
         .bind(tenantId, body.spaceId, body.projectId, body.operationId)
-        .first<{ operation_id: string; installation_id: string; connection_id: string; provider: string; status: string; attempt_count: number;
+        .first<{ operation_id: string; operation_kind: string; installation_id: string; connection_id: string; provider: string; status: string; attempt_count: number;
           last_attempt_at: string | null; action_code: string | null; last_error_code: string | null; updated_at: string }>();
       if (!persisted) return c.json({ error_code: "provider_cleanup_receipt_unavailable" }, 503);
-      return c.json({ outcome: persisted });
+      return c.json({ outcome: { ...persisted, status: attempted.status, action_code: attempted.action_code, last_error_code: attempted.last_error_code } });
     } catch { return c.json({ error_code: "provider_cleanup_retry_unavailable" }, 503); }
   }
-  const rows = await c.env.PLATFORM_DB.prepare(`SELECT operation_id,installation_id,connection_id,provider,status,attempt_count,last_attempt_at,action_code,last_error_code,updated_at
+  const setupCutoff = new Date(Date.now() - 60_000).toISOString();
+  const rows = await c.env.PLATFORM_DB.prepare(`SELECT operation_id,operation_kind,installation_id,connection_id,provider,status,attempt_count,last_attempt_at,action_code,last_error_code,updated_at
     FROM extension_provider_cleanup_operations WHERE tenant_id=? AND space_id=? AND project_id=? AND status!='complete'
+      AND (operation_kind!='setup' OR action_code NOT IN ('provider_setup_unstarted','provider_setup_in_flight') OR updated_at<?)
     ORDER BY updated_at DESC LIMIT 100`)
-    .bind(tenantId, body.spaceId, body.projectId).all<{
-      operation_id: string; installation_id: string; connection_id: string; provider: string; status: string; attempt_count: number;
+    .bind(tenantId, body.spaceId, body.projectId, setupCutoff).all<{
+      operation_id: string; operation_kind: string; installation_id: string; connection_id: string; provider: string; status: string; attempt_count: number;
       last_attempt_at: string | null; action_code: string | null; last_error_code: string | null; updated_at: string;
     }>();
   return c.json({ outcomes: rows.results ?? [] });
@@ -8598,7 +8805,7 @@ app.post("/internal/channel-extensions/session-state", async c => {
       try { providerRevocations.push(await attemptSavedExtensionProviderRevocation(c.env, {
         tenantId, spaceId: body.spaceId, projectId: body.projectId, operationId: operation.operationId,
       })); }
-      catch { providerRevocations.push({ operation_id: operation.operationId, installation_id: body.installationId, connection_id: operation.connection_id,
+      catch { providerRevocations.push({ operation_id: operation.operationId, operation_kind: "cleanup", installation_id: body.installationId, connection_id: operation.connection_id,
         provider: operation.provider, status: "pending", action_code: null, last_error_code: "provider_cleanup_processing_failed" }); }
     }
     const result = await c.env.PLATFORM_DB.prepare(`UPDATE channel_links SET extension_instance_id=NULL,extension_script_sha256=NULL

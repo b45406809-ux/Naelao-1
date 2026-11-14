@@ -206,14 +206,14 @@ function ExtensionConnectionControls({ spaceId, projectId, session, installation
   }
   async function connectTelegram() {
     setBusy(true); setError(null); setNotice(null);
-    try { const result = await connectExtensionTelegram(spaceId, projectId, installation.instance_id, connection.id, telegramToken, session); setTelegramToken(""); await refresh(); setNotice(`Telegram ${result.account_label} connected to this extension.`); }
-    catch (err) { setError(err instanceof Error ? err.message : "Couldn't connect this Telegram bot."); }
+    try { const result = await connectExtensionTelegram(spaceId, projectId, installation.instance_id, connection.id, telegramToken, session); setTelegramToken(""); await refresh(); await onProviderRevocationsChanged(); setNotice(`Telegram ${result.account_label} connected to this extension.`); }
+    catch (err) { setError(err instanceof Error ? err.message : "Couldn't connect this Telegram bot."); await Promise.allSettled([refresh(), onProviderRevocationsChanged()]); }
     finally { setBusy(false); }
   }
   async function connectWhatsApp() {
     setBusy(true); setError(null); setNotice(null);
-    try { const result = await connectExtensionWhatsApp(spaceId, projectId, installation.instance_id, connection.id, whatsAppToken, whatsAppPhoneId, session); setWhatsAppToken(""); await refresh(); setNotice(`WhatsApp ${result.account_label} connected. Configure Meta's app webhook at ${result.webhook_url} with the verify token supplied by your administrator.`); }
-    catch (err) { setError(err instanceof Error ? err.message : "Couldn't connect this WhatsApp number."); }
+    try { const result = await connectExtensionWhatsApp(spaceId, projectId, installation.instance_id, connection.id, whatsAppToken, whatsAppPhoneId, session); setWhatsAppToken(""); await refresh(); await onProviderRevocationsChanged(); setNotice(`WhatsApp ${result.account_label} connected. Configure Meta's app webhook at ${result.webhook_url} with the verify token supplied by your administrator.`); }
+    catch (err) { setError(err instanceof Error ? err.message : "Couldn't connect this WhatsApp number."); await Promise.allSettled([refresh(), onProviderRevocationsChanged()]); }
     finally { setBusy(false); }
   }
   return <div style={{ margin: "6px 0 4px 12px", fontSize: 11.5, color: "var(--text2)" }}>
@@ -963,12 +963,12 @@ export function ChannelConnect({
         </div>
       </details>}
       {projectId && canManage && providerRevocations.length > 0 && <details open style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
-        <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Provider cleanup after uninstall ({providerRevocations.length})</summary>
-        <p style={{ fontSize: 11, color: "var(--text3)" }}>Local extension access is already removed. These receipts track external cleanup and credential deletion. A pending result retains its encrypted credential only for retry. Telegram webhook deletion and WhatsApp subscription removal do not invalidate provider tokens; those outcomes require manual token revocation.</p>
+        <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Provider cleanup follow-up ({providerRevocations.length})</summary>
+        <p style={{ fontSize: 11, color: "var(--text3)" }}>These receipts track provider cleanup and credential deletion after setup compensation, disconnect or uninstall. Failed setup never activates local routing. Pending outcomes retain their encrypted credentials for retry. Telegram webhook deletion and WhatsApp subscription removal do not invalidate provider tokens; those outcomes require manual token revocation.</p>
         {providerRevocations.map(outcome => {
           const key = outcome.operation_id;
           return <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "7px 0", borderTop: "1px solid var(--border)", fontSize: 11.5 }}>
-            <span>{outcome.provider} · {outcome.status === "not_supported" ? `manual provider cleanup required (${outcome.last_error_code ?? outcome.action_code ?? "unsupported"})` : [outcome.action_code, outcome.last_error_code].filter(Boolean).join(" · ") || "provider cleanup pending"} · {outcome.attempt_count} attempt(s)</span>
+            <span>{outcome.operation_kind === "setup" ? "setup compensation · " : ""}{outcome.provider} · {outcome.status === "not_supported" ? `manual provider cleanup required (${outcome.last_error_code ?? outcome.action_code ?? "unsupported"})` : [outcome.action_code, outcome.last_error_code].filter(Boolean).join(" · ") || "provider cleanup pending"} · {outcome.attempt_count} attempt(s)</span>
             {outcome.status === "pending" && <button type="button" className="btn-ghost" disabled={!!retryingProviderRevocation} onClick={() => void retryProviderRevocation(outcome)}>
               {retryingProviderRevocation === key ? "Retrying…" : "Retry provider cleanup"}
             </button>}

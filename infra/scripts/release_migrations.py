@@ -401,7 +401,7 @@ def _required_schema_check(d1: D1, manifest: dict, ledger: dict[str, dict[str, A
     }
     cleanup_operation_expected = {
         "operation_id", "tenant_id", "space_id", "project_id", "installation_id", "connection_id",
-        "provider", "account_id", "credential_name", "webhook_secret_name", "routing_keys_json", "status",
+        "provider", "account_id", "credential_name", "webhook_secret_name", "routing_keys_json", "status", "operation_kind",
     }
     if not cleanup_operation_expected.issubset(cleanup_operation_columns):
         raise ReleaseError("required schema check failed for extension_provider_cleanup_operations")

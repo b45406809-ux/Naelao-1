@@ -41,7 +41,7 @@ class MemoryD1:
         self.extension_call_columns = ("extension_installation_id", "handler_sha256")
         self.cleanup_operation_columns = (
             "operation_id", "tenant_id", "space_id", "project_id", "installation_id", "connection_id",
-            "provider", "account_id", "credential_name", "webhook_secret_name", "routing_keys_json", "status",
+            "provider", "account_id", "credential_name", "webhook_secret_name", "routing_keys_json", "status", "operation_kind",
         )
 
     def query(self, sql):
@@ -219,11 +219,29 @@ class ReleaseMigrationTests(unittest.TestCase):
                 VALUES ('tenant-a','space-a','project-a','instance-b','connection-b','slack','owner-a','complete',1,
                         'slack_token_revoked',NULL,'2026-11-12T00:00:00Z','2026-11-12T00:00:00Z','2026-11-12T00:00:00Z')""")
             connection.executescript((root / "infra/migrations/0241_extension_provider_cleanup_generations.sql").read_text())
-            pending = connection.execute("SELECT operation_id,status,credential_name,action_code,last_error_code FROM extension_provider_cleanup_operations WHERE installation_id='instance-a'").fetchone()
+            connection.executescript((root / "infra/migrations/0242_extension_provider_cleanup_operation_kinds.sql").read_text())
+            pending = connection.execute("SELECT operation_id,status,credential_name,action_code,last_error_code,operation_kind FROM extension_provider_cleanup_operations WHERE installation_id='instance-a'").fetchone()
             completed = connection.execute("SELECT status,action_code,last_error_code FROM extension_provider_cleanup_operations WHERE installation_id='instance-b'").fetchone()
-            self.assertEqual(pending, ("legacy:tenant-a:space-a:instance-a:connection-a", "not_supported", "", "legacy_generation_unknown", "legacy_cleanup_generation_unknown"))
+            self.assertEqual(pending, ("legacy:tenant-a:space-a:instance-a:connection-a", "not_supported", "", "legacy_generation_unknown", "legacy_cleanup_generation_unknown", "cleanup"))
             self.assertEqual(completed, ("complete", "slack_token_revoked", None))
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM extension_provider_revocation_outcomes").fetchone()[0], 2)
+            setup_operation = ("setup-one", "tenant-a", "space-a", "project-a", "instance-c", "connection-c", "telegram", "bot-1", "owner-a",
+                               "token-generation-one", "secret-generation-one", "[]", "pending", 0, "2026-11-13T00:00:00Z", "2026-11-13T00:00:00Z", "setup")
+            duplicate_account_setup = (*setup_operation[:4], "instance-d", "connection-d", *setup_operation[6:])
+            connection.execute("""INSERT INTO extension_provider_cleanup_operations
+                (operation_id,tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,requested_by,
+                 credential_name,webhook_secret_name,routing_keys_json,status,attempt_count,created_at,updated_at,operation_kind)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", setup_operation)
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("""INSERT INTO extension_provider_cleanup_operations
+                    (operation_id,tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,requested_by,
+                     credential_name,webhook_secret_name,routing_keys_json,status,attempt_count,created_at,updated_at,operation_kind)
+                    VALUES('setup-two',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", duplicate_account_setup[1:])
+            connection.execute("UPDATE extension_provider_cleanup_operations SET status='complete' WHERE operation_id='setup-one'")
+            connection.execute("""INSERT INTO extension_provider_cleanup_operations
+                (operation_id,tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,requested_by,
+                 credential_name,webhook_secret_name,routing_keys_json,status,attempt_count,created_at,updated_at,operation_kind)
+                VALUES('setup-two',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", duplicate_account_setup[1:])
         finally:
             connection.close()
 

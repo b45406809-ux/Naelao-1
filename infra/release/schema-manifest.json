@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0241_extension_provider_cleanup_generations",
+  "requiredSchemaVersion": "0242_extension_provider_cleanup_operation_kinds",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -967,6 +967,10 @@
     {
       "filename": "0241_extension_provider_cleanup_generations.sql",
       "sha256": "1c7dbe5b58a8bf15c399100be392974bd3171dbb5a30145caf925dece9fdb631"
+    },
+    {
+      "filename": "0242_extension_provider_cleanup_operation_kinds.sql",
+      "sha256": "0dadaa93dc54fbcd83add6ed12f3b5863f9cf662d34c0b966410835f43874cb8"
     }
   ]
 }

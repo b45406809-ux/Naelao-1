@@ -29,10 +29,10 @@ function setup(
                 webhook_secret_name: provider === "slack" ? "extension:instance-a:connection-a:webhook" : null, routing_keys_json: "[]" };
               if (sql.includes("FROM extension_provider_cleanup_operations")) {
                 const id = String(values[3] ?? operationId);
-                const snapshot = { operation_id: id, installation_id: "instance-a", connection_id: "connection-a", provider, account_id: "account-a",
+                const snapshot = { operation_id: id, operation_kind: "cleanup", installation_id: "instance-a", connection_id: "connection-a", provider, account_id: "account-a",
                   credential_name: `extension:instance-a:connection-a:${provider}`,
                   webhook_secret_name: provider === "slack" ? "extension:instance-a:connection-a:webhook" : null,
-                  routing_keys_json: "[]", ...operationSnapshots[id], ...receiptFor(id) };
+                  routing_keys_json: "[]", ...receiptFor(id), ...operationSnapshots[id] };
                 return sql.includes("credential_name,webhook_secret_name") ? snapshot : { ...snapshot,
                   attempt_count: 1, last_attempt_at: "2026-11-13T00:00:00.000Z", updated_at: "2026-11-13T00:00:01.000Z" };
               }
@@ -97,7 +97,7 @@ describe("channel extension provider cleanup route", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       outcome: {
-        operation_id: operationId, connection_id: "connection-a", provider: "discord", status: "not_supported",
+        operation_id: operationId, operation_kind: "cleanup", connection_id: "connection-a", provider: "discord", status: "not_supported",
         action_code: "provider_cleanup_not_supported", last_error_code: "provider_revocation_not_supported",
       },
     });
@@ -108,14 +108,14 @@ describe("channel extension provider cleanup route", () => {
 
   it("returns bounded project-scoped receipts without exposing credential or provider payload fields", async () => {
     const h = setup([{
-      operation_id: operationId, installation_id: "instance-a", connection_id: "connection-a", provider: "slack", status: "pending",
+      operation_id: operationId, operation_kind: "cleanup", installation_id: "instance-a", connection_id: "connection-a", provider: "slack", status: "pending",
       attempt_count: 2, last_attempt_at: "2026-11-13T00:00:00.000Z", action_code: null,
       last_error_code: "provider_revoke_outcome_unknown", updated_at: "2026-11-13T00:00:00.000Z",
     }]);
     const response = await call(h.env, { action: "list" });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ outcomes: [{
-      operation_id: operationId, installation_id: "instance-a", connection_id: "connection-a", provider: "slack", status: "pending",
+      operation_id: operationId, operation_kind: "cleanup", installation_id: "instance-a", connection_id: "connection-a", provider: "slack", status: "pending",
       attempt_count: 2, last_attempt_at: "2026-11-13T00:00:00.000Z", action_code: null,
       last_error_code: "provider_revoke_outcome_unknown", updated_at: "2026-11-13T00:00:00.000Z",
     }] });
@@ -134,7 +134,7 @@ describe("channel extension provider cleanup route", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       removed: true,
-      providerRevocation: { operation_id: expect.any(String), installation_id: "instance-a", connection_id: "connection-a", provider: "discord", status: "not_supported", action_code: "provider_cleanup_not_supported" },
+      providerRevocation: { operation_id: expect.any(String), operation_kind: "cleanup", installation_id: "instance-a", connection_id: "connection-a", provider: "discord", status: "not_supported", action_code: "provider_cleanup_not_supported" },
     });
     expect(h.batches).toHaveLength(1);
     expect(h.batches[0]).toHaveLength(3);
@@ -207,5 +207,20 @@ describe("channel extension provider cleanup route", () => {
     } finally {
       vi.stubGlobal("fetch", originalFetch);
     }
+  });
+
+  it("does not let an owner retry compensate a setup while the setup request still holds its lease", async () => {
+    const inFlightAt = new Date().toISOString();
+    const h = setup([], async () => Response.json({ credentials: [] }), "telegram", {
+      "setup-in-flight": { operation_kind: "setup", action_code: "provider_setup_in_flight", last_error_code: "provider_setup_outcome_unknown",
+        last_attempt_at: inFlightAt, updated_at: inFlightAt },
+    });
+    const response = await call(h.env, { action: "retry", operationId: "setup-in-flight" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ outcome: {
+      operation_id: "setup-in-flight", operation_kind: "setup", status: "pending",
+      action_code: "provider_setup_in_progress", last_error_code: "provider_setup_in_flight",
+    } });
+    expect(h.credentials.fetch).not.toHaveBeenCalled();
   });
 });
