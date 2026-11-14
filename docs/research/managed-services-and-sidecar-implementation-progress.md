@@ -1,44 +1,43 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (U11 opted-in email cost alerts)
+## Active continuation — 2026-11-14 (joint plans: P06 speech and P01 migration rehearsal)
 
-Code `ca4435d81b10752133280a8b8fd9896e3430092c` is pushed to
-`origin/Mcbt5s-Backup-2`. Migration 0247 adds default-off email opt-in and a durable outbox that stores
-user/account IDs, never recipient email. The authorized Shell budget owner can opt in; the scheduled
-delivery caller resolves the current active builder or verified Product-user address, rechecks
-authorization and current opt-in, and records provider acceptance/rejection/ambiguity. Stable
-Notifications IDs, leases and capped retry handle delivery recovery; ambiguous and provider-rejected
-outcomes do not automatically re-egress. Removing a budget suppresses pending email. The owner UI
-distinguishes provider acceptance from inbox delivery, and this informational warning does not gate
-provider operations.
+Platform voice code `eec28fafb0b16721c264409171f48041bf87d4e1` is pushed to
+`origin/Mcbt5s-Backup-2`. Signed phone-menu example v1.0.4 now receives canonical provider and
+speech-policy state from the Agents DO. Twilio may gather one completed transcript only under the
+owner's existing speech-input policy; the example routes one exact option-label phrase and uses its
+fallback for ambiguity. Ingress and simulation cap speech at **2,000 UTF-8 bytes**. Telnyx remains
+DTMF-only. The owner microapp surfaces the setting, local preview and owner-only synthetic test for
+the exact active installation. This is a P06/§9.5 feature slice, not conversational AI, streaming or
+voice-provider acceptance.
 
-Local evidence: managed-cost alert tests **15/15**, Agents and Shell typechecks, release-migration
-tests **16/16**, deployment-manifest tests **11/11**, release validation for **247** migrations and
-deployment-manifest validation, `git diff --check`. Staging and production workflows probe both new
-schema surfaces. No deployment or live email/inbox acceptance ran. U11 email is IMPLEMENTED_LOCAL;
-invoice reconciliation, provider-billed idle/CPU-size feeds, approved spend enforcement and external
-cost acceptance remain open. Rollouts remain disabled.
+Local evidence: Agent SDK phone-menu **5/5**, Agents phone/DO suites **44/44**, Spaces Gadget MCP
+routes **18/18**, Agents and Spaces typechecks, dashboard inline-JavaScript syntax and
+`git diff --check`. These are local package/Worker tests; no browser, carrier, deployed Worker or live
+call ran.
 
-The requested P13 source trace confirms current backlog/age/DLQ are honestly unavailable. Admin's
-consumer targets another queue and stores raw payloads; `/admin/failures` requires `ADMIN_SECRET` and
-`platform_admin`, but no supported role issuance or reachable Router/service-binding path exists.
-Generic replay remains gated by operator identity/route, queue-specific authorization, payload
-retention/redaction and duplicate-side-effect contract. This is a real product/route/queue contract
-gate, not missing provider credentials.
+P01 migration rehearsal and 0164 legacy-skip repair are pushed as
+`db5a915e16965691506ba50334befa62e52cdcd4`. The full 247-migration manifest passes the actual
+release runner against in-memory SQLite with foreign keys enabled. The skip installs only schema
+needed by dependent 0229, records its repair metadata, and fails closed on inconsistent applied
+history. Release runner tests **20/20**, deployment-manifest tests **12/12**, both validators and
+`git diff --check` pass; both release preflights already run the expanded suite. This is local SQLite
+rehearsal only. Operator-attested per-environment D1 baselines, actual resource isolation, rollback/
+recovery and deployed acceptance are still absent.
 
-P01/P02 remain PARTIAL: `368a2f23b7c344ebcd2b3810d490c48814810ec7` adds the GET-only receipt collector,
-but preflight still finds the shared D1, eleven shared KV IDs, unresolved `naelao-calls`, missing
-account/time evidence and 158 missing observations. Operator-attested per-environment D1 baselines,
-isolated rehearsal and deployed acceptance remain absent. No Cloudflare account was queried.
-Preserve intentionally untracked `infra/scripts/__pycache__/`.
+P02's local receipt collector is implemented, but the configured shared D1, eleven shared KV IDs,
+unresolved `naelao-calls`, missing account/timestamp receipts and 158 missing observations remain
+fail-closed. No Cloudflare account was queried. P13 replay remains a genuine operator identity/route,
+queue-scope, retention/redaction and duplicate-effect contract gap. U11 email remains local; invoice
+reconciliation, provider-billed idle/CPU-size inputs, approved spend enforcement and provider/inbox
+acceptance remain open. Preserve intentionally untracked `infra/scripts/__pycache__/`; rollouts stay
+disabled.
 
-Exact next action: add a fresh-install in-memory SQLite rehearsal across the full release migration
-manifest, applying migrations in order with only the reviewed conditional `SPECIAL_SKIP` behavior.
-The test must run through the existing release preflight test gate and remain distinct from actual
-staging/production baseline or deployment evidence. Then continue the next independent P01–P24 and
-S2–S9/U01–U12 code gap.
-
+Exact next action: implement the P05 signed SpaceBlueprint knowledge and host-action requirement
+contract through SDK validation, Foundry authoring/export and owner activation review. Use existing
+package knowledge/host capability declarations and an explicit owner approval caller; a declaration
+must not itself grant collection or action access. Continue all other P01–P24 and S2–S9/U01–U12.
 
 ## Previous continuation — 2026-11-14 (signed template coordination defaults)
 

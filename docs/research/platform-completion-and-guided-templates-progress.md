@@ -1,43 +1,40 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (U11 opted-in email cost alerts)
+## Active continuation — 2026-11-14 (P06 Twilio speech; P01 SQLite rehearsal)
 
-Code `ca4435d81b10752133280a8b8fd9896e3430092c` is pushed to
-`origin/Mcbt5s-Backup-2`. Migration 0247 adds explicit default-off email preferences and a durable
-non-PII email outbox. The owner Shell control persists opt-in; the scheduled caller resolves the
-current active builder or verified Product-user address, rechecks access/preference, leases bounded
-retries and uses stable Notifications IDs. Accepted, rejected, ambiguous, suppressed and no-recipient
-states are persisted and exposed to the owner; unknown or rejected provider outcomes are not
-automatically resent. Threshold removal suppresses queued email. UI copy states provider acceptance
-does not verify inbox delivery; warnings never block service activity.
+Code `eec28fafb0b16721c264409171f48041bf87d4e1` is pushed to
+`origin/Mcbt5s-Backup-2`. Signed phone-menu example v1.0.4 receives canonical provider and policy
+state from the Agents DO. The host supports one completed Twilio speech turn only when owner policy
+enables it; deterministic exact-label routing falls back on ambiguous/unmatched text. Ingress and
+simulation cap transcript input at **2,000 UTF-8 bytes**. Telnyx and disabled Twilio speech remain
+DTMF-only. The signed owner dashboard displays policy/readiness and provides a synthetic test through
+the existing response validator/renderer for the exact active installation. This closes only a
+bounded one-turn slice of P06/§9.5; it does not add conversational AI, streaming, voice quality/language
+claims, managed voice billing, or provider support.
 
-Local evidence: managed-cost tests **15/15**, Agents and Shell typechecks, release-migration tests
-**16/16**, deployment-manifest tests **11/11**, release validation for **247** migrations, deployment
-manifest validation and `git diff --check`. Both workflows probe the opt-in columns and delivery
-table before deployment. These are mocks/static checks only; no deployment or live email/inbox
-acceptance ran. U11 email is IMPLEMENTED_LOCAL; invoice reconciliation, provider-billed idle/CPU-size
-feeds and approved spend enforcement remain open. Rollouts remain disabled.
+Local evidence: Agent SDK phone-menu **5/5**, Agents phone/DO suites **44/44**, Spaces Gadget MCP
+routes **18/18**, Agents and Spaces typechecks, dashboard inline-JavaScript syntax and
+`git diff --check`. No browser, carrier, deployed Worker or live call was exercised.
 
-P13's source trace found no safe Admin replay caller: the Admin Worker route requires `ADMIN_SECRET`
-and `platform_admin`, but that role has no supported identity issuance and the Worker has no reachable
-Router/service-binding path. Its DLQ consumer targets a different queue and stores raw payloads.
-Current backlog/age/DLQ remain honestly unavailable. Replay needs operator identity/route,
-queue-specific scope, payload retention/redaction and a duplicate-side-effect contract; these are
-product/route/queue gates, not credential blockers.
+P01's fresh SQLite rehearsal and legacy 0164 skip prerequisite repair are pushed as
+`db5a915e16965691506ba50334befa62e52cdcd4`. The actual release runner applies the full 247-migration
+manifest to fresh in-memory SQLite with foreign keys enabled; safe schema-only repair permits later
+0229 and fails closed for inconsistent applied history. Release runner tests **20/20**, deployment
+manifest tests **12/12**, both validators and `git diff --check` pass, and both workflows already run
+the migration suite. This does not establish operator-attested D1 baselines, isolated staging or
+production, data recovery/rollback or deployed acceptance.
 
-P01 remains PARTIAL for operator-attested staging/production D1 baselines, isolated rehearsal and
-deployed acceptance. P02's collector `368a2f23b7c344ebcd2b3810d490c48814810ec7` is local and GET-only;
-preflight still rejects a shared D1, eleven shared KV IDs, unresolved `naelao-calls`, missing account/
-time evidence and 158 resource observations. No Cloudflare account was queried. P03/P20 policies and
-other row-specific contract/live gates remain below.
+P02 remains fail-closed on one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent
+account/time receipts and 158 missing resource observations; no Cloudflare account was queried. P03/
+P20 policy decisions and other row-specific product/contract/live gates remain below. Rollouts remain
+disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: add a fresh-install in-memory SQLite rehearsal for every schema-manifest migration,
-using ordered SQL and the reviewed conditional special skip, to the release test suite that already
-runs in both preflights. This local schema rehearsal must remain distinct from operator-attested D1
-baselines and deployed acceptance. Then continue independent P01–P24 and S2–S9/U01–U12 work.
-Preserve untracked `infra/scripts/__pycache__/`.
-
+Exact next action: implement the P05 signed SpaceBlueprint knowledge and host-action requirement
+contract through SDK validation, Foundry authoring/export, persistence and explicit owner activation
+review. Reuse existing package knowledge and host capability declarations. Declarations must not
+create provider connections or grant collection/action access. Continue remaining P01–P24 and
+S2–S9/U01–U12 gaps.
 
 ## Previous continuation — 2026-11-14 (template coordination defaults completed locally)
 
@@ -1152,12 +1149,12 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 
 | Requirement | Current status | Reconciled state |
 | --- | --- | --- |
-| P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. `ca4435d8` adds migration 0247 and manifest-required probes for opted-in cost email storage. Operator-attested D1 baselines, a fresh-install local SQL rehearsal, isolated staging rehearsal, rollback/data recovery and deployed/live acceptance remain. |
+| P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. `db5a915e` adds a fresh-install in-memory SQLite rehearsal across all 247 migrations and repairs the safe 0164 skip prerequisite for 0229; tests pass 20/20 and run in both preflights. Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. |
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector. The preflight clears map freshness but still rejects a shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
 | P05 | PARTIAL | `50dd1fa4` adds customer-form preview; `bf55151a` multi-project setup groups; `ed924c83`/`55d67648` trusted dependency selection and package feature disclosure; `56b23a31` persists/restores bounded Space-scoped authoring drafts; `236a2e2b` refreshes the activation usage projection while total cost stays unknown. Foundry `1.3.0` persists conformance/publication lifecycle: `34c7da23` host request/job/listing idempotency and owner status recovery, `64669caf` reload repair, `cf2d28f7` terminal status correction. `5e0c6501` adds owner-approved scoped text handles. `536853b9`/`b646ec16` connect activation to exact-pin dependency import; `edf08814` resumes install after reload; `a75c0862` provider cleanup; `c1c5e0d4` Telegram/WhatsApp setup compensation. Knowledge/action authoring has no matching SpaceBlueprint/runtime contract; complete provider setup, broader lifecycle, verified rates/total cost, image/audio/binary extension access and deployed/live acceptance remain. |
-| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, cost observations and dated host-catalog list-rate estimates are local. The signed bounded-phone-menu example has per-installation settings, browser preview and a synthetic `call.received`/`call.digits` test through the host response validator/renderer; `b2d4ac0f` pins calls to the admitted installation/handler, and `4c42012b` exposes its exact signed release/key identity. This is keypad IVR support, not conversational streaming. Customer voice lifecycle, public streaming, managed billing, invoice reconciliation and live provider/region acceptance remain unavailable. |
+| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, cost observations and dated host-catalog list-rate estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn behind owner policy, exact option-label routing and synthetic installed-handler test; Telnyx remains DTMF-only. Existing release/installation binding and phone response validator remain authoritative. This is not streaming or an AI voice agent. Customer lifecycle, voice catalogs/quality tests, managed billing, invoices and live provider/region acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
