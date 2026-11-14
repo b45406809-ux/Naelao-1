@@ -6,7 +6,7 @@ import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal,
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, previewSpaceSharedExtensionImport, importSpaceSharedExtension, previewSpaceSharedExtensionInstall, installSpaceSharedExtension, type SpaceTemplateInstallationRecord, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing, type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReview } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, previewSpaceTemplateInstallationLifecycle, applySpaceTemplateInstallationLifecycle, previewSpaceSharedExtensionImport, importSpaceSharedExtension, previewSpaceSharedExtensionInstall, installSpaceSharedExtension, type SpaceTemplateInstallationRecord, type SpaceTemplateInstallationLifecyclePreview, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing, type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReview } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel, type BlueprintSetupField } from "@naelao/agent-sdk";
 import { createLatestRequestFence, parseTemplateExpectedUsageInput } from "@/lib/template-usage-estimate";
@@ -134,6 +134,9 @@ export default function SpacesPage() {
   const [templateSetupUpdateClearedFields, setTemplateSetupUpdateClearedFields] = React.useState<Record<string, Array<{ project_id: string; field_id: string }>>>({});
   const [templateSetupUpdateDataLossConfirmed, setTemplateSetupUpdateDataLossConfirmed] = React.useState<Record<string, boolean>>({});
   const [templateSetupUpdateBusy, setTemplateSetupUpdateBusy] = React.useState<string | null>(null);
+  const [templateLifecyclePreviews, setTemplateLifecyclePreviews] = React.useState<Record<string, SpaceTemplateInstallationLifecyclePreview>>({});
+  const [templateLifecycleConfirmed, setTemplateLifecycleConfirmed] = React.useState<Record<string, boolean>>({});
+  const [templateLifecycleBusy, setTemplateLifecycleBusy] = React.useState<string | null>(null);
   const pendingPreviewed = React.useRef(new Set<string>());
   const expectedUsageEstimateRequests = React.useRef(createLatestRequestFence()).current;
   const expectedUsageSpaceId = activationReview?.spaceId ?? null;
@@ -163,6 +166,8 @@ export default function SpacesPage() {
     setTemplateSetupUpdateValues({});
     setTemplateSetupUpdateClearedFields({});
     setTemplateSetupUpdateDataLossConfirmed({});
+    setTemplateLifecyclePreviews({});
+    setTemplateLifecycleConfirmed({});
     setTemplateStatusLoading(true);
     try {
       const result = await listSpaceTemplateInstallations(space.id, creds);
@@ -230,6 +235,36 @@ export default function SpacesPage() {
       show("Template setup settings were updated. No project or provider resources were changed.");
     } catch (error) { show(`Setup update was not applied: ${error instanceof Error ? error.message : "request failed"}`); }
     finally { setTemplateSetupUpdateBusy(null); }
+  }
+
+  async function previewTemplateInstallationLifecycle(record: SpaceTemplateInstallationRecord, operation: "detach" | "reattach") {
+    if (!creds || !templateStatusSpace) return;
+    const key = templateUpdateKey(templateStatusSpace.id, record.blueprint_id);
+    setTemplateLifecycleBusy(key);
+    try {
+      const preview = await previewSpaceTemplateInstallationLifecycle(templateStatusSpace.id, record.blueprint_id, creds, operation);
+      setTemplateLifecyclePreviews(current => ({ ...current, [key]: preview }));
+      setTemplateLifecycleConfirmed(current => ({ ...current, [key]: false }));
+    } catch (error) { show(`Template setup lifecycle preview unavailable: ${error instanceof Error ? error.message : "request failed"}`); }
+    finally { setTemplateLifecycleBusy(null); }
+  }
+
+  async function confirmTemplateInstallationLifecycle(record: SpaceTemplateInstallationRecord) {
+    if (!creds || !templateStatusSpace) return;
+    const key = templateUpdateKey(templateStatusSpace.id, record.blueprint_id), preview = templateLifecyclePreviews[key];
+    if (!preview || templateLifecycleConfirmed[key] !== true) return;
+    setTemplateLifecycleBusy(key);
+    try {
+      await applySpaceTemplateInstallationLifecycle(templateStatusSpace.id, creds, preview);
+      const refreshed = await listSpaceTemplateInstallations(templateStatusSpace.id, creds);
+      setTemplateStatusRecords(refreshed.installations);
+      setTemplateLifecyclePreviews(current => { const next = { ...current }; delete next[key]; return next; });
+      setTemplateLifecycleConfirmed(current => { const next = { ...current }; delete next[key]; return next; });
+      show(preview.operation === "detach"
+        ? "Template setup was detached. Generated Projects and extensions remain unchanged; check external provider billing separately."
+        : "Template setup was reattached. Existing Projects and extensions were not reinstalled.");
+    } catch (error) { show(`Template setup lifecycle update failed: ${error instanceof Error ? error.message : "request failed"}`); }
+    finally { setTemplateLifecycleBusy(null); }
   }
 
   async function loadTemplateSetupDraft(spaceId: string, blueprintId: string, preview: SpaceTemplateActivationPreview, restoreValues: boolean) {
@@ -1172,19 +1207,59 @@ export default function SpacesPage() {
                 </dd>
                 <dt>Created</dt><dd style={{ margin: 0 }}>{new Date(record.created_at).toLocaleString()}</dd>
                 <dt>Updated</dt><dd style={{ margin: 0 }}>{new Date(record.updated_at).toLocaleString()}</dd>
+                {record.lifecycle_events.length > 0 && <><dt>Setup link history</dt><dd style={{ margin: 0 }}>{record.lifecycle_events.slice(0, 5).map(event =>
+                  `${event.action} by ${event.actor_id} · ${new Date(event.created_at).toLocaleString()}`).join("; ")}</dd></>}
                 {record.error_code && <><dt>Failure code</dt><dd style={{ margin: 0 }}>{record.error_code}</dd></>}
               </dl>
-              {record.status === "installed" && templateStatusSpace && <aside style={{ marginTop: 10, padding: 10, border: "1px solid var(--border)", borderRadius: 8 }} aria-label="Template removal and retained resources">
-                <strong>Template removal and retained resources</strong>
+              {record.status === "installed" && templateStatusSpace && <aside style={{ marginTop: 10, padding: 10, border: "1px solid var(--border)", borderRadius: 8 }} aria-label="Template setup lifecycle">
+                <strong>Template setup lifecycle</strong>
                 <p style={{ margin: "4px 0 8px", color: "var(--text3)" }}>
-                  This view does not uninstall the template or remove its generated Projects and required extensions. It cannot determine whether separate provider connections, licenses, or recurring charges remain active. No resource or billing change is made here; review each item separately.
+                  {record.lifecycle_state === "detached"
+                    ? `The setup link was detached${record.detached_by ? ` by ${record.detached_by}` : ""}${record.detached_at ? ` on ${new Date(record.detached_at).toLocaleString()}` : ""}. Saved setup values, Projects, extensions, Knowledge grants, provider resources, licenses, and charges were left as they were.`
+                    : "Detaching removes this Space Template setup link and its pending setup draft. Saved setup values, generated Projects, extensions, Project Knowledge grants, provider resources, licenses, and charges are preserved and are not changed here."}
                 </p>
                 <Link href={`/p/${encodeURIComponent(product.slug)}/extensions`} onClick={() => setActiveSpace(templateStatusSpace.id, templateStatusSpace.name)}>
                   Review extensions in this Space
                 </Link>
+                {(() => {
+                  const key = templateUpdateKey(templateStatusSpace.id, record.blueprint_id), preview = templateLifecyclePreviews[key];
+                  const operation = record.lifecycle_state === "detached" ? "reattach" : "detach";
+                  return <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                    {!preview ? <Button variant="secondary" disabled={templateLifecycleBusy === key}
+                      onClick={() => void previewTemplateInstallationLifecycle(record, operation)}>
+                      {templateLifecycleBusy === key ? "Loading lifecycle preview…" : operation === "detach" ? "Review template setup detachment" : "Review template setup reattachment"}
+                    </Button> : <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+                      <strong>{preview.operation === "detach" ? "Detachment preview" : "Reattachment preview"}</strong>
+                      <p style={{ margin: "4px 0 8px", color: "var(--text3)" }}>
+                        {preview.operation === "detach"
+                          ? "This only detaches setup management and deletes a pending setup draft. Saved setup values remain. It does not delete Projects or uninstall extensions, revoke their grants, cancel provider resources, or stop external recurring charges."
+                          : "This reconnects setup management for this recorded installation. It does not recreate Projects, reinstall extensions, restore deleted drafts, or change provider or billing state."}
+                      </p>
+                      <dl style={{ display: "grid", gridTemplateColumns: "minmax(130px,auto) minmax(0,1fr)", gap: "4px 12px", fontSize: 12 }}>
+                        <dt>Generated Projects</dt><dd style={{ margin: 0 }}>{preview.generated_project_ids.length ? preview.generated_project_ids.join(", ") : "None recorded"}</dd>
+                        <dt>Required extensions</dt><dd style={{ margin: 0 }}>{preview.required_extension_ids.length ? preview.required_extension_ids.join(", ") : "None recorded"}</dd>
+                        <dt>Separate provider billing</dt><dd style={{ margin: 0 }}>Not queried or changed; check each provider connection and license.</dd>
+                      </dl>
+                      <label style={{ display: "flex", gap: 8, alignItems: "flex-start", margin: "8px 0" }}>
+                        <input type="checkbox" checked={templateLifecycleConfirmed[key] === true}
+                          onChange={event => setTemplateLifecycleConfirmed(current => ({ ...current, [key]: event.target.checked }))} />
+                        <span>{preview.operation === "detach"
+                          ? "I approve detaching this template setup link, deleting any pending setup draft, and preserving saved setup values, Projects, extensions, grants, and external provider or billing state."
+                          : "I approve reattaching setup management only; no Projects, extensions, or provider resources will be created."}</span>
+                      </label>
+                      <Button onClick={() => void confirmTemplateInstallationLifecycle(record)} disabled={templateLifecycleBusy === key || templateLifecycleConfirmed[key] !== true}>
+                        {templateLifecycleBusy === key ? "Saving…" : preview.operation === "detach" ? "Detach template setup" : "Reattach template setup"}
+                      </Button>
+                      <Button variant="secondary" onClick={() => {
+                        setTemplateLifecyclePreviews(current => { const next = { ...current }; delete next[key]; return next; });
+                        setTemplateLifecycleConfirmed(current => { const next = { ...current }; delete next[key]; return next; });
+                      }}>Close preview</Button>
+                    </div>}
+                  </div>;
+                })()}
               </aside>}
             </section>)}
-            <p style={{ color: "var(--text3)", fontSize: 12, margin: 0 }}>Each view checks the newest published, signed listing for this publisher and blueprint. A newer listing needs a separate review of its license, price, permissions and setup migration. This read-only check does not update or uninstall the installation.</p>
+            <p style={{ color: "var(--text3)", fontSize: 12, margin: 0 }}>Each view checks the newest published, signed listing for this publisher and blueprint. A newer listing needs a separate review of its license, price, permissions and setup migration. Detach only removes the setup-management link; it does not uninstall generated resources or stop their external charges.</p>
           </div>}
       </Modal>
       <Toast toast={toast} />

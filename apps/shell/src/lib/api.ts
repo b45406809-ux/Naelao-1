@@ -2931,6 +2931,10 @@ export interface SpaceTemplateInstallationRecord {
   required_extension_ids: string[];
   project_ids: string[];
   status: "installing" | "installed" | "failed";
+  lifecycle_state: "active" | "detached";
+  detached_by: string | null;
+  detached_at: string | null;
+  lifecycle_events: Array<{ action: "detached" | "reattached"; actor_id: string; created_at: string }>;
   extension_requirements_review?: { reviewed_by: string; reviewed_at: string; requirements_sha256: string;
     project_knowledge_selections?: Record<string, Record<string, string[]>> };
   error_code: string | null;
@@ -2948,6 +2952,45 @@ export interface SpaceTemplateInstallationRecord {
     removed_required_extensions: string[];
     changed_required_extension_versions: Array<{ extension_id: string; installed_version: string | null; source_version: string | null }>;
   };
+}
+
+export interface SpaceTemplateInstallationLifecyclePreview {
+  blueprint_id: string;
+  operation: "detach" | "reattach";
+  artifact_sha256: string;
+  setup_revision: number;
+  lifecycle_state: "active" | "detached";
+  generated_project_ids: string[];
+  required_extension_ids: string[];
+  effects: {
+    template_setup_association: "detached" | "reattached";
+    pending_setup_draft: "deleted" | "unchanged";
+    saved_setup_values: "retained";
+    generated_projects: "preserved";
+    required_extensions: "preserved";
+    project_knowledge_grants: "preserved";
+    provider_connections: "unchanged";
+    licenses_and_recurring_charges: "unchanged";
+  };
+}
+
+export function previewSpaceTemplateInstallationLifecycle(spaceId: string, blueprintId: string, session: SessionCredentials,
+  operation: "detach" | "reattach"): Promise<SpaceTemplateInstallationLifecyclePreview> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/lifecycle-preview`, {
+    method: "POST", session, body: JSON.stringify({ operation }), cache: "no-store",
+  });
+}
+
+export function applySpaceTemplateInstallationLifecycle(spaceId: string, session: SessionCredentials,
+  preview: SpaceTemplateInstallationLifecyclePreview): Promise<{
+    applied: true; event_id: string; blueprint_id: string; lifecycle_state: "active" | "detached";
+    detached_by: string | null; detached_at: string | null; generated_project_ids: string[]; required_extension_ids: string[];
+    effects: SpaceTemplateInstallationLifecyclePreview["effects"];
+  }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(preview.blueprint_id)}/lifecycle-apply`, {
+    method: "POST", session, body: JSON.stringify({ operation: preview.operation, expected_artifact_sha256: preview.artifact_sha256,
+      expected_setup_revision: preview.setup_revision, expected_lifecycle_state: preview.lifecycle_state, confirmed: true }), cache: "no-store",
+  });
 }
 
 export function listSpaceTemplateInstallations(spaceId: string, session: SessionCredentials): Promise<{ installations: SpaceTemplateInstallationRecord[] }> {

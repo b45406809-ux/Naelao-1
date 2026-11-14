@@ -1345,6 +1345,45 @@ async function handleTemplateSetupUpdate(c: Context<{ Bindings: Env }>, apply: b
 app.post("/spaces/:spaceId/blueprints/:blueprintId/setup-update-preview", c => handleTemplateSetupUpdate(c, false));
 app.post("/spaces/:spaceId/blueprints/:blueprintId/setup-update-apply", c => handleTemplateSetupUpdate(c, true));
 
+async function handleTemplateInstallationLifecycle(c: Context<{ Bindings: Env }>, apply: boolean) {
+  const identity = getCallerIdentity(c), tenantId = identity.tenantId ?? "", userId = identity.userId ?? "";
+  const spaceId = c.req.param("spaceId") ?? "", blueprintId = c.req.param("blueprintId") ?? "", role = c.req.header("x-naelao-role") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "forbidden" }, 403);
+  const authorityRole = role === "product_end_user" && userId
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId) ?? ""
+    : role;
+  if (!userId || !["owner", "admin"].includes(authorityRole) || !await canExportBlueprint(c, spaceId))
+    return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'")
+    .bind(spaceId, tenantId).first<{ id: string }>();
+  if (!owned) throw notFound("Space");
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as Record<string, unknown>;
+    const allowed = apply ? ["operation", "expected_artifact_sha256", "expected_setup_revision", "expected_lifecycle_state", "confirmed"] : ["operation"];
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !allowed.includes(key))) throw new Error("invalid_body");
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return c.json({ error_code: "request_body_too_large" }, 413);
+    return c.json({ error_code: "template_lifecycle_invalid" }, 400);
+  }
+  if (body.operation !== "detach" && body.operation !== "reattach")
+    return c.json({ error_code: "template_lifecycle_invalid" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const path = apply ? "apply" : "preview";
+  const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+  const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, blueprint_id: blueprintId });
+  const response = await stub.fetch(new Request(`http://space-do/blueprint-installation-lifecycle/${path}?${query}`, {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-user-id": userId, "x-naelao-role": authorityRole, "x-naelao-internal-token": token },
+    body: JSON.stringify(body),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+}
+
+app.post("/spaces/:spaceId/blueprints/:blueprintId/lifecycle-preview", c => handleTemplateInstallationLifecycle(c, false));
+app.post("/spaces/:spaceId/blueprints/:blueprintId/lifecycle-apply", c => handleTemplateInstallationLifecycle(c, true));
+
 app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c => {
   const identity = getCallerIdentity(c), tenantId = identity.tenantId, spaceId = c.req.param("spaceId");
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);

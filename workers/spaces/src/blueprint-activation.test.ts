@@ -132,6 +132,35 @@ describe("Space Template activation preview", () => {
     expect(member.status).toBe(403);
   });
 
+  it("forwards template setup lifecycle requests only for an authenticated Space owner or admin", async () => {
+    const secret = "template-lifecycle-route-secret", forwarded: Request[] = [];
+    const stub = { fetch: async (request: Request) => {
+      forwarded.push(request);
+      const url = new URL(request.url);
+      expect(url.pathname).toBe("/blueprint-installation-lifecycle/preview");
+      expect(url.searchParams.get("tenant_id")).toBe("tenant-lifecycle");
+      expect(url.searchParams.get("space_id")).toBe("space-lifecycle");
+      expect(url.searchParams.get("blueprint_id")).toBe("tpl-lifecycle");
+      expect(await verifyInternalToken(request.headers.get("x-naelao-internal-token"), "tenant-lifecycle", secret)).toBe(true);
+      return Response.json({ blueprint_id: "tpl-lifecycle", operation: "detach", lifecycle_state: "active" });
+    } };
+    const env = { PLATFORM_SECRET: secret,
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "space-lifecycle" }) }) }) },
+      SPACE_DO: { idFromName: () => "space-lifecycle-do", get: () => stub } } as never;
+    const token = await mintInternalToken(secret, "tenant-lifecycle");
+    const path = "https://spaces/spaces/space-lifecycle/blueprints/tpl-lifecycle/lifecycle-preview";
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-lifecycle", "x-naelao-user-id": "owner-a",
+      "x-naelao-role": "owner", "x-naelao-internal-token": token };
+    const owner = await worker.fetch(new Request(path, { method: "POST", headers, body: JSON.stringify({ operation: "detach" }) }), env, {} as ExecutionContext);
+    expect(owner.status).toBe(200);
+    expect(forwarded).toHaveLength(1);
+    expect(await forwarded[0]!.json()).toMatchObject({ operation: "detach" });
+    const member = await worker.fetch(new Request(path, { method: "POST", headers: { ...headers, "x-naelao-role": "member" },
+      body: JSON.stringify({ operation: "detach" }) }), env, {} as ExecutionContext);
+    expect(member.status).toBe(403);
+    expect(forwarded).toHaveLength(1);
+  });
+
   it("checks for a newer signed listing from the same publisher without applying it", async () => {
     const secret = "template-source-update-status-secret";
     const installed = blueprint({ id: "tpl_update", metadata: { name: "Installed support" }, setupSchemaVersion: 1,

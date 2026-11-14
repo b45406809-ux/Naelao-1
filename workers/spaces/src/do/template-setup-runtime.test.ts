@@ -5,6 +5,71 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.j
 import { SpaceDO } from "./SpaceDO.js";
 
 describe("Space Template setup runtime API", () => {
+  it("detaches and reattaches only the setup link with scoped confirmation and durable actor history", async () => {
+    const storage = createDOStorage(), secret = "template-lifecycle-test-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    const spaceId = "template-lifecycle-space", blueprint = {
+      id: "tpl_lifecycle", schemaVersion: "2.0" as const, metadata: { name: "Support setup" }, templateCategory: "support",
+      projects: [{ id: "support", name: "Support", kind: "DualPane" as const, templateMode: "cowork_studio" as const,
+        viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [] }],
+      requiredExtensions: ["ext_support"], requiredCredentials: [],
+    };
+    const activated = await space.fetch(new Request("http://space/blueprints/instantiate", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id }) }));
+    expect(activated.status).toBe(201);
+    const activation = await activated.json() as { projectIds: string[] };
+    storage.sql.exec(`INSERT INTO space_template_setup_drafts
+      (tenant_id,space_id,blueprint_id,listing_id,artifact_sha256,setup_schema_sha256,setup_values_ciphertext,draft_revision,updated_by,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "tenant", spaceId, blueprint.id, "listing-lifecycle", "a".repeat(64), "b".repeat(64), "ciphertext",
+    1, "owner-a", "2026-11-14T00:00:00.000Z", "2026-11-14T00:00:00.000Z");
+    const token = await mintInternalToken(secret, "tenant");
+    const url = (operation: "preview" | "apply") => `http://space/blueprint-installation-lifecycle/${operation}?${new URLSearchParams({ tenant_id: "tenant", space_id: spaceId, blueprint_id: blueprint.id })}`;
+    const request = (path: string, body: unknown, role = "owner", withToken = true) => space.fetch(new Request(path, { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-user-id": "owner-a", "x-naelao-role": role,
+        ...(withToken ? { "x-naelao-internal-token": token } : {}) }, body: JSON.stringify(body) }));
+    expect((await request(url("preview"), { operation: "detach" }, "owner", false)).status).toBe(403);
+    expect((await request(url("preview"), { operation: "detach" }, "member")).status).toBe(403);
+    const previewResponse = await request(url("preview"), { operation: "detach" });
+    expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json() as { artifact_sha256: string; setup_revision: number; lifecycle_state: string;
+      generated_project_ids: string[]; required_extension_ids: string[]; effects: Record<string, string> };
+    expect(preview).toMatchObject({ lifecycle_state: "active", generated_project_ids: activation.projectIds,
+      required_extension_ids: ["ext_support"], effects: { template_setup_association: "detached", generated_projects: "preserved",
+        saved_setup_values: "retained", required_extensions: "preserved", project_knowledge_grants: "preserved", licenses_and_recurring_charges: "unchanged" } });
+    const body = { operation: "detach", expected_artifact_sha256: preview.artifact_sha256, expected_setup_revision: preview.setup_revision,
+      expected_lifecycle_state: "active", confirmed: true };
+    expect((await request(url("apply"), { ...body, confirmed: false })).status).toBe(400);
+    expect((await request(url("apply"), { ...body, expected_setup_revision: preview.setup_revision + 1 })).status).toBe(409);
+    expect((await request(url("apply"), body)).status).toBe(200);
+    expect(storage.sql.exec("SELECT lifecycle_state,detached_by,detached_at FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", spaceId, blueprint.id).toArray()[0])
+      .toMatchObject({ lifecycle_state: "detached", detached_by: "owner-a" });
+    expect(storage.sql.exec("SELECT id FROM projects WHERE space_id=?", spaceId).toArray()).toHaveLength(1);
+    expect(storage.sql.exec("SELECT blueprint_id FROM space_template_setup_drafts WHERE tenant_id=? AND space_id=?", "tenant", spaceId).toArray()).toHaveLength(0);
+    expect(storage.sql.exec("SELECT action,actor_id FROM space_blueprint_lifecycle_events WHERE space_id=? AND blueprint_id=?", spaceId, blueprint.id).toArray())
+      .toEqual([{ action: "detached", actor_id: "owner-a" }]);
+    const activationRetry = await space.fetch(new Request("http://space/blueprints/instantiate", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id }) }));
+    expect(activationRetry.status).toBe(409);
+    expect(await activationRetry.json()).toMatchObject({ error_code: "blueprint_installation_detached" });
+
+    const reattachPreview = await (await request(url("preview"), { operation: "reattach" })).json() as typeof preview;
+    const reattached = await request(url("apply"), { operation: "reattach", expected_artifact_sha256: reattachPreview.artifact_sha256,
+      expected_setup_revision: reattachPreview.setup_revision, expected_lifecycle_state: "detached", confirmed: true });
+    expect(reattached.status).toBe(200);
+    expect(await reattached.json()).toMatchObject({ lifecycle_state: "active", generated_project_ids: activation.projectIds,
+      effects: { generated_projects: "preserved", provider_connections: "unchanged" } });
+    expect(storage.sql.exec("SELECT action,actor_id FROM space_blueprint_lifecycle_events WHERE space_id=? AND blueprint_id=? ORDER BY created_at,event_id", spaceId, blueprint.id).toArray())
+      .toHaveLength(2);
+    const status = await space.fetch(new Request(`http://space/blueprint-installations?${new URLSearchParams({ tenant_id: "tenant", space_id: spaceId })}`, {
+      headers: { "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+    }));
+    expect(await status.json()).toMatchObject({ installations: [{ lifecycle_state: "active", lifecycle_events: [
+      { action: "reattached", actor_id: "owner-a" }, { action: "detached", actor_id: "owner-a" },
+    ] }] });
+  });
+
   it("persists owner acknowledgement against the exact signed extension requirement digest", async () => {
     const storage = createDOStorage(), secret = "template-extension-review-test-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
