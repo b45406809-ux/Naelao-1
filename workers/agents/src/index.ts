@@ -10474,10 +10474,13 @@ export default {
         .then(async budgets=>{
           const alerts=await budgets.sweepManagedServiceCostBudgetAlerts(env);
           const deliveries=await budgets.sweepManagedServiceCostBudgetAlertDeliveries(env);
-          return {alerts,deliveries};
+          const emailDeliveries=await budgets.sweepManagedServiceCostBudgetAlertEmailDeliveries(env);
+          return {alerts,deliveries,emailDeliveries};
         }).then(result=>{
           if(result.alerts.alertsCreated||result.alerts.thresholdsReset||result.alerts.deferred
-            ||result.deliveries.delivered||result.deliveries.noSubscription||result.deliveries.suppressed||result.deliveries.ambiguous||result.deliveries.deferred)
+            ||result.deliveries.delivered||result.deliveries.noSubscription||result.deliveries.suppressed||result.deliveries.ambiguous||result.deliveries.deferred
+            ||result.emailDeliveries.accepted||result.emailDeliveries.rejected||result.emailDeliveries.ambiguous
+            ||result.emailDeliveries.suppressed||result.emailDeliveries.noRecipient||result.emailDeliveries.deferred)
             console.log("managed_service_cost_budget_alerts_reconciled",result);
         }).catch(()=>{console.warn("Managed service cost-budget alert sweep postponed");}));
       _ctx.waitUntil(sweepPendingProviderEventRuns(env).catch(()=>{console.warn("Pending provider event wake sweep postponed");}));

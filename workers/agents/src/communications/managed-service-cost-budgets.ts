@@ -9,6 +9,7 @@ type CostBudgetInput = {
   provenance: Provenance;
   currency: string;
   limitProviderCostMicros: number | null;
+  emailAlertsEnabled?: boolean;
 };
 
 function validInput(value: CostBudgetInput) {
@@ -29,10 +30,16 @@ async function budgetId(scope: CommunicationScope, input: CostBudgetInput) {
 
 /** Configure or remove a dashboard warning threshold. It never gates provider dispatch. */
 export async function setManagedServiceCostBudget(env: AgentsEnv, scope: CommunicationScope, input: CostBudgetInput) {
-  if (!validInput(input)) throw new Error("managed_service_cost_budget_invalid");
+  if (!validInput(input) || (input.emailAlertsEnabled !== undefined && typeof input.emailAlertsEnabled !== "boolean"))
+    throw new Error("managed_service_cost_budget_invalid");
   const id = await budgetId(scope, input);
   const at = new Date().toISOString();
   if (input.limitProviderCostMicros === null) {
+    await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries
+      SET status='suppressed',lease_token=NULL,lease_until=NULL,last_error='budget_removed',updated_at=?
+      WHERE status IN ('pending','running') AND alert_id IN (
+        SELECT id FROM managed_service_cost_budget_alerts WHERE budget_id=? AND tenant_id=? AND space_id=? AND project_id IS ?
+      )`).bind(at,id,scope.tenantId,scope.spaceId,scope.projectId??null).run();
     await env.PLATFORM_DB.prepare(`DELETE FROM managed_service_cost_budgets WHERE id=? AND tenant_id=? AND space_id=?
       AND project_id IS ? AND provider=? AND service_id=? AND provenance=? AND currency=?`)
       .bind(id, scope.tenantId, scope.spaceId, scope.projectId ?? null, input.provider, input.serviceId, input.provenance, input.currency).run();
@@ -41,14 +48,19 @@ export async function setManagedServiceCostBudget(env: AgentsEnv, scope: Communi
   }
   const previous = await env.PLATFORM_DB.prepare("SELECT limit_provider_cost_micros FROM managed_service_cost_budgets WHERE id=? AND tenant_id=?")
     .bind(id, scope.tenantId).first<{limit_provider_cost_micros:number}>();
+  const emailAlertsEnabled = input.emailAlertsEnabled === true;
+  const emailRecipientKind = scope.role === "product_end_user" ? "product_end_user" : "builder_user";
   await env.PLATFORM_DB.prepare(`INSERT INTO managed_service_cost_budgets(id,tenant_id,space_id,project_id,provider,service_id,
-      provenance,currency,limit_provider_cost_micros,created_by_user_id,updated_by_user_id,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET limit_provider_cost_micros=excluded.limit_provider_cost_micros,
-      updated_by_user_id=excluded.updated_by_user_id,updated_at=excluded.updated_at
+      provenance,currency,limit_provider_cost_micros,created_by_user_id,updated_by_user_id,created_at,updated_at,
+      email_alerts_enabled,email_recipient_kind)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET limit_provider_cost_micros=excluded.limit_provider_cost_micros,
+      updated_by_user_id=excluded.updated_by_user_id,updated_at=excluded.updated_at,
+      email_alerts_enabled=excluded.email_alerts_enabled,email_recipient_kind=excluded.email_recipient_kind
     WHERE tenant_id=excluded.tenant_id AND space_id=excluded.space_id AND project_id IS excluded.project_id
       AND provider=excluded.provider AND service_id=excluded.service_id AND provenance=excluded.provenance AND currency=excluded.currency`)
     .bind(id, scope.tenantId, scope.spaceId, scope.projectId ?? null, input.provider, input.serviceId,
-      input.provenance, input.currency, input.limitProviderCostMicros, scope.userId, scope.userId, at, at).run();
+      input.provenance, input.currency, input.limitProviderCostMicros, scope.userId, scope.userId, at, at,
+      emailAlertsEnabled ? 1 : 0, emailRecipientKind).run();
   const stored = await env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,project_id,provider,service_id,provenance,currency,
       limit_provider_cost_micros FROM managed_service_cost_budgets WHERE id=?`)
     .bind(id).first<Record<string, unknown>>();
@@ -64,7 +76,7 @@ export async function setManagedServiceCostBudget(env: AgentsEnv, scope: Communi
     await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_alert_state SET threshold_reached=0,lease_token=NULL,lease_until=NULL,updated_at=?
       WHERE budget_id=?`).bind(at,id).run();
   }
-  return { removed: false, limitProviderCostMicros: input.limitProviderCostMicros };
+  return { removed: false, limitProviderCostMicros: input.limitProviderCostMicros, emailAlertsEnabled };
 }
 
 export async function listManagedServiceCostBudgets(env: AgentsEnv, scope: CommunicationScope) {
@@ -72,17 +84,20 @@ export async function listManagedServiceCostBudgets(env: AgentsEnv, scope: Commu
     ? "tenant_id=? AND space_id=? AND project_id=?"
     : "tenant_id=? AND space_id=? AND project_id IS NULL";
   const bindings = scope.projectId ? [scope.tenantId, scope.spaceId, scope.projectId] : [scope.tenantId, scope.spaceId];
-  const result = await env.PLATFORM_DB.prepare(`SELECT provider,service_id,provenance,currency,limit_provider_cost_micros,updated_at
+  const result = await env.PLATFORM_DB.prepare(`SELECT provider,service_id,provenance,currency,limit_provider_cost_micros,updated_at,
+      email_alerts_enabled
     FROM managed_service_cost_budgets WHERE ${query} ORDER BY provider,service_id,provenance,currency`)
     .bind(...bindings)
-    .all<{ provider:string;service_id:string;provenance:Provenance;currency:string;limit_provider_cost_micros:number;updated_at:string }>();
+    .all<{ provider:string;service_id:string;provenance:Provenance;currency:string;limit_provider_cost_micros:number;updated_at:string;
+      email_alerts_enabled:number }>();
   return result.results.map(row => ({ provider:row.provider,serviceId:row.service_id,provenance:row.provenance,currency:row.currency,
-    limitProviderCostMicros:row.limit_provider_cost_micros,updatedAt:row.updated_at }));
+    limitProviderCostMicros:row.limit_provider_cost_micros,updatedAt:row.updated_at,emailAlertsEnabled:row.email_alerts_enabled === 1 }));
 }
 
 type CostBudgetRow = {
   id:string;tenant_id:string;space_id:string;project_id:string|null;provider:string;service_id:string;
   provenance:Provenance;currency:string;limit_provider_cost_micros:number;updated_at:string;
+  email_alerts_enabled:number;email_recipient_kind:"builder_user"|"product_end_user";updated_by_user_id:string;
 };
 type CostBudgetAlertState = { threshold_reached:number;lease_token:string|null;last_observed_provider_cost_micros:number };
 
@@ -133,7 +148,8 @@ export async function sweepManagedServiceCostBudgetAlerts(
   if(!Number.isInteger(limit)||limit<1||limit>250)throw new Error("managed_service_cost_budget_sweep_limit_invalid");
   const windowEnd=now.toISOString(),windowStart=new Date(now.getTime()-30*86_400_000).toISOString();
   const due=await env.PLATFORM_DB.prepare(`SELECT b.id,b.tenant_id,b.space_id,b.project_id,b.provider,b.service_id,b.provenance,b.currency,
-      b.limit_provider_cost_micros,b.updated_at FROM managed_service_cost_budgets b
+      b.limit_provider_cost_micros,b.updated_at,b.email_alerts_enabled,b.email_recipient_kind,b.updated_by_user_id
+      FROM managed_service_cost_budgets b
       LEFT JOIN managed_service_cost_budget_alert_state s ON s.budget_id=b.id
       ORDER BY COALESCE(s.updated_at,''),b.updated_at,b.id LIMIT ?`)
     .bind(limit).all<CostBudgetRow>();
@@ -172,6 +188,15 @@ export async function sweepManagedServiceCostBudgetAlerts(
           FROM managed_service_cost_budget_alerts a JOIN managed_service_cost_budgets b ON b.id=a.budget_id
           WHERE a.id=? AND b.updated_by_user_id IS NOT NULL`)
           .bind(at,at,at,alertId));
+        if (budget.email_alerts_enabled === 1) {
+          statements.push(env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_cost_budget_email_deliveries
+            (id,alert_id,tenant_id,space_id,project_id,user_id,recipient_kind,status,attempts,next_at,created_at,updated_at)
+            SELECT 'mcae_'||a.id,a.id,a.tenant_id,a.space_id,a.project_id,b.updated_by_user_id,b.email_recipient_kind,
+              'pending',0,?,?,? FROM managed_service_cost_budget_alerts a
+            JOIN managed_service_cost_budgets b ON b.id=a.budget_id
+            WHERE a.id=? AND b.email_alerts_enabled=1 AND b.updated_by_user_id IS NOT NULL`)
+            .bind(at,at,at,alertId));
+        }
       }
       statements.push(env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_alert_state SET threshold_reached=?,
           last_observed_provider_cost_micros=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE budget_id=? AND lease_token=? AND threshold_reached=?`)
@@ -195,14 +220,16 @@ export async function listManagedServiceCostBudgetAlerts(env:AgentsEnv,scope:Com
   const bindings=scope.projectId?[scope.tenantId,scope.spaceId,scope.projectId,limit]:[scope.tenantId,scope.spaceId,limit];
   const rows=await env.PLATFORM_DB.prepare(`SELECT a.id,a.provider,a.service_id,a.provenance,a.currency,a.observed_provider_cost_micros,
       a.limit_provider_cost_micros,a.window_start,a.window_end,a.created_at,
-      (SELECT d.status FROM managed_service_cost_budget_alert_deliveries d WHERE d.alert_id=a.id) AS push_delivery_status
+      (SELECT d.status FROM managed_service_cost_budget_alert_deliveries d WHERE d.alert_id=a.id) AS push_delivery_status,
+      (SELECT d.status FROM managed_service_cost_budget_email_deliveries d WHERE d.alert_id=a.id) AS email_delivery_status
     FROM managed_service_cost_budget_alerts a
     WHERE a.tenant_id=? AND a.space_id=? AND ${projectClause} AND a.acknowledged_at IS NULL ORDER BY a.created_at DESC,a.id LIMIT ?`)
     .bind(...bindings).all<Record<string,unknown>>();
   return rows.results.map(row=>({id:String(row.id),provider:String(row.provider),serviceId:String(row.service_id),provenance:row.provenance as Provenance,
     currency:String(row.currency),observedProviderCostMicros:Number(row.observed_provider_cost_micros),
     limitProviderCostMicros:Number(row.limit_provider_cost_micros),windowStart:String(row.window_start),windowEnd:String(row.window_end),createdAt:String(row.created_at),
-    pushDeliveryStatus:typeof row.push_delivery_status==="string"?row.push_delivery_status:null}));
+    pushDeliveryStatus:typeof row.push_delivery_status==="string"?row.push_delivery_status:null,
+    emailDeliveryStatus:typeof row.email_delivery_status==="string"?row.email_delivery_status:null}));
 }
 
 type CostAlertDeliveryRow={id:string;alert_id:string;tenant_id:string;space_id:string;project_id:string|null;user_id:string;attempts:number;
@@ -300,6 +327,188 @@ export async function sweepManagedServiceCostBudgetAlertDeliveries(
     }
   }
   return result;
+}
+
+type CostBudgetEmailDeliveryRow = {
+  id: string;
+  alert_id: string;
+  tenant_id: string;
+  space_id: string;
+  project_id: string | null;
+  user_id: string;
+  recipient_kind: "builder_user" | "product_end_user";
+  attempts: number;
+  email_alerts_enabled: number;
+  email_recipient_kind: "builder_user" | "product_end_user";
+  updated_by_user_id: string;
+  provider: string;
+  service_id: string;
+  currency: string;
+  observed_provider_cost_micros: number;
+  limit_provider_cost_micros: number;
+  acknowledged_at: string | null;
+};
+
+function escapeCostAlertHtml(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+}
+
+/** Deliver email only after the threshold author opted in. The outbox stores a user ID, not an
+ * email address; it resolves the current account email at dispatch and rechecks owner access. */
+export async function sweepManagedServiceCostBudgetAlertEmailDeliveries(
+  env: AgentsEnv,
+  now = new Date(),
+  limit = 50,
+): Promise<{ scanned: number; accepted: number; rejected: number; ambiguous: number; suppressed: number; noRecipient: number; deferred: number }> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("managed_service_cost_budget_email_delivery_limit_invalid");
+  const at = now.toISOString();
+  const due = await env.PLATFORM_DB.prepare(`SELECT d.id FROM managed_service_cost_budget_email_deliveries d
+    WHERE (d.status='pending' AND d.next_at<=?) OR (d.status='running' AND d.lease_until<=?)
+    ORDER BY d.next_at,d.created_at,d.id LIMIT ?`).bind(at, at, limit).all<{ id: string }>();
+  const result = { scanned: due.results.length, accepted: 0, rejected: 0, ambiguous: 0, suppressed: 0, noRecipient: 0, deferred: 0 };
+
+  for (const candidate of due.results) {
+    const token = `mcael_${crypto.randomUUID()}`;
+    const claimed = await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries
+      SET status='running',attempts=attempts+1,lease_token=?,lease_until=?,updated_at=? WHERE id=?
+      AND ((status='pending' AND next_at<=?) OR (status='running' AND lease_until<=?))`)
+      .bind(token, new Date(now.getTime() + 60_000).toISOString(), at, candidate.id, at, at).run();
+    if (!claimed.meta.changes) { result.deferred++; continue; }
+
+    const row = await env.PLATFORM_DB.prepare(`SELECT d.id,d.alert_id,d.tenant_id,d.space_id,d.project_id,d.user_id,
+        d.recipient_kind,d.attempts,a.provider,a.service_id,a.currency,a.observed_provider_cost_micros,
+        a.limit_provider_cost_micros,a.acknowledged_at,b.email_alerts_enabled,b.email_recipient_kind,b.updated_by_user_id
+      FROM managed_service_cost_budget_email_deliveries d
+      JOIN managed_service_cost_budget_alerts a ON a.id=d.alert_id
+      JOIN managed_service_cost_budgets b ON b.id=a.budget_id
+      WHERE d.id=? AND d.lease_token=?`).bind(candidate.id, token).first<CostBudgetEmailDeliveryRow>();
+    if (!row) {
+      await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries SET status='suppressed',lease_token=NULL,
+        lease_until=NULL,last_error='source_alert_or_budget_unavailable',updated_at=? WHERE id=? AND lease_token=?`)
+        .bind(at,candidate.id,token).run();
+      result.suppressed++;
+      continue;
+    }
+
+    if (row.acknowledged_at || row.email_alerts_enabled !== 1 || row.updated_by_user_id !== row.user_id
+      || row.email_recipient_kind !== row.recipient_kind) {
+      await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries SET status='suppressed',lease_token=NULL,
+        lease_until=NULL,last_error=?,updated_at=? WHERE id=? AND lease_token=?`)
+        .bind(row.acknowledged_at ? "alert_acknowledged" : "email_opt_in_changed", at, row.id, token).run();
+      result.suppressed++;
+      continue;
+    }
+
+    let stillAuthorized = !!await env.PLATFORM_DB.prepare(`SELECT 1 AS ok FROM orgs o JOIN spaces s ON s.tenant_id=o.id
+      WHERE o.id=? AND o.status='active' AND s.id=? AND s.status='active' AND
+        (o.owner_id=? OR EXISTS(SELECT 1 FROM org_members m WHERE m.org_id=o.id AND m.user_id=? AND m.role IN ('owner','admin') AND m.joined_at IS NOT NULL)
+          OR EXISTS(SELECT 1 FROM space_members sm WHERE sm.space_id=s.id AND sm.end_user_id=? AND sm.role IN ('owner','admin') AND sm.suspended_at IS NULL)) LIMIT 1`)
+      .bind(row.tenant_id, row.space_id, row.user_id, row.user_id, row.user_id).first<{ ok: number }>();
+    if (!stillAuthorized && row.project_id && env.SPACES_WORKER) {
+      try {
+        const response = await env.SPACES_WORKER.fetch(new Request(`http://spaces/spaces/${encodeURIComponent(row.space_id)}/projects/${encodeURIComponent(row.project_id)}/assistant-access?user_id=${encodeURIComponent(row.user_id)}`, {
+          headers: { "x-naelao-tenant-id": row.tenant_id, "x-naelao-user-id": row.user_id, "x-naelao-role": "product_end_user",
+            "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, row.tenant_id) },
+        }));
+        const access = await response.json<{ effective_role?: string }>().catch(() => ({} as { effective_role?: string }));
+        stillAuthorized = response.ok && access.effective_role === "owner";
+      } catch { stillAuthorized = false; }
+    }
+    if (!stillAuthorized) {
+      await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries SET status='suppressed',lease_token=NULL,
+        lease_until=NULL,last_error='recipient_access_revoked',updated_at=? WHERE id=? AND lease_token=?`).bind(at, row.id, token).run();
+      result.suppressed++;
+      continue;
+    }
+
+    let recipient: string | null = null;
+    try {
+      if (row.recipient_kind === "builder_user") {
+        const account = await env.PLATFORM_DB.prepare("SELECT email FROM users WHERE id=? AND status='active'")
+          .bind(row.user_id).first<{ email: string }>();
+        recipient = account?.email ?? null;
+      } else {
+        const account = await env.PLATFORM_DB.prepare(`SELECT u.email FROM product_end_users u
+          JOIN spaces s ON s.product_id=u.product_space_id
+          WHERE s.id=? AND s.tenant_id=? AND u.end_user_id=? AND u.email_verified_at IS NOT NULL
+            AND u.suspended_at IS NULL AND u.deleted_at IS NULL`)
+          .bind(row.space_id, row.tenant_id, row.user_id).first<{ email: string | null }>();
+        recipient = account?.email ?? null;
+      }
+    } catch {
+      await deferManagedServiceCostBudgetEmailDelivery(env, row, token, at, "recipient_lookup_unavailable", now);
+      result.deferred++;
+      continue;
+    }
+    if (!recipient || !/^[^\s@<>]{1,128}@[^\s@<>]{1,190}$/.test(recipient)) {
+      await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries SET status='no_recipient',lease_token=NULL,
+        lease_until=NULL,last_error='active_account_email_unavailable',updated_at=? WHERE id=? AND lease_token=?`).bind(at, row.id, token).run();
+      result.noRecipient++;
+      continue;
+    }
+    if (!env.NOTIFICATIONS_WORKER) {
+      await deferManagedServiceCostBudgetEmailDelivery(env, row, token, at, "notifications_worker_unavailable", now);
+      result.deferred++;
+      continue;
+    }
+
+    const amount = `${formatCostMicros(row.observed_provider_cost_micros)} ${row.currency}`;
+    const threshold = `${formatCostMicros(row.limit_provider_cost_micros)} ${row.currency}`;
+    const message = `${row.provider} ${row.service_id} recorded ${amount} in provider-cost evidence over the last 30 days, reaching the configured ${threshold} warning threshold. This informational alert does not stop provider activity or verify an invoice.`;
+    try {
+      const response = await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": row.tenant_id },
+        body: JSON.stringify({ channel: "email", space_id: row.space_id, to: recipient,
+          subject: "Managed service cost warning", body: `<p>${escapeCostAlertHtml(message)}</p><p>You opted in to this warning in Managed Services settings.</p>`,
+          notification_id: `managed-cost-alert-email:${row.id}` }),
+      }));
+      const body = await readBoundedResponseJson<{ delivered?: unknown; reason?: unknown; outcome?: unknown }>(response, 8_192)
+        .catch(() => ({} as { delivered?: unknown; reason?: unknown; outcome?: unknown }));
+      if (response.ok && body.delivered === true) {
+        const saved = await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries SET status='provider_accepted',
+          lease_token=NULL,lease_until=NULL,last_error=NULL,accepted_at=?,updated_at=? WHERE id=? AND lease_token=?`)
+          .bind(at, at, row.id, token).run();
+        if (saved.meta.changes) result.accepted++; else result.deferred++;
+      } else if (body.outcome === "attempt_ambiguous") {
+        await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries SET status='ambiguous',lease_token=NULL,
+          lease_until=NULL,last_error='notification_outcome_ambiguous',updated_at=? WHERE id=? AND lease_token=?`)
+          .bind(at, row.id, token).run();
+        result.ambiguous++;
+      } else if (body.outcome === "provider_rejected" || response.status === 403
+        || (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429)) {
+        const status = body.outcome === "provider_rejected" ? "provider_rejected" : "suppressed";
+        const reason = typeof body.reason === "string" && /^[a-z0-9_-]{1,100}$/.test(body.reason) ? body.reason
+          : status === "provider_rejected" ? "email_provider_rejected" : "notification_not_authorized";
+        await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries SET status=?,lease_token=NULL,lease_until=NULL,
+          last_error=?,updated_at=? WHERE id=? AND lease_token=?`).bind(status, reason, at, row.id, token).run();
+        if (status === "provider_rejected") result.rejected++; else result.suppressed++;
+      } else {
+        const code = typeof body.reason === "string" && /^[a-z0-9_-]{1,100}$/.test(body.reason)
+          ? body.reason : `notifications_http_${response.status}`;
+        await deferManagedServiceCostBudgetEmailDelivery(env, row, token, at, code, now);
+        result.deferred++;
+      }
+    } catch {
+      await deferManagedServiceCostBudgetEmailDelivery(env, row, token, at, "notifications_delivery_unavailable", now);
+      result.deferred++;
+    }
+  }
+  return result;
+}
+
+async function deferManagedServiceCostBudgetEmailDelivery(
+  env: AgentsEnv,
+  row: CostBudgetEmailDeliveryRow,
+  token: string,
+  at: string,
+  error: string,
+  now: Date,
+) {
+  const delay = Math.min(6 * 60 * 60_000, 60_000 * 2 ** Math.min(Math.max(row.attempts - 1, 0), 8));
+  await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries SET status='pending',next_at=?,lease_token=NULL,
+    lease_until=NULL,last_error=?,updated_at=? WHERE id=? AND lease_token=?`)
+    .bind(new Date(now.getTime() + delay).toISOString(), error.slice(0, 100), at, row.id, token).run();
 }
 
 async function deferManagedServiceCostBudgetAlertDelivery(env:AgentsEnv,row:CostAlertDeliveryRow,token:string,at:string,error:string,now:Date){

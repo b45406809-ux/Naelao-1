@@ -86,6 +86,12 @@ def validate_data(
         preflight = re.search(r"^  preflight:\s*\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)", workflow, re.MULTILINE | re.DOTALL)
         if not preflight or 'test_release_migrations.py' not in preflight.group("body"):
             errors.append(f"{environment} preflight does not test the durable D1 release migration runner")
+        required_schema_probes = (
+            "SELECT email_alerts_enabled,email_recipient_kind FROM managed_service_cost_budgets LIMIT 0",
+            "SELECT id,alert_id,tenant_id,space_id,project_id,user_id,recipient_kind,status,attempts,next_at,lease_token,lease_until,last_error,created_at,updated_at,accepted_at FROM managed_service_cost_budget_email_deliveries LIMIT 0",
+        )
+        if not all(probe in workflow for probe in required_schema_probes):
+            errors.append(f"{environment} deployment workflow is missing managed-service cost email schema probes")
         phases = env_manifest.get("phases")
         if not isinstance(phases, list) or not phases:
             errors.append(f"{environment} manifest phases must be a non-empty ordered list")

@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0246_blueprint_export_idempotency",
+  "requiredSchemaVersion": "0247_managed_service_cost_alert_email_opt_in",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -987,6 +987,10 @@
     {
       "filename": "0246_blueprint_export_idempotency.sql",
       "sha256": "6f7822f467d753b4308d81b182578a2e0013f1d3a88a52b73b62f86fa7c02214"
+    },
+    {
+      "filename": "0247_managed_service_cost_alert_email_opt_in.sql",
+      "sha256": "910f76ccc7be3630f53ade6f5f42f40def019e6fe6fda222972bda87e5562c3e"
     }
   ]
 }

@@ -251,10 +251,11 @@ async function handle(c: C, agent: boolean) {
     catch{return c.json({error_code:"managed_service_dashboard_unavailable"},503);}
   }
   if(action==="managed-service-cost-budget"){
-    if(c.req.method!=="POST"||Object.keys(body).some(key=>!["action","provider","service_id","provenance","currency","limit_provider_cost_micros"].includes(key))
+    if(c.req.method!=="POST"||Object.keys(body).some(key=>!["action","provider","service_id","provenance","currency","limit_provider_cost_micros","email_alerts_enabled"].includes(key))
       ||typeof body.provider!=="string"||typeof body.service_id!=="string"
       ||(body.provenance!=="operator_imported"&&body.provenance!=="provider_api_observed")
       ||typeof body.currency!=="string"
+      ||(body.email_alerts_enabled!==undefined&&typeof body.email_alerts_enabled!=="boolean")
       ||(body.limit_provider_cost_micros!==null&&(!Number.isSafeInteger(body.limit_provider_cost_micros)||Number(body.limit_provider_cost_micros)<=0)))
       return c.json({error_code:"invalid_managed_service_cost_budget"},400);
     let identity:CommunicationIdentity;
@@ -268,7 +269,8 @@ async function handle(c: C, agent: boolean) {
       if(!["owner","admin"].includes(effectiveRole??""))return c.json({error_code:"owner_authorization_required"},403);
     }
     try{return c.json(await setManagedServiceCostBudget(c.env,scope,{provider:body.provider,serviceId:body.service_id,
-      provenance:body.provenance,currency:body.currency,limitProviderCostMicros:body.limit_provider_cost_micros as number|null}));}
+      provenance:body.provenance,currency:body.currency,limitProviderCostMicros:body.limit_provider_cost_micros as number|null,
+      ...(body.email_alerts_enabled===undefined?{}:{emailAlertsEnabled:body.email_alerts_enabled as boolean})}));}
     catch(error){const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"managed_service_cost_budget_failed";
       return c.json({error_code:code},code.includes("conflict")?409:400);}
   }

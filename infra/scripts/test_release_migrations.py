@@ -43,6 +43,11 @@ class MemoryD1:
             "operation_id", "tenant_id", "space_id", "project_id", "installation_id", "connection_id",
             "provider", "account_id", "credential_name", "webhook_secret_name", "routing_keys_json", "status", "operation_kind",
         )
+        self.managed_cost_budget_columns = ("email_alerts_enabled", "email_recipient_kind")
+        self.managed_cost_email_delivery_columns = (
+            "id", "alert_id", "tenant_id", "space_id", "project_id", "user_id", "recipient_kind", "status",
+            "attempts", "next_at", "lease_token", "lease_until", "last_error", "created_at", "updated_at", "accepted_at",
+        )
 
     def query(self, sql):
         if "name IN (" in sql:
@@ -76,6 +81,10 @@ class MemoryD1:
             return [{"name": name} for name in self.extension_call_columns]
         if sql.startswith("PRAGMA table_info('extension_provider_cleanup_operations')"):
             return [{"name": name} for name in self.cleanup_operation_columns]
+        if sql.startswith("PRAGMA table_info('managed_service_cost_budgets')"):
+            return [{"name": name} for name in self.managed_cost_budget_columns]
+        if sql.startswith("PRAGMA table_info('managed_service_cost_budget_email_deliveries')"):
+            return [{"name": name} for name in self.managed_cost_email_delivery_columns]
         return []
 
     def execute_file(self, sql):
@@ -301,6 +310,21 @@ class ReleaseMigrationTests(unittest.TestCase):
         incomplete.cleanup_operation_columns = ("operation_id", "status", "credential_name")
         with self.assertRaisesRegex(release.ReleaseError, "extension_provider_cleanup_operations"):
             release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
+
+    def test_required_schema_probe_checks_opt_in_managed_cost_email_storage(self):
+        required = self.entries[-1]["filename"]
+        ledger = {required: {**self.entries[-1], "status": "applied"}}
+        manifest = {**self.manifest, "requiredSchemaVersion": Path(required).stem}
+
+        incomplete_budget = MemoryD1()
+        incomplete_budget.managed_cost_budget_columns = ("id",)
+        with self.assertRaisesRegex(release.ReleaseError, "managed_service_cost_budgets"):
+            release._required_schema_check(incomplete_budget, manifest, ledger)
+
+        incomplete_outbox = MemoryD1()
+        incomplete_outbox.managed_cost_email_delivery_columns = ("id", "alert_id", "status")
+        with self.assertRaisesRegex(release.ReleaseError, "managed_service_cost_budget_email_deliveries"):
+            release._required_schema_check(incomplete_outbox, manifest, ledger)
 
     def test_interrupted_run_resumes_from_next_atomic_migration(self):
         small = {

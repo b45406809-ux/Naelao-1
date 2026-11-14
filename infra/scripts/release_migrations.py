@@ -405,6 +405,26 @@ def _required_schema_check(d1: D1, manifest: dict, ledger: dict[str, dict[str, A
     }
     if not cleanup_operation_expected.issubset(cleanup_operation_columns):
         raise ReleaseError("required schema check failed for extension_provider_cleanup_operations")
+    managed_cost_budget_columns = {
+        row.get("name")
+        for row in d1.query("PRAGMA table_info('managed_service_cost_budgets')")
+        if isinstance(row.get("name"), str)
+    }
+    managed_cost_budget_expected = {"email_alerts_enabled", "email_recipient_kind"}
+    if not managed_cost_budget_expected.issubset(managed_cost_budget_columns):
+        raise ReleaseError("required schema check failed for managed_service_cost_budgets")
+    managed_cost_email_columns = {
+        row.get("name")
+        for row in d1.query("PRAGMA table_info('managed_service_cost_budget_email_deliveries')")
+        if isinstance(row.get("name"), str)
+    }
+    managed_cost_email_expected = {
+        "id", "alert_id", "tenant_id", "space_id", "project_id", "user_id", "recipient_kind",
+        "status", "attempts", "next_at", "lease_token", "lease_until", "last_error", "created_at",
+        "updated_at", "accepted_at",
+    }
+    if not managed_cost_email_expected.issubset(managed_cost_email_columns):
+        raise ReleaseError("required schema check failed for managed_service_cost_budget_email_deliveries")
     d1.execute_file(
         f"INSERT INTO {META_TABLE}(key,value) VALUES('current_schema_version',{sql_quote(manifest['requiredSchemaVersion'])}) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value;\n"

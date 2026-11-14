@@ -49,7 +49,7 @@ function providerAttachments(value: unknown): ProviderRecord[] {
 
 type CostProvenance = "operator_imported" | "provider_api_observed";
 type CostBudgetGroup = { provider: string; serviceId: string; provenance: CostProvenance; currency: string; observedProviderCostMicros: number;
-  limitProviderCostMicros: number | null; thresholdReached: boolean };
+  limitProviderCostMicros: number | null; thresholdReached: boolean; emailAlertsEnabled: boolean };
 function providerCostBudgetGroups(dashboard: ManagedServiceDashboard): CostBudgetGroup[] {
   const groups = new Map<string, CostBudgetGroup>();
   const keyOf = (row: { provider:string;serviceId:string;provenance:CostProvenance;currency:string }) =>
@@ -57,7 +57,7 @@ function providerCostBudgetGroups(dashboard: ManagedServiceDashboard): CostBudge
   for (const cost of dashboard.providerCosts30d) {
     const key = keyOf(cost);
     const current = groups.get(key) ?? { provider:cost.provider,serviceId:cost.serviceId,provenance:cost.provenance,
-      currency:cost.currency,observedProviderCostMicros:0,limitProviderCostMicros:null,thresholdReached:false };
+      currency:cost.currency,observedProviderCostMicros:0,limitProviderCostMicros:null,thresholdReached:false,emailAlertsEnabled:false };
     current.observedProviderCostMicros += cost.providerCostMicros;
     groups.set(key,current);
   }
@@ -66,16 +66,17 @@ function providerCostBudgetGroups(dashboard: ManagedServiceDashboard): CostBudge
   for (const cost of dashboard.decisionModelCosts30d) {
     const row={provider:"openrouter",serviceId:"decision-model",provenance:"provider_api_observed" as const,currency:"USD"};
     const key=keyOf(row);
-    const current=groups.get(key)??{...row,observedProviderCostMicros:0,limitProviderCostMicros:null,thresholdReached:false};
+    const current=groups.get(key)??{...row,observedProviderCostMicros:0,limitProviderCostMicros:null,thresholdReached:false,emailAlertsEnabled:false};
     current.observedProviderCostMicros+=cost.providerCostMicros;
     groups.set(key,current);
   }
   for (const budget of dashboard.providerCostBudgets30d) {
     const key = keyOf(budget);
     const current = groups.get(key) ?? { provider:budget.provider,serviceId:budget.serviceId,provenance:budget.provenance,
-      currency:budget.currency,observedProviderCostMicros:0,limitProviderCostMicros:null,thresholdReached:false };
+      currency:budget.currency,observedProviderCostMicros:0,limitProviderCostMicros:null,thresholdReached:false,emailAlertsEnabled:false };
     current.limitProviderCostMicros = budget.limitProviderCostMicros;
     current.thresholdReached = budget.thresholdReached;
+    current.emailAlertsEnabled = budget.emailAlertsEnabled;
     groups.set(key,current);
   }
   return [...groups.values()].sort((a,b) => keyOf(a).localeCompare(keyOf(b)));
@@ -140,6 +141,7 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
   const [managedModelError, setManagedModelError] = React.useState("");
   const [managedModelIdempotencyKey, setManagedModelIdempotencyKey] = React.useState("");
   const [costBudgetInputs, setCostBudgetInputs] = React.useState<Record<string,string>>({});
+  const [costBudgetEmailInputs, setCostBudgetEmailInputs] = React.useState<Record<string,boolean>>({});
 
   React.useEffect(() => {
     let current = true;
@@ -229,6 +231,10 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
       `${budget.provider}:${budget.serviceId}:${budget.provenance}:${budget.currency}`,
       costMicrosToInput(budget.limitProviderCostMicros),
     ])));
+    setCostBudgetEmailInputs(Object.fromEntries(dashboard.providerCostBudgets30d.map(budget => [
+      `${budget.provider}:${budget.serviceId}:${budget.provenance}:${budget.currency}`,
+      budget.emailAlertsEnabled,
+    ])));
   }, [dashboard]);
 
   async function saveProviderCostBudget(group: CostBudgetGroup, clear = false) {
@@ -243,7 +249,8 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
     setNotice("");
     try {
       await assistantMailApi(spaceId, session, { action:"managed-service-cost-budget", provider:group.provider,
-        service_id:group.serviceId, provenance:group.provenance, currency:group.currency, limit_provider_cost_micros:limit }, true);
+        service_id:group.serviceId, provenance:group.provenance, currency:group.currency, limit_provider_cost_micros:limit,
+        email_alerts_enabled: clear ? false : costBudgetEmailInputs[key] === true }, true);
       setNotice(clear ? "Cost threshold removed." : "Rolling 30-day cost threshold saved.");
       setRefreshVersion(version => version + 1);
     } catch (failure) {
@@ -829,6 +836,12 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
                     alert.pushDeliveryStatus === "suppressed" ? " · Browser push suppressed" :
                     alert.pushDeliveryStatus === "ambiguous" ? " · Browser push outcome unknown; check notification status" :
                     alert.pushDeliveryStatus ? " · Browser push pending" : " · Browser push not queued"}
+                  {alert.emailDeliveryStatus === "provider_accepted" ? " · Email accepted by provider; inbox delivery is unverified" :
+                    alert.emailDeliveryStatus === "provider_rejected" ? " · Email provider rejected the request" :
+                    alert.emailDeliveryStatus === "ambiguous" ? " · Email outcome unknown; automatic resend is paused" :
+                    alert.emailDeliveryStatus === "suppressed" ? " · Email suppressed after authorization or opt-in changed" :
+                    alert.emailDeliveryStatus === "no_recipient" ? " · No active account email is available" :
+                    alert.emailDeliveryStatus ? " · Email pending" : " · Email not opted in"}
                 </div>
                 <Button size="sm" variant="secondary" disabled={busy} onClick={()=>void acknowledgeProviderCostAlert(alert.id)}>Acknowledge</Button>
               </li>)}
@@ -849,8 +862,13 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
                       <input type="number" min="0.000001" max="1000000" step="0.000001" value={costBudgetInputs[key] ?? ""}
                         onChange={event=>setCostBudgetInputs(current=>({...current,[key]:event.target.value}))} disabled={busy} />
                     </label>
+                    <label style={{ fontSize:12,display:"flex",alignItems:"center",gap:6 }}>
+                      <input type="checkbox" checked={costBudgetEmailInputs[key] ?? group.emailAlertsEnabled}
+                        onChange={event=>setCostBudgetEmailInputs(current=>({...current,[key]:event.target.checked}))} disabled={busy} />
+                      Email me at my current account address when this threshold is reached
+                    </label>
                     <Button size="sm" disabled={busy || currencyLimitToMicros(costBudgetInputs[key] ?? "")===null}
-                      onClick={()=>void saveProviderCostBudget(group)}>Save threshold</Button>
+                      onClick={()=>void saveProviderCostBudget(group)}>Save threshold and alert settings</Button>
                     {group.limitProviderCostMicros!==null && <Button size="sm" variant="secondary" disabled={busy}
                       onClick={()=>void saveProviderCostBudget(group,true)}>Remove</Button>}
                   </div>

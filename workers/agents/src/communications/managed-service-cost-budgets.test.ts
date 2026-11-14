@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentsEnv } from "../index.js";
 import { fixture, scope } from "../../../../tests/fixtures/assistant-communications.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
-import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget, sweepManagedServiceCostBudgetAlertDeliveries, sweepManagedServiceCostBudgetAlerts } from "./managed-service-cost-budgets.js";
+import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget, sweepManagedServiceCostBudgetAlertDeliveries,
+  sweepManagedServiceCostBudgetAlertEmailDeliveries, sweepManagedServiceCostBudgetAlerts } from "./managed-service-cost-budgets.js";
 import { recordProviderApiCostObservation } from "./managed-service-cost-observations.js";
 import { registerCommunicationRoutes } from "./routes.js";
 
@@ -46,6 +47,8 @@ describe("managed-service provider-cost threshold notices", () => {
     expect(sweep).toMatchObject({scanned:1,alertsCreated:1,thresholdsReset:0,deferred:0});
     expect(f.db.db.prepare("SELECT status,user_id FROM managed_service_cost_budget_alert_deliveries").get())
       .toEqual({status:"pending",user_id:scope.userId});
+    expect(f.db.db.prepare("SELECT count(*) AS count FROM managed_service_cost_budget_email_deliveries").get())
+      .toEqual({count:0});
     await expect(sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:01:00.000Z")))
       .resolves.toMatchObject({alertsCreated:0,thresholdsReset:0,deferred:0});
     const alerted=await getManagedServiceDashboard(f.env,scope,new Date("2026-11-12T02:01:00.000Z"));
@@ -161,16 +164,19 @@ describe("managed-service provider-cost threshold notices", () => {
       "x-naelao-role": scope.role,
       "x-naelao-internal-token": await mintInternalToken("secret", scope.tenantId),
     };
-    const call = (userId: string, limit: number | null) => app.request(
+    const call = (userId: string, limit: number | null, emailAlertsEnabled?: boolean) => app.request(
       "/spaces/space/assistant-communications?action=managed-service-cost-budget",
       { method: "POST", headers: { ...headers, "x-naelao-user-id": userId }, body: JSON.stringify({
         action: "managed-service-cost-budget", provider: "telnyx", service_id: "phone-number",
         provenance: "provider_api_observed", currency: "USD", limit_provider_cost_micros: limit,
+        ...(emailAlertsEnabled === undefined ? {} : { email_alerts_enabled: emailAlertsEnabled }),
       }) }, f.env,
     );
 
     expect((await call("other", 5_000)).status).toBe(403);
-    expect((await call(scope.userId, 5_000)).status).toBe(200);
+    expect((await call(scope.userId, 5_000, true)).status).toBe(200);
+    expect((await getManagedServiceDashboard(f.env, scope)).providerCostBudgets30d[0]?.emailAlertsEnabled).toBe(true);
+    expect((await call(scope.userId, 5_000, "yes" as never)).status).toBe(400);
     expect((await call(scope.userId, null)).status).toBe(200);
     expect((await getManagedServiceDashboard(f.env, scope)).providerCostBudgets30d).toEqual([]);
   });
@@ -233,6 +239,121 @@ describe("managed-service provider-cost threshold notices", () => {
       .resolves.toMatchObject({scanned:1,noSubscription:1,deferred:0});
     expect(retry.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_alert_deliveries").get())
       .toEqual({status:"no_subscription",last_error:"no_active_web_push_subscription"});
+  });
+
+  it("delivers an explicitly opted-in email alert to the current active account address", async () => {
+    const f = fixture();
+    f.db.db.exec("CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL,status TEXT NOT NULL); INSERT INTO users VALUES('user','owner@example.test','active');");
+    const ownerScope = { ...scope, role: "owner" };
+    await recordProviderApiCostObservation(f.db, { tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"email-alert-operation",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,
+      providerCost:"0.010000",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z" });
+    await setManagedServiceCostBudget(f.env, ownerScope, { provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",
+      currency:"USD",limitProviderCostMicros:5_000,emailAlertsEnabled:true });
+    await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
+    expect(f.db.db.prepare("SELECT user_id,recipient_kind,status FROM managed_service_cost_budget_email_deliveries").get())
+      .toEqual({user_id:"user",recipient_kind:"builder_user",status:"pending"});
+    expect(JSON.stringify(f.db.db.prepare("SELECT * FROM managed_service_cost_budget_email_deliveries").get())).not.toContain("owner@example.test");
+
+    const notify=vi.fn(async()=>Response.json({delivered:true,accepted:true,outcome:"provider_accepted",channel:"email"}));
+    f.env.NOTIFICATIONS_WORKER={fetch:notify} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertEmailDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toEqual({scanned:1,accepted:1,rejected:0,ambiguous:0,suppressed:0,noRecipient:0,deferred:0});
+    const request=notify.mock.calls[0]?.[0] as Request;
+    expect(request.url).toBe("http://notifications-worker/internal/notify");
+    expect(request.headers.get("x-naelao-tenant-id")).toBe(scope.tenantId);
+    expect(await request.json()).toMatchObject({channel:"email",space_id:scope.spaceId,to:"owner@example.test",
+      subject:"Managed service cost warning",body:expect.stringContaining("0.01 USD"),
+      notification_id:expect.stringMatching(/^managed-cost-alert-email:/)});
+    expect(f.db.db.prepare("SELECT status,attempts,last_error,accepted_at FROM managed_service_cost_budget_email_deliveries").get())
+      .toMatchObject({status:"provider_accepted",attempts:1,last_error:null,accepted_at:"2026-11-12T02:01:00.000Z"});
+    expect((await getManagedServiceDashboard(f.env,ownerScope,new Date("2026-11-12T02:01:00.000Z"))).providerCostAlerts[0]?.emailDeliveryStatus)
+      .toBe("provider_accepted");
+  });
+
+  it("resolves product-user email through the Space product and preserves provider rejection as terminal", async () => {
+    const f = fixture();
+    f.db.db.exec(`CREATE TABLE product_end_users (
+      product_space_id TEXT NOT NULL,end_user_id TEXT NOT NULL,email TEXT,email_verified_at TEXT,
+      suspended_at TEXT,deleted_at TEXT,PRIMARY KEY(product_space_id,end_user_id));
+      ALTER TABLE spaces ADD COLUMN product_id TEXT;
+      UPDATE spaces SET product_id='product' WHERE id='space';
+      INSERT INTO product_end_users(product_space_id,end_user_id,email,email_verified_at)
+        VALUES('product','user','verified@example.test','2026-11-01T00:00:00.000Z');`);
+    const productOwnerScope = { ...scope, role: "product_end_user" };
+    await recordProviderApiCostObservation(f.db,{tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"product-email-alert-operation",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,
+      providerCost:"0.010000",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z"});
+    await setManagedServiceCostBudget(f.env,productOwnerScope,{provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",
+      currency:"USD",limitProviderCostMicros:5_000,emailAlertsEnabled:true});
+    await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
+    const notify=vi.fn(async()=>Response.json({delivered:false,outcome:"provider_rejected",status:422},{status:502}));
+    f.env.NOTIFICATIONS_WORKER={fetch:notify} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertEmailDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toMatchObject({rejected:1,deferred:0});
+    const request=notify.mock.calls[0]?.[0] as Request;
+    expect(await request.json()).toMatchObject({channel:"email",to:"verified@example.test"});
+    expect(f.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_email_deliveries").get())
+      .toEqual({status:"provider_rejected",last_error:"email_provider_rejected"});
+    await expect(sweepManagedServiceCostBudgetAlertEmailDeliveries(f.env,new Date("2026-11-12T02:02:00.000Z")))
+      .resolves.toMatchObject({scanned:0,rejected:0});
+    expect(notify).toHaveBeenCalledOnce();
+  });
+
+  it("suppresses queued email if an owner removes its cost threshold", async () => {
+    const f=fixture();
+    await recordProviderApiCostObservation(f.db,{tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"email-removed-operation",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,
+      providerCost:"0.010000",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z"});
+    const ownerScope={...scope,role:"owner"};
+    const budget={provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed" as const,currency:"USD"};
+    await setManagedServiceCostBudget(f.env,ownerScope,{...budget,limitProviderCostMicros:5_000,emailAlertsEnabled:true});
+    await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
+    await setManagedServiceCostBudget(f.env,ownerScope,{...budget,limitProviderCostMicros:null});
+    const notify=vi.fn();f.env.NOTIFICATIONS_WORKER={fetch:notify} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertEmailDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toMatchObject({scanned:0,accepted:0});
+    expect(notify).not.toHaveBeenCalled();
+    expect(f.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_email_deliveries").get())
+      .toEqual({status:"suppressed",last_error:"budget_removed"});
+  });
+
+  it("pauses email after an ambiguous provider outcome and suppresses queued delivery after access revocation", async () => {
+    const f=fixture();
+    f.db.db.exec("CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL,status TEXT NOT NULL); INSERT INTO users VALUES('user','owner@example.test','active');");
+    const ownerScope={...scope,role:"owner"};
+    await recordProviderApiCostObservation(f.db,{tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"email-ambiguous-operation",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,
+      providerCost:"0.010000",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z"});
+    await setManagedServiceCostBudget(f.env,ownerScope,{provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",
+      currency:"USD",limitProviderCostMicros:5_000,emailAlertsEnabled:true});
+    await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
+    const notify=vi.fn(async()=>Response.json({delivered:false,outcome:"attempt_ambiguous",reconcile_required:true},{status:502}));
+    f.env.NOTIFICATIONS_WORKER={fetch:notify} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertEmailDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toMatchObject({ambiguous:1,accepted:0});
+    await expect(sweepManagedServiceCostBudgetAlertEmailDeliveries(f.env,new Date("2026-11-12T02:02:00.000Z")))
+      .resolves.toMatchObject({scanned:0});
+    expect(notify).toHaveBeenCalledOnce();
+
+    const revoked=fixture();
+    revoked.db.db.exec("CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT NOT NULL,status TEXT NOT NULL); INSERT INTO users VALUES('user','owner@example.test','active');");
+    await recordProviderApiCostObservation(revoked.db,{tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"email-revoked-operation",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,
+      providerCost:"0.010000",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z"});
+    await setManagedServiceCostBudget(revoked.env,ownerScope,{provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",
+      currency:"USD",limitProviderCostMicros:5_000,emailAlertsEnabled:true});
+    await sweepManagedServiceCostBudgetAlerts(revoked.env,new Date("2026-11-12T02:00:00.000Z"));
+    revoked.db.db.prepare("DELETE FROM org_members WHERE org_id=? AND user_id=?").run(scope.tenantId,scope.userId);
+    revoked.db.db.prepare("UPDATE orgs SET owner_id='somebody-else' WHERE id=?").run(scope.tenantId);
+    revoked.db.db.prepare("DELETE FROM space_members WHERE space_id=? AND end_user_id=?").run(scope.spaceId,scope.userId);
+    const noSend=vi.fn();
+    revoked.env.NOTIFICATIONS_WORKER={fetch:noSend} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertEmailDeliveries(revoked.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toMatchObject({suppressed:1,accepted:0});
+    expect(noSend).not.toHaveBeenCalled();
+    expect(revoked.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_email_deliveries").get())
+      .toEqual({status:"suppressed",last_error:"recipient_access_revoked"});
   });
 
   it("holds an ambiguous notification outcome without automatic re-egress", async () => {

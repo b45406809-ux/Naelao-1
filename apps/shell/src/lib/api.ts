@@ -3506,8 +3506,10 @@ export interface ManagedServiceDashboard {
   decisionModelCosts30d: Array<{ provider: "openrouter"; modelId: string; currency: "USD"; providerCostMicros: number;
     receiptCount: number; evidenceSource: "openrouter_response" | "openrouter_generation_api" }>;
   providerCostBudgets30d: Array<{ provider: string; serviceId: string; provenance: "operator_imported" | "provider_api_observed";
-    currency: string; limitProviderCostMicros: number; updatedAt: string; observedProviderCostMicros: number; thresholdReached: boolean }>;
+    currency: string; limitProviderCostMicros: number; updatedAt: string; observedProviderCostMicros: number; thresholdReached: boolean;
+    emailAlertsEnabled: boolean }>;
   providerCostAlerts: Array<{ id:string;provider:string;serviceId:string;provenance:"operator_imported"|"provider_api_observed";currency:string;
     observedProviderCostMicros:number;limitProviderCostMicros:number;windowStart:string;windowEnd:string;createdAt:string;
-    pushDeliveryStatus:"pending"|"running"|"delivered"|"no_subscription"|"suppressed"|"ambiguous"|null }>;
+    pushDeliveryStatus:"pending"|"running"|"delivered"|"no_subscription"|"suppressed"|"ambiguous"|null;
+    emailDeliveryStatus:"pending"|"running"|"provider_accepted"|"provider_rejected"|"ambiguous"|"suppressed"|"no_recipient"|null }>;
 }
