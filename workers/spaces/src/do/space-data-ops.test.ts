@@ -223,7 +223,7 @@ describe("SpaceDO owner data operations", () => {
     expect(storage.sql.exec<{ enabled: number; updated_by: string }>("SELECT enabled,updated_by FROM event_triggers WHERE id=?", "trigger-a").toArray()).toEqual([{ enabled: 1, updated_by: "owner-a" }]);
   });
 
-  it("excludes owner-managed grants from new archives and rejects them in legacy restores", async () => {
+  it("excludes owner-managed grants from new archives and skips them in legacy restores", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
@@ -280,6 +280,44 @@ describe("SpaceDO owner data operations", () => {
     for (const table of Object.keys(grantRows)) expect(storage.sql.exec(`SELECT * FROM "${table}"`).toArray()).toHaveLength(0);
     expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>("SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json))
       .toMatchObject({ owner_managed_grant_rows_not_restored: preview.safety_actions.owner_managed_grant_rows_not_restored });
+  });
+
+  it("keeps an uninstalled Space extension inactive when restoring an older active installation row", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers,
+      body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    const runtimeWork = (action: "acquire" | "release", workId: string) => space.fetch(new Request("https://space/extension-runtime-work", { method: "POST", headers,
+      body: JSON.stringify({ action, tenantId: "tenant-a", spaceId: "space-a", projectId: null, instanceId: "installation-a", workId, workKind: "channel" }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    const extensionId = "ext_archive_restore";
+    const manifest = JSON.stringify({ id: extensionId, name: "Archive recovery fixture" });
+    storage.sql.exec("INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at) VALUES(?,?,?,?,?)",
+      extensionId, manifest, "owner-a", "2026-11-14T00:00:00.000Z", "2026-11-14T00:00:00.000Z");
+    storage.sql.exec(`INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at,release_version)
+      VALUES(?,?,?,?,?,?,?,?,?,?,'active',?,NULL,NULL)`, "installation-a", extensionId, "tenant-a", "space-a", null, null, "SPACE_SHARED", "default", "space:space-a", "owner-a", "2026-11-14T00:00:00.000Z");
+    const initialAdmission = await runtimeWork("acquire", "before-archive");
+    expect(initialAdmission.status).toBe(200);
+    expect((await runtimeWork("release", "before-archive")).status).toBe(200);
+
+    const exported = await post({ action: "export", request_id: "active-extension-before-uninstall" });
+    expect(exported.status).toBe(201);
+    const { archive_id: archiveId } = await exported.json() as { archive_id: string };
+    const uninstalled = await space.fetch(new Request(`https://space/extensions/${extensionId}`, { method: "DELETE", headers }));
+    expect(uninstalled.status).toBe(200);
+    expect(storage.sql.exec<{ status: string }>("SELECT status FROM extension_instances WHERE instance_id='installation-a'").toArray()).toEqual([{ status: "removed" }]);
+
+    const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
+    expect(previewResponse.status, JSON.stringify(await previewResponse.clone().json())).toBe(200);
+    const { preview_id: previewId } = await previewResponse.json() as { preview_id: string };
+    const restored = await post({ action: "apply_restore", archive_id: archiveId, preview_id: previewId });
+    expect(restored.status, JSON.stringify(await restored.clone().json())).toBe(200);
+    expect(storage.sql.exec<{ status: string }>("SELECT status FROM extension_instances WHERE instance_id='installation-a'").toArray()).toEqual([{ status: "removed" }]);
+    const admissionAfterRestore = await runtimeWork("acquire", "after-restore");
+    expect(admissionAfterRestore.status).toBe(409);
+    expect(await admissionAfterRestore.json()).toMatchObject({ error_code: "extension_installation_inactive", acquired: false });
   });
 
   it("previews exact merge inserts and skips without mutating current rows, then persists the applied outcome", async () => {
