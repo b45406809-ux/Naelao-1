@@ -12,7 +12,46 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-14 (signed template coordination defaults)
+## Latest checkpoint — 2026-11-14 (U11 opted-in email cost alerts)
+
+Code `ca4435d81b10752133280a8b8fd9896e3430092c` is pushed to
+`origin/Mcbt5s-Backup-2`. Migration `0247_managed_service_cost_alert_email_opt_in.sql` adds a
+default-off explicit email preference and non-PII durable delivery outbox. The Shell lets the
+authorized budget owner opt in, and the scheduled caller resolves the current active/verified account
+address, rechecks scope and preference, leases retries, uses a stable Notifications ID, records
+provider-accepted/rejected/ambiguous states, and stops automatic resend after an ambiguous or rejected
+outcome. Removing a threshold suppresses its queued email. Provider acceptance is shown separately
+from inbox delivery; this is an informational warning and never blocks a service operation.
+
+Local evidence: managed cost alert tests **15/15**, Agents and Shell typechecks, release migration
+tests **16/16**, deployment manifest tests **11/11**, 247-migration and deployment-manifest
+validators, and `git diff --check`. Workflows now probe both new schema surfaces before deployment.
+These are local mocks/static checks: no deployment or live email/inbox acceptance ran. U11 email
+delivery is IMPLEMENTED_LOCAL; invoice reconciliation, absent provider cost feeds and approved spend
+enforcement remain outside that closure. Keep rollouts disabled and preserve intentionally untracked
+`infra/scripts/__pycache__/`.
+
+P13 source tracing is complete. Queue health honestly marks unsupported live backlog/age/DLQ as
+unknown. The Admin Worker requires `ADMIN_SECRET` and `platform_admin`, has no reachable Router
+service binding/route, its supported role issuance is absent, and its DLQ consumer targets another
+queue while retaining raw payloads. Generic replay therefore remains gated on a real operator
+identity/route, queue-specific authorization, payload redaction/retention and duplicate-side-effect
+contract. This is a policy/route/queue contract gate, not a provider-credential blocker.
+
+P01 remains PARTIAL for operator-attested staging/production D1 baselines, isolated environment
+rehearsal and deployed acceptance. P02 collector `368a2f23b7c344ebcd2b3810d490c48814810ec7` is
+IMPLEMENTED_LOCAL; preflight still rejects a shared D1, eleven shared KV IDs, unresolved
+`naelao-calls`, absent account/time receipts and 158 missing resource observations. No Cloudflare
+account was queried; resource separation and ownership need actual inventory. All rollout flags
+remain disabled.
+
+Exact next action: add an in-memory SQLite rehearsal of the complete fresh-install migration sequence
+to the existing release migration tests, applying each manifest SQL file in order and honoring only
+the existing conditional `SPECIAL_SKIP` rule. Wire the test through the existing workflow preflight
+gate. Keep this local SQL rehearsal distinct from the still-missing operator-attested environment
+baselines; then continue the next independent P01–P24 and S2–S9/U01–U12 code gap.
+
+## Previous checkpoint — 2026-11-14 (signed template coordination defaults)
 
 Code `a3791d51fc92b2d353d6e7b0b3bbd694f84e1f6b` is pushed to
 `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. The optional coordination

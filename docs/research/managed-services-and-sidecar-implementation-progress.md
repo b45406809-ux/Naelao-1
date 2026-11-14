@@ -1,7 +1,46 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (signed template coordination defaults)
+## Active continuation — 2026-11-14 (U11 opted-in email cost alerts)
+
+Code `ca4435d81b10752133280a8b8fd9896e3430092c` is pushed to
+`origin/Mcbt5s-Backup-2`. Migration 0247 adds default-off email opt-in and a durable outbox that stores
+user/account IDs, never recipient email. The authorized Shell budget owner can opt in; the scheduled
+delivery caller resolves the current active builder or verified Product-user address, rechecks
+authorization and current opt-in, and records provider acceptance/rejection/ambiguity. Stable
+Notifications IDs, leases and capped retry handle delivery recovery; ambiguous and provider-rejected
+outcomes do not automatically re-egress. Removing a budget suppresses pending email. The owner UI
+distinguishes provider acceptance from inbox delivery, and this informational warning does not gate
+provider operations.
+
+Local evidence: managed-cost alert tests **15/15**, Agents and Shell typechecks, release-migration
+tests **16/16**, deployment-manifest tests **11/11**, release validation for **247** migrations and
+deployment-manifest validation, `git diff --check`. Staging and production workflows probe both new
+schema surfaces. No deployment or live email/inbox acceptance ran. U11 email is IMPLEMENTED_LOCAL;
+invoice reconciliation, provider-billed idle/CPU-size feeds, approved spend enforcement and external
+cost acceptance remain open. Rollouts remain disabled.
+
+The requested P13 source trace confirms current backlog/age/DLQ are honestly unavailable. Admin's
+consumer targets another queue and stores raw payloads; `/admin/failures` requires `ADMIN_SECRET` and
+`platform_admin`, but no supported role issuance or reachable Router/service-binding path exists.
+Generic replay remains gated by operator identity/route, queue-specific authorization, payload
+retention/redaction and duplicate-side-effect contract. This is a real product/route/queue contract
+gate, not missing provider credentials.
+
+P01/P02 remain PARTIAL: `368a2f23b7c344ebcd2b3810d490c48814810ec7` adds the GET-only receipt collector,
+but preflight still finds the shared D1, eleven shared KV IDs, unresolved `naelao-calls`, missing
+account/time evidence and 158 missing observations. Operator-attested per-environment D1 baselines,
+isolated rehearsal and deployed acceptance remain absent. No Cloudflare account was queried.
+Preserve intentionally untracked `infra/scripts/__pycache__/`.
+
+Exact next action: add a fresh-install in-memory SQLite rehearsal across the full release migration
+manifest, applying migrations in order with only the reviewed conditional `SPECIAL_SKIP` behavior.
+The test must run through the existing release preflight test gate and remain distinct from actual
+staging/production baseline or deployment evidence. Then continue the next independent P01–P24 and
+S2–S9/U01–U12 code gap.
+
+
+## Previous continuation — 2026-11-14 (signed template coordination defaults)
 
 Code `a3791d51fc92b2d353d6e7b0b3bbd694f84e1f6b` is pushed to
 `origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. The signed optional
@@ -1270,7 +1309,7 @@ Statuses describe inspected source only; they do not claim a fresh test, deploym
 | U08 | PARTIAL. `.github/workflows/cloudflare-computer-pinned.yml` verifies the exact source archive SHA, builds only pinned daemon dependencies, generates the SBOM, attests daemon/SBOM provenance and retains outputs for 30 days. Existing public CI run `43247749684` and attestation `66758079` are prior evidence; provenance digests are recorded in `work/research/pinned-cloudflare-computer/BUILD-PROVENANCE.md`. The workflow explicitly does not publish an image. | There is no supported Naelao adapter/readiness/auth binding/ignore-policy/FUSE path or deployable image reference. U06's unsupported runtime contract blocks safe adapter acceptance; live build/runtime behavior remains unverified. |
 | U09 | PARTIAL. Project-main runtime namespace stays stable across ordinary project branches, while race branches remain isolated. D1 generation claims are compare-and-set before cold start; allocation tokens recover a committed claim after a lost acknowledgement and stale generations fail closed. Sidecars use private installation prefixes and explicit immutable artifact transfer with checked publication. Project main size preference and sidecar execution ceiling are persisted, audited and exposed through owner settings. Deployment-pinned command manifests reach owner-scoped runtime discovery and enforce same-installation pipeline admission; JS tool discovery is bounded and guest RPC is reauthorized per call. The owner profile API now returns scoped project-main registry state/generation/last-seen, and the Shell labels it as control-plane history rather than provider health. Focused execution-ladder tests **22/22** and project profile/status tests **3/3**; Agents/Shell typechecks pass. | Live process reconnect fencing and Cloudflare acceptance remain unproven. Encrypted private-state byte fallback, operator restart recipes, complete snapshot/erasure reconciliation, physical snapshot purge and deployed R2/Container evidence remain open. |
 | U10 | PARTIAL. Migration 0187 and scoped runtime-object inventory record project ToolSandbox/DynamicSandbox/Document/Media callers. Project cleanup pages exact sidecar workspace/artifact prefixes. Migrations 0204/0205 inventory project Browser profiles/sessions and enforce exact-ID cleanup, cancellation, local DO state purge, screenshot-prefix deletion and retryable acknowledgements. `BrowserSessionDO` rejects activity after a project tombstone. Migration 0206 inventories project-main snapshots by hashes and reconciles pending retention intents before profile/restore. The owner main-profile API exposes registry state; confirmed project-main local erasure now atomically marks `project_main_runtime_registry` erased with its runtime receipt. Focused cleanup tests **15/15**, status/profile **3/3**, Agents typecheck pass. | Dormant legacy Browser DOs created before registry rollout cannot be proactively enumerated; historical race-branch names and older runtime objects without a registry identity may be unknown. Project tombstones block those objects when touched but do not prove proactive notification of unseen objects. Historical snapshot rows missing metadata fail closed and need a repair runbook. Provider TTL and physical absence remain unverified; Container snapshot purge is unsupported. Browser `localStorage` belongs to the user's device. Approved erasure/legal-hold policy, regional bindings and deployed cleanup drills remain unresolved. |
-| U11 | IMPLEMENTED_LOCAL for supported billing/cost/alert callers. Managed-service settlement atomically records a durable metering outbox intent; bounded scheduled backoff retries delivery and consumer event IDs dedupe. Owner-scoped threshold records compare operator imports versus provider API observations separately by currency over a rolling 30 days. Lease/CAS-fenced crossing state creates durable owner-dashboard alerts with acknowledgement; Space totals include project costs consistently, while project budgets remain scoped. A leased, access-revocation-aware browser-push outbox retries to an existing subscription and exposes delivery status. OpenRouter settled receipts feed the same threshold path. U02 and the current Shell caller audit provide the owner-visible supported source integration. | Email delivery, invoice reconciliation, Cloudflare billed-idle/CPU-size and other absent provider feeds, and approved spend enforcement remain unsupported or policy-gated. Thresholds are warnings; they do not stop provider operations or reconcile invoices. API observations, operator imports and Naelao credits remain distinct. No live receipt/invoice acceptance is claimed. |
+| U11 | IMPLEMENTED_LOCAL for supported billing/cost/alert callers. Managed-service settlement atomically records a durable metering outbox intent; bounded scheduled backoff retries delivery and consumer event IDs dedupe. Owner-scoped threshold records compare operator imports versus provider API observations separately by currency over a rolling 30 days. Lease/CAS-fenced crossing state creates durable owner-dashboard alerts with acknowledgement; Space totals include project costs consistently, while project budgets remain scoped. Leased browser-push and explicitly opted-in email outboxes recheck current scope, persist non-PII outcomes, expose owner delivery status and stop automatic egress after ambiguous outcomes. The email path resolves current active builder or verified Product-user addresses and suppresses queued messages when the budget is removed. | Invoice reconciliation, Cloudflare billed-idle/CPU-size and other absent provider feeds, approved spend enforcement, provider/inbox delivery acceptance and incident/restore/load/cost drills remain external or policy-gated. Thresholds are warnings; they do not stop provider operations or reconcile invoices. API observations, operator imports and Naelao credits remain distinct. |
 | U12 | IMPLEMENTED_LOCAL for build wiring. Shared `scripts/stage-agent-container-deps.mjs` verifies pinned esbuild and platform-package versions, stages them into the container build context, and is called by the Agents build plus the connected-batches and batch-measure CI workflows. A previous fresh Agents Wrangler Docker `--dry-run` is recorded in the work log. | Future CI event execution and deployed-image parity remain unverified; no deployment occurred in this audit. |
 
 ### Primary contract check (2026-11-11)

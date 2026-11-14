@@ -55,6 +55,24 @@ time in `evidence_source` and `observed_at`; do not use a deploy, create, update
 or migration operation to prove existence. Obtain ownership/environment details for
 `naelao-calls` from its actual platform owner before adding it to the named-target map.
 
+The GET-only collector can write the configured receipt format. Set `CLOUDFLARE_ACCOUNT_ID`
+and `CLOUDFLARE_API_TOKEN` in the operator's environment; the token is read in memory and
+is not written to the receipt file or command output. Use an observer label that identifies the
+person or approved inventory process:
+
+```sh
+python3 infra/scripts/collect_cloudflare_resource_receipts.py \
+  --observer "release operator" \
+  --output infra/environment/resource-receipts.json \
+  --replace-existing
+```
+
+The collector refuses to replace an existing output unless `--replace-existing` is passed.
+Review generated evidence before running `python3 infra/scripts/validate_environment_resources.py`.
+A successful collection only confirms that configured names were observed; it does not establish
+environment isolation, ownership of `naelao-calls`, or the D1 schema state required for a release.
+The collector does not create, update, delete, migrate or deploy resources.
+
 Do not put fabricated IDs in these bindings to make the static guard pass. Provision
 or identify the real environment D1/KV resources, map every Worker binding to the
 reviewed staging or production resource, and update this inventory with provider IDs

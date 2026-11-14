@@ -1,7 +1,45 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (template coordination defaults completed locally)
+## Active continuation — 2026-11-14 (U11 opted-in email cost alerts)
+
+Code `ca4435d81b10752133280a8b8fd9896e3430092c` is pushed to
+`origin/Mcbt5s-Backup-2`. Migration 0247 adds explicit default-off email preferences and a durable
+non-PII email outbox. The owner Shell control persists opt-in; the scheduled caller resolves the
+current active builder or verified Product-user address, rechecks access/preference, leases bounded
+retries and uses stable Notifications IDs. Accepted, rejected, ambiguous, suppressed and no-recipient
+states are persisted and exposed to the owner; unknown or rejected provider outcomes are not
+automatically resent. Threshold removal suppresses queued email. UI copy states provider acceptance
+does not verify inbox delivery; warnings never block service activity.
+
+Local evidence: managed-cost tests **15/15**, Agents and Shell typechecks, release-migration tests
+**16/16**, deployment-manifest tests **11/11**, release validation for **247** migrations, deployment
+manifest validation and `git diff --check`. Both workflows probe the opt-in columns and delivery
+table before deployment. These are mocks/static checks only; no deployment or live email/inbox
+acceptance ran. U11 email is IMPLEMENTED_LOCAL; invoice reconciliation, provider-billed idle/CPU-size
+feeds and approved spend enforcement remain open. Rollouts remain disabled.
+
+P13's source trace found no safe Admin replay caller: the Admin Worker route requires `ADMIN_SECRET`
+and `platform_admin`, but that role has no supported identity issuance and the Worker has no reachable
+Router/service-binding path. Its DLQ consumer targets a different queue and stores raw payloads.
+Current backlog/age/DLQ remain honestly unavailable. Replay needs operator identity/route,
+queue-specific scope, payload retention/redaction and a duplicate-side-effect contract; these are
+product/route/queue gates, not credential blockers.
+
+P01 remains PARTIAL for operator-attested staging/production D1 baselines, isolated rehearsal and
+deployed acceptance. P02's collector `368a2f23b7c344ebcd2b3810d490c48814810ec7` is local and GET-only;
+preflight still rejects a shared D1, eleven shared KV IDs, unresolved `naelao-calls`, missing account/
+time evidence and 158 resource observations. No Cloudflare account was queried. P03/P20 policies and
+other row-specific contract/live gates remain below.
+
+Exact next action: add a fresh-install in-memory SQLite rehearsal for every schema-manifest migration,
+using ordered SQL and the reviewed conditional special skip, to the release test suite that already
+runs in both preflights. This local schema rehearsal must remain distinct from operator-attested D1
+baselines and deployed acceptance. Then continue independent P01–P24 and S2–S9/U01–U12 work.
+Preserve untracked `infra/scripts/__pycache__/`.
+
+
+## Previous continuation — 2026-11-14 (template coordination defaults completed locally)
 
 Code `a3791d51fc92b2d353d6e7b0b3bbd694f84e1f6b` is pushed to
 `origin/Mcbt5s-Backup-2`. The signed optional `SpaceBlueprint.coordinationDefaults` now has Foundry
@@ -1114,8 +1152,8 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 
 | Requirement | Current status | Reconciled state |
 | --- | --- | --- |
-| P01 | PARTIAL | Release runner, manifest and promotion health gates are local. Code `60c5f03b` makes validation require the manifest-selected migration phase to invoke the environment-specific runner/baseline and remote D1 probe. Operator-attested D1 baselines, isolated rehearsal, rollback/data recovery and deployed/live acceptance remain. |
-| P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; all current targets resolve. Tests pass 11/11. The preflight still rejects 13 shared-resource findings, one unresolved `naelao-calls` owner and 158 missing read-only receipts; actual resource separation/ownership and deployed isolation remain external evidence gates. |
+| P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. `ca4435d8` adds migration 0247 and manifest-required probes for opted-in cost email storage. Operator-attested D1 baselines, a fresh-install local SQL rehearsal, isolated staging rehearsal, rollback/data recovery and deployed/live acceptance remain. |
+| P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector. The preflight clears map freshness but still rejects a shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
 | P05 | PARTIAL | `50dd1fa4` adds customer-form preview; `bf55151a` multi-project setup groups; `ed924c83`/`55d67648` trusted dependency selection and package feature disclosure; `56b23a31` persists/restores bounded Space-scoped authoring drafts; `236a2e2b` refreshes the activation usage projection while total cost stays unknown. Foundry `1.3.0` persists conformance/publication lifecycle: `34c7da23` host request/job/listing idempotency and owner status recovery, `64669caf` reload repair, `cf2d28f7` terminal status correction. `5e0c6501` adds owner-approved scoped text handles. `536853b9`/`b646ec16` connect activation to exact-pin dependency import; `edf08814` resumes install after reload; `a75c0862` provider cleanup; `c1c5e0d4` Telegram/WhatsApp setup compensation. Knowledge/action authoring has no matching SpaceBlueprint/runtime contract; complete provider setup, broader lifecycle, verified rates/total cost, image/audio/binary extension access and deployed/live acceptance remain. |
@@ -1126,7 +1164,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain; `0d121ab2` adds exact historical signed-release rollback for that bounded package class. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. Gadget/schema/data migration recovery, authority/dependency expansion, connection/price changes, scanning/retention and live acceptance remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated. `16386d95` adds signed, idempotent platform/Product-user price receipts and Marketplace provider/variant/amount/currency snapshots; live provider-to-entitlement acceptance remains. |
 | P12 | PARTIAL | Versioned dunning contract, queue and workflow paths exist; business recovery policy and provider delivery acceptance remain. |
-| P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. Admin is not safely bound to those DLQs and generic replay remains uncoded; true provider depth/age/DLQ lacks a supported source. |
+| P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. Current backlog/age/DLQ lack a supported source. Admin's consumer targets a different queue, retains raw payload, and has no reachable Router/service-binding path or supported `platform_admin` identity issuance. Generic replay remains uncoded pending those scope, retention/redaction and duplicate-side-effect contracts. |
 | P14 | PARTIAL | `product-end-user/logout` generation revocation and builder `/auth/revoke` are now awaited by reachable Portal/Shell/Dashboard callers; failures retain state and show retry. Product reset generation and DO cleanup are durable. localStorage bearer storage, cookie/CSRF/XSS transport decision and deployed copied-token acceptance remain. |
 | P15 | PARTIAL | Indexed bounded Blackboard paging has local scale evidence; representative relevance, membership density and deployed acceptance remain. |
 | P16 | PARTIAL | Shared Discord media bounds/disclosure plus P05's scoped text-only extension handles exist locally. Discord non-ephemeral ingress, image/audio/raw binary extension access and provider/live acceptance remain unsupported or unverified. |
