@@ -1,7 +1,32 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (shared-Space requests; P05 scope trace)
+## Active continuation — 2026-11-14 (P24 installed publisher revocation notice)
+
+Code `f3a04010077064cd569ed20933f4b4bbac957db9` threads persisted release revocation state through
+the installed-package views. The member-facing Space-shared list rechecks the current publisher
+registry, returns no-store, omits key IDs, and shows affected package/version and revocation time;
+owner-only project installation lists carry the same trust result. The Shell disables open/resume for
+untrusted packages while preserving removal. Follow-up `ad3888eb999793fd16d9f1725ea91cedeb4073e8`
+closes an already-open shared app after refresh detects lost trust. Runtime and mutation paths still
+recheck trust server-side. Local evidence: SpaceDO and signed package suites **48/48**, Spaces and
+Shell typechecks, `git diff --check`, and a repeat Shell typecheck/diff check after the follow-up.
+These are local mocks/static checks; no browser, deployed Worker, notification delivery or live
+acceptance ran. Both code SHAs are pushed; preserve `infra/scripts/__pycache__/`.
+
+P24's installed-package warning is IMPLEMENTED_LOCAL. P24 remains PARTIAL for proactive alert policy,
+cross-tenant artifact rights, broader schema/data migration and rollback, scanning, retention and
+deployed/live acceptance. P05 provider references remain blocked at a genuine project-vs-Space
+installation scope contract, not at credentials. P06 conversational voice/customer lifecycle/managed
+billing and live provider acceptance remain partial as recorded in the requirement index.
+
+Exact next action: continue managed-services S5/MS08d against current official Modal lifecycle,
+authentication, hosting, region, cancellation and cost contracts. Implement a reachable adapter only
+if a stable documented interface and compatible host exist; otherwise record that exact contract and
+hosting gate, then proceed to the next independent S3–S9/U01–U12 or P05/P06 implementation gap.
+Keep rollouts disabled.
+
+## Previous checkpoint — 2026-11-14 (shared-Space requests; P05 scope trace)
 
 Code commit `e46ea4f44c64bd41bbc1a87a81867a4ea1394f83` is pushed to
 `origin/Mcbt5s-Backup-2`. The owner Settings panel now shows a bounded Space coordination request
@@ -1061,7 +1086,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P21 | PARTIAL | Product-user and builder reset email use encrypted bounded outboxes, retry/cancellation, stable Notification IDs, provider acceptance receipts and HMAC-scoped metadata status. Builder Auth outbox is migration 0245 (`814c429a`); local Auth suite **39/39** and typecheck pass. Unverified-user/session policy, provider/inbox and deployed acceptance remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
-| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, owner-authorized cross-Space package import (`b4cf5214`) connected to guided activation (`536853b9`), revoked-key recheck before copy (`b646ec16`), reload resume via destination install review (`edf08814`), paused static Canvas/channel-code update and exact historical rollback receipts (`c7412170`, `0d121ab2`), runtime-work admission/drain (`15a04f7e`) and authenticated revocation receipts/readback (`f5b3c1dd`, `0ba70840`) are local. Cross-tenant artifact authorization, broader schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |
+| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, owner-authorized cross-Space package import (`b4cf5214`) connected to guided activation (`536853b9`), revoked-key recheck before copy (`b646ec16`), reload resume via destination install review (`edf08814`), paused static Canvas/channel-code update and exact historical rollback receipts (`c7412170`, `0d121ab2`), runtime-work admission/drain (`15a04f7e`), authenticated revocation receipts/readback (`f5b3c1dd`, `0ba70840`), and installed-package trust warning/revocation-aware Shell actions (`f3a04010`, `ad3888eb`) are local. Cross-tenant artifact rights, broader schema/data migration and rollback, proactive alert policy, scanning, retention and live acceptance remain. |
 
 ## Requirement queue
 

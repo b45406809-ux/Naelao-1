@@ -1,7 +1,36 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (shared-Space requests; P05 scope trace)
+## Active continuation — 2026-11-14 (P24 installed publisher revocation notice)
+
+Code `f3a04010077064cd569ed20933f4b4bbac957db9` adds current publisher-trust status to installed
+package views. Space-shared cards identify the affected package and persisted revocation time; owner-
+only project extension lists do the same. The response rechecks the current publisher registry,
+returns no-store, and does not expose key IDs in the member-facing app list. The Shell blocks resume
+and open for untrusted packages and retains removal; host-side runtime/install/update/lifecycle trust
+checks remain authoritative. Follow-up `ad3888eb999793fd16d9f1725ea91cedeb4073e8` closes an already
+open Space-shared app when refresh discovers revoked trust. Local evidence: SpaceDO and signed
+package suites **48/48**, Spaces and Shell typechecks, and `git diff --check`; the Shell typecheck and
+diff check passed again after the follow-up. These are local mocks/static checks. No browser,
+deployment, notification delivery, provider or live acceptance ran. Both commits are pushed to
+`origin/Mcbt5s-Backup-2`; preserve untracked `infra/scripts/__pycache__/`.
+
+P24's durable installed-package warning is IMPLEMENTED_LOCAL; P24 remains PARTIAL for proactive
+alert policy, cross-tenant artifact rights, broader data/schema migration and rollback, scanning,
+retention and deployed/live acceptance. P05's provider-reference scope mismatch remains an uncoded
+contract boundary, not a credentials blocker. S2 is IMPLEMENTED_LOCAL for supported lanes; S3–S9 and
+U01–U12 remain open at the specific implementation, platform/policy and live gates in the matrix.
+U05/U06 are unsupported runtime producer/writer contracts; U09 source work, supported U11 caller
+audit and U12 local toolchain verification are complete and will not be repeated without new evidence.
+Rollouts stay disabled.
+
+Exact next action: continue S5/MS08d by checking current official Modal lifecycle, authentication,
+hosting, region, cancellation and cost contracts against the provider-neutral scaffold. Implement a
+reachable adapter only if a stable documented interface and compatible host can be supported;
+otherwise record the precise contract/hosting gate and move to the next independent S3–S9/U01–U12 or
+P05/P06 code gap.
+
+## Previous checkpoint — 2026-11-14 (shared-Space requests; P05 scope trace)
 
 Code commit `e46ea4f44c64bd41bbc1a87a81867a4ea1394f83` is pushed to
 `origin/Mcbt5s-Backup-2`. Members can request contact about an active member-visible coordination
