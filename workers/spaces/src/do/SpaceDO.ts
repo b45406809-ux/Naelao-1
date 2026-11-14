@@ -15610,6 +15610,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           VALUES(?,?,?,?,?,?,?,?,?,?)`, body.tenantId, body.spaceId, body.keyId, body.actorId, now,
         releaseCount, disabledInstallationCount, activeWorkCount, state, now);
       }
+      const notificationId = `extension-publisher-revoked:${body.keyId}`;
+      const drainingSummary = activeWorkCount > 0
+        ? ` At revocation, ${activeWorkCount} admitted operation${activeWorkCount === 1 ? " was" : "s were"} still draining.`
+        : " No admitted work remained at revocation.";
+      execute(this.ctx.storage.sql as never, `INSERT OR IGNORE INTO notifications
+        (id,space_id,project_id,kind,title,body,severity,source_agent_id,related_id,recipient_user_id)
+        VALUES(?,?,NULL,'extension_publisher_revoked','Extension publisher key revoked',?,'critical',NULL,?,NULL)`,
+      notificationId, body.spaceId,
+      `Publisher signing key ${String(body.keyId).slice(0, 12)}… was revoked. ${disabledInstallationCount} installation${disabledInstallationCount === 1 ? " was" : "s were"} disabled.${drainingSummary}`,
+      body.keyId);
     });
     const state = activeWorkCount > 0 ? "draining" : "drained";
     return Response.json({ revoked: true, key_id: body.keyId, changed,

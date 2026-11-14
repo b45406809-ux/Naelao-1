@@ -262,6 +262,20 @@ describe("runtime extension installation", () => {
     expect(await revoke.json()).toMatchObject({ revoked: true, changed: true, state: "draining", active_work_count: 1,
       disabled_installation_count: 1, new_work_denied: true, admitted_work_policy: "allowed_to_finish" });
     space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    const notificationInbox = () => space.fetch(new Request("http://space/notifications?limit=20"));
+    const firstInbox = await notificationInbox();
+    expect(firstInbox.status).toBe(200);
+    expect(await firstInbox.json()).toMatchObject({ count: 1, data: [expect.objectContaining({
+      id: `extension-publisher-revoked:${"a".repeat(64)}`,
+      space_id: "space",
+      project_id: null,
+      kind: "extension_publisher_revoked",
+      title: "Extension publisher key revoked",
+      body: expect.stringContaining("1 admitted operation was still draining"),
+      severity: "critical",
+      related_id: "a".repeat(64),
+      recipient_user_id: null,
+    })] });
     expect(await (await lookup()).json()).toMatchObject({ release: { signatureValid: false, publisher: { revoked: true } } });
     expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", instanceId).toArray()).toEqual([{ status: "disabled" }]);
     const reenable = await space.fetch(new Request("http://space/project-extension-lifecycle", { method: "PATCH",
@@ -296,6 +310,7 @@ describe("runtime extension installation", () => {
       disabled_installation_count: 1 });
     expect(storage.sql.exec("SELECT status,active_work_count FROM extension_publisher_revocation_receipts WHERE key_id=?", "a".repeat(64)).toArray())
       .toEqual([{ status: "drained", active_work_count: 0 }]);
+    expect((await (await notificationInbox()).json() as { count: number }).count).toBe(1);
     const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ extensionId: "ext_publisher_lifecycle", version: "1.0.0", installationId: instanceId, tenantId: "tenant", spaceId: "space", projectId: "project-a", expectedCurrentVersion: "1.0.0" }) }));
     expect(rollback.status).toBe(409);
