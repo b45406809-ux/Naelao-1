@@ -1,7 +1,26 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P20 refund conflict reconciliation)
+## Active continuation — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
+
+CI source commit `ee41d1233659e4d3b7db7c8b1952298463337fb5` is pushed. Both deployment preflights now
+run the GET-only resource receipt collector suite, including custom-map freshness coverage. Local
+evidence: resource inventory/preflight **12/12**, collector **4/4**, Billing dunning dispatch/outbox/
+status **12/12**, Workflows queue dispatch **11/11**, dunning recovery **10/10**, and `git diff
+--check`. P03/P12 source reconciliation found both platform and Product-user failure paths use a
+versioned durable outbox and deterministic Dunning workflow, recheck current subscription/recovery
+before notification, and persist provider outcomes under stable Notification IDs. No independent code
+gap was found in this path. Grace/restriction/escalation, retry cadence and provider delivery acceptance
+remain policy/live gates. P02 still awaits actual Cloudflare resources/ownership, account/time
+observations, 158 read-only receipts and operator-attested D1 baselines. No deployment/live provider
+test ran; rollout remains disabled.
+
+Exact next action: build a customer-facing signed keypad-extension microapp on the existing installation
+settings, owner phone-dashboard and test-only simulation contracts. Keep simulations visibly synthetic,
+retain Twilio-only speech and Telnyx DTMF bounds, and leave provider provisioning/streaming unavailable.
+Then continue remaining §9.5/P05 and S3–S9/U01–U12/P01–P24 gaps.
+
+## Previous continuation — 2026-11-14 (P20 refund conflict reconciliation)
 
 Code `aa877154d5a808da03ec6d6d07a485dabd6d8994` is pushed. Refund evidence with an invalid explicit
 amount previously remained in conflict but was not linked to a later matching captured purchase.

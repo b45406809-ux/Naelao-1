@@ -1,7 +1,28 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P20 refund conflict reconciliation)
+## Active continuation — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
+
+CI caller commit `ee41d1233659e4d3b7db7c8b1952298463337fb5` is pushed. Staging and production
+deployment preflights now execute the GET-only resource receipt collector regression suite in addition
+to source-map/preflight tests. Local evidence: resource validator **12/12**, collector **4/4**,
+Billing dunning dispatch/outbox/status **12/12**, Workflows queue dispatch **11/11**, dunning recovery
+**10/10**, and `git diff --check`. Current P03/P12 trace found that platform and Product-user payment
+failures commit a versioned durable outbox intent, both direct and compatibility queue paths reach the
+deterministic Dunning workflow, current-subscription/recovery checks run before notification, and
+stable Notification IDs/provider outcomes persist. No new reachable code mismatch was found. Grace,
+restriction/escalation, retry cadence and provider delivery acceptance remain product/live gates.
+P02 remains fail-closed on actual resource separation, `naelao-calls` ownership, missing account/time
+and 158 receipts, plus operator-attested per-D1 baselines. No deployment or live API was run. Preserve
+`infra/scripts/__pycache__/`; rollouts remain disabled.
+
+Exact next action: build the first customer-facing signed keypad-extension microapp on the existing
+per-installation settings, owner `/api/phone-dashboard` and test-only `/api/phone-simulate` contracts.
+Show simulated results explicitly; preserve Twilio-only speech and Telnyx DTMF limits, and keep
+provisioning/streaming unavailable. Then continue the remaining §9.5/P05 and S3–S9/U01–U12/P01–P24
+gaps.
+
+## Previous continuation — 2026-11-14 (P20 refund conflict reconciliation)
 
 Code `aa877154d5a808da03ec6d6d07a485dabd6d8994` is pushed to
 `origin/Mcbt5s-Backup-2`. An invalid-amount refund that arrives before its captured payment keeps its

@@ -16,7 +16,26 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P20 refund conflict reconciliation)
+## Latest checkpoint — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
+
+Source `ee41d1233659e4d3b7db7c8b1952298463337fb5` is pushed to
+`origin/Mcbt5s-Backup-2`. Both staging and production preflights now run the GET-only resource receipt
+collector regression suite, including custom source-map freshness checks, before deployment jobs.
+Local evidence: environment-resource **12/12**, receipt-collector **4/4**, Billing dunning
+dispatch/outbox/status **12/12**, Workflows queue dispatch **11/11**, dunning recovery **10/10**, and
+`git diff --check`. The current P03/P12 source trace found both subscription scopes use a durable
+versioned outbox, stable workflow IDs, current-subscription/recovery checks, Notification IDs and
+provider-outcome receipts; no independent code gap was found in that path. Grace/restriction/escalation,
+retry cadence and provider delivery acceptance remain policy/live gates. P02 still blocks on real
+separated Cloudflare resources, `naelao-calls` ownership, account/time receipts, 158 read-only resource
+receipts and operator-attested D1 baselines. No deployment or live provider acceptance ran.
+
+Exact next action: implement a customer-facing, signed keypad-extension microapp using the existing
+per-installation settings, owner phone dashboard and synthetic-call APIs. Keep simulated runs labeled,
+preserve Twilio-only speech and Telnyx DTMF bounds, and do not add carrier provisioning or streaming.
+Then continue remaining §9.5/P05 and S3–S9/U01–U12/P01–P24 gaps.
+
+## Previous checkpoint — 2026-11-14 (P20 refund conflict reconciliation)
 
 Source `aa877154d5a808da03ec6d6d07a485dabd6d8994` is pushed to
 `origin/Mcbt5s-Backup-2`. If an invalid-amount refund arrives before its captured payment, its case
