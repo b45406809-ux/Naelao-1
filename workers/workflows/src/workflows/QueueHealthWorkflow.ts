@@ -7,6 +7,7 @@ import {
   buildQueueHealthReport,
   normalizeQueueAnalytics,
   persistQueueHealthReport,
+  QUEUE_ANALYTICS_ROW_LIMIT,
   type QueueAnalyticsRow,
   type QueueIntervalMetrics,
   type QueueHealthSource,
@@ -37,15 +38,17 @@ export class QueueHealthWorkflow extends WorkflowEntrypoint<Env, QueueHealthPara
     const observedAt = new Date().toISOString();
     let source: QueueHealthSource = "unavailable";
     let metrics: ReturnType<typeof normalizeQueueAnalytics> = [];
+    let mayBeTruncated = false;
     let unavailableReason: "credentials_missing" | "provider_api_unavailable" | "no_queue_rows" | undefined;
 
     if (!this.env.CF_ACCOUNT_ID || !this.env.CF_API_TOKEN) {
       unavailableReason = "credentials_missing";
     } else {
       try {
-        const observedMetrics = await step.do("fetch-queue-analytics", retry, async () => this.fetchQueueAnalytics());
+        const observed = await step.do("fetch-queue-analytics", retry, async () => this.fetchQueueAnalytics());
         source = "cloudflare_graphql_analytics";
-        metrics = observedMetrics;
+        metrics = observed.metrics;
+        mayBeTruncated = observed.returnedRows >= QUEUE_ANALYTICS_ROW_LIMIT;
         if (!metrics.length) unavailableReason = "no_queue_rows";
       } catch {
         unavailableReason = "provider_api_unavailable";
@@ -57,6 +60,7 @@ export class QueueHealthWorkflow extends WorkflowEntrypoint<Env, QueueHealthPara
       observedAt,
       source,
       metrics,
+      mayBeTruncated,
       ...(unavailableReason ? { unavailableReason } : {}),
     });
 
@@ -74,7 +78,7 @@ export class QueueHealthWorkflow extends WorkflowEntrypoint<Env, QueueHealthPara
     });
   }
 
-  private async fetchQueueAnalytics(): Promise<QueueIntervalMetrics[]> {
+  private async fetchQueueAnalytics(): Promise<{ metrics: QueueIntervalMetrics[]; returnedRows: number }> {
     const observedAt = new Date().toISOString();
     const windowEnd = observedAt;
     const windowStart = new Date(Date.parse(windowEnd) - 30 * 60 * 1000).toISOString();
@@ -84,7 +88,7 @@ export class QueueHealthWorkflow extends WorkflowEntrypoint<Env, QueueHealthPara
           accounts(filter: { accountTag: $accountTag }) {
             queueMetrics: queuesAdaptiveGroups(
               filter: { datetime_geq: $since, datetime_leq: $until }
-              limit: 100
+              limit: ${QUEUE_ANALYTICS_ROW_LIMIT}
             ) {
               dimensions { queueId queueName }
               sum { messages messagesDelivered messagesFailed messagesDeadLettered }
@@ -111,6 +115,6 @@ export class QueueHealthWorkflow extends WorkflowEntrypoint<Env, QueueHealthPara
     if (Array.isArray(payload.errors) && payload.errors.length) throw new Error("queue_analytics_query_failed");
     if (!Array.isArray(payload.data?.viewer?.accounts)) throw new Error("queue_analytics_shape_invalid");
     const rows = payload.data.viewer.accounts.flatMap((account) => Array.isArray(account.queueMetrics) ? account.queueMetrics : []);
-    return normalizeQueueAnalytics(rows, observedAt, windowStart, windowEnd);
+    return { metrics: normalizeQueueAnalytics(rows, observedAt, windowStart, windowEnd), returnedRows: rows.length };
   }
 }

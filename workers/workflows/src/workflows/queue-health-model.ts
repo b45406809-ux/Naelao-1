@@ -1,5 +1,6 @@
 export type QueueHealthSource = "cloudflare_graphql_analytics" | "unavailable";
 export type QueueHealthStatus = "unknown" | "incomplete" | "degraded";
+export const QUEUE_ANALYTICS_ROW_LIMIT = 100;
 
 export interface QueueIntervalMetrics {
   queueId: string;
@@ -86,10 +87,18 @@ export function buildQueueHealthReport(input: {
   observedAt: string;
   source: QueueHealthSource;
   metrics: QueueIntervalMetrics[];
+  mayBeTruncated?: boolean;
   unavailableReason?: QueueHealthReport["unavailableReason"];
 }): QueueHealthReport {
   const alerts: QueueHealthAlert[] = [];
   let degraded = false;
+
+  if (input.mayBeTruncated) {
+    alerts.push({
+      code: "queue_analytics_row_limit_reached",
+      message: `Queue interval analytics returned the ${QUEUE_ANALYTICS_ROW_LIMIT}-row query limit; additional queues may be omitted from this report.`,
+    });
+  }
 
   if (input.source === "unavailable" || input.metrics.length === 0) {
     alerts.push({

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildQueueHealthReport, normalizeQueueAnalytics, persistQueueHealthReport, queueHealthIncidentId } from "./queue-health-model.js";
+import { buildQueueHealthReport, normalizeQueueAnalytics, persistQueueHealthReport, queueHealthIncidentId, QUEUE_ANALYTICS_ROW_LIMIT } from "./queue-health-model.js";
 
 const observedAt = "2026-11-12T18:30:00.000Z";
 const windowStart = "2026-11-12T18:00:00.000Z";
@@ -54,6 +54,22 @@ describe("queue health evidence model", () => {
     const report = buildQueueHealthReport({ triggeredAt: trigger, observedAt, source: "cloudflare_graphql_analytics", metrics });
     expect(report.status).toBe("incomplete");
     expect(report.alerts.map((alert) => alert.code)).toContain("consumer_error_rate_unavailable");
+  });
+
+  it("warns when the GraphQL query reaches its row limit so coverage is not implied complete", () => {
+    const metrics = normalizeQueueAnalytics([{
+      dimensions: { queueId: "queue-1", queueName: "events" },
+      sum: { messages: 4, messagesDelivered: 4, messagesFailed: 0, messagesDeadLettered: 0 },
+    }], observedAt, windowStart, observedAt);
+    const report = buildQueueHealthReport({
+      triggeredAt: trigger, observedAt, source: "cloudflare_graphql_analytics", metrics, mayBeTruncated: true,
+    });
+    expect(QUEUE_ANALYTICS_ROW_LIMIT).toBe(100);
+    expect(report.status).toBe("incomplete");
+    expect(report.alerts).toContainEqual(expect.objectContaining({
+      code: "queue_analytics_row_limit_reached",
+      message: expect.stringContaining("additional queues may be omitted"),
+    }));
   });
 
   it("uses stable incident IDs for retry of the same run and alert", async () => {
