@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
-import { decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, spaceArchiveKeyringFromBindings, spaceArchiveKeyVersion } from "./space-backup.js";
+import { captureSpaceArchiveObjectChunked, decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, spaceArchiveKeyringFromBindings, spaceArchiveKeyVersion, verifySpaceArchiveObjectSnapshots } from "./space-backup.js";
 import { SpaceDO } from "./SpaceDO.js";
 import { WorkspaceCoordinatorDO } from "../../../agents/src/workspace/WorkspaceCoordinatorDO.js";
 
 function mockR2() {
   const objects = new Map<string, { bytes: Uint8Array; etag: string; httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> }>();
   const uploads = new Map<string, { key: string; parts: Map<number, Uint8Array> }>();
-  let failNext = false, failPutKey: string | null = null;
+  let failNext = false, failPutKey: string | null = null, failChunkAfter: number | null = null;
   let failPart: number | null = null, uploadedParts = 0;
   const multipart = (key: string, uploadId: string) => ({
     key, uploadId,
@@ -31,14 +31,15 @@ function mockR2() {
     objects,
     failNextWrite() { failNext = true; },
     failNextWriteForKey(key: string) { failPutKey = key; },
+    failChunkWriteAfter(successfulChunkWrites: number) { failChunkAfter = successfulChunkWrites; },
     failMultipartPart(partNumber: number) { failPart = partNumber; },
     uploadedPartCount() { return uploadedParts; },
-    async put(key: string, value: Uint8Array | string | ArrayBuffer, options?: { onlyIf?: { etagDoesNotMatch?: string }; httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> }) { if (failNext) { failNext = false; throw new Error("simulated R2 outage"); } if (failPutKey === key) { failPutKey = null; throw new Error("simulated keyed R2 outage"); } if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null; const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value instanceof Uint8Array ? new Uint8Array(value) : new Uint8Array(value); const etag = options?.onlyIf ? `restored-etag-${bytes.byteLength}-${key}` : `etag-${bytes.byteLength}-${key}`; objects.set(key, { bytes, etag, ...(options?.httpMetadata ? { httpMetadata: { ...options.httpMetadata } } : {}), ...(options?.customMetadata ? { customMetadata: { ...options.customMetadata } } : {}) }); return { etag }; },
+    async put(key: string, value: Uint8Array | string | ArrayBuffer, options?: { onlyIf?: { etagDoesNotMatch?: string }; httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> }) { if (failNext) { failNext = false; throw new Error("simulated R2 outage"); } if (failPutKey === key) { failPutKey = null; throw new Error("simulated keyed R2 outage"); } if (key.includes(".chunks/") && failChunkAfter !== null) { if (failChunkAfter === 0) { failChunkAfter = null; throw new Error("simulated archive chunk outage"); } failChunkAfter--; } if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null; const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value instanceof Uint8Array ? new Uint8Array(value) : new Uint8Array(value); const etag = options?.onlyIf ? `restored-etag-${bytes.byteLength}-${key}` : `etag-${bytes.byteLength}-${key}`; objects.set(key, { bytes, etag, ...(options?.httpMetadata ? { httpMetadata: { ...options.httpMetadata } } : {}), ...(options?.customMetadata ? { customMetadata: { ...options.customMetadata } } : {}) }); return { etag }; },
     async createMultipartUpload(key: string) { const uploadId = crypto.randomUUID(); uploads.set(uploadId, { key, parts: new Map() }); return multipart(key, uploadId); },
     resumeMultipartUpload(key: string, uploadId: string) { return multipart(key, uploadId); },
     async get(key: string) { const entry = objects.get(key); return entry && { etag: entry.etag, size: entry.bytes.byteLength, ...(entry.httpMetadata ? { httpMetadata: entry.httpMetadata } : {}), ...(entry.customMetadata ? { customMetadata: entry.customMetadata } : {}), arrayBuffer: async () => entry.bytes.slice().buffer }; },
     async head(key: string) { const entry = objects.get(key); return entry && { etag: entry.etag, size: entry.bytes.byteLength }; },
-    async delete(key: string) { objects.delete(key); },
+    async delete(key: string | string[]) { if (Array.isArray(key)) for (const item of key) objects.delete(item); else objects.delete(key); },
     async list(options: { prefix?: string; cursor?: string; limit?: number } = {}) {
       const matching = [...objects.entries()].filter(([key]) => key.startsWith(options.prefix ?? "")).sort(([a], [b]) => a.localeCompare(b));
       const offset = Number(options.cursor ?? 0), limit = options.limit ?? 1000, selected = matching.slice(offset, offset + limit);
@@ -458,6 +459,43 @@ describe("SpaceDO owner data operations", () => {
     expect(second.archive_id).toBe(first.archive_id);
   });
 
+  it("resumes an interrupted v2 chunked object export and restores authenticated object bytes", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    let space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
+    const key = "spaces/space-a/projects/project-a/workspace/large.bin";
+    const original = new Uint8Array(5 * 1024 * 1024 + 19);
+    for (let index = 0; index < original.length; index++) original[index] = (index * 17) % 251;
+    await r2.put(key, original);
+    r2.failChunkWriteAfter(1);
+    const failed = await post({ action: "export", request_id: "chunked-resume-1" });
+    expect(failed.status).toBe(503);
+    const first = await failed.json() as { archive_id: string; error_code?: string; message?: string };
+    const chunkPrefix = `space-archives/tenant-a/space-a/${first.archive_id}.chunks/`;
+    expect([...r2.objects.keys()].filter(candidate => candidate.startsWith(chunkPrefix)), JSON.stringify({ response: first, keys: [...r2.objects.keys()] })).toHaveLength(1);
+
+    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const retried = await post({ action: "export", request_id: "chunked-resume-1" });
+    expect(retried.status, JSON.stringify(await retried.clone().json())).toBe(201);
+    expect(await retried.json()).toMatchObject({ archive_id: first.archive_id });
+    const archiveKey = `space-archives/tenant-a/space-a/${first.archive_id}.enc`;
+    const archived = await decodeSpaceArchive(r2.objects.get(archiveKey)!.bytes, secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId: first.archive_id });
+    expect(archived.formatVersion).toBe(2);
+    expect(archived.objectSnapshots?.[0]).toMatchObject({ key, objectIndex: 0, size: original.byteLength });
+    expect(JSON.stringify(archived.objectSnapshots)).not.toContain("bytesBase64");
+
+    await r2.delete(key);
+    const previewResponse = await post({ action: "preview_restore", archive_id: first.archive_id });
+    expect(previewResponse.status, JSON.stringify(await previewResponse.clone().json())).toBe(200);
+    const preview = await previewResponse.json() as { preview_id: string; object_restore_required_count: number };
+    expect(preview.object_restore_required_count).toBe(1);
+    const restored = await post({ action: "apply_restore", archive_id: first.archive_id, preview_id: preview.preview_id });
+    expect(restored.status, JSON.stringify(await restored.clone().json())).toBe(200);
+    expect(new Uint8Array(await (await r2.get(key))!.arrayBuffer())).toEqual(original);
+  }, 30_000);
+
   it("resumes multipart parts after a Durable Object restart without rebuilding ciphertext", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
     let space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
@@ -481,6 +519,45 @@ describe("SpaceDO owner data operations", () => {
     expect(storage.sql.exec("SELECT archive_id FROM space_archive_uploads WHERE archive_id=?", first.archive_id).toArray()).toHaveLength(0);
     expect(storage.sql.exec("SELECT archive_id FROM space_archive_records WHERE archive_id=? AND status='verified'", first.archive_id).toArray()).toHaveLength(1);
   }, 15_000);
+
+  it("rewraps v2 object chunks before switching the archive pointer and removes old-key chunks", async () => {
+    const storage = createDOStorage(), oldSecret = "space-data-ops-test-secret-long-enough", newKey = "new-archive-key-material-long-enough-2026", r2 = mockR2();
+    let space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: oldSecret, SCRIPTS_R2: r2 as never } as never);
+    const token = await mintInternalToken(oldSecret, "tenant-a");
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
+    const archiveId = "archive-v2-rewrap", sourceKey = "spaces/space-a/projects/project-a/workspace/v2.bin";
+    const sourceBytes = new TextEncoder().encode("immutable object content to re-encrypt");
+    await r2.put(sourceKey, sourceBytes);
+    const source = await r2.get(sourceKey)!;
+    const ref = { key: sourceKey, etag: source.etag, size: source.size };
+    const captured = await captureSpaceArchiveObjectChunked(source as never, ref, 0, { tenantId: "tenant-a", spaceId: "space-a", archiveId }, oldSecret);
+    for (const chunk of captured.chunks) await r2.put(chunk.key, chunk.bytes);
+    const payload = { format: "naelao-space-archive" as const, formatVersion: 2 as const, tenantId: "tenant-a", spaceId: "space-a", archiveId,
+      createdAt: "2026-11-14T00:00:00.000Z", migrationVersion: 1, tableRows: {}, rowCounts: {}, objectReferences: [ref], objectSnapshots: [captured.snapshot] };
+    const encoded = await encodeSpaceArchive(payload, oldSecret);
+    const oldArchiveKey = `space-archives/tenant-a/space-a/${archiveId}.enc`;
+    await r2.put(oldArchiveKey, encoded.bytes);
+    storage.sql.exec(`INSERT INTO space_archive_records (archive_id,tenant_id,space_id,request_id,kind,status,object_key,schema_version,checksum,plaintext_bytes,row_counts_json,object_refs_json,selection_fingerprint,created_by,created_at)
+      VALUES (?,?,?,?,'full','verified',?,?,?,?,?,?,NULL,?,?)`, archiveId, "tenant-a", "space-a", "rewrap-v2-route", oldArchiveKey, 1, encoded.checksum, encoded.plaintextBytes, "{}", JSON.stringify([ref]), "owner-a", "2026-11-14T00:00:00.000Z");
+    const oldChunkKey = captured.chunks[0]!.key;
+    expect(r2.objects.has(oldChunkKey)).toBe(true);
+
+    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: oldSecret, SPACE_ARCHIVE_KEY: newKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-11",
+      SPACE_ARCHIVE_KEY_PREVIOUS: oldSecret, SPACE_ARCHIVE_KEY_PREVIOUS_ID: "platform-secret-hkdf-v1", SCRIPTS_R2: r2 as never } as never);
+    const rewrapped = await post({ action: "rewrap_archive", archive_id: archiveId });
+    expect(rewrapped.status, JSON.stringify(await rewrapped.clone().json())).toBe(200);
+    const outcome = await rewrapped.json() as { rewrapped: boolean };
+    expect(outcome.rewrapped).toBe(true);
+    const currentRecord = storage.sql.exec<{ object_key: string; checksum: string }>("SELECT object_key,checksum FROM space_archive_records WHERE archive_id=?", archiveId).toArray()[0]!;
+    expect(currentRecord.object_key).not.toBe(oldArchiveKey);
+    expect(currentRecord.checksum).not.toBe(encoded.checksum);
+    expect(r2.objects.has(oldArchiveKey)).toBe(false);
+    expect(r2.objects.has(oldChunkKey)).toBe(false);
+    const activeOnly = spaceArchiveKeyringFromBindings({ platformSecret: "retired-platform-secret-material-long-enough", activeKey: newKey, activeVersion: "archive-2026-11" });
+    const rotatedArchive = await decodeSpaceArchive(r2.objects.get(currentRecord.object_key)!.bytes, activeOnly, { tenantId: "tenant-a", spaceId: "space-a", archiveId });
+    await expect(verifySpaceArchiveObjectSnapshots(rotatedArchive, r2 as never, activeOnly)).resolves.toBeUndefined();
+  });
 
   it("rewraps an archive to the active key before removing the previous copy", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", nextKey = "new-archive-key-secret-material-over-32";

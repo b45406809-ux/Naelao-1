@@ -14,7 +14,9 @@ describe("ArchiveKeyRotationPanel export caller", () => {
     expect(markup).toContain("Create encrypted full archive");
     expect(markup).toContain("supported SpaceDO rows and listed workspace/extension objects");
     expect(markup).toContain("provider data and opaque Container snapshots");
-    expect(markup).toContain("8 MiB plaintext");
+    expect(markup).toContain("8 MiB encrypted-manifest plaintext");
     expect(markup).toContain("10,000 rows per table");
+    expect(markup).toContain("16 MiB per object");
+    expect(markup).toContain("64 MiB total captured object bytes");
   });
 });

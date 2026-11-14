@@ -40,7 +40,7 @@ export function ArchiveKeyRotationPanel({ spaceId, session, canManage }: { space
     const description = [
       "Create an encrypted snapshot of this Space's local database rows and supported R2 workspace/extension objects?",
       "The operation writes to R2. It does not capture other services, third-party provider data, or opaque Cloudflare Container snapshots.",
-      "The export fails closed above 8 MiB plaintext, 10,000 rows per table, 5,000 object references, 2 MiB per object, or 4 MiB total captured object bytes.",
+      "The encrypted archive manifest fails closed above 8 MiB plaintext. Limits are 10,000 rows per table, 5,000 object references, 16 MiB per object, and 64 MiB total captured object bytes. New larger captures use encrypted chunks; existing v1 archives remain readable.",
     ].join("\n\n");
     if (!window.confirm(description)) return;
 
@@ -124,7 +124,7 @@ export function ArchiveKeyRotationPanel({ spaceId, session, canManage }: { space
     <div className="settings-block" style={{ display: "grid", gap: 10 }}>
       <div style={{ display: "grid", gap: 8 }}>
         <strong style={{ fontSize: 13 }}>Encrypted Space archives</strong>
-        <p style={{ margin: 0, color: "var(--text3)", fontSize: 12 }}>Full archives include supported SpaceDO rows and listed workspace/extension objects. They exclude other services, provider data and opaque Container snapshots. Limits: 8 MiB plaintext, 10,000 rows per table, 5,000 object references, 2 MiB per object and 4 MiB total captured object bytes.</p>
+        <p style={{ margin: 0, color: "var(--text3)", fontSize: 12 }}>Full archives include supported SpaceDO rows and listed workspace/extension objects. They exclude other services, provider data and opaque Container snapshots. Limits: 8 MiB encrypted-manifest plaintext, 10,000 rows per table, 5,000 object references, 16 MiB per object and 64 MiB total captured object bytes. New larger captures use encrypted chunks; older archives remain readable.</p>
         <button type="button" disabled={busy} onClick={() => void createFullArchive()}>{busy ? "Working…" : pendingExportRequestId ? "Retry same full-archive request" : "Create encrypted full archive"}</button>
         <p style={{ margin: 0, color: "var(--text3)", fontSize: 12 }}>Restore is an additive merge, not a point-in-time rollback. Existing rows and objects remain. Archived event triggers are inserted disabled and require admin review before they can run.</p>
         {archives.filter(archive => archive.status === "verified").map(archive => <div key={archive.archive_id} className="settings-row" style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>

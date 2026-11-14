@@ -40,7 +40,7 @@ import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validate
 import { matchGlossaryTerms, normalizeGlossaryTerm, validateGlossaryEntry, type DomainGlossaryEntry } from "../domain-glossary.js";
 import { isAllowedModel } from "@naelao/billing-core";
 import { evaluationPasses, transitionCustomModelLifecycle, validateAdapterEvaluation, validateConsentAttestation, type CustomModelLifecycleAction } from "./custom-model-lifecycle.js";
-import { captureSpaceArchiveObject, decodeSpaceArchiveObjectSnapshot, decodeSpaceArchive, encodeSpaceArchive, MAX_ARCHIVE_OBJECT_CAPTURE_BYTES, readSpaceArchiveObject, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, type ResumableArchiveUploadState, type SpaceArchivePayload, type SpaceArchiveWorkspaceSnapshot } from "./space-backup.js";
+import { captureSpaceArchiveObject, captureSpaceArchiveObjectChunked, checksumSpaceArchiveObject, decodeSpaceArchiveChunkedObjectSnapshot, decodeSpaceArchiveObjectSnapshot, decodeSpaceArchive, deleteSpaceArchiveChunkObjects, encodeSpaceArchive, MAX_ARCHIVE_CHUNKED_CAPTURE_BYTES, MAX_ARCHIVE_CHUNKED_OBJECT_BYTES, MAX_ARCHIVE_OBJECT_BYTES, MAX_ARCHIVE_OBJECT_CAPTURE_BYTES, readSpaceArchiveObject, rewrapSpaceArchiveObjectChunks, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, verifySpaceArchiveObjectSnapshots, type ResumableArchiveUploadState, type SpaceArchivePayload, type SpaceArchiveWorkspaceSnapshot } from "./space-backup.js";
 import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes, type RetainedMessageRow } from "./space-retention.js";
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
@@ -3581,6 +3581,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         try {
           const archivedPayload = await decodeSpaceArchive(await readSpaceArchiveObject(archiveObject), this.archiveKeys(), { tenantId, spaceId, archiveId: archived.archive_id });
           const archivedMessages = (archivedPayload.tableRows.messages ?? []) as unknown as RetainedMessageRow[];
+          await verifySpaceArchiveObjectSnapshots(archivedPayload, this.env.SCRIPTS_R2, this.archiveKeys());
           if (archivedPayload.selectionFingerprint !== preview.fingerprint || await spaceArchiveChecksum(archivedPayload) !== archived.checksum || await fingerprintRetainedMessages(archivedMessages) !== preview.fingerprint) return Response.json({ error_code: "matching_archive_integrity_check_failed" }, { status: 409 });
         } catch { return Response.json({ error_code: "matching_archive_integrity_check_failed" }, { status: 409 }); }
       }
@@ -3602,6 +3603,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         try {
           const priorPayload = await decodeSpaceArchive(await readSpaceArchiveObject(object), this.archiveKeys(), { tenantId, spaceId, archiveId: prior.archive_id });
           if (await spaceArchiveChecksum(priorPayload) !== prior.checksum) throw new Error("archive_checksum_mismatch");
+          await verifySpaceArchiveObjectSnapshots(priorPayload, this.env.SCRIPTS_R2, this.archiveKeys());
         } catch { return Response.json({ error_code: "verified_archive_integrity_failed_use_new_request_id", archive_id: prior.archive_id }, { status: 409 }); }
         execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", prior.archive_id);
         return Response.json({ archive_id: prior.archive_id, checksum: prior.checksum, replayed: true });
@@ -3619,6 +3621,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           try {
             const recovered = await decodeSpaceArchive(await readSpaceArchiveObject(existingObject), this.archiveKeys(), { tenantId, spaceId, archiveId });
             if (await spaceArchiveChecksum(recovered) !== savedUpload.checksum) throw new Error("archive_checksum_mismatch");
+            await verifySpaceArchiveObjectSnapshots(recovered, this.env.SCRIPTS_R2, this.archiveKeys());
             execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=? WHERE archive_id=? AND tenant_id=? AND space_id=?", recovered.migrationVersion, savedUpload.checksum, savedUpload.plaintext_bytes, savedUpload.row_counts_json, savedUpload.object_refs_json, savedUpload.selection_fingerprint, archiveId, tenantId, spaceId);
             execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", archiveId);
             return Response.json({ archive_id: archiveId, checksum: savedUpload.checksum, replayed: true, recovered_completed_upload: true });
@@ -3639,6 +3642,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           if (!completedObject) throw new Error("archive_object_missing_after_upload");
           const completedPayload = await decodeSpaceArchive(await readSpaceArchiveObject(completedObject), this.archiveKeys(), { tenantId, spaceId, archiveId });
           if (await spaceArchiveChecksum(completedPayload) !== savedUpload.checksum) throw new Error("archive_checksum_mismatch");
+          await verifySpaceArchiveObjectSnapshots(completedPayload, this.env.SCRIPTS_R2, this.archiveKeys());
         } catch (error) {
           execute(sql, "UPDATE space_archive_records SET status='failed' WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
           return Response.json({ error_code: "archive_write_failed_retry_same_request_id", archive_id: archiveId, message: (error as Error).message.slice(0, 160) }, { status: 503 });
@@ -3732,28 +3736,49 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           workspaceSnapshots.push(workspace.snapshot);
         }
       }
-      const objectSnapshots: NonNullable<SpaceArchivePayload["objectSnapshots"]> = [];
-      let capturedObjectBytes = 0;
+      let totalObjectBytes = 0;
       for (const ref of objectReferences) {
-        if (!Number.isSafeInteger(ref.size) || ref.size < 0 || capturedObjectBytes + ref.size > MAX_ARCHIVE_OBJECT_CAPTURE_BYTES) {
-          return Response.json({ error_code: "archive_object_capture_limit_exceeded", key: ref.key, max_total_bytes: MAX_ARCHIVE_OBJECT_CAPTURE_BYTES }, { status: 413 });
+        if (!Number.isSafeInteger(ref.size) || ref.size < 0 || totalObjectBytes + ref.size > MAX_ARCHIVE_CHUNKED_CAPTURE_BYTES) {
+          return Response.json({ error_code: "archive_object_capture_limit_exceeded", key: ref.key, max_total_bytes: MAX_ARCHIVE_CHUNKED_CAPTURE_BYTES }, { status: 413 });
         }
+        totalObjectBytes += ref.size;
+      }
+      const useChunkedObjects = totalObjectBytes > MAX_ARCHIVE_OBJECT_CAPTURE_BYTES || objectReferences.some(ref => ref.size > MAX_ARCHIVE_OBJECT_BYTES);
+      const maxObjectBytes = useChunkedObjects ? MAX_ARCHIVE_CHUNKED_OBJECT_BYTES : MAX_ARCHIVE_OBJECT_BYTES;
+      if (objectReferences.some(ref => ref.size > maxObjectBytes)) {
+        const ref = objectReferences.find(item => item.size > maxObjectBytes)!;
+        return Response.json({ error_code: "archive_object_capture_limit_exceeded", key: ref.key, max_object_bytes: maxObjectBytes }, { status: 413 });
+      }
+      const objectSnapshots: NonNullable<SpaceArchivePayload["objectSnapshots"]> = [];
+      for (let objectIndex = 0; objectIndex < objectReferences.length; objectIndex++) {
+        const ref = objectReferences[objectIndex]!;
         const source = await this.env.SCRIPTS_R2.get(ref.key);
-        if (!source || source.etag !== ref.etag || source.size !== ref.size) return Response.json({ error_code: "archive_object_changed_during_export", key: ref.key }, { status: 409 });
+        if (!source || source.etag !== ref.etag || source.size !== ref.size) {
+          if (useChunkedObjects) await deleteSpaceArchiveChunkObjects(this.env.SCRIPTS_R2, { tenantId, spaceId, archiveId }).catch(() => undefined);
+          return Response.json({ error_code: "archive_object_changed_during_export", archive_id: archiveId, key: ref.key }, { status: 409 });
+        }
         try {
-          objectSnapshots.push(await captureSpaceArchiveObject(source, ref.key));
-          capturedObjectBytes += ref.size;
+          if (useChunkedObjects) {
+            const captured = await captureSpaceArchiveObjectChunked(source, ref, objectIndex, { tenantId, spaceId, archiveId }, this.archiveKeys());
+            for (const chunk of captured.chunks) await this.env.SCRIPTS_R2.put(chunk.key, chunk.bytes, { httpMetadata: { contentType: "application/vnd.naelao.space-archive-chunk+json" } });
+            objectSnapshots.push(captured.snapshot);
+          } else {
+            objectSnapshots.push(await captureSpaceArchiveObject(source, ref.key));
+          }
         } catch (error) {
           const code = (error as Error).message;
-          return Response.json({ error_code: code, key: ref.key }, { status: code.includes("limit") ? 413 : 409 });
+          return Response.json({ error_code: code, archive_id: archiveId, key: ref.key, retry_same_request_id: true }, { status: code.includes("limit") ? 413 : code.includes("changed") ? 409 : 503 });
         }
       }
       const maxMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
-      const payload: SpaceArchivePayload = { format: "naelao-space-archive", formatVersion: 1, tenantId, spaceId, archiveId, createdAt: now, migrationVersion: maxMigration, tableRows, rowCounts, objectReferences, objectSnapshots,
+      const payload: SpaceArchivePayload = { format: "naelao-space-archive", formatVersion: useChunkedObjects ? 2 : 1, tenantId, spaceId, archiveId, createdAt: now, migrationVersion: maxMigration, tableRows, rowCounts, objectReferences, objectSnapshots,
         ...(workspaceSnapshots.length ? { workspaceSnapshots } : {}), ...(selectionFingerprint ? { selectionFingerprint } : {}) };
       let encoded: Awaited<ReturnType<typeof encodeSpaceArchive>>;
       try { encoded = await encodeSpaceArchive(payload, this.archiveKeys()); }
-      catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 413 }); }
+      catch (error) {
+        if (useChunkedObjects) await deleteSpaceArchiveChunkObjects(this.env.SCRIPTS_R2, { tenantId, spaceId, archiveId }).catch(() => undefined);
+        return Response.json({ error_code: (error as Error).message }, { status: 413 });
+      }
       execute(sql, `INSERT INTO space_archive_uploads (archive_id,tenant_id,space_id,upload_id,encrypted_bytes,completed_parts_json,checksum,plaintext_bytes,row_counts_json,object_refs_json,selection_fingerprint,created_at,updated_at)
         VALUES (?,?,?,NULL,?,'[]',?,?,?,?,?,?,?)`, archiveId, tenantId, spaceId, encoded.bytes, encoded.checksum, encoded.plaintextBytes, JSON.stringify(rowCounts), JSON.stringify(objectReferences), selectionFingerprint, now, now);
       const uploadState: ResumableArchiveUploadState = { uploadId: null, completedParts: [] };
@@ -3764,6 +3789,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (!completedObject) throw new Error("archive_object_missing_after_upload");
           const completedPayload = await decodeSpaceArchive(await readSpaceArchiveObject(completedObject), this.archiveKeys(), { tenantId, spaceId, archiveId });
         if (await spaceArchiveChecksum(completedPayload) !== encoded.checksum) throw new Error("archive_checksum_mismatch");
+        await verifySpaceArchiveObjectSnapshots(completedPayload, this.env.SCRIPTS_R2, this.archiveKeys());
       } catch (error) {
         execute(sql, "UPDATE space_archive_records SET status='failed' WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
         return Response.json({ error_code: "archive_write_failed_retry_same_request_id", archive_id: archiveId, message: (error as Error).message.slice(0, 160) }, { status: 503 });
@@ -3837,34 +3863,49 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const source = await this.env.SCRIPTS_R2.get(record.object_key);
       if (!source) return Response.json({ error_code: "archive_object_missing" }, { status: 409 });
       const sourceBytes = await readSpaceArchiveObject(source);
-      if (spaceArchiveKeyVersion(sourceBytes) === this.archiveKeys().active.version) return Response.json({ archive_id: archiveId, rewrapped: false, reason: "already_uses_active_key" });
       let payload: SpaceArchivePayload;
       try {
         payload = await decodeSpaceArchive(sourceBytes, this.archiveKeys(), { tenantId, spaceId, archiveId });
         if (await spaceArchiveChecksum(payload) !== record.checksum) throw new Error("archive_checksum_mismatch");
+        await verifySpaceArchiveObjectSnapshots(payload, this.env.SCRIPTS_R2, this.archiveKeys());
       } catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
+      const chunkKeysCurrent = payload.formatVersion !== 2 || (payload.objectSnapshots ?? []).every(snapshot => "objectIndex" in snapshot && snapshot.chunkKeyVersion === this.archiveKeys().active.version);
+      if (spaceArchiveKeyVersion(sourceBytes) === this.archiveKeys().active.version && chunkKeysCurrent) return Response.json({ archive_id: archiveId, rewrapped: false, reason: "already_uses_active_key" });
+      const previousChunkKeyVersions = payload.formatVersion === 2
+        ? [...new Set((payload.objectSnapshots ?? []).filter((snapshot): snapshot is Extract<NonNullable<SpaceArchivePayload["objectSnapshots"]>[number], { objectIndex: number }> => "objectIndex" in snapshot).map(snapshot => snapshot.chunkKeyVersion))]
+        : [];
       const targetKey = `space-archives/${tenantId}/${spaceId}/${archiveId}.rewrap-${crypto.randomUUID()}.enc`;
       let pointerUpdated = false;
+      let encodedChecksum = record.checksum;
       try {
+        payload = await rewrapSpaceArchiveObjectChunks(payload, this.env.SCRIPTS_R2, this.archiveKeys());
         const encoded = await encodeSpaceArchive(payload, this.archiveKeys());
+        encodedChecksum = encoded.checksum;
         await this.env.SCRIPTS_R2.put(targetKey, encoded.bytes, { httpMetadata: { contentType: "application/vnd.naelao.space-archive+json" } });
         const stored = await this.env.SCRIPTS_R2.get(targetKey);
         if (!stored) throw new Error("rewrapped_archive_missing_after_write");
         const storedBytes = await readSpaceArchiveObject(stored);
         const verified = await decodeSpaceArchive(storedBytes, this.archiveKeys(), { tenantId, spaceId, archiveId });
-        if (await spaceArchiveChecksum(verified) !== record.checksum || spaceArchiveKeyVersion(storedBytes) !== this.archiveKeys().active.version) throw new Error("rewrapped_archive_verification_failed");
+        if (await spaceArchiveChecksum(verified) !== encoded.checksum || spaceArchiveKeyVersion(storedBytes) !== this.archiveKeys().active.version) throw new Error("rewrapped_archive_verification_failed");
+        await verifySpaceArchiveObjectSnapshots(verified, this.env.SCRIPTS_R2, this.archiveKeys());
         this.ctx.storage.transactionSync(() => {
-          const result = this.ctx.storage.sql.exec("UPDATE space_archive_records SET object_key=?,checksum=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status='verified'", targetKey, record.checksum, archiveId, tenantId, spaceId);
+          const result = this.ctx.storage.sql.exec("UPDATE space_archive_records SET object_key=?,checksum=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status='verified'", targetKey, encoded.checksum, archiveId, tenantId, spaceId);
           if (!result.rowsWritten) throw new Error("archive_record_changed_during_rewrap");
         });
         pointerUpdated = true;
       } catch (error) {
-        if (!pointerUpdated) await this.env.SCRIPTS_R2.delete(targetKey).catch(() => undefined);
+        if (!pointerUpdated) {
+          await this.env.SCRIPTS_R2.delete(targetKey).catch(() => undefined);
+          if (!previousChunkKeyVersions.includes(this.archiveKeys().active.version)) await deleteSpaceArchiveChunkObjects(this.env.SCRIPTS_R2, { tenantId, spaceId, archiveId }, this.archiveKeys().active.version).catch(() => undefined);
+        }
         return Response.json({ error_code: (error as Error).message || "archive_rewrap_failed" }, { status: 503 });
       }
       await this.env.SCRIPTS_R2.delete(record.object_key).catch(() => undefined);
+      for (const keyVersion of previousChunkKeyVersions) {
+        if (keyVersion !== this.archiveKeys().active.version) await deleteSpaceArchiveChunkObjects(this.env.SCRIPTS_R2, { tenantId, spaceId, archiveId }, keyVersion).catch(() => undefined);
+      }
       insertEvent("archive_key_rewrapped", { archive_id: archiveId, from_key_version: spaceArchiveKeyVersion(sourceBytes), to_key_version: this.archiveKeys().active.version });
-      return Response.json({ archive_id: archiveId, rewrapped: true, key_version: this.archiveKeys().active.version });
+      return Response.json({ archive_id: archiveId, rewrapped: true, checksum: encodedChecksum, key_version: this.archiveKeys().active.version });
     }
     if (action === "preview_restore" || action === "apply_restore") {
       if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });
@@ -3888,16 +3929,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (hasObjectSnapshots) {
         if (!Array.isArray(payload.objectSnapshots) || payload.objectSnapshots.length !== payload.objectReferences.length) return Response.json({ error_code: "archive_object_snapshot_set_incomplete" }, { status: 422 });
         let totalSnapshotBytes = 0;
-        for (const snapshot of payload.objectSnapshots) {
-          const ref = payload.objectReferences.find(candidate => candidate.key === snapshot?.key);
+        for (let index = 0; index < payload.objectSnapshots.length; index++) {
+          const snapshot = payload.objectSnapshots[index]!;
+          const ref = payload.objectReferences[index];
           if (!ref || snapshotsByKey.has(snapshot.key)) return Response.json({ error_code: "archive_object_snapshot_invalid" }, { status: 422 });
           let bytes: Uint8Array;
-          try { bytes = await decodeSpaceArchiveObjectSnapshot(snapshot, ref); }
+          try {
+            if (payload.formatVersion === 2) {
+              if (!("objectIndex" in snapshot) || snapshot.objectIndex !== index) throw new Error("archive_object_snapshot_invalid");
+              bytes = await decodeSpaceArchiveChunkedObjectSnapshot(snapshot, ref, { tenantId, spaceId, archiveId }, this.env.SCRIPTS_R2, this.archiveKeys());
+            } else {
+              if ("objectIndex" in snapshot) throw new Error("archive_object_snapshot_invalid");
+              bytes = await decodeSpaceArchiveObjectSnapshot(snapshot, ref);
+            }
+          }
           catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
           totalSnapshotBytes += bytes.byteLength;
-          if (totalSnapshotBytes > MAX_ARCHIVE_OBJECT_CAPTURE_BYTES) return Response.json({ error_code: "archive_object_capture_limit_exceeded" }, { status: 422 });
+          const totalLimit = payload.formatVersion === 2 ? MAX_ARCHIVE_CHUNKED_CAPTURE_BYTES : MAX_ARCHIVE_OBJECT_CAPTURE_BYTES;
+          if (totalSnapshotBytes > totalLimit) return Response.json({ error_code: "archive_object_capture_limit_exceeded" }, { status: 422 });
           snapshotsByKey.set(snapshot.key, snapshot);
-          snapshotBytesByKey.set(snapshot.key, bytes);
+          if (payload.formatVersion === 1) snapshotBytesByKey.set(snapshot.key, bytes);
         }
       }
       const hasWorkspaceSnapshots = Object.prototype.hasOwnProperty.call(payload, "workspaceSnapshots");
@@ -3932,8 +3983,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           const currentObject = await this.env.SCRIPTS_R2.get(ref.key);
           if (!currentObject || currentObject.size !== ref.size) return Response.json({ error_code: "referenced_workspace_object_changed_or_missing", key: ref.key }, { status: 409 });
           try {
-            const capturedCurrent = await captureSpaceArchiveObject(currentObject, ref.key);
-            if (capturedCurrent.checksum !== snapshot.checksum) return Response.json({ error_code: "referenced_workspace_object_checksum_mismatch", key: ref.key }, { status: 409 });
+            if (await checksumSpaceArchiveObject(currentObject) !== snapshot.checksum) return Response.json({ error_code: "referenced_workspace_object_checksum_mismatch", key: ref.key }, { status: 409 });
           } catch (error) { return Response.json({ error_code: (error as Error).message, key: ref.key }, { status: 422 }); }
         }
       }
@@ -4024,10 +4074,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         for (let index = 0; index < payload.objectReferences.length; index++) {
           const ref = payload.objectReferences[index]!;
           const snapshot = snapshotsByKey.get(ref.key);
-          const snapshotBytes = snapshotBytesByKey.get(ref.key);
+          let snapshotBytes = snapshotBytesByKey.get(ref.key);
           let currentObject = await this.env.SCRIPTS_R2.get(ref.key);
           if (!currentObject) {
-            if (!snapshot || !snapshotBytes) throw new Error("referenced_workspace_object_changed_or_missing");
+            if (!snapshot) throw new Error("referenced_workspace_object_changed_or_missing");
+            if (!snapshotBytes && payload.formatVersion === 2 && "objectIndex" in snapshot) {
+              snapshotBytes = await decodeSpaceArchiveChunkedObjectSnapshot(snapshot, ref, { tenantId, spaceId, archiveId }, this.env.SCRIPTS_R2, this.archiveKeys());
+            }
+            if (!snapshotBytes) throw new Error("referenced_workspace_object_changed_or_missing");
             const httpMetadata: R2HTTPMetadata = {};
             if (snapshot.httpMetadata?.contentType) httpMetadata.contentType = snapshot.httpMetadata.contentType;
             if (snapshot.httpMetadata?.contentLanguage) httpMetadata.contentLanguage = snapshot.httpMetadata.contentLanguage;
@@ -4046,8 +4100,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           }
           if ((!snapshot && currentObject.etag !== ref.etag) || currentObject.size !== ref.size) throw new Error("referenced_workspace_object_changed_or_missing");
           if (snapshot) {
-            const currentSnapshot = await captureSpaceArchiveObject(currentObject, ref.key);
-            if (currentSnapshot.checksum !== snapshot.checksum) throw new Error("restored_workspace_object_checksum_mismatch");
+            if (await checksumSpaceArchiveObject(currentObject) !== snapshot.checksum) throw new Error("restored_workspace_object_checksum_mismatch");
           }
           verifiedObjectCount = index + 1;
           execute(sql, "UPDATE space_archive_restores SET status='restoring',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, previewId, tenantId, spaceId);
