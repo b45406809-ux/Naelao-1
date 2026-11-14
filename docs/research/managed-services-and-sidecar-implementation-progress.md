@@ -1,7 +1,25 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P02 receipt identity and source freshness)
+## Active continuation — 2026-11-14 (P20 refund conflict reconciliation)
+
+Code `aa877154d5a808da03ec6d6d07a485dabd6d8994` is pushed to
+`origin/Mcbt5s-Backup-2`. An invalid-amount refund that arrives before its captured payment keeps its
+`policy_conflict`/`refund_amount_invalid` classification while settlement links the later matching
+purchase. Existing tenant and purchase-identity mismatch cases stay unattached. This recovers durable
+purchase provenance without changing license access, creator earnings or payout behavior. Verification:
+SQLite-backed Marketplace settlement/operator suites **12/12**, Billing typecheck, and `git diff
+--check`. No provider, deployment or live acceptance ran. P20 remains PARTIAL for license-access,
+author-clawback, dispute/payout decisions and live reconciliation; P03/P12 grace, restriction and retry
+policy are unresolved. P02 resource separation, owner receipts and D1 baselines remain external gates.
+Preserve `infra/scripts/__pycache__/`; keep rollouts disabled.
+
+Exact next action: trace P03/P12 dunning from both billing outbox and queue producers through durable
+workflow creation, retry timing and notification acceptance receipts. Fix an independent reachable
+contract/idempotency gap without selecting grace/restriction or retry-cadence policy; then continue the
+next uncoded S3–S9/U01–U12/P01–P24 requirement.
+
+## Previous continuation — 2026-11-14 (P02 receipt identity and source freshness)
 
 P02 fixes `fe8b31216c6c6049c7c3519dea0744e2f58e00e6` and
 `6f5ded73c48be8a5d44644ce694ea2a43dbdbdd1` are pushed to `origin/Mcbt5s-Backup-2`. Preflight now

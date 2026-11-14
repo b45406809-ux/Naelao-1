@@ -16,7 +16,25 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P02 receipt identity and source freshness)
+## Latest checkpoint — 2026-11-14 (P20 refund conflict reconciliation)
+
+Source `aa877154d5a808da03ec6d6d07a485dabd6d8994` is pushed to
+`origin/Mcbt5s-Backup-2`. If an invalid-amount refund arrives before its captured payment, its case
+remains `policy_conflict` but now receives the later exact purchase link during settlement, preserving
+the review evidence. Tenant and purchase-identity mismatches remain unlinked. Local SQLite-backed
+Marketplace settlement plus operator-review suites pass **12/12**, Billing typecheck passes, and
+`git diff --check` passes. No access, creator-clawback, dispute or payout policy changed; no provider,
+deployed or live acceptance ran. P20 remains PARTIAL for those product decisions and live reconciliation.
+P02 code `fe8b3121`/`6f5ded73` is also pushed; actual Cloudflare resource ownership, separated bindings,
+fresh account receipts and operator-attested D1 baselines remain external evidence gates. Preserve the
+intentionally untracked `infra/scripts/__pycache__/`; keep all rollouts disabled.
+
+Exact next action: trace P03/P12 dunning from both billing outbox and queue producer through workflow
+creation, retry scheduling and notification receipts. Close one concrete reachable contract/idempotency
+gap if present; preserve unresolved grace/restriction and retry-cadence policy. Then proceed to the next
+independent S3–S9/U01–U12/P01–P24 implementation gap without repeating finished audits.
+
+## Previous checkpoint — 2026-11-14 (P02 receipt identity and source freshness)
 
 P02 validator/collector fixes `fe8b31216c6c6049c7c3519dea0744e2f58e00e6` and
 `6f5ded73c48be8a5d44644ce694ea2a43dbdbdd1` are pushed to `origin/Mcbt5s-Backup-2` from

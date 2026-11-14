@@ -1,7 +1,25 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P02 receipt identity and source freshness)
+## Active continuation — 2026-11-14 (P20 refund conflict reconciliation)
+
+Code `aa877154d5a808da03ec6d6d07a485dabd6d8994` is pushed. Refund evidence with an invalid explicit
+amount previously remained in conflict but was not linked to a later matching captured purchase.
+Settlement now attaches that purchase provenance while preserving `policy_conflict`; tenant and
+purchase-identity mismatches remain unattached. This makes the durable review record more complete
+without deciding license access or creator-earning reversal. SQLite-backed Marketplace settlement and
+operator-review suites pass **12/12**, Billing typecheck passes, and `git diff --check` passes. These
+are local tests; provider/deployed/live acceptance was not run. P20 remains PARTIAL for access,
+clawback, dispute and payout policy plus live reconciliation. P02 remains PARTIAL for actual Cloudflare
+resource separation/ownership, fresh receipts and operator-attested D1 baselines. Rollouts stay
+disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: trace P03/P12 from the durable billing outbox and queue producers through workflow
+creation, retry scheduling and notification receipts. Close one concrete reachable contract or
+idempotency gap without selecting grace/restriction/retry-cadence policy, then continue independent
+S3–S9/U01–U12/P01–P24 code gaps without repeating completed audits.
+
+## Previous continuation — 2026-11-14 (P02 receipt identity and source freshness)
 
 P02 fixes `fe8b31216c6c6049c7c3519dea0744e2f58e00e6` and
 `6f5ded73c48be8a5d44644ce694ea2a43dbdbdd1` are pushed. The preflight now requires exact R2 bucket
