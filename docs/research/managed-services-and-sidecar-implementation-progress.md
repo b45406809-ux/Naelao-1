@@ -26,11 +26,18 @@ pinned-runtime contract (writer admission, drain/flush and generation-bound hand
 gap; no adapter was fabricated. Rollouts remain disabled; preserve untracked
 `infra/scripts/__pycache__/`.
 
-Exact next action: inspect P04 restore preflight and its current caller for an independent
-erasure-tombstone/read-fencing gap. Implement and locally test only a demonstrated source gap. If the
-restore path already enforces the fence, record the evidence and proceed to the next uncoded
-guided-template requirement. Keep retention/key/jurisdiction/RPO-RTO and isolated recovery as open
-P04 gates; do not repeat completed archive audits.
+P04 restore fencing was checked at the actual SpaceDO dispatch boundary. Before any route except the
+idempotent erasure-receipt DELETE, `SpaceDO.fetch` checks the durable `space_erasure_tombstones` table
+and returns 410. `workers/spaces/src/do/space-data-ops.test.ts` creates an archive, performs erasure,
+then verifies restore preview is rejected while the R2 archive remains for the workflow's cleanup
+sweep. No new restore-tombstone code change is warranted. P04 remains PARTIAL for other service stores,
+private inbound data, approved retention/key/jurisdiction policy, RPO/RTO and isolated/deployed drills.
+
+Exact next action: implement the owner-facing P05 retained-resource handoff in the existing template
+status modal: link validated generated Project IDs to their Space Projects, link to the Space extension
+manager, and disclose that this view has no template uninstall or provider/license/charge cleanup action.
+Keep it read-only and do not infer active resources from template IDs. Then continue the next independent
+uncoded platform or S3–S9/U01–U12 requirement.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 

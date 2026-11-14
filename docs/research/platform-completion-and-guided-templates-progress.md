@@ -23,10 +23,18 @@ policy, inbox delivery, and live acceptance. P01/P02 remain fail-closed on exter
 U06 is blocked by an unsupported pinned-runtime admission/drain/flush/handoff contract, not credentials.
 Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: inspect the P04 restore preflight and caller for an independent erasure-tombstone/
-read-fencing gap. Implement and locally test it only if current source lacks the fence; otherwise record
-the source evidence and move to the next uncoded guided-template requirement. Preserve P04 retention,
-key/jurisdiction, RPO/RTO and isolated recovery gates, and do not repeat completed archive audits.
+P04 restore fencing is present in the actual `SpaceDO.fetch` path: every route except the exact
+idempotent erasure receipt returns 410 when the durable `space_erasure_tombstones` table contains this
+Space. `space-data-ops.test.ts` exports an archive, erases the Space and proves restore preview is then
+rejected. No additional tombstone code is needed. P04 remains PARTIAL for backups of other service
+stores, private inbound data, approved retention/key/jurisdiction policy, RPO/RTO and isolated/deployed
+recovery drills.
+
+Exact next action: improve the owner-only P05 template status view with direct links to validated
+generated Project IDs and the target Space's extension manager, plus a read-only disclosure that the
+view cannot uninstall the template or remove Projects, extensions, provider connections, licenses or
+charges. Do not imply the listed resources are active or add cleanup mutations while their product
+semantics remain unresolved. Then continue the next independently codeable P05/P06 or S3–S9/U01–U12 gap.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 

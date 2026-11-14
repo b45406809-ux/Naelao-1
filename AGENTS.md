@@ -41,12 +41,20 @@ and live acceptance. P01/P02 inventory/evidence gates remain unchanged. U06 rema
 unsupported pinned-runtime admission/drain/flush/handoff contract, not credentials; do not invent an
 adapter. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
 
-Exact next action: inspect P04 restore code and its caller for a concrete erasure-tombstone/read-fencing
-gap, starting at the SpaceDO restore preflight and the current erasure ledger. Implement and locally test
-that gap only if current source lacks the fence. If the caller already enforces it, record the source
-evidence and proceed to the next uncoded guided-template requirement. Preserve P04 retention/key/
-jurisdiction/RPO-RTO and isolated-recovery gates. Keep rollouts disabled; do not deploy, purchase, or
-create resources.
+P04 restore fencing is verified with no remaining independent tombstone code gap: `SpaceDO.fetch`
+checks `space_erasure_tombstones` before dispatching every request except the idempotent erasure receipt,
+so archive preview/apply is fenced at the Durable Object boundary. `space-data-ops.test.ts` exports an
+archive, erases the Space, then proves later restore returns 410 while the tombstone remains durable.
+P04 still lacks other-service backup coverage, approved retention/key/jurisdiction and RPO/RTO policy,
+and isolated/deployed recovery drills.
+
+Exact next action: improve the existing owner-only P05 template status view with direct links to each
+validated generated Project and a clear retained-resource disclosure: this panel cannot remove generated
+Projects, required extensions, provider connections, licenses, or recurring charges. Keep this review
+read-only; do not add an uninstall mutation while cleanup, license and provider-charge semantics remain
+unresolved. Add no claim that listed resources or charges are currently active. Then continue the next
+independent P05/P06/S3–S9/U01–U12 code gap. Keep rollouts disabled; do not deploy, purchase, or create
+resources.
 
 ## Previous checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 
