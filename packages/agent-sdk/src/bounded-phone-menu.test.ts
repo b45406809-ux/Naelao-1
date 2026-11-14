@@ -52,6 +52,7 @@ describe("bounded phone menu package", () => {
     expect(dashboard).toContain("single-turn keyword route");
     expect(dashboard).toContain("Phone line for installed-handler test");
     expect(dashboard).toContain("binding_id:line.binding_id");
+    expect(dashboard).toContain("lineLabel(callRecord.binding_id)");
     const dashboardScript = dashboard.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(dashboardScript).toBeDefined();
     expect(() => new Function(dashboardScript!)).not.toThrow();

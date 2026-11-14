@@ -215,10 +215,10 @@ describe("gadget MCP host adapter", () => {
       publisher_id: "pub_phone", publisher_key_id: "a".repeat(64), publisher_key_status: "active" }, lines: [
       { binding_id: "binding-a", provider: "telnyx", status: "active", handler_status: "active", speech_input_allowed: false, number_hint: "•••• 0123" },
       { binding_id: "binding-c", provider: "twilio", status: "active", handler_status: "active", speech_input_allowed: false, number_hint: "•••• 0124" },
-    ], recent_telnyx_calls: [expect.objectContaining({ state: "ended", turn_count: 2, caller_hint: "•••• 0199",
+    ], recent_telnyx_calls: [expect.objectContaining({ binding_id: "binding-a", state: "ended", turn_count: 2, caller_hint: "•••• 0199",
       handler_sha256: "a".repeat(64),
       cost_report: { status: "reported", provider_cost_micros: 123456, currency: "USD", leg_count: 1 } })],
-      recent_twilio_calls: [{ call_sid: `CA${"c".repeat(32)}`, handler_sha256: "c".repeat(64), state: "completed", started_at: 1_800_000_002,
+      recent_twilio_calls: [{ call_sid: `CA${"c".repeat(32)}`, binding_id: "binding-c", handler_sha256: "c".repeat(64), state: "completed", started_at: 1_800_000_002,
         duration_seconds: 37, caller_hint: "•••• 0124", cost_report: { status: "reported", provider_cost_micros: 42000,
           currency: "USD", provenance: "provider_api_observed" } }],
       cost_disclosure: "Provider call costs appear only after an owner confirms a carrier API read. These are provider API observations, not invoices or customer charges; missing or pending prices remain unknown. Twilio Calls API price covers call connectivity and may exclude other call-related features." });

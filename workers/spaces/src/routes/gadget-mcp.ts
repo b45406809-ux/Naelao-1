@@ -259,7 +259,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
                 leg_count: Number.isSafeInteger(report.leg_count) ? report.leg_count : null }
             : { status: report?.status === "unavailable" ? "unavailable" as const : "not_linked" as const,
                 provider_cost_micros: null, currency: null, leg_count: null };
-          return { handler_sha256: call.handler_sha256,
+          return { binding_id: call.binding_id as string, handler_sha256: call.handler_sha256,
             state: typeof call.state === "string" ? call.state.slice(0, 32) : "unknown",
             turn_count: Number.isSafeInteger(call.turn_count) ? call.turn_count : 0,
             started_at: Number.isSafeInteger(call.started_at) ? call.started_at : null,
@@ -314,7 +314,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
         signed_release: { extension_id: runtime.extensionId, version: runtime.releaseVersion, publisher_id: runtime.publisherId,
           publisher_key_id: runtime.publisherKeyId, publisher_key_status: "active" },
         lines: safeLines, recent_telnyx_calls: recentCalls,
-        recent_twilio_calls: recentTwilioCalls.map(call => ({ call_sid: call.call_sid, handler_sha256: call.handler_sha256,
+        recent_twilio_calls: recentTwilioCalls.map(call => ({ call_sid: call.call_sid, binding_id: call.binding_id, handler_sha256: call.handler_sha256,
           state: call.state, started_at: call.started_at, duration_seconds: call.duration_seconds,
           caller_hint: call.caller_hint, cost_report: call.cost_report })),
         cost_disclosure: "Provider call costs appear only after an owner confirms a carrier API read. These are provider API observations, not invoices or customer charges; missing or pending prices remain unknown. Twilio Calls API price covers call connectivity and may exclude other call-related features." }),
