@@ -23,6 +23,17 @@ const blueprint = (overrides: Partial<SpaceBlueprint> = {}): SpaceBlueprint => {
 };
 
 describe("Space Template activation preview", () => {
+  it("previews validated channel availability without exposing account provisioning directives", () => {
+    const preview = previewBlueprintActivation(blueprint({ requiredExtensions: [], requiredCredentials: [], assistantChannels: {
+      spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" },
+      emailProvisioning: { spaceAssistant: { provider: "agentmail", defaultMode: "naelao_managed", provisionOnCreate: true } },
+    } }), new Map(), new Map());
+    expect(preview.assistant_channel_defaults).toEqual({
+      spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" },
+    });
+    expect(preview.assistant_channel_defaults).not.toHaveProperty("emailProvisioning");
+  });
+
   it("does not imply declared project runtimes are installed when no host provisioner exists", () => {
     const project = { id: "project-a", name: "Project A", kind: "DualPane" as const, templateMode: "cowork_studio" as const,
       viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [], runtimeRequirements: [

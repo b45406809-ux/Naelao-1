@@ -1,4 +1,4 @@
-import { validateBlueprintSetupSchema, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 export interface BlueprintActivationDependency {
   extension_id: string;
@@ -30,6 +30,7 @@ export interface BlueprintActivationPreview {
   }>;
   setup_schema_version: 1 | 2 | null;
   setup_fields: ReturnType<typeof validateBlueprintSetupSchema>;
+  assistant_channel_defaults: Pick<AssistantChannelTemplateDefaults, "spaceAssistant" | "projectAssistants"> | null;
   blockers: string[];
   requires_human_activation: true;
   installs_or_grants_applied: false;
@@ -143,6 +144,10 @@ export function previewBlueprintActivation(
   }));
   for (const requirement of runtime_requirements) if (requirement.required && requirement.status === "unavailable")
     blockers.push(`required_runtime_unavailable:${requirement.project_id}:${requirement.runtime_id}`);
+  const { spaceAssistant, projectAssistants } = blueprint.assistantChannels ?? {};
+  const assistant_channel_defaults = spaceAssistant || projectAssistants
+    ? { ...(spaceAssistant ? { spaceAssistant } : {}), ...(projectAssistants ? { projectAssistants } : {}) }
+    : null;
   return {
     ready: blockers.length === 0,
     dependencies,
@@ -153,6 +158,7 @@ export function previewBlueprintActivation(
     ),
     setup_schema_version: blueprint.setupSchemaVersion ?? null,
     setup_fields: validateBlueprintSetupSchema(blueprint),
+    assistant_channel_defaults,
     blockers,
     requires_human_activation: true,
     installs_or_grants_applied: false,

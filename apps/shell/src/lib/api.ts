@@ -2802,6 +2802,7 @@ export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
   setup_schema_version: 1 | 2 | null;
   setup_fields: Array<{ project_id: string; project_name: string; fields: import("@naelao/agent-sdk").BlueprintSetupField[] }>;
+  assistant_channel_defaults: Pick<import("@naelao/agent-sdk").AssistantChannelTemplateDefaults, "spaceAssistant" | "projectAssistants"> | null;
   dependencies: Array<{ extension_id: string; status: "installed" | "version_unpinned" | "disabled" | "not_active" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string; summary?: {
     primitives: Array<{ kind: string; id: string; capabilities: string[]; permissions: string[]; tools?: string[]; scope?: string; provider?: string; inbound_events?: string[]; outbound_events?: string[]; resources?: { cpu_cores: number; memory_mb: number; timeout_seconds: number }; network_policy?: string; gadget_reads?: Array<{ gadget_id: string; tables: string[] }> }>;
     capabilities: string[]; permissions: string[];

@@ -830,6 +830,20 @@ export default function SpacesPage() {
                   })} />)}
               </fieldset>)}
             </section>}
+            <strong>Assistant channel availability defaults</strong>
+            {activationReview.preview.assistant_channel_defaults
+              && (activationReview.preview.assistant_channel_defaults.spaceAssistant || activationReview.preview.assistant_channel_defaults.projectAssistants)
+              ? <ul>{(["spaceAssistant", "projectAssistants"] as const).map(scope => {
+                const defaults = activationReview.preview.assistant_channel_defaults?.[scope];
+                if (!defaults) return null;
+                const settings = [
+                  ...Object.entries(defaults.enabled ?? {}).map(([channel, available]) => `${channel}: ${available ? "available by default" : "unavailable by default"}`),
+                  ...(defaults.phonePrompt ? [`phone setup prompt: ${defaults.phonePrompt}`] : []),
+                ];
+                return settings.length ? <li key={scope}>{scope === "spaceAssistant" ? "Space Assistant" : "Project Assistants"}: {settings.join("; ")}</li> : null;
+              })}</ul>
+              : <p>No template channel defaults; platform defaults apply.</p>}
+            <p>These preferences do not connect provider accounts, provision phone numbers or email addresses, or authorize spending. You can review connections and change channel preferences after installation.</p>
             <strong>Extension provider connections</strong>
             {activationReview.preview.extension_connections.length ? <ul>{activationReview.preview.extension_connections.map(connection => <li key={`${connection.extension_id}:${connection.connection_id}`}>
               {connection.extension_id} · {connection.provider}/{connection.connection_id}: {connection.required ? "required" : "optional"} · {connection.required ? "Space-wide provider connection is not supported yet" : "optional provider connection is also unsupported for Space-wide extensions"} — {connection.purpose}
