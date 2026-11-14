@@ -30,6 +30,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname();
   useTheme();
   const [teamAccess, setTeamAccess] = useState<"checking" | "allowed" | "denied">("checking");
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+
+  async function handleLogout() {
+    setLoggingOut(true);
+    setLogoutError(null);
+    try {
+      await logout();
+    } catch (error) {
+      setLogoutError(error instanceof Error ? error.message : "Could not sign out. Try again.");
+    } finally {
+      setLoggingOut(false);
+    }
+  }
 
   useEffect(() => {
     if (isHydrated && !isAuthenticated) router.replace("/login");
@@ -55,7 +69,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <div className="max-w-md text-center">
         <h1 className="text-xl font-semibold text-gray-900">Naelao team access required</h1>
         <p className="text-sm text-gray-500 mt-2">This dashboard is reserved for the Naelao team.</p>
-        <button type="button" onClick={logout} className="mt-5 px-4 py-2 rounded-lg border border-gray-200 text-sm">Log out</button>
+        <button type="button" disabled={loggingOut} onClick={() => void handleLogout()} className="mt-5 px-4 py-2 rounded-lg border border-gray-200 text-sm disabled:opacity-50">{loggingOut ? "Logging out…" : "Log out"}</button>
+        {logoutError && <p role="alert" className="mt-3 text-sm text-red-700">{logoutError}</p>}
       </div>
     </div>;
   }
@@ -71,8 +86,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <div id="main">
         <TopBar left={<span style={{ fontSize: 13, color: "var(--text2)" }}>Naelao Dashboard</span>}>
           <span style={{ fontSize: 13, color: "var(--text2)" }}>{claims?.email ?? ""}</span>
-          <button type="button" onClick={logout} className="btn btn-secondary">Logout</button>
+          <button type="button" disabled={loggingOut} onClick={() => void handleLogout()} className="btn btn-secondary">{loggingOut ? "Logging out…" : "Logout"}</button>
         </TopBar>
+        {logoutError && <p role="alert" className="px-6 pt-4 text-sm text-red-700">{logoutError}</p>}
         <main style={{ padding: 24, overflow: "auto" }}>{children}</main>
       </div>
     </div>

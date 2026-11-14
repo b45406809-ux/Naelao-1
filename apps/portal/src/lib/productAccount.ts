@@ -82,6 +82,15 @@ export async function logIn(spaceId: string, email: string, password: string): P
   return session;
 }
 
-export function logOut(spaceId: string): void {
+export async function logOut(spaceId: string): Promise<void> {
+  const session = getProductSession(spaceId);
+  if (session?.end_user_id && session.session_token) {
+    const response = await fetch(`${API_URL}/v1/spaces/${encodeURIComponent(spaceId)}/end-users/logout`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ end_user_id: session.end_user_id, session_token: session.session_token }),
+    });
+    if (!response.ok) throw new Error(`Could not revoke this product session (${response.status}). Try signing out again.`);
+  }
   clearProductSession(spaceId);
 }

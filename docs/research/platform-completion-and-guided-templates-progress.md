@@ -3,13 +3,14 @@
 
 ## Active checkpoint — 2026-11-14
 
-P07 code `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1` adds owner-declared capability profiles for exact local model IDs and capability-aware selection behind exact machine and current inference-grant checks. Private runs do not discover or fall back to cloud models. Local evidence: Agents routing/tunnel **23/23**, SDK protocol **2/2**, bridge discovery **2/2**, affected typechecks and SDK/bridge builds. Profiles are not quality evidence; custom-model selection and live acceptance remain, so P07 is PARTIAL.
+P13 unknown/misrouted and malformed queue messages now retry to configured DLQs in Workflows, Billing, Notifications, Analytics, Provisioner and Agents (`4de53055`, `d640dbae`, pushed). Focused local suites and six affected Worker typechecks pass. DLQs are worker/environment-specific; Admin's consumer targets a separate queue and stores/logs raw payloads, so generic replay remains uncoded pending a safe retention/idempotency contract. P23 Notifications has a durable non-PII terminal status view. True backlog/age/DLQ remains unknown without supported provider evidence.
 
-P01 code `60c5f03b30aac5241a379b0c59bbf343ed0186b1` makes workflow validation require the manifest-selected migration phase to invoke the durable runner with its environment-specific baseline and run a remote D1 schema probe afterward. Current staging and production workflows comply. Local evidence: deployment-manifest **10/10**, release-migrations **15/15**, deployment/release manifest validators; inventory has 242 migrations and requires `0242_extension_provider_cleanup_operation_kinds`. Operator-attested baselines, remote D1, isolated rehearsal, data recovery and deployed health remain unverified; P01 is PARTIAL.
+P14 browser logout is implemented locally: Portal and Shell Product-user clients await server generation revocation; Portal and Dashboard builder clients await `/v1/auth/revoke`; Shell also awaits the HttpOnly DeskDrop cookie endpoint. Failed revocation leaves credentials available for retry and the UI shows the error; already-revoked builder tokens (401) clear locally. Evidence: Shell **3/3**, Portal **3/3**, Spaces logout route **17/17**, Shell/Portal/Dashboard typechecks and `git diff --check`. P14 remains PARTIAL for localStorage bearer storage, cross-origin/embedded cookie and CSRF/XSS transport decisions, and deployed copied-token acceptance.
 
-Managed U12 local staging/build/CI wiring is present; future CI execution and deployed-image parity are unverified. The managed ledger's MS07 summary is corrected by MS07e's combined Assistant/AgentMail search. P02 code `174f092c84fc1acec599da839e6f9a4b8c566dd6` adds same-environment Worker ownership checks for cross-script Durable Object bindings; every current target resolves. Local resource-inventory tests **11/11** pass. The preflight still fails closed on 13 shared-resource findings, unresolved `naelao-calls` ownership, 158 missing read-only receipts, and missing account/timestamp evidence. No external resource was queried or changed. Exact next action: implement P11's missing paid-plan price receipt by tracing signed checkout events to existing subscription/entitlement state and persisting provider, variant, amount, currency and event identity idempotently; do not change access/refund policy. Keep P02 blocked until the authorized read-only receipts and ownership evidence are supplied. Preserve the untracked cache and keep rollouts disabled.
+P11 purchase snapshots `16386d95679c5c739d07b3fbcc1061f98244b3ae`, P07 local-model profiles `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1`, and P01 durable migration-phase validation `60c5f03b30aac5241a379b0c59bbf343ed0186b1` remain pushed. The current release inventory has 244 migrations through 0244. P02 stays fail-closed on 13 shared resources, unresolved `naelao-calls`, 158 missing receipts and missing account/time evidence. P03/P12 access/recovery cadence and P20 refund/author accounting require product decisions; preserve the current policy. Rollouts stay disabled; no deployed or live acceptance is claimed.
 
-Setup recovery `c1c5e0d4` and U11 alert delivery `88457f40` remain pushed and locally verified in the managed ledger. Telegram/WhatsApp setup compensation is implemented for those supported journeys; cost alerts rotate through bounded sweeps and recheck project ownership. These are mocked/local paths, not provider or invoice acceptance.
+Exact next action: implement durable builder password-reset email dispatch in Auth by adapting the encrypted Product-auth outbox pattern: atomically persist the encrypted reset payload with the token, use a stable Notification ID, retry with a bounded lease/backoff, cancel superseded tokens, and preserve the constant/non-enumerating response. Then continue remaining uncoded requirements in both plans, starting with S3/U01–U12 code gaps; do not repeat completed source audits without new evidence.
+
 ## Previous checkpoint details
 
 Earlier continuation (2026-11-13): code `536853b9` connects signed same-tenant dependency import to
@@ -626,9 +627,13 @@ P12's duplicated permissive payload checks were consolidated in
 `packages/types/src/managed-billing-events.ts` as strict versioned `DunningEventV1`. Billing writes
 version 1; Billing dispatch, compatibility queue handling and Workflow queue consumption share the
 validator. Legacy pending payloads without a version remain readable as v1 for recovery; explicit
-unknown versions are rejected. Local evidence: Billing/workflow dunning, checkout and queue suites
-**31/31**; Billing, Workflows and shared-types typechecks. Email/provider delivery and platform
-access restrictions remain separate acceptance/policy gates.
+unknown versions are rejected. The durable outbox retries dispatch with bounded exponential delay;
+the workflow rechecks the current subscription before enqueueing a stable-ID notice, and Notifications
+persists provider-accepted/rejected/ambiguous receipts using the Resend idempotency key. Prior
+Billing/workflow dunning, checkout and queue evidence is **31/31**; this checkpoint reran Billing
+dunning/Product-user **8/8** and checkout-policy/fallback/Product-user **10/10**, plus Billing
+typecheck. Reminder cadence and access restriction are policy decisions; live email delivery remains
+unverified.
 
 ### P13 — queue health: PARTIAL, honest telemetry and durable alerts implemented
 
@@ -643,6 +648,17 @@ is required by release schema probes. Local evidence: model suite **7/7**, SQLit
 constraints **3/3**, release runner **8/8**, both manifests validate. No Cloudflare account was
 queried. Current depth/age/DLQ and live telemetry acceptance still need a supported provider API or
 operator inspector.
+
+Codes `4de53055` and `d640dbae` now route unknown/misrouted and malformed poison messages to the
+configured DLQs across Workflows, Billing, Notifications, Analytics, Provisioner and Agents; known
+stale messages still ACK. Focused local evidence: Workflows **11/11**, Notifications **10/10**,
+platform-plan queue/webhook **23/23**, Analytics **2/2**, Provisioner **4/4**, Agents session queues
+**3/3**, plus all six affected Worker typechecks. Configured DLQ queues are per worker/environment.
+The Admin DLQ consumer reads a different queue and stores/logs raw payloads; wiring sensitive DLQs to
+it would lack a safe retention/redaction/replay contract. Notifications has its own durable non-PII
+terminal-status view under P23. Generic authenticated replay remains uncoded until payload retention,
+idempotency and operator audit semantics are defined. Provider backlog, age and true DLQ depth remain
+unknown; no Cloudflare account was queried.
 
 ### P22 — Knowledge deletion and indexing: PARTIAL, local cache cleanup gaps closed
 
@@ -843,17 +859,17 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
 | P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. Gadget/schema/data migration recovery, broader rollback/version selection, authority/dependency expansion, connection/price changes, scanning/retention and live acceptance remain. |
-| P11 | PARTIAL | Development checkout is explicitly gated; purchased price snapshots and live provider-to-entitlement acceptance remain. |
+| P11 | PARTIAL | Development checkout is explicitly gated. `16386d95` adds signed, idempotent platform/Product-user price receipts and Marketplace provider/variant/amount/currency snapshots; live provider-to-entitlement acceptance remains. |
 | P12 | PARTIAL | Versioned dunning contract, queue and workflow paths exist; business recovery policy and provider delivery acceptance remain. |
-| P13 | PARTIAL | Honest interval-health observations and alerts persist; true depth/age/DLQ inspection lacks a supported live source. |
-| P14 | PARTIAL | Product generation-based reset/logout and retryable revocation exist; browser token storage and full cross-product security acceptance remain. |
+| P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. Admin is not safely bound to those DLQs and generic replay remains uncoded; true provider depth/age/DLQ lacks a supported source. |
+| P14 | PARTIAL | `product-end-user/logout` generation revocation and builder `/auth/revoke` are now awaited by reachable Portal/Shell/Dashboard callers; failures retain state and show retry. Product reset generation and DO cleanup are durable. localStorage bearer storage, cookie/CSRF/XSS transport decision and deployed copied-token acceptance remain. |
 | P15 | PARTIAL | Indexed bounded Blackboard paging has local scale evidence; representative relevance, membership density and deployed acceptance remain. |
 | P16 | PARTIAL | Shared Discord media bounds/disclosure plus P05's scoped text-only extension handles exist locally. Discord non-ephemeral ingress, image/audio/raw binary extension access and provider/live acceptance remain unsupported or unverified. |
 | P17 | PARTIAL | Listing identity, freshness, purchase and install handoff are improved; cross-origin identity handoff and accounting policy remain. |
 | P18 | PARTIAL | Product password reset advances security generation atomically; builder/device token and deployed acceptance gaps remain. |
 | P19 | PARTIAL | Checked staging queue/workflow names and DLQs are separated from production; actual account resource identities and isolation receipts remain external. |
 | P20 | PARTIAL | Idempotent refund review ledger and buyer/creator status exist; dispute, access reversal, author accounting and independent operator identity remain unresolved. |
-| P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
+| P21 | PARTIAL | Product-user recovery email has an encrypted bounded outbox, retry, cancellation and HMAC-scoped status. Builder reset email still calls Notifications best-effort without durable Auth-owned retry/status; unverified-user policy and live delivery remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
 | P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, owner-authorized cross-Space package import (`b4cf5214`) connected to guided activation (`536853b9`), revoked-key recheck before copy (`b646ec16`), reload resume via destination install review (`edf08814`), paused static Canvas/channel-code update receipts (`c7412170`), runtime-work admission/drain (`15a04f7e`) and authenticated revocation receipts/readback (`f5b3c1dd`, `0ba70840`) are local. Cross-tenant artifact authorization, broader schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |

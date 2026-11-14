@@ -27,14 +27,18 @@ export function getUser(): AccountUser | null {
 function store(token: string, user: AccountUser): void {
   try { localStorage.setItem(TOKEN_KEY, token); localStorage.setItem(USER_KEY, JSON.stringify(user)); } catch { /* ignore */ }
 }
-export function logout(): void {
+export async function logout(): Promise<void> {
   const token = getToken();
   if (token) {
-    void fetch(`${API_URL}/v1/auth/revoke`, {
+    const response = await fetch(`${API_URL}/v1/auth/revoke`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}` },
-      keepalive: true,
-    }).catch(() => {});
+    });
+    // A 401 means this token epoch was already revoked or expired. Other failures leave the
+    // token available so the user can retry instead of silently abandoning a live session.
+    if (!response.ok && response.status !== 401) {
+      throw new Error(`Could not revoke this account session (${response.status}). Try signing out again.`);
+    }
   }
   try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); } catch { /* ignore */ }
 }

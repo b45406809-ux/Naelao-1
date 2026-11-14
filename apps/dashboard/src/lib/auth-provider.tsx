@@ -19,7 +19,7 @@ export interface AuthContextValue {
   planTier: string | null;
   login(email: string, password: string): Promise<void>;
   register(email: string, password: string, orgName?: string): Promise<void>;
-  logout(): void;
+  logout(): Promise<void>;
   isAuthenticated: boolean;
   /** False until localStorage has been read on mount. A hard reload of any nested route must
    *  gate its redirect-to-login on this — otherwise the child route's own effect (which fires
@@ -36,7 +36,7 @@ export const AuthContext = createContext<AuthContextValue>({
   planTier: null,
   login: async () => {},
   register: async () => {},
-  logout: () => {},
+  logout: async () => {},
   isAuthenticated: false,
   isHydrated: false,
 });
@@ -87,11 +87,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     const expiresAt = claims.exp * 1000;
     const msUntilExpiry = expiresAt - Date.now();
     if (msUntilExpiry <= 0) {
-      logout();
+      void logout().catch(() => {
+        // An expired JWT is already rejected by the server; clear it even if the epoch bump
+        // cannot be reached so an expired browser token is not retained indefinitely.
+        clearToken();
+        setToken(null);
+        setClaims(null);
+        setPlanTier(null);
+        if (typeof window !== "undefined") window.location.href = "/login";
+      });
       return;
     }
     const timer = setTimeout(() => {
-      logout();
+      void logout().catch(() => {
+        clearToken();
+        setToken(null);
+        setClaims(null);
+        setPlanTier(null);
+        if (typeof window !== "undefined") window.location.href = "/login";
+      });
     }, msUntilExpiry);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -120,14 +134,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     []
   );
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
     const currentToken = token;
     if (currentToken) {
-      void fetch(`${getApiBase()}/v1/auth/revoke`, {
+      const response = await fetch(`${getApiBase()}/v1/auth/revoke`, {
         method: "POST",
         headers: { authorization: `Bearer ${currentToken}` },
-        keepalive: true,
-      }).catch(() => {});
+      });
+      if (!response.ok && response.status !== 401) {
+        throw new Error(`Could not revoke this account session (${response.status}). Try signing out again.`);
+      }
     }
     clearToken();
     setToken(null);

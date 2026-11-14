@@ -792,13 +792,15 @@ function PersonalTab({
   session: { end_user_id: string } | null;
   productSlug: string;
   productSpaceId: string;
-  signOut: () => void;
+  signOut: () => Promise<void>;
   router: ReturnType<typeof useRouter>;
 }) {
   const [confirming, setConfirming] = React.useState(false);
   const [confirmText, setConfirmText] = React.useState("");
   const [deleting, setDeleting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [signOutError, setSignOutError] = React.useState<string | null>(null);
+  const [signingOut, setSigningOut] = React.useState(false);
   const [language, setLanguage] = React.useState(me?.preferred_language ?? "");
   const [savingLanguage, setSavingLanguage] = React.useState(false);
   const [languageMessage, setLanguageMessage] = React.useState<string | null>(null);
@@ -818,13 +820,32 @@ function PersonalTab({
     } finally { setSavingLanguage(false); }
   }
 
+  async function handleSignOut() {
+    setSigningOut(true);
+    setSignOutError(null);
+    try {
+      await signOut();
+      router.replace(`/p/${productSlug}`);
+    } catch (err) {
+      setSignOutError(err instanceof Error ? err.message : "Could not sign out. Try again.");
+    } finally {
+      setSigningOut(false);
+    }
+  }
+
   async function handleDelete() {
     if (!creds) return;
     setDeleting(true);
     setError(null);
     try {
       await deleteMe(productSpaceId, creds);
-      signOut();
+      try {
+        await signOut();
+      } catch {
+        setError("Account deleted, but this browser could not complete sign-out. Retry sign out.");
+        setDeleting(false);
+        return;
+      }
       router.replace(`/p/${productSlug}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete account");
@@ -858,8 +879,9 @@ function PersonalTab({
         </div>
         <div className="settings-row">
           <div><div className="settings-row-label">Session</div></div>
-          <button className="btn btn-secondary btn-sm" type="button" onClick={signOut}>Sign out</button>
+          <button className="btn btn-secondary btn-sm" type="button" disabled={signingOut} onClick={() => void handleSignOut()}>{signingOut ? "Signing out…" : "Sign out"}</button>
         </div>
+        {signOutError && <div role="alert" style={{ color: "#dc2626", fontSize: 12.5 }}>{signOutError}</div>}
       </div>
 
       <div className="settings-block danger-zone">

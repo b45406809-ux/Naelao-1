@@ -15,7 +15,7 @@ export interface ProductAuthContextValue {
   isHydrated: boolean;
   isAuthenticated: boolean;
   setSession: (session: ProductEndUser | null) => void;
-  signOut: () => void;
+  signOut: () => Promise<void>;
 }
 
 const ProductAuthContext = React.createContext<ProductAuthContextValue | null>(null);
@@ -49,10 +49,14 @@ export function ProductAuthProvider({
 
   const setSession = React.useCallback((next: ProductEndUser | null) => setSessionState(next), []);
 
-  const signOutFn = React.useCallback(() => {
+  const signOutFn = React.useCallback(async () => {
     const api = "/api/naelao";
-    void fetch(`${api}/v1/desk-drop/logout`, { method: "POST", credentials: "include" });
-    logOut(spaceId);
+    await Promise.all([
+      fetch(`${api}/v1/desk-drop/logout`, { method: "POST", credentials: "include" }).then((response) => {
+        if (!response.ok) throw new Error(`Could not revoke this browser session (${response.status}). Try signing out again.`);
+      }),
+      logOut(spaceId),
+    ]);
     setSessionState(null);
   }, [spaceId]);
 
