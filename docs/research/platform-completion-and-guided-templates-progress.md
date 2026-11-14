@@ -1,23 +1,28 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (multi-line signed phone operations view)
+## Active continuation — 2026-11-14 (shared Gadget schema update path)
 
-Codes `ce252033` and `be8a13df` let an owner select a current active binding for the exact signed
-phone-menu installation and carry that binding through a synthetic handler test. The route verifies
-the selection against current line/installation/provider state and keeps the single-line path backward
-compatible. Call history also carries its binding and shows the matching provider, masked number hint
-and current line state. Local evidence: Agent SDK **5/5**, Spaces route **18/18**, SDK/Spaces
-typechecks and `git diff --check`. Tests used installed binaries after pnpm's non-TTY bootstrap aborted
-before execution. No browser, carrier, deployment or live acceptance ran. Caller IDs remain masked;
-synthetic calls create no session; speech remains owner-enabled Twilio-only.
+Code `035a3274` is pushed to `origin/Mcbt5s-Backup-2`. P10's owner-reviewed signed package update now
+supports only unchanged Space-shared Gadget identities/default schemas with append-only additive SQL.
+The review shows exact migration text and binds approval to source/candidate manifest and artifact
+hashes. Apply requires a paused installation with no admitted work, rechecks source/candidate releases
+and publisher identity, and uses per-actor MicroAppDO transactions and durable receipts for retry after
+partial multi-Gadget progress. Destructive or changed historical migrations, stale pins and
+cross-installation identity mismatches fail closed. The Shell review and receipts show exact digest
+prefixes. Local evidence: Spaces route/contract/DO/migration tests **64/64**, Spaces/Shell typechecks and
+`git diff --check`. No deployment, browser, provider or live acceptance ran; rollouts stay disabled.
 
-Exact next action: implement an owner-reviewed Space-shared Gadget schema update path that reuses the
-SDK's existing additive SQL migration contract. Preview exact schema changes for one installation,
-bind apply authorization/receipt to source and candidate signed release digests, pause/drain work, and
-use the MicroApp migration journal to recover idempotently. Reject destructive SQL; test authorization,
-multi-instance isolation, interruption, concurrency and replay. Then continue P01/P02, commercial and
-recovery gates, guided setup and S3–S9/U01–U12/P01–P24 code without repeating completed audits.
+P10 remains PARTIAL for authority/dependency expansion, connection/price changes, scanning/retention,
+broader migration rollback and live acceptance. P01/P02 stay fail-closed on actual Cloudflare resource
+separation, ownership, receipts, account/time evidence and D1 baselines. P03/P12 and P20 retain explicit
+business-policy gates; they do not block independent caller code. No P requirement is live-accepted.
+
+Exact next action: continue the recorded P03/P12 trace from the durable billing outbox and dunning queue
+producers through workflow creation, retry scheduling and notification receipts. Implement one concrete
+reachable idempotency/caller-contract gap without choosing grace, restriction or retry-cadence policy.
+Then resume S3–S9/U01–U12 and P01–P24 at their row-level gaps; reuse completed implementations and do
+not repeat completed audits. Fetch before each push.
 
 ## Previous continuation — 2026-11-14 (signed template coordination-default handoff)
 
@@ -1350,7 +1355,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
-| P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain; `0d121ab2` adds exact historical signed-release rollback for that bounded package class. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. Gadget/schema/data migration recovery, authority/dependency expansion, connection/price changes, scanning/retention and live acceptance remain. |
+| P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain; `0d121ab2` adds exact historical signed-release rollback for that bounded package class. `035a3274` adds exact-digest owner review and atomic retryable additive Gadget-schema migrations per Space-shared MicroApp actor. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. Authority/dependency expansion, connection/price changes, broader data-migration rollback, scanning/retention and live acceptance remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated. `16386d95` adds signed, idempotent platform/Product-user price receipts and Marketplace provider/variant/amount/currency snapshots; live provider-to-entitlement acceptance remains. |
 | P12 | PARTIAL | Versioned dunning contract, queue and workflow paths exist; business recovery policy and provider delivery acceptance remain. |
 | P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. Current backlog/age/DLQ lack a supported source. Admin's consumer targets a different queue, retains raw payload, and has no reachable Router/service-binding path or supported `platform_admin` identity issuance. Generic replay remains uncoded pending those scope, retention/redaction and duplicate-side-effect contracts. |

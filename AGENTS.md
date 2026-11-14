@@ -16,26 +16,28 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (multi-line signed phone operations view)
+## Latest checkpoint — 2026-11-14 (owner-reviewed shared Gadget schema updates)
 
-Code `ce252033` adds exact line selection to the bounded phone-menu's installed-handler simulator;
-`be8a13df` carries each call's binding ID through the owner-only per-installation response and labels
-history with that binding's provider, masked number hint and current line state. Selection and history
-are checked against the current signed installation and current binding records; an absent line is
-reported as no longer assigned. Caller IDs remain masked, and missing provider prices remain unknown.
-Local evidence after both changes: Agent SDK **5/5**, Spaces route **18/18**, SDK/Spaces typechecks,
-`git diff --check`. Vitest/TypeScript used installed binaries because pnpm's dependency bootstrap
-stopped before tests on its non-TTY modules-directory guard. No browser, carrier, deployment or live
-acceptance ran. Synthetic tests create no call/session; speech remains Twilio-only and owner-enabled.
-Code is committed locally and awaits the next safe push.
+Code `035a3274` is pushed to `origin/Mcbt5s-Backup-2`. The signed Space-shared update review accepts
+only unchanged Gadget identities/default schemas with append-only additive DDL, shows exact SQL to
+Space admins, and binds approval to source/candidate manifest and artifact digests. Apply rechecks
+the exact paused installation and publisher, verifies no admitted runtime work remains, then applies
+each Gadget migration in that installation's MicroApp DO using a signed host authorization and an
+atomic per-actor migration/operation journal. Destructive SQL, stale pins, publisher changes, shared
+Gadget scope/tier changes and identity mismatches fail closed. The SpaceDO update receipt records
+both manifest digests and source/candidate artifact digests; Shell displays them. Local evidence:
+Spaces route/contract/DO/migration suites **64/64**, Spaces and Shell typechecks, `git diff --check`.
+No deployment, browser, provider or live acceptance ran. Rollouts remain disabled.
 
-Exact next action: extend the owner-reviewed signed-package update flow to support a narrowly bounded
-Space-shared Gadget schema update using the SDK's existing additive DDL/migration contract. Bind the
-preview/apply receipt to the exact installation and source/candidate release digests; pause and drain
-runtime work first; reuse the per-installation MicroApp migration journal for idempotent retries; keep
-destructive or data-loss operations rejected. Add focused preview, interruption, concurrency and
-replay tests, then continue P01/P02, P03/P20 and remaining S3–S9/U01–U12/P01–P24 gaps in dependency
-order. Fetch before push and preserve concurrent remote commits.
+Exact next action: continue the already-recorded P03/P12 reconciliation from the durable billing
+outbox and dunning queue producers through workflow creation, retry scheduling and notification
+receipts. Close one reachable local idempotency or caller-contract gap without selecting grace,
+restriction or retry-cadence policy. Then resume S3–S9/U01–U12 and P01–P24 from their row-level gaps;
+do not repeat completed audits. Fetch before each push and safely incorporate remote advances.
+
+The prior `ce252033`/`be8a13df` multi-line voice checkpoint is recorded below. Both active plans remain
+governing; after compaction, interruption or a new session read both plans, both progress ledgers,
+inspect this worktree, and resume from the exact next action above.
 
 ## Previous checkpoint — 2026-11-14 (signed template coordination-default handoff)
 

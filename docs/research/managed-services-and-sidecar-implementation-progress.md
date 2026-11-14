@@ -1,32 +1,30 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (multi-line signed phone operations view)
+## Active continuation — 2026-11-14 (shared Gadget schema update path)
 
-Codes `ce252033` and `be8a13df` extend the owner-only signed phone-menu dashboard. Owners can select
-one exact active binding when an installation has multiple assigned lines; the Space route rechecks
-the binding against current tenant/Space, installation, provider and active state before invoking the
-synthetic handler. Single-line requests remain compatible, ambiguous requests fail closed, and the
-response names the selected binding/provider without exposing a number. The per-installation call
-history now carries each event's exact binding and renders only the matching line's provider, masked
-number hint and current status. Caller IDs remain masked; costs remain unknown until a final report.
-Local evidence after both changes: Agent SDK **5/5**, Spaces gadget route **18/18**, SDK/Spaces
-typechecks and `git diff --check`. Tests ran through installed Vitest/TypeScript binaries because the
-pnpm non-TTY dependency bootstrap aborted before execution. No browser, carrier, deployment or live
-acceptance ran; simulation creates no call/session and speech stays Twilio-only under owner policy.
+Code `035a3274` is pushed to `origin/Mcbt5s-Backup-2`. The signed package review exposes exact
+append-only additive SQL for unchanged Space-shared Gadget actors. Owner/admin approval binds the
+exact installation plus source/candidate manifest and artifact digests. Apply rechecks the paused pin,
+publisher and drained runtime, then uses a signed host authorization to execute each migration in the
+installation's MicroApp DO. Version hashes and per-operation receipts are committed with the DDL in
+one transaction; retries recover after an interrupted actor or multi-Gadget batch. Destructive SQL,
+stale releases, changed Gadget identity/default schema and installation identity mismatches fail closed.
+SpaceDO receipts and the Shell view expose both manifest and artifact digests. Local evidence: Spaces
+update/route/contract/DO/migration suites **64/64**, Spaces/Shell typechecks and `git diff --check`.
+No deployed, browser, provider or live acceptance ran. S2 remains IMPLEMENTED_LOCAL for supported lanes;
+S3–S9/U01–U12 retain their row-level gaps. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
 
-P06 remains PARTIAL for first-party publication/signing/distribution, conversational voice, streaming,
-provider provisioning, complete invoice reconciliation, full lifecycle and live acceptance. S6 still
-lacks generic provider identity/content/command callers and external-consumer durable acceptance.
-P01/P02 resource receipts/baselines, P03/P20 policy, and U05/U06 runtime contracts remain separate
-gates; no rollout is enabled.
+P10 remains PARTIAL for authority/dependency expansion, connection/price changes, scanning/retention,
+broader data-migration rollback and live acceptance. P01/P02 still lack externally attested resources,
+receipts/baselines and isolated/deployed acceptance; P03/P20 retain explicit policy gaps; U05/U06 retain
+unsupported runtime producer/writer contracts. These are distinct from the locally implemented update.
 
-Exact next action: extend the owner-reviewed signed-package update flow to a narrow Space-shared Gadget
-schema update using the SDK's existing additive DDL contract. Bind preview/apply and receipts to exact
-installation and source/candidate release digests; pause/drain runtime work; reuse the per-installation
-MicroApp migration journal for idempotent retries; reject destructive changes. Add preview,
-interruption, concurrency and replay checks, then continue release/environment and commercial/recovery
-gaps plus remaining S3–S9/U01–U12/P01–P24 work in dependency order. Fetch before each push.
+Exact next action: continue P03/P12 from the durable billing outbox and dunning queue producers through
+workflow creation, retry scheduling and notification receipts. Close one reachable local idempotency or
+caller-contract gap without choosing grace, restriction or retry-cadence policy. Then resume S3–S9,
+U01–U12 and P01–P24 at their specific remaining rows without repeating completed audits. Fetch before
+each push and preserve concurrent remote changes.
 
 ## Previous continuation — 2026-11-14 (signed template coordination-default handoff)
 
