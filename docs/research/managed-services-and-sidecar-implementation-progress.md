@@ -1,32 +1,13 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P10/P24 dependency pin expansion)
+## Active checkpoint — 2026-11-14 (P10/P24 dependency pins and publisher revocation alert)
 
-Code `414ec6224fbf7d03f495d736a739f6d4373ce47a` is pushed to `origin/Mcbt5s-Backup-2` from
-`autonomous-managed-services-20261111`; fetch and ancestry were verified before push. Owner-confirmed
-same-Space dependency updates now bind direct changes and the resolved closure through review, apply
-and a durable replay receipt. Only exact candidate dependencies already active, signed, trusted and
-manifest-pinned in the same Space qualify. SpaceDO repeats all pin checks transactionally; child
-installations are not mutated. Shell states the requirement and keeps installation paused.
+Code `414ec6224fbf7d03f495d736a739f6d4373ce47a` (dependency pins) and `00e9f0b28c931e5948d5dd8638b1df8fec07c56d` (P24 alert) are pushed to `origin/Mcbt5s-Backup-2`; each push followed fetch and ancestry verification. Same-Space dependency updates bind exact additions and resolved closure to review/apply/receipt and recheck trusted active pins transactionally, without child package mutation. Publisher revocation now inserts one deterministic-ID critical inbox notification atomically with the DO revocation receipt; it reports a bounded fingerprint, disabled-install count and whether admitted work was draining. Replay cannot duplicate the alert and can repair a missing notification.
 
-Local verification: Spaces focused contract/package-review/migration/runtime-install suites **77/77**,
-Spaces and Shell typechecks, and `git diff --check`. These are local mocks/SQLite, not browser,
-deployed, provider or live acceptance. P10/P24 remain PARTIAL for provider/price changes, broader data
-migration, scanning/retention and live acceptance. P05 shared provider scope/payer/revocation and P06
-publisher identity/key custody/catalog are product decisions, not credential blockers. Runtime trust
-was source-checked: package artifacts are signature/digest-verified when reviewed/installed/updated;
-new work verifies current publisher trust and dependency closure; durable revocation disables installs
-and reports drain state. Proactive durable owner/member inbox alerting on revocation is still uncoded.
-Other S3–S9/U01–U12/P01–P24 states and gates remain as recorded. Keep rollouts disabled and preserve
-`infra/scripts/__pycache__/`.
+Local verification: dependency update suites **77/77**, publisher revocation/runtime-install **30/30**, Spaces/Shell typechecks and `git diff --check`. No browser, deployed Worker, provider or live acceptance ran. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain IN_PROGRESS where described below. P10/P24 are still PARTIAL for provider/price updates, broader data migration, cross-tenant artifact rights, scanning/retention and deployed/live acceptance. P05 shared provider authority/payer/revocation and P06 first-party identity/key custody/catalog are product contracts, not credential blockers. U05/U06/U07/U08 and P01/P02 external/runtime evidence limits remain. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
-Exact next action: in the existing publisher-revocation SpaceDO transaction, create one durable
-business-member notification per newly inserted revocation receipt. Make its ID deterministic from the
-Space/key so retry/reconciliation cannot duplicate it. State affected install count and whether
-pre-admitted work is draining, and expose no secret. Add local DO tests for first and repeated revoke
-plus notification inbox readback. Then continue the next independent uncoded requirement. Fetch and
-safely integrate remote advances before every push; commit/push coherent checkpoints to
-`Mcbt5s-Backup-2` without force-pushing, as explicitly authorized.
+Exact next action: add a bounded owner-selected Twilio spoken voice style to the signed keypad package's existing persisted settings, handler response, host TwiML renderer and synthetic preview. Restrict it to the documented `man`/`woman` values; Telnyx remains unchanged. Disclose that this setting proves no locale availability, voice quality or price. Add contract, renderer and package test coverage, then resume the next independent S3–S9/U01–U12/P01–P24 code gap. Fetch and safely integrate before every push; push each coherent checkpoint to `Mcbt5s-Backup-2` without force.
+
 ## Previous checkpoint — 2026-11-14 (P05 activation handoff; P04 restore safety next)
 
 P05 guided Project Knowledge handoff commits `e9be8aee` and `38f50b41` are pushed to

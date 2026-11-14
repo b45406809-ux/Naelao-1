@@ -1,29 +1,13 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P10/P24 dependency pin expansion)
+## Active checkpoint — 2026-11-14 (P10/P24 dependency pins and publisher revocation alert)
 
-Code `414ec6224fbf7d03f495d736a739f6d4373ce47a` is pushed to `origin/Mcbt5s-Backup-2` after fetch
-and ancestry verification. P10/P24 same-Space dependency update now supports an owner-confirmed exact
-pin change only when the complete candidate closure is already active, signed, trusted and exact
-manifest-pinned in the Space. Review/apply/receipt bind the direct expansion and resolved closure;
-SpaceDO transactionally rechecks pins and leaves child installations untouched. Stale, revoked, missing,
-conflicting or cross-Space dependencies fail closed; Shell explains that the installation stays paused.
+Code `414ec6224fbf7d03f495d736a739f6d4373ce47a` and follow-up `00e9f0b28c931e5948d5dd8638b1df8fec07c56d` are pushed to `origin/Mcbt5s-Backup-2` after fetch/ancestry verification. P10/P24 now bind owner-confirmed exact same-Space dependency pin additions through review, transactional apply and durable receipt; every candidate closure pin must remain active, signed, trusted and exact. Child packages are unchanged. A newly recorded publisher revocation also atomically creates one durable critical Space inbox notice with bounded key fingerprint, affected install count and drain snapshot; deterministic ID prevents duplicate alerts and repairs a missing notification on retry.
 
-Local verification: Spaces focused suites **77/77**, Spaces/Shell typechecks and `git diff --check`.
-These are mock/SQLite checks only; no browser, deployed Worker, provider or live acceptance ran. P10/P24
-remain PARTIAL for provider/price changes, broader data migration, scanning/retention and live gates.
-P24 source review confirms install/update signature checks, per-use publisher/dependency checks, and
-revocation drain receipts plus installed-package warning. A proactive durable Space inbox alert when
-a publisher key is revoked remains uncoded. P05 shared provider scope/payer/revocation and P06 first-party
-publisher identity/key custody/catalog are product decisions, not credential blockers. Keep all rollouts
-disabled and preserve `infra/scripts/__pycache__/`.
+Local verification: Spaces dependency suites **77/77**, publisher revocation/runtime-install **30/30**, Spaces/Shell typechecks and `git diff --check`. These are local Worker/SQLite checks only; no browser, deployed Worker, provider or live acceptance ran. P10/P24 remain PARTIAL for provider/price changes, broader data migration, cross-tenant artifact rights, scanning/retention and live acceptance. P06's customer conversational voice-agent lifecycle is still uncoded; first-party publisher identity and key custody are product gates, while provider streaming contracts are runtime/product acceptance gates. P05 Space-wide connection authority remains a separate product contract. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
-Exact next action: create one durable, idempotent Space member notification in the existing
-publisher-revocation transaction when a new revocation receipt is recorded; include bounded key identity,
-affected installation count and draining state, with no secret. Test first and repeated revoke and
-readback through the existing notification route, then continue the next uncoded P01–P24 or S3–S9/
-U01–U12 requirement. Fetch and safely integrate before each push; push coherent checkpoints to
-`Mcbt5s-Backup-2` without force-pushing, as authorized.
+Exact next action: implement a narrowly scoped P06 dashboard setting for Twilio's documented `man`/`woman` `<Say>` styles across signed package settings, validated response type, host TwiML and synthetic preview. Telnyx keeps its current default path. Disclose that this does not verify language availability, quality or rate. Add SDK/host/package tests, then continue independent P01–P24 and S3–S9/U01–U12 gaps. Fetch before each push and preserve concurrent work; push coherent checkpoints to `Mcbt5s-Backup-2` without force.
+
 ## Previous checkpoint — 2026-11-14 (P05 Project Knowledge activation handoff)
 
 Handoff commits `e9be8aee` and `38f50b41` are pushed to `origin/Mcbt5s-Backup-2`. For a signed
@@ -1535,7 +1519,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
-| P10 | PARTIAL | Signed setup, encrypted drafts, setup-only migrations, paused same-publisher code updates, exact historical rollback, runtime drain, retryable additive Gadget upgrades, owner-approved authority expansion and sequential current-schema pins are local. Code `0866ca38` adds owner-confirmed Gadget code rollback only for an exact prefix of unchanged additive migration histories; receipts retain the schema summary and Shell states schema/data remain forward. Focused migration/update/receipt tests **70/70**, Spaces/Shell typechecks, diff check. Dependency-pin changes, provider connections, price approval, broader data migration, scanning/retention and deployed/live acceptance remain. |
+| P10 | PARTIAL | Signed setup, encrypted drafts, setup-only migrations, paused same-publisher code updates, exact historical rollback, runtime drain, retryable additive Gadget upgrades, owner-approved authority expansion and sequential current-schema pins are local. Code `0866ca38` adds owner-confirmed Gadget code rollback only for an exact prefix of unchanged additive migration histories; receipts retain the schema summary and Shell states schema/data remain forward. Focused migration/update/receipt tests **70/70**, Spaces/Shell typechecks, diff check. Same-Space exact dependency-pin updates are now local (`414ec622`); provider connections, price approval, broader data migration, scanning/retention and deployed/live acceptance remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated. `16386d95` adds signed, idempotent platform/Product-user price receipts and Marketplace provider/variant/amount/currency snapshots; live provider-to-entitlement acceptance remains. |
 | P12 | PARTIAL | Versioned dunning queue/workflow and notification outcomes exist; Product-user dispatch now verifies current product tenancy against the durable outbox (`ca9aead9`). Retry scheduling still follows bounded dispatch retry plus Cloudflare Workflow behavior; policy, exhausted-operation visibility and provider delivery acceptance remain. |
 | P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. `da6245fe` detects when the Cloudflare GraphQL query hits its 100-row limit and persists a `queue_analytics_row_limit_reached` alert; status remains incomplete. Current backlog/age/DLQ lack a supported source. Admin's consumer targets a different queue, retains raw payload, and has no reachable Router/service-binding path or supported `platform_admin` identity issuance. Generic replay remains uncoded pending those scope, retention/redaction and duplicate-side-effect contracts. |
@@ -1549,7 +1533,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P21 | PARTIAL | Product-user and builder reset email use encrypted bounded outboxes, retry/cancellation, stable Notification IDs, provider acceptance receipts and HMAC-scoped metadata status. Builder Auth outbox is migration 0245 (`814c429a`); local Auth suite **39/39** and typecheck pass. Unverified-user/session policy, provider/inbox and deployed acceptance remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
-| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive restore, owner-authorized cross-Space package import and retry, revoked-key rechecks, paused code updates/rollback, runtime drain, durable revocation receipts and installed-package trust warnings are local. Code `0866ca38` adds a bounded owner-confirmed Gadget code rollback with exact additive-history prefix and durable schema-retention receipt. Cross-tenant artifact rights, broader migrations, dependency update lifecycle, publisher-compromise alerting, scanning/retention and live acceptance remain. |
+| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive restore, owner-authorized cross-Space package import and retry, revoked-key rechecks, paused code updates/rollback, runtime drain, durable revocation receipts and installed-package trust warnings are local. Code `0866ca38` adds a bounded owner-confirmed Gadget code rollback with exact additive-history prefix and durable schema-retention receipt. `414ec622` adds exact same-Space dependency pin changes; `00e9f0b2` adds an atomic, idempotent publisher-revocation inbox alert. Cross-tenant artifact rights, broader migrations, scanning/retention and live acceptance remain. |
 
 ## S4 source-to-caller correction
 

@@ -16,35 +16,14 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P10/P24 dependency pin expansion)
+## Latest checkpoint — 2026-11-14 (P10/P24 dependency pins and publisher revocation alert)
 
-Code `414ec6224fbf7d03f495d736a739f6d4373ce47a` is pushed to `origin/Mcbt5s-Backup-2` from
-`autonomous-managed-services-20261111`; fetch/ancestry check passed before the push. The owner-confirmed
-same-Space dependency update slice binds the direct expansion and resolved closure to review, short-lived
-apply claim and durable receipt. It accepts only exact candidate dependencies already active, signed,
-trusted and manifest-pinned in that Space; apply rechecks every pin in the SpaceDO transaction. It does
-not install, remove, or mutate child packages. Missing, revoked, stale, cross-Space or conflicting pins
-fail closed. Shell explains the prerequisite and paused installation.
+Implementation `414ec6224fbf7d03f495d736a739f6d4373ce47a` and P24 alert `00e9f0b28c931e5948d5dd8638b1df8fec07c56d` are pushed to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`; fetch and ancestry checks passed. The dependency update only adds owner-approved exact pins to dependencies already active, signed, trusted and manifest-pinned in the same Space; apply rechecks closure transactionally and never mutates child packages. Publisher key revocation now creates one deterministic-ID, durable critical Space inbox alert in the same SpaceDO transaction as its drain receipt. The alert reports a bounded key fingerprint, disabled-installation count and admitted-work drain snapshot. Revoke retries repair a missing alert and do not duplicate it. Existing signed runtime and inbox paths remain in use.
 
-Verification: Spaces targeted suites **77/77**, Spaces `tsc --noEmit`, Shell `tsc --noEmit`, and
-`git diff --check` pass. Tests are local Worker/SQLite mocks; no browser, deploy, live Worker, provider,
-or live acceptance ran. This closes the dependency-pin update slice of P10/P24. Broader P10/P24 work
-remains for provider/price changes, data migrations, scanning/retention and live acceptance. P05 shared
-provider scope/payer/revoke-drain and P06 publisher identity/key custody/catalog decisions remain
-product gates, not credential blockers. P24 runtime paths were inspected: signed artifact bytes are
-revalidated during package review/install/update, installed runtime metadata is host-signed and checks
-publisher trust/dependency closure before new work, and revocation persists drain state and an owner
-warning. The remaining actionable P24 gap is a proactive durable Space inbox alert at key revocation.
-P01/P02 evidence, S4/U05/U06 runtime/provider gates and all other requirement states remain in the
-requirement records. Rollouts remain disabled; preserve the untracked `infra/scripts/__pycache__/`.
+Verification: dependency update suites **77/77**, publisher revocation/runtime-install suite **30/30**, Spaces/Shell typechecks and `git diff --check`. These are local Worker/SQLite mocks; no browser, deployment, provider or live acceptance ran. P10/P24 remain PARTIAL for provider/price changes, broader data migration, cross-tenant artifact rights, scanning/retention and live acceptance. P05 Space-wide provider scope/payer/revoke-drain and P06 Naelao publisher identity/key custody/catalog decisions are not credential blockers. S4/U05/U06 runtime contracts and P01/P02 evidence gates remain as recorded. Rollouts remain disabled; preserve the untracked `infra/scripts/__pycache__/`.
 
-Exact next action: add an idempotent, durable business-member notification for each newly recorded
-publisher-key revocation in the same SpaceDO transaction as its revocation receipt. Include bounded
-key identity, disabled-installation count, and whether admitted work is still draining; do not expose
-secrets. Repeated revocation/reconciliation must not duplicate the alert. Test first/replayed revocation
-and the existing notification inbox path, then continue the next uncoded S3–S9/U01–U12/P01–P24 item.
-Fetch and safely integrate before every push; commit/push each coherent checkpoint to `Mcbt5s-Backup-2`
-without force-pushing, as authorized for this mission.
+Exact next action: extend the signed bounded phone-menu P06 dashboard with one owner-selectable Twilio `<Say>` voice style (`man`/`woman`) using the existing installation settings and synthetic preview. Permit only that enum at the SDK/host boundary; keep Telnyx behavior unchanged and disclose that style selection does not verify language availability, voice quality or rates. Cover SDK validation, TwiML rendering and package preview/handler, then continue the next independent code gap. Fetch and safely integrate before each push; commit and push each coherent checkpoint to `Mcbt5s-Backup-2` without force-pushing. No deployment, purchase or rollout enablement.
+
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
 
 Guided activation handoff code `e9be8aee` and its missing-Project-ID recovery fix `38f50b41` are
