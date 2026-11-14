@@ -54,12 +54,17 @@ JavaScript syntax check and `git diff --check`. No provider, carrier, deployed W
 exercised. P06 remains PARTIAL for customer voice lifecycle, streaming, managed billing, invoices and
 live/region acceptance.
 
-Exact next action: add an interactive, safe customer-form preview to Foundry Template Studio using the
-same bounded setup declarations, including localization and earlier-field visibility rules. Use DOM
-text/value APIs only and keep server validation authoritative. Verify editor script syntax and the host
-validator, then continue guided-template lifecycle and remaining S3–S9/U01–U12. Keep all rollouts
-disabled and preserve `infra/scripts/__pycache__/`. After compaction, interruption or a new session,
-read both plans and both progress records, inspect the actual worktree, and resume from this exact task.
+P05 visual customer-form preview is pushed as `50dd1fa4`. It renders the current bounded v1/v2 field
+types, defaults, required flags, localization and earlier-field conditions; preview values remain in
+the page and are never sent to the host. Labels, help and options are written with DOM `textContent`.
+Local evidence: Agent SDK dogfood/blueprint setup suites **13/13**, SDK typecheck and generated
+script syntax check. No browser session or deployed Template was exercised. P05 remains PARTIAL for
+channel/action authoring, package lifecycle effects, full cost/rate support and live acceptance.
+
+Exact next action: add template-authorable assistant channel defaults to Foundry Studio's validated
+blueprint export. Reuse the existing `assistantChannels` SDK validator; show channel availability and
+phone prompt preferences as defaults only, with no account connection or provisioning. Test rejected
+unknown channel/default fields and exact export persistence before continuing P05 lifecycle and S3–S9.
 
 P13 queue routing fixes are pushed as `4de53055` and `d640dbae` to `origin/Mcbt5s-Backup-2`. Unknown/misrouted and malformed poison messages in Workflows, Billing, Notifications, Analytics, Provisioner and Agents now retry into their configured DLQs; known stale messages still ACK. Local suites and six affected Worker typechecks pass. Queue bindings are worker-specific; the Admin DLQ consumer is bound to a separate queue and stores/logs raw payloads, so no generic replay was added. P23 Notification terminal status is durable, but other DLQs lack a safe payload-retention/idempotency contract. Queue depth/age/DLQ remain unknown without a supported API or operator evidence.
 

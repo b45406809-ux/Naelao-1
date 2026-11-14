@@ -28,10 +28,18 @@ syntax and `git diff --check`. No provider, carrier, deployed Worker or live cal
 remains PARTIAL for the full customer voice-agent lifecycle, streaming, managed billing, invoices and
 live/region acceptance.
 
-Exact next action: add a safe interactive customer-form preview to Foundry Template Studio using the
-existing bounded setup declarations, including localized labels and earlier-field visibility. Use DOM
-text/value APIs only and keep server validation authoritative. Verify generated script syntax and the
-host validator, then continue guided-template lifecycle and remaining S3–S9/U01–U12 gaps.
+P05 visual customer-form preview is pushed as `50dd1fa4`. Foundry Studio renders the existing
+bounded v1/v2 data-only schema, including supported inputs, defaults, required state, localized text,
+choices and earlier-field conditions. Test values remain local; DOM text/value APIs prevent authored
+text from becoming markup, and host validation is unchanged. Local evidence: Agent SDK dogfood and
+blueprint setup suites **13/13**, SDK typecheck and generated script syntax. No browser or deployed
+Template acceptance was run. P05 remains PARTIAL for channel/action authoring, broader package
+lifecycle, complete cost/rate disclosure and live acceptance.
+
+Exact next action: add template-authored `assistantChannels` defaults to the validated Foundry Studio
+blueprint export. Reuse the existing SDK validator and present them as availability/phone-prompt
+preferences only; do not imply an account connection or provision provider resources. Cover valid
+export persistence and invalid channel/default rejection, then continue P05 lifecycle and S3–S9.
 
 ## Previous checkpoint details
 
@@ -879,7 +887,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; all current targets resolve. Tests pass 11/11. The preflight still rejects 13 shared-resource findings, one unresolved `naelao-calls` owner and 158 missing read-only receipts; actual resource separation/ownership and deployed isolation remain external evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
-| P05 | PARTIAL | Code `5e0c6501` adds owner-approved scoped text handles. Codes `536853b9`/`b646ec16` connect guided activation to exact-pin signed dependency import; `edf08814` resumes after reload. `a75c0862` adds durable provider cleanup on direct disconnect and channel-package uninstall; `c1c5e0d4` adds setup compensation for Telegram/WhatsApp. Binary/image/audio extension reads, other provider setup journeys, broader customer/update journeys, verified rates and deployed/live acceptance remain. |
+| P05 | PARTIAL | `50dd1fa4` adds an interactive customer-form preview for the bounded v1/v2 setup contract. `5e0c6501` adds owner-approved scoped text handles. `536853b9`/`b646ec16` connect guided activation to exact-pin signed dependency import; `edf08814` resumes after reload. `a75c0862` adds durable provider cleanup on direct disconnect and channel-package uninstall; `c1c5e0d4` adds setup compensation for Telegram/WhatsApp. Channel/action authoring, binary/image/audio extension reads, other provider setup journeys, broader customer/update journeys, verified rates and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. `b2140aaf` adds a draft-only simulated call/DTMF preview; `b2d4ac0f` pins calls to the admitted installation/handler and groups owner history by that pin; `4c42012b` exposes the exact signed release and active publisher-key identity in the owner phone dashboard. Customer voice lifecycle, public streaming, managed billing, invoice reconciliation and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |

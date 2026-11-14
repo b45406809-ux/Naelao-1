@@ -30,10 +30,18 @@ and `git diff --check`. No carrier, provider, deployed Worker or live acceptance
 PARTIAL for complete customer voice lifecycle, streaming, managed billing/invoice reconciliation and
 provider/region acceptance.
 
-Exact next task: add a safe interactive customer-form preview to Foundry Template Studio, rendering the
-existing bounded setup declarations with localized labels, supported input types and earlier-field
-conditions. Keep the preview data-only and server validation authoritative. Then continue remaining
-guided-template lifecycle and S3–S9/U01–U12 code gaps; preserve rollout gates.
+P05 visual customer-form preview is pushed as `50dd1fa4`. Foundry Studio now renders the existing
+bounded v1/v2 text, number, yes/no and choice fields with defaults, required status, localized labels,
+help/choice labels, and earlier-field equality conditions. Preview values are local to the page and
+the builder uses DOM `textContent`; the export host remains authoritative. Local evidence: Agent SDK
+dogfood and setup-schema suites **13/13**, SDK typecheck, generated script syntax check and
+`git diff --check`. No browser, deployed Template or live acceptance ran. P05 remains PARTIAL for
+channel/action authoring, package lifecycle effects, full cost rates and end-to-end acceptance.
+
+Exact next task: add validated assistant channel defaults to the Foundry Studio export contract using
+the existing `assistantChannels` schema. Render availability and phone prompt defaults as preferences
+only; do not connect accounts or provision resources. Test server validation and persisted export,
+then continue guided-template lifecycle and S3–S9/U01–U12 gaps.
 
 ## Prior checkpoint details
 
