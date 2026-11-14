@@ -1,6 +1,37 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
+## Active checkpoint — 2026-11-14 (P03/P12 Product-user dunning status; local, verified)
+
+The P03/P12 implementation is in the current worktree and is ready for a coherent commit. Migration
+0252 adds product/end-user/provider/subscription scope to dunning provider-attempt records. Workflow
+messages carry the exact subscription and provider event version. Notifications checks the active
+product, tenant, user, current `past_due` subscription, event version and verified current email before
+sending; it persists outcomes only if the exact account/subscription still exists. Spaces derives the
+request identity from the verified product session and calls Billing using tenant HMAC. Router exposes
+the exact customer-status path only through its product-session allowlist. Product Shell personal
+settings displays only the signed-in user's subscription and recent non-PII email-provider outcomes.
+Erasure removes scoped receipts and retries cleanup after prior anonymization. Both deploy schema
+probes and required-schema manifests include migration 0252.
+
+Local evidence: Billing **12/12** and typecheck; Notifications **14/14** including D1 SQL and typecheck;
+Spaces **7/7** including status and erasure, plus typecheck; Router **53/53** authorization/routing and
+typecheck; DunningWorkflow **2/2** and typecheck; Shell typecheck; release runner **20/20**; release
+manifest validates **252** migrations through `0252_product_user_dunning_status_scope`; deployment
+manifest validator and tests **14/14**; `git diff --check`. No deployed database, browser, email inbox,
+provider, Cloudflare inventory, or live acceptance was exercised. P03/P12 remain PARTIAL for approved
+grace/restriction/escalation and retry-cadence policy, real inbox delivery, and deployed/live acceptance.
+P01/P02 retain their external account/resource and operator-receipt gates. U06 remains an unsupported
+pinned-runtime contract (writer admission, drain/flush and generation-bound handoff), not a credentials
+gap; no adapter was fabricated. Rollouts remain disabled; preserve untracked
+`infra/scripts/__pycache__/`.
+
+Exact next action: fetch `origin/Mcbt5s-Backup-2`, verify no remote advance, commit and push this P03/P12
+code checkpoint without force. Record its SHA here, in the platform progress record and `AGENTS.md`.
+Then inspect P04's actual restore caller specifically for erasure-tombstone/read fencing; implement it
+only if a current source gap exists. If the safe restore path already enforces it, proceed to the next
+uncoded guided-template requirement and preserve P04's remaining policy and isolated recovery gates.
+
+## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 
 Code `502618ca` is pushed to `origin/Mcbt5s-Backup-2` after fetch confirmed `ac444bf8` as the remote
 tip with no advance. The activation review records bounded owner-selected external Knowledge IDs per
@@ -1614,7 +1645,7 @@ Statuses compare plan requirements with current source, reachable callers, persi
 
 | Requirement | Status | Current implementation, evidence, and remaining work |
 | --- | --- | --- |
-| §1 / P01 migration and release safety | PARTIAL | `infra/release/schema-manifest.json` pins SHA-256 for **250** exact migrations through `0250_project_main_restart_recipes`. The release runner retains operator-attested legacy baselines, ordered checksummed execution receipts, a D1 owner lock, same-run recovery, required-version/column checks and consumer probes; deployment manifests and post-worker health gates run before frontend promotion. Latest local evidence: fresh SQLite migration rehearsal **1/1** through 0250, release manifest/runner suites **38/38**, and release/deployment manifest validation. The runner still requires staging/production baselines and verified applied-history/data evidence; no remote D1 or deployed endpoint was queried. No isolated production rehearsal, rollback or live health acceptance is claimed. |
+| §1 / P01 migration and release safety | PARTIAL | `infra/release/schema-manifest.json` pins SHA-256 for **251** exact migrations through `0251_marketplace_template_subscription_refunds`. The release runner retains operator-attested legacy baselines, ordered checksummed execution receipts, a D1 owner lock, same-run recovery, required-version/column checks and consumer probes; production workflow does not suppress migration errors. Fresh local verification: release runner **20/20**, full manifest validation and deployment-manifest validation pass; existing interrupted-run failure injection proves failed migration yields no success receipt. The runner still requires staging/production baselines and verified applied-history/data evidence; no remote D1 or deployed endpoint was queried. No isolated production rehearsal, rollback or live health acceptance is claimed. |
 | §1 / P02 and §8 / P19 environment isolation | PARTIAL | The source-hash-validated map covers **28** Wrangler TOMLs, **100** binding rows, **56** Worker/environment surfaces, **2** routes and **30** endpoint-variable entries. Source and preflight cover D1/KV/R2/Vectorize/Queues/Workflows/DO targets/service bindings; staging workflow queues and DLQs, including the events queue, are named separately from production, and production Notifications has its own DLQ. The local preflight still requires **158** read-only resource receipts and fails on one shared D1, eleven shared KV IDs, and shared/unresolved `naelao-calls` ownership. Actual Cloudflare resource IDs, DO namespaces, account secrets, callbacks, jurisdiction and deployed isolation remain uninspected. Local validators and Wrangler dry runs are not deployed isolation evidence; no resource or owner is guessed. |
 | §2 / P03 and P12 dunning | PARTIAL | Codes `144c02f5` and `2625ea34` add atomic subscription transitions, a migration-0225 provider-failure outbox, bounded retry, deterministic workflow IDs and shared strict `DunningEventV1` validation. `ca9aead9` binds Product-user dispatch to the current product tenant matching `billing_dunning_outbox.tenant_id`; mismatch/missing ownership is deferred. Current local evidence: Billing dunning outbox/dispatch/status **13/13**, Billing typecheck and Workflows queue/recovery **13/13**. P11 simulation stays restricted to local/development/test. No provider/deployed delivery ran; grace/restriction/escalation and retry-cadence policy plus live delivery remain unresolved.
 | §2 / P11 checkout | PARTIAL | `workers/billing/src/index.ts` now returns the development URL only when `ALLOW_DEV_CHECKOUTS=true` and `ENVIRONMENT` is development/local/test; staging and production return `checkout_provider_unavailable` even if the flag is mis-set. Wrangler names the switch true only in top-level development vars and false in staging/production. Checkout route tests pass 6/6, Billing typecheck passes, Wrangler variable-parity passes 82/82. Purchased plan/price snapshots and live signed webhook-to-entitlement acceptance remain. |

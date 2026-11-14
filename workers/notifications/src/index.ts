@@ -325,6 +325,12 @@ interface NotificationMessage {
   notificationId?: string;
   /** Billing dunning scope; used only to persist non-PII delivery attempt outcomes. */
   subscriptionScope?: "platform_subscription" | "product_user_subscription";
+  /** Exact Product-user scope for self-service status; never supplied by a browser caller. */
+  productId?: string;
+  endUserId?: string;
+  subscriptionProvider?: "lemon_squeezy" | "whop";
+  providerSubscriptionId?: string;
+  providerUpdatedAt?: string | null;
   userId?: string;
   spaceId?: string;
   email?: string;
@@ -592,6 +598,10 @@ async function recordDunningProviderAttempt(
     tenantId: string;
     notificationId: string | undefined;
     subscriptionScope: NotificationMessage["subscriptionScope"];
+    productId?: string | undefined;
+    endUserId?: string | undefined;
+    subscriptionProvider?: NotificationMessage["subscriptionProvider"] | undefined;
+    providerSubscriptionId?: string | undefined;
     outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous";
     httpStatus?: number;
     providerReceiptId?: string;
@@ -599,11 +609,22 @@ async function recordDunningProviderAttempt(
 ): Promise<void> {
   if (!input.subscriptionScope || !/^[A-Za-z0-9_-]{1,128}$/.test(input.tenantId)
     || !input.notificationId || !/^dunning-[a-f0-9]{64}$/.test(input.notificationId)) return;
+  const platformScope = input.subscriptionScope === "platform_subscription"
+    && !input.productId && !input.endUserId && !input.subscriptionProvider && !input.providerSubscriptionId;
+  const productScope = input.subscriptionScope === "product_user_subscription"
+    && !!input.productId && /^[A-Za-z0-9_-]{1,128}$/.test(input.productId)
+    && !!input.endUserId && /^[A-Za-z0-9_-]{1,128}$/.test(input.endUserId)
+    && !!input.subscriptionProvider
+    && (input.subscriptionProvider === "lemon_squeezy" || input.subscriptionProvider === "whop")
+    && !!input.providerSubscriptionId && /^[A-Za-z0-9._:-]{1,200}$/.test(input.providerSubscriptionId);
+  if (!platformScope && !productScope) return;
   const now = new Date().toISOString();
-  await env.PLATFORM_DB.prepare(`INSERT INTO dunning_notification_attempts (
+  const insert = `INSERT INTO dunning_notification_attempts (
       tenant_id, notification_id, subscription_scope, provider, provider_outcome, attempt_count,
-      last_http_status, provider_receipt_id, first_attempt_at, last_attempt_at, accepted_at, updated_at
-    ) VALUES (?, ?, ?, 'resend', ?, 1, ?, ?, ?, ?, ?, ?)
+      last_http_status, provider_receipt_id, first_attempt_at, last_attempt_at, accepted_at, updated_at,
+      product_id, end_user_id, subscription_provider, provider_subscription_id
+    )`;
+  const values = `
     ON CONFLICT(tenant_id, notification_id) DO UPDATE SET
       provider_outcome=excluded.provider_outcome,
       attempt_count=dunning_notification_attempts.attempt_count+1,
@@ -611,8 +632,13 @@ async function recordDunningProviderAttempt(
       provider_receipt_id=COALESCE(excluded.provider_receipt_id, dunning_notification_attempts.provider_receipt_id),
       last_attempt_at=excluded.last_attempt_at,
       accepted_at=COALESCE(dunning_notification_attempts.accepted_at, excluded.accepted_at),
-      updated_at=excluded.updated_at`)
-    .bind(
+      updated_at=excluded.updated_at
+    WHERE dunning_notification_attempts.subscription_scope=excluded.subscription_scope
+      AND dunning_notification_attempts.product_id IS excluded.product_id
+      AND dunning_notification_attempts.end_user_id IS excluded.end_user_id
+      AND dunning_notification_attempts.subscription_provider IS excluded.subscription_provider
+      AND dunning_notification_attempts.provider_subscription_id IS excluded.provider_subscription_id`;
+  const baseArgs = [
       input.tenantId,
       input.notificationId,
       input.subscriptionScope,
@@ -623,13 +649,54 @@ async function recordDunningProviderAttempt(
       now,
       input.outcome === "provider_accepted" ? now : null,
       now,
-    )
-    .run();
+  ];
+  if (platformScope) {
+    await env.PLATFORM_DB.prepare(`${insert} VALUES (?, ?, ?, 'resend', ?, 1, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)${values}`)
+      .bind(...baseArgs).run();
+    return;
+  }
+  await env.PLATFORM_DB.prepare(`${insert} SELECT ?, ?, ?, 'resend', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    WHERE EXISTS (
+      SELECT 1 FROM products p
+      JOIN product_end_users u ON u.product_space_id=p.id
+      JOIN product_user_subscriptions s ON s.product_id=p.id AND s.end_user_id=u.end_user_id
+      WHERE p.id=? AND p.tenant_id=? AND p.status='active'
+        AND u.end_user_id=? AND u.deleted_at IS NULL AND u.suspended_at IS NULL
+        AND s.provider=? AND s.provider_subscription_id=?
+    )${values}`)
+    .bind(...baseArgs, input.productId!, input.endUserId!, input.subscriptionProvider!, input.providerSubscriptionId!,
+      input.productId!, input.tenantId, input.endUserId!, input.subscriptionProvider!, input.providerSubscriptionId!).run();
+}
+
+/** A Product-user dunning email can sit in the queue after its subscription is recovered,
+ * replaced, deleted, or its verified email changes. Recheck the exact subscription and current
+ * verified recipient immediately before the external send; stale work is acknowledged without
+ * contacting an obsolete address. */
+async function isCurrentProductDunningEmail(env: NotificationsEnv, message: NotificationMessage): Promise<boolean> {
+  if (message.subscriptionScope !== "product_user_subscription" || message.type !== "email"
+      || !message.productId || !/^[A-Za-z0-9_-]{1,128}$/.test(message.productId)
+      || !message.endUserId || !/^[A-Za-z0-9_-]{1,128}$/.test(message.endUserId)
+      || !message.subscriptionProvider || !message.providerSubscriptionId
+      || !/^[A-Za-z0-9._:-]{1,200}$/.test(message.providerSubscriptionId)
+      || !message.email) return false;
+  const account = await env.PLATFORM_DB.prepare(`
+    SELECT u.email,u.email_verified_at,s.provider_event_at
+    FROM product_user_subscriptions s
+    JOIN products p ON p.id=s.product_id AND p.status='active'
+    JOIN product_end_users u ON u.product_space_id=p.id AND u.end_user_id=s.end_user_id
+    JOIN orgs o ON o.id=p.tenant_id AND o.status='active'
+    WHERE p.id=? AND p.tenant_id=? AND u.end_user_id=?
+      AND u.deleted_at IS NULL AND u.suspended_at IS NULL
+      AND s.provider=? AND s.provider_subscription_id=? AND s.status='past_due'
+  `).bind(message.productId, message.tenantId, message.endUserId, message.subscriptionProvider, message.providerSubscriptionId)
+    .first<{ email: string | null; email_verified_at: string | null; provider_event_at: string | null }>();
+  if (!account || !account.email || !account.email_verified_at || account.email !== message.email) return false;
+  return !message.providerUpdatedAt || account.provider_event_at === message.providerUpdatedAt;
 }
 
 async function sendEmailNow(
   env: NotificationsEnv,
-  msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId" | "replyTo" | "subscriptionScope">,
+  msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId" | "replyTo" | "subscriptionScope" | "productId" | "endUserId" | "subscriptionProvider" | "providerSubscriptionId">,
   notificationId?: string
 ): Promise<{ ok: boolean; status?: number; from?: string; providerReceiptId?: string }> {
   let subject = msg.subject ?? "(no subject)";
@@ -671,6 +738,10 @@ async function sendEmailNow(
       tenantId: msg.tenantId,
       notificationId,
       subscriptionScope: msg.subscriptionScope,
+      productId: msg.productId,
+      endUserId: msg.endUserId,
+      subscriptionProvider: msg.subscriptionProvider,
+      providerSubscriptionId: msg.providerSubscriptionId,
       outcome: "attempt_ambiguous",
     });
     throw error;
@@ -681,6 +752,10 @@ async function sendEmailNow(
       tenantId: msg.tenantId,
       notificationId,
       subscriptionScope: msg.subscriptionScope,
+      productId: msg.productId,
+      endUserId: msg.endUserId,
+      subscriptionProvider: msg.subscriptionProvider,
+      providerSubscriptionId: msg.providerSubscriptionId,
       outcome: "provider_rejected",
       httpStatus: res.status,
     });
@@ -700,6 +775,10 @@ async function sendEmailNow(
     tenantId: msg.tenantId,
     notificationId,
     subscriptionScope: msg.subscriptionScope,
+    productId: msg.productId,
+    endUserId: msg.endUserId,
+    subscriptionProvider: msg.subscriptionProvider,
+    providerSubscriptionId: msg.providerSubscriptionId,
     outcome: "provider_accepted",
     httpStatus: res.status,
     ...(providerReceiptId ? { providerReceiptId } : {}),
@@ -752,6 +831,11 @@ export async function queue(
         await recordNotificationDeliveryAttempt(env, msg, notificationId, notificationProvider(msg.type), "not_sent", message.attempts, {
           failureCode: tenant ? "tenant_inactive" : "tenant_unavailable",
         });
+        message.ack();
+        continue;
+      }
+      if (msg.subscriptionScope === "product_user_subscription" && !(await isCurrentProductDunningEmail(env, msg))) {
+        console.info(`[notifications/queue] skipped stale Product subscription notice ${notificationId}`);
         message.ack();
         continue;
       }

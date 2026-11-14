@@ -148,6 +148,7 @@ jobs:
           npx wrangler d1 execute "$DB_ID" --command="SELECT id,sender_principal_id FROM agentport_channel_message_refs LIMIT 0" --remote
           npx wrangler d1 execute "$DB_ID" --command="SELECT email_alerts_enabled,email_recipient_kind FROM managed_service_cost_budgets LIMIT 0" --remote
           npx wrangler d1 execute "$DB_ID" --command="SELECT id,alert_id,tenant_id,space_id,project_id,user_id,recipient_kind,status,attempts,next_at,lease_token,lease_until,last_error,created_at,updated_at,accepted_at FROM managed_service_cost_budget_email_deliveries LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT product_id,end_user_id,subscription_provider,provider_subscription_id FROM dunning_notification_attempts LIMIT 0" --remote
 
       - name: Deploy router worker (staging)
         env:

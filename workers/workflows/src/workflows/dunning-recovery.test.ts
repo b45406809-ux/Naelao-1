@@ -49,6 +49,10 @@ describe("dunning notification scope", () => {
     };
     await expect(notifyCurrentPaymentFailure({ PLATFORM_DB: db, NOTIFICATIONS_QUEUE: { send } } as never, event))
       .resolves.toMatchObject({ notified: 1 });
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ subscriptionScope: "product_user_subscription" }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      subscriptionScope: "product_user_subscription", productId: "product-1", endUserId: "end-user-1",
+      subscriptionProvider: "lemon_squeezy", providerSubscriptionId: "subscription-1",
+      providerUpdatedAt: "2026-11-12T00:00:00.000Z",
+    }));
   });
 });

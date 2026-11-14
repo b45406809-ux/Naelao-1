@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0251_marketplace_template_subscription_refunds",
+  "requiredSchemaVersion": "0252_product_user_dunning_status_scope",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1007,6 +1007,10 @@
     {
       "filename": "0251_marketplace_template_subscription_refunds.sql",
       "sha256": "cd3ba7df28383776433d4e3e13ca92c1a2ef050f91523a9ee5ca214e2d85668c"
+    },
+    {
+      "filename": "0252_product_user_dunning_status_scope.sql",
+      "sha256": "55f558f25d2994111f7851ab7f9f777f99f29e05ceeeb5c43731a96efbe11df8"
     }
   ]
 }

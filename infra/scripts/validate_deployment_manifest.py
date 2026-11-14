@@ -96,6 +96,9 @@ def validate_data(
         )
         if not all(probe in workflow for probe in required_schema_probes):
             errors.append(f"{environment} deployment workflow is missing managed-service cost email schema probes")
+        product_dunning_probe = "SELECT product_id,end_user_id,subscription_provider,provider_subscription_id FROM dunning_notification_attempts LIMIT 0"
+        if product_dunning_probe not in workflow:
+            errors.append(f"{environment} deployment workflow is missing Product-user dunning scope schema probe")
         agentport_sender_probe = "SELECT id,sender_principal_id FROM agentport_channel_message_refs LIMIT 0"
         if agentport_sender_probe not in workflow:
             errors.append(f"{environment} deployment workflow is missing the AgentPort sender-principal schema probe")

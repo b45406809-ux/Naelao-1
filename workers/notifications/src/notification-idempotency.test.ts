@@ -11,7 +11,14 @@ function setup() {
     prepare(sql: string) {
       return { bind(...args: unknown[]) {
         return {
-          async first() { return sql.includes("SELECT status FROM orgs") ? { status: "active" } : null; },
+          async first() {
+            if (sql.includes("SELECT status FROM orgs")) return { status: "active" };
+            if (sql.includes("FROM product_user_subscriptions s")) return {
+              email: "customer@example.test", email_verified_at: "2026-11-01T00:00:00.000Z",
+              provider_event_at: "2026-11-14T00:00:00.000Z",
+            };
+            return null;
+          },
           async run() { writes.push({ sql, args }); return { meta: { changes: 1 } }; },
         };
       } };
@@ -63,6 +70,71 @@ describe("stable notification retry identities", () => {
     expect(receipt?.args.slice(0, 6)).toEqual(["org-1", notificationId, "platform_subscription", "provider_accepted", 200, "email_123"]);
     expect(writes.some((write) => write.sql.includes("INSERT OR IGNORE INTO notifications") && write.args[0] === notificationId)).toBe(true);
     expect(message.ack).toHaveBeenCalledOnce();
+  });
+
+  it("stores Product-user provider outcomes against the exact active product account and subscription", async () => {
+    const { writes, db } = setup();
+    const notificationId = `dunning-${"d".repeat(64)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ id: "email_product_1" })));
+    const message = {
+      id: "queue-product-dunning-1",
+      body: {
+        type: "email", tenantId: "org-1", email: "customer@example.test", notificationId,
+        subscriptionScope: "product_user_subscription", productId: "product-1", endUserId: "end-user-1",
+        subscriptionProvider: "lemon_squeezy", providerSubscriptionId: "subscription-1", providerUpdatedAt: "2026-11-14T00:00:00.000Z",
+        subject: "Payment failed", html: "Review subscription",
+      },
+      ack: vi.fn(), retry: vi.fn(),
+    };
+    const env = { PLATFORM_DB: db, RESEND_API_KEY: "test", RESEND_API_URL: "https://mail.test" } as unknown as NotificationsEnv;
+    await queue({ messages: [message] } as never, env);
+    const receipt = writes.find((write) => write.sql.includes("INSERT INTO dunning_notification_attempts"));
+    expect(receipt?.sql).toContain("FROM products p");
+    expect(receipt?.sql).toContain("u.deleted_at IS NULL AND u.suspended_at IS NULL");
+    expect(receipt?.sql).toContain("s.provider=? AND s.provider_subscription_id=?");
+    expect((receipt?.sql.match(/\?/g) ?? []).length).toBe(receipt?.args.length);
+    expect(receipt?.args.slice(10, 14)).toEqual(["product-1", "end-user-1", "lemon_squeezy", "subscription-1"]);
+    expect(receipt?.args.slice(14)).toEqual(["product-1", "org-1", "end-user-1", "lemon_squeezy", "subscription-1"]);
+    expect(JSON.stringify(receipt)).not.toContain("customer@example.test");
+    expect(JSON.stringify(receipt)).not.toContain("Review subscription");
+    expect(message.ack).toHaveBeenCalledOnce();
+  });
+
+  it("does not persist an unscoped Product-user provider outcome", async () => {
+    const { writes, db } = setup();
+    const notificationId = `dunning-${"e".repeat(64)}`;
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ id: "email_product_2" })));
+    const message = {
+      id: "queue-product-dunning-unscoped",
+      body: { type: "email", tenantId: "org-1", email: "customer@example.test", notificationId, subscriptionScope: "product_user_subscription", subject: "Payment failed", html: "Review subscription" },
+      ack: vi.fn(), retry: vi.fn(),
+    };
+    const env = { PLATFORM_DB: db, RESEND_API_KEY: "test", RESEND_API_URL: "https://mail.test" } as unknown as NotificationsEnv;
+    await queue({ messages: [message] } as never, env);
+    expect(writes.some((write) => write.sql.includes("INSERT INTO dunning_notification_attempts"))).toBe(false);
+    expect(message.ack).toHaveBeenCalledOnce();
+  });
+
+  it("acknowledges Product-user dunning work after the subscription advances to a newer event", async () => {
+    const { writes, db } = setup();
+    const fetchMock = vi.fn(async () => Response.json({ id: "must_not_send" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const message = {
+      id: "queue-product-dunning-stale",
+      body: {
+        type: "email", tenantId: "org-1", email: "customer@example.test", notificationId: `dunning-${"f".repeat(64)}`,
+        subscriptionScope: "product_user_subscription", productId: "product-1", endUserId: "end-user-1",
+        subscriptionProvider: "lemon_squeezy", providerSubscriptionId: "subscription-1", providerUpdatedAt: "2026-11-13T00:00:00.000Z",
+        subject: "Payment failed", html: "Review subscription",
+      },
+      ack: vi.fn(), retry: vi.fn(),
+    };
+    const env = { PLATFORM_DB: db, RESEND_API_KEY: "test", RESEND_API_URL: "https://mail.test" } as unknown as NotificationsEnv;
+    await queue({ messages: [message] } as never, env);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(writes.some((write) => write.sql.includes("INSERT INTO dunning_notification_attempts"))).toBe(false);
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
   });
 
   it("records provider rejection before retrying the queue message", async () => {

@@ -637,6 +637,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/shell\/manifest$/,
   /^\/spaces\/([^/]+)\/my-spaces$/,
   /^\/spaces\/([^/]+)\/customer-checkout$/,
+  /^\/spaces\/([^/]+)\/customer-billing-status$/,
   /^\/spaces\/([^/]+)\/spaces$/,
   /^\/spaces\/([^/]+)\/memberships$/,
   /^\/spaces\/([^/]+)\/sub-spaces(?:\/[^/]+(?:\/(?:projects|members)(?:\/[^/]+)?)?)?$/,

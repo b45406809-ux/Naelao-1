@@ -347,6 +347,21 @@ export async function getMe(spaceId: string, session: SessionCredentials): Promi
   return apiFetch<ProductUserMe>(`/v1/spaces/${spaceId}/product-users/me`, { session });
 }
 
+export interface ProductUserBillingStatus {
+  subscription: { plan_tier: string | null; status: string; current_period_end: string | null } | null;
+  notifications: Array<{
+    provider_outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous";
+    attempt_count: number;
+    last_attempt_at: string;
+    accepted_at: string | null;
+  }>;
+}
+
+/** Read only the signed-in Product user's own subscription and non-PII payment-notice outcomes. */
+export async function getProductUserBillingStatus(spaceId: string, session: SessionCredentials): Promise<ProductUserBillingStatus> {
+  return apiFetch<ProductUserBillingStatus>(`/v1/spaces/${encodeURIComponent(spaceId)}/customer-billing-status`, { session });
+}
+
 export async function updateMe(
   spaceId: string,
   session: SessionCredentials,

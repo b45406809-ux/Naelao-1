@@ -48,7 +48,9 @@ import {
   selectByokKey,
   deleteByokKey,
   getConnectorStatus,
+  getProductUserBillingStatus,
   type ProductUserMe,
+  type ProductUserBillingStatus,
   type SpaceSummary,
   type ShellManifest,
   type SpaceMember,
@@ -108,6 +110,8 @@ export default function SettingsPage() {
 
   const [tab, setTab] = React.useState<TabId>("general");
   const [me, setMe] = React.useState<ProductUserMe | null>(null);
+  const [customerBilling, setCustomerBilling] = React.useState<ProductUserBillingStatus | null>(null);
+  const [customerBillingError, setCustomerBillingError] = React.useState(false);
   const [space, setSpace] = React.useState<SpaceSummary | null>(null);
   const [manifest, setManifest] = React.useState<ShellManifest | null>(null);
   const [members, setMembers] = React.useState<SpaceMember[]>([]);
@@ -120,9 +124,11 @@ export default function SettingsPage() {
     if (!creds) return;
     setLoading(true);
     setLoadError(false);
+    setCustomerBillingError(false);
     const settle = <T,>(p: Promise<T>, set: (v: T) => void) => p.then(set).catch(() => {});
     Promise.allSettled([
       settle(getMe(product.space_id, creds), setMe),
+      getProductUserBillingStatus(product.space_id, creds).then(setCustomerBilling).catch(() => setCustomerBillingError(true)),
       settle(getShellManifest(activeSpaceId, creds), setManifest),
       settle(getAssistantPolicy(activeSpaceId, creds), setPolicy),
       isChildSpace
@@ -211,6 +217,8 @@ export default function SettingsPage() {
         {tab === "personal" && (
           <PersonalTab
             me={me}
+            customerBilling={customerBilling}
+            customerBillingError={customerBillingError}
             session={session}
             productSlug={product.slug}
             productSpaceId={product.space_id}
@@ -782,6 +790,8 @@ function AiTab({
 
 function PersonalTab({
   me,
+  customerBilling,
+  customerBillingError,
   session,
   productSlug,
   productSpaceId,
@@ -789,6 +799,8 @@ function PersonalTab({
   router,
 }: {
   me: ProductUserMe | null;
+  customerBilling: ProductUserBillingStatus | null;
+  customerBillingError: boolean;
   session: { end_user_id: string } | null;
   productSlug: string;
   productSpaceId: string;
@@ -876,6 +888,33 @@ function PersonalTab({
             <div className="settings-row-sub">{me?.email ?? session?.end_user_id}</div>
           </div>
           <Badge color={me?.email_verified ? "green" : "amber"}>{me?.email_verified ? "Verified" : "Unverified"}</Badge>
+        </div>
+        <div className="settings-row" style={{ alignItems: "flex-start" }}>
+          <div style={{ flex: 1 }}>
+            <div className="settings-row-label">Product subscription</div>
+            {customerBillingError ? (
+              <div className="settings-row-sub" role="status">Subscription status is temporarily unavailable.</div>
+            ) : customerBilling?.subscription ? (
+              <>
+                <div className="settings-row-sub">Plan: {customerBilling.subscription.plan_tier ?? "unknown"} · Status: {customerBilling.subscription.status}</div>
+                {customerBilling.subscription.current_period_end && <div className="settings-row-sub">Current period ends {new Date(customerBilling.subscription.current_period_end).toLocaleDateString()}</div>}
+                {customerBilling.notifications.length > 0 && (
+                  <div style={{ display: "grid", gap: 5, marginTop: 8 }}>
+                    <div className="settings-row-sub">Recent payment email requests (provider acceptance does not confirm inbox delivery):</div>
+                    {customerBilling.notifications.map((item, index) => (
+                      <div className="settings-row-sub" key={`${item.last_attempt_at}:${index}`}>
+                        {item.provider_outcome === "provider_accepted" ? "Email provider accepted" : item.provider_outcome === "provider_rejected" ? "Email provider rejected" : "Email request outcome is unclear"}
+                        {item.attempt_count > 1 ? ` · ${item.attempt_count} attempts` : ""}
+                        {` · ${new Date(item.last_attempt_at).toLocaleString()}`}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="settings-row-sub">No paid product subscription is recorded.</div>
+            )}
+          </div>
         </div>
         <div className="settings-row">
           <div><div className="settings-row-label">Session</div></div>

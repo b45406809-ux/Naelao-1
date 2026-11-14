@@ -57,6 +57,13 @@ describe("product session routes for self-service data rights", () => {
   });
 });
 
+describe("Product-user billing status routing", () => {
+  it("allows only the exact self-service status endpoint through product-session identity", () => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/customer-billing-status"))).toBe(true);
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/customer-billing-status/other-user"))).toBe(false);
+  });
+});
+
 describe("Space presentation preferences", () => {
   it("routes the exact preferences endpoint through product-session authorization", () => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/preferences"))).toBe(true);

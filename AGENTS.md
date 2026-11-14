@@ -16,31 +16,34 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
+## Latest checkpoint — 2026-11-14 (P03/P12 Product-user dunning status; local, verified)
 
-Code `502618ca` is pushed to `origin/Mcbt5s-Backup-2`; a pre-push fetch showed remote tip `ac444bf8`
-with no concurrent advance. Signed SpaceBlueprint activation review now accepts bounded owner-selected
-external Knowledge IDs per blueprint Project and extension, validates them against the certified
-declaration before installation side effects, and persists the normalized choice in the existing
-resumable activation receipt. Installation status maps blueprint Project IDs to created Project IDs.
-Project controls surface the choice as pending setup intent and prefill it only when the matching
-collection is currently published. Activation writes no grant; the owner must save through the existing
-migration-137 path, which rechecks the active signed declaration and current published ID. Omitted
-choices stay empty, and changed selections conflict on retry.
+P03/P12 customer status is implemented locally across the durable notification record, authenticated
+Billing → Spaces → Router path, and Product Shell personal settings. Migration 0252 scopes non-PII
+provider outcomes to the exact product, end user and subscription. Before a queued notice is sent,
+Notifications rechecks the current active product, user, exact `past_due` subscription, provider event
+version and verified recipient; stale work is acknowledged without sending. The status API derives the
+caller from verified product-session claims and exposes only that user's subscription state and recent
+provider acceptance outcomes. Account erasure removes scoped attempt records. Staging/production
+schema probes and required-schema manifests include 0252.
 
-Local verification: Spaces activation/setup/extension-grant suites **57/57**, Spaces and Shell
-typechecks, and `git diff --check`. No browser, deployment, multi-user, or Knowledge provider
-acceptance ran. P05 remains PARTIAL for broad guided lifecycle, the Space-wide provider-connection
-authority/payer/beneficiary/revocation contract, other cost/lifecycle gaps, and live acceptance. P20
-refund evidence remains pushed in `5a462626`; access/accounting/payout policy and disputes remain
-unresolved. All rollouts remain disabled.
+Local evidence: Billing tests **12/12** and typecheck; Notifications SQL/queue tests **14/14** and
+typecheck; Spaces status/erasure tests **7/7** and typecheck; Router authorization/routing tests
+**53/53** and typecheck; DunningWorkflow tests **2/2** and typecheck; Shell typecheck; release runner
+**20/20**; manifest validation confirms **252** migrations through `0252_product_user_dunning_status_scope`;
+deployment-manifest validation, deployment validator tests **14/14**, and `git diff --check` pass.
+No browser, deployed database, live email/provider acceptance, Cloudflare inventory or deployment was
+used. P03/P12 remain PARTIAL for grace/restriction/escalation and retry cadence policy, inbox delivery,
+and live acceptance. P01/P02 inventory/evidence gates remain unchanged. U06 remains blocked on an
+unsupported pinned-runtime admission/drain/flush/handoff contract, not credentials; do not invent an
+adapter. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
 
-Exact next action: start P01 release/environment safety. Reconcile the current production migration
-command and required-schema verifiers against the full pinned manifest; remove any failure-suppressing
-migration path and add failure-injection verification proving a failed migration cannot produce a
-successful release receipt. Then reconcile P02 resource-identity/evidence gaps before continuing
-independent S3–S9/U01–U12 code. Keep live database/deployment acceptance distinct. Preserve
-`infra/scripts/__pycache__/`; fetch and safely integrate before every push; never force-push or deploy.
+Exact next action: fetch `origin/Mcbt5s-Backup-2`, confirm it has not advanced, commit the verified
+P03/P12 implementation and this checkpoint, then push without force. After recording the resulting
+SHA in both progress records and this runbook, continue P04 recovery by checking the actual restore
+caller for an independent erasure-tombstone/read-fencing code gap; if none exists, leave the existing
+retention/key/jurisdiction/RPO-RTO and isolated-recovery gates explicit and move to the next uncoded
+guided-template requirement. Keep all rollouts disabled; do not deploy, purchase, or create resources.
 
 ## Previous checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 

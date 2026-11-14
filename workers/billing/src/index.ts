@@ -379,6 +379,46 @@ app.post("/internal/product-user-checkout", async (c) => {
   return c.json({ checkout_url: result.url, plan, provider: "lemon_squeezy" });
 });
 
+// Product-account subscription state and recent dunning provider outcomes. Spaces derives the
+// product/end-user pair from verified session claims and calls this route with tenant HMAC;
+// this route never accepts browser credentials or returns provider IDs, recipients, or receipts.
+app.use("/internal/product-user-billing-status", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.post("/internal/product-user-billing-status", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{ product_id?: string; end_user_id?: string }>().catch(() => ({} as { product_id?: string; end_user_id?: string }));
+  if (!tenantId || !body.product_id || !/^[A-Za-z0-9_-]{1,128}$/.test(body.product_id)
+      || !body.end_user_id || !/^[A-Za-z0-9_-]{1,128}$/.test(body.end_user_id)) {
+    return c.json({ error_code: "bad_request" }, 400);
+  }
+  const account = await c.env.PLATFORM_DB.prepare(`
+    SELECT s.plan_tier,s.status,s.current_period_end,s.provider,s.provider_subscription_id
+    FROM products p JOIN product_end_users u ON u.product_space_id=p.id
+    LEFT JOIN product_user_subscriptions s ON s.product_id=p.id AND s.end_user_id=u.end_user_id
+    WHERE p.id=? AND p.tenant_id=? AND p.status='active'
+      AND u.end_user_id=? AND u.deleted_at IS NULL AND u.suspended_at IS NULL
+  `).bind(body.product_id, tenantId, body.end_user_id)
+    .first<{ plan_tier: string | null; status: string | null; current_period_end: string | null; provider: string | null; provider_subscription_id: string | null }>();
+  if (!account) return c.json({ error_code: "product_account_not_found" }, 404);
+
+  let notifications: Array<{ provider_outcome: string; attempt_count: number; last_attempt_at: string; accepted_at: string | null }> = [];
+  if (account.provider && account.provider_subscription_id) {
+    const result = await c.env.PLATFORM_DB.prepare(`
+      SELECT d.provider_outcome,d.attempt_count,d.last_attempt_at,d.accepted_at
+      FROM dunning_notification_attempts d
+      WHERE d.tenant_id=? AND d.subscription_scope='product_user_subscription'
+        AND d.product_id=? AND d.end_user_id=?
+        AND d.subscription_provider=? AND d.provider_subscription_id=?
+      ORDER BY d.last_attempt_at DESC,d.notification_id DESC LIMIT 10
+    `).bind(tenantId, body.product_id, body.end_user_id, account.provider, account.provider_subscription_id)
+      .all<{ provider_outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous"; attempt_count: number; last_attempt_at: string; accepted_at: string | null }>();
+    notifications = result.results ?? [];
+  }
+  return c.json({
+    subscription: account.status ? { plan_tier: account.plan_tier, status: account.status, current_period_end: account.current_period_end } : null,
+    notifications,
+  }, 200, { "cache-control": "private, no-store" });
+});
+
 // ── POST /billing/portal ──────────────────────────────────────────────────────
 // Lemon Squeezy's hosted customer portal (subscription management / cancel / update card), OR
 // Whop's fixed self-serve orders page when the org's active subscription is Whop-backed — Whop

@@ -87,6 +87,9 @@ function testEnv() {
         },
       };
     },
+    async batch(statements: Array<{ run: () => Promise<unknown> }>) {
+      return Promise.all(statements.map((statement) => statement.run()));
+    },
   };
   const productUserCalls: string[] = [];
   const PRODUCT_USER_DO = {
@@ -146,8 +149,9 @@ describe("language preference profile routes", () => {
     expect(env.productUserCalls).toContain("/erase");
     expect(await response.json()).toMatchObject({ erased: true, sessions_deleted: 1, conversations_deleted: 2 });
     expect(env.clearedAuthData.map((sql) => sql.split(" ")[2])).toEqual([
-      "password_reset_tokens", "email_verification_tokens", "whatsapp_auth_challenges",
+      "password_reset_tokens", "email_verification_tokens", "whatsapp_auth_challenges", "dunning_notification_attempts",
     ]);
+    expect(env.clearedAuthData).toContain("DELETE FROM dunning_notification_attempts WHERE tenant_id = ? AND product_id = ? AND end_user_id = ? AND subscription_scope = 'product_user_subscription'");
     const readAfterErase = await call("/spaces/product-a/product-users/me/export", "GET", "product_end_user", "user-a");
     expect(await readAfterErase.json()).toMatchObject({ profile: { email: null, phone_e164: null, phone_verified_at: null } });
   });

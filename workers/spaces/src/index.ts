@@ -604,6 +604,26 @@ app.post("/spaces/:spaceId/customer-checkout", async (c) => {
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
+app.use("/spaces/:spaceId/customer-billing-status", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.get("/spaces/:spaceId/customer-billing-status", async (c) => {
+  const owner = await getProductSpaceOwner(c, c.req.param("spaceId"));
+  if (!owner) return c.json({ error_code: "forbidden" }, 403);
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "customer_billing_unavailable" }, 503);
+  const response = await c.env.BILLING_WORKER.fetch(new Request("http://billing/internal/product-user-billing-status", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": owner.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owner.tenantId),
+    },
+    body: JSON.stringify({ product_id: owner.root.id, end_user_id: owner.userId }),
+  }));
+  return new Response(response.body, {
+    status: response.status,
+    headers: { "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "private, no-store" },
+  });
+});
+
 app.post("/spaces/:spaceId/spaces", async (c) => {
   const owner = await getProductSpaceOwner(c, c.req.param("spaceId"));
   if (!owner) return c.json({ error_code: "forbidden", message: "A verified Space account is required" }, 403);
@@ -8794,9 +8814,19 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
       c.env.PLATFORM_DB.prepare("DELETE FROM email_verification_tokens WHERE product_space_id = ? AND end_user_id = ?").bind(root.id, userId).run(),
       c.env.PLATFORM_DB.prepare("DELETE FROM whatsapp_auth_challenges WHERE product_space_id = ? AND end_user_id = ?").bind(root.id, userId).run(),
     ]);
+    await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(
+        "UPDATE product_end_users SET email = NULL, display_name = NULL, phone_e164 = NULL, phone_verified_at = NULL, email_verified_at = NULL, preferred_language = NULL, password_hash = NULL, last_seen_at = NULL, suspended_at = NULL, deleted_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
+      ).bind(root.id, userId),
+      c.env.PLATFORM_DB.prepare(
+        "DELETE FROM dunning_notification_attempts WHERE tenant_id = ? AND product_id = ? AND end_user_id = ? AND subscription_scope = 'product_user_subscription'"
+      ).bind(tenantId, root.id, userId),
+    ]);
+  } else {
+    // Retry cleanup even if an earlier request anonymized the account before finishing.
     await c.env.PLATFORM_DB.prepare(
-      "UPDATE product_end_users SET email = NULL, display_name = NULL, phone_e164 = NULL, phone_verified_at = NULL, email_verified_at = NULL, preferred_language = NULL, password_hash = NULL, last_seen_at = NULL, suspended_at = NULL, deleted_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
-    ).bind(root.id, userId).run();
+      "DELETE FROM dunning_notification_attempts WHERE tenant_id = ? AND product_id = ? AND end_user_id = ? AND subscription_scope = 'product_user_subscription'"
+    ).bind(tenantId, root.id, userId).run();
   }
 
   return c.json({ erased: true, erased_at: erased.erased_at, sessions_deleted: erased.sessions_deleted, conversations_deleted: erased.conversations_deleted });

@@ -169,6 +169,21 @@ class DeploymentManifestTests(unittest.TestCase):
         errors = validate_data(manifest, schema, workflows, workers)
         self.assertIn("production deployment workflow is missing the AgentPort sender-principal schema probe", errors)
 
+    def test_requires_product_user_dunning_scope_probe_in_both_deployment_workflows(self):
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        schema = json.loads(SCHEMA_MANIFEST_PATH.read_text(encoding="utf-8"))
+        workflows = {
+            "staging": (ROOT / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8"),
+            "production": (ROOT / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8"),
+        }
+        workers = {path.parent.name for path in (ROOT / "workers").glob("*/wrangler.toml")}
+        workflows["production"] = workflows["production"].replace(
+            "SELECT product_id,end_user_id,subscription_provider,provider_subscription_id FROM dunning_notification_attempts LIMIT 0",
+            "SELECT tenant_id FROM dunning_notification_attempts LIMIT 0",
+        )
+        errors = validate_data(manifest, schema, workflows, workers)
+        self.assertIn("production deployment workflow is missing Product-user dunning scope schema probe", errors)
+
     def test_requires_the_deployment_phase_to_invoke_the_durable_migration_runner(self):
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         schema = json.loads(SCHEMA_MANIFEST_PATH.read_text(encoding="utf-8"))
