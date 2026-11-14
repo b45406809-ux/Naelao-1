@@ -110,6 +110,35 @@ class DeploymentManifestTests(unittest.TestCase):
         errors = validate_data(manifest, schema, out_of_preflight, workers)
         self.assertIn("production preflight does not test the durable D1 release migration runner", errors)
 
+    def test_requires_rendered_resource_validation_and_tests_in_both_preflights(self):
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        schema = json.loads(SCHEMA_MANIFEST_PATH.read_text(encoding="utf-8"))
+        workers = {path.parent.name for path in (ROOT / "workers").glob("*/wrangler.toml")}
+        workflows = {
+            "staging": (ROOT / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8"),
+            "production": (ROOT / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8"),
+        }
+        for environment in ("staging", "production"):
+            with self.subTest(environment=environment):
+                missing_validator = dict(workflows)
+                missing_validator[environment] = missing_validator[environment].replace(
+                    "node infra/scripts/validate_rendered_environment_resources.mjs",
+                    "echo skipped rendered resource validation",
+                )
+                errors = validate_data(manifest, schema, missing_validator, workers)
+                self.assertIn(
+                    f"{environment} preflight does not compare Wrangler-resolved bindings with the resource inventory",
+                    errors,
+                )
+
+                missing_test = dict(workflows)
+                missing_test[environment] = missing_test[environment].replace(
+                    "node --test infra/scripts/test_validate_rendered_environment_resources.mjs",
+                    "echo skipped rendered resource tests",
+                )
+                errors = validate_data(manifest, schema, missing_test, workers)
+                self.assertIn(f"{environment} preflight does not test the Wrangler-resolved resource inventory", errors)
+
     def test_requires_managed_cost_email_schema_probes_in_both_deployment_workflows(self):
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         schema = json.loads(SCHEMA_MANIFEST_PATH.read_text(encoding="utf-8"))

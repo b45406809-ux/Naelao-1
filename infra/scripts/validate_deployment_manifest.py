@@ -86,6 +86,10 @@ def validate_data(
         preflight = re.search(r"^  preflight:\s*\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)", workflow, re.MULTILINE | re.DOTALL)
         if not preflight or 'test_release_migrations.py' not in preflight.group("body"):
             errors.append(f"{environment} preflight does not test the durable D1 release migration runner")
+        if not preflight or "infra/scripts/validate_rendered_environment_resources.mjs" not in preflight.group("body"):
+            errors.append(f"{environment} preflight does not compare Wrangler-resolved bindings with the resource inventory")
+        if not preflight or "infra/scripts/test_validate_rendered_environment_resources.mjs" not in preflight.group("body"):
+            errors.append(f"{environment} preflight does not test the Wrangler-resolved resource inventory")
         required_schema_probes = (
             "SELECT email_alerts_enabled,email_recipient_kind FROM managed_service_cost_budgets LIMIT 0",
             "SELECT id,alert_id,tenant_id,space_id,project_id,user_id,recipient_kind,status,attempts,next_at,lease_token,lease_until,last_error,created_at,updated_at,accepted_at FROM managed_service_cost_budget_email_deliveries LIMIT 0",

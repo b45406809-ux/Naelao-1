@@ -65,6 +65,12 @@ jobs:
       - name: Reject shared mutable staging/production bindings
         run: python3 infra/scripts/validate_wrangler_env_isolation.py
 
+      - name: Validate Wrangler-resolved environment binding inventory
+        run: node infra/scripts/validate_rendered_environment_resources.mjs
+
+      - name: Test Wrangler-resolved environment binding inventory
+        run: node --test infra/scripts/test_validate_rendered_environment_resources.mjs
+
       - name: Build workspace packages
         run: pnpm turbo run build
 
