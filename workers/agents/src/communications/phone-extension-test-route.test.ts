@@ -42,7 +42,12 @@ describe("internal phone simulation route", () => {
     expect(await digits.json()).toEqual({ forwarded: {
       spaceId: "space-a", bindingId: "binding-a", eventType: "call.digits", digits: "1", simulation: true,
     } });
-    expect(f.dispatch).toHaveBeenCalledTimes(2);
+    const draft = await testRequest({ spaceId: "space-a", bindingId: "binding-a", eventType: "call.digits", digits: "2", settingsSource: "draft" }, undefined, f.env);
+    expect(draft.status).toBe(200);
+    expect(await draft.json()).toEqual({ forwarded: {
+      spaceId: "space-a", bindingId: "binding-a", eventType: "call.digits", digits: "2", settingsSource: "draft", simulation: true,
+    } });
+    expect(f.dispatch).toHaveBeenCalledTimes(3);
   });
 
   it("rejects malformed digits, extra fields and invalid internal authentication before dispatch", async () => {
@@ -51,6 +56,8 @@ describe("internal phone simulation route", () => {
     expect(malformed.status).toBe(400);
     const extra = await testRequest({ spaceId: "space-a", bindingId: "binding-a", eventType: "call.received", caller: "+15555550100" }, undefined, f.env);
     expect(extra.status).toBe(400);
+    const invalidSource = await testRequest({ spaceId: "space-a", bindingId: "binding-a", eventType: "call.received", settingsSource: "latest" }, undefined, f.env);
+    expect(invalidSource.status).toBe(400);
     const unauthorized = await testRequest({ spaceId: "space-a", bindingId: "binding-a", eventType: "call.received" }, "invalid", f.env);
     expect(unauthorized.status).toBe(403);
     expect(f.dispatch).not.toHaveBeenCalled();

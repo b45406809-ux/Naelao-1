@@ -3001,6 +3001,33 @@ const MIGRATIONS: Migration[] = [
     up: `ALTER TABLE space_shared_extension_update_receipts ADD COLUMN dependency_expansion_json TEXT NOT NULL DEFAULT '[]';
       ALTER TABLE space_shared_extension_update_receipts ADD COLUMN dependency_closure_json TEXT NOT NULL DEFAULT '[]';`,
   },
+  {
+    version: 141,
+    description: "persist owner-published extension settings drafts separately from active runtime settings",
+    up: `CREATE TABLE extension_installation_settings_drafts (
+      instance_id TEXT PRIMARY KEY,
+      settings_json TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      schema_version INTEGER NOT NULL CHECK(schema_version IN (1,2)),
+      base_active_revision INTEGER NOT NULL CHECK(base_active_revision >= 0),
+      status TEXT NOT NULL CHECK(status IN ('draft','published')),
+      published_active_revision INTEGER CHECK(published_active_revision IS NULL OR published_active_revision >= 1),
+      updated_at TEXT NOT NULL
+    );
+      CREATE TABLE extension_installation_settings_versions (
+        instance_id TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK(version >= 1),
+        settings_json TEXT NOT NULL,
+        schema_version INTEGER NOT NULL CHECK(schema_version IN (1,2)),
+        published_by TEXT NOT NULL,
+        source_draft_revision INTEGER NOT NULL CHECK(source_draft_revision >= 1),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(instance_id,version)
+      );
+      CREATE INDEX idx_extension_settings_versions_recent ON extension_installation_settings_versions(instance_id,version DESC);
+      ALTER TABLE extension_settings_audit_events ADD COLUMN target TEXT NOT NULL DEFAULT 'active' CHECK(target IN ('active','draft'));
+      CREATE INDEX idx_extension_settings_drafts_updated ON extension_installation_settings_drafts(updated_at DESC);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -5161,6 +5188,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           if (result.rowsWritten !== 1) return false;
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_settings WHERE instance_id=?", instanceId);
+          execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_settings_drafts WHERE instance_id=?", instanceId);
+          execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_settings_versions WHERE instance_id=?", instanceId);
           if (!projectId) {
             const policies = queryAll<{ tenant_id: string; space_id: string; project_id: string; revision: number }>(this.ctx.storage.sql as never,
               `SELECT tenant_id,space_id,project_id,revision FROM extension_project_knowledge_policies
@@ -14052,6 +14081,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     const current = queryOne<{ settings_json: string; revision: number; schema_version: number; updated_at: string }>(this.ctx.storage.sql as never,
       "SELECT settings_json,revision,schema_version,updated_at FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
+    if (manifest.settingsActivation === "owner_publish")
+      return this.ownerPublishedExtensionSettings(request, { tenantId, spaceId, projectId, projectScoped, row, manifest, schema,
+        actorId, role, projectUserOwner, current });
     if (request.method === "GET") {
       let settings: Record<string, unknown>;
       let migrationRequired = Boolean(current && current.schema_version !== schema.schemaVersion);
@@ -14142,6 +14174,273 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ schema, settings, revision: body.revision! + 1, migration_required: false, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
   }
 
+  private async ownerPublishedExtensionSettings(request: Request, input: {
+    tenantId: string; spaceId: string; projectId: string; projectScoped: boolean;
+    row: { instance_id: string; extension_id: string; scope: string; user_id: string | null };
+    manifest: ExtensionManifest; schema: NonNullable<ExtensionManifest["settingsSchema"]>;
+    actorId: string; role: string; projectUserOwner: boolean;
+    current: { settings_json: string; revision: number; schema_version: number; updated_at: string } | null;
+  }): Promise<Response> {
+    const { tenantId, spaceId, projectId, projectScoped, row, manifest, schema, actorId, role, projectUserOwner, current } = input;
+    const activeRevision = current?.revision ?? 0;
+    if (request.method === "GET") {
+      let activeSettings: Record<string, unknown>;
+      let migrationRequired = Boolean(current && current.schema_version !== schema.schemaVersion);
+      try { activeSettings = validateExtensionSettingsValues(manifest, current ? JSON.parse(current.settings_json) : {}, { allowIncomplete: !current }); }
+      catch {
+        migrationRequired = true;
+        return Response.json({ error_code: "extension_settings_migration_required" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+      }
+      const canConfigure = projectScoped
+        ? request.headers.get("x-naelao-project-manage") === "1" || projectUserOwner
+        : role === "owner" || role === "admin";
+      const draftRow = canConfigure ? queryOne<{ settings_json: string; revision: number; schema_version: number; base_active_revision: number;
+        status: string; published_active_revision: number | null; updated_at: string }>(this.ctx.storage.sql as never,
+        `SELECT settings_json,revision,schema_version,base_active_revision,status,published_active_revision,updated_at
+         FROM extension_installation_settings_drafts WHERE instance_id=?`, row.instance_id) : null;
+      const publishedVersions = canConfigure ? queryAll<{ version: number; schema_version: number; published_by: string;
+        source_draft_revision: number; created_at: string }>(this.ctx.storage.sql as never,
+        `SELECT version,schema_version,published_by,source_draft_revision,created_at
+         FROM extension_installation_settings_versions WHERE instance_id=? ORDER BY version DESC LIMIT 20`, row.instance_id) : [];
+      let draft: Record<string, unknown> | null = null;
+      let draftMigrationRequired = false;
+      if (draftRow) {
+        try {
+          if (draftRow.schema_version !== schema.schemaVersion) throw new Error("schema_changed");
+          draft = validateExtensionSettingsValues(manifest, JSON.parse(draftRow.settings_json));
+        } catch { draftMigrationRequired = true; }
+      }
+      return Response.json({ schema, settings: activeSettings, revision: activeRevision, migration_required: migrationRequired,
+        activation_policy: "owner_publish", can_configure: canConfigure,
+        ...(current ? { updated_at: current.updated_at } : {}),
+        ...(canConfigure ? { published_versions: publishedVersions } : {}),
+        ...(canConfigure ? { draft: draftRow ? { settings: draft, revision: draftRow.revision, schema_version: draftRow.schema_version,
+          base_active_revision: draftRow.base_active_revision, status: draftRow.status,
+          ...(draftRow.published_active_revision === null ? {} : { published_active_revision: draftRow.published_active_revision }),
+          updated_at: draftRow.updated_at, migration_required: draftMigrationRequired } : null,
+          draft_revision: draftRow?.revision ?? 0 } : {}) }, { headers: { "cache-control": "private, no-store" } });
+    }
+
+    if (typeof this.ctx.storage.transactionSync !== "function")
+      return Response.json({ error_code: "extension_settings_storage_unavailable" }, { status: 503, headers: { "cache-control": "private, no-store" } });
+    return this.parseOwnerPublishedSettingsPatch(request, input);
+  }
+
+  private async parseOwnerPublishedSettingsPatch(request: Request, input: {
+    tenantId: string; spaceId: string; projectId: string; projectScoped: boolean;
+    row: { instance_id: string; extension_id: string; scope: string; user_id: string | null };
+    manifest: ExtensionManifest; schema: NonNullable<ExtensionManifest["settingsSchema"]>;
+    actorId: string; role: string; projectUserOwner: boolean;
+    current: { settings_json: string; revision: number; schema_version: number; updated_at: string } | null;
+  }): Promise<Response> {
+    const { tenantId, spaceId, projectId, projectScoped, row, manifest, schema, actorId, role } = input;
+    let body: Record<string, unknown>;
+    try {
+      const bytes = await readBoundedRequestBytes(request, 64 * 1024);
+      body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)) as Record<string, unknown>;
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("invalid_body");
+    } catch { return Response.json({ error_code: "extension_settings_invalid" }, { status: 400, headers: { "cache-control": "private, no-store" } }); }
+    const updatedAt = new Date().toISOString();
+    const activeRevision = input.current?.revision ?? 0;
+    if (body.action === "rollback_draft") {
+      if (Object.keys(body).some(key => !["action", "version", "draft_revision", "base_active_revision"].includes(key))
+        || !Number.isSafeInteger(body.version) || Number(body.version) < 1
+        || !Number.isSafeInteger(body.draft_revision) || Number(body.draft_revision) < 0 || Number(body.draft_revision) >= Number.MAX_SAFE_INTEGER
+        || body.base_active_revision !== activeRevision)
+        return Response.json({ error_code: "extension_settings_invalid" }, { status: 400, headers: { "cache-control": "private, no-store" } });
+      const outcome = this.ctx.storage.transactionSync(() => {
+        const active = queryOne<{ manifest_json: string }>(this.ctx.storage.sql as never,
+          `SELECT manifest_json FROM extension_installation_manifests
+           WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id IS ? AND user_id IS ? AND scope=? AND status='active'`,
+          row.instance_id, tenantId, spaceId, projectScoped ? projectId : null, row.scope === "PROJECT_USER" ? row.user_id : null, row.scope);
+        if (!active) return { error: "installation_unavailable" };
+        let activeManifest: ExtensionManifest;
+        try { activeManifest = validateExtensionManifest(JSON.parse(active.manifest_json)); } catch { return { error: "schema_changed" }; }
+        const capabilities = new Set(activeManifest.capabilityRequirements), permissions = new Set(activeManifest.declaredPermissions);
+        if (!capabilities.has("extension.settings.read") || !permissions.has("extension.settings.read")
+          || !capabilities.has("extension.settings.configure") || !permissions.has("extension.settings.configure")) return { error: "write_not_declared" };
+        if (activeManifest.settingsActivation !== "owner_publish" || JSON.stringify(activeManifest.settingsSchema) !== JSON.stringify(schema)) return { error: "schema_changed" };
+        const latestActive = queryOne<{ revision: number; settings_json: string }>(this.ctx.storage.sql as never,
+          "SELECT revision,settings_json FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
+        if ((latestActive?.revision ?? 0) !== body.base_active_revision) return { error: "active_revision_conflict" };
+        const latestDraft = queryOne<{ revision: number; settings_json: string; status: string }>(this.ctx.storage.sql as never,
+          "SELECT revision,settings_json,status FROM extension_installation_settings_drafts WHERE instance_id=?", row.instance_id);
+        if ((latestDraft?.revision ?? 0) !== body.draft_revision) return { error: "draft_revision_conflict" };
+        const source = queryOne<{ settings_json: string; schema_version: number }>(this.ctx.storage.sql as never,
+          "SELECT settings_json,schema_version FROM extension_installation_settings_versions WHERE instance_id=? AND version=?", row.instance_id, Number(body.version));
+        if (!source) return { error: "version_unavailable" };
+        if (source.schema_version !== schema.schemaVersion) return { error: "version_schema_incompatible" };
+        let settings: Record<string, unknown>;
+        try { settings = validateExtensionSettingsValues(activeManifest, JSON.parse(source.settings_json)); }
+        catch { return { error: "version_schema_incompatible" }; }
+        let prior: Record<string, unknown> = {};
+        try {
+          const raw = latestDraft?.status === "draft" ? latestDraft.settings_json : latestActive?.settings_json;
+          const parsed: unknown = raw ? JSON.parse(raw) : {};
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) prior = parsed as Record<string, unknown>;
+        } catch { /* Audit metadata contains only setting field identifiers. */ }
+        const changedFieldIds = schema.fields.filter(field => {
+          const before = Object.prototype.hasOwnProperty.call(prior, field.id) ? prior[field.id] : field.defaultValue;
+          return JSON.stringify(before) !== JSON.stringify(settings[field.id]);
+        }).map(field => field.id);
+        const revision = Number(body.draft_revision) + 1;
+        this.ctx.storage.sql.exec(`INSERT INTO extension_installation_settings_drafts(instance_id,settings_json,revision,schema_version,base_active_revision,status,published_active_revision,updated_at)
+          VALUES(?,?,?,?,?,'draft',NULL,?) ON CONFLICT(instance_id) DO UPDATE SET settings_json=excluded.settings_json,revision=excluded.revision,
+          schema_version=excluded.schema_version,base_active_revision=excluded.base_active_revision,status='draft',published_active_revision=NULL,updated_at=excluded.updated_at`,
+        row.instance_id, JSON.stringify(settings), revision, schema.schemaVersion, Number(body.base_active_revision), updatedAt);
+        this.ctx.storage.sql.exec(`INSERT INTO extension_settings_audit_events(
+          event_id,tenant_id,space_id,project_id,instance_id,extension_id,instance_scope,actor_id,actor_role,
+          prior_revision,new_revision,schema_version,changed_field_ids_json,created_at,target
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'draft')`,
+        crypto.randomUUID(), tenantId, spaceId, projectScoped ? projectId : null, row.instance_id, row.extension_id, row.scope,
+        actorId, role, Number(body.draft_revision), revision, schema.schemaVersion, JSON.stringify(changedFieldIds), updatedAt);
+        return { revision, settings };
+      });
+      if ("error" in outcome) return this.ownerPublishedSettingsError(outcome.error);
+      return Response.json({ activation_policy: "owner_publish", rollback_draft: true, source_version: Number(body.version),
+        active_revision: activeRevision, draft: { settings: outcome.settings, revision: outcome.revision,
+          schema_version: schema.schemaVersion, base_active_revision: activeRevision, status: "draft", updated_at: updatedAt } },
+      { headers: { "cache-control": "private, no-store" } });
+    }
+    if (body.action === "save_draft") {
+      if (Object.keys(body).some(key => !["action", "settings", "draft_revision", "base_active_revision"].includes(key))
+        || !Number.isSafeInteger(body.draft_revision) || Number(body.draft_revision) < 0 || Number(body.draft_revision) >= Number.MAX_SAFE_INTEGER
+        || body.base_active_revision !== activeRevision)
+        return Response.json({ error_code: "extension_settings_invalid" }, { status: 400, headers: { "cache-control": "private, no-store" } });
+      let settings: Record<string, unknown>;
+      try { settings = validateExtensionSettingsValues(manifest, body.settings); }
+      catch (error) { return Response.json({ error_code: "extension_settings_invalid", message: (error as Error).message.slice(0, 200) }, { status: 400, headers: { "cache-control": "private, no-store" } }); }
+      const outcome = this.ctx.storage.transactionSync(() => {
+        const active = queryOne<{ manifest_json: string }>(this.ctx.storage.sql as never,
+          `SELECT manifest_json FROM extension_installation_manifests
+           WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id IS ? AND user_id IS ? AND scope=? AND status='active'`,
+          row.instance_id, tenantId, spaceId, projectScoped ? projectId : null, row.scope === "PROJECT_USER" ? row.user_id : null, row.scope);
+        if (!active) return { error: "installation_unavailable" };
+        let activeManifest: ExtensionManifest;
+        try { activeManifest = validateExtensionManifest(JSON.parse(active.manifest_json)); } catch { return { error: "schema_changed" }; }
+        const capabilities = new Set(activeManifest.capabilityRequirements), permissions = new Set(activeManifest.declaredPermissions);
+        if (!capabilities.has("extension.settings.read") || !permissions.has("extension.settings.read")
+          || !capabilities.has("extension.settings.configure") || !permissions.has("extension.settings.configure")) return { error: "write_not_declared" };
+        if (activeManifest.settingsActivation !== "owner_publish" || JSON.stringify(activeManifest.settingsSchema) !== JSON.stringify(schema)) return { error: "schema_changed" };
+        const latestActive = queryOne<{ revision: number }>(this.ctx.storage.sql as never,
+          "SELECT revision FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
+        if ((latestActive?.revision ?? 0) !== body.base_active_revision) return { error: "active_revision_conflict" };
+        const latestDraft = queryOne<{ revision: number; settings_json: string; status: string }>(this.ctx.storage.sql as never,
+          "SELECT revision,settings_json,status FROM extension_installation_settings_drafts WHERE instance_id=?", row.instance_id);
+        if ((latestDraft?.revision ?? 0) !== body.draft_revision) return { error: "draft_revision_conflict" };
+        let prior: Record<string, unknown> = {};
+        try {
+          const raw = latestDraft?.status === "draft" ? latestDraft.settings_json : input.current?.settings_json;
+          const parsed: unknown = raw ? JSON.parse(raw) : {};
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) prior = parsed as Record<string, unknown>;
+        } catch { /* Corrupt prior values do not leak into the metadata-only audit. */ }
+        const changedFieldIds = schema.fields.filter(field => {
+          const before = Object.prototype.hasOwnProperty.call(prior, field.id) ? prior[field.id] : field.defaultValue;
+          return JSON.stringify(before) !== JSON.stringify(settings[field.id]);
+        }).map(field => field.id);
+        const revision = Number(body.draft_revision) + 1;
+        this.ctx.storage.sql.exec(`INSERT INTO extension_installation_settings_drafts(instance_id,settings_json,revision,schema_version,base_active_revision,status,published_active_revision,updated_at)
+          VALUES(?,?,?,?,?,'draft',NULL,?) ON CONFLICT(instance_id) DO UPDATE SET settings_json=excluded.settings_json,revision=excluded.revision,
+          schema_version=excluded.schema_version,base_active_revision=excluded.base_active_revision,status='draft',published_active_revision=NULL,updated_at=excluded.updated_at`,
+        row.instance_id, JSON.stringify(settings), revision, schema.schemaVersion, Number(body.base_active_revision), updatedAt);
+        this.ctx.storage.sql.exec(`INSERT INTO extension_settings_audit_events(
+          event_id,tenant_id,space_id,project_id,instance_id,extension_id,instance_scope,actor_id,actor_role,
+          prior_revision,new_revision,schema_version,changed_field_ids_json,created_at,target
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'draft')`,
+        crypto.randomUUID(), tenantId, spaceId, projectScoped ? projectId : null, row.instance_id, row.extension_id, row.scope,
+        actorId, role, Number(body.draft_revision), revision, schema.schemaVersion, JSON.stringify(changedFieldIds), updatedAt);
+        return { revision };
+      });
+      if ("error" in outcome) return this.ownerPublishedSettingsError(outcome.error);
+      return Response.json({ activation_policy: "owner_publish", settings, active_revision: activeRevision,
+        draft: { settings, revision: outcome.revision, schema_version: schema.schemaVersion, base_active_revision: activeRevision, status: "draft", updated_at: updatedAt } },
+      { headers: { "cache-control": "private, no-store" } });
+    }
+
+    if (body.action !== "publish" || Object.keys(body).some(key => !["action", "draft_revision", "expected_active_revision", "confirm"].includes(key))
+      || body.confirm !== true || !Number.isSafeInteger(body.draft_revision) || Number(body.draft_revision) < 1
+      || !Number.isSafeInteger(body.expected_active_revision) || Number(body.expected_active_revision) < 0)
+      return Response.json({ error_code: "extension_settings_invalid" }, { status: 400, headers: { "cache-control": "private, no-store" } });
+    const outcome = this.ctx.storage.transactionSync(() => {
+      const active = queryOne<{ manifest_json: string }>(this.ctx.storage.sql as never,
+        `SELECT manifest_json FROM extension_installation_manifests
+         WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id IS ? AND user_id IS ? AND scope=? AND status='active'`,
+        row.instance_id, tenantId, spaceId, projectScoped ? projectId : null, row.scope === "PROJECT_USER" ? row.user_id : null, row.scope);
+      if (!active) return { error: "installation_unavailable" };
+      let activeManifest: ExtensionManifest;
+      try { activeManifest = validateExtensionManifest(JSON.parse(active.manifest_json)); } catch { return { error: "schema_changed" }; }
+      const capabilities = new Set(activeManifest.capabilityRequirements), permissions = new Set(activeManifest.declaredPermissions);
+      if (!capabilities.has("extension.settings.read") || !permissions.has("extension.settings.read")
+        || !capabilities.has("extension.settings.configure") || !permissions.has("extension.settings.configure")) return { error: "write_not_declared" };
+      if (activeManifest.settingsActivation !== "owner_publish" || JSON.stringify(activeManifest.settingsSchema) !== JSON.stringify(schema)) return { error: "schema_changed" };
+      const latestActive = queryOne<{ revision: number; settings_json: string }>(this.ctx.storage.sql as never,
+        "SELECT revision,settings_json FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
+      const latestRevision = latestActive?.revision ?? 0;
+      const latestDraft = queryOne<{ settings_json: string; revision: number; schema_version: number; base_active_revision: number; status: string; published_active_revision: number | null }>(this.ctx.storage.sql as never,
+        "SELECT settings_json,revision,schema_version,base_active_revision,status,published_active_revision FROM extension_installation_settings_drafts WHERE instance_id=?", row.instance_id);
+      if (latestDraft?.status === "published" && latestDraft.revision === body.draft_revision
+        && latestDraft.published_active_revision === latestRevision && latestDraft.base_active_revision === body.expected_active_revision)
+        return { replayed: true, revision: latestRevision, settings_json: latestActive?.settings_json ?? latestDraft.settings_json };
+      if (!latestDraft || latestDraft.status !== "draft" || latestDraft.revision !== body.draft_revision
+        || latestRevision !== body.expected_active_revision || latestDraft.base_active_revision !== latestRevision)
+        return { error: "revision_conflict" };
+      if (latestRevision >= Number.MAX_SAFE_INTEGER) return { error: "revision_limit" };
+      if (latestDraft.schema_version !== schema.schemaVersion) return { error: "schema_changed" };
+      let settings: Record<string, unknown>;
+      try { settings = validateExtensionSettingsValues(activeManifest, JSON.parse(latestDraft.settings_json)); }
+      catch { return { error: "draft_invalid" }; }
+      let prior: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = latestActive ? JSON.parse(latestActive.settings_json) : {};
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) prior = parsed as Record<string, unknown>;
+      } catch { /* A valid draft can replace a corrupt active row; audit stores only field IDs. */ }
+      const changedFieldIds = schema.fields.filter(field => {
+        const before = Object.prototype.hasOwnProperty.call(prior, field.id) ? prior[field.id] : field.defaultValue;
+        return JSON.stringify(before) !== JSON.stringify(settings[field.id]);
+      }).map(field => field.id);
+      const revision = latestRevision + 1;
+      this.ctx.storage.sql.exec(`INSERT INTO extension_installation_settings(instance_id,settings_json,revision,updated_at,schema_version) VALUES(?,?,?,?,?)
+        ON CONFLICT(instance_id) DO UPDATE SET settings_json=excluded.settings_json,revision=excluded.revision,updated_at=excluded.updated_at,schema_version=excluded.schema_version`,
+      row.instance_id, JSON.stringify(settings), revision, updatedAt, schema.schemaVersion);
+      this.ctx.storage.sql.exec(`INSERT INTO extension_installation_settings_versions(
+        instance_id,version,settings_json,schema_version,published_by,source_draft_revision,created_at
+      ) VALUES(?,?,?,?,?,?,?)`, row.instance_id, revision, JSON.stringify(settings), schema.schemaVersion, actorId, Number(body.draft_revision), updatedAt);
+      this.ctx.storage.sql.exec(`DELETE FROM extension_installation_settings_versions WHERE instance_id=? AND version NOT IN (
+        SELECT version FROM extension_installation_settings_versions WHERE instance_id=? ORDER BY version DESC LIMIT 20
+      )`, row.instance_id, row.instance_id);
+      this.ctx.storage.sql.exec(`UPDATE extension_installation_settings_drafts SET status='published',published_active_revision=?,updated_at=?
+        WHERE instance_id=? AND revision=? AND status='draft'`, revision, updatedAt, row.instance_id, Number(body.draft_revision));
+      this.ctx.storage.sql.exec(`INSERT INTO extension_settings_audit_events(
+        event_id,tenant_id,space_id,project_id,instance_id,extension_id,instance_scope,actor_id,actor_role,
+        prior_revision,new_revision,schema_version,changed_field_ids_json,created_at,target
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'active')`,
+      crypto.randomUUID(), tenantId, spaceId, projectScoped ? projectId : null, row.instance_id, row.extension_id, row.scope,
+      actorId, role, latestRevision, revision, schema.schemaVersion, JSON.stringify(changedFieldIds), updatedAt);
+      return { replayed: false, revision, settings_json: JSON.stringify(settings) };
+    });
+    if ("error" in outcome) return this.ownerPublishedSettingsError(outcome.error);
+    let settings: Record<string, unknown>;
+    try { settings = validateExtensionSettingsValues(manifest, JSON.parse(outcome.settings_json)); }
+    catch { return Response.json({ error_code: "extension_settings_migration_required" }, { status: 409, headers: { "cache-control": "private, no-store" } }); }
+    return Response.json({ activation_policy: "owner_publish", published: true, replayed: outcome.replayed,
+      revision: outcome.revision, settings, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private ownerPublishedSettingsError(error: string): Response {
+    const status = error === "installation_unavailable" || error === "version_unavailable" ? 404 : error === "write_not_declared" ? 403
+      : error === "active_revision_conflict" || error === "draft_revision_conflict"
+      || error === "revision_conflict" || error === "schema_changed" || error === "revision_limit" || error === "version_schema_incompatible"
+        ? 409 : error === "draft_invalid" ? 400 : 503;
+    const code = error === "active_revision_conflict" || error === "draft_revision_conflict" || error === "revision_conflict"
+      ? "extension_settings_revision_conflict" : error === "write_not_declared" ? "extension_settings_write_not_declared"
+      : error === "schema_changed" ? "extension_settings_schema_changed" : error === "installation_unavailable"
+        ? "extension_settings_unavailable" : error === "version_unavailable" ? "extension_settings_version_unavailable"
+          : error === "version_schema_incompatible" ? "extension_settings_version_incompatible"
+            : error === "revision_limit" ? "extension_settings_revision_limit"
+              : error === "draft_invalid" ? "extension_settings_invalid" : "extension_settings_storage_unavailable";
+    return Response.json({ error_code: code }, { status, headers: { "cache-control": "private, no-store" } });
+  }
+
   private async extensionSettingsAudit(request: Request, url: URL): Promise<Response> {
     const tenantId = url.searchParams.get("tenant_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "";
     const projectId = url.searchParams.get("project_id") ?? "", instanceId = url.searchParams.get("instance_id") ?? "";
@@ -14167,9 +14466,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (projectScoped && request.headers.get("x-naelao-project-manage") !== "1" && !projectUserOwner)
       return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
 
-    const rows = queryAll<{ event_id: string; extension_id: string; instance_scope: string; actor_id: string; actor_role: string;
+    const rows = queryAll<{ event_id: string; extension_id: string; instance_scope: string; actor_id: string; actor_role: string; target: string;
       prior_revision: number; new_revision: number; schema_version: number; changed_field_ids_json: string; created_at: string }>(this.ctx.storage.sql as never,
-      `SELECT event_id,extension_id,instance_scope,actor_id,actor_role,prior_revision,new_revision,schema_version,changed_field_ids_json,created_at
+      `SELECT event_id,extension_id,instance_scope,actor_id,actor_role,target,prior_revision,new_revision,schema_version,changed_field_ids_json,created_at
        FROM extension_settings_audit_events
        WHERE tenant_id=? AND space_id=? AND instance_id=? AND project_id IS ?
        ORDER BY created_at DESC,event_id DESC LIMIT 51`, tenantId, spaceId, instanceId, projectScoped ? projectId : null);
@@ -14180,7 +14479,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (Array.isArray(parsed)) changedFieldIds = parsed.filter((value): value is string => typeof value === "string").slice(0, 128);
       } catch { /* Corrupt legacy event metadata is omitted from the field list. */ }
       return { event_id: row.event_id, extension_id: row.extension_id, scope: row.instance_scope, actor_id: row.actor_id,
-        actor_role: row.actor_role, prior_revision: row.prior_revision, new_revision: row.new_revision,
+        actor_role: row.actor_role, target: row.target, prior_revision: row.prior_revision, new_revision: row.new_revision,
         schema_version: row.schema_version, changed_field_ids: changedFieldIds, created_at: row.created_at };
     });
     return Response.json({ events, truncated: rows.length > 50 }, { headers: { "cache-control": "private, no-store" } });
@@ -14191,8 +14490,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const tenantId = url.searchParams.get("tenant_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "";
     const instanceId = url.searchParams.get("instance_id") ?? "", projectId = url.searchParams.get("project_id") ?? "";
     const expectedVersion = url.searchParams.get("expected_version") ?? "", expectedArtifactSha256 = url.searchParams.get("expected_artifact_sha256") ?? "";
+    const settingsSource = url.searchParams.get("settings_source") ?? "active";
     if (!tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
       || projectId && !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
+      || settingsSource !== "active" && settingsSource !== "draft"
       || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expectedVersion) || !/^[a-f0-9]{64}$/.test(expectedArtifactSha256)
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
@@ -14227,8 +14528,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!manifest.settingsSchema || !capabilities.has("extension.settings.read") || !permissions.has("extension.settings.read"))
       return Response.json({ error_code: "phone_extension_settings_not_declared" }, { status: 404, headers: { "cache-control": "private, no-store" } });
 
-    const current = queryOne<{ settings_json: string; revision: number; schema_version: number }>(this.ctx.storage.sql as never,
+    if (settingsSource === "draft" && manifest.settingsActivation !== "owner_publish")
+      return Response.json({ error_code: "phone_extension_draft_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
+    const active = queryOne<{ settings_json: string; revision: number; schema_version: number; status?: string }>(this.ctx.storage.sql as never,
       "SELECT settings_json,revision,schema_version FROM extension_installation_settings WHERE instance_id=?", instanceId);
+    const current = settingsSource === "draft"
+      ? queryOne<{ settings_json: string; revision: number; schema_version: number; status?: string }>(this.ctx.storage.sql as never,
+        "SELECT settings_json,revision,schema_version,status FROM extension_installation_settings_drafts WHERE instance_id=?", instanceId)
+      : active;
+    if (settingsSource === "draft" && (!current || current.status !== "draft"))
+      return Response.json({ error_code: "phone_extension_draft_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
     if (current && current.schema_version !== manifest.settingsSchema.schemaVersion)
       return Response.json({ error_code: "extension_settings_migration_required" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     let settings: Record<string, string | number | boolean>;
@@ -14237,7 +14546,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     } catch {
       return Response.json({ error_code: "phone_extension_settings_invalid" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     }
-    const response = { schema_version: manifest.settingsSchema.schemaVersion, revision: current?.revision ?? 0, settings };
+    const response = { schema_version: manifest.settingsSchema.schemaVersion, revision: current?.revision ?? 0,
+      active_revision: active?.revision ?? 0, settings_source: settingsSource, settings };
     if (new TextEncoder().encode(JSON.stringify(response)).byteLength > 8_192)
       return Response.json({ error_code: "phone_extension_settings_too_large" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     return Response.json(response, { headers: { "cache-control": "private, no-store" } });

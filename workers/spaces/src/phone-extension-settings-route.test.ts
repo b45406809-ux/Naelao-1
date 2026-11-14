@@ -4,7 +4,7 @@ import spacesWorker from "./index.js";
 
 const secret = "phone-extension-settings-route-secret";
 
-function harness(activePublisher = true, settingsDeclared = true) {
+function harness(activePublisher = true, settingsDeclared = true, settingsActivation?: string) {
   const forwarded: Request[] = [];
   const spaceStub = { fetch: vi.fn(async (request: Request) => {
     forwarded.push(request);
@@ -13,11 +13,13 @@ function harness(activePublisher = true, settingsDeclared = true) {
       manifest: { id: "ext_phone", bundle: { id: "ext_phone", version: "1.0.0" },
         declaredPermissions: settingsDeclared ? ["extension.settings.read"] : [],
         capabilityRequirements: settingsDeclared ? ["extension.settings.read"] : [],
+        ...(settingsActivation ? { settingsActivation } : {}),
         ...(settingsDeclared ? { settingsSchema: { schemaVersion: 2, fields: [] } } : {}) },
       dependenciesResolved: true,
       release: { version: "1.0.0", artifactSha256: "b".repeat(64), signatureValid: true, dependenciesResolved: true, publisher: { keyId: "a".repeat(64) } },
     });
-    return Response.json({ schema_version: 2, revision: 4, settings: { greeting: "Welcome" } });
+    const source = new URL(request.url).searchParams.get("settings_source");
+    return Response.json({ schema_version: 2, revision: 4, active_revision: 3, settings_source: source, settings: { greeting: "Welcome" } });
   }) };
   const env = {
     PLATFORM_SECRET: secret,
@@ -34,14 +36,35 @@ describe("internal phone extension settings handoff", () => {
       headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
     }), h.env);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ phone_settings: { schema_version: 2, revision: 4, settings: { greeting: "Welcome" } } });
+    expect(await response.json()).toMatchObject({ phone_settings: { schema_version: 2, revision: 4, settings_source: "active", settings: { greeting: "Welcome" } } });
     expect(h.forwarded).toHaveLength(2);
     expect(new URL(h.forwarded[1]!.url).pathname).toBe("/phone-extension-settings");
     expect([...new URL(h.forwarded[1]!.url).searchParams]).toEqual([
       ["tenant_id", "tenant-a"], ["space_id", "space-a"], ["instance_id", "install-a"], ["expected_version", "1.0.0"],
-      ["expected_artifact_sha256", "b".repeat(64)], ["project_id", "project-a"],
+      ["expected_artifact_sha256", "b".repeat(64)], ["settings_source", "active"], ["project_id", "project-a"],
     ]);
     expect(await verifyInternalToken(h.forwarded[1]!.headers.get("x-naelao-internal-token") ?? undefined, "tenant-a", secret)).toBe(true);
+  });
+
+  it("forwards a requested draft only for a signed package that declares owner publication", async () => {
+    const h = harness(true, true, "owner_publish");
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/workflow-installations/install-a?include_phone_settings=1&phone_settings_source=draft", {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+    }), h.env);
+    expect(response.status).toBe(200);
+    const query = new URL(h.forwarded[1]!.url).searchParams;
+    expect(query.get("settings_source")).toBe("draft");
+    expect(h.forwarded).toHaveLength(2);
+  });
+
+  it("refuses draft settings for a package that has not opted into owner publication", async () => {
+    const h = harness();
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/workflow-installations/install-a?include_phone_settings=1&phone_settings_source=draft", {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+    }), h.env);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error_code: "phone_extension_draft_unavailable" });
+    expect(h.forwarded).toHaveLength(1);
   });
 
   it("never loads settings for an inactive or untrusted installation", async () => {
@@ -74,7 +97,8 @@ describe("internal phone extension settings handoff", () => {
         release: { version: "1.0.0", artifactSha256: "b".repeat(64), signatureValid: true, dependenciesResolved: false,
           publisher: { keyId: "a".repeat(64) } }, dependenciesResolved: false,
       });
-      return Response.json({ schema_version: 2, revision: 4, settings: { greeting: "Welcome" } });
+      const source = new URL(request.url).searchParams.get("settings_source");
+      return Response.json({ schema_version: 2, revision: 4, active_revision: 3, settings_source: source, settings: { greeting: "Welcome" } });
     });
     const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/workflow-installations/install-a?include_phone_settings=1", {
       headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },

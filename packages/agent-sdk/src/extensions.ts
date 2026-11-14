@@ -6,6 +6,8 @@ import type { BlueprintSetupValue } from "./blueprint-setup-fields.js";
 import type { BlueprintSetupField } from "./types.js";
 
 export interface ExtensionSettingsSchema { schemaVersion: 1 | 2; fields: BlueprintSetupField[] }
+/** Packages can require owners to publish a validated settings draft before it affects runtime. */
+export type ExtensionSettingsActivation = "owner_publish";
 /** Exact immutable dependency pin. The manifest digest fences same-version substitution. */
 export interface ExtensionDependency { extensionId: ExtensionId; version: string; manifestSha256: string }
 export interface InstalledExtensionDependencyPin {
@@ -76,6 +78,8 @@ export interface ExtensionManifest {
   widgetSubscriptions?: readonly ExtensionWidgetSubscription[];
   /** Optional per-installation settings for a package-owned microapp dashboard. */
   settingsSchema?: ExtensionSettingsSchema;
+  /** Omit for legacy immediate settings writes; owner_publish separates drafts from runtime values. */
+  settingsActivation?: ExtensionSettingsActivation;
   /** Exact immutable package dependencies; host admission must verify the complete scoped closure. */
   dependencies?: ExtensionDependency[];
 }
@@ -143,7 +147,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     return validateLegacyManifest(raw);
   }
   rejectKernelOverrides(raw);
-  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem", "widgetSubscriptions", "settingsSchema", "dependencies"]);
+  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem", "widgetSubscriptions", "settingsSchema", "settingsActivation", "dependencies"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
   assert(typeof raw.id === "string", "invalid_id");
   try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
@@ -166,6 +170,8 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
   }
   assert(raw.type === "extension", "invalid_type");
   assert(raw.releaseVersion === undefined || (typeof raw.releaseVersion === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(raw.releaseVersion)), "invalid_release_version");
+  assert(raw.settingsActivation === undefined || raw.settingsActivation === "owner_publish", "invalid_settings_activation");
+  assert(raw.settingsActivation === undefined || raw.settingsSchema !== undefined, "settings_activation_schema_required");
   assert(Array.isArray(raw.declaredPermissions) && raw.declaredPermissions.length <= 128 && raw.declaredPermissions.every((p) => typeof p === "string" && PERMISSION.test(p)), "invalid_permissions");
   assert(Array.isArray(raw.capabilityRequirements) && raw.capabilityRequirements.length > 0 && raw.capabilityRequirements.length <= 128 && raw.capabilityRequirements.every((p) => typeof p === "string" && PERMISSION.test(p)), "capability_requirements_required");
   if (context) {

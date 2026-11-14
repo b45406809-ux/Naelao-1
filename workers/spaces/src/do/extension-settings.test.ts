@@ -164,6 +164,7 @@ describe("Space-shared extension settings", () => {
     const manifest = {
       id: "ext_customer_phone", type: "extension", declaredPermissions: ["extension.settings.read", "extension.settings.configure"],
       capabilityRequirements: ["extension.settings.read", "extension.settings.configure"],
+      settingsActivation: "owner_publish",
       gadgets: [{ id: "customer_phone", name: "Customer Phone", viewportComponent: "./phone.ts", scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: "" }],
       daemons: [], commands: [], settingsSchema: { schemaVersion: 1, fields: [
         { id: "enabled", type: "boolean", label: "Enabled", defaultValue: true },
@@ -180,9 +181,10 @@ describe("Space-shared extension settings", () => {
     expect(installed.status, await installed.clone().text()).toBe(201);
     const { installationId, release } = await installed.json() as { installationId: string; release: { version: string; artifactSha256: string } };
     const token = await mintInternalToken(secret, "tenant");
-    const readRuntimeSettings = (overrides: { tenant?: string; space?: string; instance?: string; token?: string; expectedVersion?: string } = {}) => {
+    const readRuntimeSettings = (overrides: { tenant?: string; space?: string; instance?: string; token?: string; expectedVersion?: string; settingsSource?: "active" | "draft" } = {}) => {
       const query = new URLSearchParams({ tenant_id: overrides.tenant ?? "tenant", space_id: overrides.space ?? "space", instance_id: overrides.instance ?? installationId,
-        expected_version: overrides.expectedVersion ?? release.version, expected_artifact_sha256: release.artifactSha256 });
+        expected_version: overrides.expectedVersion ?? release.version, expected_artifact_sha256: release.artifactSha256,
+        ...(overrides.settingsSource ? { settings_source: overrides.settingsSource } : {}) });
       return space.fetch(new Request(`http://space/phone-extension-settings?${query}`, {
         headers: { "x-naelao-internal-token": overrides.token ?? token },
       }));
@@ -196,10 +198,75 @@ describe("Space-shared extension settings", () => {
     const ownerSettings = (body: unknown) => space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: "customer_phone" })}`, {
       method: "PATCH", headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "owner_a", "x-naelao-role": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
     }));
-    expect((await ownerSettings({ settings: { enabled: true, greeting: "Welcome" }, revision: 0 })).status).toBe(200);
+    expect((await ownerSettings({ settings: { enabled: true, greeting: "Welcome" }, revision: 0 })).status).toBe(400);
+    const initial = await space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: "customer_phone" })}`, {
+      headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "owner_a", "x-naelao-role": "owner" },
+    }));
+    expect(await initial.json()).toMatchObject({ activation_policy: "owner_publish", revision: 0, draft: null, settings: { enabled: true } });
+    const unauthorizedDraft = await space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: "customer_phone" })}`, {
+      method: "PATCH", headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "member_a", "x-naelao-role": "member", "content-type": "application/json" },
+      body: JSON.stringify({ action: "save_draft", settings: { enabled: true, greeting: "Member" }, draft_revision: 0, base_active_revision: 0 }),
+    }));
+    expect(unauthorizedDraft.status).toBe(403);
+    const memberRead = await space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: "customer_phone" })}`, {
+      headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "member_a", "x-naelao-role": "member" },
+    }));
+    const memberSettings = await memberRead.json() as Record<string, unknown>;
+    expect(memberSettings).toMatchObject({ activation_policy: "owner_publish", settings: { enabled: true } });
+    expect(memberSettings).not.toHaveProperty("published_versions");
+    expect(memberSettings).not.toHaveProperty("draft");
+    const savedDraft = await ownerSettings({ action: "save_draft", settings: { enabled: true, greeting: "Welcome" }, draft_revision: 0, base_active_revision: 0 });
+    expect(await savedDraft.json()).toMatchObject({ active_revision: 0, draft: { revision: 1, status: "draft", settings: { enabled: true, greeting: "Welcome" } } });
+    expect((await readRuntimeSettings()).status).toBe(409); // Live handler remains on the published row.
+    expect(await (await readRuntimeSettings({ settingsSource: "draft" })).json()).toMatchObject({
+      schema_version: 1, revision: 1, active_revision: 0, settings_source: "draft", settings: { enabled: true, greeting: "Welcome" },
+    });
+    expect((await ownerSettings({ action: "publish", draft_revision: 1, expected_active_revision: 1, confirm: true })).status).toBe(409);
+    expect((await readRuntimeSettings()).status).toBe(409); // Conflicting publish did not alter active settings.
+    expect((await ownerSettings({ action: "publish", draft_revision: 1, expected_active_revision: 0 })).status).toBe(400);
+    const published = await ownerSettings({ action: "publish", draft_revision: 1, expected_active_revision: 0, confirm: true });
+    expect(await published.json()).toMatchObject({ activation_policy: "owner_publish", published: true, replayed: false,
+      revision: 1, settings: { enabled: true, greeting: "Welcome" } });
     const runtimeSettings = await readRuntimeSettings();
     expect(runtimeSettings.headers.get("cache-control")).toContain("no-store");
-    expect(await runtimeSettings.json()).toEqual({ schema_version: 1, revision: 1, settings: { enabled: true, greeting: "Welcome" } });
+    expect(await runtimeSettings.json()).toEqual({ schema_version: 1, revision: 1, active_revision: 1, settings_source: "active",
+      settings: { enabled: true, greeting: "Welcome" } });
+    expect(await (await ownerSettings({ action: "publish", draft_revision: 1, expected_active_revision: 0, confirm: true })).json())
+      .toMatchObject({ replayed: true, revision: 1 });
+    const settingsAudit = await space.fetch(new Request(`http://space/extension-settings-audit?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", instance_id: installationId })}`,
+      { headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "owner_a", "x-naelao-role": "owner" } }));
+    const auditBody = await settingsAudit.json() as { events: Array<Record<string, unknown>> };
+    expect(auditBody.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ target: "active", prior_revision: 0, new_revision: 1, changed_field_ids: ["greeting"] }),
+      expect.objectContaining({ target: "draft", prior_revision: 0, new_revision: 1, changed_field_ids: ["greeting"] }),
+    ]));
+    expect(JSON.stringify(auditBody)).not.toContain("Welcome");
+
+    expect(await (await ownerSettings({ action: "save_draft", settings: { enabled: true, greeting: "Changed" }, draft_revision: 1, base_active_revision: 1 })).json())
+      .toMatchObject({ draft: { revision: 2, status: "draft" }, active_revision: 1 });
+    expect(await (await ownerSettings({ action: "publish", draft_revision: 2, expected_active_revision: 1, confirm: true })).json())
+      .toMatchObject({ published: true, revision: 2, settings: { greeting: "Changed" } });
+    const ownerRead = () => space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: "customer_phone" })}`, {
+      headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "owner_a", "x-naelao-role": "owner" },
+    }));
+    expect(await (await ownerRead()).json()).toMatchObject({ revision: 2, settings: { greeting: "Changed" }, published_versions: [
+      { version: 2, schema_version: 1, published_by: "owner_a", source_draft_revision: 2 },
+      { version: 1, schema_version: 1, published_by: "owner_a", source_draft_revision: 1 },
+    ] });
+    const rollbackDraft = await ownerSettings({ action: "rollback_draft", version: 1, draft_revision: 2, base_active_revision: 2 });
+    expect(await rollbackDraft.json()).toMatchObject({ rollback_draft: true, source_version: 1,
+      draft: { revision: 3, status: "draft", settings: { enabled: true, greeting: "Welcome" } } });
+    expect(await (await readRuntimeSettings()).json()).toMatchObject({ revision: 2, settings: { enabled: true, greeting: "Changed" } });
+    expect(await (await ownerSettings({ action: "publish", draft_revision: 3, expected_active_revision: 2, confirm: true })).json())
+      .toMatchObject({ published: true, revision: 3, settings: { greeting: "Welcome" } });
+    expect(await (await ownerRead()).json()).toMatchObject({ revision: 3, published_versions: [
+      { version: 3, source_draft_revision: 3 }, { version: 2, source_draft_revision: 2 }, { version: 1, source_draft_revision: 1 },
+    ] });
+    storage.sql.exec("UPDATE extension_installation_settings_versions SET schema_version=2 WHERE instance_id=? AND version=1", installationId);
+    const incompatibleRollback = await ownerSettings({ action: "rollback_draft", version: 1, draft_revision: 3, base_active_revision: 3 });
+    expect(incompatibleRollback.status).toBe(409);
+    expect(await incompatibleRollback.json()).toMatchObject({ error_code: "extension_settings_version_incompatible" });
+    expect(await (await readRuntimeSettings()).json()).toMatchObject({ revision: 3, settings: { greeting: "Welcome" } });
 
     storage.sql.exec("UPDATE extension_installation_settings SET settings_json=? WHERE instance_id=?", JSON.stringify({ greeting: "Welcome", unrelated: "private" }), installationId);
     expect((await readRuntimeSettings()).status).toBe(409);
@@ -207,5 +274,11 @@ describe("Space-shared extension settings", () => {
     expect((await readRuntimeSettings()).status).toBe(409);
     storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", installationId);
     expect((await readRuntimeSettings()).status).toBe(404);
+    const removed = await space.fetch(new Request(`http://space/extension-installation?${new URLSearchParams({
+      instance_id: installationId, tenant_id: "tenant", space_id: "space",
+    })}`, { method: "DELETE" }));
+    expect(removed.status).toBe(200);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_installation_settings_drafts WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(0);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_installation_settings_versions WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(0);
   });
 });

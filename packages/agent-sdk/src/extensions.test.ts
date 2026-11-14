@@ -111,6 +111,17 @@ describe("immutable extension kernel", () => {
     expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"],
       capabilityRequirements: ["repo.read", "extension.settings.read", "extension.settings.configure"], settingsSchema: schema })).toThrow("settings_configure_permission_required");
   });
+  it("accepts only the explicit owner-publish settings activation policy", () => {
+    const schema = { schemaVersion: 1, fields: [{ id: "greeting", type: "text", label: "Greeting", defaultValue: "Hello" }] } as const;
+    const permissions = ["repo.read", "extension.settings.read", "extension.settings.configure"];
+    const capabilities = ["repo.read", "extension.settings.read", "extension.settings.configure"];
+    expect(validateExtensionManifest({ ...valid, declaredPermissions: permissions, capabilityRequirements: capabilities,
+      settingsSchema: schema, settingsActivation: "owner_publish" }).settingsActivation).toBe("owner_publish");
+    expect(() => validateExtensionManifest({ ...valid, declaredPermissions: permissions, capabilityRequirements: capabilities,
+      settingsActivation: "owner_publish" })).toThrow("settings_activation_schema_required");
+    expect(() => validateExtensionManifest({ ...valid, declaredPermissions: permissions, capabilityRequirements: capabilities,
+      settingsSchema: schema, settingsActivation: "automatic" })).toThrow("invalid_settings_activation");
+  });
   it("reuses versioned Template conditions and localization in per-installation settings", () => {
     const manifest = validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"],
       capabilityRequirements: ["repo.read", "extension.settings.read"], settingsSchema: { schemaVersion: 2, fields: [

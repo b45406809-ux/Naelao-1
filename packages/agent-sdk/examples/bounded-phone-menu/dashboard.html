@@ -13,7 +13,7 @@
 <body>
   <h1>Phone menu</h1>
   <p>Configure a two-option phone menu with DTMF on supported phone lines. On Twilio only, choose the documented man/woman Say style and, if the owner enables speech input in Assistant Phone settings, route one completed speech turn by an exact option-label phrase. Telnyx keeps its provider default. The style does not guarantee voice availability, language, quality or rate. This is not a streaming or AI voice agent and cannot transfer or dial calls.</p>
-  <p>Settings are saved to this installation. A Space owner must separately select and confirm this signed handler for a phone number.</p>
+  <p>Menu changes remain an installation draft until an owner or admin explicitly publishes them. Publishing applies the new settings to the next handler invocation, including later events on a call already in progress; calls do not pin a settings revision for their full duration. A Space owner must separately select and confirm this signed handler for a phone number.</p>
   <div id="notice" role="status" aria-live="polite">Loading saved menu…</div>
   <form id="menu">
     <fieldset><legend>Menu prompt</legend>
@@ -26,9 +26,15 @@
       <label>Twilio spoken voice style<select id="speech_style"><option value="default">Provider default</option><option value="woman">Twilio woman</option><option value="man">Twilio man</option></select></label>
       <p>Twilio style applies only to Twilio Say actions. Telnyx uses its provider default. This setting does not verify voice availability, language support, quality or pricing.</p>
     </fieldset>
-    <button type="submit">Save menu</button>
-    <button id="reload" type="button">Reload saved menu</button>
+    <button type="submit">Save draft</button>
+    <button id="publish" type="button" disabled>Publish draft to phone handler</button>
+    <button id="reload" type="button">Reload active and draft settings</button>
   </form>
+  <details>
+    <summary>Published settings history</summary>
+    <p>The latest 20 published settings revisions are retained for rollback. Rollback creates a draft and still requires explicit publication. Uninstall removes this history.</p>
+    <ol id="settings-history"></ol>
+  </details>
   <section aria-labelledby="phone-heading">
     <h2 id="phone-heading">Phone connection</h2>
     <p>This read-only view shows phone lines assigned to this signed installation. It cannot buy, release, configure or call a phone number. Speech input works only on an assigned Twilio line with the owner speech-input policy enabled.</p>
@@ -39,11 +45,11 @@
     <label id="simulate-line-label" hidden>Phone line for installed-handler test<select id="simulate-line"></select></label>
     <button id="simulate-phone" type="button" disabled>Run installed handler test (synthetic)</button>
     <pre id="simulation-result" role="status" aria-label="Synthetic installed handler result">No installed handler test has run.</pre>
-    <p>The installed handler test uses saved installation settings and synthetic input. Speech tests require an assigned Twilio line and owner-enabled speech input. It does not create a carrier call or call session.</p>
+    <p>The installed handler test uses the current draft when one exists, otherwise the published settings, with synthetic input. Speech tests require an assigned Twilio line and owner-enabled speech input. It does not create a carrier call or call session.</p>
     <button id="run-scenarios" type="button" disabled>Run synthetic menu scenario checks</button>
     <p id="scenario-status" role="status" aria-live="polite">Choose an active phone line to check its saved menu settings.</p>
     <ol id="scenario-results" aria-label="Synthetic menu scenario results"></ol>
-    <p>Scenario checks use synthetic events and saved settings through the exact-installed-handler test path. Results are local handler checks, not carrier calls, provider acceptance, or live voice quality measurements.</p>
+    <p>Scenario checks use synthetic events and the current draft when one exists, otherwise the published settings, through the exact-installed-handler test path. Results are local handler checks, not carrier calls, provider acceptance, or live voice quality measurements.</p>
     <details><summary>Recent extension calls</summary>
       <p>At most 50 calls per provider from the last 7 days are shown for this installation. Caller IDs are masked. An owner or admin can explicitly check a Twilio call against the carrier Calls API. Provider API observations are not invoices or customer charges; missing or pending prices remain unknown. Twilio's reported call price covers connectivity and may exclude other call-related features.</p>
       <h3>Telnyx calls</h3>
@@ -67,7 +73,7 @@
     (()=>{
       const ids=['greeting','option_1_label','option_1_response','option_2_label','option_2_response','fallback_response','speech_style'];
       const defaults={greeting:'Thank you for calling.',option_1_label:'Sales',option_1_response:'Please contact our sales team for help.',option_2_label:'Support',option_2_response:'Please contact our support team for help.',fallback_response:'Sorry, that selection is not available.',speech_style:'default'};
-      const pending=new Map();let serial=0,revision=0;
+      const pending=new Map();let serial=0,revision=0,draftRevision=0,draftStatus=null;
       const notice=document.getElementById('notice');
       function previewMenuResponse(voiceEvent,digits,values,speech,provider){
         const style=String(provider).startsWith('twilio')&&(values.speech_style==='man'||values.speech_style==='woman')?{style:values.speech_style}:{};
@@ -88,8 +94,11 @@
       addEventListener('message',event=>{if(event.source!==parent)return;const message=event.data;if(message?.type!=='naelao.extension.rpc.result'||typeof message.id!=='string')return;const item=pending.get(message.id);if(!item)return;clearTimeout(item.timer);pending.delete(message.id);message.ok?item.resolve(message.result):item.reject(Error(message.error||'Settings request failed'))});
       function readForm(){return Object.fromEntries(ids.map(id=>[id,document.getElementById(id).value.trim()]))}
       function fill(values){for(const id of ids)document.getElementById(id).value=typeof values?.[id]==='string'?values[id]:defaults[id]}
-      async function reload(){notice.textContent='Loading saved menu…';try{const saved=await call('GET');revision=saved.revision;fill(saved.settings||{});notice.textContent='Loaded installation settings revision '+revision+'.'}catch(error){notice.textContent=error.message}}
-      document.getElementById('menu').addEventListener('submit',async event=>{event.preventDefault();const values=readForm();if(ids.some(id=>!values[id])){notice.textContent='Fill in all menu fields before saving.';return}notice.textContent='Saving menu…';try{const saved=await call('PATCH',{revision,settings:values});revision=saved.revision;notice.textContent='Saved installation settings revision '+revision+'.'}catch(error){notice.textContent=error.message}});
+      const publishButton=document.getElementById('publish'),settingsHistory=document.getElementById('settings-history');
+      function renderHistory(versions,schemaVersion){settingsHistory.replaceChildren();for(const version of Array.isArray(versions)?versions:[]){const item=document.createElement('li');item.append(document.createTextNode(`Revision ${version.version} · schema ${version.schema_version} · published ${version.created_at} by ${version.published_by} `));const rollback=document.createElement('button');rollback.type='button';rollback.textContent='Prepare rollback draft';rollback.disabled=version.schema_version!==schemaVersion;rollback.addEventListener('click',async()=>{if(draftStatus==='draft'&&!window.confirm('Replace the current settings draft with a rollback draft from published revision '+version.version+'?'))return;try{const restored=await call('PATCH',{action:'rollback_draft',version:version.version,draft_revision:draftRevision,base_active_revision:revision});draftRevision=restored.draft.revision;draftStatus='draft';fill(restored.draft.settings);publishButton.disabled=false;notice.textContent='Created rollback draft from revision '+version.version+'. Review it, then explicitly publish.';await reload()}catch(error){notice.textContent=error.message}});item.appendChild(rollback);settingsHistory.appendChild(item)}}
+      async function reload(){notice.textContent='Loading active and draft menu settings…';try{const saved=await call('GET');revision=saved.revision;draftRevision=saved.draft_revision||0;draftStatus=saved.draft?.status||null;const usableDraft=draftStatus==='draft'&&!saved.draft?.migration_required&&saved.draft?.settings;fill(usableDraft?saved.draft.settings:(saved.settings||{}));publishButton.disabled=!usableDraft;renderHistory(saved.published_versions,saved.schema?.schemaVersion);notice.textContent='Published revision '+revision+(usableDraft?'; draft revision '+draftRevision+' is not active.':' loaded.')}catch(error){notice.textContent=error.message}}
+      document.getElementById('menu').addEventListener('submit',async event=>{event.preventDefault();const values=readForm();if(ids.some(id=>!values[id])){notice.textContent='Fill in all menu fields before saving.';return}notice.textContent='Saving draft…';try{const saved=await call('PATCH',{action:'save_draft',draft_revision:draftRevision,base_active_revision:revision,settings:values});draftRevision=saved.draft.revision;draftStatus='draft';publishButton.disabled=false;notice.textContent='Saved draft revision '+draftRevision+'; active published revision remains '+revision+'.'}catch(error){notice.textContent=error.message}});
+      publishButton.addEventListener('click',async()=>{if(draftStatus!=='draft'){notice.textContent='Save a draft before publishing.';return}if(!window.confirm('Publish this menu draft to the active phone handler? It takes effect on the next handler invocation, including later events on calls already in progress.'))return;publishButton.disabled=true;notice.textContent='Publishing settings…';try{const saved=await call('PATCH',{action:'publish',draft_revision:draftRevision,expected_active_revision:revision,confirm:true});revision=saved.revision;draftStatus='published';notice.textContent='Published settings revision '+revision+' for subsequent handler invocations. Calls do not pin a settings revision.';await reload()}catch(error){notice.textContent=error.message;publishButton.disabled=false}});
       const previewEvent=document.getElementById('preview-event'),previewDigits=document.getElementById('preview-digits'),previewDigitsLabel=document.getElementById('preview-digits-label'),previewSpeech=document.getElementById('preview-speech'),previewSpeechLabel=document.getElementById('preview-speech-label'),previewProvider=document.getElementById('preview-provider'),previewResult=document.getElementById('preview-result');
       function updatePreview(){previewDigitsLabel.hidden=previewEvent.value!=='call.digits';previewSpeechLabel.hidden=previewEvent.value!=='call.speech';previewResult.textContent=JSON.stringify(previewMenuResponse(previewEvent.value,previewDigits.value,readForm(),previewSpeech.value,previewProvider.value),null,2);updateSimulationAvailability()}
       document.getElementById('preview').addEventListener('click',updatePreview);previewEvent.addEventListener('change',updatePreview);previewDigits.addEventListener('change',updatePreview);previewSpeech.addEventListener('input',updatePreview);previewProvider.addEventListener('change',updatePreview);
@@ -114,13 +123,13 @@
           phoneCostDisclosure.textContent=result.cost_disclosure||'';
         }catch(error){phoneStatus.textContent=error.message;phoneRelease.textContent='Signed release verification is unavailable.'}
       }
-      simulateButton.addEventListener('click',async()=>{const line=selectedPhoneLine();if(!line){simulationResult.textContent='Select an active phone line before running the installed-handler test.';return}simulationResult.textContent='Running the installed handler with synthetic input…';const body={binding_id:line.binding_id,event_type:previewEvent.value,...(previewEvent.value==='call.digits'?{digits:previewDigits.value}:{}),...(previewEvent.value==='call.speech'?{input:previewSpeech.value}:{})};try{const result=await call('POST',body,'/api/phone-simulate');simulationResult.textContent=JSON.stringify(result,null,2)}catch(error){simulationResult.textContent=error.message}});
+      simulateButton.addEventListener('click',async()=>{const line=selectedPhoneLine();if(!line){simulationResult.textContent='Select an active phone line before running the installed-handler test.';return}simulationResult.textContent='Running the installed handler with synthetic input…';const body={binding_id:line.binding_id,event_type:previewEvent.value,...(draftStatus==='draft'?{settings_source:'draft'}:{}),...(previewEvent.value==='call.digits'?{digits:previewDigits.value}:{}),...(previewEvent.value==='call.speech'?{input:previewSpeech.value}:{})};try{const result=await call('POST',body,'/api/phone-simulate');simulationResult.textContent=JSON.stringify(result,null,2)}catch(error){simulationResult.textContent=error.message}});
       function canonical(value){if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+canonical(value[key])).join(',')+'}';return JSON.stringify(value)}
       scenarioButton.addEventListener('click',async()=>{
         const line=selectedPhoneLine();if(!line){scenarioStatus.textContent='Select an active phone line before running scenario checks.';return}
-        scenarioButton.dataset.running='true';updateSimulationAvailability();scenarioResults.replaceChildren();scenarioStatus.textContent='Loading saved settings and running synthetic scenarios…';
+        scenarioButton.dataset.running='true';updateSimulationAvailability();scenarioResults.replaceChildren();scenarioStatus.textContent='Loading current draft or published settings and running synthetic scenarios…';
         try{
-          const saved=await call('GET'),values={...defaults,...(saved.settings||{})};fill(values);revision=saved.revision;
+          const saved=await call('GET'),useDraft=saved.draft?.status==='draft'&&!saved.draft?.migration_required&&saved.draft?.settings,values={...defaults,...(useDraft?saved.draft.settings:(saved.settings||{}))};fill(values);revision=saved.revision;draftRevision=saved.draft_revision||0;draftStatus=saved.draft?.status||null;
           const providerMode=line.provider==='twilio'?(line.speech_input_allowed===true?'twilio-speech':'twilio-dtmf'):'telnyx-dtmf';
           const scenarios=[
             {label:'Call starts',event:'call.received'},
@@ -140,7 +149,7 @@
           let passed=0;
           for(const scenario of scenarios){
             const request={binding_id:line.binding_id,event_type:scenario.event,...(scenario.digits?{digits:scenario.digits}:{}),...(scenario.input?{input:scenario.input}:{})};
-            const actual=await call('POST',request,'/api/phone-simulate');
+            if(useDraft)request.settings_source='draft';const actual=await call('POST',request,'/api/phone-simulate');
             const expected=previewMenuResponse(scenario.event,scenario.digits||'',values,scenario.input||'',providerMode);
             // The host validates binding_id against the owner's active line before dispatch.
             // The simulation response intentionally contains no line metadata or call receipt.
@@ -149,10 +158,10 @@
             const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Compare responses';
             const actualLabel=document.createElement('strong'),actualOutput=document.createElement('pre'),expectedLabel=document.createElement('strong'),expectedOutput=document.createElement('pre');
             actualLabel.textContent='Host-validated handler response';actualOutput.textContent=JSON.stringify(actual.response??null,null,2);
-            expectedLabel.textContent='Preview for saved settings';expectedOutput.textContent=JSON.stringify(expected,null,2);
+            expectedLabel.textContent=useDraft?'Preview for saved draft':'Preview for published settings';expectedOutput.textContent=JSON.stringify(expected,null,2);
             details.append(summary,actualLabel,actualOutput,expectedLabel,expectedOutput);item.append(details);scenarioResults.appendChild(item);if(matched)passed++;
           }
-          scenarioStatus.textContent=(passed===scenarios.length?`${passed} of ${scenarios.length} saved-settings scenarios passed for ${line.provider}.`:`${passed} of ${scenarios.length} saved-settings scenarios matched the local preview. Review failed cases.`)+' '+scenarioNotes.join(' ')+' All inputs were synthetic; no carrier call or call session was created.';
+          scenarioStatus.textContent=(passed===scenarios.length?`${passed} of ${scenarios.length} ${useDraft?'draft':'published-settings'} scenarios passed for ${line.provider}.`:`${passed} of ${scenarios.length} ${useDraft?'draft':'published-settings'} scenarios matched the local preview. Review failed cases.`)+' '+scenarioNotes.join(' ')+' All inputs were synthetic; no carrier call or call session was created.';
         }catch(error){scenarioStatus.textContent=`Scenario checks stopped: ${error.message}. No carrier call or call session was created.`}
         finally{scenarioButton.dataset.running='false';updateSimulationAvailability()}
       });

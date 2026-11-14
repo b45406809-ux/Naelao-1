@@ -328,14 +328,15 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     if (c.req.method !== "POST") return c.json({ error_code: "method_not_allowed" }, 405);
     if (!tenantId || !userId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "bad_request" }, 400);
     if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden" }, 403);
-    let body: { event_type?: unknown; digits?: unknown; input?: unknown; binding_id?: unknown };
+    let body: { event_type?: unknown; digits?: unknown; input?: unknown; binding_id?: unknown; settings_source?: unknown };
     try {
       const bytes = await readBoundedRequestBytes(c.req.raw, 12 * 1024);
       body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)) as typeof body;
     } catch { return c.json({ error_code: "bad_request" }, 400); }
     if (!body || typeof body !== "object" || Array.isArray(body)
-      || Object.keys(body).some(key => !["event_type", "digits", "input", "binding_id"].includes(key))
+      || Object.keys(body).some(key => !["event_type", "digits", "input", "binding_id", "settings_source"].includes(key))
       || (body.binding_id !== undefined && (typeof body.binding_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.binding_id)))
+      || (body.settings_source !== undefined && body.settings_source !== "active" && body.settings_source !== "draft")
       || (body.event_type !== "call.received" && body.event_type !== "call.digits" && body.event_type !== "call.speech")
       || (body.event_type === "call.received" && (body.digits !== undefined || body.input !== undefined))
       || (body.event_type === "call.digits" && (typeof body.digits !== "string" || !/^[0-9]{1,8}$/.test(body.digits) || body.input !== undefined))
@@ -378,15 +379,17 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
         `http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?action=phone-handler-test`,
         { method: "POST", headers: { ...headers, "content-type": "application/json" },
           body: JSON.stringify({ action: "phone-handler-test", binding_id: selectedLine.id, event_type: body.event_type,
+            ...(body.settings_source === "draft" ? { settings_source: "draft" } : {}),
             ...(body.event_type === "call.speech" ? { input: (body.input as string).trim() } : {}),
             ...(body.event_type === "call.digits" ? { digits: body.digits } : {}) }) }
       ));
       if (!simulation.ok) return c.json({ error_code: simulation.status === 403 ? "phone_simulation_forbidden" : "phone_simulation_failed" }, simulation.status === 403 ? 403 : 409);
-      const result = await readBoundedResponseJson<{ simulation?: unknown; response?: unknown }>(simulation, 32 * 1024);
+      const result = await readBoundedResponseJson<{ simulation?: unknown; settings_source?: unknown; response?: unknown }>(simulation, 32 * 1024);
       if (result.simulation !== true || !result.response) return c.json({ error_code: "phone_simulation_response_invalid" }, 503);
-      return new Response(JSON.stringify({ simulation: true, event_type: body.event_type,
+      return new Response(JSON.stringify({ simulation: true, event_type: body.event_type, settings_source: result.settings_source === "draft" ? "draft" : "active",
         selected_line: { binding_id: selectedLine.id, provider: selectedLine.provider }, response: result.response,
-        disclosure: "Synthetic local handler run using saved installation settings; no carrier request or call session was created." }),
+        disclosure: result.settings_source === "draft" ? "Synthetic local handler run using the owner-reviewed settings draft; no carrier request or call session was created."
+          : "Synthetic local handler run using published installation settings; no carrier request or call session was created." }),
         { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
     } catch { return c.json({ error_code: "phone_simulation_unavailable" }, 503); }
   };

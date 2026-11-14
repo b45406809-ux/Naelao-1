@@ -9865,6 +9865,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const body = await readBoundedResponseJson<{
       bindingId: string; spaceId: string; validateOnly?: boolean; simulation?: boolean; input?: string; digits?: string;
+      settingsSource?: "active" | "draft";
       expectedInstallationId?: string; expectedHandlerSha256?: string;
       eventType?: "call.received" | "call.digits" | "call.speech";
       event?: { id: string; type: string; payload: Record<string, unknown> };
@@ -9885,6 +9886,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (hasExpectedHandler && (row.installation_id !== body.expectedInstallationId || row.handler_sha256 !== body.expectedHandlerSha256))
       return Response.json({ error_code: "phone_handler_changed_during_call" }, { status: 409 });
     const simulation = body.simulation === true;
+    if (body.settingsSource !== undefined && (!simulation || body.settingsSource !== "active" && body.settingsSource !== "draft"))
+      return Response.json({ error_code: "phone_simulation_settings_source_invalid" }, { status: 400 });
     const input = typeof body.input === "string" ? body.input.trim() : "";
     const eventType = body.eventType ?? "call.speech";
     const digits = typeof body.digits === "string" ? body.digits : "";
@@ -9938,7 +9941,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const handler = await this.loadActiveChannelHandler({
       spaceId: body.spaceId, tenantId: tenant, ...(row.project_id ? { projectId: row.project_id } : {}),
       channel: "phone", messageId: event?.id ?? "validation", ...(event?.type ? { inboundEvent: event.type } : {}), instanceId: row.installation_id,
-      scriptSha256: row.handler_sha256,
+      scriptSha256: row.handler_sha256, ...(simulation ? { settingsSource: body.settingsSource ?? "active" } : {}),
     });
     if (!handler || handler.knowledgeCollections.length)
       return Response.json({ error_code: "phone_handler_invalid" }, { status: 409 });
@@ -9980,7 +9983,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       } catch {
         return Response.json({ error_code: "phone_simulation_output_invalid" }, { status: 409 });
       }
-      return Response.json({ simulation: true, response });
+      return Response.json({ simulation: true, settings_source: body.settingsSource ?? "active", response });
     }
 
     // Receipts exist only to deduplicate provider retries. Retain a bounded replay window and a
@@ -10091,7 +10094,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   private async loadActiveChannelHandler(input: {
-    spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null;
+    spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null; settingsSource?: "active" | "draft";
   }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; attachmentAccess?: { mode: "read_text" | "read_image"; maxFiles: number; maxTotalBytes: number }; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
@@ -10103,7 +10106,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const installationUrl = new URL(
       `http://spaces-worker/spaces/${encodeURIComponent(input.spaceId)}/workflow-installations/${encodeURIComponent(input.instanceId)}`,
     );
-    if (input.channel === "phone") installationUrl.searchParams.set("include_phone_settings", "1");
+    if (input.channel === "phone") {
+      installationUrl.searchParams.set("include_phone_settings", "1");
+      installationUrl.searchParams.set("phone_settings_source", input.settingsSource ?? "active");
+    } else if (input.settingsSource !== undefined) return null;
     const installationResponse = await this.env.SPACES_WORKER.fetch(new Request(
       installationUrl,
       { headers: await this.internalHeaders(input.tenantId) },
@@ -10114,7 +10120,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       manifest: { id?: string; bundle?: { id?: string; version?: string }; declaredPermissions?: string[]; capabilityRequirements?: string[];
         settingsSchema?: { schemaVersion?: number }; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; attachmentAccess?: { mode?: string; maxFiles?: number; maxTotalBytes?: number }; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
       release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
-      phone_settings?: { schema_version?: number; revision?: number; settings?: unknown };
+      phone_settings?: { schema_version?: number; revision?: number; active_revision?: number; settings_source?: string; settings?: unknown };
     }>(installationResponse, 2 * 1024 * 1024).catch(() => null);
     const instance = installation?.instance;
     if (!installation || !instance || instance.status !== "active" || instance.instance_id !== input.instanceId
@@ -10148,6 +10154,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (settingsCapability && input.channel === "phone") {
       const snapshot = installation.phone_settings;
       if (!snapshot || snapshot.schema_version !== installation.manifest.settingsSchema?.schemaVersion
+        || snapshot.settings_source !== (input.settingsSource ?? "active")
         || !Number.isSafeInteger(snapshot.revision) || Number(snapshot.revision) < 0
         || !snapshot.settings || typeof snapshot.settings !== "object" || Array.isArray(snapshot.settings)) return null;
       const values = snapshot.settings as Record<string, unknown>;

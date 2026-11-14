@@ -4122,6 +4122,9 @@ app.post("/internal/spaces/:spaceId/widget-event-subscribers", async c => {
 app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const settingsSource = c.req.query("phone_settings_source") ?? "active";
+  if (settingsSource !== "active" && settingsSource !== "draft" || settingsSource === "draft" && c.req.query("include_phone_settings") !== "1")
+    return c.json({ error_code: "phone_extension_settings_source_invalid" }, 400, { "cache-control": "private, no-store" });
   const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
   const response = await stub.fetch(new Request("http://space-do/workflow-installation?" + new URLSearchParams({ instance_id: c.req.param("instanceId"), tenant_id: tenantId, space_id: c.req.param("spaceId"), ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
   if (!response.ok) return response;
@@ -4138,11 +4141,13 @@ app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
   }
   if (c.req.query("include_phone_settings") === "1") {
     const instance = result.instance as { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; status?: string } | undefined;
-    const manifest = result.manifest as { declaredPermissions?: unknown[]; capabilityRequirements?: unknown[]; settingsSchema?: unknown } | undefined;
+    const manifest = result.manifest as { declaredPermissions?: unknown[]; capabilityRequirements?: unknown[]; settingsSchema?: unknown; settingsActivation?: unknown } | undefined;
     const readCapability = manifest?.capabilityRequirements?.includes("extension.settings.read") ?? false;
     const readPermission = manifest?.declaredPermissions?.includes("extension.settings.read") ?? false;
     if (readCapability !== readPermission || readCapability !== Boolean(manifest?.settingsSchema))
       return c.json({ error_code: "phone_extension_settings_declaration_invalid" }, 409, { "cache-control": "private, no-store" });
+    if (settingsSource === "draft" && manifest?.settingsActivation !== "owner_publish")
+      return c.json({ error_code: "phone_extension_draft_unavailable" }, 404, { "cache-control": "private, no-store" });
     if (instance?.status !== "active" || instance.instance_id !== c.req.param("instanceId")
       || instance.tenant_id !== tenantId || instance.space_id !== c.req.param("spaceId") || release?.signatureValid !== true)
       return c.json({ error_code: "phone_extension_installation_untrusted" }, 409, { "cache-control": "private, no-store" });
@@ -4151,6 +4156,7 @@ app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
     if (!readCapability) return c.json(result, 200, { "cache-control": "private, no-store" });
     const settingsQuery = new URLSearchParams({ tenant_id: tenantId, space_id: c.req.param("spaceId"), instance_id: c.req.param("instanceId"),
       expected_version: release.version, expected_artifact_sha256: release.artifactSha256,
+      settings_source: settingsSource,
       ...(instance.project_id ? { project_id: instance.project_id } : {}) });
     const settingsResponse = await stub.fetch(new Request(`http://space-do/phone-extension-settings?${settingsQuery}`, {
       headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },

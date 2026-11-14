@@ -81,8 +81,9 @@ async function invoke(agent: NaelaoAgentDO, valid = true, expectedInstallationId
   );
 }
 async function invokeSimulation(agent: NaelaoAgentDO, input = "Can you help with order 42?", valid = true,
-  eventType: "call.received" | "call.digits" | "call.speech" = "call.speech", digits?: string) {
+  eventType: "call.received" | "call.digits" | "call.speech" = "call.speech", digits?: string, settingsSource?: "active" | "draft") {
   const body = { spaceId: "space", bindingId: "binding", simulation: true, eventType,
+    ...(settingsSource ? { settingsSource } : {}),
     ...(eventType === "call.speech" && input ? { input } : {}), ...(eventType === "call.digits" && digits ? { digits } : {}) };
   return agent.fetch(
     new Request("http://agent/phone-extension", {
@@ -177,7 +178,8 @@ describe("phone extension scope dispatch", () => {
     const f = setup(null);
     const response = await invokeSimulation(f.agent);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ simulation: true, response: { actions: [{ type: "say", text: "Hello" }] } });
+    expect(await response.json()).toEqual({ simulation: true, settings_source: "active", response: { actions: [{ type: "say", text: "Hello" }] } });
+    expect(f.internals.loadActiveChannelHandler).toHaveBeenCalledWith(expect.objectContaining({ settingsSource: "active" }));
     const call = f.runChannel.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(call).toMatchObject({ installationId: "install", channel: {
       provider: "phone",
@@ -190,9 +192,15 @@ describe("phone extension scope dispatch", () => {
     expect(f.storage.sql.exec("SELECT COUNT(*) AS count FROM channel_extension_sessions").toArray()).toEqual([{ count: 0 }]);
     expect(f.storage.sql.exec("SELECT COUNT(*) AS count FROM channel_extension_named_sessions").toArray()).toEqual([{ count: 0 }]);
 
+    const draft = await invokeSimulation(f.agent, "Can you help with order 42?", true, "call.speech", undefined, "draft");
+    expect(draft.status).toBe(200);
+    expect(await draft.json()).toMatchObject({ simulation: true, settings_source: "draft" });
+    expect(f.internals.loadActiveChannelHandler).toHaveBeenCalledWith(expect.objectContaining({ settingsSource: "draft" }));
+    expect(f.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='phone_extension_events'").toArray()).toEqual([]);
+
     f.internals.loadActiveChannelHandler = vi.fn(async () => null);
     expect((await invokeSimulation(f.agent)).status).toBe(409);
-    expect(f.runChannel).toHaveBeenCalledTimes(1);
+    expect(f.runChannel).toHaveBeenCalledTimes(2);
     expect((await invokeSimulation(f.agent, "", false)).status).toBe(403);
     expect((await invokeSimulation(f.agent, "x".repeat(2_001))).status).toBe(400);
 
@@ -205,7 +213,7 @@ describe("phone extension scope dispatch", () => {
       channel_session_update: { simulation: "still not saved" },
     }));
     expect((await invokeSimulation(f.agent)).status).toBe(409);
-    expect(f.runChannel).toHaveBeenCalledTimes(2);
+    expect(f.runChannel).toHaveBeenCalledTimes(3);
   });
 
   it("simulates call start and validated DTMF events through the same isolated handler", async () => {

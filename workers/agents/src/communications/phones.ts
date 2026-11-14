@@ -1727,8 +1727,10 @@ export async function handlePhoneAction(
     if (!manager || agent || !binding || binding.status !== "active")
       throw new Error("phone_handler_owner_confirmation_required");
     const eventType = body.event_type === undefined ? "call.speech" : body.event_type;
+    const settingsSource = body.settings_source === undefined ? "active" : body.settings_source;
     if (eventType !== "call.received" && eventType !== "call.digits" && eventType !== "call.speech")
       throw new Error("phone_simulation_event_invalid");
+    if (settingsSource !== "active" && settingsSource !== "draft") throw new Error("phone_simulation_settings_source_invalid");
     const input = typeof body.input === "string" ? body.input.trim() : "";
     const digits = typeof body.digits === "string" ? body.digits : "";
     if (eventType === "call.speech" && (!input || new TextEncoder().encode(input).byteLength > 2_000)
@@ -1745,6 +1747,7 @@ export async function handlePhoneAction(
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, scope.tenantId),
       },
       body: JSON.stringify({ bindingId: binding.id, spaceId: scope.spaceId, eventType,
+        ...(settingsSource === "draft" ? { settingsSource } : {}),
         ...(eventType === "call.speech" ? { input } : {}), ...(eventType === "call.digits" ? { digits } : {}) }),
     }));
     if (!r.ok) {

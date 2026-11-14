@@ -28,8 +28,9 @@ describe("bounded phone menu package", () => {
   it("declares signed per-installation settings and only the host-supported phone channel", () => {
     const parsed = validateExtensionManifest(manifest);
     expect(parsed.id).toBe("ext_bounded_phone_menu");
-    expect(manifest.releaseVersion).toBe("1.0.7");
+    expect(manifest.releaseVersion).toBe("1.0.8");
     expect(manifest.bundle.version).toBe(manifest.releaseVersion);
+    expect(parsed.settingsActivation).toBe("owner_publish");
     expect(parsed.settingsSchema?.fields).toHaveLength(7);
     expect(parsed.settingsSchema?.fields.find(field => field.id === "speech_style")).toMatchObject({ type: "select", defaultValue: "default",
       options: [{ value: "default" }, { value: "woman" }, { value: "man" }] });
@@ -48,8 +49,15 @@ describe("bounded phone menu package", () => {
     expect(dashboard).toContain("/api/phone-simulate");
     expect(dashboard).toContain("no carrier call or call session was created.");
     expect(dashboard).toContain("Host-validated handler response");
-    expect(dashboard).toContain("Preview for saved settings");
-    expect(dashboard).toContain("saved installation settings");
+    expect(dashboard).toContain("Preview for saved draft");
+    expect(dashboard).toContain("current draft when one exists, otherwise the published settings");
+    expect(dashboard).toContain("action:'save_draft'");
+    expect(dashboard).toContain("action:'publish'");
+    expect(dashboard).toContain("action:'rollback_draft'");
+    expect(dashboard).toContain("settings_source:'draft'");
+    expect(dashboard).toContain("Published settings history");
+    expect(dashboard).toContain("latest 20 published settings revisions are retained");
+    expect(dashboard).toContain("window.confirm('Publish this menu draft");
     expect(dashboard).toContain("Telnyx calls");
     expect(dashboard).toContain("An owner or admin can explicitly check a Twilio call against the carrier Calls API");
     expect(dashboard).toContain("Read this inbound call from the connected Twilio account");
