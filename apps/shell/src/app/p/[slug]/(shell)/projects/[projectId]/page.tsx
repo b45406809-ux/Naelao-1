@@ -32,6 +32,7 @@ import {
   getProjectUsageSummary,
   listAgentDefinitions,
   listExternalKnowledgePublications,
+  listSpaceTemplateInstallations,
   listSpaceSharedChannelKnowledge,
   listDepartments,
   listKbDocuments,
@@ -244,21 +245,35 @@ export default function ProjectDetailPage() {
     if (!creds) return;
     setPublicationLoadError(false);
     setSharedChannelKnowledgeLoadError(false);
-    const [publicationsResult, sharedKnowledgeResult] = await Promise.allSettled([
+    const [publicationsResult, sharedKnowledgeResult, templateInstallationsResult] = await Promise.allSettled([
       listExternalKnowledgePublications(activeSpaceId, params.projectId, creds),
       listSpaceSharedChannelKnowledge(activeSpaceId, params.projectId, creds),
+      listSpaceTemplateInstallations(activeSpaceId, creds),
     ]);
     const publications = publicationsResult.status === "fulfilled" ? publicationsResult.value : [];
+    const installRecords = templateInstallationsResult.status === "fulfilled" ? templateInstallationsResult.value.installations : [];
+    const activationSelections: Record<string, string[]> = {};
+    for (const record of installRecords) {
+      const selected = record.extension_requirements_review?.project_knowledge_selections?.[params.projectId];
+      for (const [extensionId, publicationIds] of Object.entries(selected ?? {}))
+        activationSelections[extensionId] = [...new Set([...(activationSelections[extensionId] ?? []), ...publicationIds])].sort();
+    }
     if (publicationsResult.status === "fulfilled") setExternalPublications(publications);
     else {
       setExternalPublications([]);
       setPublicationLoadError(true);
     }
     if (sharedKnowledgeResult.status === "fulfilled") {
-      setSharedChannelKnowledge(sharedKnowledgeResult.value);
+      const installationsByExtension = new Map<string, number>();
+      for (const installation of sharedKnowledgeResult.value) installationsByExtension.set(installation.extension_id, (installationsByExtension.get(installation.extension_id) ?? 0) + 1);
+      const installations = sharedKnowledgeResult.value.map(installation => ({ ...installation,
+        ...(installationsByExtension.get(installation.extension_id) === 1 && activationSelections[installation.extension_id]?.length
+          ? { activation_selected_publication_ids: activationSelections[installation.extension_id] } : {}) }));
+      setSharedChannelKnowledge(installations);
       const currentPublications = new Set(publications.map(publication => publication.id));
-      setSharedChannelKnowledgeDrafts(Object.fromEntries(sharedKnowledgeResult.value.map(installation => [installation.instance_id,
-        installation.granted_publication_ids.filter(id => installation.declared_publication_ids.includes(id) && currentPublications.has(id)),
+      setSharedChannelKnowledgeDrafts(Object.fromEntries(installations.map(installation => [installation.instance_id,
+        (installation.configured ? installation.granted_publication_ids : installation.activation_selected_publication_ids ?? [])
+          .filter(id => installation.declared_publication_ids.includes(id) && currentPublications.has(id)),
       ])));
     } else {
       setSharedChannelKnowledgeLoadError(true);
@@ -936,6 +951,8 @@ export default function ProjectDetailPage() {
             const draft = sharedChannelKnowledgeDrafts[installation.instance_id] ?? [];
             const available = externalPublications.filter(publication => installation.declared_publication_ids.includes(publication.id));
             const unavailableGrants = installation.granted_publication_ids.filter(id => !available.some(publication => publication.id === id));
+            const activationSelectionsPending = (installation.activation_selected_publication_ids ?? [])
+              .filter(id => !installation.granted_publication_ids.includes(id));
             return (
               <div className="settings-row" key={installation.instance_id} style={{ alignItems: "flex-start" }}>
                 <div style={{ flex: 1 }}>
@@ -948,6 +965,9 @@ export default function ProjectDetailPage() {
                   <div className="settings-row-sub" style={{ marginTop: 6 }}>
                     Signed package collection IDs: {installation.declared_publication_ids.join(", ")}
                   </div>
+                  {activationSelectionsPending.length > 0 && <div role="status" className="settings-row-sub" style={{ marginTop: 8 }}>
+                    Space Template review selected {activationSelectionsPending.join(", ")} for this Project. This is a pending setup choice, not access: publish each exact collection above, then explicitly save Project access to commit it. Current publication and signed package declaration are checked again when you save.
+                  </div>}
                   {publicationLoadError ? (
                     <div role="status" className="settings-row-sub" style={{ marginTop: 8 }}>Current Project publications are unavailable; retry before changing access.</div>
                   ) : available.length > 0 ? (

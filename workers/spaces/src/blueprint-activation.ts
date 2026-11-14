@@ -20,6 +20,7 @@ export interface BlueprintActivationDependency {
 
 export interface BlueprintActivationPreview {
   ready: boolean;
+  projects: Array<{ project_id: string; project_name: string }>;
   coordination_defaults: SpaceBlueprint["coordinationDefaults"] | null;
   dependencies: BlueprintActivationDependency[];
   extension_connections: Array<{ extension_id: string; connection_id: string; provider: string; purpose: string; required: boolean; status: "unsupported" | "optional_unsupported" }>;
@@ -175,6 +176,7 @@ export function previewBlueprintActivation(
     : null;
   return {
     ready: blockers.length === 0,
+    projects: blueprint.projects.map(project => ({ project_id: project.id ?? project.name, project_name: project.name })),
     coordination_defaults: blueprint.coordinationDefaults ? structuredClone(blueprint.coordinationDefaults) : null,
     dependencies,
     extension_connections,

@@ -106,7 +106,7 @@ export default function SpacesPage() {
   const [createError, setCreateError] = React.useState<string | null>(null);
   const [activationNotice, setActivationNotice] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
-  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; applyCoordinationDefault?: boolean; applyCoordinationSingletonDefault?: boolean; extensionRequirementsReviewed?: boolean; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
+  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; applyCoordinationDefault?: boolean; applyCoordinationSingletonDefault?: boolean; extensionRequirementsReviewed?: boolean; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">>; projectKnowledgeSelections?: Record<string, Record<string, string[]>> } | null>(null);
   const [knowledgeSetupProjects, setKnowledgeSetupProjects] = React.useState<{ spaceId: string; projectIds: string[] } | null>(null);
   const [dependencyImports, setDependencyImports] = React.useState<Record<string, TemplateDependencyImportProgress>>({});
   const [dependencyImportBusy, setDependencyImportBusy] = React.useState<string | null>(null);
@@ -409,7 +409,7 @@ export default function SpacesPage() {
       }));
       const result = await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem, setupValues,
         activationReview.applyCoordinationDefault === true, hasExtensionRequirements && activationReview.extensionRequirementsReviewed === true,
-        activationReview.applyCoordinationSingletonDefault === true);
+        activationReview.applyCoordinationSingletonDefault === true, activationReview.projectKnowledgeSelections ?? {});
       if (result.coordinationSingletonPolicyApplication?.status === "active_duplicates") {
         setActivationNotice("The Space Template was installed, but its singleton suggestion was not applied because multiple active facts use one of those keys. Resolve the duplicates in Space Settings; the owner policy was left unchanged.");
         setActivationReview(current => current ? { ...current, applyCoordinationSingletonDefault: false } : current);
@@ -956,7 +956,30 @@ export default function SpacesPage() {
             </li>)}</ul> : <p>None declared</p>}
             {(activationReview.preview.extension_requirements.knowledge.length > 0 || activationReview.preview.extension_requirements.actions.length > 0) && <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
               <strong>Signed package knowledge and action requirements</strong>
-              <p style={{ margin: "4px 0", color: "var(--text3)" }}>These references are checked against the exact trusted package declarations; review does not create grants. New Projects start with no Space-shared Project Knowledge access. After activation, publish the required collection in each Project, then use its Space-shared channel access controls to grant only a current publication declared by the active signed package. Provider connections and other permissions remain separate approvals.</p>
+              <p style={{ margin: "4px 0", color: "var(--text3)" }}>These references are checked against the exact trusted package declarations. You can record which declared collection you intend to grant in each new Project. This is only a setup choice: activation creates no Knowledge grant. After activation, publish that exact collection in each Project and explicitly save Project access; the server rechecks the active signed declaration and current publication then. Unselected IDs remain empty. Provider connections and other permissions remain separate approvals.</p>
+              {activationReview.preview.extension_requirements.knowledge.some(item => item.access === "owner_published_external") && <div style={{ display: "grid", gap: 10, margin: "10px 0" }}>
+                <strong>Project Knowledge choices</strong>
+                {activationReview.preview.projects.map(project => <fieldset key={project.project_id} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
+                  <legend>{project.project_name}</legend>
+                  {activationReview.preview.extension_requirements.knowledge.filter(item => item.access === "owner_published_external").map(item => {
+                    const selected = activationReview.projectKnowledgeSelections?.[project.project_id]?.[item.extension_id] ?? [];
+                    const checked = selected.includes(item.knowledge_id);
+                    return <label key={`${project.project_id}:${item.extension_id}:${item.knowledge_id}`} style={{ display: "flex", gap: 8, alignItems: "flex-start", margin: "6px 0", fontSize: 13 }}>
+                      <input type="checkbox" checked={checked} onChange={event => setActivationReview(current => {
+                        if (!current) return current;
+                        const next = { ...(current.projectKnowledgeSelections ?? {}) };
+                        const projectSelections = { ...(next[project.project_id] ?? {}) };
+                        const extensionSelections = new Set(projectSelections[item.extension_id] ?? []);
+                        if (event.target.checked) extensionSelections.add(item.knowledge_id); else extensionSelections.delete(item.knowledge_id);
+                        if (extensionSelections.size) projectSelections[item.extension_id] = [...extensionSelections].sort(); else delete projectSelections[item.extension_id];
+                        if (Object.keys(projectSelections).length) next[project.project_id] = projectSelections; else delete next[project.project_id];
+                        return { ...current, projectKnowledgeSelections: next };
+                      })} />
+                      <span>{item.extension_id} · {item.knowledge_id} — {item.purpose}{item.required ? " · required by template" : " · optional"}</span>
+                    </label>;
+                  })}
+                </fieldset>)}
+              </div>}
               {activationReview.preview.extension_requirements.knowledge.length > 0 && <><strong>Knowledge</strong><ul>{activationReview.preview.extension_requirements.knowledge.map(item => <li key={`${item.extension_id}:${item.knowledge_id}`}>
                 {item.extension_id} · {item.knowledge_id} · {item.access} · {item.status}{item.required ? " · required" : " · optional"} — {item.purpose}{item.package_purpose ? ` (package: ${item.package_purpose})` : ""}
               </li>)}</ul></>}

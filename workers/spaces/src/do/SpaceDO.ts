@@ -51,7 +51,41 @@ import { isSpaceSharedDependencyPinList, isSpaceSharedGadgetMigrationRetentionPl
   supportsOwnerApprovedSpaceSharedDependencyExpansion,
   supportsVersionOnlySpaceSharedPackageUpdate } from "../extension-update-contract.js";
 
-type ExtensionRequirementsReviewReceipt = { reviewed_by: string; reviewed_at: string; requirements_sha256: string };
+type BlueprintProjectKnowledgeSelections = Record<string, Record<string, string[]>>;
+type ExtensionRequirementsReviewReceipt = { reviewed_by: string; reviewed_at: string; requirements_sha256: string; project_knowledge_selections: BlueprintProjectKnowledgeSelections };
+
+function normalizeBlueprintProjectKnowledgeSelections(blueprint: SpaceBlueprint, raw: unknown): BlueprintProjectKnowledgeSelections | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const projectIds = new Set(blueprint.projects.map(project => project.id ?? project.name));
+  const declarations = new Map<string, Set<string>>();
+  for (const requirement of blueprint.extensionRequirements?.knowledge ?? []) {
+    if (requirement.access !== "owner_published_external") continue;
+    const ids = declarations.get(requirement.extensionId) ?? new Set<string>();
+    ids.add(requirement.knowledgeId);
+    declarations.set(requirement.extensionId, ids);
+  }
+  const input = raw as Record<string, unknown>;
+  if (Object.keys(input).length > 64) return null;
+  const normalized: BlueprintProjectKnowledgeSelections = {};
+  let totalSelections = 0;
+  for (const [projectId, rawExtensions] of Object.entries(input)) {
+    if (!projectIds.has(projectId) || !rawExtensions || typeof rawExtensions !== "object" || Array.isArray(rawExtensions)) return null;
+    const extensions = rawExtensions as Record<string, unknown>;
+    if (Object.keys(extensions).length > 128) return null;
+    const normalizedExtensions: Record<string, string[]> = {};
+    for (const [extensionId, rawIds] of Object.entries(extensions)) {
+      const declared = declarations.get(extensionId);
+      if (!declared || !Array.isArray(rawIds) || rawIds.length > 16
+        || rawIds.some(id => typeof id !== "string" || !/^[a-z][a-z0-9_-]{2,63}$/.test(id) || !declared.has(id))
+        || new Set(rawIds).size !== rawIds.length) return null;
+      totalSelections += rawIds.length;
+      if (totalSelections > 1024) return null;
+      if (rawIds.length) normalizedExtensions[extensionId] = [...rawIds as string[]].sort();
+    }
+    if (Object.keys(normalizedExtensions).length) normalized[projectId] = Object.fromEntries(Object.entries(normalizedExtensions).sort(([a], [b]) => a.localeCompare(b)));
+  }
+  return Object.fromEntries(Object.entries(normalized).sort(([a], [b]) => a.localeCompare(b)));
+}
 
 // Owner-managed access grants require fresh approval after archive recovery. Additive restore may
 // insert missing rows from old archives, so it must never replay a grant that was revoked later.
@@ -5305,6 +5339,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         } catch (error) {
           const code = error instanceof Error ? error.message : "blueprint_install_failed";
           const status = code === "blueprint_activation_artifact_changed" || code === "blueprint_activation_listing_changed" || code === "blueprint_setup_values_changed" || code === "blueprint_install_in_progress" || code === "blueprint_extension_requirements_review_conflict" ? 409
+            : code === "blueprint_extension_requirements_review_invalid" ? 400
             : /setup/i.test(code) ? 400 : 503;
           return Response.json({ error_code: code }, { status });
         }
@@ -6423,7 +6458,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   /** Serialize host activation retries per target Space and exact blueprint artifact. */
   private async instantiateBlueprintOnce(blueprint: SpaceBlueprint, targetSpaceId: string, tenantId = "", rawSetupValues: unknown = {}, listingId: string | null = null,
-    rawExtensionRequirementsReview?: unknown): Promise<{ projectIds: string[]; taskCount: number; fileCount: number; alreadyInstalled?: boolean }> {
+    rawExtensionRequirementsReview?: unknown): Promise<{ projectIds: string[]; projectIdsByBlueprintId?: Record<string, string>; taskCount: number; fileCount: number; alreadyInstalled?: boolean }> {
     const setupSchema = validateBlueprintSetupSchema(blueprint);
     const setupSchemaJson = JSON.stringify(setupSchema);
     const setupValues = validateBlueprintSetupValues(blueprint, rawSetupValues);
@@ -6435,13 +6470,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (!rawExtensionRequirementsReview || typeof rawExtensionRequirementsReview !== "object" || Array.isArray(rawExtensionRequirementsReview))
         throw new Error("blueprint_extension_requirements_review_required");
       const review = rawExtensionRequirementsReview as Record<string, unknown>;
-      if (Object.keys(review).some(key => key !== "reviewed_by" && key !== "reviewed_at")
+      if (Object.keys(review).some(key => key !== "reviewed_by" && key !== "reviewed_at" && key !== "project_knowledge_selections")
         || typeof review.reviewed_by !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(review.reviewed_by)
         || typeof review.reviewed_at !== "string" || !Number.isFinite(Date.parse(review.reviewed_at))
         || new Date(review.reviewed_at).toISOString() !== review.reviewed_at)
         throw new Error("blueprint_extension_requirements_review_invalid");
+      const projectKnowledgeSelections = normalizeBlueprintProjectKnowledgeSelections(blueprint, review.project_knowledge_selections ?? {});
+      if (!projectKnowledgeSelections) throw new Error("blueprint_extension_requirements_review_invalid");
       extensionRequirementsReview = { reviewed_by: review.reviewed_by, reviewed_at: review.reviewed_at,
-        requirements_sha256: await sha256Hex(JSON.stringify(blueprint.extensionRequirements)) };
+        requirements_sha256: await sha256Hex(JSON.stringify(blueprint.extensionRequirements)),
+        project_knowledge_selections: projectKnowledgeSelections };
     } else if (rawExtensionRequirementsReview !== undefined) throw new Error("blueprint_extension_requirements_review_invalid");
     const extensionRequirementsReviewJson = extensionRequirementsReview ? JSON.stringify(extensionRequirementsReview) : null;
     const clearSetupDraft = () => {
@@ -6467,15 +6505,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (hasExtensionRequirements) {
         let priorReview: typeof extensionRequirementsReview;
         try { priorReview = JSON.parse(existing.extension_requirements_review_json ?? "null") as typeof extensionRequirementsReview; } catch { priorReview = null; }
-        if (!priorReview || !extensionRequirementsReview || priorReview.reviewed_by !== extensionRequirementsReview.reviewed_by
-          || priorReview.requirements_sha256 !== extensionRequirementsReview.requirements_sha256)
+        const priorSelections = normalizeBlueprintProjectKnowledgeSelections(blueprint, priorReview?.project_knowledge_selections ?? {});
+        if (!priorReview || !extensionRequirementsReview || !priorSelections || priorReview.reviewed_by !== extensionRequirementsReview.reviewed_by
+          || priorReview.requirements_sha256 !== extensionRequirementsReview.requirements_sha256
+          || JSON.stringify(priorSelections) !== JSON.stringify(extensionRequirementsReview.project_knowledge_selections))
           throw new Error("blueprint_extension_requirements_review_conflict");
-        extensionRequirementsReview = priorReview;
+        extensionRequirementsReview = { ...priorReview, project_knowledge_selections: priorSelections };
       }
       ensureExistingSchema(existing);
       if (existing.status === "installed" && existing.result_json) {
         clearSetupDraft();
-        return { ...(JSON.parse(existing.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+        return { ...(JSON.parse(existing.result_json) as { projectIds: string[]; projectIdsByBlueprintId?: Record<string, string>; taskCount: number; fileCount: number }), alreadyInstalled: true };
       }
       if (existing.status === "failed") throw new Error(existing.error_code ?? "blueprint_install_previous_attempt_failed");
       throw new Error("blueprint_install_in_progress");
@@ -6497,15 +6537,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (hasExtensionRequirements) {
         let priorReview: typeof extensionRequirementsReview;
         try { priorReview = JSON.parse(concurrent.extension_requirements_review_json ?? "null") as typeof extensionRequirementsReview; } catch { priorReview = null; }
-        if (!priorReview || !extensionRequirementsReview || priorReview.reviewed_by !== extensionRequirementsReview.reviewed_by
-          || priorReview.requirements_sha256 !== extensionRequirementsReview.requirements_sha256)
+        const priorSelections = normalizeBlueprintProjectKnowledgeSelections(blueprint, priorReview?.project_knowledge_selections ?? {});
+        if (!priorReview || !extensionRequirementsReview || !priorSelections || priorReview.reviewed_by !== extensionRequirementsReview.reviewed_by
+          || priorReview.requirements_sha256 !== extensionRequirementsReview.requirements_sha256
+          || JSON.stringify(priorSelections) !== JSON.stringify(extensionRequirementsReview.project_knowledge_selections))
           throw new Error("blueprint_extension_requirements_review_conflict");
-        extensionRequirementsReview = priorReview;
+        extensionRequirementsReview = { ...priorReview, project_knowledge_selections: priorSelections };
       }
       ensureExistingSchema(concurrent);
       if (concurrent?.status === "installed" && concurrent.result_json) {
         clearSetupDraft();
-        return { ...(JSON.parse(concurrent.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+        return { ...(JSON.parse(concurrent.result_json) as { projectIds: string[]; projectIdsByBlueprintId?: Record<string, string>; taskCount: number; fileCount: number }), alreadyInstalled: true };
       }
       throw new Error("blueprint_install_in_progress");
     }
@@ -6517,16 +6559,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (hasExtensionRequirements) {
       let priorReview: typeof extensionRequirementsReview;
       try { priorReview = JSON.parse(claim.extension_requirements_review_json ?? "null") as typeof extensionRequirementsReview; } catch { priorReview = null; }
-      if (!priorReview || !extensionRequirementsReview || priorReview.reviewed_by !== extensionRequirementsReview.reviewed_by
-        || priorReview.requirements_sha256 !== extensionRequirementsReview.requirements_sha256)
+      const priorSelections = normalizeBlueprintProjectKnowledgeSelections(blueprint, priorReview?.project_knowledge_selections ?? {});
+      if (!priorReview || !extensionRequirementsReview || !priorSelections || priorReview.reviewed_by !== extensionRequirementsReview.reviewed_by
+        || priorReview.requirements_sha256 !== extensionRequirementsReview.requirements_sha256
+        || JSON.stringify(priorSelections) !== JSON.stringify(extensionRequirementsReview.project_knowledge_selections))
         throw new Error("blueprint_extension_requirements_review_conflict");
-      extensionRequirementsReview = priorReview;
+      extensionRequirementsReview = { ...priorReview, project_knowledge_selections: priorSelections };
     }
     ensureExistingSchema(claim);
     if (claim.status !== "installing" || claim.result_json) {
       if (claim.status === "installed" && claim.result_json) {
         clearSetupDraft();
-        return { ...(JSON.parse(claim.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+        return { ...(JSON.parse(claim.result_json) as { projectIds: string[]; projectIdsByBlueprintId?: Record<string, string>; taskCount: number; fileCount: number }), alreadyInstalled: true };
       }
       throw new Error("blueprint_install_in_progress");
     }
@@ -6548,7 +6592,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   /** Install a validated blueprint locally; hashing and writes complete before returning. */
-  async instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: string, tenantId = ""): Promise<{ projectIds: string[]; taskCount: number; fileCount: number }> {
+  async instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: string, tenantId = ""): Promise<{ projectIds: string[]; projectIdsByBlueprintId: Record<string, string>; taskCount: number; fileCount: number }> {
     this.ensureInit();
     const compiled = compileBlueprint(blueprint, targetSpaceId);
     const ids = new Map<string, string>();
@@ -6667,7 +6711,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (compiled.assistantChannels !== undefined) await this.ctx.storage.put("channels:template",compiled.assistantChannels);
       for (const project of compiled.projects) if(project.configuration?.assistantChannels !== undefined) await this.ctx.storage.put(`channels:template-project:${ids.get(project.id ?? project.name)!}`,validateAssistantChannelPatch(project.configuration.assistantChannels));
       for (const project of compiled.projects) if(project.configuration?.assistantEmailProvisioning!==undefined)await this.ctx.storage.put(`channels:template-email-project:${ids.get(project.id??project.name)!}`,validateAssistantEmailProvisioning(project.configuration.assistantEmailProvisioning));
-      return { projectIds: [...ids.values()], taskCount, fileCount: preparedFiles.length };
+      const projectIds = [...ids.values()];
+      const projectIdsByBlueprintId = Object.fromEntries(compiled.projects.map(project => [project.id ?? project.name, ids.get(project.id ?? project.name)!]));
+      return { projectIds, projectIdsByBlueprintId, taskCount, fileCount: preparedFiles.length };
     } catch (error) {
       // Once project metadata commits, preserve its canonical revision for recovery; before
       // visibility, roll back coordinator scopes and staged legacy/canonical bytes retryably.
@@ -14215,16 +14261,38 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const parsed: unknown = JSON.parse(row.required_extensions_json);
         if (Array.isArray(parsed)) requiredExtensionIds = parsed.filter((value): value is string => typeof value === "string").slice(0, 128);
       } catch { /* Preserve the status receipt even if an old JSON field is corrupt. */ }
+      let projectIdsByBlueprintId: Record<string, string> = {};
       try {
-        const parsed = JSON.parse(row.result_json ?? "null") as { projectIds?: unknown } | null;
+        const parsed = JSON.parse(row.result_json ?? "null") as { projectIds?: unknown; projectIdsByBlueprintId?: unknown } | null;
         if (Array.isArray(parsed?.projectIds)) projectIds = parsed.projectIds.filter((value): value is string => typeof value === "string").slice(0, 256);
+        if (parsed?.projectIdsByBlueprintId && typeof parsed.projectIdsByBlueprintId === "object" && !Array.isArray(parsed.projectIdsByBlueprintId)) {
+          projectIdsByBlueprintId = Object.fromEntries(Object.entries(parsed.projectIdsByBlueprintId as Record<string, unknown>)
+            .filter(([blueprintProjectId, projectId]) => /^[A-Za-z0-9._:-]{1,160}$/.test(blueprintProjectId)
+              && typeof projectId === "string" && projectIds.includes(projectId)).slice(0, 64) as Array<[string, string]>);
+        }
       } catch { /* The install result is optional diagnostic data, never a reason to hide status. */ }
-      let extensionRequirementsReview: { reviewed_by: string; reviewed_at: string; requirements_sha256: string } | null = null;
+      let extensionRequirementsReview: { reviewed_by: string; reviewed_at: string; requirements_sha256: string;
+        project_knowledge_selections?: BlueprintProjectKnowledgeSelections } | null = null;
       try {
         const parsed = JSON.parse(row.extension_requirements_review_json ?? "null") as Partial<ExtensionRequirementsReviewReceipt> | null;
         if (parsed && typeof parsed.reviewed_by === "string" && typeof parsed.reviewed_at === "string"
-          && typeof parsed.requirements_sha256 === "string" && /^[a-f0-9]{64}$/.test(parsed.requirements_sha256))
-          extensionRequirementsReview = { reviewed_by: parsed.reviewed_by, reviewed_at: parsed.reviewed_at, requirements_sha256: parsed.requirements_sha256 };
+          && typeof parsed.requirements_sha256 === "string" && /^[a-f0-9]{64}$/.test(parsed.requirements_sha256)) {
+          const mappedSelections: BlueprintProjectKnowledgeSelections = {};
+          const selections = parsed.project_knowledge_selections;
+          if (selections && typeof selections === "object" && !Array.isArray(selections)) {
+            for (const [blueprintProjectId, rawExtensions] of Object.entries(selections)) {
+              const projectId = projectIdsByBlueprintId[blueprintProjectId];
+              if (!projectId || !rawExtensions || typeof rawExtensions !== "object" || Array.isArray(rawExtensions)) continue;
+              const extensions = Object.fromEntries(Object.entries(rawExtensions as Record<string, unknown>).flatMap(([extensionId, rawIds]) =>
+                /^[A-Za-z0-9._:-]{1,160}$/.test(extensionId) && Array.isArray(rawIds)
+                  && rawIds.length <= 16 && rawIds.every(id => typeof id === "string" && /^[a-z][a-z0-9_-]{2,63}$/.test(id))
+                  ? [[extensionId, [...new Set(rawIds as string[])].sort()]] : []));
+              if (Object.keys(extensions).length) mappedSelections[projectId] = extensions;
+            }
+          }
+          extensionRequirementsReview = { reviewed_by: parsed.reviewed_by, reviewed_at: parsed.reviewed_at, requirements_sha256: parsed.requirements_sha256,
+            ...(Object.keys(mappedSelections).length ? { project_knowledge_selections: mappedSelections } : {}) };
+        }
       } catch { /* Older installs have no requirement review receipt. */ }
       return { blueprint_id: row.blueprint_id, artifact_sha256: row.artifact_sha256, listing_id: row.listing_id,
         setup_schema_version: row.setup_schema_version, setup_revision: row.setup_revision,

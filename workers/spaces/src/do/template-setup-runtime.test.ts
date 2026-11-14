@@ -8,29 +8,42 @@ describe("Space Template setup runtime API", () => {
   it("persists owner acknowledgement against the exact signed extension requirement digest", async () => {
     const storage = createDOStorage(), secret = "template-extension-review-test-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
-    const blueprint = { id: "tpl_requirement_review", schemaVersion: "2.0" as const, metadata: {}, templateCategory: "support", projects: [],
+    const blueprint = { id: "tpl_requirement_review", schemaVersion: "2.0" as const, metadata: {}, templateCategory: "support", projects: [
+      { id: "support_project", name: "Support", kind: "DualPane" as const, templateMode: "cowork_studio" as const,
+        viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [] },
+    ],
       requiredExtensions: ["ext_support"], requiredCredentials: [], extensionRequirements: {
         knowledge: [{ extensionId: "ext_support", knowledgeId: "public_faq", purpose: "Answer published FAQ questions", access: "owner_published_external" as const, required: true }],
       } };
     const targetSpaceId = "template-requirement-review-space", token = await mintInternalToken(secret, "tenant");
     const activationUrl = "http://space/blueprints/instantiate";
+    const selections = { support_project: { ext_support: ["public_faq"] } };
     const request = (review?: unknown, withToken = true) => space.fetch(new Request(activationUrl, { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", ...(withToken ? { "x-naelao-internal-token": token } : {}) },
       body: JSON.stringify({ blueprint, target_space_id: targetSpaceId, activation_key: blueprint.id, ...(review === undefined ? {} : { extension_requirements_review: review }) }) }));
     expect((await request({ reviewed_by: "owner-a", reviewed_at: "2026-11-14T00:00:00.000Z" }, false)).status).toBe(403);
     expect((await request()).status).toBe(400);
-    const first = await request({ reviewed_by: "owner-a", reviewed_at: "2026-11-14T00:00:00.000Z" });
+    const first = await request({ reviewed_by: "owner-a", reviewed_at: "2026-11-14T00:00:00.000Z", project_knowledge_selections: selections });
     expect(first.status).toBe(201);
+    const activation = await first.json() as { projectIds: string[]; projectIdsByBlueprintId: Record<string, string> };
     const row = storage.sql.exec<{ extension_requirements_review_json: string }>(
       "SELECT extension_requirements_review_json FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id).toArray()[0];
-    expect(JSON.parse(row!.extension_requirements_review_json)).toMatchObject({ reviewed_by: "owner-a", requirements_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
-    const retry = await request({ reviewed_by: "owner-a", reviewed_at: "2026-11-14T00:01:00.000Z" });
+    expect(JSON.parse(row!.extension_requirements_review_json)).toMatchObject({ reviewed_by: "owner-a", requirements_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      project_knowledge_selections: selections });
+    expect(storage.sql.exec("SELECT COUNT(*) AS total FROM extension_project_knowledge_grants").toArray()[0]?.total).toBe(0);
+    const retry = await request({ reviewed_by: "owner-a", reviewed_at: "2026-11-14T00:01:00.000Z", project_knowledge_selections: selections });
     expect(retry.status).toBe(200);
+    const changedRetry = await request({ reviewed_by: "owner-a", reviewed_at: "2026-11-14T00:02:00.000Z", project_knowledge_selections: {} });
+    expect(changedRetry.status).toBe(409);
+    const invalidSelection = await request({ reviewed_by: "owner-a", reviewed_at: "2026-11-14T00:02:00.000Z",
+      project_knowledge_selections: { support_project: { ext_support: ["not_declared"] } } });
+    expect(invalidSelection.status).toBe(400);
     const status = await space.fetch(new Request(`http://space/blueprint-installations?tenant_id=tenant&space_id=${targetSpaceId}`, {
       headers: { "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
     }));
     expect(await status.json()).toMatchObject({ installations: [{ extension_requirements_review: {
       reviewed_by: "owner-a", reviewed_at: "2026-11-14T00:00:00.000Z", requirements_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      project_knowledge_selections: { [activation.projectIds[0]!]: { ext_support: ["public_faq"] } },
     } }] });
   });
 

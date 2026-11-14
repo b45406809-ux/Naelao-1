@@ -2877,11 +2877,12 @@ export interface SpaceTemplateActivationResult extends Record<string, unknown> {
 }
 export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials,
   approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}, setupValues: SpaceTemplateSetupValues = {}, applyCoordinationDefault = false,
-  confirmExtensionRequirements = false, applyCoordinationSingletonDefault = false): Promise<SpaceTemplateActivationResult> {
+  confirmExtensionRequirements = false, applyCoordinationSingletonDefault = false,
+  projectKnowledgeSelections: Record<string, Record<string, string[]>> = {}): Promise<SpaceTemplateActivationResult> {
   return apiFetch<SpaceTemplateActivationResult>(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, {
     method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, setup_values: setupValues,
       apply_coordination_default: applyCoordinationDefault, apply_coordination_singleton_default: applyCoordinationSingletonDefault,
-      extension_requirements_reviewed: confirmExtensionRequirements }),
+      extension_requirements_reviewed: confirmExtensionRequirements, project_knowledge_selections: projectKnowledgeSelections }),
   });
 }
 export interface SpaceTemplateSetupDraftSnapshot {
@@ -2910,7 +2911,8 @@ export interface SpaceTemplateInstallationRecord {
   required_extension_ids: string[];
   project_ids: string[];
   status: "installing" | "installed" | "failed";
-  extension_requirements_review?: { reviewed_by: string; reviewed_at: string; requirements_sha256: string };
+  extension_requirements_review?: { reviewed_by: string; reviewed_at: string; requirements_sha256: string;
+    project_knowledge_selections?: Record<string, Record<string, string[]>> };
   error_code: string | null;
   created_at: string;
   updated_at: string;
@@ -2934,6 +2936,7 @@ export function listSpaceTemplateInstallations(spaceId: string, session: Session
 
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
+  projects: Array<{ project_id: string; project_name: string }>;
   coordination_defaults: { memberFactsEnabled?: boolean; singletonCapabilityKeys?: string[] } | null;
   coordination_policy_current: { configured: boolean; member_facts_enabled: boolean; revision: number; active_member_facts: number } | null;
   coordination_singleton_policy_current: { configured: boolean; singleton_capability_keys: string[]; revision: number } | null;
@@ -3227,6 +3230,7 @@ export interface SpaceSharedChannelKnowledgeInstallation {
   revision: number;
   updated_by?: string;
   updated_at?: string;
+  activation_selected_publication_ids?: string[];
 }
 
 export async function listSpaceSharedChannelKnowledge(

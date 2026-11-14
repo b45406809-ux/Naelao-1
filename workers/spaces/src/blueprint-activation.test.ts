@@ -403,6 +403,13 @@ describe("Space Template activation preview", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error_code: "extension_requirements_confirmation_required" });
     expect(spaceDoCalls).toBe(0);
+    const invalidSelection = await worker.fetch(new Request(`https://spaces/spaces/space-review/blueprints/${artifact.id}/activate`, {
+      method: "POST", headers, body: JSON.stringify({ extension_requirements_reviewed: true,
+        project_knowledge_selections: { not_a_blueprint_project: { ext_support: ["public_faq"] } } }),
+    }), env, {} as ExecutionContext);
+    expect(invalidSelection.status).toBe(400);
+    expect(await invalidSelection.json()).toMatchObject({ error_code: "project_knowledge_selection_invalid" });
+    expect(spaceDoCalls).toBe(0);
   });
 
   it("matches guided-install pricing to the exact selected listing and reports paid costs without inventing a total", async () => {

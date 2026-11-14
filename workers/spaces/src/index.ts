@@ -1474,6 +1474,39 @@ async function handleTemplateSetupDraft(c: Context<{ Bindings: Env }>): Promise<
 app.get("/spaces/:spaceId/blueprints/:blueprintId/setup-draft", handleTemplateSetupDraft);
 app.put("/spaces/:spaceId/blueprints/:blueprintId/setup-draft", handleTemplateSetupDraft);
 
+function normalizeBlueprintProjectKnowledgeSelections(blueprint: SpaceBlueprint, raw: unknown): Record<string, Record<string, string[]>> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const projectIds = new Set(blueprint.projects.map(project => project.id ?? project.name));
+  const declarations = new Map<string, Set<string>>();
+  for (const requirement of blueprint.extensionRequirements?.knowledge ?? []) {
+    if (requirement.access !== "owner_published_external") continue;
+    const ids = declarations.get(requirement.extensionId) ?? new Set<string>();
+    ids.add(requirement.knowledgeId);
+    declarations.set(requirement.extensionId, ids);
+  }
+  const input = raw as Record<string, unknown>;
+  if (Object.keys(input).length > 64) return null;
+  const normalized: Record<string, Record<string, string[]>> = {};
+  let totalSelections = 0;
+  for (const [projectId, rawExtensions] of Object.entries(input)) {
+    if (!projectIds.has(projectId) || !rawExtensions || typeof rawExtensions !== "object" || Array.isArray(rawExtensions)) return null;
+    const extensions = rawExtensions as Record<string, unknown>;
+    if (Object.keys(extensions).length > 128) return null;
+    const normalizedExtensions: Record<string, string[]> = {};
+    for (const [extensionId, rawIds] of Object.entries(extensions)) {
+      const declared = declarations.get(extensionId);
+      if (!declared || !Array.isArray(rawIds) || rawIds.length > 16
+        || rawIds.some(id => typeof id !== "string" || !/^[a-z][a-z0-9_-]{2,63}$/.test(id) || !declared.has(id))
+        || new Set(rawIds).size !== rawIds.length) return null;
+      totalSelections += rawIds.length;
+      if (totalSelections > 1024) return null;
+      if (rawIds.length) normalizedExtensions[extensionId] = [...rawIds as string[]].sort();
+    }
+    if (Object.keys(normalizedExtensions).length) normalized[projectId] = Object.fromEntries(Object.entries(normalizedExtensions).sort(([a], [b]) => a.localeCompare(b)));
+  }
+  return Object.fromEntries(Object.entries(normalized).sort(([a], [b]) => a.localeCompare(b)));
+}
+
 app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const identity = getCallerIdentity(c);
   const tenantId = identity.tenantId;
@@ -1488,7 +1521,7 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const selectedListing = selectedTemplateListingId(owned.config_json ?? null);
   if (selectedListing.kind === "invalid") return c.json({ error_code: "template_listing_selection_invalid" }, 409);
   const listingId = selectedListing.kind === "selected" ? selectedListing.listingId : null;
-  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; apply_coordination_singleton_default?: unknown; extension_requirements_reviewed?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; apply_coordination_singleton_default?: unknown; extension_requirements_reviewed?: unknown }));
+  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; apply_coordination_singleton_default?: unknown; extension_requirements_reviewed?: unknown; project_knowledge_selections?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; apply_coordination_singleton_default?: unknown; extension_requirements_reviewed?: unknown; project_knowledge_selections?: unknown }));
   if (requestBody.apply_coordination_default !== undefined && typeof requestBody.apply_coordination_default !== "boolean")
     return c.json({ error_code: "coordination_default_confirmation_invalid" }, 400);
   if (requestBody.apply_coordination_singleton_default !== undefined && typeof requestBody.apply_coordination_singleton_default !== "boolean")
@@ -1508,6 +1541,8 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   )) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
   const blueprint = certifiedBlueprint!;
   const hasExtensionRequirements = (blueprint.extensionRequirements?.knowledge?.length ?? 0) > 0 || (blueprint.extensionRequirements?.actions?.length ?? 0) > 0;
+  const projectKnowledgeSelections = normalizeBlueprintProjectKnowledgeSelections(blueprint, requestBody.project_knowledge_selections ?? {});
+  if (!projectKnowledgeSelections) return c.json({ error_code: "project_knowledge_selection_invalid" }, 400);
   if (hasExtensionRequirements && requestBody.extension_requirements_reviewed !== true)
     return c.json({ error_code: "extension_requirements_confirmation_required" }, 400);
   if (requestBody.apply_coordination_default === true && blueprint.coordinationDefaults?.memberFactsEnabled === undefined)
@@ -1603,7 +1638,8 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const response = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/blueprints/instantiate", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id, listing_id: listingId, setup_values: setupValues,
-        ...(hasExtensionRequirements ? { extension_requirements_review: { reviewed_by: identity.userId, reviewed_at: new Date().toISOString() } } : {}) }),
+        ...(hasExtensionRequirements ? { extension_requirements_review: { reviewed_by: identity.userId, reviewed_at: new Date().toISOString(),
+          project_knowledge_selections: projectKnowledgeSelections } } : {}) }),
   }));
   if (!response.ok) {
     const rollbackFailures = await rollbackNewDependencies();
