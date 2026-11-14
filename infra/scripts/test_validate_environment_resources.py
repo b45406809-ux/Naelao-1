@@ -62,7 +62,7 @@ class EnvironmentResourceMapTests(unittest.TestCase):
                     "kind": "r2",
                     "environment": "staging",
                     "id_or_name": "artifacts-staging",
-                    "resource_id": "bucket-1",
+                    "resource_id": "artifacts-staging",
                     "environment": "staging",
                     "read_only": True,
                     "evidence_source": "Cloudflare read-only inventory command",
@@ -145,6 +145,40 @@ class EnvironmentResourceMapTests(unittest.TestCase):
             datetime(2026, 11, 13, 12, tzinfo=timezone.utc),
         )
         self.assertEqual(sum("exact configured resource ID" in error for error in errors), 2)
+
+    def test_name_addressed_receipts_cannot_invent_ids_to_hide_shared_targets(self):
+        source_map = {
+            "required_existence_receipts": [
+                {"kind": kind, "environment": environment, "id_or_name": name}
+                for kind, names in (("r2", ("stage-bucket", "prod-bucket")),
+                                    ("vectorize", ("stage-index", "prod-index")))
+                for environment, name in zip(("staging", "production"), names)
+            ]
+        }
+        receipts = {
+            "version": 1,
+            "account_id": ACCOUNT_ID,
+            "observed_at": "2026-11-12T12:00:00Z",
+            "resources": [
+                {
+                    "kind": row["kind"],
+                    "environment": row["environment"],
+                    "id_or_name": row["id_or_name"],
+                    # Invented values would make a shared provider resource look distinct.
+                    "resource_id": f"invented-{row['environment']}-{row['id_or_name']}",
+                    "evidence_source": "read-only inventory",
+                    "observer": "operator",
+                    "read_only": True,
+                }
+                for row in source_map["required_existence_receipts"]
+            ],
+        }
+        errors = _validate_receipts(
+            source_map,
+            receipts,
+            datetime(2026, 11, 13, 12, tzinfo=timezone.utc),
+        )
+        self.assertEqual(sum("exact configured resource name" in error for error in errors), 4)
 
     def test_all_mutable_environment_targets_must_be_separate(self):
         rows = []

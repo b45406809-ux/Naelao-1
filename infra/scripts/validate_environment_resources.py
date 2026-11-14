@@ -321,6 +321,11 @@ def _validate_receipts(
             errors.append(f"receipt for {key[0]} {key[2]} must be from a read-only inventory")
         if key[0] in {"d1", "kv"} and row.get("resource_id") != key[2]:
             errors.append(f"receipt for {key[0]} {key[2]} must confirm the exact configured resource ID")
+        # Cloudflare identifies R2 buckets and Vectorize indexes by their configured names.
+        # Keep the source-map identity bound through receipt validation as well as collection;
+        # otherwise a hand-edited receipt could invent distinct IDs and hide a shared target.
+        if key[0] in {"r2", "vectorize"} and row.get("resource_id") != key[2]:
+            errors.append(f"receipt for {key[0]} {key[2]} must confirm the exact configured resource name")
     observed_ids: dict[str, dict[str, set[str]]] = {
         kind: {"staging": set(), "production": set()} for kind in RECEIPT_KINDS
     }
