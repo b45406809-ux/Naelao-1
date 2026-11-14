@@ -1,6 +1,16 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P06 synthetic scenario response comparison; pushed)
+## Latest checkpoint — 2026-11-14 (P06 published settings and next U05 action; pushed)
+
+Code `6bf8de58716ac473913e5b305fe8ac97b8f19bba` is pushed to `origin/Mcbt5s-Backup-2`; the pre-push fetch showed `c73a1810` with no advance. The signed bounded phone menu now keeps schema-validated per-installation drafts separate from active settings, requires owner/admin confirmation to publish with revision fences, retains the latest 20 published versions, and can create a rollback draft only when its schema still matches. Active calls read published values; only an owner-triggered synthetic scenario may select the draft. Audit records retain actor/revision/field IDs, not setting values. Package version is 1.0.8.
+
+Local evidence: SDK package tests **38/38** and typecheck; Spaces selected settings/migration/route tests **34/34** and typecheck; Agents phone/simulation/scope tests **49/49** and typecheck; `git diff --check`. No browser, signed catalog installation, provider/carrier, deployment or live acceptance ran. P06 remains PARTIAL for first-party signing/catalog/provisioning, conversational streaming, complete cost/quality evidence and live acceptance. Current handler invocations use the latest published settings; there is no per-call configuration snapshot.
+
+P01's fail-closed migration runner and failure-injection path are already locally implemented and verified in the current platform ledger; do not repeat the stale recorded task. P02 still requires real Cloudflare resource ownership/separation, per-D1 operator baselines and read-only receipts. Current §10 source has the host-only Space singleton reservation implementation; preserve the fact that it reserves/discloses a capability and does not grant access. Policy, retention, jurisdiction, provider and deployed gates remain distinct. Rollouts remain disabled. Preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: continue S3/U05 by implementing the missing reachable product-side candidate allocation/reservation path against the existing owner-authorized workspace runtime lifecycle. Bind reservations to exact tenant/Space/project, main allocation generation, selected template/image digest, current authorization and budget reservation; keep candidates unqualified until trusted runtime observations exist. Add persistence, caller authorization, stale/concurrent allocation and no-fabricated-attestation tests. Do not claim a live mount, trusted observation, or U06 writer/drain/flush behavior. Then continue P04/P05 and remaining S3–S9/U01–U12/P01–P24 gaps.
+
+## Previous checkpoint — 2026-11-14 (P06 synthetic scenario response comparison; pushed)
 
 Code `c7b8b45ac21badaf7719f48d56a490fd537c1f75` is pushed to `origin/Mcbt5s-Backup-2`; pre-push
 fetch confirmed remote tip `bafa3d9c` with no advance. The package-owned phone dashboard now displays
