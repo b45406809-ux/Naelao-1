@@ -173,12 +173,17 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
     return sandbox.fetch(new Request("http://sandbox/_internal/profile", { method: "POST", body: JSON.stringify({ tenantId: "tenant", ...(reset ? { reset: true } : {}) }),
       headers: { "x-naelao-internal-token": token } }));
   }
+  async function privateState(body: Record<string, unknown>, suppliedToken?: string) {
+    const token = suppliedToken ?? await mintInternalToken("secret", "tenant");
+    return sandbox.fetch(new Request("http://sandbox/_internal/private-state", { method: "POST", body: JSON.stringify(body),
+      headers: { "content-type": "application/json", "x-naelao-internal-token": token } }));
+  }
   async function eraseProject() {
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" };
     return sandbox.fetch(new Request("http://sandbox/_internal/workspace/erase", { method: "POST", body: JSON.stringify({ scope, confirm: true }),
       headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken("secret", "tenant") } }));
   }
-  return { invoke, profile, transport, records, capacity, env, billing, projectMainRegistry, budgetReservations, snapshotRetentionWrites, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
+  return { invoke, profile, privateState, transport, records, capacity, env, billing, projectMainRegistry, budgetReservations, snapshotRetentionWrites, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
     setSnapshotRetentionFails: (value: boolean) => { snapshotRetentionFails = value; },
     restart: () => { sandbox = new DynamicSandboxDO(ctx as never, env as never); },
     setInfo: (v: any) => { info = v; }, hangBuild: () => { taskStarted = new Promise<void>(resolve => { markTaskStarted = resolve; }); task = new Promise<Response>(resolve => { releaseTask = resolve; }); },
@@ -190,6 +195,18 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
 afterEach(() => vi.restoreAllMocks());
 
 describe("Cloudflare dynamic execution", () => {
+  it("fails closed on private-state requests while the independent backup feature is unconfigured", async () => {
+    const r = runtime();
+    const response = await r.privateState({ tenantId: "tenant", action: "capture",
+      scope: { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" },
+      requestId: "capture-1", expectedManifestVersion: 1 });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error_code: "project_main_private_state_backup_disabled" });
+    expect(r.transport.start).not.toHaveBeenCalled();
+    const unauthorized = await r.privateState({ tenantId: "tenant" }, await mintInternalToken("secret", "other-tenant"));
+    expect(unauthorized.status).toBe(403);
+  });
+
   it("keeps one project main runtime across branch handoffs and advances its fence once", async () => {
     const r = runtime();
     const key = "tenant:space:project";

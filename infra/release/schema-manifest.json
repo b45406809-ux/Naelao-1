@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0254_twilio_extension_call_settings_revision",
+  "requiredSchemaVersion": "0255_project_main_private_state_recovery",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1019,6 +1019,10 @@
     {
       "filename": "0254_twilio_extension_call_settings_revision.sql",
       "sha256": "6c558aba6586e71d995a04d580e92200f8790457df0245e9206fd990458eab0b"
+    },
+    {
+      "filename": "0255_project_main_private_state_recovery.sql",
+      "sha256": "da9bb714225d01a97417bea9ee08417bdbbd94e7fbd9f2f88bdaf9071eff0410"
     }
   ]
 }

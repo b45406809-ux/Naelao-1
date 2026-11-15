@@ -47,6 +47,7 @@ import { promisify } from "node:util";
 import { runGuest, cancelExecution, cancelAllExecutions, executionOutput } from "./process-supervisor.mjs";
 import { ArtifactFS } from "./artifact-fs.mjs";
 import { assertWorkspaceAncestors, safeWorkspacePath } from "./workspace-path.mjs";
+import { readPrivateStatePaths, writePrivateStatePaths } from "./private-state-path.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -259,6 +260,7 @@ const SESSION_ROUTES = new Set(["/shell"]);
 const ARTIFACT_ROUTES = new Set(["/artifact/mount", "/artifact/read", "/artifact/write", "/artifact/flush"]);
 const PDF_ROUTES = new Set(["/pdf/render"]);
 const MEDIA_ROUTES = new Set(["/media/extract-audio", "/media/extract-video-frames"]);
+const PRIVATE_STATE_ROUTES = new Set(["/private-state/read", "/private-state/write"]);
 let artifactFs;
 let shuttingDown = false;
 let controlToken;
@@ -312,6 +314,7 @@ createServer((req, res) => {
   const isArtifactRoute = [...ARTIFACT_ROUTES].some((r) => path.endsWith(r));
   const isPdfRoute = [...PDF_ROUTES].some((r) => path.endsWith(r));
   const isMediaRoute = [...MEDIA_ROUTES].some((r) => path.endsWith(r));
+  const isPrivateStateRoute = [...PRIVATE_STATE_ROUTES].some((r) => path.endsWith(r));
   if (
     req.method !== "POST" ||
     (!path.endsWith("/build") &&
@@ -321,7 +324,8 @@ createServer((req, res) => {
       !isSessionRoute &&
       !isArtifactRoute &&
       !isPdfRoute &&
-      !isMediaRoute)
+      !isMediaRoute &&
+      !isPrivateStateRoute)
   ) {
     res.writeHead(404).end(JSON.stringify({ error: "not_found" }));
     return;
@@ -514,6 +518,13 @@ createServer((req, res) => {
           ? [state.split("\n")[0], state.split("\n")[1], state.split(`${marker}ENV\n`)[1] ?? ""] : ["1", cwd, ""];
         const env = Object.fromEntries(envBlock.split("\0").filter(Boolean).map((line) => { const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)]; }));
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: Number(statusLine) === 0, status: Number(statusLine), stdout: visible, stderr: String(stderr), session: { cwd: cwdLine || cwd, env } }));
+        return;
+      }
+      if (isPrivateStateRoute) {
+        const result = path.endsWith("/private-state/read")
+          ? await readPrivateStatePaths(parsed.paths, WORKSPACE_DIR)
+          : await writePrivateStatePaths(parsed.files_base64, WORKSPACE_DIR);
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
         return;
       }
       if (isWorkspaceRoute) {

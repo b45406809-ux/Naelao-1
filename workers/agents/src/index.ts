@@ -24,6 +24,8 @@ import { exportProjectMainRuntimeSettingsArchive, previewProjectMainRuntimeSetti
 import { replayWorkspaceErasureLedgerReceipt, type WorkspaceErasureLedgerReceipt } from "./workspace/phase6-erasure.js";
 import { exportPendingWorkspaceErasureReceipts, replayWorkspaceErasureBackupPage } from "./workspace/erasure-backup.js";
 import { readLatestRuntimeSnapshotRetention, sweepRuntimeSnapshotRetention } from "./workspace/runtime-snapshot-retention.js";
+import { privateStateBackupAvailability, readPrivateStateSelection, savePrivateStateSelection,
+  sweepPrivateStateBackupRetention, type PrivateStateBackupBindings } from "./workspace/private-state-backup.js";
 import { publishProjectChatUpload, MAX_COORDINATOR_UPLOAD_BYTES, type ChatUploadManifestSnapshot } from "./channels/workspace-chat-uploads.js";
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
 // Fulfills G-D01 through G-D25: Agent worker routes with DO forwarding
@@ -393,6 +395,15 @@ export interface AgentsEnv extends Cloudflare.Env {
   DYNAMIC_CONTAINER_BASE_PROFILE?: string;
   DYNAMIC_CONTAINER_MAX_INSTANCES?: string;
   DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED?: string;
+  /** Keep false until the dedicated key, regional R2 bindings, quotas and retention are configured. */
+  DYNAMIC_PRIVATE_STATE_BACKUP_ENABLED?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_KEY?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_KEY_VERSION?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_JURISDICTION?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_RETENTION_DAYS?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_QUOTA_BYTES?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_GLOBAL_R2?: R2Bucket;
+  DYNAMIC_PRIVATE_STATE_BACKUP_EU_R2?: R2Bucket;
   DOCUMENT_SANDBOX?: DurableObjectNamespace<ToolSandboxDO>;
   MEDIA_SANDBOX?: DurableObjectNamespace<ToolSandboxDO>;
   CONTAINER_IMAGE_REGISTRY?: string;
@@ -755,7 +766,7 @@ app.post("/internal/workspaces/delete-project", async c => {
   return withWorkspaceMigrationLease(c.env, body.scope, `delete-project:${body.scope.projectId.slice(-72)}`, signal =>
     handleWorkspaceProjectCleanup(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string; PLATFORM_DB?: D1Database; SCRIPTS_R2?: R2Bucket;
       TOOL_SANDBOX?: DurableObjectNamespace; DYNAMIC_SANDBOX?: DurableObjectNamespace; DOCUMENT_SANDBOX?: DurableObjectNamespace; MEDIA_SANDBOX?: DurableObjectNamespace }
-      & import("./workspace/erasure-backup.js").WorkspaceErasureBackupBindings, signal));
+      & import("./workspace/erasure-backup.js").WorkspaceErasureBackupBindings & PrivateStateBackupBindings, signal));
 });
 async function withWorkspaceMigrationLease(
   env: AgentsEnv,
@@ -5342,6 +5353,83 @@ app.get("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => 
   const runtimeStatus = await readProjectMainRuntimeStatus(c.env.PLATFORM_DB, { tenantId, spaceId, projectId });
   const snapshotRetention = await readLatestRuntimeSnapshotRetention(c.env.PLATFORM_DB,{tenantId,spaceId,projectId});
   return c.json({ ...profile, runtimeStatus, snapshotRetention, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true", provider: "cloudflare" });
+});
+
+function privateStateBackupBindings(env: AgentsEnv): PrivateStateBackupBindings {
+  return { ...(env.DYNAMIC_PRIVATE_STATE_BACKUP_ENABLED ? { enabled: env.DYNAMIC_PRIVATE_STATE_BACKUP_ENABLED } : {}),
+    ...(env.DYNAMIC_PRIVATE_STATE_BACKUP_KEY ? { key: env.DYNAMIC_PRIVATE_STATE_BACKUP_KEY } : {}),
+    ...(env.DYNAMIC_PRIVATE_STATE_BACKUP_KEY_VERSION ? { keyVersion: env.DYNAMIC_PRIVATE_STATE_BACKUP_KEY_VERSION } : {}),
+    ...(env.DYNAMIC_PRIVATE_STATE_BACKUP_JURISDICTION ? { jurisdiction: env.DYNAMIC_PRIVATE_STATE_BACKUP_JURISDICTION } : {}),
+    ...(env.DYNAMIC_PRIVATE_STATE_BACKUP_GLOBAL_R2 ? { globalBucket: env.DYNAMIC_PRIVATE_STATE_BACKUP_GLOBAL_R2 } : {}),
+    ...(env.DYNAMIC_PRIVATE_STATE_BACKUP_EU_R2 ? { euBucket: env.DYNAMIC_PRIVATE_STATE_BACKUP_EU_R2 } : {}),
+    ...(env.DYNAMIC_PRIVATE_STATE_BACKUP_RETENTION_DAYS ? { retentionDays: env.DYNAMIC_PRIVATE_STATE_BACKUP_RETENTION_DAYS } : {}),
+    ...(env.DYNAMIC_PRIVATE_STATE_BACKUP_QUOTA_BYTES ? { quotaBytes: env.DYNAMIC_PRIVATE_STATE_BACKUP_QUOTA_BYTES } : {}) };
+}
+
+app.get("/spaces/:spaceId/projects/:projectId/main-runtime-private-state", async c => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  const scope = { tenantId, spaceId, projectId };
+  const selection = await readPrivateStateSelection(c.env.PLATFORM_DB, scope);
+  const jurisdiction = c.env.DATA_JURISDICTION === "eu" ? "eu" : "global";
+  const availability = privateStateBackupAvailability(privateStateBackupBindings(c.env), jurisdiction);
+  const backups = await c.env.PLATFORM_DB.prepare(`SELECT backup_id,allocation_generation,image_fingerprint,toolchain_fingerprint,
+      ciphertext_bytes,file_count,state,created_at,expires_at FROM project_main_private_state_backups
+    WHERE tenant_id=? AND space_id=? AND project_id=? ORDER BY created_at DESC LIMIT 10`)
+    .bind(tenantId,spaceId,projectId).all<{ backup_id: string; allocation_generation: number; image_fingerprint: string;
+      toolchain_fingerprint: string; ciphertext_bytes: number; file_count: number; state: string; created_at: string; expires_at: string }>();
+  return c.json({ ...selection, backups: (backups.results ?? []).map(row => ({ backupId: row.backup_id,
+    allocationGeneration: row.allocation_generation, imageFingerprint: row.image_fingerprint,
+    toolchainFingerprint: row.toolchain_fingerprint, ciphertextBytes: row.ciphertext_bytes,
+    fileCount: row.file_count, state: row.state === "available" && Date.parse(row.expires_at) <= Date.now() ? "expired" : row.state,
+    createdAt: row.created_at, expiresAt: row.expires_at })),
+    backupAvailability: availability, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true",
+    restoreBehavior: "add_missing_files_only", privatePath: ".naelao/private/", providerSnapshotPurgeSupported: false });
+});
+
+app.put("/spaces/:spaceId/projects/:projectId/main-runtime-private-state", async c => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId, userId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  const body = await c.req.json<{ paths?: unknown; expected_version?: number }>().catch(() => null);
+  if (!body || typeof body.expected_version !== "number") return c.json({ error_code: "project_main_private_state_manifest_invalid" }, 400);
+  try {
+    const saved = await savePrivateStateSelection(c.env.PLATFORM_DB, { tenantId,spaceId,projectId },
+      { paths: body.paths, expectedVersion: body.expected_version, actorId: userId });
+    return c.json(saved);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "project_main_private_state_manifest_failed";
+    if (code === "project_main_private_state_manifest_version_conflict") return c.json({ error_code: code }, 409);
+    if (["project_main_private_state_manifest_invalid", "project_main_private_state_paths_invalid"].includes(code)) return c.json({ error_code: code }, 400);
+    throw error;
+  }
+});
+
+async function invokeProjectMainPrivateState(c: Context<{ Bindings: AgentsEnv }>, input: {
+  spaceId: string; projectId: string; tenantId: string; body: Record<string, unknown>;
+}): Promise<Response> {
+  if (!c.env.DYNAMIC_SANDBOX || c.env.DYNAMIC_CONTAINERS_ENABLED !== "true")
+    return c.json({ error_code: "managed_runtime_profiles_unavailable" }, 503);
+  const stub = c.env.DYNAMIC_SANDBOX.get(c.env.DYNAMIC_SANDBOX.idFromName(`sandbox:${input.spaceId}:${input.projectId}`));
+  return stub.fetch(new Request("http://sandbox/_internal/private-state", { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, input.tenantId) },
+    body: JSON.stringify({ tenantId: input.tenantId, scope: { tenantId: input.tenantId, spaceId: input.spaceId,
+      projectId: input.projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" }, ...input.body }) }));
+}
+
+app.post("/spaces/:spaceId/projects/:projectId/main-runtime-private-state/backups", async c => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  const body = await c.req.json<{ request_id?: string; expected_version?: number }>().catch(() => null);
+  if (!body || typeof body.request_id !== "string" || typeof body.expected_version !== "number")
+    return c.json({ error_code: "project_main_private_state_request_invalid" }, 400);
+  return invokeProjectMainPrivateState(c, { spaceId,projectId,tenantId,
+    body: { action: "capture", requestId: body.request_id, expectedManifestVersion: body.expected_version } });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/main-runtime-private-state/backups/:backupId/restore", async c => {
+  const { spaceId, projectId, backupId } = c.req.param();
+  const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  return invokeProjectMainPrivateState(c, { spaceId,projectId,tenantId,body: { action: "restore", backupId } });
 });
 
 app.put("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => {
@@ -10672,6 +10760,9 @@ export default {
     if (controller.cron === "*/5 * * * *") {
       const snapshotRetention = await sweepRuntimeSnapshotRetention(env.PLATFORM_DB).catch(() => -1);
       if (snapshotRetention > 0) console.log("workspace_runtime_snapshot_ttl_elapsed_unverified", { count: snapshotRetention });
+      const privateStateRetention = await sweepPrivateStateBackupRetention(env.PLATFORM_DB, privateStateBackupBindings(env))
+        .catch(() => ({ deleted: 0, pending: 1, examined: 0 }));
+      if (privateStateRetention.pending > 0) console.warn("project_main_private_state_retention_attention", privateStateRetention);
       if (env.WORKSPACE_ERASURE_BACKUP_R2 || env.WORKSPACE_ERASURE_BACKUP_EU_R2) {
         const backedUp = await exportPendingWorkspaceErasureReceipts(env.PLATFORM_DB, env).catch(() => ({ exported: 0, pending: 0, failed: 1 }));
         if (backedUp.pending || backedUp.failed) console.warn("workspace_erasure_backup_attention", backedUp);

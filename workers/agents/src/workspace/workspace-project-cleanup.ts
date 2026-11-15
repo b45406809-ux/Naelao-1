@@ -3,8 +3,9 @@ import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "
 import { validateWorkspaceScope, type WorkspaceScope } from "./workspace-contract.js";
 import { advanceWorkspaceErasureCursor, beginProjectWorkspaceErasure, finalizeProjectSandboxDataErasure, restartCompletedWorkspaceErasure, workspaceErasureTombstone } from "./phase6-erasure.js";
 import { exportWorkspaceErasureReceipt, type WorkspaceErasureBackupBindings } from "./erasure-backup.js";
+import { eraseProjectPrivateStateBackups, type PrivateStateBackupBindings } from "./private-state-backup.js";
 
-type CleanupEnv = WorkspaceCoordinatorBindings & WorkspaceErasureBackupBindings & {
+type CleanupEnv = WorkspaceCoordinatorBindings & WorkspaceErasureBackupBindings & PrivateStateBackupBindings & {
   PLATFORM_SECRET?: string;
   PLATFORM_DB?: D1Database;
   BROWSER_WORKER?: Fetcher;
@@ -303,6 +304,13 @@ export async function handleWorkspaceProjectCleanup(request: Request, env: Clean
     }
   }
   if (!tombstone) return Response.json({ error_code: "workspace_erasure_tombstone_missing" }, { status: 503 });
+
+  try {
+    const privateState = await eraseProjectPrivateStateBackups(env.PLATFORM_DB, env, scope);
+    if (privateState.pending > 0) return Response.json({ error_code: "workspace_private_state_erasure_pending", ...privateState }, { status: 503 });
+  } catch {
+    return Response.json({ error_code: "workspace_private_state_erasure_retry_required" }, { status: 503 });
+  }
 
   let runtimeErasure: { notified: number; pending: number };
   try { runtimeErasure = await notifyWorkspaceRuntimes(env, scope); }

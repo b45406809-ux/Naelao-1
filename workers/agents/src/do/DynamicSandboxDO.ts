@@ -5,6 +5,9 @@ import { ToolSandboxDO, type ContainerRuntime } from "./ToolSandboxDO.js";
 import { parseApprovedContainerImages, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import { assertDynamicPlan, dynamicCreditsPerHour, dynamicPlanLimits, isDynamicProfile, selectDynamicProfile, type DynamicProfile } from "../script-engine/dynamic-containers.js";
 import { recordRuntimeSnapshotRetention, updateRuntimeSnapshotRetention, type RuntimeSnapshotRetentionRecord } from "../workspace/runtime-snapshot-retention.js";
+import { createPrivateStateBackup, privateStateBackupConfig, readPrivateStateBackup, readPrivateStateSelection,
+  type PrivateStateBackupBindings } from "../workspace/private-state-backup.js";
+import { validateWorkspaceScope, type WorkspaceScope } from "../workspace/workspace-contract.js";
 
 interface DynamicBindings {
   PLATFORM_SECRET: string;
@@ -16,6 +19,14 @@ interface DynamicBindings {
   DYNAMIC_CONTAINER_BASE_PROFILE?: string;
   DYNAMIC_CONTAINER_MAX_INSTANCES?: string;
   DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_ENABLED?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_KEY?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_KEY_VERSION?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_JURISDICTION?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_RETENTION_DAYS?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_QUOTA_BYTES?: string;
+  DYNAMIC_PRIVATE_STATE_BACKUP_GLOBAL_R2?: R2Bucket;
+  DYNAMIC_PRIVATE_STATE_BACKUP_EU_R2?: R2Bucket;
 }
 interface Selection {
   image: string; profile: DynamicProfile; owner: string; fingerprint: string; tier: string;
@@ -35,6 +46,7 @@ interface SavedSnapshot {
 interface Capacity { holder: string; tenant: string; expiresAt: number }
 interface PendingSnapshotRetention { snapshot: SavedSnapshot; record: RuntimeSnapshotRetentionRecord }
 const SNAPSHOT_RECOVERY_TTL_MS = 29 * 24 * 60 * 60 * 1000;
+const PRIVATE_STATE_HARNESS_PORT = 8080;
 function snapshotMetadataInvalid(snapshot: SavedSnapshot): boolean {
   return snapshot.sizeBytes !== undefined && (!Number.isSafeInteger(snapshot.sizeBytes) || snapshot.sizeBytes < 0)
     || snapshot.allocationGeneration !== undefined && (!Number.isSafeInteger(snapshot.allocationGeneration) || snapshot.allocationGeneration < 0)
@@ -73,6 +85,16 @@ export class DynamicSandboxDO extends ToolSandboxDO {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname === "/_internal/private-state") {
+      const body = await request.json<{ tenantId?: string; scope?: unknown; action?: string; requestId?: string;
+        expectedManifestVersion?: number; backupId?: string }>().catch(() => ({} as { tenantId?: string; scope?: unknown; action?: string;
+          requestId?: string; expectedManifestVersion?: number; backupId?: string }));
+      if (!body.tenantId || !this.bindings.PLATFORM_SECRET || !await verifyInternalToken(
+        request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.bindings.PLATFORM_SECRET)) {
+        return new Response(null, { status: 403 });
+      }
+      return this.enqueueSerialized(() => this.privateStateOperation(body));
+    }
     if (new URL(request.url).pathname === "/_internal/profile") {
       const scope: { tenantId?: string; reset?: boolean } = await request.json<{ tenantId?: string; reset?: boolean }>().catch(() => ({}));
       if (!scope.tenantId || !this.bindings.PLATFORM_SECRET || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
@@ -134,6 +156,83 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     if (restoreCandidate && !response.ok && !await this.ctx.storage.get("dynamic_snapshot_restore_error"))
       await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_restore_failed");
     return response;
+  }
+
+  private privateStateBindings(): PrivateStateBackupBindings {
+    const value = this.bindings;
+    return { ...(value.DYNAMIC_PRIVATE_STATE_BACKUP_ENABLED ? { enabled: value.DYNAMIC_PRIVATE_STATE_BACKUP_ENABLED } : {}),
+      ...(value.DYNAMIC_PRIVATE_STATE_BACKUP_KEY ? { key: value.DYNAMIC_PRIVATE_STATE_BACKUP_KEY } : {}),
+      ...(value.DYNAMIC_PRIVATE_STATE_BACKUP_KEY_VERSION ? { keyVersion: value.DYNAMIC_PRIVATE_STATE_BACKUP_KEY_VERSION } : {}),
+      ...(value.DYNAMIC_PRIVATE_STATE_BACKUP_JURISDICTION ? { jurisdiction: value.DYNAMIC_PRIVATE_STATE_BACKUP_JURISDICTION } : {}),
+      ...(value.DYNAMIC_PRIVATE_STATE_BACKUP_GLOBAL_R2 ? { globalBucket: value.DYNAMIC_PRIVATE_STATE_BACKUP_GLOBAL_R2 } : {}),
+      ...(value.DYNAMIC_PRIVATE_STATE_BACKUP_EU_R2 ? { euBucket: value.DYNAMIC_PRIVATE_STATE_BACKUP_EU_R2 } : {}),
+      ...(value.DYNAMIC_PRIVATE_STATE_BACKUP_RETENTION_DAYS ? { retentionDays: value.DYNAMIC_PRIVATE_STATE_BACKUP_RETENTION_DAYS } : {}),
+      ...(value.DYNAMIC_PRIVATE_STATE_BACKUP_QUOTA_BYTES ? { quotaBytes: value.DYNAMIC_PRIVATE_STATE_BACKUP_QUOTA_BYTES } : {}) };
+  }
+
+  private privateStateOperation(body: { tenantId?: string; scope?: unknown; action?: string; requestId?: string;
+    expectedManifestVersion?: number; backupId?: string }): Promise<Response> {
+    return this.runPrivateStateOperation(body).catch(error => {
+      const code = error instanceof Error ? error.message : "project_main_private_state_failed";
+      const status = code.includes("disabled") || code.includes("unavailable") || code.includes("unconfigured") ? 503
+        : code.includes("erased") ? 410 : code.includes("stale") || code.includes("changed") || code.includes("incompatible") ? 409
+          : code.includes("invalid") || code.includes("limit") || code.includes("quota") || code.includes("secret") || code.includes("unsupported") ? 400 : 503;
+      return Response.json({ error_code: code }, { status });
+    });
+  }
+
+  private async runPrivateStateOperation(body: { tenantId?: string; scope?: unknown; action?: string; requestId?: string;
+    expectedManifestVersion?: number; backupId?: string }): Promise<Response> {
+    if (!body.scope || !validateWorkspaceScope(body.scope) || body.scope.tenantId !== body.tenantId
+      || (body.action !== "capture" && body.action !== "restore")) return Response.json({ error_code: "project_main_private_state_request_invalid" }, { status: 400 });
+    const scope = body.scope;
+    const config = privateStateBackupConfig(this.privateStateBindings(), scope.jurisdiction);
+    const selection = await this.ctx.storage.get<Selection>("dynamic_selection");
+    if (!selection?.projectMain || selection.tenantId !== scope.tenantId || selection.spaceId !== scope.spaceId
+      || selection.projectId !== scope.projectId) return Response.json({ error_code: "project_main_private_state_runtime_scope_mismatch" }, { status: 409 });
+    const db = this.bindings.PLATFORM_DB;
+    if (!db) return Response.json({ error_code: "project_main_private_state_database_unavailable" }, { status: 503 });
+    const savedSelection = await readPrivateStateSelection(db, scope);
+    if (savedSelection.version < 1 || !savedSelection.paths.length) return Response.json({ error_code: "project_main_private_state_selection_empty" }, { status: 409 });
+    if (body.action === "capture" && (!body.requestId || !Number.isSafeInteger(body.expectedManifestVersion)
+      || body.expectedManifestVersion !== savedSelection.version)) return Response.json({ error_code: "project_main_private_state_request_invalid" }, { status: 400 });
+    if (body.action === "restore" && (!body.backupId || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.backupId)))
+      return Response.json({ error_code: "project_main_private_state_request_invalid" }, { status: 400 });
+    if (!this.container?.running) return Response.json({ error_code: "project_main_private_state_runtime_not_active" }, { status: 409 });
+    const generation = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
+    if (!Number.isSafeInteger(generation) || generation < 1) return Response.json({ error_code: "project_main_private_state_generation_unavailable" }, { status: 409 });
+    const imageFingerprint = await digest(selection.image);
+    const toolchainFingerprint = await digest(JSON.stringify({ image: selection.image, profile: selection.profile }));
+    const port = this.container.getTcpPort(PRIVATE_STATE_HARNESS_PORT);
+    const encode = (bytes: Uint8Array) => {
+      let value = "";
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) value += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+      return btoa(value);
+    };
+    if (body.action === "capture") {
+      const response = await port.fetch(new Request("http://sandbox/private-state/read", { method: "POST",
+        headers: { "content-type": "application/json" }, body: JSON.stringify({ paths: savedSelection.paths }) }));
+      if (!response.ok) return Response.json({ error_code: "project_main_private_state_capture_failed" }, { status: 503 });
+      const result = await response.json<{ files_base64?: Record<string, string> }>();
+      const files = Object.entries(result.files_base64 ?? {}).map(([path, encoded]) => ({ path,
+        bytes: Uint8Array.from(atob(encoded), character => character.charCodeAt(0)) }));
+      const backup = await createPrivateStateBackup(db, this.privateStateBindings(), scope, {
+        requestId: body.requestId!, expectedManifestVersion: body.expectedManifestVersion!, allocationGeneration: generation,
+        imageFingerprint, toolchainFingerprint, files,
+      });
+      return Response.json({ backup, selectionVersion: savedSelection.version, encrypted: true,
+        providerSnapshotPurge: "not_supported" });
+    }
+    const restored = await readPrivateStateBackup(db, this.privateStateBindings(), scope, { backupId: body.backupId!,
+      allocationGeneration: generation, imageFingerprint, toolchainFingerprint });
+    const response = await port.fetch(new Request("http://sandbox/private-state/write", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ files_base64: Object.fromEntries(
+        restored.files.map(file => [file.path, encode(file.bytes)])) }) }));
+    if (!response.ok) return Response.json({ error_code: "project_main_private_state_restore_failed", backupId: restored.metadata.backupId }, { status: 503 });
+    const receipt = await response.json<{ written_paths?: string[]; preserved_paths?: string[] }>();
+    return Response.json({ backupId: restored.metadata.backupId, restoredPaths: receipt.written_paths ?? [],
+      preservedPaths: receipt.preserved_paths ?? [], imageFingerprint, toolchainFingerprint, encrypted: true,
+      providerSnapshotPurge: "not_supported" });
   }
 
   private async resetSnapshot(): Promise<Response> {

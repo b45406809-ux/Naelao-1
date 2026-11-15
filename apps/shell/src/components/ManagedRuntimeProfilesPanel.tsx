@@ -3,17 +3,22 @@
 import * as React from "react";
 import {
   getManagedRuntimeProfile,
+  captureProjectMainPrivateState,
   getProjectMainRuntimeProfile,
+  getProjectMainPrivateState,
   getWorkspaceRetentionPolicy,
   getSidecarRuntimeExecutionProfile,
   getSidecarArtifactTransfers,
   listContainerInstallations,
   resetManagedRuntimeProfile,
+  restoreProjectMainPrivateState,
+  saveProjectMainPrivateState,
   saveProjectMainRuntimeProfile,
   saveWorkspaceRetentionPolicy,
   saveSidecarRuntimeExecutionProfile,
   type ManagedRuntimeProfile,
   type ProjectMainRuntimeProfile,
+  type ProjectMainPrivateState,
   type SidecarRuntimeExecutionProfile,
   type SidecarArtifactTransferReceipt,
   type SessionCredentials,
@@ -44,6 +49,10 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
   const [mainProfile, setMainProfile] = React.useState<ProjectMainRuntimeProfile | null>(null);
   const [mainProfileDraft, setMainProfileDraft] = React.useState<ProjectMainRuntimeProfile["profile"] | "">("");
   const [mainProfileError, setMainProfileError] = React.useState("");
+  const [privateState, setPrivateState] = React.useState<ProjectMainPrivateState | null>(null);
+  const [privateStateDraft, setPrivateStateDraft] = React.useState("");
+  const [privateStateError, setPrivateStateError] = React.useState("");
+  const [privateStateCaptureRequestId, setPrivateStateCaptureRequestId] = React.useState<string | null>(null);
   const [retentionPolicy, setRetentionPolicy] = React.useState<WorkspaceRetentionPolicy | null>(null);
   const [retentionDaysDraft, setRetentionDaysDraft] = React.useState("7");
   const [legalHoldDraft, setLegalHoldDraft] = React.useState(false);
@@ -59,6 +68,9 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     setMainProfile(null);
     setMainProfileDraft("");
     setMainProfileError("");
+    setPrivateState(null);
+    setPrivateStateDraft("");
+    setPrivateStateError("");
     setRetentionPolicy(null);
     setRetentionDaysDraft("7");
     setLegalHoldDraft(false);
@@ -66,7 +78,7 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     setRetentionReasonDraft("");
     setRetentionError("");
     try {
-      const [inventory, savedMainProfile, savedRetentionPolicy] = await Promise.all([
+      const [inventory, savedMainProfile, savedRetentionPolicy, savedPrivateState] = await Promise.all([
         listContainerInstallations(spaceId, stableSession, projectId),
         getProjectMainRuntimeProfile(spaceId, projectId, stableSession).catch((failure) => {
           setMainProfileError(failure instanceof Error ? failure.message : "Main computer profile unavailable");
@@ -76,12 +88,21 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
           setRetentionError(failure instanceof Error ? failure.message : "Workspace retention policy unavailable");
           return null;
         }),
+        getProjectMainPrivateState(spaceId, projectId, stableSession).catch((failure) => {
+          setPrivateStateError(failure instanceof Error ? failure.message : "Private-state recovery settings unavailable");
+          return null;
+        }),
       ]);
       const { installations } = inventory;
       if (savedMainProfile) {
         setMainProfile(savedMainProfile);
         setMainProfileDraft(savedMainProfile.profile);
         setMainProfileError("");
+      }
+      if (savedPrivateState) {
+        setPrivateState(savedPrivateState);
+        setPrivateStateDraft(savedPrivateState.paths.join("\n"));
+        setPrivateStateError("");
       }
       if (savedRetentionPolicy) {
         setRetentionPolicy(savedRetentionPolicy);
@@ -144,6 +165,52 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
       setMainProfile(saved);
       setNotice(saved.runtimeEnabled ? "Main computer profile saved for new allocations." : "Main computer profile saved; runtime allocation remains disabled on this deployment.");
     } catch (error) { setMainProfileError(error instanceof Error ? error.message : "Main computer profile could not be saved"); }
+    finally { setBusy(null); }
+  }
+
+  function selectedPrivateStatePaths() {
+    return privateStateDraft.split(/\r?\n/).map(path => path.trim()).filter(Boolean);
+  }
+
+  async function savePrivateStateSelection() {
+    if (!privateState || busy) return;
+    setBusy("private-state-selection"); setNotice(""); setPrivateStateError("");
+    try {
+      const saved = await saveProjectMainPrivateState(spaceId, projectId, stableSession, {
+        paths: selectedPrivateStatePaths(), expected_version: privateState.version,
+      });
+      setPrivateState(current => current ? { ...current, paths: saved.paths, version: saved.version } : current);
+      setPrivateStateDraft(saved.paths.join("\n"));
+      setNotice("Private-state selection saved. No files were read or uploaded.");
+    } catch (error) { setPrivateStateError(error instanceof Error ? error.message : "Private-state selection could not be saved"); }
+    finally { setBusy(null); }
+  }
+
+  async function capturePrivateState() {
+    if (!privateState || busy || !privateState.paths.length || !privateState.backupAvailability.enabled || !privateState.runtimeEnabled) return;
+    if (!window.confirm(`Encrypt and store up to ${privateState.paths.length} explicitly selected files from .naelao/private/? Files will be capped at 512 KiB total and retained for ${privateState.backupAvailability.retentionDays} days.`)) return;
+    setBusy("private-state-capture"); setNotice(""); setPrivateStateError("");
+    const requestId = privateStateCaptureRequestId ?? crypto.randomUUID();
+    setPrivateStateCaptureRequestId(requestId);
+    try {
+      const saved = await captureProjectMainPrivateState(spaceId, projectId, stableSession, {
+        request_id: requestId, expected_version: privateState.version,
+      });
+      setPrivateStateCaptureRequestId(null);
+      setNotice(`Encrypted private-state backup ${saved.backup.backupId} recorded for generation ${saved.backup.allocationGeneration}.`);
+      await refresh();
+    } catch (error) { setPrivateStateError(error instanceof Error ? error.message : "Private-state backup failed"); }
+    finally { setBusy(null); }
+  }
+
+  async function restorePrivateState(backupId: string) {
+    if (busy || !window.confirm("Restore only selected files that are missing from .naelao/private/. Existing files will be preserved. Restore requires the same image and toolchain fingerprints and is blocked after project erasure.")) return;
+    setBusy(`private-state-restore:${backupId}`); setNotice(""); setPrivateStateError("");
+    try {
+      const result = await restoreProjectMainPrivateState(spaceId, projectId, backupId, stableSession);
+      setNotice(`Private-state recovery added ${result.restoredPaths.length} file(s) and preserved ${result.preservedPaths.length} existing file(s).`);
+      await refresh();
+    } catch (error) { setPrivateStateError(error instanceof Error ? error.message : "Private-state restore failed"); }
     finally { setBusy(null); }
   }
 
@@ -243,6 +310,39 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
             : mainProfile.snapshotRetention.state === "reference_dropped" ? "The local restore reference was removed. " : "A provider snapshot is recorded. "}
             Its recorded retention window ends {new Date(mainProfile.snapshotRetention.expiresAt).toLocaleString()}; provider-side deletion is not supported or verified.</>}
     </p>}
+    {privateState && <div style={{ borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)", padding: "12px 0", marginBottom: 12 }}>
+      <div className="section-label" style={{ margin: "0 0 6px" }}>Encrypted private-state fallback</div>
+      <p style={{ color: "var(--text3)", fontSize: 12, margin: "0 0 8px" }}>
+        Select relative paths below <code>.naelao/private/</code>. These files stay outside canonical workspace sync. Do not select credentials, browser profiles, caches, or shared workspace files. Backups use the same project scope, jurisdiction and image/toolchain fingerprints; restore adds missing files and preserves files already present. Provider snapshots remain separate and cannot be physically purged through this interface.
+      </p>
+      <label htmlFor="project-main-private-state-paths" style={{ display: "block", fontSize: 12, marginBottom: 4 }}>Selected paths (one per line)</label>
+      <textarea id="project-main-private-state-paths" rows={3} maxLength={8192} value={privateStateDraft} disabled={busy !== null}
+        placeholder="settings/preferences.json" onChange={event => setPrivateStateDraft(event.target.value)} style={{ width: "100%", maxWidth: 560 }} />
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+        <button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null || privateStateCaptureRequestId !== null
+          || privateStateDraft.split(/\r?\n/).map(path => path.trim()).filter(Boolean).join("\n") === privateState.paths.join("\n")}
+          onClick={() => void savePrivateStateSelection()}>{busy === "private-state-selection" ? "Saving…" : "Save file selection"}</button>
+        <span style={{ color: "var(--text3)", fontSize: 11 }}>Manifest revision {privateState.version} · {privateState.paths.length}/20 files selected · default is empty</span>
+      </div>
+      <p role="status" style={{ color: "var(--text3)", fontSize: 12, margin: "8px 0" }}>
+        {privateState.backupAvailability.enabled
+          ? `Encrypted backup is configured for ${privateState.backupAvailability.retentionDays} days with a ${Math.round(privateState.backupAvailability.quotaBytes / (1024 * 1024))} MiB per-Project quota.`
+          : `Encrypted backup is unavailable: ${privateState.backupAvailability.reason}. Runtime rollout remains ${privateState.runtimeEnabled ? "deployment controlled" : "disabled"}.`}
+      </p>
+      {privateStateCaptureRequestId && <p role="status" style={{ color: "var(--text3)", fontSize: 11, margin: "0 0 8px" }}>
+        The last capture response is unresolved. Retry capture with the same request ID before changing the selected paths.
+      </p>}
+      {privateState.paths.length > 0 && <button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null || !privateState.backupAvailability.enabled || !privateState.runtimeEnabled}
+        onClick={() => void capturePrivateState()}>{busy === "private-state-capture" ? "Encrypting…" : "Capture selected private state"}</button>}
+      {privateState.backups.length > 0 && <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+        {privateState.backups.map(backup => <div key={backup.backupId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: 6, fontSize: 11 }}>
+          <span>{new Date(backup.createdAt).toLocaleString()} · generation {backup.allocationGeneration} · {backup.fileCount} files · {backup.ciphertextBytes.toLocaleString()} encrypted bytes · expires {new Date(backup.expiresAt).toLocaleDateString()} · {backup.state}</span>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null || backup.state !== "available" || !privateState.runtimeEnabled || !privateState.backupAvailability.enabled}
+            onClick={() => void restorePrivateState(backup.backupId)}>{busy === `private-state-restore:${backup.backupId}` ? "Restoring…" : "Restore missing files"}</button>
+        </div>)}
+      </div>}
+      {privateStateError && <p role="alert" style={{ color: "var(--danger,#b42318)", fontSize: 12, margin: "6px 0 0" }}>{privateStateError}</p>}
+    </div>}
     {mainProfile && <ProjectMainRestartRecipesEditor spaceId={spaceId} projectId={projectId} session={stableSession} />}
     <div className="section-label">Workspace retention and legal hold</div>
     <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 12px" }}>

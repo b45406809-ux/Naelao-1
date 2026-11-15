@@ -1684,6 +1684,44 @@ export function saveProjectMainRuntimeProfile(spaceId: string, projectId: string
     method: "PUT", session, body: JSON.stringify(input),
   });
 }
+export interface ProjectMainPrivateState {
+  paths: string[];
+  version: number;
+  updatedBy: string | null;
+  updatedAt: string | null;
+  backups: Array<{ backupId: string; allocationGeneration: number; imageFingerprint: string; toolchainFingerprint: string;
+    ciphertextBytes: number; fileCount: number; state: string; createdAt: string; expiresAt: string }>;
+  backupAvailability: { enabled: true; retentionDays: number; quotaBytes: number } | { enabled: false; reason: string };
+  runtimeEnabled: boolean;
+  restoreBehavior: "add_missing_files_only";
+  privatePath: ".naelao/private/";
+  providerSnapshotPurgeSupported: false;
+}
+function projectMainPrivateStatePath(spaceId: string, projectId: string) {
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/main-runtime-private-state`;
+}
+export function getProjectMainPrivateState(spaceId: string, projectId: string, session: SessionCredentials) {
+  return apiFetch<ProjectMainPrivateState>(projectMainPrivateStatePath(spaceId, projectId), { session, cache: "no-store" });
+}
+export function saveProjectMainPrivateState(spaceId: string, projectId: string, session: SessionCredentials, input: {
+  paths: string[]; expected_version: number;
+}) {
+  return apiFetch<{ paths: string[]; version: number; changed: boolean }>(projectMainPrivateStatePath(spaceId, projectId), {
+    method: "PUT", session, body: JSON.stringify({ paths: input.paths, expected_version: input.expected_version }),
+  });
+}
+export function captureProjectMainPrivateState(spaceId: string, projectId: string, session: SessionCredentials, input: {
+  request_id: string; expected_version: number;
+}) {
+  return apiFetch<{ backup: ProjectMainPrivateState["backups"][number] & { requestId: string }; encrypted: boolean }>(
+    `${projectMainPrivateStatePath(spaceId, projectId)}/backups`, {
+      method: "POST", session, body: JSON.stringify({ request_id: input.request_id, expected_version: input.expected_version }),
+    });
+}
+export function restoreProjectMainPrivateState(spaceId: string, projectId: string, backupId: string, session: SessionCredentials) {
+  return apiFetch<{ backupId: string; restoredPaths: string[]; preservedPaths: string[]; encrypted: boolean }>(
+    `${projectMainPrivateStatePath(spaceId, projectId)}/backups/${encodeURIComponent(backupId)}/restore`, { method: "POST", session });
+}
 export interface ProjectMainRestartRecipe {
   id: string;
   label: string;
