@@ -1751,8 +1751,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       else if (baseEntry.executable !== targetEntry.executable || baseEntry.executable !== sourceEntry.executable ||
           (baseEntry.contentType ?? inferWorkspaceContentType(path)) !== (targetEntry.contentType ?? inferWorkspaceContentType(path)) ||
           (baseEntry.contentType ?? inferWorkspaceContentType(path)) !== (sourceEntry.contentType ?? inferWorkspaceContentType(path))) reason = "metadata_conflict";
-      else if (![baseEntry, targetEntry, sourceEntry].every(entry => entry.size <= THREE_WAY_TEXT_MERGE_MAX_BYTES) ||
-          !isInlineTextContentType(baseEntry.contentType ?? inferWorkspaceContentType(path))) reason = "review_required";
+      else if (![baseEntry, targetEntry, sourceEntry].every(entry => entry.size <= THREE_WAY_TEXT_MERGE_MAX_BYTES)) reason = "size_limit";
+      else if (!isInlineTextContentType(baseEntry.contentType ?? inferWorkspaceContentType(path))) reason = "review_required";
       else {
         const readTextEntry = async (entry: WorkspaceEntry): Promise<Uint8Array> => {
           if (!entry.objectKey.startsWith(contentPrefix(targetHead.scope))) throw new Error("workspace_object_scope_mismatch");

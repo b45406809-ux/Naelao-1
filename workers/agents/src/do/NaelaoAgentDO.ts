@@ -116,6 +116,7 @@ import { putBytesCas, putTextCas, readBytesWithHash, readTextWithHash } from "..
 import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
 import { handleWorkspaceCheckedPublish } from "../workspace/workspace-checked-publish-route.js";
 import type { WorkspaceScope } from "../workspace/workspace-contract.js";
+import { withWorkerMergeConflicts } from "../workspace/worker-merge-report.js";
 import { withWorkspaceManifestRead } from "../script-engine/workspace-r2-compat.js";
 import {
   buildConversationContext,
@@ -4986,19 +4987,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const ok = resp.ok && !!body.result?.ok;
           const awaitingPlanner = resp.ok && body.pending_worker_question !== undefined;
           const awaitingHuman = resp.ok && (body.pending_question !== undefined || body.pending_approval !== undefined);
-          let output = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
+          let output: unknown = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
           if (ok && workspaceBranch) {
             if (mergeWorkerWorkspace && workspaceBranch.startsWith("workers/")) {
               const conflicts = await mergeWorkerWorkspace(subId, workspaceBranch);
-              if (conflicts.length) {
-                const visible = conflicts.slice(0, 50).map(conflict => ({
-                  path: conflict.path.slice(0, 512), reason: conflict.reason.slice(0, 64),
-                  ...(conflict.otherPath ? { otherPath: conflict.otherPath.slice(0, 512) } : {}),
-                  baseHash: conflict.baseHash ?? null, targetHash: conflict.targetHash ?? null, sourceHash: conflict.sourceHash ?? null,
-                }));
-                const remaining = Math.max(0, conflicts.length - visible.length);
-                output = `${output ?? ""}\n\nWORKSPACE MERGE CONFLICTS (unapplied): ${JSON.stringify({ conflicts: visible, ...(remaining ? { omitted: remaining } : {}) })}\nAsk the planner to reconcile these paths; original worker and target branches are retained.`;
-              }
+              if (conflicts.length) output = withWorkerMergeConflicts(output, conflicts);
             }
           }
           const modifiedFiles = output && typeof output === "object" && Array.isArray((output as Record<string, unknown>)["modifiedFiles"])

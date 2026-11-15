@@ -142,6 +142,38 @@ async function call(instance: WorkspaceCoordinatorDO, path: string, body?: unkno
   return instance.fetch(new Request(`https://workspace${path}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) }));
 }
 
+async function createMergeConflictCase(input: {
+  path: string;
+  base: string;
+  worker: string | null;
+  owner: string;
+  contentType?: string;
+}) {
+  const { instance, objects } = setup();
+  const baseBytes = new TextEncoder().encode(input.base);
+  const baseHash = await sha256Hex(baseBytes);
+  const baseKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${baseHash}`;
+  objects.set(baseKey, baseBytes);
+  await call(instance, "/v1/initialize", { scope, branch: "main", entries: [
+    { path: input.path, sha256: baseHash, size: baseBytes.byteLength, executable: false, objectKey: baseKey,
+      ...(input.contentType ? { contentType: input.contentType } : {}) },
+  ] });
+  await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/review-conflict" });
+  const worker = await (await call(instance, "/v1/open", { scope, branch: "runs/review-conflict", actorId: "worker", runtimeId: "runtime-worker", allocationGeneration: 1 })).json() as { session: { id: string } };
+  const owner = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "runtime-owner", allocationGeneration: 1 })).json() as { session: { id: string } };
+  const workerCheckpoint = await call(instance, "/v1/checkpoint", { sessionId: worker.session.id, allocationGeneration: 1, fence: 0,
+    baseRevision: 1, idempotencyKey: "worker-review-conflict", changes: [{ path: input.path, expectedHash: baseHash,
+      contentBase64: input.worker === null ? null : btoa(input.worker), ...(input.contentType ? { contentType: input.contentType } : {}) }] });
+  const ownerCheckpoint = await call(instance, "/v1/checkpoint", { sessionId: owner.session.id, allocationGeneration: 1, fence: 0,
+    baseRevision: 1, idempotencyKey: "owner-review-conflict", changes: [{ path: input.path, expectedHash: baseHash,
+      contentBase64: btoa(input.owner), ...(input.contentType ? { contentType: input.contentType } : {}) }] });
+  expect(workerCheckpoint.status).toBe(200);
+  expect(ownerCheckpoint.status).toBe(200);
+  const merge = await call(instance, "/v1/merge", { sessionId: worker.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0,
+    idempotencyKey: "review-conflict-merge" });
+  return { instance, merge };
+}
+
 describe("WorkspaceCoordinatorDO checked publication", () => {
   it("archives current committed branch heads, merge bases and referenced bytes, then restores idempotently", async () => {
     const source = setup();
@@ -1259,6 +1291,29 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     ] } });
     expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({ entries: [{ path: "README.md" }] });
     expect(await (await call(instance, "/v1/read?branch=runs%2Fcase-collision")).json()).toMatchObject({ entries: [{ path: "Readme.md" }] });
+  });
+
+  it("keeps delete-versus-edit conflicts structured and unpublished", async () => {
+    const { instance, merge } = await createMergeConflictCase({ path: "notes.txt", base: "base\n", worker: null, owner: "owner edit\n" });
+    expect(merge.status).toBe(409);
+    expect(await merge.json()).toMatchObject({ publication: { status: "conflicted", appliedPaths: [], conflicts: [
+      { path: "notes.txt", reason: "delete_edit_or_path_collision", sourceHash: null },
+    ] } });
+    expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
+    expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({ entries: [{ path: "notes.txt" }] });
+    expect(await (await call(instance, "/v1/read?branch=runs%2Freview-conflict")).json()).toMatchObject({ entries: [] });
+  });
+
+  it.each([
+    { name: "binary content", path: "payload.bin", contentType: "application/octet-stream", base: "base\0", worker: "worker\0", owner: "owner\0", reason: "review_required" },
+    { name: "shared manifest", path: "package.json", contentType: "application/json; charset=utf-8", base: "{}", worker: "{\"worker\":true}", owner: "{\"owner\":true}", reason: "review_required" },
+    { name: "over-size text", path: "large.txt", base: "base\n", worker: "w".repeat(256 * 1024 + 1), owner: "o".repeat(256 * 1024 + 1), reason: "size_limit" },
+  ])("routes $name to explicit review without publication", async ({ path, contentType, base, worker, owner, reason }) => {
+    const { instance, merge } = await createMergeConflictCase({ path, base, worker, owner, ...(contentType ? { contentType } : {}) });
+    expect(merge.status).toBe(409);
+    expect(await merge.json()).toMatchObject({ publication: { status: "conflicted", appliedPaths: [], conflicts: [{ path, reason }] } });
+    expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
+    expect(await (await call(instance, "/v1/read?branch=runs%2Freview-conflict")).json()).toMatchObject({ head: { revision: 2 } });
   });
 
   it("requires a committed revision for writer handoff and rejects stale writes after fencing", async () => {
