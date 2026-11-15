@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0255_project_main_private_state_recovery",
+  "requiredSchemaVersion": "0256_modal_sandbox_operation_journal",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1023,6 +1023,10 @@
     {
       "filename": "0255_project_main_private_state_recovery.sql",
       "sha256": "da9bb714225d01a97417bea9ee08417bdbbd94e7fbd9f2f88bdaf9071eff0410"
+    },
+    {
+      "filename": "0256_modal_sandbox_operation_journal.sql",
+      "sha256": "1bdec40e6f1fac4fd8e5e06edc3648ba0148438d50e3d02fb72d0169cbaba8d3"
     }
   ]
 }
