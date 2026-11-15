@@ -12,7 +12,38 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pushed)
+## Latest checkpoint — 2026-11-15 (P16 Discord attachment contract reconciled; pushed)
+
+P16 source tracing confirms the active path checks the authenticated event, pairing, active Space and
+egress policy before downloading; it accepts only ephemeral CDN references and validates exact CDN
+host, event channel/attachment IDs, `ex`/`is`/`hm` query shape, expiry, no redirects, timeout, declared
+and streamed size. It stores task-scoped media in R2, then exposes only exact-message metadata/bytes
+after the active installation, provider binding and owner-declared `read_text` or `read_image` grant
+are rechecked. `read_image` is limited to one PNG/JPEG/WebP up to 480 KiB and validates bytes before
+the isolated handler. The channel setup UI and versioned capability API disclose ephemeral-only
+support, limits, retention and the ordinary-attachment restriction.
+
+The pinned official [Discord Cloudflare Workers tutorial](https://github.com/discord/discord-api-docs/blob/37148620d2324292b76047541d5f8331f81ea77a/developers/tutorials/hosting-on-cloudflare-workers.mdx)
+says ordinary Discord CDN media returns 403 from Workers and ephemeral CDN media is fetchable. The
+current [Discord message attachment schema](https://docs.discord.com/developers/resources/message)
+documents attachment URLs and `ephemeral` lifetime, but not the `ex`/`is`/`hm` signing format. Keep
+that query validation fail-closed and treat its shape as unverified until authorized provider events
+confirm it. No relay or provider bypass was added. P16 remains PARTIAL for ordinary media, audio/raw
+binary support, query-contract verification and live acceptance.
+
+Local verification: `workers/agents` Discord media and capability suites **9/9**. The existing wider
+P16 route/image authorization evidence remains local mock evidence; no live Discord event, deployment
+or provider acceptance ran. Rollouts remain disabled and `infra/scripts/__pycache__/` remains
+untouched.
+
+Exact next action: continue P17's remaining Marketplace-to-Shell identity handoff. Trace the current
+Marketplace session claims, selected listing/purchase scope and Shell session issuer; implement a
+short-lived, single-use, exact-listing handoff only if both sides can verify the same identity without
+putting bearer credentials in a redirect URL, then add caller, replay, expiry and cross-account tests.
+If the identities cannot be linked safely from existing authority, record that exact contract gap and
+continue the next independent code requirement. Keep all rollouts disabled.
+
+## Previous checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pushed)
 
 Added the signed, bounded, read-only `inventory.listLowStock.v1` action to the MicroApp contract and
 host runtime. It reuses the same owner/admin actor, Space/Project scope, active installation and exact

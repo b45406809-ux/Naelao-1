@@ -1,5 +1,30 @@
 # Managed services and sidecar implementation progress
 
+## Latest checkpoint — 2026-11-15 (P16 contract/source-to-caller audit; no code change)
+
+Traced Discord attachments from the authenticated and paired provider event through bounded download
+and task-scoped R2 storage to the internal attachment index and isolated handler. Ingress accepts only
+ephemeral URLs on the exact Discord CDN host/path, checks the `ex`/`is`/`hm` query shape and expiry,
+uses no redirects with a timeout, and enforces declared and streamed byte limits. The host returns
+only exact-message attachment metadata after the active tenant/Space/Project/install/provider binding
+and the signed `read_text`/`read_image` grant are rechecked. Image bytes are restricted to one PNG,
+JPEG or WebP up to 480 KiB and are validated before extension use. Channel capability discovery and
+setup disclose ephemeral-only support, ordinary attachment unavailability, limits and retention.
+
+The pinned official [Discord Workers tutorial](https://github.com/discord/discord-api-docs/blob/37148620d2324292b76047541d5f8331f81ea77a/developers/tutorials/hosting-on-cloudflare-workers.mdx)
+states ordinary CDN media returns 403 from Workers while ephemeral CDN media is reachable. The
+current [message schema](https://docs.discord.com/developers/resources/message) documents attachment
+URLs and ephemeral lifetime but not the signed `ex`/`is`/`hm` query format. The code remains fail-closed;
+that URL format still requires authorized provider-event verification. No relay was introduced.
+Focused local Discord media and capability tests pass **9/9**. No live Discord event or deployed
+acceptance ran. P16 remains PARTIAL for ordinary media, audio/arbitrary binary and live acceptance.
+
+Exact next action: reconcile P17 Marketplace-to-Shell identity handoff. Trace current session claims,
+listing/purchase scope and Shell identity issuance; add an exact-listing short-lived single-use handoff
+only if existing authorities can verify the same account safely, and test caller scope/replay/expiry/
+cross-account denial. Otherwise record the precise identity contract gap and advance to an independent
+uncoded S2–S9/U01–U12/P01–P24 item. Preserve untracked `infra/scripts/__pycache__/`; rollout remains off.
+
 ## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pushed)
 
 Implemented signed `inventory.listLowStock.v1` through the existing MicroApp runtime. Owner/admin,

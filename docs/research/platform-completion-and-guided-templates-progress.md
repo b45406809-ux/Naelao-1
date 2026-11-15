@@ -1,5 +1,29 @@
 # Platform completion and guided templates progress
 
+## Latest checkpoint — 2026-11-15 (P16 Discord contract/source-to-caller audit; no code change)
+
+The P16 path is locally bounded end to end: authenticated/paired event and active-Space checks,
+ephemeral-only exact Discord CDN host/path, signed-query shape and expiry, no redirects, timeout,
+declared/streamed size caps, task-scoped R2 retention, and owner-approved exact-install/provider-
+bound `read_text` or `read_image` access. `read_image` permits one PNG/JPEG/WebP up to 480 KiB and
+validates bytes before extension use. The versioned capability endpoint and channel setup view disclose
+ephemeral-only support, limits, retention and ordinary-attachment unavailability.
+
+The pinned official [Discord Cloudflare Workers tutorial](https://github.com/discord/discord-api-docs/blob/37148620d2324292b76047541d5f8331f81ea77a/developers/tutorials/hosting-on-cloudflare-workers.mdx)
+documents 403 for ordinary CDN media from Workers and access to ephemeral CDN media. The current
+[Discord message schema](https://docs.discord.com/developers/resources/message) documents attachment
+URLs and ephemeral lifetime but not the `ex`/`is`/`hm` URL-signature format used by the local validator.
+That format is still unverified against authorized provider events; the implementation remains
+fail-closed. Focused local Agents tests pass **9/9**. No live provider, Worker or deployed acceptance
+ran. No retrieval relay or provider bypass was added. P16 remains PARTIAL for ordinary attachments,
+audio/arbitrary binary and live acceptance.
+
+Exact next action: reconcile P17's missing Marketplace-to-Shell identity handoff against actual
+session issuers and purchase/listing scope. Implement a short-lived single-use exact-listing handoff
+with replay, expiry and cross-account tests only if existing authorities can prove one identity safely;
+otherwise record the precise identity-contract gap and continue another independent implementation
+item. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
 ## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pushed)
 
 Added the signed `inventory.listLowStock.v1` read-only action through MicroApp host execution. It shares
@@ -1906,7 +1930,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. `da6245fe` detects when the Cloudflare GraphQL query hits its 100-row limit and persists a `queue_analytics_row_limit_reached` alert; status remains incomplete. Current backlog/age/DLQ lack a supported source. Admin's consumer targets a different queue, retains raw payload, and has no reachable Router/service-binding path or supported `platform_admin` identity issuance. Generic replay remains uncoded pending those scope, retention/redaction and duplicate-side-effect contracts. |
 | P14 | PARTIAL | `product-end-user/logout` generation revocation and builder `/auth/revoke` are now awaited by reachable Portal/Shell/Dashboard callers; failures retain state and show retry. Product reset generation and DO cleanup are durable. localStorage bearer storage, cookie/CSRF/XSS transport decision and deployed copied-token acceptance remain. |
 | P15 | PARTIAL | Indexed bounded Blackboard paging has local scale evidence; representative relevance, membership density and deployed acceptance remain. |
-| P16 | PARTIAL | Shared Discord media bounds/disclosure plus P05's scoped text and owner-approved one-image extension modes exist locally. Image access is limited to one PNG/JPEG/WebP up to 480 KiB and rechecks exact active install/provider/message and byte signature. `db56ee37` validates Discord's signed ephemeral URL fields, event channel/attachment path IDs, expiry, response length and streamed cap before isolated use. Official Discord guidance says ordinary CDN media is blocked from Cloudflare Workers; it requires a separately operated supported retrieval host/relay. Audio/arbitrary binary access and live acceptance remain open. |
+| P16 | PARTIAL | Discord event ingress, ephemeral-only exact CDN retrieval, task-scoped storage, capability/setup disclosure, and owner-granted exact-message `read_text`/`read_image` are locally implemented. Image access is limited to one PNG/JPEG/WebP up to 480 KiB and rechecks active install/provider/message and byte signature. Official [Discord Cloudflare Workers tutorial](https://github.com/discord/discord-api-docs/blob/37148620d2324292b76047541d5f8331f81ea77a/developers/tutorials/hosting-on-cloudflare-workers.mdx) documents 403 for ordinary CDN media from Workers and access to ephemeral media. The current attachment schema does not specify the local `ex`/`is`/`hm` signature format, and no authorized real event has verified it. Ordinary media, audio/arbitrary binary, and live provider acceptance remain open; no relay or bypass is implemented. |
 | P17 | PARTIAL | Listing identity, freshness, purchase and install handoff are improved; cross-origin identity handoff and accounting policy remain. |
 | P18 | PARTIAL | Product password reset advances security generation atomically; builder/device token and deployed acceptance gaps remain. |
 | P19 | PARTIAL | Checked staging queue/workflow names and DLQs are separated from production; actual account resource identities and isolation receipts remain external. |
