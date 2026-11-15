@@ -131,7 +131,7 @@ export function AssistantPhonePanel({
     [handlerDigest, setHandlerDigest] = React.useState("");
   const [extensionAssignments, setExtensionAssignments] = React.useState<Record<string, { installation: string; digest: string }>>({});
   const [simulationInputs, setSimulationInputs] = React.useState<Record<string, string>>({});
-  const [simulationTypes, setSimulationTypes] = React.useState<Record<string, "call.received" | "call.digits" | "call.speech">>({});
+  const [simulationTypes, setSimulationTypes] = React.useState<Record<string, "call.received" | "call.digits" | "call.speech" | "transcript.final">>({});
   const [simulationResults, setSimulationResults] = React.useState<Record<string, string>>({});
   const [liveCall, setLiveCall] = React.useState<{
     code: string;
@@ -292,8 +292,11 @@ export function AssistantPhonePanel({
       if (action === "phone-event")
         setContent(JSON.stringify(result.body, null, 2));
       if (action === "phone-handler-test") {
-        const response = result.response as { actions?: Array<{ type?: string; text?: string }> } | undefined;
-        const spoken = response?.actions?.map(item => item.type === "hangup" ? "Call would end." : item.text)
+        const response = (result.response ?? result.stream_response) as { actions?: Array<{ type?: string; text?: string; input?: string; timeout_ms?: number }> } | undefined;
+        const spoken = response?.actions?.map(item => item.type === "hangup" || item.type === "end" ? "Call would end."
+          : item.type === "listen" ? `Listen for ${item.input ?? "input"}${item.timeout_ms ? ` (${Math.ceil(item.timeout_ms / 1000)}s)` : ""}.`
+          : item.type === "transfer" ? "Request handoff to the configured destination."
+          : item.text)
           .filter((item): item is string => typeof item === "string" && item.length > 0) ?? [];
         const bindingId = String(args.binding_id ?? "");
         const eventType = String(args.event_type ?? "call.speech");
@@ -386,10 +389,11 @@ export function AssistantPhonePanel({
           }}>Assign or update extension</button>{" "}
           <button type="button" onClick={() => { if (window.confirm("Detach this number and restore its prior carrier callbacks?")) void act("phone-detach", { binding_id: line.id, confirm: true }); }}>Detach number</button>
           {line.status === "active" && line.handler_status === "active" && <div>
-            <label>Test event <select value={simulationType} onChange={event => setSimulationTypes(current => ({ ...current, [line.id]: event.target.value as "call.received" | "call.digits" | "call.speech" }))}>
+            <label>Test event <select value={simulationType} onChange={event => setSimulationTypes(current => ({ ...current, [line.id]: event.target.value as "call.received" | "call.digits" | "call.speech" | "transcript.final" }))}>
               <option value="call.received">Start call greeting</option>
               <option value="call.digits">Keypad digits</option>
               {line.provider === "twilio" && <option value="call.speech">Synthetic caller speech</option>}
+              {line.provider === "telnyx" && <option value="transcript.final">Synthetic final transcript</option>}
             </select></label>
             {simulationType === "call.digits" && <label>Keypad digits <input inputMode="numeric" pattern="[0-9]{1,8}" maxLength={8} value={simulationInput}
               onChange={event => setSimulationInputs(current => ({ ...current, [line.id]: event.target.value }))}
@@ -397,12 +401,15 @@ export function AssistantPhonePanel({
             {simulationType === "call.speech" && <label>Try caller speech <textarea value={simulationInput} maxLength={2_000}
               onChange={event => setSimulationInputs(current => ({ ...current, [line.id]: event.target.value }))}
               placeholder="Enter a synthetic caller message" /></label>}
-            <button type="button" disabled={simulationType === "call.digits" ? !/^[0-9]{1,8}$/.test(simulationInput) : simulationType === "call.speech" && !simulationInput.trim()}
+            {simulationType === "transcript.final" && <label>Synthetic transcript <textarea value={simulationInput} maxLength={2_000}
+              onChange={event => setSimulationInputs(current => ({ ...current, [line.id]: event.target.value }))}
+              placeholder="Enter text as if recognized from caller audio" /></label>}
+            <button type="button" disabled={simulationType === "call.digits" ? !/^[0-9]{1,8}$/.test(simulationInput) : (simulationType === "call.speech" || simulationType === "transcript.final") && !simulationInput.trim()}
               onClick={() => void act("phone-handler-test", { binding_id: line.id, event_type: simulationType,
-                ...(simulationType === "call.digits" ? { digits: simulationInput } : simulationType === "call.speech" ? { input: simulationInput } : {}) })}>
+                ...(simulationType === "call.digits" ? { digits: simulationInput } : simulationType === "call.speech" || simulationType === "transcript.final" ? { input: simulationInput } : {}) })}>
               Run local simulation
             </button>
-            <p>This runs the active signed handler with a synthetic {line.provider === "telnyx" ? "call or DTMF" : "call, DTMF, or speech"} event. It does not contact the carrier or save a call or conversation session.</p>
+            <p>This runs the active signed handler with synthetic {line.provider === "telnyx" ? "call, DTMF, or final-transcript" : "call, DTMF, or speech"} input. Transcript text is supplied directly; it is not live recognition. No carrier is contacted or call session saved.</p>
             {simulationResults[line.id] && <pre aria-label="Simulated phone response" role="status" style={{ whiteSpace: "pre-wrap" }}>{simulationResults[line.id]}</pre>}
           </div>}
         </fieldset>;

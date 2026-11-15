@@ -83,10 +83,10 @@ async function invoke(agent: NaelaoAgentDO, valid = true, expectedInstallationId
   );
 }
 async function invokeSimulation(agent: NaelaoAgentDO, input = "Can you help with order 42?", valid = true,
-  eventType: "call.received" | "call.digits" | "call.speech" = "call.speech", digits?: string, settingsSource?: "active" | "draft") {
+  eventType: "call.received" | "call.digits" | "call.speech" | "transcript.final" = "call.speech", digits?: string, settingsSource?: "active" | "draft") {
   const body = { spaceId: "space", bindingId: "binding", simulation: true, eventType,
     ...(settingsSource ? { settingsSource } : {}),
-    ...(eventType === "call.speech" && input ? { input } : {}), ...(eventType === "call.digits" && digits ? { digits } : {}) };
+    ...(eventType === "call.speech" || eventType === "transcript.final" ? { input } : {}), ...(eventType === "call.digits" && digits ? { digits } : {}) };
   return agent.fetch(
     new Request("http://agent/phone-extension", {
       method: "POST",
@@ -261,5 +261,30 @@ describe("phone extension scope dispatch", () => {
       channel_replies: [JSON.stringify({ schema_version: 1, actions: [{ type: "gather", input: "speech", text: "Speak now" }] })],
     }));
     expect((await invokeSimulation(telnyx.agent, "", true, "call.received")).status).toBe(409);
+  });
+
+  it("simulates a Telnyx final transcript with the streaming response schema and no carrier effects", async () => {
+    const f = setup(null, "telnyx");
+    f.runChannel.mockImplementationOnce(async () => ({
+      ok: true, channel_replies: [JSON.stringify({ schema_version: 1, actions: [
+        { type: "speak", text: "I can help with that." }, { type: "listen", input: "speech", timeout_ms: 5_000 },
+      ] })],
+    }));
+    const response = await invokeSimulation(f.agent, "Where is my order?", true, "transcript.final");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ simulation: true, settings_source: "active", response: {
+      schema_version: 1, actions: [
+        { type: "speak", text: "I can help with that." }, { type: "listen", input: "speech", timeout_ms: 5_000 },
+      ],
+    } });
+    const call = f.runChannel.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(call).toMatchObject({ channel: { provider: "phone", event: { payload: {
+      voice_event: "transcript.final", text: "Where is my order?", caller: "simulation", provider: "telnyx",
+    } } } });
+    expect(f.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='phone_extension_events'").toArray()).toEqual([]);
+
+    f.runChannel.mockImplementationOnce(async () => ({ ok: true, channel_replies: [JSON.stringify({ schema_version: 1,
+      actions: [{ type: "transfer", target: "+263771234567" }] })] }));
+    expect((await invokeSimulation(f.agent, "Transfer me", true, "transcript.final")).status).toBe(409);
   });
 });

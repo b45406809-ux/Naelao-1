@@ -1009,7 +1009,9 @@ describe("assistant telephone safety and lifecycle", () => {
     .resolves.toMatchObject({ simulation: true, event: { eventType: "call.received" } });
   await expect(f.act("phone-handler-test", { binding_id: f.binding.id, event_type: "call.digits", digits: "1" }))
     .resolves.toMatchObject({ simulation: true, event: { eventType: "call.digits", digits: "1" } });
-  expect(dispatch).toHaveBeenCalledTimes(2);
+  await expect(f.act("phone-handler-test", { binding_id: f.binding.id, event_type: "transcript.final", input: "Synthetic transcript" }))
+    .resolves.toMatchObject({ simulation: true, event: { eventType: "transcript.final", input: "Synthetic transcript" } });
+  expect(dispatch).toHaveBeenCalledTimes(3);
   expect(f.provider).not.toHaveBeenCalled();
   await expect(f.act("phone-handler-test", { binding_id: f.binding.id, event_type: "call.digits", digits: "1#" }))
     .rejects.toThrow("phone_simulation_input_invalid");
@@ -1017,7 +1019,9 @@ describe("assistant telephone safety and lifecycle", () => {
     .rejects.toThrow("phone_simulation_input_invalid");
   await expect(f.act("phone-handler-test", { binding_id: f.binding.id, event_type: "call.speech", input: "hello" }, false, false))
     .rejects.toThrow("human_control_required");
-  expect(dispatch).toHaveBeenCalledTimes(2);
+  await expect(f.act("phone-handler-test", { binding_id: f.binding.id, event_type: "transcript.final", input: "" }))
+    .rejects.toThrow("phone_simulation_input_invalid");
+  expect(dispatch).toHaveBeenCalledTimes(3);
  });
 
  it("shows owner-scoped Telnyx call-cost summaries without exposing provider call IDs",async()=>{

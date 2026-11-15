@@ -30,7 +30,7 @@ async function testRequest(body: Record<string, unknown>, token?: string, env?: 
 }
 
 describe("internal phone simulation route", () => {
-  it("forwards only normalized call-start and DTMF inputs to the local SpaceDO simulator", async () => {
+  it("forwards only normalized call, DTMF and synthetic transcript inputs to the local SpaceDO simulator", async () => {
     const f = fixture();
     const start = await testRequest({ spaceId: "space-a", bindingId: "binding-a", eventType: "call.received" }, undefined, f.env);
     expect(start.status).toBe(200);
@@ -47,13 +47,20 @@ describe("internal phone simulation route", () => {
     expect(await draft.json()).toEqual({ forwarded: {
       spaceId: "space-a", bindingId: "binding-a", eventType: "call.digits", digits: "2", settingsSource: "draft", simulation: true,
     } });
-    expect(f.dispatch).toHaveBeenCalledTimes(3);
+    const transcript = await testRequest({ spaceId: "space-a", bindingId: "binding-a", eventType: "transcript.final", input: "Synthetic transcript" }, undefined, f.env);
+    expect(transcript.status).toBe(200);
+    expect(await transcript.json()).toEqual({ forwarded: {
+      spaceId: "space-a", bindingId: "binding-a", eventType: "transcript.final", input: "Synthetic transcript", simulation: true,
+    } });
+    expect(f.dispatch).toHaveBeenCalledTimes(4);
   });
 
   it("rejects malformed digits, extra fields and invalid internal authentication before dispatch", async () => {
     const f = fixture();
     const malformed = await testRequest({ spaceId: "space-a", bindingId: "binding-a", eventType: "call.digits", digits: "1#" }, undefined, f.env);
     expect(malformed.status).toBe(400);
+    const missingTranscript = await testRequest({ spaceId: "space-a", bindingId: "binding-a", eventType: "transcript.final" }, undefined, f.env);
+    expect(missingTranscript.status).toBe(400);
     const extra = await testRequest({ spaceId: "space-a", bindingId: "binding-a", eventType: "call.received", caller: "+15555550100" }, undefined, f.env);
     expect(extra.status).toBe(400);
     const invalidSource = await testRequest({ spaceId: "space-a", bindingId: "binding-a", eventType: "call.received", settingsSource: "latest" }, undefined, f.env);

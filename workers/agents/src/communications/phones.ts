@@ -1732,16 +1732,16 @@ export async function handlePhoneAction(
       throw new Error("phone_handler_owner_confirmation_required");
     const eventType = body.event_type === undefined ? "call.speech" : body.event_type;
     const settingsSource = body.settings_source === undefined ? "active" : body.settings_source;
-    if (eventType !== "call.received" && eventType !== "call.digits" && eventType !== "call.speech")
+    if (eventType !== "call.received" && eventType !== "call.digits" && eventType !== "call.speech" && eventType !== "transcript.final")
       throw new Error("phone_simulation_event_invalid");
     if (settingsSource !== "active" && settingsSource !== "draft") throw new Error("phone_simulation_settings_source_invalid");
     const input = typeof body.input === "string" ? body.input.trim() : "";
     const digits = typeof body.digits === "string" ? body.digits : "";
-    if (eventType === "call.speech" && (!input || new TextEncoder().encode(input).byteLength > 2_000)
+    if ((eventType === "call.speech" || eventType === "transcript.final") && (!input || new TextEncoder().encode(input).byteLength > 2_000)
       || eventType === "call.digits" && !/^[0-9]{1,8}$/.test(digits)
       || eventType === "call.received" && (body.input !== undefined || body.digits !== undefined)
       || eventType === "call.digits" && body.input !== undefined
-      || eventType === "call.speech" && body.digits !== undefined)
+      || (eventType === "call.speech" || eventType === "transcript.final") && body.digits !== undefined)
       throw new Error("phone_simulation_input_invalid");
     const r = await env.AGENTS_WORKER.fetch(new Request("http://agents/internal/phone-extension-test", {
       method: "POST",
@@ -1752,7 +1752,7 @@ export async function handlePhoneAction(
       },
       body: JSON.stringify({ bindingId: binding.id, spaceId: scope.spaceId, eventType,
         ...(settingsSource === "draft" ? { settingsSource } : {}),
-        ...(eventType === "call.speech" ? { input } : {}), ...(eventType === "call.digits" ? { digits } : {}) }),
+        ...(eventType === "call.speech" || eventType === "transcript.final" ? { input } : {}), ...(eventType === "call.digits" ? { digits } : {}) }),
     }));
     if (!r.ok) {
       const result = await r.json<{ error_code?: string }>().catch(() => ({} as { error_code?: string }));

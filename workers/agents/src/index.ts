@@ -1307,12 +1307,13 @@ app.post('/internal/phone-extension-test',async c=>{
  if(typeof body.spaceId!=='string'||typeof body.bindingId!=='string'
    ||Object.keys(body).some(key=>!['spaceId','bindingId','eventType','input','digits','settingsSource'].includes(key))
    ||settingsSource!=='active'&&settingsSource!=='draft'
-   ||eventType!=='call.received'&&eventType!=='call.digits'&&eventType!=='call.speech'
+   ||eventType!=='call.received'&&eventType!=='call.digits'&&eventType!=='call.speech'&&eventType!=='transcript.final'
    ||eventType==='call.speech'&&(!input||new TextEncoder().encode(input).byteLength>2_000||body.digits!==undefined)
+   ||eventType==='transcript.final'&&(!input||new TextEncoder().encode(input).byteLength>2_000||body.digits!==undefined)
    ||eventType==='call.digits'&&(!/^[0-9]{1,8}$/.test(digits)||body.input!==undefined)
    ||eventType==='call.received'&&(body.input!==undefined||body.digits!==undefined))return c.json({error_code:'phone_simulation_input_invalid'},400);
  const stub=await getAgentDOForSpace(c.env,tenant,body.spaceId,'naelao-agent');
- const testBody={spaceId:body.spaceId,bindingId:body.bindingId,eventType,...(settingsSource==='draft'?{settingsSource}:{}),...(eventType==='call.speech'?{input}:{}),...(eventType==='call.digits'?{digits}:{})};
+ const testBody={spaceId:body.spaceId,bindingId:body.bindingId,eventType,...(settingsSource==='draft'?{settingsSource}:{}),...(eventType==='call.speech'||eventType==='transcript.final'?{input}:{}),...(eventType==='call.digits'?{digits}:{})};
  return stub.fetch(new Request('http://agent/phone-extension',{method:'POST',headers:{'content-type':'application/json','x-naelao-tenant-id':tenant,'x-naelao-internal-token':await mintInternalToken(c.env.PLATFORM_SECRET,tenant)},body:JSON.stringify({...testBody,simulation:true})}));
 });
 

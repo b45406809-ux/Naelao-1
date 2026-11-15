@@ -19,7 +19,7 @@ import { clearChannelExtensionConversationSessions, clearChannelExtensionSession
 import { resolveExtensionProjectKnowledge } from "../channels/extension-knowledge-selection.js";
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { createScaleDownProcessor } from "../shared/scaledown.js";
-import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, type DocumentProcessingGateway } from "@naelao/agent-sdk";
+import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, validateVoiceExtensionStreamResponse, type DocumentProcessingGateway } from "@naelao/agent-sdk";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
 
 type AssistantApprovalPolicySnapshot = {
@@ -9868,7 +9868,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       pinCall?: boolean; settingsRevision?: number | null;
       settingsSource?: "active" | "draft";
       expectedInstallationId?: string; expectedHandlerSha256?: string;
-      eventType?: "call.received" | "call.digits" | "call.speech";
+      eventType?: "call.received" | "call.digits" | "call.speech" | "transcript.final";
       event?: { id: string; type: string; payload: Record<string, unknown> };
     }>(new Response(request.body), 16_384);
     const hasExpectedHandler = body.expectedInstallationId !== undefined || body.expectedHandlerSha256 !== undefined;
@@ -9907,8 +9907,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const input = typeof body.input === "string" ? body.input.trim() : "";
     const eventType = body.eventType ?? "call.speech";
     const digits = typeof body.digits === "string" ? body.digits : "";
-    if (simulation && (eventType !== "call.received" && eventType !== "call.digits" && eventType !== "call.speech"
+    if (simulation && (eventType !== "call.received" && eventType !== "call.digits" && eventType !== "call.speech" && eventType !== "transcript.final"
       || eventType === "call.speech" && (!input || new TextEncoder().encode(input).byteLength > 2_000 || body.digits !== undefined)
+      || eventType === "transcript.final" && (row.provider !== "telnyx" || !input || new TextEncoder().encode(input).byteLength > 2_000 || body.digits !== undefined)
       || eventType === "call.digits" && (!/^[0-9]{1,8}$/.test(digits) || body.input !== undefined)
       || eventType === "call.received" && (body.input !== undefined || body.digits !== undefined)
       || row.provider === "telnyx" && eventType === "call.speech"))
@@ -9917,6 +9918,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ? { id: `simulation-${crypto.randomUUID()}`, type: eventType, payload: {
         caller: "simulation",
         ...(eventType === "call.speech" ? { speech: input } : {}), ...(eventType === "call.digits" ? { digits } : {}),
+        ...(eventType === "transcript.final" ? { call_ref: `call_${crypto.randomUUID().replace(/-/g, "")}`, sequence: 0, text: input } : {}),
       } }
       : body.event;
     if (!simulation && row.provider === "telnyx" && event?.type.startsWith("call.")
@@ -9992,6 +9994,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!raw || new TextEncoder().encode(raw).byteLength > 8_192)
         return Response.json({ error_code: "phone_simulation_output_invalid" }, { status: 409 });
       let response: unknown;
+      if (event.type === "transcript.final") {
+        try {
+          const validatedResponse = validateVoiceExtensionStreamResponse(JSON.parse(raw));
+          if (!validatedResponse) throw new Error("invalid_phone_stream_simulation_response");
+          return Response.json({ simulation: true, settings_source: body.settingsSource ?? "active", response: validatedResponse });
+        } catch {
+          return Response.json({ error_code: "phone_simulation_output_invalid" }, { status: 409 });
+        }
+      }
       try {
         const validatedResponse = validateVoiceChannelResponse(JSON.parse(raw));
         if (!validatedResponse) throw new Error("invalid_phone_simulation_response");
