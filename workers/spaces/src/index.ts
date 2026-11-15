@@ -111,6 +111,8 @@ export interface Env {
   EXPORTS_BUCKET: R2Bucket;
   /** F-39: agent workspace bucket (read-only file viewer). Optional so tests/dev without R2 degrade. */
   SCRIPTS_R2?: R2Bucket;
+  /** Knowledge-owned source/chunk objects captured only through the owner archive flow. */
+  KB_BUCKET?: R2Bucket;
   /** Producer to the provisioning queue — consumed by naelao-provisioner. */
   PROVISION_QUEUE?: Queue<ProvisionMessage>;
   /** Producer for workflow events such as organization data erasure. */

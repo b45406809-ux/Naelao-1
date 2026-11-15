@@ -16,6 +16,8 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import {
   listKbDocuments,
   createKbDocument,
+  getRestoredKbDocumentContent,
+  reindexRestoredKbDocument,
   deleteKbDocument,
   searchKb,
   type KbDocument,
@@ -27,6 +29,7 @@ const STATUS_COLOR: Record<KbDocument["status"], "green" | "amber" | "red"> = {
   pending: "amber",
   processing: "amber",
   deleting: "amber",
+  reindex_required: "amber",
   flagged: "amber",
   failed: "red",
 };
@@ -123,6 +126,23 @@ export default function KnowledgePage() {
       if (result.state === "pending") show("Deletion is still in progress. This list will update when cleanup finishes.");
     } catch (err) {
       show(err instanceof Error ? err.message : "Couldn't delete that document");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleReindexRestoredDocument(doc: KbDocument) {
+    if (!creds || doc.status !== "reindex_required") return;
+    if (!window.confirm("Rebuild search indexes for this restored document from its archived chunks? This sends the stored text through the current Knowledge indexing path and may use Workers AI, Vectorize, and optional AutoRAG resources.")) return;
+    setBusyId(doc.id);
+    try {
+      const source = await getRestoredKbDocumentContent(activeSpaceId, doc.id, creds);
+      await reindexRestoredKbDocument(activeSpaceId, doc.id, creds, { title: source.title, content: source.content });
+      show("Knowledge indexes rebuilt from the restored chunks.");
+      await refresh();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Could not reindex the restored document");
+      await refresh(false);
     } finally {
       setBusyId(null);
     }
@@ -233,6 +253,9 @@ export default function KnowledgePage() {
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
                   <Badge color={STATUS_COLOR[d.status]}>{d.status}</Badge>
+                  {d.status === "reindex_required" && <Button variant="secondary" onClick={() => void handleReindexRestoredDocument(d)} disabled={busyId === d.id}>
+                    {busyId === d.id ? "Reindexing…" : "Rebuild search index"}
+                  </Button>}
                   <Button variant="secondary" onClick={() => void handleDelete(d)} disabled={busyId === d.id || d.status === "deleting"}>
                     {busyId === d.id || d.status === "deleting" ? "Deleting…" : "Delete"}
                   </Button>

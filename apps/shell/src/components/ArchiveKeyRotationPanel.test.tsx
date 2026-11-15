@@ -15,6 +15,9 @@ describe("ArchiveKeyRotationPanel export caller", () => {
     expect(markup).toContain("supported SpaceDO rows, listed workspace/extension objects");
     expect(markup).toContain("safe per-Project main runtime profiles and inert restart recipe configuration");
     expect(markup).toContain("signed shared/project MicroApp data, action receipts and events");
+    expect(markup).toContain("indexed Knowledge documents with their chunks and required KB_BUCKET source objects");
+    expect(markup).toContain("restored documents require reindexing through the existing Knowledge path");
+    expect(markup).toContain("Vectorize and AutoRAG indexes are not restored");
     expect(markup).toContain("1 MiB per MicroApp actor");
     expect(markup).toContain("4 MiB total MicroApp data");
     expect(markup).toContain("runtime allocations, live observations, provider snapshots");
@@ -23,6 +26,8 @@ describe("ArchiveKeyRotationPanel export caller", () => {
     expect(markup).toContain("Reapprove grants after recovery");
     expect(markup).toContain("8 MiB encrypted-manifest plaintext");
     expect(markup).toContain("10,000 rows per table");
+    expect(markup).toContain("500 Knowledge documents");
+    expect(markup).toContain("2,000 Knowledge chunks");
     expect(markup).toContain("16 MiB per object");
     expect(markup).toContain("64 MiB total captured object bytes");
   });

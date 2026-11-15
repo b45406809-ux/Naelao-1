@@ -69,11 +69,100 @@ class WorkspaceStorage {
   async deleteAlarm(): Promise<void> { this.alarm = null; }
 }
 
+function newArchiveSpace(storage: unknown, env: Record<string, unknown>): SpaceDO {
+  const knowledgeWorker = env.KNOWLEDGE_WORKER ?? {
+    async fetch(request: Request) {
+      const url = new URL(request.url), parts = url.pathname.split("/");
+      const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+      const spaceId = decodeURIComponent(parts[3] ?? "");
+      if (url.pathname.endsWith("/kb/archive/export")) return Response.json({
+        snapshot: { version: 1, scope: { tenantId, spaceId }, documents: [],
+          omissions: { nonIndexedDocuments: 0, deletionFencedDocuments: 0 } },
+      });
+      if (url.pathname.endsWith("/kb/archive/preview")) return Response.json({ preview: {
+        documents: { willRestore: 0, preservedCurrent: 0, blockedByDeletion: 0, requiresReindex: 0 },
+        chunks: { willRestore: 0, preservedCurrent: 0 }, excludedObjectKeys: [],
+      } });
+      if (url.pathname.endsWith("/kb/archive/restore")) return Response.json({ restored: {
+        restoredDocuments: 0, restoredChunks: 0, preservedCurrentDocuments: 0,
+        blockedByDeletionDocuments: 0, requiresReindexDocuments: 0,
+      } });
+      return Response.json({ error_code: "not_found" }, { status: 404 });
+    },
+  };
+  return new SpaceDO(storage as never, { ...env, KNOWLEDGE_WORKER: knowledgeWorker as never,
+    KB_BUCKET: (env.KB_BUCKET ?? env.SCRIPTS_R2) as never } as never);
+}
+
 function workspaceCoordinator(storage: WorkspaceStorage, r2: ReturnType<typeof mockR2>, secret: string): WorkspaceCoordinatorDO {
   return new WorkspaceCoordinatorDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
 }
 
 describe("SpaceDO owner data operations", () => {
+  it("captures Knowledge rows and R2 objects and routes additive restore through Knowledge", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2(), kb = mockR2();
+    const content = "recoverable Knowledge text";
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
+    const contentHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const docId = "doc-archive-1", prefix = `kb/space-a/_space/${docId}/`;
+    const objectReferences = [
+      { key: `${prefix}chunk_0.json`, etag: `etag-2-${prefix}chunk_0.json`, size: 2 },
+      { key: `${prefix}chunk_0.txt`, etag: `etag-${new TextEncoder().encode(content).byteLength}-${prefix}chunk_0.txt`, size: new TextEncoder().encode(content).byteLength },
+    ];
+    await kb.put(objectReferences[0]!.key, "{}" as never);
+    await kb.put(objectReferences[1]!.key, content as never);
+    const snapshot = { version: 1, scope: { tenantId: "tenant-a", spaceId: "space-a" },
+      documents: [{ id: docId, tenant_id: "tenant-a", space_id: "space-a", project_id: null, title: "Guide", source_url: null,
+        content_type: "text", status: "indexed", chunk_count: 1, required_role_rank: 20, allowed_user_ids_json: "[\"user-a\"]",
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), chunks: [{
+          id: `${docId}_chunk_0`, tenant_id: "tenant-a", space_id: "space-a", project_id: "_space", document_id: docId,
+          chunk_index: 0, content, content_hash: contentHash, visibility: "space", required_role_rank: 20,
+          source_freshness: new Date().toISOString(), heading_path: "[]", r2_key: `${prefix}chunk_0.txt`,
+          byte_start: 0, byte_end: new TextEncoder().encode(content).byteLength, line_start: 1, line_end: 1,
+          created_at: new Date().toISOString(), deleted_at: null,
+        }], objectReferences }], omissions: { nonIndexedDocuments: 0, deletionFencedDocuments: 0 } };
+    const knowledgeCalls: string[] = [];
+    const knowledgeWorker = { async fetch(request: Request) {
+      const path = new URL(request.url).pathname;
+      knowledgeCalls.push(path);
+      if (path.endsWith("/kb/archive/export")) return Response.json({ snapshot });
+      if (path.endsWith("/kb/archive/preview")) return Response.json({ preview: {
+        documents: { willRestore: 1, preservedCurrent: 0, blockedByDeletion: 0, requiresReindex: 1 },
+        chunks: { willRestore: 1, preservedCurrent: 0 }, excludedObjectKeys: [],
+      } });
+      if (path.endsWith("/kb/archive/restore")) return Response.json({ restored: {
+        restoredDocuments: 1, restoredChunks: 1, preservedCurrentDocuments: 0,
+        blockedByDeletionDocuments: 0, requiresReindexDocuments: 1,
+      } });
+      return Response.json({ error_code: "not_found" }, { status: 404 });
+    } };
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
+      KB_BUCKET: kb as never, KNOWLEDGE_WORKER: knowledgeWorker as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers,
+      body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    const exported = await post({ action: "export", request_id: "knowledge-archive-1" });
+    expect(exported.status).toBe(201);
+    const archive = await exported.json() as { archive_id: string; coverage: { knowledgeDocuments?: number; knowledgeChunks?: number } };
+    expect(archive.coverage).toMatchObject({ knowledgeDocuments: 1, knowledgeChunks: 1 });
+    const archivedPayload = await decodeSpaceArchive(r2.objects.get(`space-archives/tenant-a/space-a/${archive.archive_id}.enc`)!.bytes,
+      secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId: archive.archive_id });
+    expect(archivedPayload.tableRows).not.toHaveProperty("kb_documents");
+    expect(archivedPayload.knowledgeSnapshot?.documents).toHaveLength(1);
+    await kb.delete(objectReferences.map(reference => reference.key));
+    const previewResponse = await post({ action: "preview_restore", archive_id: archive.archive_id });
+    expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json() as { preview_id: string; knowledge_data?: { vectors_require_reindex: number } };
+    expect(preview.knowledge_data?.vectors_require_reindex).toBe(1);
+    const restored = await post({ action: "apply_restore", archive_id: archive.archive_id, preview_id: preview.preview_id });
+    expect(restored.status).toBe(200);
+    expect(await kb.head(objectReferences[0]!.key)).toBeTruthy();
+    expect(knowledgeCalls.map(path => path.split("/").at(-1))).toEqual(["export", "preview", "preview", "restore"]);
+    expect(await restored.json()).toMatchObject({ safety_actions: { knowledge: { restoredDocuments: 1, requiresReindexDocuments: 1 } } });
+  });
+
   it("captures and previews signed MicroApp data only for the exact pinned installation", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
     const extensionId = "ext_archive_demo", version = "1.0.0", artifactSha256 = "a".repeat(64);
@@ -98,7 +187,7 @@ describe("SpaceDO owner data operations", () => {
         return Response.json({ error_code: "not_found" }, { status: 404 });
       } }; },
     };
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
       MICRO_APP_DO: microAppNamespace as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
@@ -156,7 +245,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("purges local Space data, keeps a durable erasure tombstone, and rejects later writes and restores", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
     const dataOps = (action: string) => space.fetch(new Request("https://space/data-ops", {
@@ -203,7 +292,7 @@ describe("SpaceDO owner data operations", () => {
   it("previews retention, requires an exact archive when configured, then deletes only selected messages", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough";
     const r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
@@ -241,7 +330,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("exports encrypted state, verifies same-Space restore, and replays idempotently", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    let space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    let space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
@@ -250,7 +339,7 @@ describe("SpaceDO owner data operations", () => {
     const exported = await post({ action: "export", request_id: "full-1" });
     const archive = await exported.json() as { archive_id: string };
     expect(exported.status).toBe(201);
-    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const replayed = await post({ action: "export", request_id: "full-1" });
     expect(replayed.status).toBe(200);
     expect(await replayed.json()).toMatchObject({ archive_id: archive.archive_id, replayed: true });
@@ -268,7 +357,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("inserts restored active event triggers disabled and records the safety action before owner reactivation", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
       AGENTS_WORKER: { async fetch() { return Response.json({ present: false }); } } as unknown as Fetcher } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
@@ -292,7 +381,10 @@ describe("SpaceDO owner data operations", () => {
     expect(applied.status).toBe(200);
     expect(await applied.json()).toMatchObject({ safety_actions: { restored_event_triggers_inserted_disabled: 1, restored_tasks_blocked_for_human_intervention: 0 } });
     expect(storage.sql.exec<{ enabled: number }>("SELECT enabled FROM event_triggers WHERE id=?", "trigger-a").toArray()).toEqual([{ enabled: 0 }]);
-    expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>("SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json)).toEqual({ restored_event_triggers_inserted_disabled: 1, restored_tasks_blocked_for_human_intervention: 0 });
+    expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>("SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json)).toEqual({
+      restored_event_triggers_inserted_disabled: 1, restored_tasks_blocked_for_human_intervention: 0,
+      knowledge: { restoredDocuments: 0, restoredChunks: 0, preservedCurrentDocuments: 0, blockedByDeletionDocuments: 0, requiresReindexDocuments: 0 },
+    });
     const restoreList = await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a&actor_id=owner-a", { headers }));
     expect(await restoreList.json()).toMatchObject({ restores: [{ id: preview.preview_id, status: "completed", safety_actions: { restored_event_triggers_inserted_disabled: 1 } }] });
 
@@ -307,7 +399,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("blocks restored active tasks for human review and never overwrites current or terminal task state", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers,
@@ -371,7 +463,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("excludes owner-managed grants from new archives and skips them in legacy restores", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
@@ -430,7 +522,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("keeps an uninstalled Space extension inactive when restoring an older active installation row", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers,
@@ -468,7 +560,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("previews exact merge inserts and skips without mutating current rows, then persists the applied outcome", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
       AGENTS_WORKER: { async fetch() { return Response.json({ present: false }); } } as unknown as Fetcher } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST",
@@ -510,7 +602,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("captures bounded workspace bytes and retries a checksum-verified missing-object restore without overwriting conflicts", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
@@ -633,7 +725,7 @@ describe("SpaceDO owner data operations", () => {
       }
       return Response.json({ error_code: "not_found" }, { status: 404 });
     } } as unknown as Fetcher;
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never, AGENTS_WORKER: agentsWorker } as never);
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never, AGENTS_WORKER: agentsWorker } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers,
@@ -713,7 +805,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("retries a failed archive write with the same request and archive identity", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
@@ -729,7 +821,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("resumes an interrupted v2 chunked object export and restores authenticated object bytes", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    let space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    let space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
@@ -744,7 +836,7 @@ describe("SpaceDO owner data operations", () => {
     const chunkPrefix = `space-archives/tenant-a/space-a/${first.archive_id}.chunks/`;
     expect([...r2.objects.keys()].filter(candidate => candidate.startsWith(chunkPrefix)), JSON.stringify({ response: first, keys: [...r2.objects.keys()] })).toHaveLength(1);
 
-    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const retried = await post({ action: "export", request_id: "chunked-resume-1" });
     expect(retried.status, JSON.stringify(await retried.clone().json())).toBe(201);
     expect(await retried.json()).toMatchObject({ archive_id: first.archive_id });
@@ -766,7 +858,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("resumes multipart parts after a Durable Object restart without rebuilding ciphertext", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    let space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    let space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
@@ -779,7 +871,7 @@ describe("SpaceDO owner data operations", () => {
     const parts = storage.sql.exec<{ completed_parts_json: string }>("SELECT completed_parts_json FROM space_archive_uploads WHERE archive_id=?", first.archive_id).toArray()[0]?.completed_parts_json;
     expect(JSON.parse(parts ?? "[]")).toHaveLength(1);
     expect(storage.sql.exec<{ bytes: Uint8Array }>("SELECT encrypted_bytes AS bytes FROM space_archive_uploads WHERE archive_id=?", first.archive_id).toArray()[0]?.bytes.byteLength).toBeGreaterThan(5 * 1024 * 1024);
-    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const retried = await post({ action: "export", request_id: "multipart-resume-1" });
     expect(retried.status).toBe(201);
     expect(await retried.json()).toMatchObject({ archive_id: first.archive_id, resumed: true });
@@ -790,7 +882,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("rewraps v2 object chunks before switching the archive pointer and removes old-key chunks", async () => {
     const storage = createDOStorage(), oldSecret = "space-data-ops-test-secret-long-enough", newKey = "new-archive-key-material-long-enough-2026", r2 = mockR2();
-    let space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: oldSecret, SCRIPTS_R2: r2 as never } as never);
+    let space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: oldSecret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(oldSecret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
@@ -811,7 +903,7 @@ describe("SpaceDO owner data operations", () => {
     const oldChunkKey = captured.chunks[0]!.key;
     expect(r2.objects.has(oldChunkKey)).toBe(true);
 
-    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: oldSecret, SPACE_ARCHIVE_KEY: newKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-11",
+    space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: oldSecret, SPACE_ARCHIVE_KEY: newKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-11",
       SPACE_ARCHIVE_KEY_PREVIOUS: oldSecret, SPACE_ARCHIVE_KEY_PREVIOUS_ID: "platform-secret-hkdf-v1", SCRIPTS_R2: r2 as never } as never);
     const rewrapped = await post({ action: "rewrap_archive", archive_id: archiveId });
     expect(rewrapped.status, JSON.stringify(await rewrapped.clone().json())).toBe(200);
@@ -830,14 +922,14 @@ describe("SpaceDO owner data operations", () => {
   it("rewraps an archive to the active key before removing the previous copy", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", nextKey = "new-archive-key-secret-material-over-32";
     const r2 = mockR2();
-    let space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    let space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
     const exported = await post({ action: "export", request_id: "rewrap-archive-1" });
     const archive = await exported.json() as { archive_id: string };
     const recordBefore = storage.sql.exec<{ object_key: string }>("SELECT object_key FROM space_archive_records WHERE archive_id=?", archive.archive_id).toArray()[0]!;
-    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SPACE_ARCHIVE_KEY: nextKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-10", SPACE_ARCHIVE_KEY_PREVIOUS: secret, SPACE_ARCHIVE_KEY_PREVIOUS_ID: "archive-2026-04", SCRIPTS_R2: r2 as never } as never);
+    space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SPACE_ARCHIVE_KEY: nextKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-10", SPACE_ARCHIVE_KEY_PREVIOUS: secret, SPACE_ARCHIVE_KEY_PREVIOUS_ID: "archive-2026-04", SCRIPTS_R2: r2 as never } as never);
     const result = await post({ action: "rewrap_archive", archive_id: archive.archive_id });
     expect(result.status, JSON.stringify(await result.clone().json())).toBe(200);
     const recordAfter = storage.sql.exec<{ object_key: string }>("SELECT object_key FROM space_archive_records WHERE archive_id=?", archive.archive_id).toArray()[0]!;
@@ -852,7 +944,7 @@ describe("SpaceDO owner data operations", () => {
   it("resumes a bounded bulk rewrap job after a Durable Object restart", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", nextKey = "rotated-archive-key-material-with-more-than-32-chars";
     const r2 = mockR2();
-    let space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    let space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
@@ -863,7 +955,7 @@ describe("SpaceDO owner data operations", () => {
       const archive = await response.json() as { archive_id: string };
       originalKeys.push(storage.sql.exec<{ object_key: string }>("SELECT object_key FROM space_archive_records WHERE archive_id=?", archive.archive_id).toArray()[0]!.object_key);
     }
-    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SPACE_ARCHIVE_KEY: nextKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-10", SPACE_ARCHIVE_KEY_PREVIOUS: secret, SPACE_ARCHIVE_KEY_PREVIOUS_ID: "archive-2026-04", SCRIPTS_R2: r2 as never } as never);
+    space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SPACE_ARCHIVE_KEY: nextKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-10", SPACE_ARCHIVE_KEY_PREVIOUS: secret, SPACE_ARCHIVE_KEY_PREVIOUS_ID: "archive-2026-04", SCRIPTS_R2: r2 as never } as never);
     let result = await post({ action: "start_rewrap_archives" });
     const started = await result.json() as { job_id: string; status: string };
     expect(started.status).toBe("active");
@@ -873,7 +965,7 @@ describe("SpaceDO owner data operations", () => {
     expect(await post({ action: "get_rewrap_archives", job_id: started.job_id }).then(response => response.json())).toMatchObject({ status: "blocked", scanned_count: 0 });
     result = await post({ action: "resume_rewrap_archives", job_id: started.job_id });
     expect(await result.json()).toMatchObject({ status: "active", scanned_count: 3, rewrapped_count: 3 });
-    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SPACE_ARCHIVE_KEY: nextKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-10", SPACE_ARCHIVE_KEY_PREVIOUS: secret, SPACE_ARCHIVE_KEY_PREVIOUS_ID: "archive-2026-04", SCRIPTS_R2: r2 as never } as never);
+    space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SPACE_ARCHIVE_KEY: nextKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-10", SPACE_ARCHIVE_KEY_PREVIOUS: secret, SPACE_ARCHIVE_KEY_PREVIOUS_ID: "archive-2026-04", SCRIPTS_R2: r2 as never } as never);
     result = await post({ action: "resume_rewrap_archives", job_id: started.job_id });
     expect(await result.json()).toMatchObject({ status: "completed", scanned_count: 5, rewrapped_count: 5 });
     expect(storage.sql.exec<{ status: string }>("SELECT status FROM space_archive_rewrap_jobs WHERE job_id=?", started.job_id).toArray()[0]?.status).toBe("completed");
@@ -884,7 +976,7 @@ describe("SpaceDO owner data operations", () => {
 
   it("rolls back all restore writes when deferred foreign keys fail at commit", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
     const token = await mintInternalToken(secret, "tenant-a");
     const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));

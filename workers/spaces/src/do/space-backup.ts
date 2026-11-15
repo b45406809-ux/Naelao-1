@@ -21,6 +21,14 @@ export interface SpaceArchivePayload {
   microAppSnapshots?: MicroAppArchiveSnapshot[];
   /** Explicit coverage limits for per-user, legacy/unsigned, and never-initialized app actors. */
   microAppArchiveOmissions?: { privateScopeInstallations: number; unsupportedInstallations: number; uninitializedActors: number };
+  /** Tenant/Space-bound Knowledge D1 rows; R2 bytes remain in the archive object snapshot set. */
+  knowledgeSnapshotVersion?: 1;
+  knowledgeSnapshot?: {
+    version: 1;
+    scope: { tenantId: string; spaceId: string };
+    documents: Array<Record<string, unknown>>;
+    omissions: { nonIndexedDocuments: number; deletionFencedDocuments: number };
+  };
   /** Absent only in legacy archives written before object-byte capture was added. */
   objectSnapshots?: Array<SpaceArchiveObjectSnapshot | SpaceArchiveChunkedObjectSnapshot>;
   selectionFingerprint?: string;

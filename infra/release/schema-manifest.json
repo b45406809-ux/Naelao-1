@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0258_telnyx_extension_voice_runtime",
+  "requiredSchemaVersion": "0259_kb_archive_acl_source",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1035,6 +1035,10 @@
     {
       "filename": "0258_telnyx_extension_voice_runtime.sql",
       "sha256": "9aa3c3141eeeda3bb4c803d7b7a49a4179998de2be6c62e458e79206c316c09f"
+    },
+    {
+      "filename": "0259_kb_archive_acl_source.sql",
+      "sha256": "377f7490c0cf9d63e99ab1399be6f3a844ad90fcd69d3fbd2bc60ca63b217250"
     }
   ]
 }

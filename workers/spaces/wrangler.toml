@@ -153,6 +153,10 @@ bucket_name = "naelao-exports"
 binding = "SCRIPTS_R2"
 bucket_name = "naelao-agent-scripts"
 
+[[r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb"
+
 # KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
 [[kv_namespaces]]
 binding = "NAELAO_CONFIG_KV"
@@ -331,6 +335,10 @@ bucket_name = "naelao-exports-staging"
 binding = "SCRIPTS_R2"
 bucket_name = "naelao-agent-scripts-staging"
 
+[[env.staging.r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb-staging"
+
 # KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
 
 [[env.staging.kv_namespaces]]
@@ -447,6 +455,10 @@ bucket_name = "naelao-exports"
 [[env.production.r2_buckets]]
 binding = "SCRIPTS_R2"
 bucket_name = "naelao-agent-scripts"
+
+[[env.production.r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb"
 
 # KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
 

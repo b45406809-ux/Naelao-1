@@ -98,7 +98,7 @@ const SPACE_ARCHIVE_PERMISSION_TABLES = [
 const SPACE_ARCHIVE_EXCLUDED_TABLES = [
   "space_retention_policies", "space_storage_measurements", "space_archive_records", "space_archive_uploads",
   "space_retention_previews", "space_archive_restore_previews", "space_archive_restores", "space_retention_events",
-  "space_erasure_tombstones", ...SPACE_ARCHIVE_PERMISSION_TABLES,
+  "space_erasure_tombstones", "kb_documents", ...SPACE_ARCHIVE_PERMISSION_TABLES,
 ] as const;
 const SPACE_ARCHIVE_EXCLUDED_TABLE_SET: ReadonlySet<string> = new Set(SPACE_ARCHIVE_EXCLUDED_TABLES);
 const SPACE_ARCHIVE_EXCLUDED_TABLE_SQL = SPACE_ARCHIVE_EXCLUDED_TABLES.map(table => `'${table}'`).join(",");
@@ -112,6 +112,9 @@ type SpaceArchiveCoverage = {
   projectWorkspaces: number;
   projectRuntimeSettings: number;
   signedMicroAppActors: number;
+  knowledgeDocuments?: number;
+  knowledgeChunks?: number;
+  knowledgeOmissions?: { nonIndexedDocuments: number; deletionFencedDocuments: number };
   microAppOmissions: { privateScopeInstallations: number; unsupportedInstallations: number; uninitializedActors: number };
 };
 
@@ -127,6 +130,12 @@ function summarizeSpaceArchiveCoverage(payload: SpaceArchivePayload, kind: Space
     projectWorkspaces: payload.workspaceSnapshots?.length ?? 0,
     projectRuntimeSettings: payload.projectRuntimeSettings?.length ?? 0,
     signedMicroAppActors: payload.microAppSnapshots?.length ?? 0,
+    ...(payload.knowledgeSnapshot ? {
+      knowledgeDocuments: payload.knowledgeSnapshot.documents.length,
+      knowledgeChunks: payload.knowledgeSnapshot.documents.reduce((sum, document) =>
+        sum + (Array.isArray(document.chunks) ? document.chunks.length : 0), 0),
+      knowledgeOmissions: payload.knowledgeSnapshot.omissions,
+    } : {}),
     microAppOmissions: {
       privateScopeInstallations: omissions.privateScopeInstallations,
       unsupportedInstallations: omissions.unsupportedInstallations,
@@ -142,6 +151,11 @@ function parseSpaceArchiveCoverage(value: string | null | undefined): SpaceArchi
     if (parsed.version !== 1 || !["full", "retention_messages"].includes(String(parsed.kind))
       || ![parsed.spaceTables, parsed.spaceRows, parsed.capturedObjects, parsed.projectWorkspaces,
         parsed.projectRuntimeSettings, parsed.signedMicroAppActors].every(item => Number.isSafeInteger(item) && Number(item) >= 0)
+      || parsed.knowledgeDocuments !== undefined && (!Number.isSafeInteger(parsed.knowledgeDocuments) || Number(parsed.knowledgeDocuments) < 0)
+      || parsed.knowledgeChunks !== undefined && (!Number.isSafeInteger(parsed.knowledgeChunks) || Number(parsed.knowledgeChunks) < 0)
+      || parsed.knowledgeOmissions !== undefined && (!parsed.knowledgeOmissions
+        || ![parsed.knowledgeOmissions.nonIndexedDocuments, parsed.knowledgeOmissions.deletionFencedDocuments]
+          .every(item => Number.isSafeInteger(item) && Number(item) >= 0))
       || !parsed.microAppOmissions || ![parsed.microAppOmissions.privateScopeInstallations,
         parsed.microAppOmissions.unsupportedInstallations, parsed.microAppOmissions.uninitializedActors]
         .every(item => Number.isSafeInteger(item) && Number(item) >= 0)) return null;
@@ -199,6 +213,63 @@ function isSpaceArchiveWorkspaceSnapshot(value: unknown, expected: { projectId: 
     }
   }
   return branches.has("main") && bases.every(base => branches.has(base.parentBranch));
+}
+
+function isSpaceArchiveKnowledgeSnapshot(value: unknown, expected: { tenantId: string; spaceId: string }): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Record<string, unknown>;
+  const scope = snapshot.scope as Record<string, unknown> | null;
+  const omissions = snapshot.omissions as Record<string, unknown> | null;
+  if (snapshot.version !== 1 || !scope || scope.tenantId !== expected.tenantId || scope.spaceId !== expected.spaceId
+    || !Array.isArray(snapshot.documents) || snapshot.documents.length > 500 || !omissions
+    || ![omissions.nonIndexedDocuments, omissions.deletionFencedDocuments].every(item => Number.isSafeInteger(item) && Number(item) >= 0)) return false;
+  const seenDocuments = new Set<string>(), seenObjects = new Set<string>();
+  let totalChunks = 0, totalBytes = 0, totalObjects = 0, totalObjectBytes = 0;
+  for (const candidate of snapshot.documents) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const document = candidate as Record<string, unknown>;
+    const id = document.id, projectId = document.project_id;
+    if (typeof id !== "string" || !id || id.length > 256 || seenDocuments.has(id)
+      || document.tenant_id !== expected.tenantId || document.space_id !== expected.spaceId
+      || projectId !== null && (typeof projectId !== "string" || !projectId || projectId.length > 256)
+      || typeof document.title !== "string" || document.title.length > 500 || typeof document.content_type !== "string"
+      || document.status !== "indexed" || !Number.isSafeInteger(document.chunk_count) || Number(document.chunk_count) < 0
+      || !Number.isSafeInteger(document.required_role_rank) || Number(document.required_role_rank) < 0 || Number(document.required_role_rank) > 50
+      || typeof document.allowed_user_ids_json !== "string" || !Array.isArray(document.chunks)
+      || document.chunks.length !== document.chunk_count || !Array.isArray(document.objectReferences)
+      || !Number.isFinite(Date.parse(String(document.created_at))) || !Number.isFinite(Date.parse(String(document.updated_at)))) return false;
+    let acl: unknown;
+    try { acl = JSON.parse(document.allowed_user_ids_json); } catch { return false; }
+    if (!Array.isArray(acl) || acl.length > 100 || acl.some(userId => typeof userId !== "string" || !userId || userId.length > 256)) return false;
+    seenDocuments.add(id);
+    const projectScope = projectId ?? "_space";
+    for (const [index, rawChunk] of document.chunks.entries()) {
+      if (!rawChunk || typeof rawChunk !== "object" || Array.isArray(rawChunk)) return false;
+      const chunk = rawChunk as Record<string, unknown>;
+      if (chunk.id !== `${id}_chunk_${index}` || chunk.tenant_id !== expected.tenantId || chunk.space_id !== expected.spaceId
+        || chunk.project_id !== projectScope || chunk.document_id !== id || chunk.chunk_index !== index
+        || typeof chunk.content !== "string" || typeof chunk.content_hash !== "string" || !/^[a-f0-9]{64}$/.test(chunk.content_hash)
+        || !Number.isSafeInteger(chunk.required_role_rank) || Number(chunk.required_role_rank) < 0 || Number(chunk.required_role_rank) > 50
+        || typeof chunk.r2_key !== "string" || chunk.deleted_at !== null) return false;
+    }
+    const prefix = `kb/${expected.spaceId}/${projectScope}/${id}/`;
+    const keysForDoc = new Set<string>();
+    for (const rawReference of document.objectReferences) {
+      if (!rawReference || typeof rawReference !== "object" || Array.isArray(rawReference)) return false;
+      const reference = rawReference as Record<string, unknown>;
+      if (typeof reference.key !== "string" || !reference.key.startsWith(prefix)
+        || !/^(?:original|chunk_[0-9]{1,5}\.(?:json|txt))$/.test(reference.key.slice(prefix.length))
+        || typeof reference.etag !== "string" || !reference.etag || !Number.isSafeInteger(reference.size)
+        || Number(reference.size) < 0 || Number(reference.size) > MAX_ARCHIVE_CHUNKED_OBJECT_BYTES
+        || seenObjects.has(reference.key)) return false;
+      keysForDoc.add(reference.key); seenObjects.add(reference.key); totalObjects++; totalObjectBytes += Number(reference.size);
+    }
+    if (document.chunks.some((_, index) => !keysForDoc.has(`${prefix}chunk_${index}.json`) || !keysForDoc.has(`${prefix}chunk_${index}.txt`))) return false;
+    totalChunks += document.chunks.length;
+    totalBytes += new TextEncoder().encode(JSON.stringify(document)).byteLength;
+  }
+  return totalChunks <= 2_000 && totalBytes <= 3 * 1024 * 1024 && totalObjects <= 5_000
+    && totalObjectBytes <= MAX_ARCHIVE_CHUNKED_CAPTURE_BYTES;
 }
 
 async function templateDraftKey(secret: string, tenantId: string, spaceId: string): Promise<CryptoKey> {
@@ -3136,12 +3207,16 @@ export interface SpaceDOEnv {
   SPACE_ARCHIVE_KEY_PREVIOUS_ID?: string;
   /** Project starter artifacts are mirrored into the workspace bucket at install time. */
   SCRIPTS_R2?: R2Bucket;
+  /** Direct archive access to the separate Knowledge object bucket. */
+  KB_BUCKET?: R2Bucket;
   ACTION_RECEIPT_HMAC_KEY?: string;
   ACTION_RECEIPT_HMAC_KEY_PREV?: string;
   ACTION_RECEIPT_KEY_VERSION?: string;
   ACTION_RECEIPT_KEY_VERSION_PREV?: string;
   /** Agents worker — used for lifecycle actions and authenticated project-workspace archive snapshots. */
   AGENTS_WORKER?: Fetcher;
+  /** Knowledge canonical D1 rows and ACL/deletion-fenced archive operations. */
+  KNOWLEDGE_WORKER?: Fetcher;
   /** MicroAppDO namespace — exact signed app actors and their receipts participate in full Space archives. */
   MICRO_APP_DO?: DurableObjectNamespace;
   /** §A1.17 Phase V — naelao-ws-gateway, for live-syncing a mutation to a space's connected
@@ -4457,6 +4532,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const workspaceSnapshots: SpaceArchiveWorkspaceSnapshot[] = [];
       const projectRuntimeSettings: SpaceArchiveProjectRuntimeSettingsSnapshot[] = [];
       const microAppSnapshots: MicroAppArchiveSnapshot[] = [];
+      let knowledgeSnapshot: SpaceArchivePayload["knowledgeSnapshot"];
       const microAppArchiveOmissions = { privateScopeInstallations: 0, unsupportedInstallations: 0, uninitializedActors: 0 };
       let microAppSnapshotBytes = 0;
       let projectRuntimeSettingsBytes = 0;
@@ -4472,6 +4548,43 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
         const jurisdiction: "global" | "eu" = this.env.DATA_JURISDICTION === "eu" ? "eu" : "global";
         const knownObjectKeys = new Set(objectReferences.map(ref => ref.key));
+        if (!this.env.KNOWLEDGE_WORKER || !this.env.KB_BUCKET) {
+          return Response.json({ error_code: "archive_knowledge_store_unavailable" }, { status: 503 });
+        }
+        let knowledgeResponse: Response;
+        try {
+          knowledgeResponse = await this.env.KNOWLEDGE_WORKER.fetch(new Request(
+            `http://knowledge-worker/internal/spaces/${encodeURIComponent(spaceId)}/kb/archive/export`, {
+              method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+                "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) }, body: "{}",
+            }));
+        } catch {
+          return Response.json({ error_code: "archive_knowledge_export_unavailable" }, { status: 503 });
+        }
+        if (!knowledgeResponse.ok) {
+          const detail = await readBoundedResponseJson<{ error_code?: unknown }>(knowledgeResponse, 8 * 1024).catch(() => null);
+          const code = typeof detail?.error_code === "string" && /^[a-z0-9_]{1,96}$/.test(detail.error_code)
+            ? detail.error_code : "archive_knowledge_export_failed";
+          return Response.json({ error_code: code }, { status: [409, 413].includes(knowledgeResponse.status) ? knowledgeResponse.status as 409 | 413 : 503 });
+        }
+        const knowledge = await readBoundedResponseJson<{ snapshot?: unknown }>(knowledgeResponse, 4 * 1024 * 1024).catch(() => null);
+        if (!knowledge || !isSpaceArchiveKnowledgeSnapshot(knowledge.snapshot, { tenantId, spaceId })) {
+          return Response.json({ error_code: "archive_knowledge_snapshot_invalid" }, { status: 503 });
+        }
+        const parsedKnowledgeSnapshot = knowledge.snapshot as NonNullable<SpaceArchivePayload["knowledgeSnapshot"]>;
+        knowledgeSnapshot = parsedKnowledgeSnapshot;
+        const knowledgeObjectReferences = parsedKnowledgeSnapshot.documents.flatMap(document =>
+          Array.isArray(document.objectReferences) ? document.objectReferences as Array<Record<string, unknown>> : []);
+        for (const reference of knowledgeObjectReferences) {
+          if (typeof reference.key !== "string" || !reference.key.startsWith(`kb/${spaceId}/`)
+            || typeof reference.etag !== "string" || !Number.isSafeInteger(reference.size) || Number(reference.size) < 0
+            || knownObjectKeys.has(reference.key)) {
+            return Response.json({ error_code: "archive_knowledge_object_reference_invalid" }, { status: 503 });
+          }
+          knownObjectKeys.add(reference.key);
+          objectReferences.push({ key: reference.key, etag: reference.etag, size: Number(reference.size) });
+          if (objectReferences.length > 5000) return Response.json({ error_code: "archive_object_reference_limit_exceeded" }, { status: 413 });
+        }
         for (const project of tableRows.projects ?? []) {
           if (project.space_id !== spaceId || typeof project.id !== "string" || !project.id) continue;
           if (!this.env.AGENTS_WORKER) return Response.json({ error_code: "archive_workspace_coordinator_unavailable", project_id: project.id }, { status: 503 });
@@ -4644,7 +4757,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const objectSnapshots: NonNullable<SpaceArchivePayload["objectSnapshots"]> = [];
       for (let objectIndex = 0; objectIndex < objectReferences.length; objectIndex++) {
         const ref = objectReferences[objectIndex]!;
-        const source = await this.env.SCRIPTS_R2.get(ref.key);
+        const sourceBucket = ref.key.startsWith(`kb/${spaceId}/`) ? this.env.KB_BUCKET : this.env.SCRIPTS_R2;
+        if (!sourceBucket) return Response.json({ error_code: ref.key.startsWith(`kb/${spaceId}/`) ? "archive_knowledge_store_unavailable" : "archive_workspace_bucket_unavailable" }, { status: 503 });
+        const source = await sourceBucket.get(ref.key);
         if (!source || source.etag !== ref.etag || source.size !== ref.size) {
           if (useChunkedObjects) await deleteSpaceArchiveChunkObjects(this.env.SCRIPTS_R2, { tenantId, spaceId, archiveId }).catch(() => undefined);
           return Response.json({ error_code: "archive_object_changed_during_export", archive_id: archiveId, key: ref.key }, { status: 409 });
@@ -4665,6 +4780,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const maxMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
       const payload: SpaceArchivePayload = { format: "naelao-space-archive", formatVersion: useChunkedObjects ? 2 : 1, tenantId, spaceId, archiveId, createdAt: now, migrationVersion: maxMigration, tableRows, rowCounts, objectReferences, objectSnapshots,
         ...(workspaceSnapshots.length ? { workspaceSnapshots } : {}), ...(projectRuntimeSettings.length ? { projectRuntimeSettingsVersion: 1 as const, projectRuntimeSettings } : {}),
+        ...(knowledgeSnapshot ? { knowledgeSnapshotVersion: 1 as const, knowledgeSnapshot } : {}),
         ...(microAppSnapshots.length || Object.values(microAppArchiveOmissions).some(count => count > 0)
           ? { microAppSnapshotsVersion: 1 as const, ...(microAppSnapshots.length ? { microAppSnapshots } : {}),
             ...(Object.values(microAppArchiveOmissions).some(count => count > 0) ? { microAppArchiveOmissions } : {}) } : {}),
@@ -4857,6 +4973,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           if (payload.formatVersion === 1) snapshotBytesByKey.set(snapshot.key, bytes);
         }
       }
+      const hasKnowledgeSnapshot = Object.prototype.hasOwnProperty.call(payload, "knowledgeSnapshot")
+        || Object.prototype.hasOwnProperty.call(payload, "knowledgeSnapshotVersion");
+      const knowledgeSnapshot = payload.knowledgeSnapshot;
+      if (hasKnowledgeSnapshot && (payload.knowledgeSnapshotVersion !== 1
+        || !isSpaceArchiveKnowledgeSnapshot(knowledgeSnapshot, { tenantId, spaceId }))) {
+        return Response.json({ error_code: "archive_knowledge_snapshot_invalid" }, { status: 422 });
+      }
+      if (knowledgeSnapshot?.documents.some(document => typeof document.project_id === "string"
+        && !(payload.tableRows.projects ?? []).some(project => project.id === document.project_id && project.space_id === spaceId))) {
+        return Response.json({ error_code: "archive_knowledge_project_scope_mismatch" }, { status: 422 });
+      }
       const hasWorkspaceSnapshots = Object.prototype.hasOwnProperty.call(payload, "workspaceSnapshots");
       const workspaceSnapshots = payload.workspaceSnapshots ?? [];
       if (hasWorkspaceSnapshots && !Array.isArray(payload.workspaceSnapshots)) return Response.json({ error_code: "archive_workspace_snapshot_set_invalid" }, { status: 422 });
@@ -4916,12 +5043,56 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       let objectRestoreRequiredCount = 0;
       const seenObjectKeys = new Set<string>();
+      const knowledgeObjectKeys = new Set((knowledgeSnapshot?.documents ?? []).flatMap(document =>
+        Array.isArray(document.objectReferences) ? document.objectReferences.flatMap(reference =>
+          reference && typeof reference === "object" && typeof (reference as Record<string, unknown>).key === "string"
+            ? [String((reference as Record<string, unknown>).key)] : []) : []));
+      let knowledgeRestorePreview: { documents: { willRestore: number; preservedCurrent: number; blockedByDeletion: number; requiresReindex: number };
+        chunks: { willRestore: number; preservedCurrent: number }; excludedObjectKeys: string[] } | null = null;
+      let knowledgeRestoreId: string | null = null;
+      const knowledgeExcludedObjectKeys = new Set<string>();
+      if (knowledgeSnapshot) {
+        if (!this.env.KNOWLEDGE_WORKER || !this.env.KB_BUCKET) return Response.json({ error_code: "archive_knowledge_store_unavailable" }, { status: 503 });
+        knowledgeRestoreId = await sha256Hex(`space-archive-knowledge-restore-v1\u0000${tenantId}\u0000${spaceId}\u0000${archiveId}`);
+        let response: Response;
+        try {
+          response = await this.env.KNOWLEDGE_WORKER.fetch(new Request(
+            `http://knowledge-worker/internal/spaces/${encodeURIComponent(spaceId)}/kb/archive/preview`, {
+              method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+                "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+              body: JSON.stringify({ snapshot: knowledgeSnapshot, restoreId: knowledgeRestoreId }),
+            }));
+        } catch { return Response.json({ error_code: "archive_knowledge_preview_unavailable" }, { status: 503 }); }
+        if (!response.ok) {
+          const detail = await readBoundedResponseJson<{ error_code?: unknown }>(response, 8 * 1024).catch(() => null);
+          const code = typeof detail?.error_code === "string" && /^[a-z0-9_]{1,96}$/.test(detail.error_code)
+            ? detail.error_code : "archive_knowledge_preview_failed";
+          return Response.json({ error_code: code }, { status: [409, 413, 422].includes(response.status) ? response.status as 409 | 413 | 422 : 503 });
+        }
+        const result = await readBoundedResponseJson<{ preview?: { documents?: unknown; chunks?: unknown; excludedObjectKeys?: unknown } }>(response, 256 * 1024).catch(() => null);
+        const documents = result?.preview?.documents as Record<string, unknown> | undefined;
+        const chunks = result?.preview?.chunks as Record<string, unknown> | undefined;
+        const excluded = result?.preview?.excludedObjectKeys;
+        if (!documents || !chunks || !Array.isArray(excluded)
+          || ![documents.willRestore, documents.preservedCurrent, documents.blockedByDeletion, documents.requiresReindex,
+            chunks.willRestore, chunks.preservedCurrent].every(value => Number.isSafeInteger(value) && Number(value) >= 0)
+          || excluded.some(key => typeof key !== "string" || !knowledgeObjectKeys.has(key))) {
+          return Response.json({ error_code: "archive_knowledge_preview_response_invalid" }, { status: 503 });
+        }
+        knowledgeRestorePreview = { documents: documents as unknown as NonNullable<typeof knowledgeRestorePreview>["documents"],
+          chunks: chunks as unknown as NonNullable<typeof knowledgeRestorePreview>["chunks"], excludedObjectKeys: excluded as string[] };
+        for (const key of excluded as string[]) knowledgeExcludedObjectKeys.add(key);
+      }
       for (const ref of payload.objectReferences) {
         const workspaceKeyAllowed = typeof ref?.key === "string" && workspaceSnapshots.some(snapshot => ref.key.startsWith(`workspace-v1/${tenantId}/${spaceId}/${snapshot.projectId}/${snapshot.jurisdiction}/`));
-        if (!ref || typeof ref.key !== "string" || (!ref.key.startsWith(`spaces/${spaceId}/`) && !workspaceKeyAllowed) || !Number.isSafeInteger(ref.size) || ref.size < 0 || typeof ref.etag !== "string" || seenObjectKeys.has(ref.key)) return Response.json({ error_code: "archive_object_reference_invalid" }, { status: 422 });
+        const knowledgeKeyAllowed = typeof ref?.key === "string" && knowledgeObjectKeys.has(ref.key);
+        if (!ref || typeof ref.key !== "string" || (!ref.key.startsWith(`spaces/${spaceId}/`) && !workspaceKeyAllowed && !knowledgeKeyAllowed) || !Number.isSafeInteger(ref.size) || ref.size < 0 || typeof ref.etag !== "string" || seenObjectKeys.has(ref.key)) return Response.json({ error_code: "archive_object_reference_invalid" }, { status: 422 });
         seenObjectKeys.add(ref.key);
+        if (knowledgeKeyAllowed && knowledgeExcludedObjectKeys.has(ref.key)) continue;
+        const bucket = knowledgeKeyAllowed ? this.env.KB_BUCKET : this.env.SCRIPTS_R2;
+        if (!bucket) return Response.json({ error_code: knowledgeKeyAllowed ? "archive_knowledge_store_unavailable" : "archive_storage_unavailable" }, { status: 503 });
         const snapshot = snapshotsByKey.get(ref.key);
-        const head = await this.env.SCRIPTS_R2.head(ref.key);
+        const head = await bucket.head(ref.key);
         if (!head) {
           if (!snapshot) return Response.json({ error_code: "referenced_workspace_object_changed_or_missing", key: ref.key }, { status: 409 });
           objectRestoreRequiredCount++;
@@ -4929,12 +5100,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
         if ((!snapshot && head.etag !== ref.etag) || head.size !== ref.size) return Response.json({ error_code: "referenced_workspace_object_changed_or_missing", key: ref.key }, { status: 409 });
         if (snapshot) {
-          const currentObject = await this.env.SCRIPTS_R2.get(ref.key);
+          const currentObject = await bucket.get(ref.key);
           if (!currentObject || currentObject.size !== ref.size) return Response.json({ error_code: "referenced_workspace_object_changed_or_missing", key: ref.key }, { status: 409 });
           try {
             if (await checksumSpaceArchiveObject(currentObject) !== snapshot.checksum) return Response.json({ error_code: "referenced_workspace_object_checksum_mismatch", key: ref.key }, { status: 409 });
           } catch (error) { return Response.json({ error_code: (error as Error).message, key: ref.key }, { status: 422 }); }
         }
+      }
+      if ([...knowledgeObjectKeys].some(key => !seenObjectKeys.has(key))) {
+        return Response.json({ error_code: "archive_knowledge_object_reference_set_incomplete" }, { status: 422 });
       }
       for (const workspaceSnapshot of workspaceSnapshots) {
         for (const branch of workspaceSnapshot.branches) {
@@ -5042,11 +5216,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const dependencies: Record<string, string[]> = {};
       const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
       for (const table of Object.keys(payload.tableRows)) {
-        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table) || virtualTables.some(name => table === name || table.startsWith(`${name}_`)) || SPACE_ARCHIVE_EXCLUDED_TABLE_SET.has(table)) return Response.json({ error_code: "archive_table_forbidden", table }, { status: 422 });
+        const legacyKnowledgeMirror = table === "kb_documents";
+        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table) || virtualTables.some(name => table === name || table.startsWith(`${name}_`))
+          || SPACE_ARCHIVE_EXCLUDED_TABLE_SET.has(table) && !legacyKnowledgeMirror) return Response.json({ error_code: "archive_table_forbidden", table }, { status: 422 });
         const exists = queryOne<{ name: string; sql: string | null }>(sql, "SELECT name,sql FROM sqlite_master WHERE type='table' AND name=?", table);
         if (!exists || exists.sql?.startsWith("CREATE VIRTUAL TABLE")) return Response.json({ error_code: "archive_table_schema_incompatible", table }, { status: 409 });
         const columns = new Set(queryAll<{ name: string }>(sql, "SELECT name FROM pragma_table_info(?)", table).map(row => row.name));
         const rows = payload.tableRows[table] ?? [];
+        // Older Space archives serialized this obsolete mirror table. The Knowledge Worker now
+        // owns canonical documents/chunks; accept old rows for compatibility but never restore
+        // them into the stale SpaceDO table.
         for (const row of rows) {
           const unknownColumns = Object.keys(row).filter(column => !columns.has(column));
           if (unknownColumns.length) return Response.json({ error_code: "archive_column_schema_incompatible", table, columns: unknownColumns }, { status: 409 });
@@ -5074,6 +5253,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         this.ctx.storage.sql.exec("PRAGMA defer_foreign_keys = ON");
         for (const table of restoreOrder) {
           const rows = payload.tableRows[table] ?? [];
+          if (table === "kb_documents") { inserted[table] = 0; skipped[table] = rows.length; continue; }
           const columns = [...new Set([...rows.flatMap(row => Object.keys(row)),
             ...(table === "event_triggers" ? ["enabled"] : []),
             ...(table === "tasks" ? ["status", "intervention_status", "claimed_by", "lease_expires_at"] : [])])].sort();
@@ -5119,6 +5299,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           ...(projectRuntimeSettings.length ? { project_runtime_settings: projectRuntimeSettingsPreview } : {}),
           ...(microAppSnapshots.length || Object.values(microAppRestorePreview.omissions).some(count => count > 0)
             ? { micro_app_data: microAppRestorePreview } : {}),
+          ...(knowledgeRestorePreview ? { knowledge_data: {
+            documents: knowledgeRestorePreview.documents, chunks: knowledgeRestorePreview.chunks,
+            omissions: knowledgeSnapshot?.omissions,
+            object_references_to_skip: knowledgeRestorePreview.excludedObjectKeys.length,
+            vectors_require_reindex: knowledgeRestorePreview.documents.requiresReindex,
+          } } : {}),
           safety_actions: { archived_active_event_trigger_count: archivedActiveEventTriggerCount, missing_event_triggers_will_be_inserted_disabled: true,
             existing_event_trigger_state_will_be_preserved: true,
             archived_active_task_count: archivedActiveTaskCount,
@@ -5139,7 +5325,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           const ref = payload.objectReferences[index]!;
           const snapshot = snapshotsByKey.get(ref.key);
           let snapshotBytes = snapshotBytesByKey.get(ref.key);
-          let currentObject = await this.env.SCRIPTS_R2.get(ref.key);
+          if (knowledgeExcludedObjectKeys.has(ref.key)) {
+            verifiedObjectCount = index + 1;
+            execute(sql, "UPDATE space_archive_restores SET status='restoring',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, previewId, tenantId, spaceId);
+            continue;
+          }
+          const targetBucket = knowledgeObjectKeys.has(ref.key) ? this.env.KB_BUCKET : this.env.SCRIPTS_R2;
+          if (!targetBucket) throw new Error(knowledgeObjectKeys.has(ref.key) ? "archive_knowledge_store_unavailable" : "archive_storage_unavailable");
+          let currentObject = await targetBucket.get(ref.key);
           if (!currentObject) {
             if (!snapshot) throw new Error("referenced_workspace_object_changed_or_missing");
             if (!snapshotBytes && payload.formatVersion === 2 && "objectIndex" in snapshot) {
@@ -5158,8 +5351,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
               ...(Object.keys(httpMetadata).length ? { httpMetadata } : {}),
               ...(snapshot.customMetadata ? { customMetadata: snapshot.customMetadata } : {}),
             };
-            const written = await this.env.SCRIPTS_R2.put(ref.key, snapshotBytes, putOptions);
-            currentObject = await this.env.SCRIPTS_R2.get(ref.key);
+            const written = await targetBucket.put(ref.key, snapshotBytes, putOptions);
+            currentObject = await targetBucket.get(ref.key);
             if (!currentObject) throw new Error(written ? "restored_workspace_object_missing_after_write" : "workspace_object_changed_during_restore");
           }
           if ((!snapshot && currentObject.etag !== ref.etag) || currentObject.size !== ref.size) throw new Error("referenced_workspace_object_changed_or_missing");
@@ -5174,6 +5367,46 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         execute(sql, "UPDATE space_archive_restores SET status='partial',restored_object_count=?,last_error=? WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, message, previewId, tenantId, spaceId);
         const status = message.includes("changed") ? 409 : message.includes("checksum") ? 422 : 503;
         return Response.json({ error_code: "archive_object_restore_incomplete", message, restored_object_count: verifiedObjectCount }, { status });
+      }
+      let restoredKnowledge: { restoredDocuments: number; restoredChunks: number; preservedCurrentDocuments: number;
+        blockedByDeletionDocuments: number; requiresReindexDocuments: number } | null = null;
+      if (knowledgeSnapshot) {
+        if (!this.env.KNOWLEDGE_WORKER || !knowledgeRestoreId) {
+          const message = "archive_knowledge_store_unavailable";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',restored_object_count=?,last_error=? WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, message, previewId, tenantId, spaceId);
+          return Response.json({ error_code: message, restored_object_count: verifiedObjectCount }, { status: 503 });
+        }
+        let response: Response;
+        try {
+          response = await this.env.KNOWLEDGE_WORKER.fetch(new Request(
+            `http://knowledge-worker/internal/spaces/${encodeURIComponent(spaceId)}/kb/archive/restore`, {
+              method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+                "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+              body: JSON.stringify({ snapshot: knowledgeSnapshot, restoreId: knowledgeRestoreId }),
+            }));
+        } catch {
+          const message = "archive_knowledge_restore_unavailable";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',restored_object_count=?,last_error=? WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, message, previewId, tenantId, spaceId);
+          return Response.json({ error_code: message, restored_object_count: verifiedObjectCount }, { status: 503 });
+        }
+        if (!response.ok) {
+          const detail = await readBoundedResponseJson<{ error_code?: unknown }>(response, 8 * 1024).catch(() => null);
+          const code = typeof detail?.error_code === "string" && /^[a-z0-9_]{1,96}$/.test(detail.error_code)
+            ? detail.error_code : "archive_knowledge_restore_failed";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',restored_object_count=?,last_error=? WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, code, previewId, tenantId, spaceId);
+          return Response.json({ error_code: code, restored_object_count: verifiedObjectCount }, { status: [409, 413, 422].includes(response.status) ? response.status as 409 | 413 | 422 : 503 });
+        }
+        const result = await readBoundedResponseJson<{ restored?: unknown }>(response, 16 * 1024).catch(() => null);
+        const restored = result?.restored as Record<string, unknown> | undefined;
+        if (!restored || !["restoredDocuments", "restoredChunks", "preservedCurrentDocuments", "blockedByDeletionDocuments", "requiresReindexDocuments"]
+          .every(key => Number.isSafeInteger(restored[key]) && Number(restored[key]) >= 0)) {
+          const message = "archive_knowledge_restore_response_invalid";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',restored_object_count=?,last_error=? WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, message, previewId, tenantId, spaceId);
+          return Response.json({ error_code: message, restored_object_count: verifiedObjectCount }, { status: 503 });
+        }
+        restoredKnowledge = restored as unknown as NonNullable<typeof restoredKnowledge>;
+        execute(sql, "UPDATE space_archive_restores SET status='restoring',safety_actions_json=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?",
+          JSON.stringify({ knowledge: restoredKnowledge }), previewId, tenantId, spaceId);
       }
       let restoredWorkspaceCount = 0;
       for (const workspaceSnapshot of workspaceSnapshots) {
@@ -5323,6 +5556,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           const safetyActions = { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
             restored_tasks_blocked_for_human_intervention: restoredTasksBlockedForHumanIntervention,
             ...(projectRuntimeSettings.length ? { project_runtime_settings: restoredProjectRuntimeSettings } : {}),
+            ...(restoredKnowledge ? { knowledge: restoredKnowledge } : {}),
             ...(microAppSnapshots.length || Object.values(microAppRestorePreview.omissions).some(count => count > 0) ? { micro_app_data: restoredMicroAppData } : {}),
             ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) };
           execute(sql, "UPDATE space_archive_restores SET restored_by=?,restored_at=?,row_counts_json=?,skipped_counts_json=?,safety_actions_json=?,status='completed',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", actorId, now, JSON.stringify(restoredCounts), JSON.stringify(skippedCounts), JSON.stringify(safetyActions), verifiedObjectCount, previewId, tenantId, spaceId);
@@ -5337,6 +5571,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         restored_workspace_count: restoredWorkspaceCount, safety_actions: { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
           restored_tasks_blocked_for_human_intervention: restoredTasksBlockedForHumanIntervention,
           ...(projectRuntimeSettings.length ? { project_runtime_settings: restoredProjectRuntimeSettings } : {}),
+          ...(restoredKnowledge ? { knowledge: restoredKnowledge } : {}),
           ...(microAppSnapshots.length || Object.values(microAppRestorePreview.omissions).some(count => count > 0) ? { micro_app_data: restoredMicroAppData } : {}),
           ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) }, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
     }

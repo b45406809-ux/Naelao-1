@@ -77,6 +77,9 @@ export interface SpaceArchiveCoverage {
   projectWorkspaces: number;
   projectRuntimeSettings: number;
   signedMicroAppActors: number;
+  knowledgeDocuments?: number;
+  knowledgeChunks?: number;
+  knowledgeOmissions?: { nonIndexedDocuments: number; deletionFencedDocuments: number };
   microAppOmissions: MicroAppArchiveOmissions;
 }
 export interface SpaceArchiveRecord { archive_id: string; kind: "full" | "retention_messages"; status: string; checksum: string; plaintext_bytes: number; row_counts_json: string; coverage?: SpaceArchiveCoverage | null; created_by: string; created_at: string; restored_at?: string | null }
@@ -86,7 +89,14 @@ export interface ProjectRuntimeSettingsRestoreCounts {
 }
 export interface MicroAppArchiveOmissions { privateScopeInstallations: number; unsupportedInstallations: number; uninitializedActors: number }
 export interface SpaceArchiveMicroAppRestore { snapshots: number; omissions: MicroAppArchiveOmissions; completed?: number; replayed?: number; restored_rows?: number; preserved_rows?: number }
-export interface SpaceArchiveRestore { id: string; archive_id: string; restored_by: string; restored_at: string; row_counts: Record<string, number>; skipped_counts: Record<string, number>; status: "restoring" | "partial" | "completed"; restored_object_count: number; last_error?: string | null; safety_actions: { restored_event_triggers_inserted_disabled?: number; restored_tasks_blocked_for_human_intervention?: number; owner_managed_grant_rows_not_restored?: Record<string, number>; project_runtime_settings?: { projects: number; restored?: ProjectRuntimeSettingsRestoreCounts; preserved_current?: ProjectRuntimeSettingsRestoreCounts }; micro_app_data?: SpaceArchiveMicroAppRestore } }
+export interface SpaceArchiveKnowledgeRestore {
+  restoredDocuments: number;
+  restoredChunks: number;
+  preservedCurrentDocuments: number;
+  blockedByDeletionDocuments: number;
+  requiresReindexDocuments: number;
+}
+export interface SpaceArchiveRestore { id: string; archive_id: string; restored_by: string; restored_at: string; row_counts: Record<string, number>; skipped_counts: Record<string, number>; status: "restoring" | "partial" | "completed"; restored_object_count: number; last_error?: string | null; safety_actions: { restored_event_triggers_inserted_disabled?: number; restored_tasks_blocked_for_human_intervention?: number; owner_managed_grant_rows_not_restored?: Record<string, number>; project_runtime_settings?: { projects: number; restored?: ProjectRuntimeSettingsRestoreCounts; preserved_current?: ProjectRuntimeSettingsRestoreCounts }; micro_app_data?: SpaceArchiveMicroAppRestore; knowledge?: SpaceArchiveKnowledgeRestore } }
 export interface SpaceArchiveExportResult { archive_id: string; checksum: string; plaintext_bytes?: number; row_counts?: Record<string, number>; object_reference_count?: number; coverage?: SpaceArchiveCoverage; replayed?: boolean; resumed?: boolean }
 export function getSpaceDataOps(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ archives: SpaceArchiveRecord[]; restores: SpaceArchiveRestore[]; rewrap_jobs: ArchiveRewrapJob[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { session, cache: "no-store" });
@@ -114,6 +124,13 @@ export interface SpaceArchiveRestorePreview {
   object_restore_required_count: number;
   project_runtime_settings?: { projects: number; will_restore: ProjectRuntimeSettingsRestoreCounts; preserved_current: ProjectRuntimeSettingsRestoreCounts };
   micro_app_data?: SpaceArchiveMicroAppRestore & { tables: number; would_insert_rows: number; would_preserve_rows: number };
+  knowledge_data?: {
+    documents: { willRestore: number; preservedCurrent: number; blockedByDeletion: number; requiresReindex: number };
+    chunks: { willRestore: number; preservedCurrent: number };
+    omissions?: { nonIndexedDocuments: number; deletionFencedDocuments: number };
+    object_references_to_skip: number;
+    vectors_require_reindex: number;
+  };
   restore_mode: "idempotent_merge_missing_rows";
   merge_snapshot_at: string;
   safety_actions: {
@@ -125,6 +142,7 @@ export interface SpaceArchiveRestorePreview {
     archived_terminal_task_count: number;
     existing_task_state_will_be_preserved: true;
     owner_managed_grant_rows_not_restored?: Record<string, number>;
+    knowledge?: SpaceArchiveKnowledgeRestore;
   };
   expires_at: string;
   requires_explicit_apply: true;
@@ -133,7 +151,7 @@ export async function previewSpaceArchiveRestore(spaceId: string, session: Sessi
   return apiFetch<SpaceArchiveRestorePreview>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { method: "POST", session, body: JSON.stringify({ action: "preview_restore", archive_id: archiveId }) });
 }
 export async function applySpaceArchiveRestore(spaceId: string, session: SessionCredentials, archiveId: string, previewId: string) {
-  return apiFetch<{ archive_id: string; restored_counts: Record<string, number>; skipped_counts: Record<string, number>; restored_object_count: number; safety_actions: { restored_event_triggers_inserted_disabled: number; restored_tasks_blocked_for_human_intervention: number; owner_managed_grant_rows_not_restored?: Record<string, number>; project_runtime_settings?: { projects: number; restored: ProjectRuntimeSettingsRestoreCounts; preserved_current: ProjectRuntimeSettingsRestoreCounts }; micro_app_data?: SpaceArchiveMicroAppRestore }; mode: "idempotent_merge_missing_rows"; active_sqlite_remains_canonical: true }>(
+  return apiFetch<{ archive_id: string; restored_counts: Record<string, number>; skipped_counts: Record<string, number>; restored_object_count: number; safety_actions: { restored_event_triggers_inserted_disabled: number; restored_tasks_blocked_for_human_intervention: number; owner_managed_grant_rows_not_restored?: Record<string, number>; project_runtime_settings?: { projects: number; restored: ProjectRuntimeSettingsRestoreCounts; preserved_current: ProjectRuntimeSettingsRestoreCounts }; micro_app_data?: SpaceArchiveMicroAppRestore; knowledge?: SpaceArchiveKnowledgeRestore }; mode: "idempotent_merge_missing_rows"; active_sqlite_remains_canonical: true }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { method: "POST", session, body: JSON.stringify({ action: "apply_restore", archive_id: archiveId, preview_id: previewId }) });
 }
 
@@ -3370,7 +3388,7 @@ export interface KbDocument {
   title: string;
   source_url: string | null;
   content_type: "text" | "url" | "code" | "pdf";
-  status: "pending" | "processing" | "indexed" | "flagged" | "failed" | "deleting";
+  status: "pending" | "processing" | "indexed" | "flagged" | "failed" | "deleting" | "reindex_required";
   chunk_count: number;
   created_at: string;
   updated_at: string;
@@ -3388,6 +3406,16 @@ export async function createKbDocument(
   input: { title: string; content: string; content_type?: string; source_url?: string; project_id?: string }
 ): Promise<KbDocument> {
   return apiFetch(`/v1/spaces/${spaceId}/kb/documents`, { method: "POST", body: JSON.stringify(input), session });
+}
+
+export async function getRestoredKbDocumentContent(spaceId: string, docId: string, session: SessionCredentials) {
+  return apiFetch<{ id: string; title: string; content: string; source: "restored_indexed_chunks" }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/documents/${encodeURIComponent(docId)}/reindex-content`, { session, cache: "no-store" });
+}
+
+export async function reindexRestoredKbDocument(spaceId: string, docId: string, session: SessionCredentials, input: { title: string; content: string }) {
+  return apiFetch<KbDocument>(`/v1/spaces/${encodeURIComponent(spaceId)}/kb/documents/${encodeURIComponent(docId)}`,
+    { method: "PATCH", body: JSON.stringify(input), session });
 }
 
 export interface KbDocumentDeletion {

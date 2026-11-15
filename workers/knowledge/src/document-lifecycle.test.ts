@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; queueFails?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; reindexDoc?: boolean; reindexChunks?: Array<{ chunk_index: number; content: string; content_hash: string; deleted_at: string | null }>; queueFails?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean; legacyAcl?: boolean } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const vectorUpserts: VectorizeVector[][] = [];
@@ -19,23 +19,31 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
             }
             if (sql.includes("FROM spaces")) return { id: "space-1" };
             if (sql.includes("COUNT(*) as count FROM kb_documents")) return { count: 0 };
-            if (sql.includes("SELECT id, title, status, chunk_count FROM kb_documents")) return options.workflowDoc
-              ? { id: "doc-1", title: "Guide", status: options.workflowStatus ?? "processing", chunk_count: 2 }
+            if (sql.includes("SELECT id, title, status, chunk_count")) return options.workflowDoc
+              ? { id: "doc-1", title: "Guide", status: options.workflowStatus ?? "processing", chunk_count: 2,
+                  required_role_rank: options.requiredRoleRank,
+                  allowed_user_ids_json: options.allowedUserIds ? JSON.stringify(options.allowedUserIds) : null }
               : null;
             if (sql.includes("SELECT id, status FROM kb_documents")) return options.workflowDoc
               ? { id: "doc-1", status: options.workflowStatus ?? "processing" }
               : null;
+            if (sql.includes("SELECT id,title,project_id,status,chunk_count")) return options.reindexDoc
+              ? { id: "doc-1", title: "Restored guide", project_id: null, status: "reindex_required", chunk_count: options.reindexChunks?.length ?? 0 }
+              : null;
             if (sql.includes("SELECT id, title, chunk_count, project_id,")) return options.existing
-              ? { id: "doc-1", title: "Old title", chunk_count: 1, project_id: options.projectId ?? null, required_role_rank: options.requiredRoleRank ?? 0, content_type: "text" }
+              ? { id: "doc-1", title: "Old title", chunk_count: 1, project_id: options.projectId ?? null,
+                  required_role_rank: options.legacyAcl ? 0 : options.requiredRoleRank ?? 0,
+                  allowed_user_ids_json: options.legacyAcl ? null : options.allowedUserIds ? JSON.stringify(options.allowedUserIds) : null,
+                  legacy_required_role_rank: options.requiredRoleRank ?? 0, content_type: "text" }
               : null;
             if (sql.includes("FROM project_access")) return options.workflowDoc ? { role_rank: 50, visibility: "private" } : null;
             if (sql.includes("SELECT id, chunk_count, project_id FROM kb_documents")) return options.existing
               ? { id: "doc-1", chunk_count: 1, project_id: options.projectId ?? null }
               : null;
-            if (sql.includes("SELECT * FROM kb_documents")) return { id: "doc-1", status: "indexed" };
+            if (sql.includes("SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status")) return { id: "doc-1", status: "indexed" };
             return null;
           },
-          all: async () => ({ results: [] }),
+          all: async () => ({ results: sql.includes("SELECT chunk_index,content,content_hash,deleted_at") ? options.reindexChunks ?? [] : [] }),
           run: async () => ({ meta: { changes: options.mutationLeaseUnavailable && sql.includes("INSERT INTO kb_document_mutation_leases") ? 0 : 1 } }),
         };
       },
@@ -82,6 +90,55 @@ async function request(path: string, method: string, body?: unknown): Promise<Re
 }
 
 describe("Knowledge document lifecycle boundaries", () => {
+  it("exposes one bounded tenant-authenticated snapshot without duplicating its object reference ledger", async () => {
+    const f = fixture();
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/archive/export", "POST", {},
+    ), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ snapshot: {
+      version: 1, scope: { tenantId: "tenant-1", spaceId: "space-1" }, documents: [],
+    } });
+    expect(f.vectorUpserts).toHaveLength(0);
+  });
+
+  it("returns verified restored chunk text for the explicit existing reindex caller without provider effects", async () => {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("alpha"));
+    const contentHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const f = fixture({ reindexDoc: true, reindexChunks: [{ chunk_index: 0, content: "alpha", content_hash: contentHash, deleted_at: null }] });
+    const response = await worker.fetch(await request(
+      "/spaces/space-1/kb/documents/doc-1/reindex-content", "GET",
+    ), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toMatchObject({ id: "doc-1", title: "Restored guide", content: "alpha", source: "restored_indexed_chunks" });
+    expect(f.vectorUpserts).toHaveLength(0);
+    expect(f.writes).toHaveLength(0);
+  });
+
+  it("rejects corrupted restored chunks before returning reindex content", async () => {
+    const f = fixture({ reindexDoc: true, reindexChunks: [{ chunk_index: 0, content: "tampered", content_hash: "0".repeat(64), deleted_at: null }] });
+    const response = await worker.fetch(await request(
+      "/spaces/space-1/kb/documents/doc-1/reindex-content", "GET",
+    ), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(409);
+    expect(f.vectorUpserts).toHaveLength(0);
+  });
+
+  it("does not reveal restored chunk text after a deletion operation takes its fence", async () => {
+    const f = fixture({ reindexDoc: true, mutationLeaseUnavailable: true,
+      reindexChunks: [{ chunk_index: 0, content: "private", content_hash: "0".repeat(64), deleted_at: null }] });
+    const response = await worker.fetch(await request(
+      "/spaces/space-1/kb/documents/doc-1/reindex-content", "GET",
+    ), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(410);
+    expect(f.dbCalls.some(({ sql }) => sql.includes("SELECT chunk_index,content,content_hash,deleted_at"))).toBe(false);
+  });
+
   it("accepts workflow chunk batches through the tenant-HMAC internal API", async () => {
     const f = fixture({ workflowDoc: true });
     const response = await worker.fetch(await request(
@@ -156,6 +213,20 @@ describe("Knowledge document lifecycle boundaries", () => {
     expect(f.dbCalls.some(({ sql, args }) => sql.includes("INSERT INTO kb_chunks") && args[9] === 40)).toBe(true);
   });
 
+  it("uses persisted D1 ACLs instead of queued ACL fields for new workflow documents", async () => {
+    const f = fixture({ workflowDoc: true, requiredRoleRank: 40, allowedUserIds: ["user-owner"] });
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
+        projectId: "project-1", chunks: ["restricted content"], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
+        requiredRoleRank: 0, allowedUserIds: [],
+      },
+    ), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(f.vectorUpserts.flat()[0]?.metadata).toMatchObject({
+      required_role_rank: 40, allowed_roles: [], allowed_user_ids: ["user-owner"],
+    });
+  });
+
   it("stages large project documents and enqueues the workflow with their access policy", async () => {
     const f = fixture({ workflowDoc: true });
     const content = "safe content ".repeat(81_000);
@@ -172,6 +243,10 @@ describe("Knowledge document lifecycle boundaries", () => {
         type: "kb.ingest", docId: result.id, spaceId: "space-1", tenantId: "tenant-1",
         projectId: "project-1", r2Key: key, requiredRoleRank: 30, allowedUserIds: ["user-special"],
       }));
+    const insert = f.dbCalls.find(({ sql }) => sql.includes("INSERT INTO kb_documents"));
+    expect(insert?.sql).toContain("allowed_user_ids_json");
+    expect(insert?.args).toContain(JSON.stringify(["user-special"]));
+    expect(insert?.args).toContain(30);
   });
 
   it("does not stage or enqueue a large document after deletion fencing denies its mutation lease", async () => {
@@ -336,13 +411,23 @@ describe("Knowledge document lifecycle boundaries", () => {
     const f = fixture({ existing: true, allowedUserIds: ["user-1"], requiredRoleRank: 30 });
     const response = await worker.fetch(await request("/spaces/space-1/kb/documents/doc-1", "PATCH", { content: "replacement source" }), f.env, {} as ExecutionContext);
     expect(response.status).toBe(200);
-    expect(f.vectorize.getByIds).toHaveBeenCalledWith(["doc-1_chunk_0"]);
+    expect(f.vectorize.getByIds).not.toHaveBeenCalled();
     const updatedVector = f.vectorUpserts.flat().find((vector) => vector.id === "doc-1_chunk_0");
     expect(updatedVector?.metadata).toMatchObject({
       visibility: "restricted", required_role_rank: 30, allowed_roles: [], allowed_user_ids: ["user-1"],
     });
     const chunkInsert = f.dbCalls.find(({ sql }) => sql.includes("INSERT INTO kb_chunks"));
     expect(chunkInsert?.args).toContain(30);
+  });
+
+  it("continues to recover legacy ACLs from Vectorize when the D1 policy is unknown", async () => {
+    const f = fixture({ existing: true, legacyAcl: true, allowedUserIds: ["user-legacy"], requiredRoleRank: 30 });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents/doc-1", "PATCH", { content: "replacement source" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(f.vectorize.getByIds).toHaveBeenCalledWith(["doc-1_chunk_0"]);
+    expect(f.vectorUpserts.flat().find((vector) => vector.id === "doc-1_chunk_0")?.metadata).toMatchObject({
+      allowed_user_ids: ["user-legacy"], required_role_rank: 30,
+    });
   });
 
   it("fails closed before deleting old vectors when prior ACL metadata is unavailable", async () => {

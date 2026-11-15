@@ -17,6 +17,7 @@ import { reportKnowledgeStorageWrite } from "./storage-usage.js";
 import { acquireKnowledgeDocumentMutationLease, hasKnowledgeDocumentDeletionSince, hasPendingKnowledgeDocumentDeletion, processKnowledgeDocumentDeletion,
   reconcileKnowledgeDocumentDeletions, releaseKnowledgeDocumentMutationLease, renewKnowledgeDocumentMutationLease, type KnowledgeDeletionBindings,
   type KnowledgeDocumentDeletion } from "./document-deletion.js";
+import { exportKnowledgeArchive, previewKnowledgeArchiveRestore, restoreKnowledgeArchive, validateKnowledgeArchiveSnapshot } from "./knowledge-archive.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -186,6 +187,12 @@ async function verifySpaceOwnership(db: D1Database, spaceId: string, tenantId: s
     .bind(spaceId, tenantId)
     .first();
   return row !== null;
+}
+
+function publicKnowledgeDocument<T extends Record<string, unknown> | null>(row: T): T {
+  if (!row) return row;
+  const { allowed_user_ids_json: _allowedUserIds, archive_restore_id: _archiveRestoreId, ...publicRow } = row;
+  return publicRow as T;
 }
 
 async function verifySpaceTenantOwnership(db: D1Database, spaceId: string, tenantId: string): Promise<boolean> {
@@ -483,6 +490,60 @@ app.get("/internal/spaces/:spaceId/kb/documents/:documentId/shared", async (c) =
   return c.json({ document: { id: doc.id, title: doc.title, source_url: doc.source_url, content, chunk_count: results.length } });
 });
 
+app.post("/internal/spaces/:spaceId/kb/archive/export", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  try {
+    const result = await exportKnowledgeArchive(c.env, { tenantId, spaceId });
+    // Object references already live beside their owning documents in the bounded snapshot.
+    // Do not duplicate thousands of keys/ETags in the internal response body.
+    return c.json({ snapshot: result.snapshot });
+  } catch (error) {
+    const code = (error as Error).message || "knowledge_archive_export_failed";
+    const status = code.includes("limit_exceeded") ? 413
+      : code.includes("scope_invalid") || code.includes("set_invalid") || code.includes("invalid") ? 409 : 503;
+    return c.json({ error_code: /^[a-z0-9_]{1,96}$/.test(code) ? code : "knowledge_archive_export_failed" }, status);
+  }
+});
+
+app.post("/internal/spaces/:spaceId/kb/archive/preview", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const body = await readBoundedJson<{ snapshot?: unknown; restoreId?: unknown }>(c.req.raw, 4 * 1024 * 1024);
+  if (!body || typeof body.restoreId !== "string" || !/^[a-f0-9]{64}$/.test(body.restoreId)) {
+    throw badRequest("Invalid Knowledge archive preview request");
+  }
+  try {
+    const snapshot = await validateKnowledgeArchiveSnapshot(body.snapshot, { tenantId, spaceId });
+    const preview = await previewKnowledgeArchiveRestore(c.env, snapshot, body.restoreId);
+    return c.json({ preview });
+  } catch (error) {
+    const code = (error as Error).message || "knowledge_archive_preview_failed";
+    const status = code.includes("limit_exceeded") ? 413 : code.includes("invalid") || code.includes("incompatible") ? 422 : 409;
+    return c.json({ error_code: /^[a-z0-9_]{1,96}$/.test(code) ? code : "knowledge_archive_preview_failed" }, status);
+  }
+});
+
+app.post("/internal/spaces/:spaceId/kb/archive/restore", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const body = await readBoundedJson<{ snapshot?: unknown; restoreId?: unknown }>(c.req.raw, 4 * 1024 * 1024);
+  if (!body || typeof body.restoreId !== "string" || !/^[a-f0-9]{64}$/.test(body.restoreId)) {
+    throw badRequest("Invalid Knowledge archive restore request");
+  }
+  try {
+    const snapshot = await validateKnowledgeArchiveSnapshot(body.snapshot, { tenantId, spaceId });
+    const restored = await restoreKnowledgeArchive(c.env, snapshot, body.restoreId);
+    return c.json({ restored });
+  } catch (error) {
+    const code = (error as Error).message || "knowledge_archive_restore_failed";
+    const status = code.includes("missing_after_restore") ? 409
+      : code.includes("limit_exceeded") ? 413
+        : code.includes("invalid") || code.includes("incompatible") ? 422 : 503;
+    return c.json({ error_code: /^[a-z0-9_]{1,96}$/.test(code) ? code : "knowledge_archive_restore_failed" }, status);
+  }
+});
+
 // ── GET /spaces/:spaceId/kb/documents ─────────────────────────────────────────
 
 app.get("/spaces/:spaceId/kb/documents", async (c) => {
@@ -518,6 +579,53 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
     .all();
 
   return c.json({ data: results, count: results.length, limit, offset });
+});
+
+// A restored Knowledge document has canonical D1 chunks but intentionally no Vectorize or
+// AutoRAG state. Expose those exact verified chunks only to the current Space/Project reader so
+// the existing authenticated PATCH indexing path can rebuild provider indexes after an explicit
+// owner action. Restore itself never calls this route or a provider.
+app.get("/spaces/:spaceId/kb/documents/:docId/reindex-content", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const docId = c.req.param("docId");
+  const document = await c.env.PLATFORM_DB.prepare(`SELECT id,title,project_id,status,chunk_count
+    FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?`)
+    .bind(docId, tenantId, spaceId)
+    .first<{ id: string; title: string; project_id: string | null; status: string; chunk_count: number }>();
+  if (!document || document.status !== "reindex_required") throw notFound("Restored Knowledge document");
+  if (document.project_id) {
+    const access = await requireProjectAccess(c, document.project_id);
+    if (access instanceof Response) return access;
+  }
+  const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
+  if (!mutationLease) return c.json({ error_code: "document_deletion_in_progress" }, 410);
+  try {
+    if (!Number.isSafeInteger(document.chunk_count) || document.chunk_count < 1 || document.chunk_count > 2_000) {
+      return c.json({ error_code: "restored_knowledge_chunks_invalid" }, 409);
+    }
+    const { results: chunks } = await c.env.PLATFORM_DB.prepare(`SELECT chunk_index,content,content_hash,deleted_at
+      FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=?
+        AND project_id=? ORDER BY chunk_index`)
+      .bind(docId, tenantId, spaceId, document.project_id ?? SPACE_WIDE_PROJECT_SENTINEL)
+      .all<{ chunk_index: number; content: string; content_hash: string; deleted_at: string | null }>();
+    if (chunks.length !== document.chunk_count || chunks.some((chunk, index) => chunk.chunk_index !== index
+      || chunk.deleted_at !== null || typeof chunk.content !== "string" || !/^[a-f0-9]{64}$/.test(chunk.content_hash))) {
+      return c.json({ error_code: "restored_knowledge_chunks_invalid" }, 409);
+    }
+    for (const chunk of chunks) {
+      if (await sha256Hex(chunk.content) !== chunk.content_hash) return c.json({ error_code: "restored_knowledge_chunk_hash_mismatch" }, 409);
+    }
+    if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+      return c.json({ error_code: "document_deletion_in_progress" }, 410);
+    }
+    const content = chunks.map((chunk) => chunk.content).join("\n\n");
+    if (!content || content.length > 1_048_576) return c.json({ error_code: "restored_knowledge_reindex_size_limit" }, 413);
+    return c.json({ id: document.id, title: document.title, content, source: "restored_indexed_chunks" }, 200,
+      { "cache-control": "private, no-store" });
+  } finally {
+    await releaseKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease);
+  }
 });
 
 // Workflow-only large-document endpoints. These internal routes are guarded by the
@@ -580,8 +688,10 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
   }
 
   const doc = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, title, status, chunk_count FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ? AND project_id = ?"
-  ).bind(docId, spaceId, tenantId, body.projectId).first<{ id: string; title: string; status: string; chunk_count: number }>();
+    `SELECT id, title, status, chunk_count, required_role_rank, allowed_user_ids_json
+       FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ? AND project_id = ?`
+  ).bind(docId, spaceId, tenantId, body.projectId).first<{ id: string; title: string; status: string; chunk_count: number;
+    required_role_rank: number; allowed_user_ids_json: string | null }>();
   if (!doc) throw notFound("KbDocument");
   if (doc.status === "indexed") return c.json({ chunk_count: doc.chunk_count, idempotent: true });
   if (doc.status !== "processing" && doc.status !== "flagged") return c.json({ error_code: "document_not_processing" }, 409);
@@ -599,8 +709,22 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
   try {
   const projectId = body.projectId;
   const projectScope = projectId || SPACE_WIDE_PROJECT_SENTINEL;
-  const requiredRoleRank = Number(body.requiredRoleRank ?? 0);
-  const allowedUserIds = [...new Set((body.allowedUserIds ?? []) as string[])];
+  const requiredRoleRank = Number.isSafeInteger(doc.required_role_rank) ? doc.required_role_rank : Number(body.requiredRoleRank ?? 0);
+  let allowedUserIds: string[];
+  if (doc.allowed_user_ids_json !== null) {
+    try {
+      const storedAcl: unknown = JSON.parse(doc.allowed_user_ids_json);
+      if (!Array.isArray(storedAcl) || storedAcl.length > 100 || storedAcl.some((id) => typeof id !== "string" || !id || id.length > 256)) {
+        throw new Error("invalid_stored_acl");
+      }
+      allowedUserIds = [...new Set(storedAcl as string[])];
+    } catch {
+      throw internalError("Stored workflow access metadata is invalid");
+    }
+  } else {
+    // Compatibility for work queued before the canonical ACL column was introduced.
+    allowedUserIds = [...new Set((body.allowedUserIds ?? []) as string[])];
+  }
   const now = new Date().toISOString();
   const roles = allowedUserIds.length > 0 ? [] : Object.entries(ROLE_RANK)
     .filter(([role, rank]) => role in KNOWLEDGE_ROLE_MASK && rank >= requiredRoleRank)
@@ -774,9 +898,11 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     const r2Key = `staging/${tenantId}/${spaceId}/${projectId}/${docId}/original`;
     await c.env.PLATFORM_DB.prepare(
       `INSERT INTO kb_documents
-       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?)`
-    ).bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType, now, now).run();
+       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count,
+        required_role_rank, allowed_user_ids_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, ?, ?)`
+    ).bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
+      requiredRoleRank, JSON.stringify(allowedUserIds), now, now).run();
     const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
     if (!mutationLease) {
       await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?
@@ -814,10 +940,12 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   // Insert doc record with status=processing
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO kb_documents
-       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?)`
+       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count,
+        required_role_rank, allowed_user_ids_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, ?, ?)`
   )
-    .bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType, now, now)
+    .bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
+      requiredRoleRank, JSON.stringify(allowedUserIds), now, now)
     .run();
   const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
   if (!mutationLease) {
@@ -979,19 +1107,20 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     // ── Update DB: status=indexed ────────────────────────────────────────────
     const publish = await c.env.PLATFORM_DB.prepare(
       `UPDATE kb_documents
-       SET status = 'indexed', chunk_count = ?, updated_at = datetime('now')
+       SET status = 'indexed', chunk_count = ?, required_role_rank=?, allowed_user_ids_json=COALESCE(allowed_user_ids_json, ?), updated_at = datetime('now')
        WHERE id = ? AND status IN ('processing', 'flagged')
          AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
     )
-      .bind(chunks.length, docId, docId)
+      .bind(chunks.length, requiredRoleRank, JSON.stringify(allowedUserIds), docId, docId)
       .run();
     if (!publish.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
 
-    const doc = await c.env.PLATFORM_DB.prepare(
-      "SELECT * FROM kb_documents WHERE id = ?"
+    const doc = publicKnowledgeDocument(await c.env.PLATFORM_DB.prepare(
+      `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
+              chunk_count, created_at, updated_at FROM kb_documents WHERE id = ?`
     )
       .bind(docId)
-      .first();
+      .first<Record<string, unknown>>());
 
     await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, true);
     return c.json(doc, 201);
@@ -1041,10 +1170,11 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
 
   // Verify ownership and get current state
   const existing = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, title, chunk_count, project_id,
-       (SELECT required_role_rank FROM kb_chunks WHERE document_id=kb_documents.id AND chunk_index=0 LIMIT 1) AS required_role_rank
+    `SELECT id, title, chunk_count, project_id, required_role_rank, allowed_user_ids_json,
+       (SELECT required_role_rank FROM kb_chunks WHERE document_id=kb_documents.id AND chunk_index=0 LIMIT 1) AS legacy_required_role_rank
      FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ?`
-  ).bind(docId, spaceId, tenantId).first<{ id: string; title: string; chunk_count: number; project_id: string | null; required_role_rank: number | null }>();
+  ).bind(docId, spaceId, tenantId).first<{ id: string; title: string; chunk_count: number; project_id: string | null;
+    required_role_rank: number; allowed_user_ids_json: string | null; legacy_required_role_rank: number | null }>();
 
   if (!existing) throw notFound("KbDocument");
   const projectId = existing.project_id;
@@ -1066,7 +1196,10 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       if (!result.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
     });
 
-    const updated = await c.env.PLATFORM_DB.prepare("SELECT * FROM kb_documents WHERE id = ?").bind(docId).first();
+    const updated = publicKnowledgeDocument(await c.env.PLATFORM_DB.prepare(
+      `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
+              chunk_count, created_at, updated_at FROM kb_documents WHERE id = ?`
+    ).bind(docId).first<Record<string, unknown>>());
     return c.json(updated, 200);
   }
 
@@ -1093,20 +1226,41 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   // if the prior vector is unavailable, fail closed instead of silently making private content public.
   let requiredRoleRank = Number.isSafeInteger(existing.required_role_rank) ? Number(existing.required_role_rank) : 0;
   let allowedUserIds: string[] = [];
-  if ((existing.chunk_count ?? 0) > 0) {
-    const oldVectors = await c.env.KB_VECTORS.getByIds([`${docId}_chunk_0`]);
-    const oldVector = oldVectors.find((vector) => vector.id === `${docId}_chunk_0`);
-    if (!oldVector) throw new HttpError(503, "upstream_error", "Existing knowledge access metadata is unavailable");
-    const rawAllowedUserIds = oldVector.metadata?.allowed_user_ids;
-    if (rawAllowedUserIds !== undefined && (!Array.isArray(rawAllowedUserIds) || rawAllowedUserIds.some((id) => typeof id !== "string" || !id || id.length > 256))) {
+  if (existing.allowed_user_ids_json !== null) {
+    try {
+      const storedAcl: unknown = JSON.parse(existing.allowed_user_ids_json);
+      if (!Array.isArray(storedAcl) || storedAcl.length > 100 || storedAcl.some((id) => typeof id !== "string" || !id || id.length > 256)) {
+        throw new Error("invalid_stored_acl");
+      }
+      allowedUserIds = [...new Set(storedAcl as string[])];
+    } catch {
       throw internalError("Existing knowledge access metadata is invalid");
     }
-    const vectorRoleRank = oldVector.metadata?.required_role_rank;
-    if (vectorRoleRank !== undefined && (!Number.isSafeInteger(vectorRoleRank) || Number(vectorRoleRank) < 0 || Number(vectorRoleRank) > 50)) {
-      throw internalError("Existing knowledge role metadata is invalid");
+  }
+  const legacyRequiredRoleRank = existing.legacy_required_role_rank;
+  if (Number.isSafeInteger(legacyRequiredRoleRank) && Number(legacyRequiredRoleRank) >= 0 && Number(legacyRequiredRoleRank) <= 50) {
+    requiredRoleRank = Math.max(requiredRoleRank, Number(legacyRequiredRoleRank));
+  }
+  if ((existing.chunk_count ?? 0) > 0) {
+    if (existing.allowed_user_ids_json === null) {
+      const oldVectors = await c.env.KB_VECTORS.getByIds([`${docId}_chunk_0`]);
+      const oldVector = oldVectors.find((vector) => vector.id === `${docId}_chunk_0`);
+      if (!oldVector) throw new HttpError(503, "upstream_error", "Existing knowledge access metadata is unavailable");
+      const rawAllowedUserIds = oldVector.metadata?.allowed_user_ids;
+      if (rawAllowedUserIds !== undefined && (!Array.isArray(rawAllowedUserIds) || rawAllowedUserIds.some((id) => typeof id !== "string" || !id || id.length > 256))) {
+        throw internalError("Existing knowledge access metadata is invalid");
+      }
+      const vectorRoleRank = oldVector.metadata?.required_role_rank;
+      if (vectorRoleRank !== undefined && (!Number.isSafeInteger(vectorRoleRank) || Number(vectorRoleRank) < 0 || Number(vectorRoleRank) > 50)) {
+        throw internalError("Existing knowledge role metadata is invalid");
+      }
+      if (typeof vectorRoleRank === "number") requiredRoleRank = Math.max(requiredRoleRank, vectorRoleRank);
+      allowedUserIds = Array.isArray(rawAllowedUserIds) ? [...new Set(rawAllowedUserIds as string[])] : [];
+      await c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET required_role_rank=?,allowed_user_ids_json=?
+        WHERE id=? AND tenant_id=? AND space_id=? AND allowed_user_ids_json IS NULL
+          AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`)
+        .bind(requiredRoleRank, JSON.stringify(allowedUserIds), docId, tenantId, spaceId, docId).run();
     }
-    if (typeof vectorRoleRank === "number") requiredRoleRank = Math.max(requiredRoleRank, vectorRoleRank);
-    allowedUserIds = Array.isArray(rawAllowedUserIds) ? [...new Set(rawAllowedUserIds as string[])] : [];
   }
   const allowedRoles = allowedUserIds.length > 0
     ? []
@@ -1254,13 +1408,17 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     }
 
     const publishReindex = await c.env.PLATFORM_DB.prepare(
-      `UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, updated_at = datetime('now')
+      `UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, required_role_rank=?,
+          allowed_user_ids_json=COALESCE(allowed_user_ids_json, ?), updated_at = datetime('now')
         WHERE id = ? AND status='processing'
           AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
-    ).bind(newTitle, chunks.length, docId, docId).run();
+    ).bind(newTitle, chunks.length, requiredRoleRank, JSON.stringify(allowedUserIds), docId, docId).run();
     if (!publishReindex.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
 
-    const updated = await c.env.PLATFORM_DB.prepare("SELECT * FROM kb_documents WHERE id = ?").bind(docId).first();
+    const updated = publicKnowledgeDocument(await c.env.PLATFORM_DB.prepare(
+      `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
+              chunk_count, created_at, updated_at FROM kb_documents WHERE id = ?`
+    ).bind(docId).first<Record<string, unknown>>());
     await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, true, storageOperationId);
     return c.json(updated, 200);
   } catch (err) {
