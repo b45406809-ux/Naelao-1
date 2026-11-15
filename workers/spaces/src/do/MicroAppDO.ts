@@ -732,7 +732,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   private async verifyMicroAppArchiveScope(scope: MicroAppArchiveSnapshot["scope"]): Promise<{ ok: true } | { ok: false; status: 403 | 409 | 503; error: string }> {
     const proofJson = this.metadata("release_proof"), html = this.metadata("html");
     if (this.appId() !== scope.appId || this.metadata("scope") !== scope.gadgetScope
-      || this.metadata("extension_installation_id") !== scope.installationId || !proofJson || html === undefined)
+      || this.metadata("extension_installation_id") !== scope.installationId || !proofJson || html === undefined
+      || (scope.userId ?? null) !== (this.metadata("user_id") ?? null))
       return { ok: false, status: 409, error: "micro_app_archive_installation_mismatch" };
     let proof: CanvasReleaseProof;
     try { proof = JSON.parse(proofJson) as CanvasReleaseProof; }
@@ -740,8 +741,16 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (proof.extensionId !== scope.extensionId || proof.version !== scope.releaseVersion || proof.artifactSha256 !== scope.artifactSha256
       || !await this.verifyCanvasReleaseProof(proof, html)) return { ok: false, status: 403, error: "micro_app_archive_release_invalid" };
     try {
-      const manifest = validateExtensionManifest(JSON.parse(proof.manifestJson));
+      const rawManifest = JSON.parse(proof.manifestJson) as { gadgets?: Array<{ id?: unknown; scope?: unknown }>;
+        bundle?: { primitives?: Array<{ kind?: unknown; id?: unknown; scope?: unknown }> } };
+      const manifest = validateExtensionManifest(rawManifest);
       if (await digestExtensionManifest(manifest) !== scope.manifestSha256) return { ok: false, status: 409, error: "micro_app_archive_manifest_mismatch" };
+      if (["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(scope.gadgetScope)) {
+        const sourceGadgetId = this.metadata("source_gadget_id");
+        const declared = sourceGadgetId && ([...(rawManifest.gadgets ?? []), ...(rawManifest.bundle?.primitives ?? [])]
+          .some(item => item.id === sourceGadgetId && item.scope === scope.gadgetScope));
+        if (!declared) return { ok: false, status: 409, error: "micro_app_archive_user_scope_mismatch" };
+      }
     } catch { return { ok: false, status: 503, error: "micro_app_archive_manifest_invalid" }; }
     return { ok: true };
   }
@@ -858,19 +867,25 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   private async initialize(request: Request): Promise<Response> {
     const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string;
       migrations?: Array<{ version: number; description: string; up: string }>; html?: string; releaseProof?: CanvasReleaseProof;
-      extensionInstallationId?: string; sourceGadgetId?: string; businessActions?: unknown }>();
+      extensionInstallationId?: string; sourceGadgetId?: string; userId?: string; businessActions?: unknown }>();
     if (!body.appId || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.appId) || !body.scope || !body.gadgetTier) return Response.json({ error: "valid appId, scope and gadgetTier are required" }, { status: 400 });
     if ((body.gadgetTier === 1 && !["USER_PRIVATE", "PROJECT_USER", "SPACE_USER"].includes(body.scope)) ||
       (body.gadgetTier === 2 && !["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope)) ||
       (body.gadgetTier === 3 && !["PROJECT_BOUND", "PROJECT_SHARED", "SPACE_WIDE", "SPACE_SHARED"].includes(body.scope))) {
       return Response.json({ error: "gadget_tier_scope_mismatch" }, { status: 400 });
     }
+    const userScoped = ["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(body.scope);
+    if (userScoped !== (typeof body.userId === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.userId)))
+      return Response.json({ error: "gadget_user_scope_identity_invalid" }, { status: 400 });
     const existing = [...this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM gadget_metadata WHERE key = 'app_id'")][0];
     if (existing && existing.value !== body.appId) return Response.json({ error: "actor_already_owned" }, { status: 409 });
     const existingTier = this.gadgetTier();
     if (existingTier !== undefined && existingTier !== body.gadgetTier) return Response.json({ error: "gadget_tier_immutable" }, { status: 409 });
     const existingScope = this.metadata("scope");
     if (existingScope !== undefined && existingScope !== body.scope) return Response.json({ error: "gadget_scope_immutable" }, { status: 409 });
+    const existingUserId = this.metadata("user_id");
+    if (existingUserId !== undefined && existingUserId !== body.userId)
+      return Response.json({ error: "gadget_user_identity_immutable" }, { status: 409 });
     const existingExtensionInstallationId = this.metadata("extension_installation_id");
     if (body.extensionInstallationId !== undefined && (!/^[A-Za-z0-9._:-]{1,768}$/.test(body.extensionInstallationId)
       || !body.releaseProof || existingExtensionInstallationId && existingExtensionInstallationId !== body.extensionInstallationId))
@@ -938,8 +953,10 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         this.ctx.storage.sql.exec("INSERT INTO gadget_schema_migrations(version,description) VALUES(?,?)", migration.version, migration.description);
       }
     this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?),('html_sha256',?)", body.appId, body.scope, String(body.gadgetTier), html, htmlSha256);
+    if (body.userId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('user_id',?)", body.userId);
       this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('business_actions_json',?)", JSON.stringify(businessActions));
       if (body.extensionInstallationId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('extension_installation_id',?)", body.extensionInstallationId);
+      if (body.sourceGadgetId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('source_gadget_id',?)", body.sourceGadgetId);
     };
     if ((body.defaultSchemaSql || migrations.length) && typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(apply);
     else if (body.defaultSchemaSql || migrations.length) throw new Error("atomic_gadget_migration_unavailable");

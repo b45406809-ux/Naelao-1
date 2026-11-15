@@ -33,15 +33,18 @@ export interface MicroAppArchiveSnapshot {
     manifestSha256: string;
     appId: string;
     gadgetScope: GadgetScope;
+    userId?: string;
   };
   tables: Array<{ name: string; schemaSha256: string; rows: Array<Record<string, unknown>> }>;
 }
 
-const GADGET_SCOPES = new Set<GadgetScope>(["SPACE_SHARED", "PROJECT_BOUND", "PROJECT_SHARED"]);
+const GADGET_SCOPES = new Set<GadgetScope>(["USER_PRIVATE", "SPACE_USER", "PROJECT_USER", "SPACE_SHARED", "PROJECT_BOUND", "PROJECT_SHARED"]);
+const USER_GADGET_SCOPES = new Set<GadgetScope>(["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"]);
+const PROJECT_GADGET_SCOPES = new Set<GadgetScope>(["PROJECT_USER", "PROJECT_BOUND", "PROJECT_SHARED"]);
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const HEX_SHA256 = /^[a-f0-9]{64}$/;
 
-export function isMicroAppArchiveSnapshot(value: unknown, expected?: { tenantId?: string; spaceId?: string; projectId?: string | null }): value is MicroAppArchiveSnapshot {
+export function isMicroAppArchiveSnapshot(value: unknown, expected?: { tenantId?: string; spaceId?: string; projectId?: string | null; userId?: string }): value is MicroAppArchiveSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const snapshot = value as Record<string, unknown>;
   if (Object.keys(snapshot).some(key => !["version", "createdAt", "scope", "tables"].includes(key)) || snapshot.version !== 1
@@ -50,7 +53,7 @@ export function isMicroAppArchiveSnapshot(value: unknown, expected?: { tenantId?
     || snapshot.tables.length > 128) return false;
   const scope = snapshot.scope as Record<string, unknown>;
   if (Object.keys(scope).some(key => !["tenantId", "spaceId", "projectId", "installationId", "extensionId", "releaseVersion",
-    "artifactSha256", "manifestSha256", "appId", "gadgetScope"].includes(key))
+    "artifactSha256", "manifestSha256", "appId", "gadgetScope", "userId"].includes(key))
     || typeof scope.tenantId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scope.tenantId)
     || typeof scope.spaceId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scope.spaceId)
     || !(scope.projectId === null || typeof scope.projectId === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scope.projectId))
@@ -61,10 +64,13 @@ export function isMicroAppArchiveSnapshot(value: unknown, expected?: { tenantId?
     || typeof scope.manifestSha256 !== "string" || !HEX_SHA256.test(scope.manifestSha256)
     || typeof scope.appId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(scope.appId)
     || !GADGET_SCOPES.has(scope.gadgetScope as GadgetScope)
-    || (scope.gadgetScope === "SPACE_SHARED") !== (scope.projectId === null)
+    || PROJECT_GADGET_SCOPES.has(scope.gadgetScope as GadgetScope) !== (scope.projectId !== null)
+    || Object.hasOwn(scope, "userId") && !USER_GADGET_SCOPES.has(scope.gadgetScope as GadgetScope)
+    || USER_GADGET_SCOPES.has(scope.gadgetScope as GadgetScope) !== (typeof scope.userId === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scope.userId))
     || expected?.tenantId !== undefined && expected.tenantId !== scope.tenantId
     || expected?.spaceId !== undefined && expected.spaceId !== scope.spaceId
-    || expected && "projectId" in expected && expected.projectId !== scope.projectId) return false;
+    || expected && "projectId" in expected && expected.projectId !== scope.projectId
+    || expected?.userId !== undefined && expected.userId !== scope.userId) return false;
   const names = new Set<string>();
   let totalRows = 0;
   for (const tableValue of snapshot.tables as unknown[]) {

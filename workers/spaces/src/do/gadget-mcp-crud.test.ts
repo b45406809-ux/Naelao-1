@@ -23,10 +23,13 @@ async function signedBusinessActionFixture(actionInput: Record<string, unknown> 
     bindingSignature: await signHmac(bindingPayload, secret) } };
 }
 
-async function signedMicroAppArchiveFixture(secret: string, installationId = "install-archive-1") {
+async function signedMicroAppArchiveFixture(secret: string, installationId = "install-archive-1",
+  gadgetScope: "PROJECT_BOUND" | "USER_PRIVATE" = "PROJECT_BOUND", userId = "user-archive-a") {
   const extensionId = "ext_archive_demo", version = "1.0.0", appId = "archive_canvas", html = "<main>Archive demo</main>";
   const manifest = { id: extensionId, type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.canvas"],
-    gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: extensionId, version,
+    gadgets: gadgetScope === "USER_PRIVATE" ? [{ id: appId, name: "Personal archive", viewportComponent: "./archive.ts",
+      scope: "USER_PRIVATE", gadgetTier: 1, defaultSchemaSql: "CREATE TABLE IF NOT EXISTS todos(id TEXT PRIMARY KEY)" }] : [],
+    daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: extensionId, version,
       primitives: [{ schemaVersion: "1.0", kind: "canvas", id: "archive_canvas", version, permissions: [], capabilityRequirements: [], lifecycle: {},
         layout: "DualPane.DataGrid", component: "./archive.html", dynamicPage: false }] } };
   const canonicalManifest = validateExtensionManifest(manifest);
@@ -39,8 +42,9 @@ async function signedMicroAppArchiveFixture(secret: string, installationId = "in
   return { appId, html, extensionId, version, manifestSha256, artifactSha256,
     releaseProof: { extensionId, version, manifestJson, artifactSha256, hostSignature, canvasPath: "./archive.html", canvasSha256,
       bindingSignature: await signHmac(bindingPayload, secret) },
-    scope: { tenantId: "tenant-archive", spaceId: "space-archive", projectId: "project-archive", installationId,
-      extensionId, releaseVersion: version, artifactSha256, manifestSha256, appId, gadgetScope: "PROJECT_BOUND" as const } };
+    scope: { tenantId: "tenant-archive", spaceId: "space-archive", projectId: gadgetScope === "PROJECT_BOUND" ? "project-archive" : null, installationId,
+      extensionId, releaseVersion: version, artifactSha256, manifestSha256, appId, gadgetScope,
+      ...(gadgetScope === "USER_PRIVATE" ? { userId } : {}) } };
 }
 
 function microAppWithStorage(storage: ReturnType<typeof createDOStorage>, secret: string) {
@@ -368,6 +372,35 @@ describe("Gadget MCP record operations", () => {
     const unauthorized = await target.fetch(new Request("http://gadget/internal/archive/export", { method: "POST", headers: { "x-naelao-tenant-id": "tenant-archive" },
       body: JSON.stringify({ scope: signed.scope }) }));
     expect(unauthorized.status).toBe(403);
+  });
+
+  it("binds private-scope archive snapshots to the initialized product user", async () => {
+    const secret = "microapp-private-archive-secret";
+    const signed = await signedMicroAppArchiveFixture(secret, "install-private-archive", "USER_PRIVATE", "user-a");
+    const sourceStorage = createDOStorage(), source = microAppWithStorage(sourceStorage, secret);
+    const initialize = (instance: MicroAppDO, scope: typeof signed.scope, userId: string | undefined = scope.userId) => instance.fetch(new Request("http://gadget/initialize", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ appId: signed.appId, scope: "USER_PRIVATE",
+        gadgetTier: 1, userId, sourceGadgetId: "archive_canvas", extensionInstallationId: scope.installationId, html: signed.html, releaseProof: signed.releaseProof }),
+    }));
+    expect((await initialize(source, signed.scope)).status).toBe(201);
+    const missingIdentity = await initialize(microAppWithStorage(createDOStorage(), secret), signed.scope, "");
+    expect(missingIdentity.status).toBe(400);
+
+    const internalHeaders = async () => ({ "content-type": "application/json", "x-naelao-tenant-id": signed.scope.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(secret, signed.scope.tenantId) });
+    const exported = await source.fetch(new Request("http://gadget/internal/archive/export", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ scope: signed.scope }) }));
+    expect(exported.status).toBe(200);
+    const { snapshot } = await exported.json() as { snapshot: { scope: typeof signed.scope } };
+    expect(snapshot.scope).toMatchObject({ gadgetScope: "USER_PRIVATE", userId: "user-a" });
+
+    const otherUser = microAppWithStorage(createDOStorage(), secret);
+    const otherScope = { ...signed.scope, userId: "user-b" };
+    expect((await initialize(otherUser, otherScope, "user-b")).status).toBe(201);
+    const crossUser = await otherUser.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot }) }));
+    expect(crossUser.status).toBe(409);
+    expect(await crossUser.json()).toMatchObject({ error_code: "micro_app_archive_installation_mismatch" });
   });
 
   it("maintains bounded Canvas cursors and actor-attributed collaboration events", async () => {

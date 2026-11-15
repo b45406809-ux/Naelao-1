@@ -46,10 +46,11 @@ describe("three-tier gadget lifecycle", () => {
       if (query.includes("SELECT value FROM gadget_metadata WHERE key = 'html'")) {
         const value = metadata.get("html"); return cursor(value === undefined ? [] : [{ value }]);
       }
-      if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata")) {
+      if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id'")) {
         metadata.set("app_id", String(params[0])); metadata.set("scope", String(params[1]));
         metadata.set("gadget_tier", String(params[2])); metadata.set("html", String(params[3])); metadata.set("html_sha256", String(params[4]));
       }
+      if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('user_id'")) metadata.set("user_id", String(params[0]));
       if (query.startsWith("INSERT INTO gadget_data")) data.set(String(params[0]), String(params[1]));
       return cursor();
     } };
@@ -61,7 +62,7 @@ describe("three-tier gadget lifecycle", () => {
     const nearLimitPages = Math.ceil(TIER_ONE_STORAGE_LIMIT_BYTES / 4096);
     const harness = tierOneHarness(nearLimitPages);
     const before = Date.now();
-    const initialized = await harness.instance.fetch(new Request("https://app/initialize", { method: "POST", body: JSON.stringify({ appId: "notes", scope: "USER_PRIVATE", gadgetTier: 1 }) }));
+    const initialized = await harness.instance.fetch(new Request("https://app/initialize", { method: "POST", body: JSON.stringify({ appId: "notes", scope: "USER_PRIVATE", gadgetTier: 1, userId: "user-a" }) }));
     expect(initialized.status).toBe(201);
     expect(Number(harness.setAlarm.mock.calls[0]?.[0])).toBeGreaterThanOrEqual(before + TIER_ONE_IDLE_TTL_MS);
     const response = await harness.instance.fetch(new Request("https://app/api/data", { method: "POST", body: JSON.stringify({ key: "x", value: "value" }) }));
@@ -103,7 +104,7 @@ describe("three-tier gadget lifecycle", () => {
   it("keeps gadget canvases script-isolated and preserves immutable actor scope", async () => {
     const harness = tierOneHarness();
     const initialize = (scope: "USER_PRIVATE" | "SPACE_WIDE", gadgetTier: 1 | 3) => harness.instance.fetch(new Request("https://app/initialize", {
-      method: "POST", body: JSON.stringify({ appId: "notes", scope, gadgetTier, html: "<main>safe</main>" }),
+      method: "POST", body: JSON.stringify({ appId: "notes", scope, gadgetTier, ...(scope === "USER_PRIVATE" ? { userId: "user-a" } : {}), html: "<main>safe</main>" }),
     }));
     expect((await initialize("USER_PRIVATE", 1)).status).toBe(201);
     const page = await harness.instance.fetch(new Request("https://app/app"));

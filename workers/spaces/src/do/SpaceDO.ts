@@ -5083,7 +5083,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const microAppSnapshotKeys = new Set<string>();
       let microAppArchiveBytes = 0;
       for (const snapshot of microAppSnapshots) {
-        if (!isMicroAppArchiveSnapshot(snapshot, { tenantId, spaceId })) return Response.json({ error_code: "archive_micro_app_snapshot_invalid" }, { status: 422 });
+        if (!isMicroAppArchiveSnapshot(snapshot, { tenantId, spaceId }) || snapshot.scope.userId !== undefined
+          || ["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(snapshot.scope.gadgetScope))
+          return Response.json({ error_code: "archive_micro_app_snapshot_invalid" }, { status: 422 });
         const key = `${snapshot.scope.installationId}\u0000${snapshot.scope.projectId ?? ""}\u0000${snapshot.scope.appId}`;
         if (microAppSnapshotKeys.has(key)) return Response.json({ error_code: "archive_micro_app_snapshot_duplicate" }, { status: 422 });
         microAppSnapshotKeys.add(key);
