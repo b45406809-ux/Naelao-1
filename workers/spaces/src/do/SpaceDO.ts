@@ -31,7 +31,7 @@ import type { MessageRole } from "@naelao/types";
 import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, validateSpaceCoordinationSingletonKeys, scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope, type SpaceCoordinationDraftV2 } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
-import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
+import type { DisplayMode, ExtensionManifest, GadgetScope, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { promoteCockpit } from "@naelao/agent-sdk";
 import { projectFactRelevance } from "@naelao/agent-sdk";
 import { consumeEphemeralActionGrant, issueCapabilityToken, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
@@ -45,6 +45,9 @@ import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES } from "../shared-extension-package-policy.js";
+import { gadgetActorId } from "./MicroAppDO.js";
+import { isMicroAppArchiveOmissions, isMicroAppArchiveSnapshot, MAX_MICRO_APP_ARCHIVE_SNAPSHOTS,
+  MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES, MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES, type MicroAppArchiveSnapshot } from "./microapp-archive.js";
 import { isSpaceSharedDependencyPinList, isSpaceSharedGadgetMigrationRetentionPlan, spaceSharedAuthorityExpansion,
   spaceSharedDependencyExpansion,
   spaceSharedGadgetMigrationRetentionPlan, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
@@ -3088,6 +3091,8 @@ export interface SpaceDOEnv {
   ACTION_RECEIPT_KEY_VERSION_PREV?: string;
   /** Agents worker — used for lifecycle actions and authenticated project-workspace archive snapshots. */
   AGENTS_WORKER?: Fetcher;
+  /** MicroAppDO namespace — exact signed app actors and their receipts participate in full Space archives. */
+  MICRO_APP_DO?: DurableObjectNamespace;
   /** §A1.17 Phase V — naelao-ws-gateway, for live-syncing a mutation to a space's connected
    *  clients via WsHubDO. Optional: broadcastSpaceEvent degrades to a silent no-op when unbound. */
   WS_GATEWAY?: Fetcher;
@@ -4392,6 +4397,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const objectReferences: Array<{ key: string; etag: string; size: number }> = [];
       const workspaceSnapshots: SpaceArchiveWorkspaceSnapshot[] = [];
       const projectRuntimeSettings: SpaceArchiveProjectRuntimeSettingsSnapshot[] = [];
+      const microAppSnapshots: MicroAppArchiveSnapshot[] = [];
+      const microAppArchiveOmissions = { privateScopeInstallations: 0, unsupportedInstallations: 0, uninitializedActors: 0 };
+      let microAppSnapshotBytes = 0;
       let projectRuntimeSettingsBytes = 0;
       if (kind === "full") {
         for (const prefix of [`spaces/${spaceId}/projects/`, `spaces/${spaceId}/space-workspace/`, `spaces/${spaceId}/extensions/`, `spaces/${spaceId}/agents/`, `spaces/${spaceId}/workspace/`, `spaces/${spaceId}/scripts/`]) {
@@ -4467,6 +4475,99 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
               return Response.json({ error_code: "archive_project_runtime_settings_limit_exceeded" }, { status: 413 });
           } else if (settings.snapshot !== undefined) return Response.json({ error_code: "archive_project_runtime_settings_invalid", project_id: project.id }, { status: 503 });
         }
+
+        const extensionRows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; instance_key: string;
+          scope: string; status: string; manifest_json: string; release_version: string | null; pinned_artifact_sha256: string | null }>(
+          sql, `SELECT instance_id,extension_id,project_id,instance_key,scope,status,manifest_json,release_version,pinned_artifact_sha256
+            FROM extension_installation_manifests WHERE tenant_id=? AND space_id=? AND status IN ('active','disabled','staging')
+            ORDER BY instance_id`, tenantId, spaceId);
+        const archivedProjects = new Set((tableRows.projects ?? []).filter(project => project.space_id === spaceId && typeof project.id === "string")
+          .map(project => String(project.id)));
+        for (const installation of extensionRows) {
+          if (["SPACE_USER", "PROJECT_USER", "SPACE_ASSISTANT"].includes(installation.scope)) {
+            microAppArchiveOmissions.privateScopeInstallations++;
+            continue;
+          }
+          if (!(["SPACE_SHARED", "PROJECT_BOUND", "PROJECT_SHARED"].includes(installation.scope)
+            && ["active", "disabled"].includes(installation.status))) {
+            microAppArchiveOmissions.unsupportedInstallations++;
+            continue;
+          }
+          if (installation.scope === "SPACE_SHARED" ? installation.project_id !== null
+            : !installation.project_id || !archivedProjects.has(installation.project_id)) {
+            return Response.json({ error_code: "archive_micro_app_installation_scope_invalid", installation_id: installation.instance_id }, { status: 409 });
+          }
+          if (!installation.release_version) {
+            microAppArchiveOmissions.unsupportedInstallations++;
+            continue;
+          }
+          let manifest: ExtensionManifest;
+          try { manifest = validateExtensionManifest(JSON.parse(installation.manifest_json)); }
+          catch {
+            return Response.json({ error_code: "archive_micro_app_installation_manifest_invalid", installation_id: installation.instance_id }, { status: 409 });
+          }
+          if (!manifest.bundle || manifest.id !== installation.extension_id || manifest.bundle.version !== installation.release_version) {
+            microAppArchiveOmissions.unsupportedInstallations++;
+            continue;
+          }
+          if (!/^[a-f0-9]{64}$/.test(installation.pinned_artifact_sha256 ?? "")) {
+            return Response.json({ error_code: "archive_micro_app_artifact_pin_invalid", installation_id: installation.instance_id }, { status: 409 });
+          }
+          const manifestSha256 = await digestExtensionManifest(manifest);
+          const actorScope: GadgetScope = installation.scope === "SPACE_SHARED" ? "SPACE_SHARED" : "PROJECT_BOUND";
+          const prefix = installation.instance_key && installation.instance_key !== "default" ? `${installation.instance_key}_` : "";
+          const primitiveApps = manifest.bundle.primitives.filter(primitive => primitive.kind === "canvas"
+            || primitive.kind === "gadget" && primitive.scope === actorScope);
+          const seenApps = new Set<string>();
+          for (const primitive of primitiveApps) {
+            const appId = `${prefix}${primitive.id}`;
+            if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId) || seenApps.has(appId))
+              return Response.json({ error_code: "archive_micro_app_id_invalid", installation_id: installation.instance_id }, { status: 409 });
+            seenApps.add(appId);
+            if (!this.env.MICRO_APP_DO) return Response.json({ error_code: "archive_micro_app_storage_unavailable" }, { status: 503 });
+            const scope = { tenantId, spaceId, projectId: actorScope === "SPACE_SHARED" ? null : installation.project_id,
+              installationId: installation.instance_id, extensionId: installation.extension_id, releaseVersion: installation.release_version,
+              artifactSha256: installation.pinned_artifact_sha256!, manifestSha256, appId, gadgetScope: actorScope };
+            let response: Response;
+            try {
+              const actor = gadgetActorId(this.env.MICRO_APP_DO, actorScope === "SPACE_SHARED"
+                ? { scope: actorScope, spaceId, appId }
+                : { scope: actorScope, spaceId, projectId: installation.project_id!, appId });
+              response = await this.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/internal/archive/export", {
+                method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+                  "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ scope }),
+              }));
+            } catch {
+              return Response.json({ error_code: "archive_micro_app_export_unavailable", installation_id: installation.instance_id, app_id: appId }, { status: 503 });
+            }
+            if (!response.ok) {
+              const detail = await readBoundedResponseJson<{ error_code?: unknown }>(response, 8 * 1024).catch(() => null);
+              const code = typeof detail?.error_code === "string" && /^[a-z0-9_]{1,96}$/.test(detail.error_code)
+                ? detail.error_code : "archive_micro_app_export_failed";
+              return Response.json({ error_code: code, installation_id: installation.instance_id, app_id: appId },
+                { status: [400, 403, 409, 413].includes(response.status) ? response.status as 400 | 403 | 409 | 413 : 503 });
+            }
+            const result = await readBoundedResponseJson<{ present?: unknown; snapshot?: unknown }>(response,
+              MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES + 16 * 1024).catch(() => null);
+            if (!result || typeof result.present !== "boolean" || result.present && !isMicroAppArchiveSnapshot(result.snapshot, { tenantId, spaceId, projectId: scope.projectId }))
+              return Response.json({ error_code: "archive_micro_app_snapshot_invalid", installation_id: installation.instance_id, app_id: appId }, { status: 503 });
+            if (!result.present) {
+              microAppArchiveOmissions.uninitializedActors++;
+              continue;
+            }
+            const snapshot = result.snapshot as MicroAppArchiveSnapshot;
+            if (snapshot.scope.installationId !== scope.installationId || snapshot.scope.extensionId !== scope.extensionId
+              || snapshot.scope.releaseVersion !== scope.releaseVersion || snapshot.scope.artifactSha256 !== scope.artifactSha256
+              || snapshot.scope.manifestSha256 !== scope.manifestSha256 || snapshot.scope.appId !== scope.appId
+              || snapshot.scope.gadgetScope !== scope.gadgetScope) {
+              return Response.json({ error_code: "archive_micro_app_snapshot_scope_mismatch", installation_id: installation.instance_id, app_id: appId }, { status: 409 });
+            }
+            microAppSnapshotBytes += new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+            if (microAppSnapshots.length >= MAX_MICRO_APP_ARCHIVE_SNAPSHOTS || microAppSnapshotBytes > MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES)
+              return Response.json({ error_code: "archive_micro_app_snapshot_limit_exceeded", max_bytes: MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES }, { status: 413 });
+            microAppSnapshots.push(snapshot);
+          }
+        }
       }
       let totalObjectBytes = 0;
       for (const ref of objectReferences) {
@@ -4505,6 +4606,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const maxMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
       const payload: SpaceArchivePayload = { format: "naelao-space-archive", formatVersion: useChunkedObjects ? 2 : 1, tenantId, spaceId, archiveId, createdAt: now, migrationVersion: maxMigration, tableRows, rowCounts, objectReferences, objectSnapshots,
         ...(workspaceSnapshots.length ? { workspaceSnapshots } : {}), ...(projectRuntimeSettings.length ? { projectRuntimeSettingsVersion: 1 as const, projectRuntimeSettings } : {}),
+        ...(microAppSnapshots.length || Object.values(microAppArchiveOmissions).some(count => count > 0)
+          ? { microAppSnapshotsVersion: 1 as const, ...(microAppSnapshots.length ? { microAppSnapshots } : {}),
+            ...(Object.values(microAppArchiveOmissions).some(count => count > 0) ? { microAppArchiveOmissions } : {}) } : {}),
         ...(selectionFingerprint ? { selectionFingerprint } : {}) };
       let encoded: Awaited<ReturnType<typeof encodeSpaceArchive>>;
       try { encoded = await encodeSpaceArchive(payload, this.archiveKeys()); }
@@ -4730,6 +4834,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (projectRuntimeSettingsBytes > MAX_ARCHIVE_PROJECT_RUNTIME_SETTINGS_BYTES)
           return Response.json({ error_code: "archive_project_runtime_settings_limit_exceeded" }, { status: 422 });
       }
+      const hasMicroAppSnapshotVersion = Object.prototype.hasOwnProperty.call(payload, "microAppSnapshotsVersion");
+      const hasMicroAppSnapshots = Object.prototype.hasOwnProperty.call(payload, "microAppSnapshots");
+      const hasMicroAppOmissions = Object.prototype.hasOwnProperty.call(payload, "microAppArchiveOmissions");
+      const microAppSnapshots = Array.isArray(payload.microAppSnapshots) ? payload.microAppSnapshots : [];
+      if ((hasMicroAppSnapshotVersion || hasMicroAppSnapshots || hasMicroAppOmissions)
+        && (payload.microAppSnapshotsVersion !== 1 || hasMicroAppSnapshots && !Array.isArray(payload.microAppSnapshots)
+          || microAppSnapshots.length > MAX_MICRO_APP_ARCHIVE_SNAPSHOTS
+          || hasMicroAppOmissions && !isMicroAppArchiveOmissions(payload.microAppArchiveOmissions))) {
+        return Response.json({ error_code: "archive_micro_app_snapshot_set_invalid" }, { status: 422 });
+      }
+      const microAppSnapshotKeys = new Set<string>();
+      let microAppArchiveBytes = 0;
+      for (const snapshot of microAppSnapshots) {
+        if (!isMicroAppArchiveSnapshot(snapshot, { tenantId, spaceId })) return Response.json({ error_code: "archive_micro_app_snapshot_invalid" }, { status: 422 });
+        const key = `${snapshot.scope.installationId}\u0000${snapshot.scope.projectId ?? ""}\u0000${snapshot.scope.appId}`;
+        if (microAppSnapshotKeys.has(key)) return Response.json({ error_code: "archive_micro_app_snapshot_duplicate" }, { status: 422 });
+        microAppSnapshotKeys.add(key);
+        microAppArchiveBytes += new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+        if (microAppArchiveBytes > MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES) return Response.json({ error_code: "archive_micro_app_snapshot_limit_exceeded" }, { status: 422 });
+      }
       let objectRestoreRequiredCount = 0;
       const seenObjectKeys = new Set<string>();
       for (const ref of payload.objectReferences) {
@@ -4783,6 +4907,77 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           if (result.preview.restartRecipes === "will_restore") projectRuntimeSettingsPreview.will_restore.restart_recipes++;
           if (result.preview.restartRecipes === "preserved_current") projectRuntimeSettingsPreview.preserved_current.restart_recipes++;
         }
+      }
+      const microAppRestorePreview = { snapshots: microAppSnapshots.length, tables: 0, would_insert_rows: 0, would_preserve_rows: 0,
+        omissions: isMicroAppArchiveOmissions(payload.microAppArchiveOmissions) ? payload.microAppArchiveOmissions
+          : { privateScopeInstallations: 0, unsupportedInstallations: 0, uninitializedActors: 0 } };
+      for (const snapshot of microAppSnapshots) {
+        const scope = snapshot.scope;
+        const archivedInstall = (payload.tableRows.extension_instances ?? []).find(row => row.instance_id === scope.installationId);
+        if (!archivedInstall || archivedInstall.tenant_id !== tenantId || archivedInstall.space_id !== spaceId
+          || archivedInstall.extension_id !== scope.extensionId || archivedInstall.release_version !== scope.releaseVersion
+          || !["active", "disabled"].includes(String(archivedInstall.status))
+          || archivedInstall.project_id !== scope.projectId
+          || (scope.gadgetScope === "SPACE_SHARED" ? archivedInstall.scope !== "SPACE_SHARED"
+            : !["PROJECT_BOUND", "PROJECT_SHARED"].includes(String(archivedInstall.scope)))) {
+          return Response.json({ error_code: "archive_micro_app_installation_archive_mismatch", installation_id: scope.installationId }, { status: 422 });
+        }
+        const installation = queryOne<{ instance_id: string; extension_id: string; project_id: string | null; instance_key: string; scope: string;
+          status: string; manifest_json: string; release_version: string | null; pinned_artifact_sha256: string | null }>(sql,
+          `SELECT instance_id,extension_id,project_id,instance_key,scope,status,manifest_json,release_version,pinned_artifact_sha256
+            FROM extension_installation_manifests WHERE instance_id=? AND tenant_id=? AND space_id=? AND status IN ('active','disabled')`,
+          scope.installationId, tenantId, spaceId);
+        if (!installation || installation.extension_id !== scope.extensionId || installation.project_id !== scope.projectId
+          || installation.release_version !== scope.releaseVersion || installation.pinned_artifact_sha256 !== scope.artifactSha256
+          || installation.scope !== archivedInstall.scope || installation.instance_key !== archivedInstall.instance_key) {
+          return Response.json({ error_code: "archive_micro_app_installation_unavailable", installation_id: scope.installationId }, { status: 409 });
+        }
+        if (scope.projectId && !queryOne(sql, "SELECT 1 AS present FROM projects WHERE id=? AND space_id=?", scope.projectId, spaceId))
+          return Response.json({ error_code: "archive_micro_app_project_unavailable", project_id: scope.projectId }, { status: 409 });
+        let manifest: ExtensionManifest;
+        try { manifest = validateExtensionManifest(JSON.parse(installation.manifest_json)); }
+        catch { return Response.json({ error_code: "archive_micro_app_current_manifest_invalid", installation_id: scope.installationId }, { status: 409 }); }
+        if (!manifest.bundle || manifest.id !== scope.extensionId || manifest.bundle.version !== scope.releaseVersion
+          || await digestExtensionManifest(manifest) !== scope.manifestSha256)
+          return Response.json({ error_code: "archive_micro_app_current_manifest_mismatch", installation_id: scope.installationId }, { status: 409 });
+        const archivedRelease = (payload.tableRows.extension_releases ?? []).find(row => row.extension_id === scope.extensionId && row.version === scope.releaseVersion);
+        if (!archivedRelease || archivedRelease.artifact_sha256 !== scope.artifactSha256 || typeof archivedRelease.manifest_json !== "string")
+          return Response.json({ error_code: "archive_micro_app_release_missing", installation_id: scope.installationId }, { status: 422 });
+        try {
+          const archivedManifest = validateExtensionManifest(JSON.parse(archivedRelease.manifest_json));
+          if (archivedManifest.id !== scope.extensionId || archivedManifest.bundle?.version !== scope.releaseVersion
+            || await digestExtensionManifest(archivedManifest) !== scope.manifestSha256)
+            return Response.json({ error_code: "archive_micro_app_release_mismatch", installation_id: scope.installationId }, { status: 422 });
+        } catch { return Response.json({ error_code: "archive_micro_app_release_invalid", installation_id: scope.installationId }, { status: 422 }); }
+        const prefix = installation.instance_key && installation.instance_key !== "default" ? `${installation.instance_key}_` : "";
+        const hasApp = manifest.bundle.primitives.some(primitive => (primitive.kind === "canvas"
+          || primitive.kind === "gadget" && primitive.scope === scope.gadgetScope) && `${prefix}${primitive.id}` === scope.appId);
+        if (!hasApp) return Response.json({ error_code: "archive_micro_app_id_not_in_release", app_id: scope.appId }, { status: 422 });
+        if (!this.env.MICRO_APP_DO) return Response.json({ error_code: "archive_micro_app_storage_unavailable" }, { status: 503 });
+        let response: Response;
+        try {
+          const actor = gadgetActorId(this.env.MICRO_APP_DO, scope.gadgetScope === "SPACE_SHARED"
+            ? { scope: scope.gadgetScope, spaceId, appId: scope.appId }
+            : { scope: scope.gadgetScope, spaceId, projectId: scope.projectId!, appId: scope.appId });
+          response = await this.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/internal/archive/preview", {
+            method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ snapshot }),
+          }));
+        } catch { return Response.json({ error_code: "archive_micro_app_preview_unavailable", app_id: scope.appId }, { status: 503 }); }
+        if (!response.ok) {
+          const detail = await readBoundedResponseJson<{ error_code?: unknown }>(response, 8 * 1024).catch(() => null);
+          const code = typeof detail?.error_code === "string" && /^[a-z0-9_]{1,96}$/.test(detail.error_code)
+            ? detail.error_code : "archive_micro_app_preview_failed";
+          return Response.json({ error_code: code, app_id: scope.appId }, { status: [403, 409, 413, 422].includes(response.status) ? response.status as 403 | 409 | 413 | 422 : 503 });
+        }
+        const result = await readBoundedResponseJson<{ preview?: { inserted?: unknown; skipped?: unknown } }>(response, 32 * 1024).catch(() => null);
+        const validRowCounts = (value: unknown): value is Record<string, number> => Boolean(value && typeof value === "object" && !Array.isArray(value)
+          && Object.entries(value).every(([table, count]) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(table) && Number.isSafeInteger(count) && Number(count) >= 0));
+        if (!result?.preview || !validRowCounts(result.preview.inserted) || !validRowCounts(result.preview.skipped))
+          return Response.json({ error_code: "archive_micro_app_preview_response_invalid", app_id: scope.appId }, { status: 503 });
+        microAppRestorePreview.tables += Object.keys(result.preview.inserted).length;
+        microAppRestorePreview.would_insert_rows += Object.values(result.preview.inserted).reduce((sum, count) => sum + count, 0);
+        microAppRestorePreview.would_preserve_rows += Object.values(result.preview.skipped).reduce((sum, count) => sum + count, 0);
       }
       const dependencies: Record<string, string[]> = {};
       const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
@@ -4862,6 +5057,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           row_merge: { would_insert: mergePreview.inserted, would_skip_by_constraints: mergePreview.skipped }, object_references_verified: payload.objectReferences.length,
           object_restore_required_count: objectRestoreRequiredCount, workspace_restore_count: workspaceSnapshots.length, restore_mode: "idempotent_merge_missing_rows", merge_snapshot_at: now,
           ...(projectRuntimeSettings.length ? { project_runtime_settings: projectRuntimeSettingsPreview } : {}),
+          ...(microAppSnapshots.length || Object.values(microAppRestorePreview.omissions).some(count => count > 0)
+            ? { micro_app_data: microAppRestorePreview } : {}),
           safety_actions: { archived_active_event_trigger_count: archivedActiveEventTriggerCount, missing_event_triggers_will_be_inserted_disabled: true,
             existing_event_trigger_state_will_be_preserved: true,
             archived_active_task_count: archivedActiveTaskCount,
@@ -4998,6 +5195,59 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         execute(sql, "UPDATE space_archive_restores SET status='restoring',safety_actions_json=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?",
           JSON.stringify({ project_runtime_settings: restoredProjectRuntimeSettings }), previewId, tenantId, spaceId);
       }
+      const restoredMicroAppData = { snapshots: microAppSnapshots.length, completed: 0, replayed: 0, restored_rows: 0, preserved_rows: 0,
+        omissions: microAppRestorePreview.omissions };
+      for (const snapshot of microAppSnapshots) {
+        const scope = snapshot.scope;
+        if (!this.env.MICRO_APP_DO) {
+          const message = "archive_micro_app_storage_unavailable";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',last_error=? WHERE id=? AND tenant_id=? AND space_id=?", message, previewId, tenantId, spaceId);
+          return Response.json({ error_code: message, restored_object_count: verifiedObjectCount,
+            restored_workspace_count: restoredWorkspaceCount, restored_micro_app_snapshots: restoredMicroAppData.completed }, { status: 503 });
+        }
+        const restoreId = await sha256Hex(`space-archive-micro-app-restore-v1\u0000${archiveId}\u0000${scope.installationId}\u0000${scope.projectId ?? ""}\u0000${scope.appId}`);
+        let response: Response;
+        try {
+          const actor = gadgetActorId(this.env.MICRO_APP_DO, scope.gadgetScope === "SPACE_SHARED"
+            ? { scope: scope.gadgetScope, spaceId, appId: scope.appId }
+            : { scope: scope.gadgetScope, spaceId, projectId: scope.projectId!, appId: scope.appId });
+          response = await this.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/internal/archive/restore", {
+            method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+            body: JSON.stringify({ snapshot, restoreId, restoredBy: actorId }),
+          }));
+        } catch {
+          const message = "archive_micro_app_restore_unavailable";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',last_error=? WHERE id=? AND tenant_id=? AND space_id=?", message, previewId, tenantId, spaceId);
+          return Response.json({ error_code: message, app_id: scope.appId, restored_object_count: verifiedObjectCount,
+            restored_workspace_count: restoredWorkspaceCount, restored_micro_app_snapshots: restoredMicroAppData.completed }, { status: 503 });
+        }
+        if (!response.ok) {
+          const detail = await readBoundedResponseJson<{ error_code?: unknown }>(response, 8 * 1024).catch(() => null);
+          const code = typeof detail?.error_code === "string" && /^[a-z0-9_]{1,96}$/.test(detail.error_code)
+            ? detail.error_code : "archive_micro_app_restore_rejected";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',last_error=? WHERE id=? AND tenant_id=? AND space_id=?", code, previewId, tenantId, spaceId);
+          return Response.json({ error_code: code, app_id: scope.appId, restored_object_count: verifiedObjectCount,
+            restored_workspace_count: restoredWorkspaceCount, restored_micro_app_snapshots: restoredMicroAppData.completed },
+          { status: [403, 409, 413, 422].includes(response.status) ? response.status as 403 | 409 | 413 | 422 : 503 });
+        }
+        const result = await readBoundedResponseJson<{ inserted?: unknown; skipped?: unknown; replayed?: unknown }>(response, 32 * 1024).catch(() => null);
+        const validRowCounts = (value: unknown): value is Record<string, number> => Boolean(value && typeof value === "object" && !Array.isArray(value)
+          && Object.entries(value).every(([table, count]) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(table) && Number.isSafeInteger(count) && Number(count) >= 0));
+        if (!result || !validRowCounts(result.inserted) || !validRowCounts(result.skipped) || typeof result.replayed !== "boolean") {
+          const message = "archive_micro_app_restore_response_invalid";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',last_error=? WHERE id=? AND tenant_id=? AND space_id=?", message, previewId, tenantId, spaceId);
+          return Response.json({ error_code: message, app_id: scope.appId, restored_object_count: verifiedObjectCount,
+            restored_workspace_count: restoredWorkspaceCount, restored_micro_app_snapshots: restoredMicroAppData.completed }, { status: 503 });
+        }
+        restoredMicroAppData.completed++;
+        if (result.replayed) restoredMicroAppData.replayed++;
+        restoredMicroAppData.restored_rows += Object.values(result.inserted).reduce((sum, count) => sum + count, 0);
+        restoredMicroAppData.preserved_rows += Object.values(result.skipped).reduce((sum, count) => sum + count, 0);
+        execute(sql, "UPDATE space_archive_restores SET status='restoring',safety_actions_json=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?",
+          JSON.stringify({ ...(projectRuntimeSettings.length ? { project_runtime_settings: restoredProjectRuntimeSettings } : {}), micro_app_data: restoredMicroAppData }),
+          previewId, tenantId, spaceId);
+      }
       const restoredCounts: Record<string, number> = {};
       const skippedCounts: Record<string, number> = {};
       let restoredEventTriggersDisabled = 0;
@@ -5013,6 +5263,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           const safetyActions = { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
             restored_tasks_blocked_for_human_intervention: restoredTasksBlockedForHumanIntervention,
             ...(projectRuntimeSettings.length ? { project_runtime_settings: restoredProjectRuntimeSettings } : {}),
+            ...(microAppSnapshots.length || Object.values(microAppRestorePreview.omissions).some(count => count > 0) ? { micro_app_data: restoredMicroAppData } : {}),
             ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) };
           execute(sql, "UPDATE space_archive_restores SET restored_by=?,restored_at=?,row_counts_json=?,skipped_counts_json=?,safety_actions_json=?,status='completed',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", actorId, now, JSON.stringify(restoredCounts), JSON.stringify(skippedCounts), JSON.stringify(safetyActions), verifiedObjectCount, previewId, tenantId, spaceId);
           insertEvent("archive_restored", { archive_id: archiveId, preview_id: previewId, restored_counts: restoredCounts, safety_actions: safetyActions, mode: "idempotent_merge_missing_rows" });
@@ -5026,6 +5277,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         restored_workspace_count: restoredWorkspaceCount, safety_actions: { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
           restored_tasks_blocked_for_human_intervention: restoredTasksBlockedForHumanIntervention,
           ...(projectRuntimeSettings.length ? { project_runtime_settings: restoredProjectRuntimeSettings } : {}),
+          ...(microAppSnapshots.length || Object.values(microAppRestorePreview.omissions).some(count => count > 0) ? { micro_app_data: restoredMicroAppData } : {}),
           ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) }, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
     }
     return Response.json({ error_code: "unknown_action" }, { status: 400 });

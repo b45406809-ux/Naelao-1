@@ -1,3 +1,5 @@
+import type { MicroAppArchiveSnapshot } from "./microapp-archive.js";
+
 export interface SpaceArchivePayload {
   format: "naelao-space-archive";
   formatVersion: 1 | 2;
@@ -14,6 +16,11 @@ export interface SpaceArchivePayload {
   /** Versioned safe Agent-owned project settings; never contains allocations or provider snapshots. */
   projectRuntimeSettingsVersion?: 1;
   projectRuntimeSettings?: SpaceArchiveProjectRuntimeSettingsSnapshot[];
+  /** Exact signed MicroAppDO data/recovery receipts, separate from executable release metadata. */
+  microAppSnapshotsVersion?: 1;
+  microAppSnapshots?: MicroAppArchiveSnapshot[];
+  /** Explicit coverage limits for per-user, legacy/unsigned, and never-initialized app actors. */
+  microAppArchiveOmissions?: { privateScopeInstallations: number; unsupportedInstallations: number; uninitializedActors: number };
   /** Absent only in legacy archives written before object-byte capture was added. */
   objectSnapshots?: Array<SpaceArchiveObjectSnapshot | SpaceArchiveChunkedObjectSnapshot>;
   selectionFingerprint?: string;

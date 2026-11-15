@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { MicroAppDO } from "./MicroAppDO.js";
-import { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA } from "@naelao/agent-sdk";
+import { digestExtensionManifest, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, validateExtensionManifest } from "@naelao/agent-sdk";
 import { signHmac } from "@naelao/crypto";
+import { mintInternalToken } from "@naelao/http";
 
 async function signedBusinessActionFixture(action: Record<string, unknown>, secret: string) {
   const extensionId = "ext_inventory_shop", version = "1.0.0", html = "<main>Inventory receiving</main>";
@@ -19,6 +20,35 @@ async function signedBusinessActionFixture(action: Record<string, unknown>, secr
   const bindingPayload = JSON.stringify([extensionId, version, manifestJson, artifactSha256, hostSignature, "./inventory.html", canvasSha256]);
   return { html, releaseProof: { extensionId, version, manifestJson, artifactSha256, hostSignature, canvasPath: "./inventory.html", canvasSha256,
     bindingSignature: await signHmac(bindingPayload, secret) } };
+}
+
+async function signedMicroAppArchiveFixture(secret: string, installationId = "install-archive-1") {
+  const extensionId = "ext_archive_demo", version = "1.0.0", appId = "archive_canvas", html = "<main>Archive demo</main>";
+  const manifest = { id: extensionId, type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.canvas"],
+    gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: extensionId, version,
+      primitives: [{ schemaVersion: "1.0", kind: "canvas", id: "archive_canvas", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+        layout: "DualPane.DataGrid", component: "./archive.html", dynamicPage: false }] } };
+  const canonicalManifest = validateExtensionManifest(manifest);
+  const manifestJson = JSON.stringify(manifest), manifestSha256 = await digestExtensionManifest(canonicalManifest);
+  const artifactSha256 = "a".repeat(64);
+  const hash = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const canvasSha256 = await hash(html);
+  const hostSignature = await signHmac(JSON.stringify([extensionId, version, manifestJson, artifactSha256]), secret);
+  const bindingPayload = JSON.stringify([extensionId, version, manifestJson, artifactSha256, hostSignature, "./archive.html", canvasSha256]);
+  return { appId, html, extensionId, version, manifestSha256, artifactSha256,
+    releaseProof: { extensionId, version, manifestJson, artifactSha256, hostSignature, canvasPath: "./archive.html", canvasSha256,
+      bindingSignature: await signHmac(bindingPayload, secret) },
+    scope: { tenantId: "tenant-archive", spaceId: "space-archive", projectId: "project-archive", installationId,
+      extensionId, releaseVersion: version, artifactSha256, manifestSha256, appId, gadgetScope: "PROJECT_BOUND" as const } };
+}
+
+function microAppWithStorage(storage: ReturnType<typeof createDOStorage>, secret: string) {
+  const sql = { exec<T = unknown>(query: string, ...args: unknown[]) {
+    const result = storage.sql.exec<T>(query, ...args);
+    return { ...result, [Symbol.iterator]: () => result.toArray()[Symbol.iterator]() };
+  } };
+  return new MicroAppDO({ storage: { ...storage, sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never,
+    { PLATFORM_SECRET: secret } as never);
 }
 
 describe("Gadget MCP record operations", () => {
@@ -124,6 +154,100 @@ describe("Gadget MCP record operations", () => {
     expect((await invoke({ "x-naelao-active-installation-id": "install-inventory-1", "x-naelao-active-release-version": "1.0.1" })).status).toBe(409);
     const accepted = await invoke({ "x-naelao-active-installation-id": "install-inventory-1", "x-naelao-active-release-version": "1.0.0" });
     expect(accepted.status).toBe(200);
+  });
+
+  it("exports signed MicroAppDO business data and restores it with exact scope, additive conflicts, and replay receipts", async () => {
+    const secret = "microapp-archive-secret";
+    const signed = await signedMicroAppArchiveFixture(secret);
+    const sourceStorage = createDOStorage(), source = microAppWithStorage(sourceStorage, secret);
+    const initialized = await source.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ appId: signed.appId, scope: "PROJECT_BOUND", gadgetTier: 2, extensionInstallationId: signed.scope.installationId,
+        defaultSchemaSql: "CREATE TABLE todos(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE scoped_records(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,installation_id TEXT NOT NULL)",
+        html: signed.html, releaseProof: signed.releaseProof }) }));
+    expect(initialized.status).toBe(201);
+    sourceStorage.sql.exec("INSERT INTO todos(id,payload) VALUES(?,?)", "source-row", new Uint8Array([0, 7, 255]));
+    sourceStorage.sql.exec("INSERT INTO scoped_records(id,tenant_id,space_id,installation_id) VALUES(?,?,?,?)",
+      "scoped-row", signed.scope.tenantId, signed.scope.spaceId, signed.scope.installationId);
+    sourceStorage.sql.exec("INSERT INTO gadget_business_action_receipts(action_id,actor_id,idempotency_key,request_sha256,response_json,created_at) VALUES(?,?,?,?,?,?)",
+      "receiveStock", "owner-a", "request-1", "b".repeat(64), "{\"quantity\":7}", 100);
+    sourceStorage.sql.exec(`INSERT INTO gadget_business_action_events(action_id,actor_id,product_id,quantity_received,quantity_before,quantity_after,
+      version_before,version_after,reason,idempotency_key_sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+    "receiveStock", "owner-a", "sku-1", 3, 4, 7, 1, 2, "PO-1", "c".repeat(64), 101);
+
+    const internalHeaders = async (tenantId = "tenant-archive") => ({ "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(secret, tenantId) });
+    const exported = await source.fetch(new Request("http://gadget/internal/archive/export", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ scope: signed.scope }) }));
+    expect(exported.status).toBe(200);
+    const archive = await exported.json() as { present: boolean; snapshot: { scope: unknown; tables: Array<{ name: string; rows: Array<Record<string, unknown>> }> } };
+    expect(archive.present).toBe(true);
+    expect(archive.snapshot.scope).toEqual(signed.scope);
+    expect(archive.snapshot.tables.map(table => table.name)).toContain("todos");
+    expect(archive.snapshot.tables.map(table => table.name)).toContain("scoped_records");
+    expect(archive.snapshot.tables.map(table => table.name)).toContain("gadget_business_action_receipts");
+    expect(archive.snapshot.tables.map(table => table.name)).toContain("gadget_business_action_events");
+    expect(archive.snapshot.tables.map(table => table.name)).not.toContain("gadget_metadata");
+    expect(archive.snapshot.tables.map(table => table.name)).not.toContain("canvas_presence");
+
+    const targetStorage = createDOStorage(), target = microAppWithStorage(targetStorage, secret);
+    const targetInit = await target.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ appId: signed.appId, scope: "PROJECT_BOUND", gadgetTier: 2, extensionInstallationId: signed.scope.installationId,
+        defaultSchemaSql: "CREATE TABLE todos(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE scoped_records(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,installation_id TEXT NOT NULL)",
+        html: signed.html, releaseProof: signed.releaseProof }) }));
+    expect(targetInit.status).toBe(201);
+    targetStorage.sql.exec("INSERT INTO todos(id,payload) VALUES(?,?)", "source-row", "current-value");
+    const restoreSnapshot = archive.snapshot;
+    const tamperedScope = structuredClone(restoreSnapshot);
+    tamperedScope.tables.find(table => table.name === "scoped_records")!.rows[0]!.tenant_id = "tenant-other";
+    const wrongRowScope = await target.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: tamperedScope }) }));
+    expect(wrongRowScope.status).toBe(422);
+    const incompleteSnapshot = structuredClone(restoreSnapshot);
+    incompleteSnapshot.tables = incompleteSnapshot.tables.filter(table => table.name !== "scoped_records");
+    const incomplete = await target.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: incompleteSnapshot }) }));
+    expect(incomplete.status).toBe(422);
+    const incompatibleSchema = structuredClone(restoreSnapshot);
+    incompatibleSchema.tables.find(table => table.name === "scoped_records")!.schemaSha256 = "e".repeat(64);
+    const schemaMismatch = await target.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: incompatibleSchema }) }));
+    expect(schemaMismatch.status).toBe(409);
+    const preview = await target.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: restoreSnapshot }) }));
+    expect(preview.status).toBe(200);
+    expect(targetStorage.sql.exec<{ id: string }>("SELECT id FROM todos").toArray().map(row => row.id)).toEqual(["source-row"]);
+
+    const restoreId = "d".repeat(64);
+    const restore = async () => target.fetch(new Request("http://gadget/internal/archive/restore", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: restoreSnapshot, restoreId, restoredBy: "owner-a" }) }));
+    const firstRestore = await restore();
+    expect(firstRestore.status).toBe(200);
+    expect(await firstRestore.json()).toMatchObject({ replayed: false, inserted: { todos: 0 }, skipped: { todos: 1 } });
+    const preserved = targetStorage.sql.exec<{ payload: string }>("SELECT payload FROM todos WHERE id=?", "source-row").toArray()[0]?.payload;
+    expect(preserved).toBe("current-value");
+    expect(targetStorage.sql.exec("SELECT action_id FROM gadget_business_action_receipts").toArray()).toHaveLength(1);
+    expect(targetStorage.sql.exec("SELECT product_id FROM gadget_business_action_events").toArray()).toHaveLength(1);
+    expect(targetStorage.sql.exec("SELECT id FROM scoped_records").toArray()).toHaveLength(1);
+    const replay = await restore();
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ replayed: true });
+
+    const wrongTenant = await target.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: { ...restoreSnapshot, scope: { ...signed.scope, tenantId: "tenant-other" } } }) }));
+    expect(wrongTenant.status).toBe(422);
+    const wrongInstallationStorage = createDOStorage(), wrongInstallation = microAppWithStorage(wrongInstallationStorage, secret);
+    const other = await signedMicroAppArchiveFixture(secret, "install-other");
+    const otherInit = await wrongInstallation.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ appId: other.appId, scope: "PROJECT_BOUND", gadgetTier: 2, extensionInstallationId: other.scope.installationId,
+        defaultSchemaSql: "CREATE TABLE todos(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE scoped_records(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,installation_id TEXT NOT NULL)",
+        html: other.html, releaseProof: other.releaseProof }) }));
+    expect(otherInit.status).toBe(201);
+    const crossInstall = await wrongInstallation.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: restoreSnapshot }) }));
+    expect(crossInstall.status).toBe(409);
+    const unauthorized = await target.fetch(new Request("http://gadget/internal/archive/export", { method: "POST", headers: { "x-naelao-tenant-id": "tenant-archive" },
+      body: JSON.stringify({ scope: signed.scope }) }));
+    expect(unauthorized.status).toBe(403);
   });
 
   it("maintains bounded Canvas cursors and actor-attributed collaboration events", async () => {

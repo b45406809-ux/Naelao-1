@@ -13,7 +13,10 @@ describe("ArchiveKeyRotationPanel export caller", () => {
     const markup = renderToStaticMarkup(<ArchiveKeyRotationPanel spaceId="space-a" session={{ sessionToken: "session", endUserId: "owner-a" }} canManage={true} />);
     expect(markup).toContain("Create encrypted full archive");
     expect(markup).toContain("supported SpaceDO rows, listed workspace/extension objects");
-    expect(markup).toContain("safe per-Project main runtime profiles plus inert restart recipe configuration");
+    expect(markup).toContain("safe per-Project main runtime profiles and inert restart recipe configuration");
+    expect(markup).toContain("signed shared/project MicroApp data, action receipts and events");
+    expect(markup).toContain("1 MiB per MicroApp actor");
+    expect(markup).toContain("4 MiB total MicroApp data");
     expect(markup).toContain("runtime allocations, live observations, provider snapshots");
     expect(markup).toContain("recipes remain manual and never execute");
     expect(markup).toContain("local-machine, shared-filesystem and Project Knowledge grants");

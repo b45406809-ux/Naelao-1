@@ -1,9 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import type { GadgetActorScope, GadgetScope, GadgetTier } from "@naelao/agent-sdk";
 import { signHmac, verifyHmac } from "@naelao/crypto";
-import { parseBoundedInteger, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
-import { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, validateExtensionBusinessAction, validateReceiveStockInput,
-  validateReceiveStockOutput, type ExtensionBusinessAction } from "@naelao/agent-sdk";
+import { parseBoundedInteger, readBoundedRequestBytes, RequestBodyTooLargeError, verifyInternalToken } from "@naelao/http";
+import { digestExtensionManifest, validateExtensionManifest, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA,
+  validateExtensionBusinessAction, validateReceiveStockInput, validateReceiveStockOutput, type ExtensionBusinessAction } from "@naelao/agent-sdk";
+import { decodeMicroAppArchiveValue, encodeMicroAppArchiveValue, isMicroAppArchiveSnapshot,
+  MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES, MAX_MICRO_APP_ARCHIVE_TABLE_ROWS, type MicroAppArchiveSnapshot } from "./microapp-archive.js";
 
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
 
@@ -49,6 +51,7 @@ export const GADGET_STORAGE_LIMIT_BYTES: Record<GadgetTier, number> = {
 export const TIER_ONE_IDLE_TTL_MS = 14 * 86_400 * 1000;
 const PUBLIC_ACTION_TTL_MS = 15 * 60 * 1000;
 const MAX_BUSINESS_ACTION_RECEIPTS = 10_000;
+const MAX_ARCHIVE_RESTORE_RECEIPTS = 10_000;
 const GADGET_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const PLATFORM_TABLES = new Set([
   "gadget_metadata",
@@ -56,6 +59,7 @@ const PLATFORM_TABLES = new Set([
   "gadget_extension_schema_update_receipts",
   "gadget_business_action_receipts",
   "gadget_business_action_events",
+  "gadget_archive_restore_receipts",
   "gadget_public_pages",
   "consumed_public_action_nonces",
   "canvas_collaboration_events",
@@ -63,6 +67,10 @@ const PLATFORM_TABLES = new Set([
   "gadget_action_audit",
   "gadget_data",
 ]);
+const ARCHIVE_PLATFORM_TABLES = ["gadget_data", "gadget_schema_migrations", "gadget_extension_schema_update_receipts",
+  "gadget_business_action_receipts", "gadget_business_action_events", "gadget_action_audit", "gadget_public_pages",
+  "consumed_public_action_nonces", "canvas_collaboration_events"] as const;
+const ARCHIVE_REQUEST_MAX_BYTES = MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES + 16 * 1024;
 function isGadgetId(value: unknown): value is string { return typeof value === "string" && GADGET_ID_PATTERN.test(value); }
 
 interface PublicPageAction { key: string; fields: string[] }
@@ -141,6 +149,10 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       idempotency_key_sha256 TEXT NOT NULL CHECK(length(idempotency_key_sha256)=64), created_at INTEGER NOT NULL,
       UNIQUE(action_id,idempotency_key_sha256)
     );`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gadget_archive_restore_receipts (
+      restore_id TEXT PRIMARY KEY, snapshot_sha256 TEXT NOT NULL CHECK(length(snapshot_sha256)=64),
+      result_json TEXT NOT NULL, created_at INTEGER NOT NULL
+    );`);
     const migrationColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(gadget_schema_migrations)").toArray();
     if (!migrationColumns.some(column => column.name === "migration_sha256"))
       this.ctx.storage.sql.exec("ALTER TABLE gadget_schema_migrations ADD COLUMN migration_sha256 TEXT NOT NULL DEFAULT ''");
@@ -168,6 +180,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const url = new URL(request.url);
     try {
       if (request.method === "POST" && url.pathname === "/initialize") return await this.initialize(request);
+      if (request.method === "POST" && url.pathname === "/internal/archive/export") return await this.exportArchiveSnapshot(request);
+      if (request.method === "POST" && url.pathname === "/internal/archive/preview") return await this.previewArchiveRestore(request);
+      if (request.method === "POST" && url.pathname === "/internal/archive/restore") return await this.applyArchiveRestore(request);
       if (request.method === "POST" && url.pathname === "/extension-schema-update") return await this.applyExtensionSchemaUpdate(request);
       if (request.method === "GET" && url.pathname === "/app") return await this.renderApp();
       if (request.method === "POST" && url.pathname === "/page/publish") return await this.publishPage(request);
@@ -509,6 +524,220 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         version_before,version_after,reason,created_at FROM gadget_business_action_events WHERE id>? ORDER BY id LIMIT 100`, businessAfter).toArray();
     return Response.json({ items, next_after: items[items.length - 1]?.id ?? after,
       business_events: businessEvents, business_events_next_after: businessEvents[businessEvents.length - 1]?.id ?? businessAfter });
+  }
+
+  private async exportArchiveSnapshot(request: Request): Promise<Response> {
+    const body = await this.readArchiveRequest(request);
+    if (body instanceof Response) return body;
+    const scope = body.scope;
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (Object.keys(body).some(key => key !== "scope")
+      || !isMicroAppArchiveSnapshot({ version: 1, createdAt: new Date().toISOString(), scope, tables: [] }, { tenantId }))
+      return Response.json({ error_code: "micro_app_archive_scope_invalid" }, { status: 400 });
+    const typedScope = scope as MicroAppArchiveSnapshot["scope"];
+    if (!this.metadata("app_id")) return Response.json({ present: false });
+    const identity = await this.verifyMicroAppArchiveScope(typedScope);
+    if (!identity.ok) return Response.json({ error_code: identity.error }, { status: identity.status });
+    try {
+      const names = new Set([...this.userTables(), ...ARCHIVE_PLATFORM_TABLES]);
+      if (names.size > 128) return Response.json({ error_code: "micro_app_archive_table_limit_exceeded" }, { status: 413 });
+      const captured = this.ctx.storage.transactionSync(() => {
+        const result: Array<{ name: string; schema: string; rows: Array<Record<string, unknown>> }> = [];
+        let rowCount = 0;
+        for (const name of [...names].sort()) {
+          const definition = [...this.ctx.storage.sql.exec<{ sql: string | null }>(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", name)][0]?.sql;
+          if (typeof definition !== "string" || definition.startsWith("CREATE VIRTUAL TABLE")) continue;
+          const rows = [...this.ctx.storage.sql.exec<Record<string, SqlStorageValue>>(
+            `SELECT * FROM "${name.replaceAll('"', '""')}" LIMIT ?`, MAX_MICRO_APP_ARCHIVE_TABLE_ROWS + 1)];
+          if (rows.length > MAX_MICRO_APP_ARCHIVE_TABLE_ROWS) throw new Error(`micro_app_archive_row_limit_exceeded:${name}`);
+          rowCount += rows.length;
+          if (rowCount > MAX_MICRO_APP_ARCHIVE_TABLE_ROWS) throw new Error("micro_app_archive_row_limit_exceeded");
+          result.push({ name, schema: definition, rows: rows.map(row => Object.fromEntries(
+            Object.entries(row).map(([key, value]) => [key, encodeMicroAppArchiveValue(value)]))) });
+        }
+        return result;
+      });
+      const tables: MicroAppArchiveSnapshot["tables"] = await Promise.all(captured.map(async table => ({
+        name: table.name, schemaSha256: await this.archiveSha256(table.schema), rows: table.rows,
+      })));
+      if (!this.microAppArchiveRowsMatchScope(typedScope, captured))
+        return Response.json({ error_code: "micro_app_archive_row_scope_mismatch" }, { status: 409 });
+      const snapshot: MicroAppArchiveSnapshot = { version: 1, createdAt: new Date().toISOString(), scope: typedScope, tables };
+      if (!isMicroAppArchiveSnapshot(snapshot) || new TextEncoder().encode(JSON.stringify(snapshot)).byteLength > MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES)
+        return Response.json({ error_code: "micro_app_archive_snapshot_limit_exceeded" }, { status: 413 });
+      return Response.json({ present: true, snapshot }, { headers: { "cache-control": "no-store" } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message.startsWith("micro_app_archive_row_limit_exceeded")) return Response.json({ error_code: "micro_app_archive_row_limit_exceeded" }, { status: 413 });
+      return Response.json({ error_code: "micro_app_archive_export_failed" }, { status: 503 });
+    }
+  }
+
+  private async previewArchiveRestore(request: Request): Promise<Response> {
+    const body = await this.readArchiveRequest(request);
+    if (body instanceof Response) return body;
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (Object.keys(body).some(key => key !== "snapshot")) return Response.json({ error_code: "micro_app_archive_request_invalid" }, { status: 400 });
+    if (!isMicroAppArchiveSnapshot(body.snapshot, { tenantId })) return Response.json({ error_code: "micro_app_archive_snapshot_invalid" }, { status: 422 });
+    const identity = await this.verifyMicroAppArchiveScope((body.snapshot as MicroAppArchiveSnapshot).scope);
+    if (!identity.ok) return Response.json({ error_code: identity.error }, { status: identity.status });
+    const plan = await this.prepareMicroAppArchiveMerge(body.snapshot as MicroAppArchiveSnapshot);
+    if (plan instanceof Response) return plan;
+    try {
+      const preview = this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec("SAVEPOINT micro_app_archive_preview");
+        try { return this.mergeMicroAppArchiveRows(plan); }
+        finally {
+          this.ctx.storage.sql.exec("ROLLBACK TO micro_app_archive_preview");
+          this.ctx.storage.sql.exec("RELEASE micro_app_archive_preview");
+        }
+      });
+      return Response.json({ preview, restore_mode: "idempotent_merge_missing_rows" }, { headers: { "cache-control": "no-store" } });
+    } catch { return Response.json({ error_code: "micro_app_archive_preview_failed" }, { status: 409 }); }
+  }
+
+  private async applyArchiveRestore(request: Request): Promise<Response> {
+    const body = await this.readArchiveRequest(request);
+    if (body instanceof Response) return body;
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const snapshot = body.snapshot;
+    if (Object.keys(body).some(key => !["snapshot", "restoreId", "restoredBy"].includes(key))
+      || !isMicroAppArchiveSnapshot(snapshot, { tenantId }) || typeof body.restoreId !== "string" || !/^[a-f0-9]{64}$/.test(body.restoreId)
+      || typeof body.restoredBy !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.restoredBy))
+      return Response.json({ error_code: "micro_app_archive_restore_invalid" }, { status: 422 });
+    const typedSnapshot = snapshot as MicroAppArchiveSnapshot;
+    const identity = await this.verifyMicroAppArchiveScope(typedSnapshot.scope);
+    if (!identity.ok) return Response.json({ error_code: identity.error }, { status: identity.status });
+    const plan = await this.prepareMicroAppArchiveMerge(typedSnapshot);
+    if (plan instanceof Response) return plan;
+    const snapshotSha256 = await this.archiveSha256(JSON.stringify(typedSnapshot));
+    let result: { inserted: Record<string, number>; skipped: Record<string, number>; replayed: boolean } | null = null;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        const prior = [...this.ctx.storage.sql.exec<{ snapshot_sha256: string; result_json: string }>(
+          "SELECT snapshot_sha256,result_json FROM gadget_archive_restore_receipts WHERE restore_id=?", body.restoreId)][0];
+        if (prior) {
+          if (prior.snapshot_sha256 !== snapshotSha256) throw new Error("micro_app_archive_restore_conflict");
+          result = { ...(JSON.parse(prior.result_json) as { inserted: Record<string, number>; skipped: Record<string, number> }), replayed: true };
+          return;
+        }
+        const receiptCount = [...this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM gadget_archive_restore_receipts")][0]?.count ?? 0;
+        if (receiptCount >= MAX_ARCHIVE_RESTORE_RECEIPTS) throw new Error("micro_app_archive_restore_receipt_limit_exceeded");
+        const merged = this.mergeMicroAppArchiveRows(plan);
+        this.ctx.storage.sql.exec("INSERT INTO gadget_action_audit(actor_id,operation,table_name,target_hash,created_at) VALUES(?,?,?,?,?)",
+          body.restoredBy, "business:archive_restore", "gadget_business_action_events", null, Date.now());
+        this.ctx.storage.sql.exec("DELETE FROM gadget_action_audit WHERE id <= (SELECT COALESCE(MAX(id),0)-1000 FROM gadget_action_audit)");
+        this.ctx.storage.sql.exec("INSERT INTO gadget_archive_restore_receipts(restore_id,snapshot_sha256,result_json,created_at) VALUES(?,?,?,?)",
+          body.restoreId, snapshotSha256, JSON.stringify(merged), Date.now());
+        result = { ...merged, replayed: false };
+      });
+    } catch (error) {
+      return Response.json({ error_code: error instanceof Error && error.message === "micro_app_archive_restore_conflict"
+        ? error.message : error instanceof Error && error.message === "micro_app_archive_restore_receipt_limit_exceeded"
+          ? error.message : "micro_app_archive_restore_failed" }, { status: error instanceof Error && error.message === "micro_app_archive_restore_conflict"
+            || error instanceof Error && error.message === "micro_app_archive_restore_receipt_limit_exceeded" ? 409 : 503 });
+    }
+    return Response.json(result, { headers: { "cache-control": "no-store" } });
+  }
+
+  private async readArchiveRequest(request: Request): Promise<Record<string, unknown> | Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !(await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET)))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    try {
+      const bytes = await readBoundedRequestBytes(request, ARCHIVE_REQUEST_MAX_BYTES);
+      const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+      if (!value || typeof value !== "object" || Array.isArray(value)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+      return value as Record<string, unknown>;
+    } catch (error) {
+      return Response.json({ error_code: error instanceof RequestBodyTooLargeError ? "payload_too_large" : "bad_request" },
+        { status: error instanceof RequestBodyTooLargeError ? 413 : 400 });
+    }
+  }
+
+  private async verifyMicroAppArchiveScope(scope: MicroAppArchiveSnapshot["scope"]): Promise<{ ok: true } | { ok: false; status: 403 | 409 | 503; error: string }> {
+    const proofJson = this.metadata("release_proof"), html = this.metadata("html");
+    if (this.appId() !== scope.appId || this.metadata("scope") !== scope.gadgetScope
+      || this.metadata("extension_installation_id") !== scope.installationId || !proofJson || html === undefined)
+      return { ok: false, status: 409, error: "micro_app_archive_installation_mismatch" };
+    let proof: CanvasReleaseProof;
+    try { proof = JSON.parse(proofJson) as CanvasReleaseProof; }
+    catch { return { ok: false, status: 503, error: "micro_app_archive_release_invalid" }; }
+    if (proof.extensionId !== scope.extensionId || proof.version !== scope.releaseVersion || proof.artifactSha256 !== scope.artifactSha256
+      || !await this.verifyCanvasReleaseProof(proof, html)) return { ok: false, status: 403, error: "micro_app_archive_release_invalid" };
+    try {
+      const manifest = validateExtensionManifest(JSON.parse(proof.manifestJson));
+      if (await digestExtensionManifest(manifest) !== scope.manifestSha256) return { ok: false, status: 409, error: "micro_app_archive_manifest_mismatch" };
+    } catch { return { ok: false, status: 503, error: "micro_app_archive_manifest_invalid" }; }
+    return { ok: true };
+  }
+
+  private async prepareMicroAppArchiveMerge(snapshot: MicroAppArchiveSnapshot): Promise<Array<{ name: string; rows: Array<Record<string, unknown>> }> | Response> {
+    const allowed = new Set([...this.userTables(), ...ARCHIVE_PLATFORM_TABLES]);
+    const tables: Array<{ name: string; rows: Array<Record<string, unknown>> }> = [];
+    const archivedNames = new Set(snapshot.tables.map(table => table.name));
+    for (const name of allowed) {
+      const definition = [...this.ctx.storage.sql.exec<{ sql: string | null }>("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", name)][0]?.sql;
+      if (typeof definition === "string" && !definition.startsWith("CREATE VIRTUAL TABLE") && !archivedNames.has(name))
+        return Response.json({ error_code: "micro_app_archive_table_set_incomplete", table: name }, { status: 422 });
+    }
+    for (const archived of snapshot.tables) {
+      if (!allowed.has(archived.name) || archived.name === "canvas_presence" || archived.name === "gadget_archive_restore_receipts")
+        return Response.json({ error_code: "micro_app_archive_table_forbidden" }, { status: 422 });
+      const schema = [...this.ctx.storage.sql.exec<{ sql: string | null }>("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", archived.name)][0]?.sql;
+      if (typeof schema !== "string" || schema.startsWith("CREATE VIRTUAL TABLE") || await this.archiveSha256(schema) !== archived.schemaSha256)
+        return Response.json({ error_code: "micro_app_archive_schema_incompatible", table: archived.name }, { status: 409 });
+      const columns = [...this.ctx.storage.sql.exec<{ name: string }>(`PRAGMA table_info("${archived.name.replaceAll('"', '""')}")`)].map(column => column.name).sort();
+      const rows: Array<Record<string, unknown>> = [];
+      for (const row of archived.rows) {
+        if (Object.keys(row).sort().join("\u0000") !== columns.join("\u0000"))
+          return Response.json({ error_code: "micro_app_archive_columns_incompatible", table: archived.name }, { status: 409 });
+        try { rows.push(Object.fromEntries(Object.entries(row).map(([column, value]) => [column, decodeMicroAppArchiveValue(value)]))); }
+        catch { return Response.json({ error_code: "micro_app_archive_value_invalid", table: archived.name }, { status: 422 }); }
+      }
+      tables.push({ name: archived.name, rows });
+    }
+    if (!this.microAppArchiveRowsMatchScope(snapshot.scope, tables))
+      return Response.json({ error_code: "micro_app_archive_row_scope_mismatch" }, { status: 422 });
+    return tables;
+  }
+
+  private microAppArchiveRowsMatchScope(scope: MicroAppArchiveSnapshot["scope"], tables: Array<{ name: string; rows: Array<Record<string, unknown>> }>): boolean {
+    for (const table of tables) {
+      for (const row of table.rows) {
+        if (row.tenant_id !== undefined && row.tenant_id !== scope.tenantId) return false;
+        if (row.space_id !== undefined && row.space_id !== scope.spaceId) return false;
+        if (scope.projectId && row.project_id !== undefined && row.project_id !== null && row.project_id !== scope.projectId) return false;
+        if (row.extension_installation_id !== undefined && row.extension_installation_id !== scope.installationId) return false;
+        if (table.name === "gadget_extension_schema_update_receipts"
+          && (row.installation_id !== scope.installationId || row.extension_id !== scope.extensionId || row.app_id !== scope.appId)) return false;
+      }
+    }
+    return true;
+  }
+
+  private mergeMicroAppArchiveRows(tables: Array<{ name: string; rows: Array<Record<string, unknown>> }>): { inserted: Record<string, number>; skipped: Record<string, number> } {
+    const inserted: Record<string, number> = {}, skipped: Record<string, number> = {};
+    this.ctx.storage.sql.exec("PRAGMA defer_foreign_keys = ON");
+    for (const table of tables) {
+      const columns = [...this.ctx.storage.sql.exec<{ name: string }>(`PRAGMA table_info("${table.name.replaceAll('"', '""')}")`)].map(column => column.name);
+      const placeholders = columns.map(() => "?").join(",");
+      let count = 0;
+      for (const row of table.rows) {
+        const result = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO "${table.name.replaceAll('"', '""')}" (${columns.map(column => `"${column.replaceAll('"', '""')}"`).join(",")}) VALUES (${placeholders})`,
+          ...columns.map(column => row[column] as SqlStorageValue));
+        count += result.rowsWritten;
+      }
+      inserted[table.name] = count;
+      skipped[table.name] = table.rows.length - count;
+    }
+    return { inserted, skipped };
+  }
+
+  private async archiveSha256(value: string): Promise<string> {
+    return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
   }
 
   private async writeCollaboration(request: Request): Promise<Response> {

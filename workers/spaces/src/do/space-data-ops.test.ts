@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { digestExtensionManifest, validateExtensionManifest } from "@naelao/agent-sdk";
 import { mintInternalToken } from "@naelao/http";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { captureSpaceArchiveObjectChunked, decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, spaceArchiveKeyringFromBindings, spaceArchiveKeyVersion, verifySpaceArchiveObjectSnapshots } from "./space-backup.js";
@@ -73,6 +74,80 @@ function workspaceCoordinator(storage: WorkspaceStorage, r2: ReturnType<typeof m
 }
 
 describe("SpaceDO owner data operations", () => {
+  it("captures and previews signed MicroApp data only for the exact pinned installation", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    const extensionId = "ext_archive_demo", version = "1.0.0", artifactSha256 = "a".repeat(64);
+    const manifest = { id: extensionId, type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.canvas"],
+      gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: extensionId, version,
+        primitives: [{ schemaVersion: "1.0", kind: "canvas", id: "archive_canvas", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+          layout: "DualPane.DataGrid", component: "./archive.html", dynamicPage: false }] } };
+    const manifestSha256 = await digestExtensionManifest(validateExtensionManifest(manifest));
+    const manifestJson = JSON.stringify(manifest);
+    const calls: Array<{ path: string; actor: string }> = [];
+    const microAppNamespace = {
+      idFromName(name: string) { return name as unknown as DurableObjectId; },
+      get(id: DurableObjectId) { return { async fetch(request: Request) {
+        const path = new URL(request.url).pathname, actor = String(id);
+        calls.push({ path, actor });
+        if (path === "/internal/archive/export") {
+          const body = await request.json() as { scope: Record<string, unknown> };
+          return Response.json({ present: true, snapshot: { version: 1, createdAt: new Date().toISOString(), scope: body.scope, tables: [] } });
+        }
+        if (path === "/internal/archive/preview") return Response.json({ preview: { inserted: {}, skipped: {} }, restore_mode: "idempotent_merge_missing_rows" });
+        if (path === "/internal/archive/restore") return Response.json({ inserted: {}, skipped: {}, replayed: false });
+        return Response.json({ error_code: "not_found" }, { status: 404 });
+      } }; },
+    };
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
+      MICRO_APP_DO: microAppNamespace as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers,
+      body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    storage.sql.exec("INSERT INTO extension_releases(extension_id,version,manifest_json,artifact_sha256,host_signature,created_by,created_at) VALUES(?,?,?,?,?,?,?)",
+      extensionId, version, manifestJson, artifactSha256, "b".repeat(64), "owner-a", "2026-01-01T00:00:00.000Z");
+    storage.sql.exec("INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at) VALUES(?,?,?,?,?)",
+      extensionId, manifestJson, "owner-a", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+    storage.sql.exec(`INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,
+      owner_key,installed_by,status,installed_at,removed_at,release_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    "install-a", extensionId, "tenant-a", "space-a", null, null, "SPACE_SHARED", "default", "owner-a", "owner-a", "active",
+    "2026-01-01T00:00:00.000Z", null, version);
+    storage.sql.exec(`INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,
+      owner_key,installed_by,status,installed_at,removed_at,release_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    "install-private", extensionId, "tenant-a", "space-a", null, "user-a", "SPACE_USER", "private", "owner-a", "owner-a", "active",
+    "2026-01-01T00:00:00.000Z", null, version);
+
+    const exported = await post({ action: "export", request_id: "micro-app-archive-export" });
+    expect(exported.status, JSON.stringify(await exported.clone().json())).toBe(201);
+    const { archive_id: archiveId } = await exported.json() as { archive_id: string };
+    const archive = await decodeSpaceArchive(r2.objects.get(`space-archives/tenant-a/space-a/${archiveId}.enc`)!.bytes,
+      secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId });
+    expect(archive.microAppSnapshotsVersion).toBe(1);
+    expect(archive.microAppSnapshots).toHaveLength(1);
+    expect(archive.microAppSnapshots?.[0]?.scope).toEqual({ tenantId: "tenant-a", spaceId: "space-a", projectId: null,
+      installationId: "install-a", extensionId, releaseVersion: version, artifactSha256, manifestSha256,
+      appId: "archive_canvas", gadgetScope: "SPACE_SHARED" });
+    expect(archive.microAppArchiveOmissions).toEqual({ privateScopeInstallations: 1, unsupportedInstallations: 0, uninitializedActors: 0 });
+    expect(calls.map(call => call.path)).toEqual(["/internal/archive/export"]);
+    expect(calls[0]?.actor).toContain("space:space-a");
+
+    const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
+    expect(previewResponse.status, JSON.stringify(await previewResponse.clone().json())).toBe(200);
+    const preview = await previewResponse.json() as { preview_id: string; micro_app_data: { snapshots: number; omissions: { privateScopeInstallations: number } } };
+    expect(preview.micro_app_data).toMatchObject({ snapshots: 1, omissions: { privateScopeInstallations: 1 } });
+    expect(calls.map(call => call.path)).toEqual(["/internal/archive/export", "/internal/archive/preview"]);
+    const applied = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
+    expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
+    expect(await applied.json()).toMatchObject({ safety_actions: { micro_app_data: { snapshots: 1, completed: 1, restored_rows: 0 } } });
+    expect(calls.map(call => call.path)).toEqual(["/internal/archive/export", "/internal/archive/preview", "/internal/archive/preview", "/internal/archive/restore"]);
+    storage.sql.exec("UPDATE extension_instances SET status='removed' WHERE instance_id=?", "install-a");
+    const unavailable = await post({ action: "preview_restore", archive_id: archiveId });
+    expect(unavailable.status).toBe(409);
+    expect(await unavailable.json()).toMatchObject({ error_code: "archive_micro_app_installation_unavailable" });
+    expect(calls.map(call => call.path)).toEqual(["/internal/archive/export", "/internal/archive/preview", "/internal/archive/preview", "/internal/archive/restore"]);
+  });
+
   it("purges local Space data, keeps a durable erasure tombstone, and rejects later writes and restores", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
