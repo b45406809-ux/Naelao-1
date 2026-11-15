@@ -1,5 +1,32 @@
 # Platform completion and guided templates progress
 
+## Continuation checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c355)
+
+The owner can select a host-approved 16 kHz economy profile for new Telnyx extension calls. Migration
+0260 stores the selected profile on the admitted call and consented stream session; runtime resolves
+the exact pinned catalog entry. Changing the line policy does not change active calls. The reachable
+phone dashboard shows profile selection, catalog list-rate provenance/date, existing consent/cost
+limits and pinned call-history profile. Rollout flags remain disabled.
+
+Local evidence: Agents phone/call/session/runtime suites **57/57**; direct Agents, Shell and Agent SDK
+TypeScript checks; migration inventory **260/260**; release tests **20/20**, release manifest tests
+**5/5**, deployment manifest tests **14/14**, validators and `git diff --check`. Mocked local evidence
+only: no Telnyx/OpenRouter account availability, live price, quality, deployment or production
+acceptance was checked. One initial parallel run hit a runtime timing wait; isolated and full reruns
+passed. P06 remains PARTIAL for provider/model/price verification, first-party signed package/catalog
+publication and complete dashboard acceptance. Code checkpoint: `2742c355` (push pending at this
+record update).
+
+The microapp/UI SDK/voice plan copy remains from `origin/plan/microapps-ui-sdk-voice` commit
+`df3386257262a88888d647daa4d10f3af2ff9596`; no merge occurred. Rollouts stay disabled.
+
+Exact next action: implement the independent S3/U05 product-side candidate allocation/reservation
+caller bound to exact project scope, current main allocation generation, selected template/image digest,
+current authorization and budget reservation. Add persistence and authorization, stale/concurrent
+allocation, and fabricated-attestation rejection checks. Candidates remain unqualified without a
+trusted runtime observation. Then continue the plans in dependency order; do not claim live, deployed
+or U06 sync/flush acceptance.
+
 ## Latest checkpoint — 2026-11-15 (§10.1 delegated settings drafts and owner publication; pushed)
 
 Code `26ceb675176e37d7ace7c10013c65be44f50fb5c` is pushed to

@@ -1,5 +1,34 @@
 # Managed services and sidecar implementation progress
 
+## Continuation checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c355)
+
+Code `2742c355` persists an owner-selected host-approved economy voice profile in extension-line
+policy and migration 0260. Each admitted Telnyx extension call and consented stream session pins the
+exact catalog ID; runtime resolution rejects unknown or wrong-class profiles. Changing the line's
+selection does not retarget an active call. The existing phone dashboard exposes the selection,
+published list-rate source/date and consent/cost gates; recent history shows the pinned profile.
+Streaming rollout flags remain disabled.
+
+Local verification: Agents focused phone/call/stream-session/runtime suites **57/57**; direct Agents,
+Shell and Agent SDK TypeScript checks; release inventory **260/260**; release tests **20/20**, release
+manifest tests **5/5**, deployment manifest tests **14/14**, manifest validators and `git diff --check`.
+These checks use local D1/Worker/provider mocks. No deployment, live provider check or production
+acceptance ran. The standard workspace wrapper aborted before tests while trying to purge/install
+shared modules; direct binaries were used. Preserve `infra/scripts/__pycache__/`.
+
+P06 remains PARTIAL for live provider/model/rate/quality verification, first-party signed phone
+package/catalog distribution and broader dashboard acceptance. The active plan's microapp/UI SDK/
+voice text is copied from `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596`;
+no merge occurred. Code checkpoint SHA: `2742c355` (push pending at this record update).
+
+Exact next action: implement S3/U05's missing product-side candidate allocation/reservation caller.
+Bind durable candidates to exact tenant/Space/Project, current main allocation generation, selected
+template/image digest, current authorization and budget reservation. Keep them unqualified until a
+trusted runtime observation exists; test persistence, authorization, stale/concurrent allocation and
+rejection of caller-fabricated attestation. Do not imply live mount, U06 drain/flush or deployed
+acceptance. Then continue release/environment, commercial/recovery, guided setup and remaining S2–S9/
+U01–U12/P01–P24 requirements in dependency order.
+
 ## Latest checkpoint — 2026-11-15 (joint-plan §10.1 settings delegation; pushed)
 
 Code `26ceb675176e37d7ace7c10013c65be44f50fb5c` is pushed to
