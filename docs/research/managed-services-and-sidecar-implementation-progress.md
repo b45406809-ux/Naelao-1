@@ -1,5 +1,11 @@
 # Managed services and sidecar implementation progress
 
+## Cross-plan checkpoint — 2026-11-15 (PW05 worker review status; code cb485279 pushed)
+
+The Shell worker activity view now exposes the logical workspace branch, model-token use against its allocated token budget, attempt number, worker-reported changed paths, and an explicit “no integrated-test receipt” state. It does not claim those paths are a verified diff, that the branch has an isolated runtime, or that tokens equal currency cost. Local verification: Shell worker-merge-result **3/3**, Shell typecheck, and `git diff --check`. Code `cb4852791e1129b7fbc5c869f5ee49b1e0678f73` is pushed and remote-verified; local only, no deployed/runtime/provider acceptance. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+PW04 source trace: branch-aware Tier 6 execution exists, but `sandbox-routing.ts` gives a dedicated project ToolSandbox only to `race/` branches; `manual/` review branches share the project sandbox identity. There is no manual conflict test-command contract, exact-manifest race fork, deterministic replay identity or durable validation receipt. This is uncoded implementation, not a credential blocker. Exact next action: add an authorized validation lifecycle on a Coordinator-pinned `race/` fork with bounded project-owned command, Code grant and budget checks, deterministic execution ID, and durable passed/failed/uncertain receipt; stale or uncertain outcomes must never merge. Keep rollout disabled.
+
 ## Cross-plan checkpoint — 2026-11-15 (PW04 checked manual resolution; code 4d33cf29 pushed)
 
 The requirements from `docs/research/planner-worker-isolation-and-conflict-resolution-plan.md` at `45575a395df9571eb075f0a479c65144e767be7c` are incorporated in platform §12 and managed plan §20. That exact source ref is fetched and was not checked out or merged. S2–S9/U01–U12 status is otherwise unchanged.
