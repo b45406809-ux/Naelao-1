@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { instantiateBlueprint, validateBlueprintExtensionRequirements } from "./blueprint.js";
+import { instantiateBlueprint, validateBlueprintExpectedUsage, validateBlueprintExtensionRequirements } from "./blueprint.js";
 import type { SpaceBlueprint } from "./types.js";
 
 const valid: SpaceBlueprint = { id: "bp", schemaVersion: "2.0", metadata: {}, templateCategory: "venture", requiredExtensions: [], requiredCredentials: [], projects: [{ name: "App", kind: "DualPane", templateMode: "cowork_studio", viewports: {}, systemPrompt: "Build safely", initialTasks: [{ title: "Start" }], starterFiles: [{ path: "/workspace/src/index.ts", content: "export {};" }] }] };
@@ -29,6 +29,18 @@ describe("blueprint compiler", () => {
       .toThrow("Invalid coordination defaults");
     expect(() => instantiateBlueprint({ ...valid, coordinationDefaults: { singletonCapabilityKeys: [] } }, "space"))
       .toThrow("Invalid coordination defaults");
+  });
+  it("validates advisory workload defaults without accepting author prices or customer budgets", () => {
+    const usage = { conversations_per_month: 200, interactions_per_conversation: 8,
+      managed_model_id: "@cf/example-model", model_calls_per_interaction: 2 };
+    expect(instantiateBlueprint({ ...valid, expectedUsage: usage }, "space").expectedUsage).toEqual(usage);
+    for (const invalid of [
+      { ...usage, price_cents: 100 },
+      { ...usage, model_credits_budget_per_month: 500 },
+      { ...usage, conversations_per_month: 1_000_001 },
+      { conversations_per_month: 10, interactions_per_conversation: 2, model_calls_per_interaction: 1 },
+      { ...usage, model_calls_per_interaction: 11 },
+    ]) expect(() => validateBlueprintExpectedUsage(invalid)).toThrow("Invalid expected usage");
   });
   it("requires dependency pins to name declared dependencies with valid release versions", () => {
     expect(() => instantiateBlueprint({ ...valid, requiredExtensionVersions: { ext_undeclared: "1.0.0" } }, "space")).toThrow("Invalid required extension version");

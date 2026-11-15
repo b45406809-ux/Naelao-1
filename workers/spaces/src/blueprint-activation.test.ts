@@ -443,7 +443,9 @@ describe("Space Template activation preview", () => {
 
   it("matches guided-install pricing to the exact selected listing and reports paid costs without inventing a total", async () => {
     const secret = "template-cost-preview-secret";
-    const artifact = blueprint({ id: "tpl_cost", projects: [], requiredExtensions: [], requiredCredentials: [] });
+    const artifact = blueprint({ id: "tpl_cost", projects: [], requiredExtensions: [], requiredCredentials: [],
+      expectedUsage: { conversations_per_month: 200, interactions_per_conversation: 8,
+        managed_model_id: "@cf/example-model", model_calls_per_interaction: 2 } });
     const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `cost-${index}` })) };
     const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "publisher-tenant");
     if (!certificate) throw new Error("test_certificate_not_issued");
@@ -471,6 +473,14 @@ describe("Space Template activation preview", () => {
       known_one_time_costs: [{ amount_cents: 2500, basis: "recorded_purchase", already_paid: true,
         paid_at: "2026-11-01T00:00:00.000Z" }],
       expected_monthly_usage: { conversations: 200, interactions_per_conversation: 8, projected_interactions: 1600, estimated_cost_cents: null },
+    } });
+    const authorDefaults = await worker.fetch(new Request(`https://spaces/spaces/space-cost/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
+    expect(authorDefaults.status).toBe(200);
+    expect(await authorDefaults.json()).toMatchObject({ expected_usage_defaults: artifact.expectedUsage, cost_estimate: {
+      expected_monthly_usage: { basis: "template_author_assumption", conversations: 200, interactions_per_conversation: 8,
+        model_id: "@cf/example-model", model_calls_per_interaction: 2 },
+      managed_model_scenario: { basis: "template_author_operation_assumption", status: "unavailable", reason: "model_rate_catalog_unavailable" },
+      total_estimate_cents: null,
     } });
     expect(queries.find(query => query.sql.includes("marketplace_license_purchases"))?.values)
       .toEqual(["tenant-buyer", artifact.id, "listing-selected"]);

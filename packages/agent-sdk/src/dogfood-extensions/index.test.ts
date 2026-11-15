@@ -24,6 +24,12 @@ describe("dogfooded enterprise extensions", () => {
     expect(foundry).toContain("Setup contract preview");
     expect(foundry).toContain("Customer form preview");
     expect(foundry).toContain("Assistant channel availability defaults");
+    expect(foundry).toContain("Expected monthly workload assumptions");
+    expect(foundry).toContain("function collectExpectedUsage");
+    expect(foundry).toContain("expected_usage:collectExpectedUsage()");
+    expect(foundry).toContain("expectedUsage?{expectedUsage}");
+    expect(foundry).toContain("validateExpectedUsage(draft.expected_usage)");
+    expect(foundry).toContain("do not set author prices, grant model access, or create a customer budget");
     expect(foundry).toContain("collectAssistantChannelDefaults");
     expect(foundry).toContain("blueprint.dependencies");
     expect(foundry).toContain("manifest_sha256");

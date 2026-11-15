@@ -283,6 +283,15 @@ export interface BlueprintExtensionRequirements {
   actions?: BlueprintExtensionActionRequirement[];
 }
 
+/** Advisory monthly workload defaults for a customer-facing estimate. These values do not set
+ * provider prices, grant model access, or create an enforceable budget. */
+export interface BlueprintExpectedUsageV1 {
+  conversations_per_month: number;
+  interactions_per_conversation: number;
+  managed_model_id?: string;
+  model_calls_per_interaction?: number;
+}
+
 /** Version 1 is a primitive form; version 2 adds bounded localization and one equality condition. */
 export type BlueprintSetupField =
   | ({ id: string; type: "text"; label: string; helpText?: string; required?: boolean; defaultValue?: string; minLength?: number; maxLength?: number } & { localization?: BlueprintSetupFieldLocalization; visibleWhen?: BlueprintSetupVisibilityCondition })
@@ -300,6 +309,8 @@ export interface SpaceBlueprint {
   coordinationDefaults?: { memberFactsEnabled?: boolean; singletonCapabilityKeys?: string[] };
   /** Owner-reviewed references into exact signed dependency declarations; not runtime grants. */
   extensionRequirements?: BlueprintExtensionRequirements;
+  /** Author-provided planning defaults only; the host recomputes estimates from current verified rates. */
+  expectedUsage?: BlueprintExpectedUsageV1;
   id: string;
   schemaVersion: "2.0";
   metadata: Record<string, unknown> & { name?: string; exportedAt?: string };

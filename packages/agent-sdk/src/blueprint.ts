@@ -1,5 +1,5 @@
 import { validateTemplateRuntimes } from "./execution-environments.js";
-import type { BlueprintExtensionActionRequirement, BlueprintExtensionKnowledgeRequirement, BlueprintExtensionRequirements, GadgetScope, PermissionAction, SpaceBlueprint } from "./types.js";
+import type { BlueprintExpectedUsageV1, BlueprintExtensionActionRequirement, BlueprintExtensionKnowledgeRequirement, BlueprintExtensionRequirements, GadgetScope, PermissionAction, SpaceBlueprint } from "./types.js";
 import { validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning } from "./assistant-channels.js";
 import { PROJECT_KINDS } from "./canvas-runtime.js";
 import { validateBlueprintSetupSchema } from "./blueprint-setup-fields.js";
@@ -7,6 +7,28 @@ import { validateSpaceCoordinationSingletonKeys } from "./space-coordination.js"
 
 const BLUEPRINT_EXTENSION_SCOPES = new Set<GadgetScope>(["USER_PRIVATE", "SPACE_WIDE", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
 const BLUEPRINT_PERMISSION_ACTIONS = new Set<PermissionAction>(["read", "write", "execute", "network", "admin"]);
+
+/** Validate only bounded workload assumptions. Authors cannot publish prices or customer budgets. */
+export function validateBlueprintExpectedUsage(value: unknown): BlueprintExpectedUsageV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid expected usage");
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).some(key => !["conversations_per_month", "interactions_per_conversation", "managed_model_id", "model_calls_per_interaction"].includes(key))
+    || !Number.isSafeInteger(raw.conversations_per_month) || Number(raw.conversations_per_month) < 1 || Number(raw.conversations_per_month) > 1_000_000
+    || !Number.isSafeInteger(raw.interactions_per_conversation) || Number(raw.interactions_per_conversation) < 1 || Number(raw.interactions_per_conversation) > 500)
+    throw new Error("Invalid expected usage");
+  const modelId = raw.managed_model_id;
+  const calls = raw.model_calls_per_interaction;
+  if (modelId === undefined && calls !== undefined
+    || modelId !== undefined && (typeof modelId !== "string" || modelId.length > 200
+      || !/^(?:[A-Za-z0-9]|@[A-Za-z0-9])[A-Za-z0-9._:/-]{0,199}$/.test(modelId)
+      || !Number.isSafeInteger(calls) || Number(calls) < 1 || Number(calls) > 10))
+    throw new Error("Invalid expected usage");
+  return {
+    conversations_per_month: Number(raw.conversations_per_month),
+    interactions_per_conversation: Number(raw.interactions_per_conversation),
+    ...(typeof modelId === "string" ? { managed_model_id: modelId, model_calls_per_interaction: Number(calls) } : {}),
+  };
+}
 
 /** Validate signed review references against the blueprint's immutable dependency list. */
 export function validateBlueprintExtensionRequirements(
@@ -70,6 +92,7 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
   if (!blueprint.id || !Array.isArray(blueprint.projects)) throw new Error("Invalid blueprint");
   const copy = structuredClone(blueprint);
   validateBlueprintSetupSchema(copy);
+  if (copy.expectedUsage !== undefined) copy.expectedUsage = validateBlueprintExpectedUsage(copy.expectedUsage);
   if (copy.extensionRequirements !== undefined)
     copy.extensionRequirements = validateBlueprintExtensionRequirements(copy.extensionRequirements, copy.requiredExtensions ?? []);
   if (copy.coordinationDefaults !== undefined) {

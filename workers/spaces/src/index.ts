@@ -67,7 +67,7 @@ import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, spaceSha
   isSpaceSharedDependencyPinList, isSpaceSharedGadgetMigrationRetentionPlan, spaceSharedDependencyExpansion,
   supportsOwnerApprovedSpaceSharedAuthorityExpansion, supportsOwnerApprovedSpaceSharedDependencyExpansion,
   supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
-import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
+import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintExpectedUsage, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -790,7 +790,7 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Blueprint storage not configured" }, 503);
-  const exportOptions = await c.req.json<{ requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; extensionRequirements?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; extensionRequirements?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
+  const exportOptions = await c.req.json<{ requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; expectedUsage?: unknown; extensionRequirements?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; expectedUsage?: unknown; extensionRequirements?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
   if (exportOptions.requestId !== undefined && (typeof exportOptions.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(exportOptions.requestId))) return c.json({ error_code: "invalid_export_request_id" }, 400);
   const requestId = exportOptions.requestId;
   const requestPayload = { ...exportOptions };
@@ -859,6 +859,10 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   if (exportOptions.coordinationDefaults !== undefined) {
     try { rawBlueprint = attachBlueprintCoordinationDefaults(rawBlueprint, exportOptions.coordinationDefaults); }
     catch { return c.json({ error_code: "blueprint_coordination_defaults_invalid" }, 422); }
+  }
+  if (exportOptions.expectedUsage !== undefined) {
+    try { rawBlueprint = attachBlueprintExpectedUsage(rawBlueprint, exportOptions.expectedUsage); }
+    catch { return c.json({ error_code: "blueprint_expected_usage_invalid" }, 422); }
   }
   if (exportOptions.extensionRequirements !== undefined) {
     try { rawBlueprint = attachBlueprintExtensionRequirements(rawBlueprint, exportOptions.extensionRequirements); }
@@ -1464,8 +1468,9 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   const managedModelId = c.req.query("managed_model_id"), modelCallsPerInteraction = c.req.query("model_calls_per_interaction");
   const modelCreditsBudgetPerMonth = c.req.query("model_credits_budget_per_month");
   let expectedUsage: ReturnType<typeof validateTemplateExpectedUsage> | undefined;
-  if (conversationsPerMonth !== undefined || interactionsPerConversation !== undefined || managedModelId !== undefined
-    || modelCallsPerInteraction !== undefined || modelCreditsBudgetPerMonth !== undefined) {
+  const customerUsageProvided = conversationsPerMonth !== undefined || interactionsPerConversation !== undefined || managedModelId !== undefined
+    || modelCallsPerInteraction !== undefined || modelCreditsBudgetPerMonth !== undefined;
+  if (customerUsageProvided) {
     try {
       if (conversationsPerMonth === undefined || interactionsPerConversation === undefined) throw new Error("Both expected usage values are required");
       expectedUsage = validateTemplateExpectedUsage({ conversations_per_month: Number(conversationsPerMonth),
@@ -1475,7 +1480,12 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
         ...(modelCreditsBudgetPerMonth === undefined ? {} : { model_credits_budget_per_month: Number(modelCreditsBudgetPerMonth) }) });
     } catch (error) { return c.json({ error_code: "template_expected_usage_invalid", message: (error as Error).message.slice(0, 160) }, 400); }
   }
-  const costEstimate = await loadTemplateCostEstimate(c.env.PLATFORM_DB, tenantId, blueprint.id, listingId, new Date(), expectedUsage);
+  let usageSource: "customer" | "template_author" = "customer";
+  if (!customerUsageProvided && blueprint.expectedUsage !== undefined) {
+    try { expectedUsage = validateTemplateExpectedUsage(blueprint.expectedUsage); usageSource = "template_author"; }
+    catch { return c.json({ error_code: "blueprint_expected_usage_invalid" }, 422); }
+  }
+  const costEstimate = await loadTemplateCostEstimate(c.env.PLATFORM_DB, tenantId, blueprint.id, listingId, new Date(), expectedUsage, usageSource);
   return c.json({ ...preview, coordination_policy_current: coordinationPolicyCurrent,
     coordination_singleton_policy_current: coordinationSingletonPolicyCurrent, blueprint_id: blueprint.id, target_space_id: spaceId, security,
     evaluation: { passed: value.conformanceCertificate.passed, total: value.conformanceCertificate.total,

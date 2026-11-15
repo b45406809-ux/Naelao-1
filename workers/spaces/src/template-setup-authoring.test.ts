@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { digestExtensionManifest, type SpaceBlueprint, validateBlueprintSetupSchema, validateExtensionManifest } from "@naelao/agent-sdk";
-import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
+import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintExpectedUsage, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 import spacesWorker from "./index.js";
 
 const sourceBlueprint = (): SpaceBlueprint => ({
@@ -141,6 +141,31 @@ describe("visual Template setup authoring export", () => {
     expect(() => attachBlueprintCoordinationDefaults(source, { singletonCapabilityKeys: ["Official.Website"] })).toThrow("blueprint_coordination_defaults_invalid");
   });
 
+  it("attaches bounded workload assumptions but rejects author prices and customer budgets", () => {
+    const source = sourceBlueprint();
+    const expectedUsage = { conversations_per_month: 200, interactions_per_conversation: 8,
+      managed_model_id: "@cf/example-model", model_calls_per_interaction: 2 };
+    expect(attachBlueprintExpectedUsage(source, expectedUsage).expectedUsage).toEqual(expectedUsage);
+    expect(source.expectedUsage).toBeUndefined();
+    expect(() => attachBlueprintExpectedUsage(source, { ...expectedUsage, price_cents: 100 })).toThrow();
+    expect(() => attachBlueprintExpectedUsage(source, { ...expectedUsage, model_credits_budget_per_month: 500 })).toThrow();
+  });
+
+  it("rejects invalid author workload assumptions before storing an artifact or starting conformance", async () => {
+    const h = exportHarness();
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-studio/export-template", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-studio",
+        "x-naelao-user-id": "owner-studio", "x-naelao-role": "owner" },
+      body: JSON.stringify({ projectId: "support", requiredExtensions: [], name: "Support", description: "Support template",
+        expectedUsage: { conversations_per_month: 200, interactions_per_conversation: 8, price_cents: 100 },
+        stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
+    }), h.env);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error_code: "blueprint_expected_usage_invalid" });
+    expect(h.writes).toHaveLength(0);
+    expect(h.jobs).toHaveLength(0);
+  });
+
   it("authors only exact dependency knowledge and action references", () => {
     const source = sourceBlueprint();
     source.requiredExtensions = ["ext_support"];
@@ -177,6 +202,8 @@ describe("visual Template setup authoring export", () => {
         setupSchemaVersion: 2, setupFields,
         assistantChannels: { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" }, projectAssistants: { enabled: { email: false } } },
         coordinationDefaults: { memberFactsEnabled: true, singletonCapabilityKeys: ["service.phone", "official.website"] },
+        expectedUsage: { conversations_per_month: 200, interactions_per_conversation: 8,
+          managed_model_id: "@cf/example-model", model_calls_per_interaction: 2 },
         extensionRequirements,
         stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
     }), h.env);
@@ -189,6 +216,8 @@ describe("visual Template setup authoring export", () => {
     expect(payload.blueprint).toMatchObject({ setupSchemaVersion: 2, projects: expect.arrayContaining([expect.objectContaining({ id: "support", setupFields })]),
       assistantChannels: { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" }, projectAssistants: { enabled: { email: false } } },
       coordinationDefaults: { memberFactsEnabled: true, singletonCapabilityKeys: ["official.website", "service.phone"] },
+      expectedUsage: { conversations_per_month: 200, interactions_per_conversation: 8,
+        managed_model_id: "@cf/example-model", model_calls_per_interaction: 2 },
       extensionRequirements,
       metadata: { stateDeltaSuite: { fixtures: expect.arrayContaining([expect.objectContaining({ id: "fixture-0" })]) } } });
   });

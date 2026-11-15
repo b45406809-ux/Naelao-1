@@ -27,7 +27,7 @@ export interface TemplateCostEstimate {
   }>;
   managed_model_scenario: null | {
     status: "estimated" | "unavailable";
-    basis: "customer_entered_operation_assumption";
+    basis: "customer_entered_operation_assumption" | "template_author_operation_assumption";
     model_id: string;
     provider: "cloudflare";
     service_id: "workers-ai";
@@ -52,7 +52,7 @@ export interface TemplateCostEstimate {
     reason?: "active_model_entitlement_unavailable" | "model_rate_catalog_unavailable" | "projection_out_of_range";
   };
   expected_monthly_usage: {
-    basis: "customer_entered_assumption";
+    basis: "customer_entered_assumption" | "template_author_assumption";
     conversations: number;
     interactions_per_conversation: number;
     projected_interactions: number;
@@ -186,6 +186,7 @@ export async function loadTemplateCostEstimate(
   listingId: string | null,
   now = new Date(),
   rawExpectedUsage?: unknown,
+  usageSource: "customer" | "template_author" = "customer",
 ): Promise<TemplateCostEstimate> {
   const expectedUsage = rawExpectedUsage === undefined ? null : validateTemplateExpectedUsage(rawExpectedUsage);
   const modelRates = await loadAvailableManagedModelRates(db, tenantId, now);
@@ -199,7 +200,7 @@ export async function loadTemplateCostEstimate(
     available_managed_models: modelRates.models,
     managed_model_scenario: null as TemplateCostEstimate["managed_model_scenario"],
     expected_monthly_usage: expectedUsage ? {
-      basis: "customer_entered_assumption" as const,
+      basis: usageSource === "template_author" ? "template_author_assumption" as const : "customer_entered_assumption" as const,
       conversations: expectedUsage.conversations_per_month,
       interactions_per_conversation: expectedUsage.interactions_per_conversation,
       projected_interactions: expectedUsage.conversations_per_month * expectedUsage.interactions_per_conversation,
@@ -215,7 +216,7 @@ export async function loadTemplateCostEstimate(
       * expectedUsage.model_calls_per_interaction!;
     const projectedCredits = model ? operationsPerMonth * model.credits_per_operation : undefined;
     base.managed_model_scenario = model && Number.isSafeInteger(projectedCredits) ? {
-      status: "estimated", basis: "customer_entered_operation_assumption", model_id: model.model_id,
+      status: "estimated", basis: usageSource === "template_author" ? "template_author_operation_assumption" : "customer_entered_operation_assumption", model_id: model.model_id,
       provider: model.provider, service_id: model.service_id, operation_name: model.operation_name, region: model.region,
       price_version: model.price_version, credit_unit: "naelao_credit", credits_per_operation: model.credits_per_operation,
       max_credits_per_operation: model.max_credits_per_operation,
@@ -230,7 +231,7 @@ export async function loadTemplateCostEstimate(
         enforcement: "not_enforced" as const,
       } }),
     } : {
-      status: "unavailable", basis: "customer_entered_operation_assumption", model_id: expectedUsage.managed_model_id,
+      status: "unavailable", basis: usageSource === "template_author" ? "template_author_operation_assumption" : "customer_entered_operation_assumption", model_id: expectedUsage.managed_model_id,
       provider: "cloudflare", service_id: "workers-ai", operation_name: "generate-text", region: "global",
       credit_unit: "naelao_credit", operations_per_month: operationsPerMonth,
       ...(expectedUsage.model_credits_budget_per_month === undefined ? {} : { customer_budget_comparison: {

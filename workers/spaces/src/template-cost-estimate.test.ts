@@ -75,6 +75,18 @@ describe("guided template cost disclosure", () => {
     } });
   });
 
+  it("labels signed template defaults separately while still using only the current verified model rate", async () => {
+    const db = sqliteCostDb();
+    const estimate = await loadTemplateCostEstimate(db, "tenant-a", "blueprint-a", "listing-a",
+      new Date("2026-11-13T00:00:00.000Z"), { conversations_per_month: 200, interactions_per_conversation: 8,
+        managed_model_id: MODEL, model_calls_per_interaction: 2 }, "template_author");
+    expect(estimate).toMatchObject({ total_estimate_cents: null,
+      expected_monthly_usage: { basis: "template_author_assumption", conversations: 200, projected_interactions: 1600 },
+      managed_model_scenario: { basis: "template_author_operation_assumption", status: "estimated", model_id: MODEL,
+        operations_per_month: 3200, projected_credits: 176000, price_version: "cf-model-fixed-v3" } });
+    db.db.close();
+  });
+
   it("projects only the exact current verified model-credit price and plan limit from SQLite", async () => {
     const db = sqliteCostDb();
     const usage = validateTemplateExpectedUsage({ conversations_per_month: 200, interactions_per_conversation: 8,

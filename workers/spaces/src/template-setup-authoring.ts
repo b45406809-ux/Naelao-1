@@ -1,4 +1,4 @@
-import { validateAssistantChannelDefaults, validateBlueprintExtensionRequirements, validateBlueprintSetupSchema, validateSpaceCoordinationSingletonKeys, type AssistantChannelTemplateDefaults, type BlueprintSetupField, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateAssistantChannelDefaults, validateBlueprintExpectedUsage, validateBlueprintExtensionRequirements, validateBlueprintSetupSchema, validateSpaceCoordinationSingletonKeys, type AssistantChannelTemplateDefaults, type BlueprintSetupField, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 /** Attach one author's visual setup form to the exact exported project and validate it with the same
  * SDK contract used by activation. Caller-provided schemas remain data; no executable form logic is accepted. */
@@ -66,6 +66,14 @@ export function attachBlueprintCoordinationDefaults(source: SpaceBlueprint, inpu
     ...(raw.memberFactsEnabled !== undefined ? { memberFactsEnabled: raw.memberFactsEnabled } : {}),
     ...(singletonKeys?.ok ? { singletonCapabilityKeys: singletonKeys.value } : {}),
   } as NonNullable<SpaceBlueprint["coordinationDefaults"]>;
+  return blueprint;
+}
+
+/** Attach author-suggested monthly workload assumptions only. Prices, access and customer budgets
+ * are always supplied or verified by the host cost preview. */
+export function attachBlueprintExpectedUsage(source: SpaceBlueprint, input: unknown): SpaceBlueprint {
+  const blueprint = structuredClone(source);
+  blueprint.expectedUsage = validateBlueprintExpectedUsage(input);
   return blueprint;
 }
 
