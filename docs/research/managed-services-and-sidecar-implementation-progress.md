@@ -1,6 +1,32 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d gated Modal host and durable journal; pushed)
+
+Code `ab5d80a5fd9b90d02e0eb3bf6084e879ff25235b` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
+confirmed remote `8239cb51561778a73df07bb259e02d836ad17040` with no advance. Migration 0256 adds an
+exact Project-scoped operation journal, stable idempotency, revision CAS and bounded actor-attributed
+events. Lifecycle persists before billing/provider effects and keeps ambiguous create/terminate results
+unreplayed. New `workers/modal-host` is an isolated Node 22 process using pinned `modal@0.11.1`; its
+HMAC API validates scope, digest-pinned image, GPU/region/resource bounds, deterministic operation
+names and blocks guest network. Host credentials never enter Workers. All three SDK/host gates default
+off.
+
+Local evidence: host tests **6/6**, host build/typecheck, Agents Modal suites **13/13**, Agents typecheck,
+release migration tests **20/20**, both release validators report **256** migrations and schema 0256,
+plus `git diff --check`. No live SDK call or provider, deployed host, owner caller, deployment or browser
+acceptance ran. S5/MS08d is PARTIAL: missing owner-facing reachable create/status caller, artifacts and
+approved execution/volume contract remain uncoded; Modal does not expose a per-sandbox settled-cost
+receipt through this current SDK integration, so usage settlement cannot be claimed. Beta/private gRPC
+acceptance and pricing/metering/customer-billing policy are external gates, not credentials blockers.
+Rollout flags remain false; preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: implement P21 durable verification/reset email delivery tracking in
+`workers/spaces/src/product-end-user-routes.ts`, reusing current notification/outbox code. Keep external
+responses neutral, store no raw reset/verification tokens, and add bounded retry/outcome persistence and
+failure-injection coverage. Then resume remaining S3–S9/U01–U12/P01–P24 work without repeating closed
+audits.
+
+## Previous checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
 
 Code `ef77e19375b134c724be5fec95ba771573e1ba10` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
 confirmed the remote at `7e9d3c2b` with no advance. Migration 0255 persists a default-empty,

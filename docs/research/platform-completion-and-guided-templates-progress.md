@@ -1,6 +1,32 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d gated Modal host and journal; pushed)
+
+Code `ab5d80a5fd9b90d02e0eb3bf6084e879ff25235b` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
+confirmed remote `8239cb51561778a73df07bb259e02d836ad17040`. Migration 0256 adds project-bound Modal
+operation intent/event tables with stable idempotency and revision fencing. The provider-neutral
+lifecycle records before external effects and retains unknown results. `workers/modal-host` is a
+separate Node 22 service using `modal@0.11.1`; HMAC, digest-pinned image, GPU/region/resource allowlists,
+deterministic names and network blocking are tested. `MODAL_HOST_ENABLED`, beta acceptance, and private
+gRPC acceptance all remain false. Modal credentials remain host-only.
+
+Local evidence: host tests **6/6**, build/typecheck, Agents Modal suites **13/13**, Agents typecheck,
+release migration tests **20/20**, release/deployment validators confirm schema 0256 and **256** pinned
+migrations, and `git diff --check`. No live provider, deployment, browser or deployed tests ran. P01
+release code remains locally verified; P02 deployed resource identities/receipts remain external. S5/
+MS08d remains PARTIAL: no reachable owner create/status caller or artifact/command/volume handoff exists,
+and this SDK integration has no per-sandbox settled-cost receipt. These are remaining code/product
+gaps plus a Beta/private-gRPC and metering/price-policy gate, not credential blockers. P01/P02, P03/P20
+policy choices, P04 deployed recovery, P05 Space provider authority and P06 live/streaming/catalog gaps
+remain as recorded below. Keep all rollouts disabled; preserve untracked
+`infra/scripts/__pycache__/`.
+
+Exact next action: implement P21 durable delivery outcomes and retry for verification/reset email in
+`workers/spaces/src/product-end-user-routes.ts`, preserving neutral public responses and ensuring raw
+tokens do not enter durable records/logs. Add bounded persistence, failure/retry checks, then continue
+independent P01–P24/S3–S9/U01–U12 code gaps.
+
+## Previous checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
 
 Code `ef77e19375b134c724be5fec95ba771573e1ba10` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
 confirmed the remote at `7e9d3c2b` with no advance. Migration 0255 provides an owner/admin,

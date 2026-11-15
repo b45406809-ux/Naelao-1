@@ -16,7 +16,33 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d gated Modal host and journal; pushed)
+
+Code `ab5d80a5fd9b90d02e0eb3bf6084e879ff25235b` is pushed to `origin/Mcbt5s-Backup-2`; immediately
+before push, fetch confirmed remote `8239cb51561778a73df07bb259e02d836ad17040` with no advance. Migration
+0256 adds a Project-scoped Modal operation journal with stable idempotency, event history, and revision
+compare-and-set. The Agents lifecycle persists intent before billing/provider effects and retains
+ambiguous create/stop outcomes without blind retries. A separate Node 22 host uses the official `modal`
+0.11.1 SDK behind HMAC, pinned image, GPU/region/resource allowlists, deterministic operation names,
+network blocking, and three false-by-default rollout/contract gates. Modal credentials stay host-side.
+
+Verification: Modal host suite **6/6**, host typecheck/build, Agents lifecycle/journal/host-client suites
+**13/13**, Agents typecheck, release migration suite **20/20**, release/deployment validators confirm
+**256** migrations through 0256, and `git diff --check`. All are local/fake-provider checks; no provider
+call, deployed host, browser, deployment, or live acceptance ran. This is not Modal support: there is no
+owner-facing create caller yet, no per-sandbox settled-cost receipt in the current SDK path, and no
+artifact handoff or command/volume integration. Treat the missing caller and metering policy as code/
+product gaps, not credential blockers. Beta/private gRPC acceptance and usage-priced commercial policy
+remain external gates. Keep every rollout false and preserve untracked
+`infra/scripts/__pycache__/`.
+
+Exact next action: continue platform requirement **P21** by mapping verification/reset mail issuance and
+existing queue/outbox callers in `workers/spaces/src/product-end-user-routes.ts`; add durable bounded
+delivery attempts/outcomes with neutral public responses and token-safe retry, then add failure/retry
+verification. Return to S5/MS08d after this independent recovery gap; do not claim the Modal caller is
+complete.
+
+## Previous checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
 
 Code `ef77e19375b134c724be5fec95ba771573e1ba10` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
 confirmed the remote at `7e9d3c2b` with no advance. Migration 0255 adds a default-empty owner-selected
