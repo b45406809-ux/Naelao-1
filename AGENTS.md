@@ -12,7 +12,40 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (P04 signed product-user MicroApp lifecycle; pushed fbaeeea8ba19a0c9fb73f48209acd1368776dd87)
+## Latest checkpoint — 2026-11-15 (P04 product-user actor and chat erasure; pushed c20d13003be80befa7bb7cd45c18f2f5ee424cc2)
+
+Code `c20d13003be80befa7bb7cd45c18f2f5ee424cc2` is pushed and `ls-remote` verified on
+`origin/Mcbt5s-Backup-2`. Self-service account deletion now fans out exact-user MicroApp actor cleanup
+and the existing G-AO31 SpaceDO session/message/agent-state deletion across every Product Space. It
+keeps the durable Product-user erasure marker until all Spaces finish, so retry resumes idempotently.
+The Router blocks all authenticated product-session routes and stream-ticket use once that marker is
+set while allowing the exact self-service account DELETE to retry. Space membership authorization
+also denies members whose Product-user erasure marker is set. Invalid stream tickets do not disclose
+erasure state.
+
+Local evidence: product-user MicroApp erasure, route and account cleanup suites **15/15**; Router
+product-user identity/erasure/stream-ticket suite **5/5**; Spaces and Router `tsc --noEmit`; `git diff
+--check`; and an SQLite membership-fence check (active before erasure, denied after). Local mocks and
+SQLite only; no deployment, live provider, browser, or production acceptance. Rollouts remain disabled.
+Preserve the preexisting untracked `infra/scripts/__pycache__/`.
+
+P04 remains PARTIAL: supported product-user actor and chat cleanup now has retryable callers, but
+per-app user uninstall, other service stores, legal/retention/key/jurisdiction choices, cross-service
+consistency, isolated recovery drills and measured RPO/RTO remain open. `PROJECT_USER` remains
+unsupported. S2 is locally implemented for its supported provider lanes; S3–S9/U01–U12 and P01–P24
+remain open only to the extent shown in their ledgers. U05's Container-versus-Computer trusted
+observation bridge is uncoded, not a credentials blocker. The microapp/UI SDK/voice plan copy remains
+in platform-plan sections 9 and 11 from `origin/plan/microapps-ui-sdk-voice` at
+`df3386257262a88888d647daa4d10f3af2ff9596`; no merge occurred.
+
+Exact next action: implement authenticated per-app uninstall for the product user's own
+USER_PRIVATE/SPACE_USER installation. Persist a removal tombstone/receipt, erase that actor's data,
+remove its install row only after cleanup is confirmed, retry safely after partial failure, and deny
+replay/reinitialization. Keep owner-shared installation untouched. Add Router reachability and
+cross-user, retry, partial-failure and post-uninstall-call coverage; then continue other P04 stores
+and the next independent requirement in plan dependency order.
+
+## Previous checkpoint — 2026-11-15 (P04 signed product-user MicroApp lifecycle; pushed fbaeeea8ba19a0c9fb73f48209acd1368776dd87)
 
 Code `fbaeeea8ba19a0c9fb73f48209acd1368776dd87` is pushed to
 `origin/Mcbt5s-Backup-2`; fetch and `ls-remote` verified the tip. The owner-approved signed bundle

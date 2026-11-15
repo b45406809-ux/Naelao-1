@@ -1,6 +1,34 @@
 # Managed services and sidecar implementation progress
 
-## Continuation checkpoint — 2026-11-15 (P04 signed product-user MicroApp lifecycle; pushed fbaeeea8ba19a0c9fb73f48209acd1368776dd87)
+## Continuation checkpoint — 2026-11-15 (P04 account erasure fence; pushed c20d13003be80befa7bb7cd45c18f2f5ee424cc2)
+
+Code `c20d13003be80befa7bb7cd45c18f2f5ee424cc2` is pushed and remote-verified on
+`origin/Mcbt5s-Backup-2`. Product account deletion now cleans exact-user MicroApp actor state and
+G-AO31 SpaceDO sessions/messages/agent state across each Product Space before shared account data.
+The existing durable erasure marker remains until every Space succeeds; retries redo idempotent
+cleanup. Router product sessions and stream tickets are fenced while pending, with the exact account
+DELETE left reachable for retries. Space membership resolution also consults the Product-user
+erasure marker and deleted state.
+
+Local evidence: Spaces erasure, product-user route and account cleanup suites **15/15**; Router
+product-user auth/erasure/stream-ticket suite **5/5**; Spaces and Router TypeScript checks;
+`git diff --check`; and a SQLite check of membership before/after marker. Local/mock only; no deploy,
+browser, provider or live acceptance. Rollouts remain disabled; preserve untracked
+`infra/scripts/__pycache__/`.
+
+P04 remains PARTIAL for per-app user uninstall, other service stores, retention/key/jurisdiction
+policy, cross-service consistency, isolated recovery and measured/deployed RPO/RTO. `PROJECT_USER`
+remains unsupported. U05's Container-to-Computer trusted-observation adapter is uncoded, not blocked
+by credentials. S2 is locally implemented for supported provider lanes; remaining S3–S9/U01–U12 and
+P01–P24 work is indexed in the respective ledgers.
+
+Exact next action: add authenticated per-app uninstall for the current product user's own
+USER_PRIVATE/SPACE_USER installation. Persist a durable removal state/receipt; erase actor data before
+removing the install row; make partial failures retryable; and reject reactivation or further actor
+calls. Keep the owner's shared package installation intact. Add route, cross-user, retry,
+partial-failure and post-uninstall coverage, then proceed to the next independent plan requirement.
+
+## Previous checkpoint — 2026-11-15 (P04 signed product-user MicroApp lifecycle; pushed fbaeeea8ba19a0c9fb73f48209acd1368776dd87)
 
 Code `fbaeeea8ba19a0c9fb73f48209acd1368776dd87` is pushed and remote-verified on
 `Mcbt5s-Backup-2`. Owner-approved signed bundles can contain low-capability Tier 1 USER_PRIVATE or

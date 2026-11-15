@@ -1,6 +1,34 @@
 # Platform completion and guided templates progress
 
-## Continuation checkpoint — 2026-11-15 (P04 signed product-user MicroApp lifecycle; pushed fbaeeea8ba19a0c9fb73f48209acd1368776dd87)
+## Continuation checkpoint — 2026-11-15 (P04 account erasure fence; pushed c20d13003be80befa7bb7cd45c18f2f5ee424cc2)
+
+Code `c20d13003be80befa7bb7cd45c18f2f5ee424cc2` is pushed and remote-verified on
+`origin/Mcbt5s-Backup-2`. The self-service product account DELETE now deletes exact-user MicroApp
+actor state plus G-AO31 SpaceDO sessions/messages/agent state across all linked Product Spaces,
+keeping the durable account fence active until cleanup succeeds. Retries resume idempotently. The
+Router blocks product-session API and stream-ticket access while erasure is pending and preserves the
+exact account DELETE retry; Space membership checks also consult the marker. Invalid tickets receive
+the usual auth failure without disclosing account state.
+
+Local evidence: Spaces erasure, product-user route and account cleanup suites **15/15**; Router
+product-user auth/erasure/stream-ticket **5/5**; Spaces and Router typechecks; `git diff --check`; and
+SQLite membership-fence behavior. These are local mocks/SQLite, not browser, deployed or live
+acceptance. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+P04 remains PARTIAL for per-app uninstall, other stores, retention/legal/key/jurisdiction choices,
+cross-service consistency, isolated restore drills and measured RPO/RTO. `PROJECT_USER` remains
+unsupported. Plan text from `origin/plan/microapps-ui-sdk-voice` (`df3386257262a88888d647daa4d10f3af2ff9596`)
+is copied into sections 9 and 11; there was no branch merge. S2 remains locally implemented for its
+supported provider lanes; S3–S9/U01–U12 and P01–P24 continue per their ledgers. U05's trusted
+Container-to-Computer observation bridge remains uncoded, not credential-blocked.
+
+Exact next action: implement product-user uninstall for one's own USER_PRIVATE/SPACE_USER MicroApp.
+Persist a durable removal receipt/tombstone, erase actor state before removing the user's install row,
+support retry after partial failure, and reject later activation/calls. Preserve the owner-shared
+installation. Verify the reachable Router/API path plus cross-user, retry, partial-failure and
+post-uninstall denial; then continue the next independent plan gap.
+
+## Previous checkpoint — 2026-11-15 (P04 signed product-user MicroApp lifecycle; pushed fbaeeea8ba19a0c9fb73f48209acd1368776dd87)
 
 The pushed code checkpoint `fbaeeea8ba19a0c9fb73f48209acd1368776dd87` adds owner-approved
 USER_PRIVATE/SPACE_USER Tier 1 package declarations and a product-session caller for discovery,
