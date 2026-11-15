@@ -1,57 +1,28 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host scope authorization; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d Modal operation status caller; pushed)
 
-Code `36e3ad53` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch confirmed
-`bb7070bf9c407ab84ffe88ff158b03c11ab17d38` as an ancestor. Building on `ab5d80a5`, every Modal host
-operation now carries a fresh HMAC binding exact tenant/Space/Project scope. GET/DELETE first resolve
-the deterministic provider name under that scope and the operation identity and reject mismatched IDs;
-POST body scope must equal the signed headers. This closes a cross-project/tenant inspect/terminate gap.
+Code `e8bfdd81` is pushed to `origin/Mcbt5s-Backup-2`; fetch confirmed `34d1486e` was an ancestor.
+The migration 0256 journal now has a fixed-25-row newest-first status projection returning operation
+ID/state, region/revision, credit reservation/usage/overrun, bounded error code and timestamps only.
+The authenticated Agents route enforces verified tenant/Space/Project membership and owner/admin
+authority; Router dispatches it before the Spaces catch-all; Project Computers renders the saved
+metadata without contacting Modal or exposing create/termination controls. Provider IDs, request
+payloads, idempotency keys and actor IDs are omitted.
 
-Local evidence: Modal host tests **7/7**, Agents host-client/lifecycle/journal tests **13/13**, host and
-Agents typechecks, and `git diff --check`. No live SDK/provider, deployment, browser or deployed
-acceptance ran. All Modal rollout, Beta and private-gRPC flags remain false. P21 is locally implemented
-for encrypted outbox persistence/retry and delivery receipts; its prior recorded next action was stale.
-P22's independent local cache-entry purge and whole-Space cleanup status gaps are closed; AutoRAG
-provider-index deletion and deployed store acceptance remain unverified. P01/P02, commercial/recovery
-policy and remaining P05/P06 gaps keep the statuses in the matrix below. Preserve untracked
+Local evidence: Agents journal/route tests **8/8**, Router managed-runtime dispatch **1/1**, Agents,
+Router and Shell typechecks, and `git diff --check`. These are SQLite/mocked routing checks only; no
+browser, deployment, Modal provider or live acceptance ran. Modal create remains disabled pending
+reliable per-sandbox usage reconciliation and an approved customer pricing/metering decision; Beta/
+private-gRPC and hosted-provider acceptance remain separate gates. P21 outboxes and P22 local cache/
+Space cleanup are implemented; provider/deployed gates remain. Preserve untracked
 `infra/scripts/__pycache__/` and keep rollouts disabled.
 
-Exact next action: add an authenticated owner/admin read-only status view for existing Modal journal
-operations, scoped to tenant/Space/Project through an Agents route and Shell Project Computers caller.
-Expose only bounded metadata; do not call Modal or expose paid create/termination controls. Then continue
-the next independent uncoded requirement across S3–S9/U01–U12 and P01–P24. Do not claim Modal support.
-
-## Previous checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
-
-Code `ef77e19375b134c724be5fec95ba771573e1ba10` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
-confirmed the remote at `7e9d3c2b` with no advance. Migration 0255 provides an owner/admin,
-default-empty private-path manifest, metadata-only revision audit and encrypted per-Project backup
-ledger. The Shell manages selected UTF-8 files under `.naelao/private/`, outside canonical workspace
-sync. Capture filters shared, secret, browser and cache paths/content; authenticated encryption binds
-tenant/Space/Project/jurisdiction, request, generation, configured image/toolchain fingerprints, key
-version and expiry. Restore checks current tombstone, allocation, selection, jurisdiction and
-provenance, then creates only missing files. Five-minute expiry cleanup is bounded and retryable; the
-project-erasure path waits for R2 deletion receipts. Feature and runtime flags remain false.
-
-Local evidence: five focused Agents suites **66/66**, Agents/Shell typechecks, release migration runner
-**20/20**, release/deployment validators confirm **255** migrations and required schema 0255, and
-`git diff --check`. Local SQLite/fake-R2/fake-Container only; no deployed schema, R2, Container, browser,
-provider, deployment or live acceptance ran. The dedicated key and global/EU R2 bindings are absent,
-so backup is unavailable in every environment. U09 remains PARTIAL for physical provider-snapshot
-deletion, restart execution, stale-process reconnect fencing, provider-proven immutable image/toolchain
-identity and deployed recovery. P04 remains PARTIAL for other services, inbound data, approved
-retention/key/jurisdiction policy, RPO/RTO and isolated/deployed recovery. P06 remains PARTIAL for
-publisher identity/signing/catalog, conversational streaming, managed provisioning, complete cost/
-quality evidence and live acceptance; Twilio and Telnyx both pin signed installation, handler digest and
-published settings revision (`7e9d3c2b`). Preserve untracked `infra/scripts/__pycache__/` and keep all
-rollouts disabled.
-
-Exact next action: continue S5/MS08d by adding the missing reachable Modal provider caller and durable
-operation journal on a separately hosted Node 22+ boundary, using the existing provider-neutral
-lifecycle contract. Keep credentials in the host and rollout disabled; do not claim Modal support until
-the product accepts the Beta/private gRPC SDK dependency and deploys the host. Then continue remaining
-S3–S9/U01–U12/P01–P24 uncoded work.
+Exact next action: fix the U09 Shell caller reachability gap found during routing: `/main-runtime-private-state`
+and `/main-runtime-private-state/backups` currently miss explicit Router mappings and fall into the
+Spaces catch-all instead of Agents. Add the two authenticated mappings and routing regression coverage;
+keep owner/admin checks, R2/key gates and rollout settings unchanged. Then continue independent
+S3–S9/U01–U12/P01–P24 work.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided setup lifecycle; pushed)
 

@@ -16,28 +16,30 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host scope authorization; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d Modal operation status caller; pushed)
 
-Code `36e3ad53` is pushed to `origin/Mcbt5s-Backup-2`; fetch confirmed prior remote
-`bb7070bf9c407ab84ffe88ff158b03c11ab17d38` was an ancestor. On top of `ab5d80a5`, the Modal host now
-requires a fresh HMAC binding the exact tenant, Space and Project for every operation. GET/DELETE first
-resolve the deterministic provider name under that signed scope and operation identity and reject a
-provider ID that is not owned there. POST body scope must match the signed headers. This closes a
-cross-project/cross-tenant inspect/terminate gap without enabling the host.
+Code `e8bfdd81` is pushed to `origin/Mcbt5s-Backup-2`; fetch confirmed `34d1486e` was an ancestor.
+The migration 0256 journal now has a fixed-25-row newest-first status projection that returns only
+operation ID/state, region/revision, credit reservation/usage/overrun, bounded error code and times.
+An authenticated Agents GET route enforces exact verified tenant/Space/Project membership and
+owner/admin authority; Router dispatches it before the Spaces catch-all; Project Computers renders the
+saved metadata with no provider call or create/termination controls. Provider IDs, request payloads,
+idempotency keys and actor IDs are omitted.
 
-Verification: Modal host boundary **7/7**, Agents Modal client/lifecycle/journal **13/13**, Modal host
-typecheck, Agents typecheck and `git diff --check`. These are local/fake-provider checks; no provider,
-deployed host, browser, deployment or live acceptance ran. The migration 0256 journal, host and three
-false-by-default gates remain as recorded below. P21's current-source outboxes already implement the
-durable verification/reset work; the previous P21 next-action line was stale. P22's local cache and
-Space cleanup code gaps are closed; AutoRAG provider-index deletion and deployed store acceptance
-remain unverified. Preserve untracked `infra/scripts/__pycache__/` and keep rollouts disabled.
+Local evidence: Agents journal/route tests **8/8**, Router managed-runtime dispatch **1/1**, Agents,
+Router and Shell typechecks, and `git diff --check`. These are local SQLite/mocked routing checks; no
+browser, deployment, Modal provider or live acceptance ran. Modal create remains disabled pending
+reliable per-sandbox usage reconciliation and an approved customer pricing/metering decision; Beta/
+private-gRPC and hosted-provider acceptance remain separate gates. P21 outboxes and P22 local cache/
+Space cleanup are implemented; their provider/deployed gates remain as recorded below. Preserve
+untracked `infra/scripts/__pycache__/` and keep every rollout disabled.
 
-Exact next action: add a tenant/Space/Project-scoped owner/admin read-only view for existing Modal
-journal operations through an authenticated Agents route and reachable Shell Project Computers view.
-Return only bounded operation metadata; do not call Modal or expose create/termination controls. Then
-continue the next independent uncoded S3–S9/U01–U12/P01–P24 requirement. Do not add a paid create path
-until verified usage reconciliation and the customer pricing/metering decision exist.
+Exact next action: close the reachable-caller gap found while tracing U09 private-state recovery:
+Router has no explicit mapping for the Shell's `/main-runtime-private-state` or `/backups` paths, so the
+generic Spaces catch-all receives owner backup reads/captures instead of the Agents handlers. Add both
+authenticated Agents mappings and routing regression coverage; preserve owner/admin enforcement,
+default-off R2/key gates and no-deploy boundaries. Then continue the next independent uncoded S3–S9/
+U01–U12/P01–P24 requirement. Do not repeat completed audits without new evidence or enable rollout.
 
 ## Previous checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
 

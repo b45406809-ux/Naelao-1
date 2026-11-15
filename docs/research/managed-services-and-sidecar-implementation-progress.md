@@ -1,28 +1,27 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host scope authorization; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d Modal operation status caller; pushed)
 
-Code `36e3ad53` is pushed to `origin/Mcbt5s-Backup-2`; fetch confirmed prior remote
-`bb7070bf9c407ab84ffe88ff158b03c11ab17d38` was an ancestor. On top of `ab5d80a5`, the Modal host now
-requires a fresh HMAC binding tenant, Space and Project on every request. For GET/DELETE it first
-resolves the deterministic sandbox name from that signed scope and operation identity, and rejects any
-provider ID that does not match. POST requires the body scope to equal the signed scope. This closes a
-cross-scope inspect/terminate gap. Migration 0256's Project-scoped operation journal, revision CAS and
-three false-by-default rollout/contract gates are unchanged.
+Code `e8bfdd81` is pushed to `origin/Mcbt5s-Backup-2`; fetch confirmed `34d1486e` was an ancestor.
+The migration 0256 journal now has a fixed-25-row newest-first status projection that returns only
+operation ID/state, region/revision, credit reservation/usage/overrun, bounded error code and times.
+An authenticated Agents GET route enforces exact verified tenant/Space/Project membership and
+owner/admin authority; Router dispatches it before the Spaces catch-all; Project Computers renders the
+saved metadata with no provider call or create/termination controls. Provider IDs, request payloads,
+idempotency keys and actor IDs are omitted.
 
-Verification: Modal host boundary **7/7**, Agents Modal host-client/lifecycle/journal **13/13**, host
-typecheck, Agents typecheck and `git diff --check`. These are local fake-provider tests; no provider,
-deployed host, owner caller, browser, deployment or live acceptance ran. S5/MS08d remains PARTIAL: there
-is no owner-facing operation-status/create caller or artifact/command/volume handoff, and the SDK path
-has no per-sandbox settled-cost receipt. Do not add a paid create flow before usage reconciliation and
-customer pricing/metering policy are resolved. Modal Beta/private-gRPC adoption also remains a platform
-acceptance gate; no credentials are blocking this local code. Preserve untracked
+Local evidence: Agents journal/route tests **8/8**, Router managed-runtime dispatch **1/1**, Agents,
+Router and Shell typechecks, and `git diff --check`. These are local SQLite/mocked routing checks; no
+browser, deployment, Modal provider or live acceptance ran. Modal create remains disabled pending
+reliable per-sandbox usage reconciliation and an approved customer pricing/metering decision; Beta/
+private-gRPC and hosted-provider acceptance remain separate gates. Preserve untracked
 `infra/scripts/__pycache__/` and keep rollouts disabled.
 
-Exact next action: add an authenticated, owner/admin-only, read-only list/status path for existing Modal
-journal records, filtered by exact tenant/Space/Project, and expose it in Shell Project Computers. Return
-bounded metadata only; do not make provider calls or expose create/terminate controls. Then continue the
-next independent uncoded S3–S9/U01–U12/P01–P24 requirement.
+Exact next action: close the reachable-caller gap found while tracing U09 private-state recovery:
+Router has no explicit mapping for Shell `/main-runtime-private-state` or `/backups`, so the generic
+Spaces catch-all receives backup reads/captures instead of the Agents handlers. Add both authenticated
+Agents mappings and routing regression coverage; preserve owner/admin enforcement, default-off R2/key
+gates and no-deploy boundaries. Then continue the next independent S3–S9/U01–U12/P01–P24 requirement.
 
 ## Previous checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
 
