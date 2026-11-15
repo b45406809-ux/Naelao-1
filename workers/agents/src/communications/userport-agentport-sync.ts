@@ -66,6 +66,7 @@ async function agentPort(env: AgentsEnv, tenantId: string, path: string, method 
   if (!env.AGENTPORT_WORKER) throw new Error("agentport_worker_unavailable");
   const response = await env.AGENTPORT_WORKER.fetch(new Request(`https://agentport.internal/internal/agentport${path}`, {
     method,
+    signal: AbortSignal.timeout(10_000),
     headers: { "content-type": "application/json", "x-agentport-tenant-id": tenantId,
       "x-agentport-actor-role": "client_system", "x-agentport-actor-id": tenantId,
       "x-agentport-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) },
@@ -680,10 +681,25 @@ export async function sweepUserPortAgentPortRevocations(env: AgentsEnv, now = ne
 
 export async function sweepUserPortAgentPortOperations(env: AgentsEnv, now = new Date(), limit = 10) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 25) throw new Error("userport_agentport_reconciliation_limit_invalid");
-  const revocations=await sweepUserPortAgentPortRevocations(env,now,limit);
-  const remaining=limit-revocations.checked;
+  const expired = await env.PLATFORM_DB.prepare(`SELECT operation_id,tenant_id,lease_until FROM managed_service_operations
+    WHERE operation_name IN ('agentport_connector_sync','agentport_connector_revoke') AND status='running'
+      AND lease_until IS NOT NULL AND lease_until<=? ORDER BY lease_until,created_at LIMIT ?`)
+    .bind(now.toISOString(), limit).all<{operation_id:string;tenant_id:string;lease_until:string}>();
+  let recovered = 0;
+  for (const row of expired.results ?? []) {
+    const result = await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='uncertain',lease_until=NULL,
+      next_reconcile_at=?,error_code='userport_agentport_operation_lease_expired',reconcile_attempts=reconcile_attempts+1,updated_at=?
+      WHERE operation_id=? AND tenant_id=? AND status='running' AND lease_until=?`)
+      .bind(now.toISOString(),now.toISOString(),row.operation_id,row.tenant_id,row.lease_until).run();
+    recovered += result.meta.changes ?? 0;
+  }
+  const remainingAfterRecovery = limit - recovered;
+  const revocations=remainingAfterRecovery > 0
+    ? await sweepUserPortAgentPortRevocations(env,now,remainingAfterRecovery)
+    : {checked:0,reconciled:0,deferred:0,failed:0};
+  const remaining=remainingAfterRecovery-revocations.checked;
   const syncs=remaining>0?await sweepUserPortAgentPortSyncs(env,now,remaining):{checked:0,reconciled:0,deferred:0,failed:0};
-  return {checked:revocations.checked+syncs.checked,reconciled:revocations.reconciled+syncs.reconciled,
+  return {checked:recovered+revocations.checked+syncs.checked,reconciled:revocations.reconciled+syncs.reconciled,
     deferred:revocations.deferred+syncs.deferred,failed:revocations.failed+syncs.failed};
 }
 

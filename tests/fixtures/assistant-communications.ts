@@ -106,6 +106,7 @@ export function fixture() {
   db.db.exec(readFileSync(new URL("../../infra/migrations/0222_managed_telnyx_rate_agreements.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0223_managed_telnyx_call_reservation_lifecycle.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0212_userport_agentport_connector_sync.sql", import.meta.url), "utf8"));
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0262_userport_connector_expired_operation_index.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0215_agentmail_usage_snapshots.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0216_agentmail_connection_region.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0196_higgsfield_customer_owned_media.sql", import.meta.url), "utf8"));

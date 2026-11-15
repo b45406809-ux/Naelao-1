@@ -147,6 +147,64 @@ describe("UserPort to AgentPort connector synchronization", () => {
     expect(drift.port.calls.filter(call=>call.path.endsWith("/revoke"))).toHaveLength(1);
   });
 
+  it("reconciles a UserPort sync whose worker stopped with an expired running lease", async () => {
+    const t=setup();
+    t.port.failNextGrant();
+    await expect(syncUserPortAgentPortConnector(t.env,scope,"alias-1",["GMAIL_SEND"]))
+      .rejects.toThrow("agentport_temporary_failure");
+    const operation=t.f.db.db.prepare(`SELECT operation_id FROM managed_service_operations
+      WHERE operation_name='agentport_connector_sync'`).get<{operation_id:string}>()!;
+    t.f.db.db.prepare(`UPDATE managed_service_operations SET status='running',lease_until='2000-01-01T00:00:00.000Z',
+      next_reconcile_at=NULL WHERE operation_id=?`).run(operation.operation_id);
+
+    await expect(sweepUserPortAgentPortOperations(t.env,new Date(Date.now()+120_000),10))
+      .resolves.toEqual({checked:2,reconciled:1,deferred:0,failed:0});
+    expect(t.f.db.db.prepare("SELECT status,error_code,reconcile_attempts FROM managed_service_operations WHERE operation_id=?")
+      .get(operation.operation_id)).toMatchObject({status:"complete",error_code:null,reconcile_attempts:1});
+    expect(t.f.db.db.prepare("SELECT status,revision FROM agentport_userport_connector_bindings WHERE alias_id='alias-1'")
+      .get()).toMatchObject({status:"active",revision:1});
+  });
+
+  it("reconciles an exact UserPort revoke after its worker lease expires", async () => {
+    const t=setup();
+    await syncUserPortAgentPortConnector(t.env,scope,"alias-1",["GMAIL_SEND"]);
+    t.port.failNextRevoke();
+    await expect(revokeUserPortAgentPortConnector(t.env,scope,"alias-1")).rejects.toThrow("agentport_temporary_failure");
+    const operation=t.f.db.db.prepare(`SELECT operation_id FROM managed_service_operations
+      WHERE operation_name='agentport_connector_revoke'`).get<{operation_id:string}>()!;
+    t.f.db.db.prepare(`UPDATE managed_service_operations SET status='running',lease_until='2000-01-01T00:00:00.000Z',
+      next_reconcile_at=NULL WHERE operation_id=?`).run(operation.operation_id);
+
+    await expect(sweepUserPortAgentPortOperations(t.env,new Date(Date.now()+120_000),10))
+      .resolves.toEqual({checked:2,reconciled:1,deferred:0,failed:0});
+    expect(t.f.db.db.prepare("SELECT status,error_code,reconcile_attempts FROM managed_service_operations WHERE operation_id=?")
+      .get(operation.operation_id)).toMatchObject({status:"complete",error_code:null,reconcile_attempts:1});
+    expect(t.f.db.db.prepare("SELECT status FROM agentport_userport_connector_bindings WHERE alias_id='alias-1'")
+      .get()).toMatchObject({status:"revoked"});
+  });
+
+  it("keeps the scheduled operation sweep within its requested work limit", async () => {
+    const t=setup();
+    await syncUserPortAgentPortConnector(t.env,scope,"alias-1",["GMAIL_SEND"]);
+    t.port.failNextRevoke();
+    await expect(revokeUserPortAgentPortConnector(t.env,scope,"alias-1")).rejects.toThrow("agentport_temporary_failure");
+    t.f.db.db.prepare(`INSERT INTO connector_aliases(id,tenant_id,space_id,alias,scope,project_id,user_id,server_id)
+      VALUES('alias-2','tenant','space','secondary_mail','space',NULL,NULL,'server-1')`).run();
+    t.port.failNextGrant();
+    await expect(syncUserPortAgentPortConnector(t.env,scope,"alias-2",["GMAIL_SEND"]))
+      .rejects.toThrow("agentport_temporary_failure");
+    t.f.db.db.prepare(`UPDATE managed_service_operations SET status='running',lease_until='2000-01-01T00:00:00.000Z'
+      WHERE operation_name='agentport_connector_sync' AND json_extract(request_json,'$.aliasId')='alias-2'`).run();
+
+    await expect(sweepUserPortAgentPortOperations(t.env,new Date(Date.now()+120_000),1))
+      .resolves.toEqual({checked:1,reconciled:0,deferred:0,failed:0});
+    expect(t.f.db.db.prepare("SELECT status FROM managed_service_operations WHERE operation_name='agentport_connector_revoke'")
+      .get()).toMatchObject({status:"uncertain"});
+    expect(t.port.calls.filter(call=>call.path.endsWith("/revoke"))).toHaveLength(1);
+    await expect(sweepUserPortAgentPortOperations(t.env,new Date(Date.now()+120_000),1))
+      .resolves.toEqual({checked:1,reconciled:1,deferred:0,failed:0});
+  });
+
   it("links a personal connector to the individual owner and revokes that owner link through the authenticated route", async () => {
     const t=setup();
     t.f.db.db.exec("UPDATE connector_aliases SET scope='user',user_id='user' WHERE id='alias-1'");
