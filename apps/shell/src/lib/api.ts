@@ -1668,7 +1668,7 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
 export interface ContainerInstallation {
   instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string; release_version?: string | null;
     publisher_key_id?: string | null; publisher_trusted?: boolean; publisher_revoked_at?: string | null };
-  manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; settingsSchema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; containers?: Array<{ id?: string }>; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; name?: string; scope?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }>; businessActions?: Array<{ id: string }> }> } };
+  manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; settingsSchema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; settingsActivation?: "owner_publish"; containers?: Array<{ id?: string }>; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; name?: string; scope?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }>; businessActions?: Array<{ id: string }> }> } };
 }
 export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string, includeDisabled = false) {
   const params = new URLSearchParams();
@@ -2095,12 +2095,45 @@ export function callProjectExtensionSettings(spaceId: string, projectId: string,
     method: request.method, session, cache: "no-store", ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
   });
 }
+export interface ProjectExtensionAgentMaintenanceGrant {
+  agent_id: string;
+  permission: "settings.propose";
+  revision: number;
+  granted_by: string;
+  granted_at: string;
+  updated_by: string;
+  updated_at: string;
+}
+export interface ProjectExtensionAgentMaintenanceResponse {
+  permission: "settings.propose";
+  eligible_agents: Array<{ id: string; name: string }>;
+  grants: ProjectExtensionAgentMaintenanceGrant[];
+}
+export function getProjectExtensionAgentMaintenance(spaceId: string, projectId: string, installationId: string, session: SessionCredentials) {
+  return apiFetch<ProjectExtensionAgentMaintenanceResponse>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(installationId)}/agent-maintenance-grants`, {
+    session, cache: "no-store",
+  });
+}
+export function grantProjectExtensionAgentMaintenance(spaceId: string, projectId: string, installationId: string, session: SessionCredentials,
+  request: { agentId: string; expectedRevision: number }) {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(installationId)}/agent-maintenance-grants`, {
+    method: "PUT", session, body: JSON.stringify({ agent_id: request.agentId, permission: "settings.propose", expected_revision: request.expectedRevision }),
+  });
+}
+export function revokeProjectExtensionAgentMaintenance(spaceId: string, projectId: string, installationId: string, session: SessionCredentials,
+  request: { agentId: string; expectedRevision: number }) {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(installationId)}/agent-maintenance-grants`, {
+    method: "DELETE", session, body: JSON.stringify({ agent_id: request.agentId, permission: "settings.propose", expected_revision: request.expectedRevision }),
+  });
+}
 export interface ExtensionSettingsAuditEvent {
   event_id: string;
   extension_id: string;
   scope: "PROJECT_BOUND" | "PROJECT_SHARED" | "PROJECT_USER" | "SPACE_SHARED";
   actor_id: string;
   actor_role: string;
+  actor_agent_id?: string | null;
+  delegated_by?: string | null;
   prior_revision: number;
   new_revision: number;
   schema_version: number;

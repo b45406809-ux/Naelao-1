@@ -669,6 +669,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extension-installations\/([^/]+)\/lifecycle$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extension-installations\/((?:[A-Za-z0-9._:-]|%[0-9A-Fa-f]{2})+)\/settings$/,
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extension-installations\/([^/]+)\/agent-maintenance-grants$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions\/([^/]+)\/releases$/,
   /^\/spaces\/([^/]+)\/extension-releases\/rollback$/,
   /^\/spaces\/([^/]+)\/extension-publishers(\/[^/]+)?$/,

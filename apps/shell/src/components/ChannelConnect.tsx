@@ -17,6 +17,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
+import { ExtensionAgentMaintenanceDelegation } from "@/components/ExtensionAgentMaintenanceDelegation";
 import { MicroAppStorageStatus, projectGadgetStorageApps } from "@/components/MicroAppStorageStatus";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionProviderRevocationOutcome, ExtensionPublisherKey, ExtensionPublisherRevocationReceipt, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
 import { callProjectExtensionSettingsAudit, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
@@ -1081,6 +1082,9 @@ export function ChannelConnect({
             <ExtensionSettingsForm spaceId={spaceId} appId={item.manifest.id ?? item.instance.extension_id} schema={schema} session={session}
               canConfigure={capabilities.has("extension.settings.configure") && permissions.has("extension.settings.configure")}
               projectScope={{ projectId, installationId: instanceId }} loadAudit={() => callProjectExtensionSettingsAudit(spaceId, projectId, instanceId, session)} />
+            {item.manifest.settingsActivation === "owner_publish" && capabilities.has("extension.settings.configure")
+              && permissions.has("extension.settings.configure") && <ExtensionAgentMaintenanceDelegation
+                spaceId={spaceId} projectId={projectId} installationId={instanceId} session={session} />}
           </div>;
         })}
       </details>}

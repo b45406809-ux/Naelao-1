@@ -3,6 +3,44 @@ import { describe, expect, it, vi } from "vitest";
 import { createWorkflowHooks } from "./workflow-orchestration.js";
 
 describe("container work inside durable workflows", () => {
+  it("rechecks project membership and forwards delegated settings status and draft proposals", async () => {
+    const requests: Request[] = [];
+    const env = {
+      PLATFORM_SECRET: "workflow-settings-secret",
+      SCRIPTS_R2: { get: vi.fn(async () => ({ size: 0, text: async () => "" })) },
+      SPACES_WORKER: { fetch: vi.fn(async (request: Request) => {
+        requests.push(request);
+        const path = new URL(request.url).pathname;
+        if (path === "/spaces/space-a/members") return Response.json({ data: [{ user_id: "owner-a", role: "owner" }] });
+        if (path === "/spaces/space-a/projects/project-a/members") return Response.json({ data: [{ user_id: "owner-a", role: "owner" }] });
+        if (path === "/spaces/space-a/workflow-installations/instance-a") return Response.json({ instance: {
+          instance_id: "instance-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", status: "active",
+        } });
+        return Response.json(path.endsWith("settings-proposals")
+          ? { active_revision: 4, draft_revision: 2, approval_required: true }
+          : { error_code: "unexpected_route" }, { status: path.endsWith("settings-proposals") ? 200 : 404 });
+      }) },
+    };
+    const hooks = createWorkflowHooks(env as never, { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a",
+      agentId: "agent-a", actorId: "owner-a" }, "parent", { availableOperations: () => [], create: vi.fn() } as never);
+
+    await expect(hooks.workflowExtensionSettings?.({ installationId: "instance-a", action: "status" })).resolves.toMatchObject({
+      active_revision: 4, draft_revision: 2, approval_required: true,
+    });
+    await hooks.workflowExtensionSettings?.({ installationId: "instance-a", action: "propose", expectedActiveRevision: 4,
+      expectedDraftRevision: 2, changes: { greeting: "Hello" } });
+    const proposals = requests.filter(request => new URL(request.url).pathname.endsWith("settings-proposals"));
+    expect(proposals.map(request => request.method)).toEqual(["GET", "POST"]);
+    expect(proposals[1]?.headers.get("x-naelao-agent-id")).toBe("agent-a");
+    expect(proposals[1]?.headers.get("x-naelao-role")).toBe("owner");
+    await expect(proposals[1]?.json()).resolves.toEqual({ expected_active_revision: 4, expected_draft_revision: 2, changes: { greeting: "Hello" } });
+
+    const noProject = createWorkflowHooks(env as never, { tenantId: "tenant-a", spaceId: "space-a", agentId: "agent-a", actorId: "owner-a" },
+      "parent", { availableOperations: () => [], create: vi.fn() } as never);
+    await expect(noProject.workflowExtensionSettings?.({ installationId: "instance-a", action: "status" }))
+      .rejects.toThrow("workflow_extension_settings_project_required");
+  });
+
   it("allows only explicitly declared bounded shell execution capabilities", async () => {
     const tools = {
       availableOperations: () => [

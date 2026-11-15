@@ -42,6 +42,25 @@ export function createWorkflowHooks(env: DurableWorkflowHostEnv, scope: { tenant
           dependencyPins: (manifest.dependencies ?? []).map(dependency => ({ ...dependency })), parts, workflows }];
       });
     },
+    workflowExtensionSettings: async input => {
+      const actorId = actor();
+      if (!scope.projectId) throw new Error("workflow_extension_settings_project_required");
+      const callerGrant = await readWorkflowGrant(env, { tenantId: scope.tenantId, spaceId: scope.spaceId, projectId: scope.projectId,
+        actorId, agentId: scope.agentId, installationId: input.installationId });
+      const path = `/spaces/${encodeURIComponent(scope.spaceId)}/projects/${encodeURIComponent(scope.projectId)}`
+        + `/extension-installations/${encodeURIComponent(input.installationId)}/settings-proposals`;
+      const response = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker${path}`, {
+        method: input.action === "status" ? "GET" : "POST",
+        headers: { ...await workflowHeaders(env, scope.tenantId, actorId), "x-naelao-role": callerGrant.role, "x-naelao-agent-id": scope.agentId },
+        ...(input.action === "propose" ? { body: JSON.stringify({ expected_active_revision: input.expectedActiveRevision,
+          expected_draft_revision: input.expectedDraftRevision, changes: input.changes }) } : {}),
+      }));
+      if (!response.ok) {
+        const error = await response.json<{ error_code?: string }>().catch(() => null);
+        throw new Error(error?.error_code ?? `workflow_extension_settings_failed:${response.status}`);
+      }
+      return readBoundedResponseJson<Record<string, unknown>>(response, 32 * 1024);
+    },
     workflowCreate: async (name, code, options) => {
       const capabilities = options?.capabilities ?? [];
       const available = new Set(tools.availableOperations());

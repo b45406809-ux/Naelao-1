@@ -559,6 +559,8 @@ export interface OrchestrationHooks {
   workflowListExtensions?(): Promise<Array<{ extensionId: string; version: string; installationId: string; scope: "PROJECT_BOUND" | "PROJECT_SHARED";
     status: "active"; workflowRuntime: "Cloudflare Workflows" | null; dependencyPins: Array<{ extensionId: string; version: string; manifestSha256: string }>;
     parts: Array<{ id: string; kind: string }>; workflows: Array<{ id: string; entry: string; toolNames: string[]; workerRoles: Array<{ id?: string; principal?: string; invocation?: string; execution?: string; entry?: string }> }> }>>;
+  workflowExtensionSettings?(input: { installationId: string; action: "status" | "propose"; expectedActiveRevision?: number; expectedDraftRevision?: number;
+    changes?: Record<string, string | number | boolean> }): Promise<unknown>;
   workflowRun?(name: string, params: Record<string, unknown>, options?: { startKey?: string; installationId?: string; extensionId?: string; detach?: boolean; cleanContext?: boolean; maxContextTokens?: number; contextSources?: string[]; inheritChatHistory?: boolean; workflowClass?: string; budgetKey?: string; budgetCredits?: number; reportTarget?: string; escalationTarget?: string }): Promise<unknown>;
   workflowSchedule?(name: string, cron: string): Promise<{ id: string }>;
   workflowStatus?(id: string): Promise<unknown>;

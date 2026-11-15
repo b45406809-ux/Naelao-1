@@ -290,3 +290,96 @@ describe("Space-shared extension settings", () => {
     expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_installation_settings_versions WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(0);
   });
 });
+
+describe("delegated project extension settings proposals", () => {
+  it("requires project-owner authority to read or publish owner-approved drafts", async () => {
+    const storage = createDOStorage(), secret = "project-owner-publish-settings-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=owner&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','Project A','active')");
+    const manifest = { id: "ext_owner_config", type: "extension", bundle: { schemaVersion: "1.0", kind: "extension_bundle" as const,
+      id: "ext_owner_config", version: "1.0.0", primitives: [] }, settingsActivation: "owner_publish",
+      declaredPermissions: ["extension.settings.read", "extension.settings.configure"], capabilityRequirements: ["extension.settings.read", "extension.settings.configure"],
+      gadgets: [], daemons: [], commands: [], settingsSchema: { schemaVersion: 1, fields: [{ id: "greeting", type: "text" as const, label: "Greeting", required: true, minLength: 2, maxLength: 80 }] } };
+    const installed = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "PROJECT_BOUND", projectId: "project-a",
+        gatekeeperCapabilities: manifest.capabilityRequirements }) }));
+    expect(installed.status, await installed.clone().text()).toBe(201);
+    const { installationId } = await installed.json() as { installationId: string };
+    const token = await mintInternalToken(secret, "tenant");
+    const url = `http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", instance_id: installationId })}`;
+    const editorHeaders = { "x-naelao-internal-token": token, "x-naelao-user-id": "editor-a", "x-naelao-role": "editor",
+      "x-naelao-project-read": "1", "x-naelao-project-manage": "1", "content-type": "application/json" };
+    const ownerHeaders = { ...editorHeaders, "x-naelao-user-id": "project-owner", "x-naelao-project-owner": "1" };
+    const editorRead = await space.fetch(new Request(url, { headers: editorHeaders }));
+    expect(await editorRead.json()).toMatchObject({ activation_policy: "owner_publish", can_configure: false, revision: 0, settings: {} });
+    const rejectedDraft = await space.fetch(new Request(url, { method: "PATCH", headers: editorHeaders,
+      body: JSON.stringify({ action: "save_draft", settings: { greeting: "Editor" }, draft_revision: 0, base_active_revision: 0 }) }));
+    expect(rejectedDraft.status).toBe(403);
+
+    const saved = await space.fetch(new Request(url, { method: "PATCH", headers: ownerHeaders,
+      body: JSON.stringify({ action: "save_draft", settings: { greeting: "Owner" }, draft_revision: 0, base_active_revision: 0 }) }));
+    expect(await saved.json()).toMatchObject({ active_revision: 0, draft: { revision: 1, status: "draft", settings: { greeting: "Owner" } } });
+    const published = await space.fetch(new Request(url, { method: "PATCH", headers: ownerHeaders,
+      body: JSON.stringify({ action: "publish", draft_revision: 1, expected_active_revision: 0, confirm: true }) }));
+    expect(await published.json()).toMatchObject({ published: true, revision: 1, settings: { greeting: "Owner" } });
+  });
+
+  it("lets an explicitly granted project agent create a revision-fenced draft without publishing or returning settings values", async () => {
+    const storage = createDOStorage(), secret = "extension-agent-settings-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=owner&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status,allowed_agent_ids) VALUES('project-a','space','Project A','active',?)", JSON.stringify(["agent-a"]));
+    storage.sql.exec("INSERT INTO agent_definitions(id,space_id,name,enabled) VALUES('agent-a','space','Project Agent',1),('agent-b','space','Other Agent',1)");
+    const manifest = { id: "ext_project_config", type: "extension", settingsActivation: "owner_publish",
+      declaredPermissions: ["extension.settings.read", "extension.settings.configure"],
+      capabilityRequirements: ["extension.settings.read", "extension.settings.configure"], gadgets: [], daemons: [], commands: [],
+      settingsSchema: { schemaVersion: 1, fields: [
+        { id: "language", type: "select" as const, label: "Language", defaultValue: "en", options: [{ value: "en", label: "English" }, { value: "fr", label: "French" }] },
+        { id: "greeting", type: "text" as const, label: "Greeting", required: true, minLength: 2, maxLength: 80 },
+      ] } };
+    const installed = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "PROJECT_BOUND", projectId: "project-a",
+        gatekeeperCapabilities: manifest.capabilityRequirements }) }));
+    expect(installed.status, await installed.clone().text()).toBe(201);
+    const { installationId } = await installed.json() as { installationId: string };
+    const token = await mintInternalToken(secret, "tenant");
+    const query = new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", instance_id: installationId });
+    const ownerHeaders = { "x-naelao-internal-token": token, "x-naelao-user-id": "owner", "x-naelao-role": "owner", "x-naelao-project-read": "1", "x-naelao-project-manage": "1", "content-type": "application/json" };
+    const agentHeaders = { "x-naelao-internal-token": token, "x-naelao-user-id": "member", "x-naelao-role": "member", "x-naelao-agent-id": "agent-a", "x-naelao-project-read": "1", "content-type": "application/json" };
+    const grantPath = `http://space/extension-agent-maintenance-grants?${query}`;
+    storage.sql.exec("UPDATE projects SET allowed_agent_ids=? WHERE id='project-a'", JSON.stringify("agent-a"));
+    expect((await space.fetch(new Request(grantPath, { headers: ownerHeaders }))).status).toBe(409);
+    storage.sql.exec("UPDATE projects SET allowed_agent_ids=? WHERE id='project-a'", JSON.stringify(["agent-a"]));
+    const before = await space.fetch(new Request(grantPath, { headers: ownerHeaders }));
+    expect(await before.json()).toMatchObject({ permission: "settings.propose", eligible_agents: [{ id: "agent-a", name: "Project Agent" }], grants: [] });
+    expect((await space.fetch(new Request(grantPath, { method: "PUT", headers: ownerHeaders, body: JSON.stringify({ agent_id: "agent-b", permission: "settings.propose", expected_revision: 0 }) }))).status).toBe(400);
+    const granted = await space.fetch(new Request(grantPath, { method: "PUT", headers: ownerHeaders, body: JSON.stringify({ agent_id: "agent-a", permission: "settings.propose", expected_revision: 0 }) }));
+    expect(await granted.json()).toMatchObject({ agent_id: "agent-a", permission: "settings.propose", revision: 1, status: "active" });
+    const proposalPath = `http://space/extension-settings-agent-proposal?${query}`;
+    const status = await space.fetch(new Request(proposalPath, { headers: agentHeaders }));
+    expect(await status.json()).toEqual({ active_revision: 0, draft_revision: 0, draft_status: "empty", approval_required: true });
+    const proposed = await space.fetch(new Request(proposalPath, { method: "POST", headers: agentHeaders,
+      body: JSON.stringify({ expected_active_revision: 0, expected_draft_revision: 0, changes: { greeting: "Hello" } }) }));
+    expect(proposed.status).toBe(201);
+    const proposedBody = await proposed.json();
+    expect(proposedBody).toMatchObject({ proposal: { status: "draft", approval_required: true, active_revision: 0, draft_revision: 1, changed_field_ids: ["greeting"] } });
+    expect(JSON.stringify(proposedBody)).not.toContain("Hello");
+    const active = await storage.sql.exec<{ revision: number }>("SELECT revision FROM extension_installation_settings WHERE instance_id=?", installationId).toArray();
+    expect(active).toHaveLength(0);
+    expect(storage.sql.exec("SELECT revision,status FROM extension_installation_settings_drafts WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ revision: 1, status: "draft" }]);
+    const stale = await space.fetch(new Request(proposalPath, { method: "POST", headers: agentHeaders,
+      body: JSON.stringify({ expected_active_revision: 0, expected_draft_revision: 0, changes: { greeting: "Overwrite" } }) }));
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error_code: "extension_settings_revision_conflict" });
+    const audit = await space.fetch(new Request(`http://space/extension-settings-audit?${query}`, { headers: ownerHeaders }));
+    const auditBody = await audit.json();
+    expect(auditBody).toMatchObject({ events: [expect.objectContaining({ actor_id: "agent-a", actor_role: "agent", actor_agent_id: "agent-a", delegated_by: "member", target: "draft", changed_field_ids: ["greeting"] })] });
+    expect(JSON.stringify(auditBody)).not.toContain("Hello");
+    const revoked = await space.fetch(new Request(grantPath, { method: "DELETE", headers: ownerHeaders,
+      body: JSON.stringify({ agent_id: "agent-a", permission: "settings.propose", expected_revision: 1 }) }));
+    expect(await revoked.json()).toMatchObject({ agent_id: "agent-a", revision: 2, status: "revoked" });
+    expect((await space.fetch(new Request(proposalPath, { headers: agentHeaders }))).status).toBe(403);
+  });
+});

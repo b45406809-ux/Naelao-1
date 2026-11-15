@@ -520,6 +520,23 @@ async function canExportBlueprint(c: { env: Env; req: { header(h: string): strin
   }
   return role === "owner" || role === "admin";
 }
+async function resolveProjectExtensionOwnerAuthority(c: any, spaceId: string, projectId: string): Promise<boolean | Response> {
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId) return c.json({ error_code: "user_identity_required" }, 401);
+  if (await canExportBlueprint(c, spaceId)) return true;
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const response = await stub.fetch(new Request(`http://space-do/projects/${encodeURIComponent(projectId)}/members`, {
+    headers: { "x-naelao-tenant-id": identity.tenantId },
+  }));
+  if (!response.ok) return c.json({ error_code: "project_owner_lookup_unavailable" }, 503);
+  const members = await response.json<{ data?: Array<{ user_id?: string; role?: string }> }>().catch(() => null);
+  return members?.data?.some(member => member.user_id === identity.userId && member.role === "owner") ?? false;
+}
+async function requireProjectOwnerForExtensionDelegation(c: any, spaceId: string, projectId: string): Promise<Response | null> {
+  const authority = await resolveProjectExtensionOwnerAuthority(c, spaceId, projectId);
+  if (authority instanceof Response) return authority;
+  return authority ? null : c.json({ error_code: "project_owner_required" }, 403);
+}
 
 // ── GET /spaces — list spaces for tenant ────────────────────────────────────
 app.get("/spaces", async (c) => {
@@ -5691,16 +5708,30 @@ async function forwardProjectExtensionSettings(c: any) {
     manageable = !(await requireManageableAutomationProject(c, spaceId, projectId));
   }
   let body: ArrayBuffer | undefined;
+  let projectOwner = false;
   if (c.req.method === "PATCH") {
     try { body = (await readBoundedRequestBytes(c.req.raw, 64 * 1024)).buffer as ArrayBuffer; }
     catch { return c.json({ error_code: "payload_too_large" }, 413); }
+    try {
+      const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body)) as { action?: unknown };
+      if (["save_draft", "publish", "rollback_draft"].includes(String(parsed?.action))) {
+        const ownerAuthority = await resolveProjectExtensionOwnerAuthority(c, spaceId, projectId);
+        if (ownerAuthority instanceof Response) return ownerAuthority;
+        if (!ownerAuthority) return c.json({ error_code: "project_owner_required" }, 403);
+        projectOwner = true;
+      }
+    } catch { /* SpaceDO returns the canonical bounded settings request error. */ }
+  } else {
+    const ownerAuthority = await resolveProjectExtensionOwnerAuthority(c, spaceId, projectId);
+    projectOwner = ownerAuthority === true;
   }
   const query = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId, instance_id: instanceId });
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   return stub.fetch(new Request(`http://space-do/extension-settings?${query}`, {
     method: c.req.method,
     headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId),
-      "x-naelao-role": identity.role, "x-naelao-user-id": identity.userId, "x-naelao-project-read": "1", ...(manageable ? { "x-naelao-project-manage": "1" } : {}) },
+      "x-naelao-role": identity.role, "x-naelao-user-id": identity.userId, "x-naelao-project-read": "1",
+      ...(manageable ? { "x-naelao-project-manage": "1" } : {}), ...(projectOwner ? { "x-naelao-project-owner": "1" } : {}) },
     ...(body ? { body } : {}),
   }));
 }
@@ -5722,6 +5753,89 @@ app.get(projectExtensionSettingsAuditPath, async c => {
     headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId),
       "x-naelao-user-id": identity.userId, "x-naelao-role": identity.role, "x-naelao-project-read": "1",
       ...(manageable ? { "x-naelao-project-manage": "1" } : {}) },
+  }));
+});
+
+const projectExtensionAgentMaintenancePath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/agent-maintenance-grants";
+app.use(projectExtensionAgentMaintenancePath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+async function getTrustedProjectSettingsInstallation(c: any, spaceId: string, projectId: string, instanceId: string) {
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId) return { error: c.json({ error_code: "unauthorized" }, 401) };
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const response = await stub.fetch(new Request(`http://space-do/workflow-installation?${new URLSearchParams({
+    tenant_id: identity.tenantId, space_id: spaceId, instance_id: instanceId,
+  })}`, { headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) } }));
+  if (!response.ok) return { error: c.json({ error_code: "extension_installation_unavailable" }, response.status === 404 ? 404 : 503) };
+  const installed = await response.json<{
+    instance?: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string };
+    manifest?: { id?: string; settingsActivation?: string; settingsSchema?: unknown; declaredPermissions?: unknown[]; capabilityRequirements?: unknown[]; bundle?: { id?: string; version?: string } };
+    release?: { version?: string; signatureValid?: boolean; dependenciesResolved?: boolean; publisher?: { keyId?: string } } | null;
+    dependenciesResolved?: boolean;
+  }>().catch(() => null);
+  const item = installed?.instance, manifest = installed?.manifest, release = installed?.release;
+  if (!item || item.instance_id !== instanceId || item.tenant_id !== identity.tenantId || item.space_id !== spaceId
+    || item.project_id !== projectId || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(item.scope ?? "") || item.status !== "active"
+    || !manifest || manifest.id !== manifest.bundle?.id || !manifest.bundle?.version
+    || release?.version !== manifest.bundle.version || release.signatureValid !== true
+    || installed.dependenciesResolved !== true && release.dependenciesResolved !== true)
+    return { error: c.json({ error_code: "extension_installation_untrusted" }, 409) };
+  if (release.publisher?.keyId) {
+    const activeKey = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
+      WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(identity.tenantId, spaceId, release.publisher.keyId).first();
+    if (!activeKey) return { error: c.json({ error_code: "extension_installation_untrusted" }, 409) };
+  }
+  const declared = new Set(manifest.declaredPermissions ?? []), capabilities = new Set(manifest.capabilityRequirements ?? []);
+  if (manifest.settingsActivation !== "owner_publish" || !manifest.settingsSchema
+    || !declared.has("extension.settings.read") || !capabilities.has("extension.settings.read")
+    || !declared.has("extension.settings.configure") || !capabilities.has("extension.settings.configure"))
+    return { error: c.json({ error_code: "extension_agent_settings_proposals_unavailable" }, 409) };
+  return { identity, stub, installed };
+}
+app.on(["GET", "PUT", "DELETE"], projectExtensionAgentMaintenancePath, async c => {
+  const { spaceId, projectId, instanceId } = c.req.param();
+  const ownerDenied = await requireProjectOwnerForExtensionDelegation(c, spaceId, projectId);
+  if (ownerDenied) return ownerDenied;
+  const trusted = await getTrustedProjectSettingsInstallation(c, spaceId, projectId, instanceId);
+  if ("error" in trusted) return trusted.error;
+  const { identity, stub } = trusted;
+  const query = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId, instance_id: instanceId });
+  let body: ArrayBuffer | undefined;
+  if (c.req.method !== "GET") {
+    try { body = (await readBoundedRequestBytes(c.req.raw, 8 * 1024)).buffer as ArrayBuffer; }
+    catch { return c.json({ error_code: "payload_too_large" }, 413); }
+  }
+  return stub.fetch(new Request(`http://space-do/extension-agent-maintenance-grants?${query}`, {
+    method: c.req.method,
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId),
+      "x-naelao-user-id": identity.userId!, "x-naelao-role": identity.role, "x-naelao-project-manage": "1" },
+    ...(body ? { body } : {}),
+  }));
+});
+
+const projectExtensionAgentSettingsProposalPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/settings-proposals";
+app.use(projectExtensionAgentSettingsProposalPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.on(["GET", "POST"], projectExtensionAgentSettingsProposalPath, async c => {
+  const identity = getCallerIdentity(c), { spaceId, projectId, instanceId } = c.req.param();
+  if (!identity.tenantId || !identity.userId) return c.json({ error_code: "user_identity_required" }, 403);
+  const agentId = c.req.header("x-naelao-agent-id") ?? "";
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(agentId)) return c.json({ error_code: "extension_agent_identity_required" }, 403);
+  const denied = await requireReadableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  const trusted = await getTrustedProjectSettingsInstallation(c, spaceId, projectId, instanceId);
+  if ("error" in trusted) return trusted.error;
+  const { stub } = trusted;
+  const query = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId, instance_id: instanceId });
+  let body: ArrayBuffer | undefined;
+  if (c.req.method === "POST") {
+    try { body = (await readBoundedRequestBytes(c.req.raw, 16 * 1024)).buffer as ArrayBuffer; }
+    catch { return c.json({ error_code: "payload_too_large" }, 413); }
+  }
+  return stub.fetch(new Request(`http://space-do/extension-settings-agent-proposal?${query}`, {
+    method: c.req.method,
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId),
+      "x-naelao-user-id": identity.userId, "x-naelao-role": identity.role, "x-naelao-agent-id": agentId,
+      "x-naelao-project-read": "1" },
+    ...(body ? { body } : {}),
   }));
 });
 

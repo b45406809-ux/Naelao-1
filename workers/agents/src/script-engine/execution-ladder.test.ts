@@ -240,6 +240,24 @@ describe("Execution Ladder & Code Runner", () => {
       })
     );
   });
+
+  it("exposes delegated extension settings as status or owner-reviewable proposals only", async () => {
+    const workflowExtensionSettings = vi.fn(async (input: unknown) => ({ accepted: input }));
+    const context = { env: { scriptsBucket: {} as R2Bucket, spaceId: "space-a", projectId: "project-a", tenantId: "tenant-a", agentId: "agent-a",
+      orchestration: { workflowExtensionSettings } }, run: async () => undefined } as never;
+    await dynamicWorkflow.operations["workflow.extension.settings"]?.({ installation_id: "instance-a", action: "status" }, context);
+    await dynamicWorkflow.operations["workflow.extension.settings"]?.({ installation_id: "instance-a", action: "propose",
+      expected_active_revision: 4, expected_draft_revision: 2, changes: { greeting: "Hello" } }, context);
+    expect(workflowExtensionSettings.mock.calls).toEqual([
+      [{ installationId: "instance-a", action: "status" }],
+      [{ installationId: "instance-a", action: "propose", expectedActiveRevision: 4, expectedDraftRevision: 2, changes: { greeting: "Hello" } }],
+    ]);
+    await expect(dynamicWorkflow.operations["workflow.extension.settings"]?.({ installation_id: "instance-a", action: "publish" }, context))
+      .rejects.toThrow("workflow_extension_settings_proposal_invalid");
+    await expect(dynamicWorkflow.operations["workflow.extension.settings"]?.({ installation_id: "../instance", action: "status" }, context))
+      .rejects.toThrow("workflow_extension_installation_required");
+  });
+
   it("validates extension IDs before routing vertical workflows", async () => {
     const context = {
       env: {

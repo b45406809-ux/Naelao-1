@@ -41,6 +41,7 @@ export const dynamicWorkflow: PrebuiltScript = {
   requires_tier: 3,
   paramHints: {
     "workflow.extensions": "no parameters; lists only this project’s active bound/shared extensions with installation ID, version, scope, exact declared dependency pins, primitive IDs/kinds, workflow runtime and entries when present, and worker-role bindings",
+    "workflow.extension.settings": "installation_id, action=status|propose. Status returns only active and draft revisions. Propose requires expected_active_revision, expected_draft_revision, and a partial changes object; it creates an owner-reviewable draft only and never publishes settings.",
     "workflow.create": "name, code: export async function execute(step, ctx); capabilities: installed operation names; use ctx.params and ctx.tools.call(stableStepKey, operation, params)",
     "workflow.run": "name, params, start_key (reuse for retries), workflow_class, budget_credits, optional installation_id",
     "workflow.status": "id: workflow run ID",
@@ -53,6 +54,23 @@ export const dynamicWorkflow: PrebuiltScript = {
       const h = hooks(ctx);
       if (!h.workflowListExtensions) return { ok: false, reason: "extension workflow inventory not available" };
       return { extensions: await h.workflowListExtensions() };
+    },
+    async "workflow.extension.settings"(args, ctx) {
+      const h = hooks(ctx);
+      if (!h.workflowExtensionSettings) return { ok: false, reason: "delegated extension settings proposals are not available" };
+      const installationId = String(args.installation_id ?? "");
+      if (!/^[A-Za-z0-9._:-]{1,768}$/.test(installationId)) throw new Error("workflow_extension_installation_required");
+      const action = args.action;
+      if (action === "status") return h.workflowExtensionSettings({ installationId, action });
+      if (action !== "propose" || !Number.isSafeInteger(args.expected_active_revision) || Number(args.expected_active_revision) < 0
+        || !Number.isSafeInteger(args.expected_draft_revision) || Number(args.expected_draft_revision) < 0
+        || !args.changes || typeof args.changes !== "object" || Array.isArray(args.changes)) throw new Error("workflow_extension_settings_proposal_invalid");
+      const changes = args.changes as Record<string, unknown>;
+      if (Object.keys(changes).length < 1 || Object.keys(changes).length > 32
+        || Object.values(changes).some(value => !["string", "number", "boolean"].includes(typeof value)))
+        throw new Error("workflow_extension_settings_proposal_invalid");
+      return h.workflowExtensionSettings({ installationId, action, expectedActiveRevision: Number(args.expected_active_revision),
+        expectedDraftRevision: Number(args.expected_draft_revision), changes: changes as Record<string, string | number | boolean> });
     },
     async "workflow.create"(args, ctx) {
       const h = hooks(ctx);
