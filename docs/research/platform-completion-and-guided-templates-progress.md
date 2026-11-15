@@ -1,6 +1,14 @@
 # Platform completion and guided templates progress
 
-## Latest cross-plan checkpoint — 2026-11-15 (PW06 durable worker cancellation fences; code 79d671a3 pushed)
+## Latest cross-plan checkpoint — 2026-11-15 (K02/K03 PDF preview and provenance; code 08d9c509 pushed)
+
+The builder Dashboard, Space-wide Shell and Project-private Shell now expose scope-bounded PDF preview/correction through the existing parser. A 15-minute signed receipt binds exact bytes, parser/extraction and tenant/Space/Project; the Knowledge Worker persists raw source and approved extraction hashes. Archive export/restore carries the lineage and checks raw source bytes. Migration 0263 is reflected in both release manifests without deploying or applying it.
+
+Code `08d9c509a9ab2a9b8e66e4fa4707bc1d2e442324` is pushed and verified on `origin/Mcbt5s-Backup-2`. Local evidence: Knowledge Worker **104/104**, Shell helper **3/3**, Knowledge/Shell/Dashboard typechecks, migration DDL check, release/deployment validators, release migration tests **39/39**, and diff check. No browser, live parser, D1/Worker deployment, invoice, provider or production acceptance. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: close K04 create idempotency for lost responses across sync and queued Knowledge ingestion. Persist a scope-bound request key and canonical request hash; exact retries return the existing lifecycle state, while changed content/ACL under the same key conflicts. Test concurrent/retried creation and ensure no duplicate parsing, index writes or usage reports; retain deletion fencing. Then resume remaining S/U/P/PW/K code gaps.
+
+## Previous cross-plan checkpoint — 2026-11-15 (PW06 durable worker cancellation fences; code 79d671a3 pushed)
 
 Worker rows now fence integration and terminal writes using the current durable `status` and monotonic `attempt`. Late child successes/failures cannot start a checked merge or overwrite `terminated`. Signed worker session callbacks include the attempt and return conflict after termination or retry supersession. The automatic validation lifecycle rechecks active state before branch operations, validation, receipts and expected-head publication.
 

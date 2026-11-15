@@ -1,6 +1,16 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-15 (PW06 durable worker cancellation fences; code 79d671a3 pushed)
+## Latest cross-plan checkpoint — 2026-11-15 (K02/K03 PDF preview and provenance; code 08d9c509 pushed)
+
+All three reachable Knowledge add surfaces now preview bounded PDFs and require review/correction before ingestion. Scope authorization is repeated by Knowledge Worker; the signed 15-minute receipt binds tenant/Space/Project, original byte hash, extracted-text hash and parser version. The original PDF, parser metadata and approved-text hash persist through sync and workflow ingestion, and archive export/restore verifies source bytes. Migration 0263 and its release/deployment manifest versions are recorded; rollout and deployment remain off.
+
+Code `08d9c509a9ab2a9b8e66e4fa4707bc1d2e442324` is pushed and remote-verified. Local evidence: Knowledge **104/104**, Shell PDF helper **3/3**, Knowledge/Shell/Dashboard typechecks, migration DDL smoke, release/deployment validators, release migration unit suites **39/39**, and `git diff --check`. No browser, live Cohere, deployed D1/Worker, billing invoice or production acceptance. Preserve `infra/scripts/__pycache__/`.
+
+K02 is implemented locally for the supported text and PDF formats. K03 remains partial for richer page/section provenance and parser quality evidence. Uncoded Office/image/OCR ingestion and other S2–S9/U01–U12/P/PW/K gaps remain code work. Keep rollouts disabled.
+
+Exact next action: implement K04 durable, scope-bound document-create idempotency. A repeated request after a lost response must return the same document and not create duplicate parse/index/storage charges; reusing the key with changed content, scope or ACL must conflict. Cover synchronous and queued paths while preserving deletion fences; then continue the remaining plan requirements.
+
+## Previous cross-plan checkpoint — 2026-11-15 (PW06 durable worker cancellation fences; code 79d671a3 pushed)
 
 Durable worker cancellation now prevents a late child response from entering checked branch integration and fences completion/failure writes by `status='running'` and expected `attempt`. The signed delegation callback carries the attempt; the parent rejects callbacks after termination or a superseding retry. Validation and publication adapters recheck the durable attempt before work, receipts and the checked publication request.
 
