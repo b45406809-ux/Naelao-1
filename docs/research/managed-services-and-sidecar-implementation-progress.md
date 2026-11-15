@@ -1,33 +1,31 @@
 # Managed services and sidecar implementation progress
 
-## Continuation checkpoint — 2026-11-15 (P04 product-user MicroApp archive/restore caller; pushed d7e87e35db6301cd9957ea5c55bf35831089ab4a)
+## Continuation checkpoint — 2026-11-15 (P04 signed product-user MicroApp lifecycle; pushed fbaeeea8ba19a0c9fb73f48209acd1368776dd87)
 
-Code `d7e87e35db6301cd9957ea5c55bf35831089ab4a` is pushed and remote-verified on
-`Mcbt5s-Backup-2`. The authenticated product-user export enumerates only exact-user active
-SPACE_USER/PROJECT_USER installations, checks current host-signed release pins and active publisher
-keys, returns bounded MicroApp snapshots, and reports uninitialized/unsupported omissions. Product
-session preview/restore routes require current Space membership, and SpaceDO rechecks exact user,
-installation, declared gadget, active signed release and publisher before preview/apply. Migration 146
-persists a 15-minute preview bound to the snapshot-set hash; per-actor MicroApp receipts make additive
-restores replay-safe after partial multi-actor failures. Space-owner archives still reject private data.
+Code `fbaeeea8ba19a0c9fb73f48209acd1368776dd87` is pushed and remote-verified on
+`Mcbt5s-Backup-2`. Owner-approved signed bundles can contain low-capability Tier 1 USER_PRIVATE or
+SPACE_USER gadgets. A product user can discover, explicitly activate, and call their isolated app,
+data, storage, and MCP routes. Each request rechecks active membership, owner package, exact signed
+release, current publisher key, user installation and release pin. Activation verifies all declared
+R2 artifact bytes against the signed digest, initializes only that user's actor from release/canvas
+proof, and activates a per-user install. Router permits only the exact route shapes. PROJECT_USER,
+per-user uninstall and account-erasure cleanup are still absent.
 
-Local evidence: Spaces archive/export/route tests **26/26**, Router product-session allowlist tests
-**59/59**, Spaces/Router `tsc --noEmit`, `git diff --check`. The package-manager wrapper attempted to
-remove shared modules and aborted without a TTY; installed workspace binaries ran the checks. Local
-SQLite/Worker mocks only; no browser, deployment or isolated restore drill. Rollouts remain disabled;
-preserve `infra/scripts/__pycache__/`.
+Local evidence: focused Spaces tests **72/72**, Router allowlist **69/69**, both typechecks, and
+`git diff --check`. Local mocks only; no browser, deployed Worker, provider or live acceptance.
+Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`. The source plan branch
+`origin/plan/microapps-ui-sdk-voice` remains at `df3386257262a88888d647daa4d10f3af2ff9596`; its
+microapp/UI SDK/voice plan content is already copied into active platform-plan sections 9 and 11,
+with no merge.
 
-P04 remains PARTIAL because current `installSignedSpaceExtension` accepts only SPACE_SHARED gadget
-primitives, and no product-user actor initialization or user app execution route exists. That is an
-ordinary implementation gap, not a credential blocker. Other service archives, approved retention/key/
-jurisdiction, cross-service point-in-time consistency, live restore and measured RPO/RTO remain open.
-U05 remains a separate uncoded Cloudflare Container-to-Computer trusted-observation contract gap.
+P04 remains PARTIAL: other service stores, deletion/export coverage for all stores, key/jurisdiction
+and retention policy, cross-service consistency, and measured/deployed RPO/RTO remain open. U05 is a
+separate uncoded Container-to-Computer trusted-observation adapter, not a credential gate.
 
-Exact next action: add a signed, owner-approved user-scoped gadget installation/lifecycle and a
-product-session caller that lazily initializes the exact user's actor from the pinned release artifact
-and signed canvas proof. Bind every read/write to current membership, exact user and active install;
-test cross-user, release revocation, first-init, uninstall and private archive round trip. Then advance
-to the next independent P04 store and S3–S9/U01–U12/P01–P24 gap.
+Exact next action: extend self-service account erasure to delete the exact user's SPACE_USER and
+USER_PRIVATE actor storage and install rows with durable retry/tombstone semantics, then test replay,
+partial failure and denied runtime after erasure. Continue other independent P04 and S2–S9/U01–U12/
+P01–P24 requirements afterward.
 
 ## Previous checkpoint — 2026-11-15 (U05 runtime-contract trace; P04 user-private MicroApp archive foundation; pushed verification checkpoint 6f6ec9020a8808141a1919f7ffb226ea60e78e71)
 

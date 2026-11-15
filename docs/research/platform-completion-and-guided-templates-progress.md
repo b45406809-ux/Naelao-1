@@ -1,30 +1,28 @@
 # Platform completion and guided templates progress
 
-## Continuation checkpoint — 2026-11-15 (P04 authenticated product-user MicroApp recovery; pushed d7e87e35db6301cd9957ea5c55bf35831089ab4a)
+## Continuation checkpoint — 2026-11-15 (P04 signed product-user MicroApp lifecycle; pushed fbaeeea8ba19a0c9fb73f48209acd1368776dd87)
 
-Code `d7e87e35db6301cd9957ea5c55bf35831089ab4a` is pushed and remote-verified on
-`Mcbt5s-Backup-2`. `/product-users/me/export` now returns bounded exact-user MicroApp snapshots
-from current active SPACE_USER/PROJECT_USER installations after host-signature and publisher checks.
-Exact product-session preview/restore routes verify current Space membership; SpaceDO binds uploads to
-the current user, installation, gadget declaration, pinned release and active publisher. Migration 146
-persists a short-lived snapshot-set preview hash; additive restore uses durable per-actor receipts for
-replay and partial recovery. Space-owner archive export/restore continues to exclude personal state.
+The pushed code checkpoint `fbaeeea8ba19a0c9fb73f48209acd1368776dd87` adds owner-approved
+USER_PRIVATE/SPACE_USER Tier 1 package declarations and a product-session caller for discovery,
+explicit activation, isolated app/data/storage/MCP access. It verifies exact owner installation and
+release, signed publisher key, all R2 artifact bytes, active Space membership and the caller's user
+identity before initialization or use. User actor state is initialized lazily from the signed release
+and canvas proof, with a per-user installation. `PROJECT_USER`, account erasure of MicroApp actors,
+and per-app uninstall are uncoded.
 
-Local evidence: Spaces tests **26/26**, Router exact product-session path tests **59/59**, Spaces and
-Router typechecks, `git diff --check`. The pnpm wrapper tried to purge shared modules and aborted
-without a TTY; existing workspace binaries were used. No browser, deployment, provider, or isolated
-recovery acceptance ran. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+Local evidence: Spaces **72/72**, Router **69/69**, Spaces/Router typechecks and diff hygiene pass.
+These are local mocks, not browser/deployed/live-provider acceptance. Rollouts remain disabled. The
+source plan branch `origin/plan/microapps-ui-sdk-voice` is fetched at
+`df3386257262a88888d647daa4d10f3af2ff9596`; its Fish Live 3 and business MicroApp/UI SDK/voice text
+is already copied into active sections 9 and 11. No branch merge occurred.
 
-P04 remains PARTIAL: the signed package installer currently permits only SPACE_SHARED gadgets, and no
-user-session caller initializes or executes user-scoped actors. This is uncoded implementation, not a
-provider credential gate. Other P04 stores, retention/key/jurisdiction policy, cross-service snapshot
-consistency and live RPO/RTO remain open. The fetched microapps/UI SDK/voice plan copy is unchanged:
-sections 9 and 11 already contain its requirements; no branch merge occurred.
+P04 remains PARTIAL for other service stores, user-actor deletion, legal/key/jurisdiction and retention
+policy, cross-service consistency, and measured/deployed recovery. P01–P24 and S2–S9/U01–U12 remain
+open where their indexed evidence says so.
 
-Exact next action: implement the owner-approved signed user-gadget install/lifecycle and product-user
-execution caller, initializing only the verified user's actor from the exact active release/artifact
-and signed canvas proof. Add cross-user, revoked-release, uninstall, archive-preview/apply and replay
-checks, then continue remaining P04 and P01–P24/S2–S9/U01–U12.
+Exact next action: complete retryable exact-user MicroApp actor and installation erasure in the
+existing self-service account deletion path, and prove erased actors cannot be reactivated or called.
+Then continue other P04 stores and the next independent plan requirements.
 
 ## Previous checkpoint — 2026-11-15 (U05 runtime-contract trace; P04 user-private MicroApp archive foundation; pushed verification checkpoint 6f6ec9020a8808141a1919f7ffb226ea60e78e71)
 
@@ -2043,7 +2041,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P01 | PARTIAL | Release runner, ordered fail-closed migration phase, schema probes and promotion health gates are local. Current inventory pins **255** migrations through `0255_project_main_private_state_recovery`; release runner tests pass **20/20**, and release/deployment validators pass. | Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. No migration was applied remotely. |
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Versioned platform/Product-user outboxes and deterministic Workflow dispatch remain. Migration 0252 scopes Product-user dunning provider outcomes to the exact product/end user/subscription; Notifications rechecks active tenancy, current `past_due` status, provider event version and verified recipient before sending. The authenticated Spaces/Router/Shell caller exposes the current user's subscription, durable outbox status (`pending`/`leased`/queue handoff) and recent non-PII provider outcomes (`c4d9b6ca`); erasure deletes scoped provider receipts. Fresh Billing dunning/status **13/13**, Spaces status caller **2/2**, affected typechecks, and an SQLite cross-scope query check pass locally. | Grace/restriction/escalation and retry-cadence policy, inbox delivery, provider acceptance and live acceptance remain. |
-| P04 | PARTIAL | Bounded encrypted Space archives include signed shared/project MicroApp business data, receipts/events/audit (c46592da, e90ccab7), runtime settings/recipes/private fallback (ef77e193), coverage ledger (a47fbedb), and canonical Knowledge docs/chunks, ACL and required KB_BUCKET bytes (e475eb6b) with deletion fences and explicit reindex. Code `4a8dd06d` binds MicroApp user-scope archive snapshots to persisted exact user identity and signed gadget scope, while Space-owner archives continue to reject those scopes. The exact product-user account export now passes Router's session allowlist, but it does not include MicroApp snapshots; active user-install listing and preview/additive-restore caller remain uncoded. | Other service/provider/inbound stores, USER_PRIVATE MicroApp caller/persistence lifecycle, legacy/unsigned stores, regional keys/jurisdiction, retention/legal hold, cross-DO consistency, RPO/RTO and deployed recovery remain. Provider snapshots and physical purge are unsupported. |
+| P04 | PARTIAL | Bounded encrypted Space archives include signed shared/project MicroApp business data, receipts/events/audit (c46592da, e90ccab7), runtime settings/recipes/private fallback (ef77e193), coverage ledger (a47fbedb), and canonical Knowledge docs/chunks, ACL and required KB_BUCKET bytes (e475eb6b) with deletion fences and explicit reindex. User-scope snapshots bind to exact persisted user identity and signed gadget scope; Space-owner archives reject them. `d7e87e35` adds exact-user export, short-lived preview and additive restore with per-actor replay receipts. `fbaeeea8` now permits signed owner-approved USER_PRIVATE/SPACE_USER Tier 1 packages and a reachable product-user discovery/activation/app/data/storage/MCP lifecycle with exact membership, publisher, release and artifact checks. Local current focused evidence: Spaces 72/72 and Router 69/69, both typechecks. | Account-erasure actor deletion/tombstones and per-app uninstall remain uncoded; PROJECT_USER installation is unsupported. Other service/provider/inbound stores, legacy/unsigned stores, regional keys/jurisdiction, retention/legal hold, cross-DO consistency, RPO/RTO and deployed recovery remain. Provider snapshots and physical purge are unsupported. |
 | P05 | PARTIAL | Signed SpaceBlueprint requirements/review, setup drafts, durable activation/recovery and cost disclosure are local. Knowledge intent flows to created Projects; migration 137 grants are owner-approved and default-empty; 75feeabb prevents grant resurrection. c2963702 adds exact generated-Project cleanup preview/confirmation; 0a4021ba adds bounded durable status. Code `d9d31383` adds signed author-provided workload assumptions, validated export/preview, current verified model-rate recalculation and Shell reuse; this creates no author price, budget or access grant, and total USD remains unknown. | Broader uninstall/update effects, complete fixed/metered/provider/runtime rates, license/provider payer and revocation policy, and deployed/live acceptance remain. Space-shared provider links cannot be represented safely: connection rows/routes require project_id, Space-level install currently supports phone only, and signed declarations lack beneficiary, payer, shared-authority and drain/revoke semantics. |
 | P06 | PARTIAL | Owner voice dashboards, bounded keypad handlers, signed handler discovery/readiness, per-installation history, synthetic call/DTMF and Twilio speech tests, draft/publish revisions and rollback drafts are local. Twilio and Telnyx calls pin admitted signed installation, handler digest and published settings revision (`7e9d3c2b`). Code `1f429ee9` adds owner Telnyx voice preference, a default-off caller consent flow, durable grant/deny, one-use ticket and a separate WebSocket start-pin validator. DTMF remains the only active extension runtime; the new media boundary fails closed without processing audio. | Naelao publisher/key custody, signed distribution/catalog policy, host STT/TTS and speech budget/interruption/cleanup runtime, managed provisioning, full cost/quality evidence and live carrier acceptance remain. Delayed Twilio connectivity prices are not invoices. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |

@@ -12,35 +12,35 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (P04 product-user MicroApp export and restore; pushed d7e87e35db6301cd9957ea5c55bf35831089ab4a)
+## Latest checkpoint — 2026-11-15 (P04 signed product-user MicroApp lifecycle; pushed fbaeeea8ba19a0c9fb73f48209acd1368776dd87)
 
-Code `d7e87e35db6301cd9957ea5c55bf35831089ab4a` is pushed to
-`origin/Mcbt5s-Backup-2`; fetch and `ls-remote` verified the tip. Product-user export now resolves
-the caller's own active SPACE_USER/PROJECT_USER installations, verifies the pinned host-signed
-release and active publisher key, and returns bounded per-user MicroApp snapshots with explicit
-omission counts. Exact product-session preview/restore routes require Space membership, bind the
-snapshot set to an exact user/Space/install and current signed release, persist a 15-minute hashed
-preview, merge additively, and use per-actor restore receipts for replay/partial-retry safety.
-Space-owner archives still exclude user data.
+Code `fbaeeea8ba19a0c9fb73f48209acd1368776dd87` is pushed to
+`origin/Mcbt5s-Backup-2`; fetch and `ls-remote` verified the tip. The owner-approved signed bundle
+installer now admits low-capability `USER_PRIVATE`/`SPACE_USER` Tier 1 gadgets. The exact product
+user can list, explicitly activate, and use the isolated gadget app/data/storage/MCP routes after
+current Space membership, owner installation/release pin, publisher key and complete R2 artifact
+digest checks. Initialization is lazy and binds the user's actor to the signed release and canvas
+proof; per-user activation is separate from the owner's shared package installation. Router exposes
+only exact app paths. `PROJECT_USER`, per-user uninstall, and user-actor erasure are not implemented.
 
-Local verification: Spaces export/archive tests **26/26**, Router product-session route tests
-**59/59**, Spaces and Router `tsc --noEmit`, and `git diff --check`. These are local SQLite/Worker
-mocks; no browser, deployed Worker, provider, or isolated recovery acceptance ran. The normal pnpm
-wrapper tried to purge shared modules and aborted without a TTY; checks used existing workspace
-binaries. Preserve untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
+Local verification: focused Spaces tests **72/72**, Router allowlist tests **69/69**, Spaces and
+Router `tsc --noEmit`, and `git diff --check`. These are local Worker/SQLite mocks; no browser,
+deployed Worker, provider, or live acceptance ran. Rollouts remain disabled. Preserve the preexisting
+untracked `infra/scripts/__pycache__/`.
 
-P04 remains PARTIAL: `installSignedSpaceExtension` currently admits only SPACE_SHARED gadgets and
-there is no product-user route to initialize or execute signed USER_PRIVATE/SPACE_USER/PROJECT_USER
-gadgets. Thus the newly reachable recovery path is correctly empty/uninitialized for installations
-the current system cannot create. Other service stores, legal/key/jurisdiction policy, cross-service
-point-in-time consistency and measured RPO/RTO remain incomplete. U05 remains an uncoded Container
-versus Computer identity/observation adapter gap, not a credential blocker.
+P04 remains PARTIAL: product-user MicroApp export/preview/restore and the supported
+`USER_PRIVATE`/`SPACE_USER` runtime now have reachable callers. Account deletion still leaves their
+actor storage/install rows; archive/update/revocation lifecycle needs further audit, other service
+stores, legal/key/jurisdiction policy, cross-service consistency and measured RPO/RTO remain. The
+active platform plan already contains the copied microapp/UI SDK/voice text from
+`origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596`; no branch merge
+occurred. U05's Container-versus-Computer trusted-observation adapter remains uncoded, not blocked by
+credentials.
 
-Exact next action: implement the supported signed user-scoped gadget lifecycle: owner-approved
-installation declarations, lazy per-user actor initialization from exact active release/artifact and
-canvas proof, and product-session execution/data callers bound to current membership and installation.
-Test unauthorized/cross-user access, release revocation, first initialization, removal, archive
-export, restore and replay. Then continue remaining P04 stores and S3–S9/U01–U12/P01–P24.
+Exact next action: make self-service product-user account erasure delete that user's SPACE_USER and
+USER_PRIVATE MicroApp install rows and actor data with durable retry semantics; gate runtime on the
+erasure tombstone and cover replay/partial failure. Then continue independent P04 stores and the
+remaining S2–S9/U01–U12/P01–P24 gaps.
 
 ## Previous checkpoint — 2026-11-15 (U05 runtime-contract trace; P04 user-private MicroApp archive foundation; remote checkpoint 6f6ec9020a8808141a1919f7ffb226ea60e78e71)
 
