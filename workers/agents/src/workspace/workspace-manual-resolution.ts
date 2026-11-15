@@ -18,8 +18,10 @@ export type WorkspaceManualResolutionInput = {
   expectedTargetHash: string | null;
   expectedSourceHash: string | null;
   content: string | null;
+  copyFrom?: "target" | "worker";
   idempotencyKey: string;
   changes?: WorkspaceManualResolutionChange[];
+  copyBucket?: WorkspaceConflictBucket;
   validationCommand?: string;
   validate?: (request: WorkspaceManualValidationRequest) => Promise<WorkspaceManualValidationReceipt>;
 };
@@ -29,6 +31,11 @@ export type WorkspaceManualResolutionChange = {
   expectedTargetHash: string | null;
   expectedSourceHash: string | null;
   content: string | null;
+  copyFrom?: "target" | "worker";
+};
+
+export type WorkspaceConflictBucket = {
+  get(key: string): Promise<{ size: number; arrayBuffer(): Promise<ArrayBuffer> } | null>;
 };
 
 export function isWorkspaceManualResolutionChange(value: unknown): value is WorkspaceManualResolutionChange {
@@ -37,7 +44,11 @@ export function isWorkspaceManualResolutionChange(value: unknown): value is Work
   if (!validateWorkspacePath(change.path) ||
       !(change.expectedTargetHash === null || typeof change.expectedTargetHash === "string" && HASH.test(change.expectedTargetHash)) ||
       !(change.expectedSourceHash === null || typeof change.expectedSourceHash === "string" && HASH.test(change.expectedSourceHash)) ||
-      !(change.content === null || typeof change.content === "string")) return false;
+      !(change.content === null || typeof change.content === "string") ||
+      !(change.copyFrom === undefined || change.copyFrom === "target" || change.copyFrom === "worker")) return false;
+  if (change.copyFrom !== undefined) {
+    return change.content === null && (change.copyFrom === "target" ? change.expectedTargetHash : change.expectedSourceHash) !== null;
+  }
   if (change.content === null) return true;
   const bytes = new TextEncoder().encode(change.content);
   return bytes.byteLength <= MAX_RESOLUTION_BYTES && !bytes.includes(0);
@@ -53,7 +64,7 @@ export function isWorkspaceManualConflictChangeSet(
       new Set(changes.map(change => change.path)).size !== changes.length || !changes.some(change => change.path === path)) return false;
   if (otherPath === undefined) return changes.length === 1;
   return validateWorkspacePath(otherPath) && otherPath !== path && changes.length === 2 &&
-    changes.some(change => change.path === otherPath) && changes.some(change => change.content === null);
+    changes.some(change => change.path === otherPath) && changes.some(change => change.content === null && change.copyFrom === undefined);
 }
 
 export type WorkspaceCoordinatorCall = (
@@ -64,6 +75,8 @@ export type WorkspaceCoordinatorCall = (
 export type WorkspaceConflictPreviewVersion = {
   hash: string | null;
   content: string | null;
+  /** Exact bytes are verified and within the manual-resolution bound, but are not rendered as text. */
+  copyAllowed?: boolean;
   unavailableReason?:
     | "missing"
     | "size_limit"
@@ -127,12 +140,13 @@ export function isWorkspaceManualValidationCommand(value: unknown): value is str
 
 function normalizeResolutionChanges(input: WorkspaceManualResolutionInput): WorkspaceManualResolutionChange[] | null {
   const changes = input.changes ?? [{ path: input.path, expectedTargetHash: input.expectedTargetHash,
-    expectedSourceHash: input.expectedSourceHash, content: input.content }];
+    expectedSourceHash: input.expectedSourceHash, content: input.content, ...(input.copyFrom ? { copyFrom: input.copyFrom } : {}) }];
   if (!Array.isArray(changes) || changes.length < 1 || changes.length > 2 ||
       changes.some(change => !isWorkspaceManualResolutionChange(change)) ||
       new Set(changes.map(change => change.path)).size !== changes.length) return null;
   const primary = changes.find(change => change.path === input.path);
-  if (!primary || primary.expectedTargetHash !== input.expectedTargetHash || primary.expectedSourceHash !== input.expectedSourceHash || primary.content !== input.content) return null;
+  if (!primary || primary.expectedTargetHash !== input.expectedTargetHash || primary.expectedSourceHash !== input.expectedSourceHash ||
+      primary.content !== input.content || primary.copyFrom !== input.copyFrom) return null;
   const normalized = [...changes].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
   let totalBytes = 0;
   for (const change of normalized) {
@@ -197,35 +211,28 @@ async function readBranchText(
     /\.(?:txt|md|mdx|json|jsonc|ya?ml|toml|xml|html|css|scss|js|jsx|mjs|cjs|ts|tsx|mts|cts|sql|sh|py|rb|go|rs|java|kt|swift|c|h|cpp|hpp|cs|php|vue|svelte|graphql|gql|proto)$/i.test(
       path
     );
-  if (
-    !(
-      contentType.startsWith("text/") ||
-      /^application\/(json|javascript|typescript|xml|yaml|toml|sql)(?:;|$)/.test(
-        contentType
-      ) ||
-      textPath
-    )
-  ) {
-    return {
-      hash: entry.sha256,
-      content: null,
-      unavailableReason: "unsupported_type",
-    };
-  }
   const object = await bucket.get(entry.objectKey);
   if (!object || object.size !== entry.size)
     throw new Error("workspace_manual_preview_content_unavailable");
   const bytes = new Uint8Array(await object.arrayBuffer());
+  if (bytes.byteLength !== entry.size)
+    return { hash: entry.sha256, content: null, unavailableReason: "invalid_text" };
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const hash = [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-  if (hash !== entry.sha256 || bytes.includes(0))
+  if (hash !== entry.sha256)
     return {
       hash: entry.sha256,
       content: null,
       unavailableReason: "invalid_text",
     };
+  if (!(contentType.startsWith("text/") ||
+      /^application\/(json|javascript|typescript|xml|yaml|toml|sql)(?:;|$)/.test(contentType) || textPath)) {
+    return { hash: entry.sha256, content: null, unavailableReason: "unsupported_type", copyAllowed: true };
+  }
+  if (bytes.includes(0))
+    return { hash: entry.sha256, content: null, unavailableReason: "invalid_text", copyAllowed: true };
   try {
     return {
       hash,
@@ -235,8 +242,36 @@ async function readBranchText(
       }).decode(bytes),
     };
   } catch {
-    return { hash, content: null, unavailableReason: "invalid_text" };
+    return { hash, content: null, unavailableReason: "invalid_text", copyAllowed: true };
   }
+}
+
+async function readBoundedBranchBytes(
+  scope: WorkspaceScope,
+  branch: string,
+  path: string,
+  expectedHash: string,
+  coordinator: WorkspaceCoordinatorCall,
+  bucket: WorkspaceConflictBucket,
+): Promise<{ bytes: Uint8Array; hash: string; contentType?: string; executable?: boolean }> {
+  const response = await coordinator(`/v1/read?branch=${encodeURIComponent(branch)}&path=${encodeURIComponent(path)}`);
+  if (!response.ok) throw new Error(`workspace_manual_resolution_copy_read_failed:${response.status}`);
+  const payload = await response.json() as { entries?: Array<{ path?: unknown; sha256?: unknown; size?: unknown;
+    objectKey?: unknown; contentType?: unknown; executable?: unknown }> };
+  const entry = payload.entries?.find(candidate => candidate.path === path);
+  if (!entry || entry.sha256 !== expectedHash || typeof entry.sha256 !== "string" || !HASH.test(entry.sha256) ||
+      typeof entry.size !== "number" || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > MAX_RESOLUTION_BYTES ||
+      entry.objectKey !== `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${entry.sha256}`) {
+    throw new Error("workspace_manual_resolution_copy_stale_or_invalid");
+  }
+  const object = await bucket.get(entry.objectKey);
+  if (!object || object.size !== entry.size) throw new Error("workspace_manual_resolution_copy_unavailable");
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  if (bytes.byteLength !== entry.size || await sha256Hex(bytes) !== expectedHash)
+    throw new Error("workspace_manual_resolution_copy_integrity_failed");
+  return { bytes, hash: expectedHash,
+    ...(typeof entry.contentType === "string" ? { contentType: entry.contentType } : {}),
+    ...(typeof entry.executable === "boolean" ? { executable: entry.executable } : {}) };
 }
 
 async function branchHasResolution(
@@ -432,6 +467,7 @@ export async function publishWorkspaceManualResolution(
     !ID.test(input.idempotencyKey) ||
     !(input.content === null || typeof input.content === "string") ||
     !changes ||
+    changes.some(change => change.copyFrom !== undefined) && !input.copyBucket ||
     input.validate !== undefined && (!isWorkspaceManualValidationCommand(input.validationCommand) || typeof input.validate !== "function")
   ) {
     throw new Error("invalid_workspace_manual_resolution");
@@ -443,6 +479,9 @@ export async function publishWorkspaceManualResolution(
   if (sourceMatches.some(matches => !matches)) {
     throw new Error("workspace_manual_resolution_stale_source");
   }
+  const resolvedHashes = await Promise.all(changes.map(async change => ({ path: change.path,
+    hash: change.copyFrom === "target" ? change.expectedTargetHash : change.copyFrom === "worker" ? change.expectedSourceHash :
+      change.content === null ? null : await sha256Hex(new TextEncoder().encode(change.content)) })));
   const branch = await coordinator("/v1/branch", {
     scope: input.scope,
     sourceBranch: input.targetBranch,
@@ -457,10 +496,22 @@ export async function publishWorkspaceManualResolution(
   // A previous request can finish both Coordinator publications and lose the Worker result
   // write. The deterministic review branch plus exact resolved bytes let a retry resume from
   // that durable state instead of applying the original expected hash a second time.
-  const resolvedHashes = await Promise.all(changes.map(async change => ({ path: change.path,
-    hash: change.content === null ? null : await sha256Hex(new TextEncoder().encode(change.content)) })));
   const appliedState = await Promise.all(resolvedHashes.map(change => branchHasResolution(reviewBranch, change.path, change.hash, coordinator)));
   const alreadyApplied = appliedState.every(Boolean);
+  const resolvedChanges: Array<{ path: string; contentBase64: string | null; contentType?: string; executable?: boolean }> = alreadyApplied ? [] : await Promise.all(changes.map(async change => {
+    if (change.content === null && change.copyFrom === undefined) return { path: change.path, contentBase64: null };
+    if (change.copyFrom) {
+      const expectedHash = change.copyFrom === "target" ? change.expectedTargetHash : change.expectedSourceHash;
+      if (!expectedHash || !input.copyBucket) throw new Error("workspace_manual_resolution_copy_unavailable");
+      const copied = await readBoundedBranchBytes(input.scope, change.copyFrom === "target" ? input.targetBranch : input.sourceBranch,
+        change.path, expectedHash, coordinator, input.copyBucket);
+      return { path: change.path, contentBase64: encodeBase64(copied.bytes),
+        ...(copied.contentType ? { contentType: copied.contentType } : {}),
+        ...(copied.executable === undefined ? {} : { executable: copied.executable }) };
+    }
+    const bytes = new TextEncoder().encode(change.content!);
+    return { path: change.path, contentBase64: encodeBase64(bytes) };
+  }));
 
   const runtimeId = "workspace-manual-review";
   const opened = await coordinator("/v1/open", {
@@ -504,8 +555,12 @@ export async function publishWorkspaceManualResolution(
           fence,
           baseRevision,
           idempotencyKey: `manual-${operationId}`,
-          changes: changes.map(change => ({ path: change.path, expectedHash: change.expectedTargetHash,
-            contentBase64: change.content === null ? null : encodeBase64(new TextEncoder().encode(change.content)) })),
+          changes: changes.map(change => {
+            const resolved = resolvedChanges.find(candidate => candidate.path === change.path)!;
+            return { path: change.path, expectedHash: change.expectedTargetHash, contentBase64: resolved.contentBase64,
+              ...(resolved.contentType ? { contentType: resolved.contentType } : {}),
+              ...(resolved.executable === undefined ? {} : { executable: resolved.executable }) };
+          }),
         });
     const checkpointBody = checkpointResponse
       ? ((await checkpointResponse.json().catch(() => ({}))) as {

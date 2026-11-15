@@ -148,12 +148,12 @@ function createAgent(options: { execution: "uncertain" | "passed"; loseFirstResu
     noteCanonicalPublication: () => { canonicalPublicationCount++; } };
 }
 
-function request() {
+function request(overrides: Record<string, unknown> = {}) {
   return new Request("http://agent/internal/sub-agents/resolve-conflict", {
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
     body: JSON.stringify({ scope, actorId, callerRole: "owner", sessionId, workerId, path, expectedTargetHash: targetHash,
-      expectedSourceHash: sourceHash, content: "reviewed content\n", idempotencyKey: "manual-route-1", validationCommand: "pnpm test" }),
+      expectedSourceHash: sourceHash, content: "reviewed content\n", idempotencyKey: "manual-route-1", validationCommand: "pnpm test", ...overrides }),
   });
 }
 
@@ -183,8 +183,8 @@ describe("manual workspace conflict route", () => {
     routeMocks.publish.mockReset();
   }
 
-  async function invoke(instance: NaelaoAgentDO) {
-    const input = request();
+  async function invoke(instance: NaelaoAgentDO, overrides: Record<string, unknown> = {}) {
+    const input = request(overrides);
     input.headers.set("x-naelao-internal-token", await mintInternalToken(secret, tenantId));
     return instance.fetch(input);
   }
@@ -227,6 +227,21 @@ describe("manual workspace conflict route", () => {
     expect(agent.execution).toHaveBeenCalledTimes(1);
     expect(agent.getCanonicalPublicationCount()).toBe(1);
     expect(agent.getResult().workspaceMerge.manualResolutions).toHaveLength(1);
+  });
+
+  it("accepts a bounded binary side choice without returning binary data to the caller", async () => {
+    setupMocks(async () => true);
+    routeMocks.preview.mockResolvedValue({ path, stale: false,
+      target: { hash: targetHash, content: "target content\n" },
+      worker: { hash: sourceHash, content: null, unavailableReason: "invalid_text", copyAllowed: true } });
+    const agent = createAgent({ execution: "passed" });
+    configurePublish(agent);
+    const response = await invoke(agent.instance, { content: null, copyFrom: "worker" });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({ resolution: { path, status: "published" } });
+    expect(routeMocks.publish).toHaveBeenCalledWith(expect.objectContaining({ content: null, copyFrom: "worker", copyBucket: expect.any(Object) }), expect.any(Function));
+    expect(JSON.stringify(body)).not.toContain("base64");
   });
 
 });

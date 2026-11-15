@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isWorkspaceManualConflictChangeSet,
+  isWorkspaceManualResolutionChange,
   isWorkspaceManualValidationCommand,
   readWorkspaceConflictPreview,
 } from "./workspace-manual-resolution.js";
@@ -23,6 +24,11 @@ describe("workspace manual conflict change sets", () => {
     expect(isWorkspaceManualConflictChangeSet("Readme.md", "README.md", [primary])).toBe(false);
     expect(isWorkspaceManualConflictChangeSet("Readme.md", undefined, [primary, pairedDelete])).toBe(false);
     expect(isWorkspaceManualConflictChangeSet("Readme.md", "../unsafe", [primary, pairedDelete])).toBe(false);
+    const binaryCopy = { path: "README.md", expectedTargetHash: hash, expectedSourceHash: null, content: null, copyFrom: "target" as const };
+    expect(isWorkspaceManualResolutionChange(binaryCopy)).toBe(true);
+    expect(isWorkspaceManualConflictChangeSet("Readme.md", "README.md", [primary, binaryCopy])).toBe(false);
+    expect(isWorkspaceManualResolutionChange({ ...binaryCopy, expectedTargetHash: null })).toBe(false);
+    expect(isWorkspaceManualResolutionChange({ ...binaryCopy, content: "replacement" })).toBe(false);
   });
 });
 
@@ -149,6 +155,45 @@ describe("workspace manual conflict previews", () => {
       }
     );
     expect(preview.stale).toBe(true);
+  });
+
+  it("offers bounded verified binary versions for server-side exact-byte copying", async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+    const hash = await sha256Hex(bytes);
+    const objectKey = `workspace-v1/tenant/space/project/global/content/${hash}`;
+    const preview = await readWorkspaceConflictPreview({ scope, targetBranch: "main", workerBranch: "workers/one", path: "assets/icon.png",
+      expectedTargetHash: hash, expectedSourceHash: null }, async route => {
+      const branch = new URL(`https://workspace${route}`).searchParams.get("branch");
+      return Response.json({ entries: branch === "main" ? [{ path: "assets/icon.png", sha256: hash, size: bytes.byteLength,
+        objectKey, contentType: "image/png", executable: false }] : [] });
+    }, { async get(key) { return key === objectKey ? { size: bytes.byteLength, async arrayBuffer() { return bytes.slice().buffer; } } : null; } });
+    expect(preview.target).toEqual({ hash, content: null, unavailableReason: "unsupported_type", copyAllowed: true });
+    expect(preview.worker).toMatchObject({ hash: null, content: null, unavailableReason: "missing" });
+  });
+
+  it("keeps oversized and corrupted binary objects unavailable for copying", async () => {
+    const expectedHash = "a".repeat(64);
+    let bucketReads = 0;
+    const oversized = await readWorkspaceConflictPreview({ scope, targetBranch: "main", workerBranch: "workers/one", path: "assets/large.bin" },
+      async route => Response.json({ entries: new URL(`https://workspace${route}`).searchParams.get("branch") === "main"
+        ? [{ path: "assets/large.bin", sha256: expectedHash, size: 256 * 1024 + 1,
+            objectKey: `workspace-v1/tenant/space/project/global/content/${expectedHash}`, contentType: "application/octet-stream" }]
+        : [] }),
+      { async get() { bucketReads++; return null; } });
+    expect(oversized.target).toMatchObject({ hash: expectedHash, content: null, unavailableReason: "size_limit" });
+    expect(oversized.target.copyAllowed).not.toBe(true);
+    expect(bucketReads).toBe(0);
+
+    const corruptBytes = new Uint8Array([1, 2, 3, 4]);
+    const corruptHash = "b".repeat(64);
+    const corruptKey = `workspace-v1/tenant/space/project/global/content/${corruptHash}`;
+    const corrupted = await readWorkspaceConflictPreview({ scope, targetBranch: "main", workerBranch: "workers/one", path: "assets/corrupt.bin" },
+      async route => Response.json({ entries: new URL(`https://workspace${route}`).searchParams.get("branch") === "main"
+        ? [{ path: "assets/corrupt.bin", sha256: corruptHash, size: corruptBytes.byteLength, objectKey: corruptKey, contentType: "application/octet-stream" }]
+        : [] }),
+      { async get() { return { size: corruptBytes.byteLength, async arrayBuffer() { return corruptBytes.slice().buffer; } }; } });
+    expect(corrupted.target).toMatchObject({ hash: corruptHash, content: null, unavailableReason: "invalid_text" });
+    expect(corrupted.target.copyAllowed).not.toBe(true);
   });
 
   it("returns both paths for a case-collision preview", async () => {

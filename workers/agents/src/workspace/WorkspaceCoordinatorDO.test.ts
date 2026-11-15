@@ -1513,6 +1513,87 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(await (await call(instance, "/v1/read?branch=workers%2Fworker-delete&path=src%2Fremove.ts")).json()).toMatchObject({ entries: [{ sha256: hash }] });
   });
 
+  it("copies bounded binary bytes by verified hash and preserves them across retry", async () => {
+    const { instance, objects } = setup();
+    const baseBytes = new Uint8Array([0x00, 0x10, 0x20]);
+    const workerBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x42]);
+    const targetBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x01, 0xfe, 0x24]);
+    const baseHash = await sha256Hex(baseBytes);
+    const workerHash = await sha256Hex(workerBytes);
+    const targetHash = await sha256Hex(targetBytes);
+    const objectKey = (hash: string) => `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${hash}`;
+    objects.set(objectKey(baseHash), baseBytes);
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [
+      { path: "assets/icon.png", sha256: baseHash, size: baseBytes.byteLength, executable: false, objectKey: objectKey(baseHash), contentType: "image/png" },
+    ] });
+    await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/binary-conflict" });
+    const worker = await (await call(instance, "/v1/open", { scope, branch: "runs/binary-conflict", actorId: "worker", runtimeId: "binary-worker", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const owner = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "binary-owner", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const toBase64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+    expect((await call(instance, "/v1/checkpoint", { sessionId: worker.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "binary-worker-update", changes: [{ path: "assets/icon.png", expectedHash: baseHash, contentBase64: toBase64(workerBytes),
+        contentType: "image/png", executable: false }] })).status).toBe(200);
+    expect((await call(instance, "/v1/checkpoint", { sessionId: owner.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "binary-target-update", changes: [{ path: "assets/icon.png", expectedHash: baseHash, contentBase64: toBase64(targetBytes),
+        contentType: "image/png", executable: false }] })).status).toBe(200);
+    expect((await call(instance, "/v1/merge", { sessionId: worker.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0,
+      idempotencyKey: "binary-conflict" })).status).toBe(409);
+
+    const input = { scope, actorId: "reviewer", workerId: "worker-binary", attempt: 1, targetBranch: "main", sourceBranch: "runs/binary-conflict",
+      path: "assets/icon.png", expectedTargetHash: targetHash, expectedSourceHash: workerHash, content: null, copyFrom: "worker" as const,
+      copyBucket: { async get(key: string) { const bytes = objects.get(key); return bytes ? { size: bytes.byteLength, async arrayBuffer() { return bytes.slice().buffer; } } : null; } },
+      idempotencyKey: "manual-copy-binary-1" };
+    const requestCoordinator = (path: string, body?: Record<string, unknown>) => call(instance, path, body);
+    const first = await publishWorkspaceManualResolution(input, requestCoordinator);
+    const replay = await publishWorkspaceManualResolution(input, requestCoordinator);
+    expect(first.merge).toMatchObject({ status: "published", appliedPaths: ["assets/icon.png"] });
+    expect(replay.merge.id).toBe(first.merge.id);
+    const targetEntry = (await (await call(instance, "/v1/read?branch=main&path=assets%2Ficon.png")).json() as { entries: Array<{ sha256: string; objectKey: string; contentType: string }> }).entries[0]!;
+    expect(targetEntry).toMatchObject({ sha256: workerHash, contentType: "image/png" });
+    expect([...objects.get(targetEntry.objectKey)!]).toEqual([...workerBytes]);
+    const workerEntry = (await (await call(instance, "/v1/read?branch=runs%2Fbinary-conflict&path=assets%2Ficon.png")).json() as { entries: Array<{ sha256: string; objectKey: string }> }).entries[0]!;
+    expect(workerEntry.sha256).toBe(workerHash);
+    expect([...objects.get(workerEntry.objectKey)!]).toEqual([...workerBytes]);
+  });
+
+  it("keeps a binary path-collision choice atomic with its paired deletion", async () => {
+    const { instance, objects } = setup();
+    const workerBytes = new Uint8Array([0x00, 0xff, 0x41, 0x80]);
+    const targetBytes = new Uint8Array([0x00, 0xfe, 0x42, 0x81]);
+    const workerHash = await sha256Hex(workerBytes);
+    const targetHash = await sha256Hex(targetBytes);
+    const objectKey = (hash: string) => `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${hash}`;
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/binary-path-pair" });
+    const worker = await (await call(instance, "/v1/open", { scope, branch: "runs/binary-path-pair", actorId: "worker", runtimeId: "binary-pair-worker", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const owner = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "binary-pair-owner", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const toBase64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+    expect((await call(instance, "/v1/checkpoint", { sessionId: worker.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "binary-pair-worker-add", changes: [{ path: "Readme.bin", expectedHash: null, contentBase64: toBase64(workerBytes), contentType: "application/octet-stream" }] })).status).toBe(200);
+    expect((await call(instance, "/v1/checkpoint", { sessionId: owner.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "binary-pair-owner-add", changes: [{ path: "README.bin", expectedHash: null, contentBase64: toBase64(targetBytes), contentType: "application/octet-stream" }] })).status).toBe(200);
+    expect((await call(instance, "/v1/merge", { sessionId: worker.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0,
+      idempotencyKey: "binary-pair-conflict" })).status).toBe(409);
+    const changes = [
+      { path: "Readme.bin", expectedTargetHash: null, expectedSourceHash: workerHash, content: null, copyFrom: "worker" as const },
+      { path: "README.bin", expectedTargetHash: targetHash, expectedSourceHash: null, content: null },
+    ];
+    const result = await publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-binary-pair", attempt: 1,
+      targetBranch: "main", sourceBranch: "runs/binary-path-pair", path: "Readme.bin", expectedTargetHash: null,
+      expectedSourceHash: workerHash, content: null, copyFrom: "worker", changes, idempotencyKey: "manual-binary-pair-1",
+      copyBucket: { async get(key: string) { const bytes = objects.get(key); return bytes ? { size: bytes.byteLength, async arrayBuffer() { return bytes.slice().buffer; } } : null; } },
+    }, (path, body) => call(instance, path, body));
+
+    expect(result.merge).toMatchObject({ status: "published", appliedPaths: ["README.bin", "Readme.bin"] });
+    const targetEntries = (await (await call(instance, "/v1/read?branch=main")).json() as { entries: Array<{ path: string; sha256: string; objectKey: string }> }).entries;
+    expect(targetEntries.map(entry => entry.path)).toEqual(["Readme.bin"]);
+    expect(targetEntries[0]!.sha256).toBe(workerHash);
+    expect([...objects.get(targetEntries[0]!.objectKey)!]).toEqual([...workerBytes]);
+    const workerEntries = (await (await call(instance, "/v1/read?branch=runs%2Fbinary-path-pair")).json() as { entries: Array<{ path: string; objectKey: string }> }).entries;
+    expect(workerEntries).toHaveLength(1);
+    expect([...objects.get(workerEntries[0]!.objectKey)!]).toEqual([...workerBytes]);
+  });
+
   it("rejects a stale manual target without changing the parent", async () => {
     const { instance } = await createMergeConflictCase({ path: "src/stale.ts", base: "base\n", worker: "worker\n", owner: "target\n" });
     const oldTargetHash = await sha256Hex(new TextEncoder().encode("target\n"));

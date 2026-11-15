@@ -83,4 +83,22 @@ describe("worker conflict resolution caller", () => {
       "Bearer session-token"
     );
   });
+
+  it("sends a binary version choice by side and hashes without sending file bytes", async () => {
+    const fetch = vi.fn(async () => Response.json({ resolution: { path: "assets/icon.png", status: "published" } }));
+    vi.stubGlobal("fetch", fetch);
+    await resolveWorkerWorkspaceConflict("space one", "worker/1", {
+      sessionToken: "session-token", endUserId: "reviewer",
+    }, {
+      sessionId: "conversation-1", projectId: "project-1", path: "assets/icon.png",
+      expectedTargetHash: "a".repeat(64), expectedSourceHash: "b".repeat(64), content: null, copyFrom: "worker",
+      idempotencyKey: "retry-binary-1", validationCommand: "pnpm test",
+    });
+    const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      path: "assets/icon.png", expected_target_hash: "a".repeat(64), expected_source_hash: "b".repeat(64),
+      content: null, copy_from: "worker", idempotency_key: "retry-binary-1",
+    });
+    expect(String(init.body)).not.toContain("base64");
+  });
 });

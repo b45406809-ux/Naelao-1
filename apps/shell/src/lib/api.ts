@@ -2857,6 +2857,7 @@ export interface WorkerWorkspaceConflictResolution {
 export interface WorkerWorkspaceConflictPreviewVersion {
   hash: string | null;
   content: string | null;
+  copyAllowed?: boolean;
   unavailableReason?: "missing" | "size_limit" | "unsupported_type" | "invalid_text";
 }
 
@@ -2873,6 +2874,7 @@ export interface WorkerWorkspaceConflictResolutionChange {
   expectedTargetHash: string | null;
   expectedSourceHash: string | null;
   content: string | null;
+  copyFrom?: "target" | "worker";
 }
 
 export async function readWorkerWorkspaceConflictPreview(
@@ -2891,12 +2893,13 @@ export async function resolveWorkerWorkspaceConflict(
   spaceId: string,
   workerId: string,
   session: SessionCredentials,
-  input: { sessionId: string; agentId?: string | null; projectId: string; path: string; expectedTargetHash: string | null; expectedSourceHash: string | null; content: string | null; changes?: WorkerWorkspaceConflictResolutionChange[]; idempotencyKey: string; validationCommand: string }
+  input: { sessionId: string; agentId?: string | null; projectId: string; path: string; expectedTargetHash: string | null; expectedSourceHash: string | null; content: string | null; copyFrom?: "target" | "worker"; changes?: WorkerWorkspaceConflictResolutionChange[]; idempotencyKey: string; validationCommand: string }
 ): Promise<{ resolution: WorkerWorkspaceConflictResolution; replay?: boolean }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/sub-agents/${encodeURIComponent(workerId)}/workspace-conflicts/resolve`, {
     method: "POST", session, body: JSON.stringify({ session_id: input.sessionId, ...(input.agentId ? { agent_id: input.agentId } : {}),
       project_id: input.projectId, path: input.path, expected_target_hash: input.expectedTargetHash,
       expected_source_hash: input.expectedSourceHash, content: input.content,
+      ...(input.copyFrom ? { copy_from: input.copyFrom } : {}),
       ...(input.changes ? { changes: input.changes } : {}),
       idempotency_key: input.idempotencyKey, validation_command: input.validationCommand }),
   });

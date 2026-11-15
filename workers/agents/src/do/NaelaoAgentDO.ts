@@ -5073,6 +5073,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const expectedTargetHash = body.expectedTargetHash;
     const expectedSourceHash = body.expectedSourceHash;
     const content = body.content;
+    const copyFrom = body.copyFrom;
     const rawChanges = body.changes;
     const idempotencyKey = body.idempotencyKey;
     const validationCommand = body.validationCommand;
@@ -5084,30 +5085,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         !(expectedTargetHash === null || (typeof expectedTargetHash === "string" && /^[a-f0-9]{64}$/.test(expectedTargetHash))) ||
         !(expectedSourceHash === null || (typeof expectedSourceHash === "string" && /^[a-f0-9]{64}$/.test(expectedSourceHash))) ||
         !(content === null || typeof content === "string") || typeof idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(idempotencyKey) ||
+        !(copyFrom === undefined || copyFrom === "target" || copyFrom === "worker") ||
         (rawChanges !== undefined && (!Array.isArray(rawChanges) || rawChanges.length < 1 || rawChanges.length > 2 || rawChanges.some(change => !isWorkspaceManualResolutionChange(change)))) ||
         !isWorkspaceManualValidationCommand(validationCommand)) {
       return Response.json({ error_code: "invalid_workspace_manual_resolution" }, { status: 400 });
     }
     const submittedChanges = rawChanges === undefined
       ? [{ path: path as string, expectedTargetHash: expectedTargetHash as string | null,
-          expectedSourceHash: expectedSourceHash as string | null, content: content as string | null }]
+          expectedSourceHash: expectedSourceHash as string | null, content: content as string | null,
+          ...(copyFrom ? { copyFrom: copyFrom as "target" | "worker" } : {}) }]
       : rawChanges as WorkspaceManualResolutionChange[];
     const changes = [...submittedChanges].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
     const primaryChange = changes.find(change => change.path === path);
     if (new Set(changes.map(change => change.path)).size !== changes.length || !primaryChange ||
-        primaryChange.expectedTargetHash !== expectedTargetHash || primaryChange.expectedSourceHash !== expectedSourceHash || primaryChange.content !== content) {
+        primaryChange.expectedTargetHash !== expectedTargetHash || primaryChange.expectedSourceHash !== expectedSourceHash ||
+        primaryChange.content !== content || primaryChange.copyFrom !== copyFrom) {
       return Response.json({ error_code: "invalid_workspace_manual_resolution" }, { status: 400 });
     }
     const pathList = changes.map(change => change.path);
     const pathIdentity: string | string[] = pathList.length === 1 ? pathList[0]! : pathList;
     const changeDigests = await Promise.all(changes.map(async change => [change.path, change.expectedTargetHash, change.expectedSourceHash,
-      change.content === null ? "delete" : [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(change.content)))].map(byte => byte.toString(16).padStart(2, "0")).join("")]));
+      change.copyFrom ? `copy:${change.copyFrom}:${change.copyFrom === "target" ? change.expectedTargetHash : change.expectedSourceHash}` :
+        change.content === null ? "delete" : [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(change.content)))].map(byte => byte.toString(16).padStart(2, "0")).join("")]));
     const contentDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(changeDigests))))]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
     const validationCommandHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(validationCommand)))]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
-    const primaryContentDigest = content === null ? "delete" : [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content)))]
-      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const primaryContentDigest = copyFrom ? `copy:${copyFrom}:${copyFrom === "target" ? expectedTargetHash : expectedSourceHash}` :
+      content === null ? "delete" : [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content)))]
+        .map(byte => byte.toString(16).padStart(2, "0")).join("");
     // Preserve the established single-path identity for retries and completion receipts.
     const requestIdentity = changes.length === 1
       ? [path, expectedTargetHash, expectedSourceHash, primaryContentDigest, validationCommandHash]
@@ -5191,8 +5197,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         workerBranch: row.workspace_branch!, path: change.path, expectedTargetHash: change.expectedTargetHash,
         expectedSourceHash: change.expectedSourceHash }, checkedCoordinator, this.env.SCRIPTS_R2!)));
       if (previews.some(preview => preview.stale)) return Response.json({ error_code: "workspace_manual_resolution_stale_input" }, { status: 409, headers: { "cache-control": "no-store" } });
-      if (previews.some(preview => [preview.target, preview.worker].some(version => version.hash !== null && version.content === null))) {
-        return Response.json({ error_code: "workspace_manual_resolution_preview_unavailable" }, { status: 422, headers: { "cache-control": "no-store" } });
+      const previewByPath = new Map(previews.map(preview => [preview.path, preview]));
+      for (const change of changes) {
+        const preview = previewByPath.get(change.path);
+        if (!preview) return Response.json({ error_code: "workspace_manual_resolution_preview_unavailable" }, { status: 422, headers: { "cache-control": "no-store" } });
+        if (change.copyFrom) {
+          const selected = change.copyFrom === "target" ? preview.target : preview.worker;
+          const expectedHash = change.copyFrom === "target" ? change.expectedTargetHash : change.expectedSourceHash;
+          if (!selected.copyAllowed || !selected.hash || selected.hash !== expectedHash) {
+            return Response.json({ error_code: "workspace_manual_resolution_copy_unavailable" }, { status: 422, headers: { "cache-control": "no-store" } });
+          }
+        } else if (change.content !== null && [preview.target, preview.worker].some(version => version.hash !== null && version.content === null)) {
+          return Response.json({ error_code: "workspace_manual_resolution_preview_unavailable" }, { status: 422, headers: { "cache-control": "no-store" } });
+        }
       }
     } catch {
       return Response.json({ error_code: "workspace_preview_unavailable" }, { status: 503, headers: { "cache-control": "no-store" } });
@@ -5352,6 +5369,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         sourceBranch: row.workspace_branch, path, expectedTargetHash: expectedTargetHash as string | null,
         expectedSourceHash: expectedSourceHash as string | null, content, idempotencyKey,
         changes,
+        ...(copyFrom ? { copyFrom: copyFrom as "target" | "worker" } : {}),
+        copyBucket: this.env.SCRIPTS_R2!,
         validationCommand, validate: runManualValidation },
       checkedCoordinator);
     } catch (error) {
@@ -5373,8 +5392,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return workspaceManualResolutionErrorResponse(error);
     }
     if (!published.validation) return Response.json({ error_code: "workspace_manual_validation_receipt_required" }, { status: 409 });
-    const deletedPaths = changes.filter(change => change.content === null).map(change => change.path);
-    const resolution = { path, paths: pathList, deletedPaths, idempotencyKey, requestHash, reviewBranch: published.reviewBranch, targetBranch, deleted: content === null,
+    const deletedPaths = changes.filter(change => change.content === null && change.copyFrom === undefined).map(change => change.path);
+    const resolution = { path, paths: pathList, deletedPaths, idempotencyKey, requestHash, reviewBranch: published.reviewBranch, targetBranch, deleted: content === null && copyFrom === undefined,
       status: published.merge.status, revision: published.merge.revision, publicationId: published.merge.id, completedAt: new Date().toISOString(), validation: published.validation };
     const latestRows = this.ctx.storage.sql.exec(`SELECT result,status,workspace_branch,configuration_json FROM sub_agents WHERE id=?`, workerId)
       .toArray() as Array<{ result: string | null; status: string; workspace_branch: string | null; configuration_json: string | null }>;
