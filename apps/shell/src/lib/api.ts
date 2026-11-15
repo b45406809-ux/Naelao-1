@@ -1353,6 +1353,29 @@ export async function updateProject(
   });
 }
 
+export interface ProjectWorkspaceCleanupResult {
+  archived: true;
+  erased: boolean;
+  hasMore: boolean;
+  nextCursor?: string;
+  providerConnectionsDeleted: false;
+  providerDeletion?: { queued: number; pending: number; unresolved: number };
+}
+
+/** Owner/admin-confirmed, retryable archive and project workspace cleanup. Provider connections
+ * and Space-shared extension installs are outside this project-scoped operation. */
+export async function archiveAndCleanupProjectWorkspace(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials,
+  cursor?: string,
+): Promise<ProjectWorkspaceCleanupResult> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}`, {
+    method: "DELETE", session,
+    body: JSON.stringify({ confirm: true, ...(cursor ? { cursor } : {}) }),
+  });
+}
+
 // ── Business-wide BYOK LLM keys (step 28) ────────────────────────────────────
 
 /** Which BYOK providers this business has a key configured for. Never carries the key value. */

@@ -6,7 +6,7 @@ import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal,
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, previewSpaceTemplateInstallationLifecycle, applySpaceTemplateInstallationLifecycle, previewSpaceSharedExtensionImport, importSpaceSharedExtension, previewSpaceSharedExtensionInstall, installSpaceSharedExtension, type SpaceTemplateInstallationRecord, type SpaceTemplateInstallationLifecyclePreview, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing, type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReview } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, previewSpaceTemplateInstallationLifecycle, applySpaceTemplateInstallationLifecycle, archiveAndCleanupProjectWorkspace, previewSpaceSharedExtensionImport, importSpaceSharedExtension, previewSpaceSharedExtensionInstall, installSpaceSharedExtension, type ProjectWorkspaceCleanupResult, type SpaceTemplateInstallationRecord, type SpaceTemplateInstallationLifecyclePreview, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing, type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReview } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel, type BlueprintSetupField } from "@naelao/agent-sdk";
 import { createLatestRequestFence, parseTemplateExpectedUsageInput } from "@/lib/template-usage-estimate";
@@ -34,6 +34,14 @@ interface TemplateDependencyImportProgress {
   importedPackages?: string[] | undefined;
   installReview?: SpaceSharedExtensionInstallReview | undefined;
   notice?: string | undefined;
+}
+
+interface TemplateProjectCleanupProgress {
+  phase: "review" | "running" | "partial" | "retry" | "complete";
+  confirmed: boolean;
+  cursor?: string | undefined;
+  result?: ProjectWorkspaceCleanupResult;
+  error?: string | undefined;
 }
 
 function defaultSetupValues(preview: SpaceTemplateActivationPreview): SpaceTemplateSetupValues {
@@ -137,6 +145,7 @@ export default function SpacesPage() {
   const [templateLifecyclePreviews, setTemplateLifecyclePreviews] = React.useState<Record<string, SpaceTemplateInstallationLifecyclePreview>>({});
   const [templateLifecycleConfirmed, setTemplateLifecycleConfirmed] = React.useState<Record<string, boolean>>({});
   const [templateLifecycleBusy, setTemplateLifecycleBusy] = React.useState<string | null>(null);
+  const [templateProjectCleanup, setTemplateProjectCleanup] = React.useState<Record<string, TemplateProjectCleanupProgress>>({});
   const pendingPreviewed = React.useRef(new Set<string>());
   const expectedUsageEstimateRequests = React.useRef(createLatestRequestFence()).current;
   const expectedUsageSpaceId = activationReview?.spaceId ?? null;
@@ -265,6 +274,38 @@ export default function SpacesPage() {
         : "Template setup was reattached. Existing Projects and extensions were not reinstalled.");
     } catch (error) { show(`Template setup lifecycle update failed: ${error instanceof Error ? error.message : "request failed"}`); }
     finally { setTemplateLifecycleBusy(null); }
+  }
+
+  function templateProjectCleanupKey(record: SpaceTemplateInstallationRecord, projectId: string): string {
+    return `${templateUpdateKey(templateStatusSpace?.id ?? "", record.blueprint_id)}:${projectId}`;
+  }
+
+  function reviewTemplateGeneratedProjectCleanup(record: SpaceTemplateInstallationRecord, projectId: string) {
+    if (!templateStatusSpace || !safeTemplateProjectIds(record.project_ids).includes(projectId)) return;
+    const key = templateProjectCleanupKey(record, projectId);
+    setTemplateProjectCleanup(current => ({ ...current, [key]: { phase: "review", confirmed: false } }));
+  }
+
+  async function runTemplateGeneratedProjectCleanup(record: SpaceTemplateInstallationRecord, projectId: string) {
+    if (!creds || !templateStatusSpace || !safeTemplateProjectIds(record.project_ids).includes(projectId)) return;
+    const key = templateProjectCleanupKey(record, projectId);
+    const progress = templateProjectCleanup[key];
+    if (!progress || progress.confirmed !== true || !["review", "partial", "retry"].includes(progress.phase)) return;
+    setTemplateProjectCleanup(current => ({ ...current, [key]: { ...progress, phase: "running", error: undefined } }));
+    try {
+      const result = await archiveAndCleanupProjectWorkspace(templateStatusSpace.id, projectId, creds, progress.cursor);
+      setTemplateProjectCleanup(current => ({ ...current, [key]: { ...progress, phase: result.hasMore ? "partial" : "complete",
+        cursor: result.nextCursor, result, error: undefined } }));
+      show(result.hasMore
+        ? "Project archived. Workspace cleanup has more bounded pages; continue to finish it."
+        : result.providerDeletion && (result.providerDeletion.pending > 0 || result.providerDeletion.unresolved > 0)
+          ? `Project archived and workspace cleanup completed. ${result.providerDeletion.pending} provider cleanup item(s) remain pending; ${result.providerDeletion.unresolved} are retained or need review.`
+          : "Project archived and supported workspace cleanup completed. Provider connections, shared extensions, licenses, and external charges were not cancelled.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "project cleanup request failed";
+      setTemplateProjectCleanup(current => ({ ...current, [key]: { ...progress, phase: "retry", error: message } }));
+      show(`Project cleanup needs a retry: ${message}`);
+    }
   }
 
   async function loadTemplateSetupDraft(spaceId: string, blueprintId: string, preview: SpaceTemplateActivationPreview, restoreValues: boolean) {
@@ -1201,6 +1242,52 @@ export default function SpacesPage() {
                           if (space) setActiveSpace(space.id, space.name);
                         }}>Open generated Project {index + 1}</Link>
                         <span style={{ marginLeft: 6, color: "var(--text3)", fontFamily: "monospace" }}>{projectId}</span>
+                        {(() => {
+                          const cleanupKey = templateProjectCleanupKey(record, projectId);
+                          const cleanup = templateProjectCleanup[cleanupKey];
+                          if (!cleanup) return <div style={{ marginTop: 6 }}>
+                            <Button variant="secondary" onClick={() => reviewTemplateGeneratedProjectCleanup(record, projectId)}>
+                              Review archive and workspace cleanup
+                            </Button>
+                          </div>;
+                          if (cleanup.phase === "review") return <aside style={{ marginTop: 8, padding: 10, border: "1px solid var(--border)", borderRadius: 8 }} aria-label={`Review cleanup for generated Project ${projectId}`}>
+                            <strong>Archive this generated Project and clean its workspace?</strong>
+                            <p style={{ margin: "6px 0", color: "var(--text3)" }}>
+                              This archives Project <code>{projectId}</code> and starts bounded, retryable cleanup of supported project workspace data, runtime state, private-state backups, and project-scoped provider artifacts. Unsupported opaque provider snapshots may be retained for review.
+                            </p>
+                            <p style={{ margin: "6px 0", color: "var(--text3)" }}>
+                              This does not uninstall Space-shared extensions, delete tenant provider connections, cancel licenses, or stop external charges. Review those separately with their owner or payer.
+                            </p>
+                            <label style={{ display: "flex", gap: 8, alignItems: "flex-start", margin: "8px 0" }}>
+                              <input type="checkbox" checked={cleanup.confirmed} onChange={event => setTemplateProjectCleanup(current => ({
+                                ...current,
+                                [cleanupKey]: { ...cleanup, confirmed: event.target.checked },
+                              }))} />
+                              <span>I understand that this will archive this Project and begin destructive workspace cleanup.</span>
+                            </label>
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                              <Button disabled={!cleanup.confirmed || !creds} onClick={() => void runTemplateGeneratedProjectCleanup(record, projectId)}>Archive and clean workspace</Button>
+                              <Button variant="secondary" onClick={() => setTemplateProjectCleanup(current => {
+                                const next = { ...current }; delete next[cleanupKey]; return next;
+                              })}>Cancel</Button>
+                            </div>
+                          </aside>;
+                          if (cleanup.phase === "running") return <p role="status" style={{ margin: "6px 0", color: "var(--text3)" }}>Project archived; processing a bounded workspace cleanup page…</p>;
+                          if (cleanup.phase === "partial") return <div role="status" style={{ marginTop: 8 }}>
+                            <p style={{ margin: "4px 0", color: "var(--text3)" }}>Project is archived. More workspace cleanup pages remain.</p>
+                            <Button disabled={!creds} onClick={() => void runTemplateGeneratedProjectCleanup(record, projectId)}>Continue cleanup</Button>
+                          </div>;
+                          if (cleanup.phase === "retry") return <div role="alert" style={{ marginTop: 8 }}>
+                            <p style={{ margin: "4px 0", color: "var(--text3)" }}>Cleanup did not return a final result: {cleanup.error ?? "retry required"}. The server keeps a durable cursor; retry is safe.</p>
+                            <Button disabled={!creds} onClick={() => void runTemplateGeneratedProjectCleanup(record, projectId)}>Retry cleanup</Button>
+                          </div>;
+                          const providerDeletion = cleanup.result?.providerDeletion;
+                          return <div role="status" style={{ marginTop: 8, color: "var(--text3)" }}>
+                            Supported workspace cleanup is complete. Provider cleanup: {providerDeletion
+                              ? `${providerDeletion.queued} queued, ${providerDeletion.pending} pending, ${providerDeletion.unresolved} unresolved or retained.`
+                              : "no provider cleanup summary was returned."} Tenant connections, shared extensions, licenses, and external charges were not cancelled.
+                          </div>;
+                        })()}
                       </li>
                     ))}
                   </ul> : "None recorded"}
