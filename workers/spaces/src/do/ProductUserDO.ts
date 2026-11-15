@@ -390,13 +390,17 @@ export class ProductUserDO extends DurableObject {
         .toArray() as unknown as { key: string; value: string }[];
       const preferences: Record<string, unknown> = {};
       for (const r of prefRows) preferences[r.key] = JSON.parse(r.value) as unknown;
+      const notifications = this.ctx.storage.sql.exec(
+        "SELECT id, payload, status, created_at FROM notification_queue ORDER BY created_at ASC, id ASC"
+      ).toArray() as unknown as Array<{ id: string; payload: string; status: string; created_at: string }>;
       return Response.json({
-        export_version: "1",
+        export_version: "2",
         exported_at: new Date().toISOString(),
         // Note: sessions exclude token_hash — never export credential material.
         sessions,
         conversations,
         preferences,
+        notifications: notifications.map(row => ({ ...row, payload: JSON.parse(row.payload) as unknown })),
       });
     }
 
@@ -409,13 +413,16 @@ export class ProductUserDO extends DurableObject {
     if (method === "DELETE" && url.pathname === "/erase") {
       const sessionsDeleted = this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM session_state").toArray()[0] as unknown as { n: number };
       const conversationsDeleted = this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM conversation_refs").toArray()[0] as unknown as { n: number };
+      const notificationsDeleted = this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM notification_queue").toArray()[0] as unknown as { n: number };
       this.ctx.storage.sql.exec("DELETE FROM session_state");
       this.ctx.storage.sql.exec("DELETE FROM conversation_refs");
       this.ctx.storage.sql.exec("DELETE FROM preferences");
+      this.ctx.storage.sql.exec("DELETE FROM notification_queue");
       return Response.json({
         erased_at: new Date().toISOString(),
         sessions_deleted: sessionsDeleted?.n ?? 0,
         conversations_deleted: conversationsDeleted?.n ?? 0,
+        notifications_deleted: notificationsDeleted?.n ?? 0,
       });
     }
 

@@ -81,5 +81,19 @@ describe("ProductUserDO sessions and stored-value retirement", () => {
     const notificationTail = await (await user.fetch(new Request(`https://user/notifications?cursor=${encodeURIComponent(notificationPage.next_cursor)}`))).json() as { data: Array<{ id: string }> };
     expect(notificationTail.data).toHaveLength(1);
     expect((await user.fetch(new Request(`https://user/notifications?cursor=${"a".repeat(2050)}`))).status).toBe(400);
+
+    const exported = await (await user.fetch(new Request("https://user/export"))).json() as {
+      export_version: string; notifications: Array<{ payload: unknown }>;
+    };
+    expect(exported.export_version).toBe("2");
+    expect(exported.notifications).toHaveLength(3);
+    expect(exported.notifications.map(row => row.payload)).toEqual(expect.arrayContaining([{ i: 0 }, { i: 1 }, { i: 2 }]));
+
+    const erased = await (await user.fetch(new Request("https://user/erase", { method: "DELETE" }))).json() as {
+      notifications_deleted: number;
+    };
+    expect(erased.notifications_deleted).toBe(3);
+    expect(await (await user.fetch(new Request("https://user/notifications"))).json()).toMatchObject({ data: [] });
+    expect(await (await user.fetch(new Request("https://user/export"))).json()).toMatchObject({ notifications: [] });
   });
 });

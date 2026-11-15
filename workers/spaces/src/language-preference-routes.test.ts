@@ -114,6 +114,7 @@ function testEnv() {
     },
   };
   const productUserCalls: string[] = [];
+  let productUserEraseResponse: Response | null = null;
   const spaceDoCalls: Array<{ path: string; userId: string | null }> = [];
   const microAppArchiveSpaceIds: string[] = [];
   const spaceDataEraseUsers: string[] = [];
@@ -122,8 +123,12 @@ function testEnv() {
     idFromName: (name: string) => name,
     get: () => ({ fetch: async (request: Request) => {
       productUserCalls.push(new URL(request.url).pathname);
-      if (new URL(request.url).pathname === "/export") return Response.json({ conversations: [], preferences: {} });
-      if (new URL(request.url).pathname === "/erase") return Response.json({ erased_at: "now", sessions_deleted: 1, conversations_deleted: 2 });
+      if (new URL(request.url).pathname === "/export") return Response.json({ conversations: [], preferences: {}, notifications: [] });
+      if (new URL(request.url).pathname === "/erase") {
+        const response = productUserEraseResponse ?? Response.json({ erased_at: "now", sessions_deleted: 1, conversations_deleted: 2, notifications_deleted: 3 });
+        productUserEraseResponse = null;
+        return response;
+      }
       return Response.json({});
     } }),
   };
@@ -147,6 +152,7 @@ function testEnv() {
     } }),
   };
   return { PLATFORM_DB, PRODUCT_USER_DO, SPACE_DO, productProfiles, productUserCalls, spaceDoCalls, microAppErasureResponses,
+    setProductUserEraseResponse(response: Response) { productUserEraseResponse = response; },
     microAppArchiveSpaceIds, spaceDataEraseUsers, clearedAuthData, PLATFORM_SECRET: "test-secret" };
 }
 
@@ -184,11 +190,11 @@ describe("language preference profile routes", () => {
     const child = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a");
     expect(child.status).toBe(200);
     const data = await child.json() as { export_version: string; profile: { end_user_id: string; email: string; phone_e164: string };
-      product_user_data: { conversations: unknown[]; preferences: Record<string, unknown> };
+      product_user_data: { conversations: unknown[]; preferences: Record<string, unknown>; notifications: unknown[] };
       micro_app_archives: unknown[]; micro_app_archive_omissions: { privateScopeInstallations: number; uninitializedActors: number; unsupportedInstallations: number } };
     expect(data.export_version).toBe("2");
     expect(data.profile).toMatchObject({ end_user_id: "user-a", email: "a@example.invalid", phone_e164: "+14155550100" });
-    expect(data.product_user_data).toEqual({ conversations: [], preferences: {} });
+    expect(data.product_user_data).toEqual({ conversations: [], preferences: {}, notifications: [] });
     expect(data.micro_app_archives).toEqual([]);
     expect(data.micro_app_archive_omissions).toEqual({ privateScopeInstallations: 0, uninitializedActors: 0, unsupportedInstallations: 0 });
     expect(env.productUserCalls).toContain("/export");
@@ -216,7 +222,7 @@ describe("language preference profile routes", () => {
     expect(response.status).toBe(200);
     expect(env.productUserCalls).toContain("/erase");
     expect(env.spaceDataEraseUsers).toEqual(["user-a", "user-a", "user-a"]);
-    expect(await response.json()).toMatchObject({ erased: true, sessions_deleted: 1, conversations_deleted: 2 });
+    expect(await response.json()).toMatchObject({ erased: true, sessions_deleted: 1, conversations_deleted: 2, notifications_deleted: 3 });
     expect(env.clearedAuthData.map((sql) => sql.split(" ")[2])).toEqual([
       "password_reset_tokens", "email_verification_tokens", "whatsapp_auth_challenges", "dunning_notification_attempts",
     ]);
@@ -266,6 +272,19 @@ describe("language preference profile routes", () => {
     expect(localEnv.productUserCalls).not.toContain("/erase");
     expect(localEnv.clearedAuthData).toHaveLength(0);
     expect(localEnv.spaceDataEraseUsers).toHaveLength(3);
+  });
+
+  it("keeps PII and recovery rows fenced when ProductUserDO does not confirm erasure", async () => {
+    const localEnv = testEnv();
+    localEnv.setProductUserEraseResponse(Response.json({ error_code: "temporary_failure" }, { status: 503 }));
+    const response = await call("/spaces/business-a/product-users/me", "DELETE", "product_end_user", "user-a",
+      undefined, "tenant-a", localEnv);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error_code: "product_user_record_erasure_failed" });
+    expect(localEnv.productProfiles.get("product-a:user-a")).toMatchObject({
+      erasure_started_at: "now", email: "a@example.invalid", password_hash: "private", deleted_at: null,
+    });
+    expect(localEnv.clearedAuthData).toHaveLength(0);
   });
 
   it("does not resolve a product user's profile across a tenant boundary", async () => {

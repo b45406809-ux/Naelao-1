@@ -9295,8 +9295,16 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   await eraseAssistantCommunications(c.env,tenantId,root.id,userId,true);
   await eraseWebsiteConnections(c.env, tenantId, { userId, productSpaceId: root.id });
   const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
-  const eraseRes = await stub.fetch(new Request("http://do/erase", { method: "DELETE" }));
-  const erased = await eraseRes.json<{ erased_at: string; sessions_deleted: number; conversations_deleted: number }>();
+  let eraseRes: Response;
+  try { eraseRes = await stub.fetch(new Request("http://do/erase", { method: "DELETE" })); }
+  catch { return c.json({ error_code: "product_user_record_erasure_unavailable" }, 503); }
+  let erased: { erased_at?: unknown; sessions_deleted?: unknown; conversations_deleted?: unknown; notifications_deleted?: unknown } | null = null;
+  try { erased = await eraseRes.json(); } catch { /* Keep the account fence until the DO confirms cleanup. */ }
+  if (!eraseRes.ok || !erased || typeof erased.erased_at !== "string"
+    || !Number.isSafeInteger(erased.sessions_deleted) || Number(erased.sessions_deleted) < 0
+    || !Number.isSafeInteger(erased.conversations_deleted) || Number(erased.conversations_deleted) < 0
+    || !Number.isSafeInteger(erased.notifications_deleted) || Number(erased.notifications_deleted) < 0)
+    return c.json({ error_code: "product_user_record_erasure_failed" }, 503);
 
   if (!row.deleted_at) {
     // Remove outstanding recovery/verification material as part of account erasure. These
@@ -9322,7 +9330,8 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
     ).bind(tenantId, root.id, userId).run();
   }
 
-  return c.json({ erased: true, erased_at: erased.erased_at, sessions_deleted: erased.sessions_deleted, conversations_deleted: erased.conversations_deleted });
+  return c.json({ erased: true, erased_at: erased.erased_at, sessions_deleted: erased.sessions_deleted,
+    conversations_deleted: erased.conversations_deleted, notifications_deleted: erased.notifications_deleted ?? 0 });
 });
 
 // Platform member language preference. Stored on the authenticated platform user record,
