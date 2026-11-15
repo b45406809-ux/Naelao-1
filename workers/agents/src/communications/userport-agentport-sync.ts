@@ -557,13 +557,17 @@ export async function sweepUserPortAgentPortSyncs(env: AgentsEnv, now = new Date
   return {checked:due.results?.length??0,reconciled,deferred,failed};
 }
 
-export async function revokeUserPortAgentPortConnector(env: AgentsEnv, scope: CommunicationScope, aliasId: string) {
+export async function revokeUserPortAgentPortConnector(env: AgentsEnv, scope: CommunicationScope, aliasId: string,
+  options: { allowHeldOperationIds?: readonly string[] } = {}) {
   if (!validId(aliasId)) throw new Error("userport_connector_alias_invalid");
   const pendingSync=await env.PLATFORM_DB.prepare(`SELECT operation_id,status FROM managed_service_operations
     WHERE tenant_id=? AND space_id=? AND operation_name='agentport_connector_sync'
-      AND status IN ('pending','running','uncertain','held') AND json_extract(request_json,'$.aliasId')=? LIMIT 1`)
+      AND status IN ('pending','running','uncertain','held') AND json_extract(request_json,'$.aliasId')=?
+    ORDER BY CASE WHEN status='held' THEN 1 ELSE 0 END,created_at DESC LIMIT 1`)
     .bind(scope.tenantId,scope.spaceId,aliasId).first<{operation_id:string;status:string}>();
-  if (pendingSync?.status==="held") {
+  const explicitlyRetainedHeldOperation = pendingSync?.status === "held"
+    && options.allowHeldOperationIds?.includes(pendingSync.operation_id) === true;
+  if (pendingSync?.status==="held" && !explicitlyRetainedHeldOperation) {
     const at=new Date().toISOString();
     await env.PLATFORM_DB.prepare(`UPDATE agentport_userport_connector_bindings SET status='sync_required',updated_at=?
       WHERE tenant_id=? AND space_id=? AND alias_id=? AND status='active'`).bind(at,scope.tenantId,scope.spaceId,aliasId).run();
@@ -572,7 +576,7 @@ export async function revokeUserPortAgentPortConnector(env: AgentsEnv, scope: Co
       .bind(at,at,pendingSync.operation_id,scope.tenantId).run();
     throw new Error("userport_agentport_sync_cleanup_pending");
   }
-  if (pendingSync) throw new Error("userport_agentport_sync_pending");
+  if (pendingSync && pendingSync.status !== "held") throw new Error("userport_agentport_sync_pending");
   const binding = await env.PLATFORM_DB.prepare(`SELECT account_id,previous_account_id,service_id,provider,status FROM agentport_userport_connector_bindings
     WHERE tenant_id=? AND space_id=? AND alias_id=?`).bind(scope.tenantId, scope.spaceId, aliasId)
     .first<{account_id:string;previous_account_id:string|null;service_id:string;provider:string;status:string}>();
@@ -721,31 +725,49 @@ export async function revokeUserPortAgentPortOwnerLink(env: AgentsEnv, scope: Co
   await env.PLATFORM_DB.prepare(`UPDATE managed_service_owner_links SET status='revoked',revoked_by_user_id=?,
     revoked_at=COALESCE(revoked_at,?),updated_at=? WHERE id=? AND tenant_id=? AND owner_type=? AND owner_id=? AND status='active'`)
     .bind(scope.userId,revokedAt,revokedAt,ownerLinkId,scope.tenantId,link.owner_type,link.owner_id).run();
-  const heldSyncs=await env.PLATFORM_DB.prepare(`SELECT operation_id,request_json,project_id FROM managed_service_operations
+  const heldSyncs=await env.PLATFORM_DB.prepare(`SELECT operation_id,request_json,project_id,space_id FROM managed_service_operations
     WHERE tenant_id=? AND operation_name='agentport_connector_sync' AND status='held'
       AND json_extract(request_json,'$.ownerLinkId')=?`).bind(scope.tenantId,ownerLinkId)
-    .all<{operation_id:string;request_json:string;project_id:string|null}>();
-  if ((heldSyncs.results??[]).some(operation=>!recoverableSyncRequest(operation.request_json,ownerLinkId,operation.project_id,
-    link.owner_type,link.owner_id,scope.userId)))
-    throw new Error("userport_agentport_sync_recovery_unavailable");
-  let cleanupPending=heldSyncs.results?.length??0;
+    .all<{operation_id:string;request_json:string;project_id:string|null;space_id:string}>();
+  const blockedHeldOperations: Array<{operationId:string;spaceId:string;aliasId:string}> = [];
+  let cleanupPending=0,cleanupBlocked=0;
   for (const operation of heldSyncs.results ?? []) {
+    if (!recoverableSyncRequest(operation.request_json,ownerLinkId,operation.project_id,
+      link.owner_type,link.owner_id,scope.userId)) {
+      let request: {aliasId?:unknown} = {};
+      try { request=JSON.parse(operation.request_json) as typeof request; } catch { /* retained as a held audit record */ }
+      const aliasId=typeof request.aliasId === "string" && validId(request.aliasId) ? request.aliasId : "";
+      await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET error_code='userport_connector_sync_recovery_unavailable',
+        next_reconcile_at=NULL,lease_until=NULL,last_reconciled_at=?,updated_at=?
+        WHERE operation_id=? AND tenant_id=? AND status='held'`)
+        .bind(revokedAt,revokedAt,operation.operation_id,scope.tenantId).run();
+      blockedHeldOperations.push({operationId:operation.operation_id,spaceId:operation.space_id,aliasId});
+      cleanupPending++;
+      cleanupBlocked++;
+      continue;
+    }
     await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='uncertain',error_code='userport_connector_cleanup_requested',
       lease_until=NULL,next_reconcile_at=?,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='held'`)
       .bind(revokedAt,revokedAt,operation.operation_id,scope.tenantId).run();
+    cleanupPending++;
   }
   const rows = await env.PLATFORM_DB.prepare(`SELECT space_id,alias_id FROM agentport_userport_connector_bindings
     WHERE tenant_id=? AND owner_link_id=? ORDER BY space_id,alias_id`).bind(scope.tenantId, ownerLinkId)
     .all<{space_id:string;alias_id:string}>();
   for (const row of rows.results) {
-    const sync=await env.PLATFORM_DB.prepare(`SELECT operation_id FROM managed_service_operations
+    const sync=await env.PLATFORM_DB.prepare(`SELECT operation_id,status FROM managed_service_operations
       WHERE tenant_id=? AND space_id=? AND operation_name='agentport_connector_sync'
-        AND status IN ('pending','running','uncertain','held') AND json_extract(request_json,'$.aliasId')=? LIMIT 1`)
-      .bind(scope.tenantId,row.space_id,row.alias_id).first<{operation_id:string}>();
-    if (sync) continue;
+        AND status IN ('pending','running','uncertain','held') AND json_extract(request_json,'$.aliasId')=?
+      ORDER BY CASE WHEN status='held' THEN 1 ELSE 0 END,created_at DESC LIMIT 1`)
+      .bind(scope.tenantId,row.space_id,row.alias_id).first<{operation_id:string;status:string}>();
+    if (sync && sync.status !== "held") continue;
+    const retainedIds=blockedHeldOperations.filter(operation=>operation.spaceId===row.space_id
+      &&operation.aliasId===row.alias_id).map(operation=>operation.operationId);
+    if (sync && !retainedIds.includes(sync.operation_id)) continue;
     const revoked = await revokeUserPortAgentPortConnector(env,
-      { tenantId:scope.tenantId, spaceId:row.space_id, userId:scope.userId, role:scope.role }, row.alias_id);
+      { tenantId:scope.tenantId, spaceId:row.space_id, userId:scope.userId, role:scope.role }, row.alias_id,
+      {allowHeldOperationIds:retainedIds});
     if (!revoked.revoked && !("idempotent" in revoked && revoked.idempotent)) throw new Error("userport_agentport_revoke_pending");
   }
-  return { revoked:true, aliasCount:rows.results.length, cleanupPending };
+  return { revoked:true, aliasCount:rows.results.length, cleanupPending, cleanupBlocked };
 }

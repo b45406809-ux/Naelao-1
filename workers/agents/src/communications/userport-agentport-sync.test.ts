@@ -313,6 +313,31 @@ describe("UserPort to AgentPort connector synchronization", () => {
     expect(t.port.calls.filter(call=>call.path.endsWith("/revoke"))).toHaveLength(1);
   });
 
+  it("revokes known connector accounts while preserving an irrecoverable held sync for review", async () => {
+    const t=setup();
+    await syncUserPortAgentPortConnector(t.env,scope,"alias-1",["GMAIL_SEND"]);
+    const ownerLinkId=String(t.f.db.db.prepare("SELECT id FROM managed_service_owner_links").get<{id:string}>()?.id);
+    t.f.db.db.prepare(`UPDATE managed_service_operations SET status='held',request_json=?
+      WHERE operation_name='agentport_connector_sync'`).run(JSON.stringify({aliasId:"alias-1",ownerLinkId,userId:"user"}));
+
+    const app=new Hono<{Bindings:AgentsEnv}>();
+    registerCommunicationRoutes(app);
+    const headers={"content-type":"application/json","x-naelao-tenant-id":"tenant","x-naelao-user-id":"user",
+      "x-naelao-role":"product_end_user","x-naelao-internal-token":await mintInternalToken("secret","tenant")};
+    const response=await app.request("/spaces/space/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({action:"userport-agentport-owner-unlink",owner_link_id:ownerLinkId})},t.f.env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({revoked:true,aliasCount:1,cleanupPending:1,cleanupBlocked:1});
+    expect(t.f.db.db.prepare("SELECT status FROM managed_service_owner_links WHERE id=?").get(ownerLinkId))
+      .toMatchObject({status:"revoked"});
+    expect(t.f.db.db.prepare("SELECT status FROM agentport_userport_connector_bindings WHERE alias_id='alias-1'").get())
+      .toMatchObject({status:"revoked"});
+    expect(t.f.db.db.prepare("SELECT status,error_code FROM managed_service_operations WHERE operation_name='agentport_connector_sync'").get())
+      .toMatchObject({status:"held",error_code:"userport_connector_sync_recovery_unavailable"});
+    expect(t.port.calls.filter(call=>call.path.endsWith("/grants"))).toHaveLength(1);
+    expect(t.port.calls.filter(call=>call.path.endsWith("/revoke"))).toHaveLength(1);
+  });
+
   it("revokes the just-created AgentPort account if owner unlink wins during sync", async () => {
     const t=setup();
     t.port.onGrant(()=>t.f.db.db.prepare("UPDATE managed_service_owner_links SET status='revoked',revoked_at='2026-11-12T00:00:00.000Z' WHERE consent_source='userport.connector_sync'").run());
