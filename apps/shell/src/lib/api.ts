@@ -384,6 +384,14 @@ export async function getMe(spaceId: string, session: SessionCredentials): Promi
   return apiFetch<ProductUserMe>(`/v1/spaces/${spaceId}/product-users/me`, { session });
 }
 
+/** Download the authenticated Product user's bounded portability export without browser caching. */
+export async function exportMyProductData(spaceId: string, session: SessionCredentials): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>(`/v1/spaces/${encodeURIComponent(spaceId)}/product-users/me/export`, {
+    session,
+    cache: "no-store",
+  });
+}
+
 export interface ProductUserBillingStatus {
   subscription: { plan_tier: string | null; status: string; current_period_end: string | null } | null;
   dispatches: Array<{

@@ -35,6 +35,7 @@ import { AttachmentOcrSettings } from "@/components/AttachmentOcrSettings";
 import { VideoFrameAnalysisSettings } from "@/components/VideoFrameAnalysisSettings";
 import {
   getMe,
+  exportMyProductData,
   updateMe,
   deleteMe,
   listMySpaces,
@@ -816,6 +817,8 @@ function PersonalTab({
   const [language, setLanguage] = React.useState(me?.preferred_language ?? "");
   const [savingLanguage, setSavingLanguage] = React.useState(false);
   const [languageMessage, setLanguageMessage] = React.useState<string | null>(null);
+  const [exportingData, setExportingData] = React.useState(false);
+  const [exportMessage, setExportMessage] = React.useState<string | null>(null);
   const creds = useSessionCredentials();
 
   React.useEffect(() => setLanguage(me?.preferred_language ?? ""), [me?.preferred_language]);
@@ -830,6 +833,35 @@ function PersonalTab({
     } catch (err) {
       setLanguageMessage(err instanceof Error ? err.message : "Could not save language preference.");
     } finally { setSavingLanguage(false); }
+  }
+
+  async function downloadMyData() {
+    if (!creds) return;
+    setExportingData(true);
+    setExportMessage(null);
+    try {
+      const data = await exportMyProductData(productSpaceId, creds);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const safeSlug = productSlug.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80) || "product";
+      link.href = url;
+      link.download = `naelao-${safeSlug}-my-data-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setExportMessage("Your data export was downloaded. Your account was not changed.");
+    } catch (err) {
+      const status = (err as { status?: unknown } | null)?.status;
+      setExportMessage(status === 413
+        ? "This export exceeds the current download limit. No partial export was returned; contact the product owner for help."
+        : status === 401 || status === 403
+          ? "Your session could not authorize the export. Sign in again and retry."
+          : err instanceof Error ? err.message : "Could not download your data export.");
+    } finally {
+      setExportingData(false);
+    }
   }
 
   async function handleSignOut() {
@@ -922,6 +954,16 @@ function PersonalTab({
               <div className="settings-row-sub">No paid product subscription is recorded.</div>
             )}
           </div>
+        </div>
+        <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
+          <div>
+            <div className="settings-row-label">Download my data</div>
+            <div className="settings-row-sub">Download a private JSON copy of your available profile, conversations, preferences, billing summaries, and supported app data.</div>
+          </div>
+          <button className="btn btn-secondary btn-sm" type="button" disabled={!creds || exportingData} onClick={() => void downloadMyData()}>
+            {exportingData ? "Preparing export…" : "Download my data"}
+          </button>
+          {exportMessage && <div className="settings-row-sub" role="status" aria-live="polite">{exportMessage}</div>}
         </div>
         <div className="settings-row">
           <div><div className="settings-row-label">Session</div></div>
