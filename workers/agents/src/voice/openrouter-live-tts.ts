@@ -2,7 +2,7 @@ import type { TTSProvider } from "agents/voice";
 
 const MAX_PCM_BYTES = 8 * 1024 * 1024;
 export interface OpenRouterSpeechClient {
-  speak(input: { model: string; requestId: string; text: string; voice: string; instructions?: string; speed: number; rate: 16000 | 24000; channels: 1; priceUsdPerMillionCharacters: number }): Promise<{ stream: ReadableStream<Uint8Array> }>;
+  speak(input: { model: string; requestId: string; text: string; voice: string; instructions?: string; speed: number; rate: 16000 | 24000; channels: 1; priceUsdPerMillionCharacters: number; signal?: AbortSignal }): Promise<{ stream: ReadableStream<Uint8Array> }>;
 }
 /** Adapter for the Agents voice transport, which consumes bounded 16kHz mono PCM ArrayBuffers. */
 export class OpenRouterLiveTTS implements TTSProvider {
@@ -15,24 +15,35 @@ export class OpenRouterLiveTTS implements TTSProvider {
       ...(this.options.instructions ? { instructions: this.options.instructions } : {}),
       priceUsdPerMillionCharacters: this.options.priceUsdPerMillionCharacters ?? 15,
       rate: this.options.sampleRate ?? 16_000, channels: 1, requestId: this.options.requestId(), text,
+      ...(signal ? { signal } : {}),
     });
     const reader = stream.getReader(), chunks: Uint8Array[] = [];
     let size = 0;
+    const cancelOnAbort = () => { void reader.cancel().catch(() => {}); };
+    signal?.addEventListener("abort", cancelOnAbort, { once: true });
     try {
       while (true) {
         if (signal?.aborted) { await reader.cancel().catch(() => {}); throw new Error("voice_tts_cancelled"); }
         const { done, value } = await reader.read();
+        // A cancel resolves a pending read as `done`; check the signal before treating that as
+        // a successfully completed, billable utterance.
+        if (signal?.aborted) throw new Error("voice_tts_cancelled");
         if (done) break;
         size += value.byteLength;
         if (size > MAX_PCM_BYTES) { await reader.cancel().catch(() => {}); throw new Error("voice_tts_size_limit"); }
         chunks.push(value);
       }
-    } finally { reader.releaseLock(); }
+    } finally {
+      signal?.removeEventListener("abort", cancelOnAbort);
+      reader.releaseLock();
+    }
+    if (signal?.aborted) throw new Error("voice_tts_cancelled");
     if (!size || size % 2) throw new Error("voice_tts_pcm_invalid");
     const source = new Uint8Array(size); let offset = 0;
     for (const chunk of chunks) { source.set(chunk, offset); offset += chunk.byteLength; }
     // The Agents phone transport is fixed at 16 kHz. Microsoft speech models emit 24 kHz PCM;
     // downsample with bounded linear interpolation before passing audio to the telephony layer.
+    if (signal?.aborted) throw new Error("voice_tts_cancelled");
     if ((this.options.sampleRate ?? 16_000) === 16_000) return source.buffer;
     const sourceView = new DataView(source.buffer), targetCount = Math.floor((size / 2) * 2 / 3);
     const output = new Uint8Array(targetCount * 2), targetView = new DataView(output.buffer);
@@ -41,6 +52,7 @@ export class OpenRouterLiveTTS implements TTSProvider {
       const a = sourceView.getInt16(left * 2, true), b = sourceView.getInt16(Math.min(left + 1, size / 2 - 1) * 2, true);
       targetView.setInt16(i * 2, Math.max(-32768, Math.min(32767, Math.round(a + (b - a) * fraction))), true);
     }
+    if (signal?.aborted) throw new Error("voice_tts_cancelled");
     return output.buffer;
   }
 }
