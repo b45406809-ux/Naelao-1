@@ -114,6 +114,17 @@ function testEnv() {
     },
   };
   const productUserCalls: string[] = [];
+  const billingRequests: Request[] = [];
+  const billingStatus = {
+    subscription: { plan_tier: "growth", status: "past_due", current_period_end: "2026-12-01T00:00:00.000Z" },
+    notifications: [{ provider_outcome: "provider_accepted", attempt_count: 2, last_attempt_at: "2026-11-14T00:00:00.000Z", accepted_at: "2026-11-14T00:00:00.000Z" }],
+    dispatches: [{ status: "pending", attempt_count: 2, updated_at: "2026-11-14T00:00:00.000Z", sent_at: null }],
+  };
+  let billingStatusResponse = Response.json(billingStatus);
+  const BILLING_WORKER = { fetch: async (request: Request) => {
+    billingRequests.push(request);
+    return billingStatusResponse.clone();
+  } };
   let productUserEraseResponse: Response | null = null;
   const spaceDoCalls: Array<{ path: string; userId: string | null }> = [];
   const microAppArchiveSpaceIds: string[] = [];
@@ -151,7 +162,8 @@ function testEnv() {
       return Response.json({ snapshots: [], omissions: { privateScopeInstallations: 0, uninitializedActors: 0, unsupportedInstallations: 0 } });
     } }),
   };
-  return { PLATFORM_DB, PRODUCT_USER_DO, SPACE_DO, productProfiles, productUserCalls, spaceDoCalls, microAppErasureResponses,
+  return { PLATFORM_DB, PRODUCT_USER_DO, SPACE_DO, BILLING_WORKER, productProfiles, productUserCalls, billingRequests, billingStatus,
+    setBillingStatusResponse(response: Response) { billingStatusResponse = response; }, spaceDoCalls, microAppErasureResponses,
     setProductUserEraseResponse(response: Response) { productUserEraseResponse = response; },
     microAppArchiveSpaceIds, spaceDataEraseUsers, clearedAuthData, PLATFORM_SECRET: "test-secret" };
 }
@@ -191,15 +203,55 @@ describe("language preference profile routes", () => {
     expect(child.status).toBe(200);
     const data = await child.json() as { export_version: string; profile: { end_user_id: string; email: string; phone_e164: string };
       product_user_data: { conversations: unknown[]; preferences: Record<string, unknown>; notifications: unknown[] };
+      billing_status: typeof env.billingStatus;
       micro_app_archives: unknown[]; micro_app_archive_omissions: { privateScopeInstallations: number; uninitializedActors: number; unsupportedInstallations: number } };
     expect(data.export_version).toBe("2");
+    expect(child.headers.get("cache-control")).toBe("private, no-store");
     expect(data.profile).toMatchObject({ end_user_id: "user-a", email: "a@example.invalid", phone_e164: "+14155550100" });
     expect(data.product_user_data).toEqual({ conversations: [], preferences: {}, notifications: [] });
+    expect(data.billing_status).toEqual(env.billingStatus);
     expect(data.micro_app_archives).toEqual([]);
     expect(data.micro_app_archive_omissions).toEqual({ privateScopeInstallations: 0, uninitializedActors: 0, unsupportedInstallations: 0 });
     expect(env.productUserCalls).toContain("/export");
+    expect(env.billingRequests).toHaveLength(1);
+    expect(new URL(env.billingRequests[0]!.url).pathname).toBe("/internal/product-user-billing-status");
+    expect(env.billingRequests[0]!.headers.get("x-naelao-tenant-id")).toBe("tenant-a");
+    expect(env.billingRequests[0]!.headers.get("x-naelao-internal-token")).toBeTruthy();
+    expect(await env.billingRequests[0]!.json()).toEqual({ product_id: "product-a", end_user_id: "user-a" });
     expect(env.spaceDoCalls).toContainEqual({ path: "/product-user-micro-app-archives", userId: "user-a" });
     expect(env.microAppArchiveSpaceIds.sort()).toEqual(["business-a", "business-b", "department-a"]);
+  });
+
+  it("fails closed when Billing is missing, unavailable, or returns malformed or excessive status data", async () => {
+    const noBinding = { ...testEnv(), BILLING_WORKER: undefined };
+    const missing = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined,
+      "tenant-a", noBinding as never);
+    expect(missing.status).toBe(503);
+    expect(await missing.json()).toMatchObject({ error_code: "billing_status_export_unavailable" });
+
+    const failedEnv = testEnv();
+    failedEnv.setBillingStatusResponse(Response.json({ error_code: "temporary_failure" }, { status: 503 }));
+    const failed = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined,
+      "tenant-a", failedEnv);
+    expect(failed.status).toBe(502);
+    expect(await failed.json()).toMatchObject({ error_code: "billing_status_export_unavailable" });
+
+    const malformedEnv = testEnv();
+    malformedEnv.setBillingStatusResponse(Response.json({ ...malformedEnv.billingStatus, provider_subscription_id: "must-not-leak" }));
+    const malformed = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined,
+      "tenant-a", malformedEnv);
+    expect(malformed.status).toBe(502);
+    expect(await malformed.json()).toMatchObject({ error_code: "billing_status_export_invalid" });
+    expect(malformedEnv.productUserCalls).toHaveLength(0);
+
+    const excessiveEnv = testEnv();
+    excessiveEnv.setBillingStatusResponse(Response.json({ ...excessiveEnv.billingStatus,
+      notifications: Array.from({ length: 11 }, () => excessiveEnv.billingStatus.notifications[0]) }));
+    const excessive = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined,
+      "tenant-a", excessiveEnv);
+    expect(excessive.status).toBe(502);
+    expect(await excessive.json()).toMatchObject({ error_code: "billing_status_export_invalid" });
+    expect(excessiveEnv.productUserCalls).toHaveLength(0);
   });
 
   it("forwards only the verified product-user identity to archive preview and restore", async () => {

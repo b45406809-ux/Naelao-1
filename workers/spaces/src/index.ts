@@ -9042,6 +9042,49 @@ app.patch("/spaces/:spaceId/product-users/me", async (c) => {
 // D1 contains the user's roster/profile fields. Credentials and password hashes are never returned.
 // Active user-scoped MicroApp actors across this Product's Spaces are exported separately as
 // bounded signed snapshots; each snapshot retains its exact Space and installation identity.
+type ProductUserBillingStatusExport = {
+  subscription: null | { plan_tier: "free" | "growth" | "business"; status: "active" | "past_due" | "cancelled" | "paused" | "expired"; current_period_end: string | null };
+  notifications: Array<{ provider_outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous"; attempt_count: number; last_attempt_at: string; accepted_at: string | null }>;
+  dispatches: Array<{ status: "pending" | "leased" | "sent"; attempt_count: number; updated_at: string; sent_at: string | null }>;
+};
+
+function isBillingExportTimestamp(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 64 && Number.isFinite(Date.parse(value));
+}
+
+function isProductUserBillingStatusExport(value: unknown): value is ProductUserBillingStatusExport {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const root = value as Record<string, unknown>;
+  if (Object.keys(root).length !== 3 || !["subscription", "notifications", "dispatches"].every(key => key in root)) return false;
+  if (root.subscription !== null) {
+    if (!root.subscription || typeof root.subscription !== "object" || Array.isArray(root.subscription)) return false;
+    const subscription = root.subscription as Record<string, unknown>;
+    if (Object.keys(subscription).length !== 3 || !["plan_tier", "status", "current_period_end"].every(key => key in subscription)
+      || !["free", "growth", "business"].includes(String(subscription.plan_tier))
+      || !["active", "past_due", "cancelled", "paused", "expired"].includes(String(subscription.status))
+      || (subscription.current_period_end !== null && !isBillingExportTimestamp(subscription.current_period_end))) return false;
+  }
+  if (!Array.isArray(root.notifications) || root.notifications.length > 10
+    || !Array.isArray(root.dispatches) || root.dispatches.length > 10) return false;
+  const boundedCount = (count: unknown) => Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000_000;
+  for (const raw of root.notifications) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const row = raw as Record<string, unknown>;
+    if (Object.keys(row).length !== 4 || !["provider_outcome", "attempt_count", "last_attempt_at", "accepted_at"].every(key => key in row)
+      || !["provider_accepted", "provider_rejected", "attempt_ambiguous"].includes(String(row.provider_outcome))
+      || !boundedCount(row.attempt_count) || !isBillingExportTimestamp(row.last_attempt_at)
+      || (row.accepted_at !== null && !isBillingExportTimestamp(row.accepted_at))) return false;
+  }
+  for (const raw of root.dispatches) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const row = raw as Record<string, unknown>;
+    if (Object.keys(row).length !== 4 || !["status", "attempt_count", "updated_at", "sent_at"].every(key => key in row)
+      || !["pending", "leased", "sent"].includes(String(row.status)) || !boundedCount(row.attempt_count)
+      || !isBillingExportTimestamp(row.updated_at) || (row.sent_at !== null && !isBillingExportTimestamp(row.sent_at))) return false;
+  }
+  return true;
+}
+
 app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { role, userId, tenantId } = getCallerIdentity(c);
@@ -9057,6 +9100,19 @@ app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
   if (profile.erasure_started_at) return c.json({ error_code: "product_user_erasure_started" }, 410);
   if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
     return c.json({ error_code: "forbidden", message: "Not a member of this Space" }, 403);
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_status_export_unavailable" }, 503);
+  let billingResponse: Response;
+  try {
+    billingResponse = await c.env.BILLING_WORKER.fetch(new Request("http://billing/internal/product-user-billing-status", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+      body: JSON.stringify({ product_id: root.id, end_user_id: userId }),
+    }));
+  } catch { return c.json({ error_code: "billing_status_export_unavailable" }, 502); }
+  if (!billingResponse.ok) return c.json({ error_code: "billing_status_export_unavailable" }, 502);
+  const billingStatus = await readBoundedResponseJson<unknown>(billingResponse, 16 * 1024).catch(() => null);
+  if (!isProductUserBillingStatusExport(billingStatus)) return c.json({ error_code: "billing_status_export_invalid" }, 502);
   const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
   const response = await stub.fetch(new Request("http://do/export"));
   if (!response.ok) return c.json({ error_code: "data_export_unavailable" }, 502);
@@ -9110,9 +9166,10 @@ app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
     exported_at: new Date().toISOString(),
     profile: { end_user_id: userId, ...profile },
     product_user_data: await response.json(),
+    billing_status: billingStatus,
     micro_app_archives: snapshots,
     micro_app_archive_omissions: omissions,
-  });
+  }, 200, { "cache-control": "private, no-store" });
 });
 
 const forwardProductUserMicroAppArchiveAction = async (c: Context<{ Bindings: Env }>, action: "preview" | "restore") => {
