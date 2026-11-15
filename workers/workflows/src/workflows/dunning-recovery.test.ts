@@ -31,6 +31,9 @@ describe("dunning notification scope", () => {
       .resolves.toMatchObject({ notified: 1 });
     expect(send).toHaveBeenCalledWith(expect.objectContaining({
       subscriptionScope: "platform_subscription",
+      subscriptionProvider: "lemon_squeezy",
+      providerSubscriptionId: "subscription-1",
+      providerUpdatedAt: "2026-11-12T00:00:00.000Z",
       notificationId: expect.stringMatching(/^dunning-[a-f0-9]{64}$/),
     }));
     expect(statements[0]?.sql).toContain("FROM subscriptions");

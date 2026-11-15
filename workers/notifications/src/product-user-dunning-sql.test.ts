@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { queue, type NotificationsEnv } from "./index.js";
 
@@ -17,8 +18,8 @@ function database() {
      INSERT INTO product_end_users VALUES ('product-1','user-1','customer@example.test','2026-11-01T00:00:00.000Z',NULL,NULL);
      CREATE TABLE product_user_subscriptions(product_id TEXT NOT NULL,end_user_id TEXT NOT NULL,provider TEXT NOT NULL,provider_subscription_id TEXT NOT NULL,status TEXT NOT NULL,provider_event_at TEXT,PRIMARY KEY(product_id,end_user_id));
      INSERT INTO product_user_subscriptions VALUES ('product-1','user-1','lemon_squeezy','subscription-1','past_due','2026-11-14T00:00:00.000Z');`,
-    readFileSync(new URL("../../../infra/migrations/0233_dunning_notification_attempt_receipts.sql", import.meta.url), "utf8"),
-    readFileSync(new URL("../../../infra/migrations/0252_product_user_dunning_status_scope.sql", import.meta.url), "utf8"),
+    readFileSync(fileURLToPath(new URL("../../../infra/migrations/0233_dunning_notification_attempt_receipts.sql", import.meta.url).href), "utf8"),
+    readFileSync(fileURLToPath(new URL("../../../infra/migrations/0252_product_user_dunning_status_scope.sql", import.meta.url).href), "utf8"),
   ];
   for (const sql of schemaSql) sqlite.exec(sql);
   return {

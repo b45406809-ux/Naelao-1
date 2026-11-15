@@ -609,8 +609,13 @@ async function recordDunningProviderAttempt(
 ): Promise<void> {
   if (!input.subscriptionScope || !/^[A-Za-z0-9_-]{1,128}$/.test(input.tenantId)
     || !input.notificationId || !/^dunning-[a-f0-9]{64}$/.test(input.notificationId)) return;
+  const hasPlatformProviderReference = input.subscriptionProvider !== undefined || input.providerSubscriptionId !== undefined;
+  const validPlatformProviderReference = input.subscriptionProvider !== undefined
+    && (input.subscriptionProvider === "lemon_squeezy" || input.subscriptionProvider === "whop")
+    && !!input.providerSubscriptionId && /^[A-Za-z0-9._:-]{1,200}$/.test(input.providerSubscriptionId);
   const platformScope = input.subscriptionScope === "platform_subscription"
-    && !input.productId && !input.endUserId && !input.subscriptionProvider && !input.providerSubscriptionId;
+    && !input.productId && !input.endUserId
+    && (!hasPlatformProviderReference || validPlatformProviderReference);
   const productScope = input.subscriptionScope === "product_user_subscription"
     && !!input.productId && /^[A-Za-z0-9_-]{1,128}$/.test(input.productId)
     && !!input.endUserId && /^[A-Za-z0-9_-]{1,128}$/.test(input.endUserId)
@@ -692,6 +697,34 @@ async function isCurrentProductDunningEmail(env: NotificationsEnv, message: Noti
     .first<{ email: string | null; email_verified_at: string | null; provider_event_at: string | null }>();
   if (!account || !account.email || !account.email_verified_at || account.email !== message.email) return false;
   return !message.providerUpdatedAt || account.provider_event_at === message.providerUpdatedAt;
+}
+
+/** A platform dunning message can wait in the notification queue after subscription recovery,
+ * owner transfer, admin removal, or an email change. Recheck exact current authority and billing
+ * state immediately before sending, just as the Product-user path does. */
+async function isCurrentPlatformDunningEmail(env: NotificationsEnv, message: NotificationMessage): Promise<boolean> {
+  if (message.subscriptionScope !== "platform_subscription" || message.type !== "email"
+      || message.productId !== undefined || message.endUserId !== undefined
+      || !message.userId || !/^[A-Za-z0-9_-]{1,128}$/.test(message.userId)
+      || !message.email || !message.subscriptionProvider
+      || !["lemon_squeezy", "whop"].includes(message.subscriptionProvider)
+      || !message.providerSubscriptionId || !/^[A-Za-z0-9._:-]{1,200}$/.test(message.providerSubscriptionId)
+      || (message.providerUpdatedAt != null && !Number.isFinite(Date.parse(message.providerUpdatedAt)))) return false;
+  const subscriptionColumn = message.subscriptionProvider === "whop" ? "whop_subscription_id" : "ls_subscription_id";
+  const account = await env.PLATFORM_DB.prepare(`
+    SELECT u.id
+    FROM orgs o
+    JOIN users u ON u.id=? AND u.status='active' AND u.email=?
+    JOIN subscriptions s ON s.org_id=o.id AND s.status='past_due'
+      AND s.billing_provider=? AND s.${subscriptionColumn}=?
+    LEFT JOIN org_members m ON m.org_id=o.id AND m.user_id=u.id
+    WHERE o.id=? AND o.status='active'
+      AND (u.id=o.owner_id OR (m.joined_at IS NOT NULL AND m.role IN ('owner','admin')))
+      AND (? IS NULL OR s.provider_event_at=?)
+  `).bind(message.userId, message.email, message.subscriptionProvider, message.providerSubscriptionId,
+    message.tenantId, message.providerUpdatedAt ?? null, message.providerUpdatedAt ?? null)
+    .first<{ id: string }>();
+  return Boolean(account?.id);
 }
 
 async function sendEmailNow(
@@ -836,6 +869,11 @@ export async function queue(
       }
       if (msg.subscriptionScope === "product_user_subscription" && !(await isCurrentProductDunningEmail(env, msg))) {
         console.info(`[notifications/queue] skipped stale Product subscription notice ${notificationId}`);
+        message.ack();
+        continue;
+      }
+      if (msg.subscriptionScope === "platform_subscription" && !(await isCurrentPlatformDunningEmail(env, msg))) {
+        console.info(`[notifications/queue] skipped stale platform subscription notice ${notificationId}`);
         message.ack();
         continue;
       }

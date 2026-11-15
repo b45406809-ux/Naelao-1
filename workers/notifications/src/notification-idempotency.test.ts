@@ -13,6 +13,7 @@ function setup() {
         return {
           async first() {
             if (sql.includes("SELECT status FROM orgs")) return { status: "active" };
+            if (sql.includes("FROM orgs o") && sql.includes("JOIN subscriptions s")) return { id: "owner-1" };
             if (sql.includes("FROM product_user_subscriptions s")) return {
               email: "customer@example.test", email_verified_at: "2026-11-01T00:00:00.000Z",
               provider_event_at: "2026-11-14T00:00:00.000Z",
@@ -60,7 +61,7 @@ describe("stable notification retry identities", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const message = {
-      id: "queue-2", body: { type: "email", tenantId: "org-1", userId: "owner-1", email: "owner@example.test", notificationId, subscriptionScope: "platform_subscription", subject: "Payment failed", html: "Update payment details" },
+      id: "queue-2", body: { type: "email", tenantId: "org-1", userId: "owner-1", email: "owner@example.test", notificationId, subscriptionScope: "platform_subscription", subscriptionProvider: "lemon_squeezy", providerSubscriptionId: "subscription-1", providerUpdatedAt: "2026-11-14T00:00:00.000Z", subject: "Payment failed", html: "Update payment details" },
       ack: vi.fn(), retry: vi.fn(),
     };
     const env = { PLATFORM_DB: db, RESEND_API_KEY: "test", RESEND_API_URL: "https://mail.test" } as unknown as NotificationsEnv;
@@ -142,7 +143,7 @@ describe("stable notification retry identities", () => {
     const notificationId = `dunning-${"b".repeat(64)}`;
     vi.stubGlobal("fetch", vi.fn(async () => new Response("rate limited", { status: 429 })));
     const message = {
-      id: "queue-3", body: { type: "email", tenantId: "org-1", email: "owner@example.test", notificationId, subscriptionScope: "platform_subscription", subject: "Payment failed", html: "Update payment details" },
+      id: "queue-3", body: { type: "email", tenantId: "org-1", userId: "owner-1", email: "owner@example.test", notificationId, subscriptionScope: "platform_subscription", subscriptionProvider: "lemon_squeezy", providerSubscriptionId: "subscription-1", providerUpdatedAt: "2026-11-14T00:00:00.000Z", subject: "Payment failed", html: "Update payment details" },
       ack: vi.fn(), retry: vi.fn(),
     };
     const env = { PLATFORM_DB: db, RESEND_API_KEY: "test", RESEND_API_URL: "https://mail.test" } as unknown as NotificationsEnv;
@@ -158,7 +159,7 @@ describe("stable notification retry identities", () => {
     const notificationId = `dunning-${"c".repeat(64)}`;
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network timeout"); }));
     const message = {
-      id: "queue-4", body: { type: "email", tenantId: "org-1", email: "owner@example.test", notificationId, subscriptionScope: "platform_subscription", subject: "Payment failed", html: "Update payment details" },
+      id: "queue-4", body: { type: "email", tenantId: "org-1", userId: "owner-1", email: "owner@example.test", notificationId, subscriptionScope: "platform_subscription", subscriptionProvider: "lemon_squeezy", providerSubscriptionId: "subscription-1", providerUpdatedAt: "2026-11-14T00:00:00.000Z", subject: "Payment failed", html: "Update payment details" },
       ack: vi.fn(), retry: vi.fn(),
     };
     const env = { PLATFORM_DB: db, RESEND_API_KEY: "test", RESEND_API_URL: "https://mail.test" } as unknown as NotificationsEnv;

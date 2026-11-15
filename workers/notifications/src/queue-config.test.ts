@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const config = readFileSync(fileURLToPath(new URL("../wrangler.toml", import.meta.url)), "utf8");
+const config = readFileSync(fileURLToPath(new URL("../wrangler.toml", import.meta.url).href), "utf8");
 
 describe("Notifications queue consumer limits", () => {
   it("bounds primary and dead-letter consumers in every deployment environment", () => {
