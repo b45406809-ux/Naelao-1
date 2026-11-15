@@ -78,13 +78,12 @@ export async function notifyCurrentProductPaymentFailure(
   if (event.providerUpdatedAt && account.provider_event_at && Date.parse(account.provider_event_at) > Date.parse(event.providerUpdatedAt)) {
     return { skipped: "stale_provider_event", notified: 0 };
   }
-  if (!account.email || !account.email_verified_at) return { skipped: "no_verified_account_email", notified: 0 };
 
   const notificationId = await stableNotificationId(event, "product_user_subscription", event.productId, event.endUserId);
+  const inboxBody = "A payment for your product subscription failed. Sign in to review your current plan status and payment options.";
   await env.NOTIFICATIONS_QUEUE.send({
-    type: "email",
+    type: "in_app",
     tenantId: account.tenant_id,
-    email: account.email,
     subscriptionScope: "product_user_subscription",
     productId: event.productId,
     endUserId: event.endUserId,
@@ -92,10 +91,27 @@ export async function notifyCurrentProductPaymentFailure(
     providerSubscriptionId: event.subscriptionId,
     providerUpdatedAt: event.providerUpdatedAt,
     notificationId,
-    subject: "Action needed: payment for your subscription failed",
-    html: "A payment for your subscription was not completed. Sign in to your account to review your plan and payment method.",
+    subject: "Payment needs attention",
+    data: { kind: "billing_payment_failed", body: inboxBody },
   });
-  return { notified: 1 };
+  const emailQueued = Boolean(account.email && account.email_verified_at);
+  if (emailQueued) {
+    await env.NOTIFICATIONS_QUEUE.send({
+      type: "email",
+      tenantId: account.tenant_id,
+      email: account.email!,
+      subscriptionScope: "product_user_subscription",
+      productId: event.productId,
+      endUserId: event.endUserId,
+      subscriptionProvider: event.provider,
+      providerSubscriptionId: event.subscriptionId,
+      providerUpdatedAt: event.providerUpdatedAt,
+      notificationId,
+      subject: "Action needed: payment for your subscription failed",
+      html: "A payment for your subscription was not completed. Sign in to your account to review your plan and payment method.",
+    });
+  }
+  return { notified: 1, emailQueued };
 }
 
 export async function notifyCurrentPaymentFailure(

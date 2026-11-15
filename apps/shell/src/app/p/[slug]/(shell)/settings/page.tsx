@@ -50,8 +50,11 @@ import {
   deleteByokKey,
   getConnectorStatus,
   getProductUserBillingStatus,
+  listMyProductInbox,
+  markMyProductInboxNotificationRead,
   type ProductUserMe,
   type ProductUserBillingStatus,
+  type ProductUserInboxNotification,
   type SpaceSummary,
   type ShellManifest,
   type SpaceMember,
@@ -819,7 +822,27 @@ function PersonalTab({
   const [languageMessage, setLanguageMessage] = React.useState<string | null>(null);
   const [exportingData, setExportingData] = React.useState(false);
   const [exportMessage, setExportMessage] = React.useState<string | null>(null);
+  const [productInbox, setProductInbox] = React.useState<ProductUserInboxNotification[]>([]);
+  const [productInboxLoading, setProductInboxLoading] = React.useState(true);
+  const [productInboxLoadingMore, setProductInboxLoadingMore] = React.useState(false);
+  const [productInboxNextCursor, setProductInboxNextCursor] = React.useState<string | null>(null);
+  const [productInboxError, setProductInboxError] = React.useState<string | null>(null);
+  const [markingInboxId, setMarkingInboxId] = React.useState<string | null>(null);
   const creds = useSessionCredentials();
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const sessionToken = creds?.sessionToken;
+    const endUserId = creds?.endUserId;
+    if (!sessionToken || !endUserId) { setProductInboxLoading(false); return; }
+    setProductInboxLoading(true);
+    setProductInboxError(null);
+    void listMyProductInbox(productSpaceId, { sessionToken, endUserId })
+      .then((page) => { if (!cancelled) { setProductInbox(page.data); setProductInboxNextCursor(page.next_cursor ?? null); } })
+      .catch((err) => { if (!cancelled) setProductInboxError(err instanceof Error ? err.message : "Could not load payment notices."); })
+      .finally(() => { if (!cancelled) setProductInboxLoading(false); });
+    return () => { cancelled = true; };
+  }, [productSpaceId, creds?.sessionToken, creds?.endUserId]);
 
   React.useEffect(() => setLanguage(me?.preferred_language ?? ""), [me?.preferred_language]);
 
@@ -862,6 +885,34 @@ function PersonalTab({
     } finally {
       setExportingData(false);
     }
+  }
+
+  async function markProductInboxRead(notificationId: string) {
+    if (!creds) return;
+    setMarkingInboxId(notificationId);
+    setProductInboxError(null);
+    try {
+      await markMyProductInboxNotificationRead(productSpaceId, creds, notificationId);
+      const readAt = new Date().toISOString();
+      setProductInbox((current) => current.map((item) => item.id === notificationId
+        ? { ...item, status: "read", read_at: item.read_at ?? readAt }
+        : item));
+    } catch (err) {
+      setProductInboxError(err instanceof Error ? err.message : "Could not mark this notice as read.");
+    } finally { setMarkingInboxId(null); }
+  }
+
+  async function loadOlderProductInbox() {
+    if (!creds || !productInboxNextCursor) return;
+    setProductInboxLoadingMore(true);
+    setProductInboxError(null);
+    try {
+      const page = await listMyProductInbox(productSpaceId, creds, { cursor: productInboxNextCursor });
+      setProductInbox((current) => [...current, ...page.data]);
+      setProductInboxNextCursor(page.next_cursor ?? null);
+    } catch (err) {
+      setProductInboxError(err instanceof Error ? err.message : "Could not load older payment notices.");
+    } finally { setProductInboxLoadingMore(false); }
   }
 
   async function handleSignOut() {
@@ -954,6 +1005,29 @@ function PersonalTab({
               <div className="settings-row-sub">No paid product subscription is recorded.</div>
             )}
           </div>
+        </div>
+        <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
+          <div className="settings-row-label">Payment notices</div>
+          <div className="settings-row-sub">Private notices about payment failures for your account. Email provider acceptance is shown separately below and does not confirm inbox delivery.</div>
+          {productInboxLoading ? <div className="settings-row-sub">Loading payment notices…</div>
+            : productInboxError ? <div className="settings-row-sub" role="alert">Could not load payment notices: {productInboxError}</div>
+              : productInbox.length === 0 ? <div className="settings-row-sub">No payment notices.</div>
+                : productInbox.map((item) => (
+                  <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, width: "100%" }}>
+                    <div>
+                      <div className="settings-row-label">{item.title}</div>
+                      <div className="settings-row-sub">{item.body}</div>
+                      <div className="settings-row-sub">{new Date(item.created_at).toLocaleString()}</div>
+                    </div>
+                    {item.status === "unread" && <button className="btn btn-secondary btn-sm" type="button" disabled={markingInboxId === item.id} onClick={() => void markProductInboxRead(item.id)}>
+                      {markingInboxId === item.id ? "Saving…" : "Mark read"}
+                    </button>}
+                  </div>
+                ))}
+          {productInboxNextCursor && <button className="btn btn-secondary btn-sm" type="button" disabled={productInboxLoadingMore} onClick={() => void loadOlderProductInbox()}>
+            {productInboxLoadingMore ? "Loading…" : "Load older notices"}
+          </button>}
+          {productInboxError && !productInboxLoading && productInbox.length > 0 && <div className="settings-row-sub" role="alert">{productInboxError}</div>}
         </div>
         <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
           <div>

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
 type Profile = {
@@ -30,6 +31,7 @@ function testEnv() {
     ["product-a:user-b", { email: "b@example.invalid", display_name: null, first_seen_at: "now", last_seen_at: null, suspended_at: null, email_verified_at: "now", deleted_at: null, preferred_language: null }],
     ["product-b:user-a", { email: "a@example.invalid", display_name: null, first_seen_at: "now", last_seen_at: null, suspended_at: null, email_verified_at: "now", deleted_at: null, preferred_language: null }],
   ]);
+  let currentDunning = true;
   const members = new Map([["member-a", null as string | null], ["member-b", null as string | null]]);
   const clearedAuthData: string[] = [];
   const PLATFORM_DB = {
@@ -38,6 +40,7 @@ function testEnv() {
         bind(...values: unknown[]) {
           return {
             async first() {
+              if (sql.includes("SELECT 1 AS current FROM products")) return currentDunning ? { current: 1 } : null;
               if (sql.includes("JOIN space_members sm")) return { role: "owner" };
               if (sql.includes("SELECT tenant_id, product_id FROM spaces")) return spaces.get(String(values[0])) ?? null;
               if (sql.includes("SELECT id, tenant_id FROM products")) {
@@ -114,6 +117,7 @@ function testEnv() {
     },
   };
   const productUserCalls: string[] = [];
+  const productInboxRequests: Array<{ method: string; body: unknown }> = [];
   const billingRequests: Request[] = [];
   const billingStatus = {
     subscription: { plan_tier: "growth", status: "past_due", current_period_end: "2026-12-01T00:00:00.000Z" },
@@ -137,9 +141,16 @@ function testEnv() {
     idFromName: (name: string) => name,
     get: () => ({ fetch: async (request: Request) => {
       productUserCalls.push(new URL(request.url).pathname);
-      if (new URL(request.url).pathname === "/export") return Response.json({ conversations: [], preferences: {}, notifications: [] });
+      if (new URL(request.url).pathname === "/export") return Response.json({ conversations: [], preferences: {}, notifications: [], inbox_notifications: [] });
+      if (new URL(request.url).pathname === "/inbox-notifications") {
+        const body = await request.clone().json().catch(() => ({}));
+        productInboxRequests.push({ method: request.method, body });
+        return request.method === "GET" ? Response.json({ data: [{ id: `dunning-${"a".repeat(64)}`, kind: "billing_payment_failed",
+          title: "Payment needs attention", body: "Review your subscription.", status: "unread", read_at: null, created_at: "now" }] })
+          : Response.json({ ok: true }, { status: body && typeof body === "object" && "action" in body && body.action === "deliver" ? 201 : 200 });
+      }
       if (new URL(request.url).pathname === "/erase") {
-        const response = productUserEraseResponse ?? Response.json({ erased_at: "now", sessions_deleted: 1, conversations_deleted: 2, notifications_deleted: 3 });
+        const response = productUserEraseResponse ?? Response.json({ erased_at: "now", sessions_deleted: 1, conversations_deleted: 2, notifications_deleted: 3, inbox_notifications_deleted: 0 });
         productUserEraseResponse = null;
         return response;
       }
@@ -172,7 +183,8 @@ function testEnv() {
       return Response.json({ snapshots: [], omissions: { privateScopeInstallations: 0, uninitializedActors: 0, unsupportedInstallations: 0 } });
     } }),
   };
-  return { PLATFORM_DB, PRODUCT_USER_DO, SPACE_DO, BILLING_WORKER, productProfiles, productUserCalls, billingRequests, billingStatus,
+  return { PLATFORM_DB, PRODUCT_USER_DO, SPACE_DO, BILLING_WORKER, productProfiles, productUserCalls, productInboxRequests, billingRequests, billingStatus,
+    setCurrentDunning(value: boolean) { currentDunning = value; },
     setBillingStatusResponse(response: Response) { billingStatusResponse = response; }, spaceDoCalls, microAppErasureResponses,
     setProductUserEraseResponse(response: Response) { productUserEraseResponse = response; },
     microAppArchiveSpaceIds, chatHistoryRequests,
@@ -189,6 +201,15 @@ async function call(path: string, method: string, role: string, userId: string, 
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   return worker.fetch(request, targetEnv as never, { waitUntil: () => undefined } as never);
+}
+
+async function internalProductInboxCall(targetEnv: ReturnType<typeof testEnv>, body: unknown, secret = "test-secret") {
+  const tenantId = "tenant-a";
+  const token = await mintInternalToken(secret, tenantId);
+  return worker.fetch(new Request("https://worker.test/internal/product-user-inbox-notifications", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": token }, body: JSON.stringify(body),
+  }), targetEnv as never, { waitUntil: () => undefined } as never);
 }
 
 describe("language preference profile routes", () => {
@@ -219,14 +240,14 @@ describe("language preference profile routes", () => {
     const child = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined, "tenant-a", exportEnv);
     expect(child.status).toBe(200);
     const data = await child.json() as { export_version: string; profile: { end_user_id: string; email: string; phone_e164: string };
-      product_user_data: { conversations: unknown[]; preferences: Record<string, unknown>; notifications: unknown[] };
+      product_user_data: { conversations: unknown[]; preferences: Record<string, unknown>; notifications: unknown[]; inbox_notifications: unknown[] };
       billing_status: typeof env.billingStatus;
       chat_history: Array<typeof transcript>;
       micro_app_archives: unknown[]; micro_app_archive_omissions: { privateScopeInstallations: number; uninitializedActors: number; unsupportedInstallations: number } };
     expect(data.export_version).toBe("3");
     expect(child.headers.get("cache-control")).toBe("private, no-store");
     expect(data.profile).toMatchObject({ end_user_id: "user-a", email: "a@example.invalid", phone_e164: "+14155550100" });
-    expect(data.product_user_data).toEqual({ conversations: [], preferences: {}, notifications: [] });
+    expect(data.product_user_data).toEqual({ conversations: [], preferences: {}, notifications: [], inbox_notifications: [] });
     expect(data.billing_status).toEqual(env.billingStatus);
     expect(data.chat_history).toEqual([transcript,
       { space_id: "business-b", sessions: [], messages: [] },
@@ -244,6 +265,41 @@ describe("language preference profile routes", () => {
     expect(exportEnv.chatHistoryRequests).toEqual(["business-a", "business-b", "department-a"].map(spaceId => ({
       spaceId, userId: "user-a", tenantId: "tenant-a", internalToken: expect.any(String),
     })));
+  });
+
+  it("reads and marks only the authenticated Product user's private billing inbox", async () => {
+    const response = await call("/spaces/product-a/product-users/me/inbox?status=unread", "GET", "product_end_user", "user-a");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toMatchObject({ data: [{ id: `dunning-${"a".repeat(64)}`, status: "unread" }] });
+    expect(env.productUserCalls).toContain("/inbox-notifications");
+    const denied = await call("/spaces/product-a/product-users/me/inbox", "GET", "owner", "user-a");
+    expect(denied.status).toBe(404);
+    const marked = await call("/spaces/product-a/product-users/me/inbox", "POST", "product_end_user", "user-a",
+      { action: "mark_read", notification_id: `dunning-${"a".repeat(64)}` });
+    expect(marked.status).toBe(200);
+    expect(env.productInboxRequests.at(-1)).toEqual({ method: "POST", body: { action: "mark_read", notification_id: `dunning-${"a".repeat(64)}` } });
+  });
+
+  it("accepts dunning inbox delivery only through tenant HMAC and the current exact subscription", async () => {
+    const targetEnv = testEnv();
+    const notice = { product_id: "product-a", end_user_id: "user-a", provider: "lemon_squeezy",
+      provider_subscription_id: "subscription-a", provider_updated_at: "2026-11-14T00:00:00.000Z",
+      notification_id: `dunning-${"a".repeat(64)}`, title: "Payment needs attention",
+      body: "A payment for your product subscription failed. Sign in to review your current plan status and payment options." };
+    const accepted = await internalProductInboxCall(targetEnv, notice);
+    expect(accepted.status).toBe(201);
+    expect(targetEnv.productInboxRequests.at(-1)).toEqual({ method: "POST", body: {
+      action: "deliver", notification_id: notice.notification_id, kind: "billing_payment_failed",
+      title: notice.title, body: notice.body,
+    } });
+
+    const denied = await internalProductInboxCall(targetEnv, notice, "wrong-secret");
+    expect(denied.status).toBe(403);
+    targetEnv.setCurrentDunning(false);
+    const stale = await internalProductInboxCall(targetEnv, { ...notice, notification_id: `dunning-${"b".repeat(64)}` });
+    expect(stale.status).toBe(204);
+    expect(targetEnv.productInboxRequests).toHaveLength(1);
   });
 
   it("fails closed when Billing is missing, unavailable, or returns malformed or excessive status data", async () => {

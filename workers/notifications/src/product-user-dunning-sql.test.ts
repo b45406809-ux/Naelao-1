@@ -14,10 +14,11 @@ function database() {
      INSERT INTO orgs VALUES ('org-1','active');
      CREATE TABLE products(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,status TEXT NOT NULL);
      INSERT INTO products VALUES ('product-1','org-1','active');
-     CREATE TABLE product_end_users(product_space_id TEXT NOT NULL,end_user_id TEXT NOT NULL,email TEXT,email_verified_at TEXT,deleted_at TEXT,suspended_at TEXT,PRIMARY KEY(product_space_id,end_user_id));
-     INSERT INTO product_end_users VALUES ('product-1','user-1','customer@example.test','2026-11-01T00:00:00.000Z',NULL,NULL);
+     CREATE TABLE product_end_users(product_space_id TEXT NOT NULL,end_user_id TEXT NOT NULL,email TEXT,email_verified_at TEXT,deleted_at TEXT,suspended_at TEXT,erasure_started_at TEXT,PRIMARY KEY(product_space_id,end_user_id));
+     INSERT INTO product_end_users VALUES ('product-1','user-1','customer@example.test','2026-11-01T00:00:00.000Z',NULL,NULL,NULL);
      CREATE TABLE product_user_subscriptions(product_id TEXT NOT NULL,end_user_id TEXT NOT NULL,provider TEXT NOT NULL,provider_subscription_id TEXT NOT NULL,status TEXT NOT NULL,provider_event_at TEXT,PRIMARY KEY(product_id,end_user_id));
      INSERT INTO product_user_subscriptions VALUES ('product-1','user-1','lemon_squeezy','subscription-1','past_due','2026-11-14T00:00:00.000Z');`,
+    readFileSync(fileURLToPath(new URL("../../../infra/migrations/0010_notifications.sql", import.meta.url).href), "utf8"),
     readFileSync(fileURLToPath(new URL("../../../infra/migrations/0233_dunning_notification_attempt_receipts.sql", import.meta.url).href), "utf8"),
     readFileSync(fileURLToPath(new URL("../../../infra/migrations/0252_product_user_dunning_status_scope.sql", import.meta.url).href), "utf8"),
   ];
@@ -41,6 +42,15 @@ function notice(notificationId: string, providerUpdatedAt = "2026-11-14T00:00:00
     subscriptionScope: "product_user_subscription", productId: "product-1", endUserId: "user-1",
     subscriptionProvider: "lemon_squeezy", providerSubscriptionId: "subscription-1", providerUpdatedAt,
     subject: "Payment failed", html: "Review your subscription",
+  };
+}
+
+function inboxNotice(notificationId: string, providerUpdatedAt = "2026-11-14T00:00:00.000Z") {
+  return {
+    type: "in_app", tenantId: "org-1", notificationId, subscriptionScope: "product_user_subscription",
+    productId: "product-1", endUserId: "user-1", subscriptionProvider: "lemon_squeezy",
+    providerSubscriptionId: "subscription-1", providerUpdatedAt, subject: "Payment needs attention",
+    data: { kind: "billing_payment_failed", body: "A payment for your product subscription failed. Sign in to review your current plan status and payment options." },
   };
 }
 
@@ -73,5 +83,42 @@ describe("Product-user dunning provider receipt SQL", () => {
     expect(deleted.ack).toHaveBeenCalledOnce();
     expect(send).toHaveBeenCalledTimes(1);
     expect(await db.prepare("SELECT COUNT(*) AS count FROM dunning_notification_attempts").first<{ count: number }>()).toEqual({ count: 1 });
+  });
+
+  it("persists current Product-user inbox notices through the scoped Spaces binding and retries failures", async () => {
+    const db = database();
+    const requests: Request[] = [];
+    const env = { PLATFORM_DB: db, PLATFORM_SECRET: "platform-secret", SPACES_WORKER: { fetch: async (request: Request) => {
+      requests.push(request);
+      return Response.json({ ok: true }, { status: 201 });
+    } } } as unknown as NotificationsEnv;
+    const message = { id: "inbox-1", body: inboxNotice(`dunning-${"a".repeat(64)}`), attempts: 1, ack: vi.fn(), retry: vi.fn() };
+
+    await queue({ messages: [message] } as never, env);
+
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).pathname).toBe("/internal/product-user-inbox-notifications");
+    expect(requests[0]!.headers.get("x-naelao-tenant-id")).toBe("org-1");
+    expect(requests[0]!.headers.get("x-naelao-internal-token")).toMatch(/v1=/);
+    expect(await requests[0]!.json()).toEqual({ product_id: "product-1", end_user_id: "user-1",
+      provider: "lemon_squeezy", provider_subscription_id: "subscription-1", provider_updated_at: "2026-11-14T00:00:00.000Z",
+      notification_id: `dunning-${"a".repeat(64)}`, title: "Payment needs attention",
+      body: "A payment for your product subscription failed. Sign in to review your current plan status and payment options." });
+
+    await db.prepare("UPDATE product_user_subscriptions SET provider_event_at=? WHERE product_id=? AND end_user_id=?")
+      .bind("2026-11-15T00:00:00.000Z", "product-1", "user-1").run();
+    const stale = { id: "inbox-stale", body: inboxNotice(`dunning-${"b".repeat(64)}`), attempts: 1, ack: vi.fn(), retry: vi.fn() };
+    await queue({ messages: [stale] } as never, env);
+    expect(stale.ack).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+
+    const retryEnv = { PLATFORM_DB: database(), PLATFORM_SECRET: "platform-secret",
+      SPACES_WORKER: { fetch: async () => new Response("unavailable", { status: 503 }) } } as unknown as NotificationsEnv;
+    const retryMessage = { id: "inbox-retry", body: inboxNotice(`dunning-${"c".repeat(64)}`), attempts: 1, ack: vi.fn(), retry: vi.fn() };
+    await queue({ messages: [retryMessage] } as never, retryEnv);
+    expect(retryMessage.retry).toHaveBeenCalledOnce();
+    expect(retryMessage.ack).not.toHaveBeenCalled();
   });
 });

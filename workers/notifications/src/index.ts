@@ -1,5 +1,5 @@
 // G-N01: Notifications worker — email + in-app notification consumer
-import { badRequest, errorResponse, requestId, requireInternalHmac, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
+import { badRequest, errorResponse, mintInternalToken, requestId, requireInternalHmac, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { Hono, type Context } from "hono";
 import { checkSsrf, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { decryptSubscription, deliverWebPush, encryptSubscription, hashEndpoint, validatePushSubscription, type BrowserPushSubscription } from "./web-push.js";
@@ -20,6 +20,8 @@ export interface NotificationsEnv {
   RESEND_FROM_ADDRESS?: string;
   WEBHOOK_SIGNING_SECRET: string;
   PLATFORM_DB: D1Database;
+  /** Internal Product-user inbox bridge; never publicly routable. */
+  SPACES_WORKER?: Fetcher;
   // G-P11/G-P12: APNs push notification credentials (optional — push disabled if absent)
   APNS_KEY_ID?: string;
   APNS_TEAM_ID?: string;
@@ -699,6 +701,62 @@ async function isCurrentProductDunningEmail(env: NotificationsEnv, message: Noti
   return !message.providerUpdatedAt || account.provider_event_at === message.providerUpdatedAt;
 }
 
+/** An in-app Product-user notice is independent of email verification, but still requires the
+ * exact active Product user and current past-due subscription immediately before persistence. */
+async function isCurrentProductDunningInbox(env: NotificationsEnv, message: NotificationMessage): Promise<boolean> {
+  if (message.subscriptionScope !== "product_user_subscription" || message.type !== "in_app"
+      || !message.productId || !/^[A-Za-z0-9_-]{1,128}$/.test(message.productId)
+      || !message.endUserId || !/^[A-Za-z0-9_-]{1,128}$/.test(message.endUserId)
+      || !message.subscriptionProvider || !message.providerSubscriptionId
+      || !/^[A-Za-z0-9._:-]{1,200}$/.test(message.providerSubscriptionId)
+      || (message.providerUpdatedAt != null && !Number.isFinite(Date.parse(message.providerUpdatedAt)))) return false;
+  const account = await env.PLATFORM_DB.prepare(`
+    SELECT s.status,s.provider_event_at
+    FROM product_user_subscriptions s
+    JOIN products p ON p.id=s.product_id AND p.status='active' AND p.tenant_id=?
+    JOIN orgs o ON o.id=p.tenant_id AND o.status='active'
+    JOIN product_end_users u ON u.product_space_id=p.id AND u.end_user_id=s.end_user_id
+    WHERE p.id=? AND u.end_user_id=? AND u.deleted_at IS NULL
+      AND u.suspended_at IS NULL AND u.erasure_started_at IS NULL
+      AND s.provider=? AND s.provider_subscription_id=?
+  `).bind(message.tenantId, message.productId, message.endUserId,
+    message.subscriptionProvider, message.providerSubscriptionId)
+    .first<{ status: string; provider_event_at: string | null }>();
+  return Boolean(account && account.status === "past_due"
+    && (!message.providerUpdatedAt || !account.provider_event_at || account.provider_event_at === message.providerUpdatedAt));
+}
+
+async function persistProductUserInboxNotification(
+  env: NotificationsEnv,
+  message: NotificationMessage,
+  notificationId: string,
+): Promise<"persisted" | "stale"> {
+  if (!env.SPACES_WORKER || !env.PLATFORM_SECRET || !message.productId || !message.endUserId
+      || !message.subscriptionProvider || !message.providerSubscriptionId) throw new Error("product_user_inbox_bridge_unavailable");
+  if (message.subject !== "Payment needs attention"
+      || message.data?.kind !== "billing_payment_failed"
+      || message.data?.body !== "A payment for your product subscription failed. Sign in to review your current plan status and payment options.")
+    throw new Error("product_user_inbox_message_invalid");
+  const token = await mintInternalToken(env.PLATFORM_SECRET, message.tenantId);
+  const response = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/product-user-inbox-notifications", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": message.tenantId, "x-naelao-internal-token": token },
+    body: JSON.stringify({
+      product_id: message.productId,
+      end_user_id: message.endUserId,
+      provider: message.subscriptionProvider,
+      provider_subscription_id: message.providerSubscriptionId,
+      provider_updated_at: message.providerUpdatedAt ?? null,
+      notification_id: notificationId,
+      title: message.subject,
+      body: message.data.body,
+    }),
+  }));
+  if (response.status === 204) return "stale";
+  if (!response.ok) throw new Error(`product_user_inbox_bridge_${response.status}`);
+  return "persisted";
+}
+
 /** A platform dunning message can wait in the notification queue after subscription recovery,
  * owner transfer, admin removal, or an email change. Recheck exact current authority and billing
  * state immediately before sending, just as the Product-user path does. */
@@ -867,8 +925,13 @@ export async function queue(
         message.ack();
         continue;
       }
-      if (msg.subscriptionScope === "product_user_subscription" && !(await isCurrentProductDunningEmail(env, msg))) {
+      if (msg.subscriptionScope === "product_user_subscription" && msg.type === "email" && !(await isCurrentProductDunningEmail(env, msg))) {
         console.info(`[notifications/queue] skipped stale Product subscription notice ${notificationId}`);
+        message.ack();
+        continue;
+      }
+      if (msg.subscriptionScope === "product_user_subscription" && msg.type === "in_app" && !(await isCurrentProductDunningInbox(env, msg))) {
+        console.info(`[notifications/queue] skipped stale Product inbox notice ${notificationId}`);
         message.ack();
         continue;
       }
@@ -943,6 +1006,20 @@ export async function queue(
         }
 
         case "in_app": {
+          if (msg.subscriptionScope === "product_user_subscription") {
+            try {
+              const result = await persistProductUserInboxNotification(env, msg, notificationId);
+              await recordNotificationDeliveryAttempt(env, msg, notificationId, "internal", result === "persisted" ? "persisted" : "not_sent", message.attempts,
+                result === "stale" ? { failureCode: "subscription_recovered_before_inbox_persist" } : undefined);
+              message.ack();
+            } catch {
+              await recordNotificationDeliveryAttempt(env, msg, notificationId, "internal", "attempt_ambiguous", message.attempts, {
+                failureCode: "product_user_inbox_persist_ambiguous",
+              });
+              message.retry();
+            }
+            break;
+          }
           if (!msg.userId) {
             console.warn("[notifications/queue] in_app message missing userId, acking");
             await recordNotificationDeliveryAttempt(env, msg, notificationId, "internal", "not_sent", message.attempts, {

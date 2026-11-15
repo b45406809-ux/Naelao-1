@@ -82,18 +82,40 @@ describe("ProductUserDO sessions and stored-value retirement", () => {
     expect(notificationTail.data).toHaveLength(1);
     expect((await user.fetch(new Request(`https://user/notifications?cursor=${"a".repeat(2050)}`))).status).toBe(400);
 
+    const inboxId = `dunning-${"a".repeat(64)}`;
+    const deliverInbox = (id = inboxId) => user.fetch(new Request("https://user/inbox-notifications", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "deliver", notification_id: id, kind: "billing_payment_failed",
+        title: "Payment needs attention", body: "Review your subscription status." }),
+    }));
+    expect((await deliverInbox()).status).toBe(201);
+    expect(await (await deliverInbox()).json()).toMatchObject({ duplicate: true });
+    const inbox = await (await user.fetch(new Request("https://user/inbox-notifications?status=unread"))).json() as {
+      data: Array<{ id: string; status: string; title: string }>;
+    };
+    expect(inbox.data).toEqual([expect.objectContaining({ id: inboxId, status: "unread", title: "Payment needs attention" })]);
+    expect((await user.fetch(new Request("https://user/inbox-notifications", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "mark_read", notification_id: inboxId }),
+    }))).status).toBe(200);
+    await expect((await user.fetch(new Request("https://user/inbox-notifications?status=unread"))).json()).resolves.toMatchObject({ data: [] });
+
     const exported = await (await user.fetch(new Request("https://user/export"))).json() as {
       export_version: string; notifications: Array<{ payload: unknown }>;
+      inbox_notifications: Array<{ id: string; status: string }>;
     };
-    expect(exported.export_version).toBe("2");
+    expect(exported.export_version).toBe("3");
     expect(exported.notifications).toHaveLength(3);
     expect(exported.notifications.map(row => row.payload)).toEqual(expect.arrayContaining([{ i: 0 }, { i: 1 }, { i: 2 }]));
+    expect(exported.inbox_notifications).toMatchObject([{ id: inboxId, status: "read" }]);
 
     const erased = await (await user.fetch(new Request("https://user/erase", { method: "DELETE" }))).json() as {
-      notifications_deleted: number;
+      notifications_deleted: number; inbox_notifications_deleted: number;
     };
     expect(erased.notifications_deleted).toBe(3);
+    expect(erased.inbox_notifications_deleted).toBe(1);
     expect(await (await user.fetch(new Request("https://user/notifications"))).json()).toMatchObject({ data: [] });
     expect(await (await user.fetch(new Request("https://user/export"))).json()).toMatchObject({ notifications: [] });
+    expect(await (await user.fetch(new Request("https://user/inbox-notifications"))).json()).toMatchObject({ data: [] });
   });
 });

@@ -51,11 +51,12 @@ describe("product session routes for composed project extensions", () => {
 
 describe("product session routes for self-service data rights", () => {
   it.each(["/spaces/s/me/export", "/spaces/s/me/data", "/spaces/s/product-users/me", "/spaces/s/product-users/me/export",
+    "/spaces/s/product-users/me/inbox",
     "/spaces/s/product-users/me/micro-app-archives/preview", "/spaces/s/product-users/me/micro-app-archives/restore"])("requires product-session identity for %s", path => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
   });
 
-  it.each(["/spaces/s/product-users/me/export/download", "/spaces/s/product-users/me/other",
+  it.each(["/spaces/s/product-users/me/export/download", "/spaces/s/product-users/me/other", "/spaces/s/product-users/me/inbox/other",
     "/spaces/s/product-users/me/micro-app-archives/other", "/spaces/s/product-users/me/micro-app-archives/restore/other"])("keeps unrelated account paths outside the self-service identity route: %s", path => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
   });

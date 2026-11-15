@@ -39,6 +39,8 @@ const MAX_ACTIVE_SESSIONS = 100;
 const MAX_CONVERSATION_REFS = 10_000;
 const MAX_PREFERENCES = 500;
 const MAX_PENDING_NOTIFICATIONS = 1_000;
+const MAX_INBOX_NOTIFICATIONS = 500;
+const PRODUCT_INBOX_NOTIFICATION_ID = /^dunning-[a-f0-9]{64}$/;
 
 function validOptionalText(value: unknown, maxLength: number): value is string | undefined {
   return value === undefined || (typeof value === "string" && value.length > 0 && value.length <= maxLength);
@@ -174,6 +176,20 @@ const MIGRATIONS: Migration[] = [
     version: 8,
     description: "bind product sessions to authoritative account security generation",
     up: `ALTER TABLE session_state ADD COLUMN security_generation INTEGER NOT NULL DEFAULT 0;`,
+  },
+  {
+    version: 9,
+    description: "add private product-user inbox notifications",
+    up: `CREATE TABLE product_user_inbox_notifications (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL CHECK (kind IN ('billing_payment_failed')),
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'unread' CHECK (status IN ('unread','read')),
+      read_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_product_user_inbox_recent ON product_user_inbox_notifications(created_at DESC,id DESC);`,
   },
 ];
 
@@ -376,6 +392,68 @@ export class ProductUserDO extends DurableObject {
       return Response.json({ data: data.map((r) => ({ ...r, payload: JSON.parse(r.payload) as unknown })), ...(hasMore && last ? { next_cursor: btoa(encodeURIComponent(JSON.stringify([last.created_at, last.id]))) } : {}) });
     }
 
+    // A separate user-facing inbox; notification_queue above is an outbound delivery queue and
+    // must not be exposed as a read/receipt history. ProductUserDO identity scopes every row to
+    // this exact (product,user) actor, keeping personal notices out of owner Space archives.
+    if (method === "GET" && url.pathname === "/inbox-notifications") {
+      const limitValue = Number(url.searchParams.get("limit") ?? "50");
+      const status = url.searchParams.get("status");
+      const cursor = url.searchParams.get("cursor");
+      if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 100
+          || (status !== null && status !== "unread" && status !== "read"))
+        return Response.json({ error_code: "invalid_inbox_query" }, { status: 400 });
+      let cursorParts: string[] | null = null;
+      if (cursor !== null) {
+        if (cursor.length > 2048) return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
+        try { cursorParts = JSON.parse(decodeURIComponent(atob(cursor))) as string[]; } catch { return Response.json({ error_code: "invalid_cursor" }, { status: 400 }); }
+        if (!Array.isArray(cursorParts) || cursorParts.length !== 2 || cursorParts.some((part) => typeof part !== "string" || !part))
+          return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
+      }
+      const clauses: string[] = [];
+      const args: unknown[] = [];
+      if (status) { clauses.push("status = ?"); args.push(status); }
+      if (cursorParts) { clauses.push("(created_at < ? OR (created_at = ? AND id < ?))"); args.push(cursorParts[0], cursorParts[0], cursorParts[1]); }
+      const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+      const rows = this.ctx.storage.sql.exec(
+        `SELECT id,kind,title,body,status,read_at,created_at FROM product_user_inbox_notifications ${where} ORDER BY created_at DESC,id DESC LIMIT ?`,
+        ...args, limitValue + 1
+      ).toArray() as unknown as Array<{ id: string; kind: string; title: string; body: string; status: string; read_at: string | null; created_at: string }>;
+      const hasMore = rows.length > limitValue;
+      const data = rows.slice(0, limitValue);
+      const last = data[data.length - 1];
+      return Response.json({ data, ...(hasMore && last ? { next_cursor: btoa(encodeURIComponent(JSON.stringify([last.created_at, last.id]))) } : {}) }, {
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+    if (method === "POST" && url.pathname === "/inbox-notifications") {
+      const body = await request.json<{
+        action?: string; notification_id?: string; kind?: string; title?: string; body?: string;
+      }>().catch(() => null);
+      if (!body || typeof body !== "object") return Response.json({ error_code: "inbox_notification_invalid" }, { status: 400 });
+      if (body.action === "mark_read") {
+        if (typeof body.notification_id !== "string" || !PRODUCT_INBOX_NOTIFICATION_ID.test(body.notification_id))
+          return Response.json({ error_code: "inbox_notification_id_invalid" }, { status: 400 });
+        this.ctx.storage.sql.exec(
+          "UPDATE product_user_inbox_notifications SET status='read',read_at=COALESCE(read_at,datetime('now')) WHERE id=?",
+          body.notification_id
+        );
+        return Response.json({ ok: true });
+      }
+      if (body.action !== "deliver" || typeof body.notification_id !== "string" || !PRODUCT_INBOX_NOTIFICATION_ID.test(body.notification_id)
+          || body.kind !== "billing_payment_failed" || !validOptionalText(body.title, 300) || !body.title
+          || typeof body.body !== "string" || body.body.length > 2000)
+        return Response.json({ error_code: "inbox_notification_invalid" }, { status: 400 });
+      const existing = this.ctx.storage.sql.exec("SELECT 1 AS found FROM product_user_inbox_notifications WHERE id=?", body.notification_id).toArray();
+      if (existing.length) return Response.json({ ok: true, duplicate: true });
+      const count = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM product_user_inbox_notifications").toArray() as Array<{ count: number }>;
+      if ((count[0]?.count ?? 0) >= MAX_INBOX_NOTIFICATIONS) return Response.json({ error_code: "product_user_inbox_full" }, { status: 429 });
+      this.ctx.storage.sql.exec(
+        "INSERT OR IGNORE INTO product_user_inbox_notifications (id,kind,title,body) VALUES (?,?,?,?)",
+        body.notification_id, body.kind, body.title, body.body
+      );
+      return Response.json({ ok: true }, { status: 201 });
+    }
+
     // ── GDPR Art. 20 — data portability. Full machine-readable dump of everything this DO holds
     // for this end user (mirrors the SpaceDO /me/export pattern, but for the product-user record). ──
     if (method === "GET" && url.pathname === "/export") {
@@ -393,14 +471,18 @@ export class ProductUserDO extends DurableObject {
       const notifications = this.ctx.storage.sql.exec(
         "SELECT id, payload, status, created_at FROM notification_queue ORDER BY created_at ASC, id ASC"
       ).toArray() as unknown as Array<{ id: string; payload: string; status: string; created_at: string }>;
+      const inboxNotifications = this.ctx.storage.sql.exec(
+        "SELECT id,kind,title,body,status,read_at,created_at FROM product_user_inbox_notifications ORDER BY created_at ASC,id ASC"
+      ).toArray();
       return Response.json({
-        export_version: "2",
+        export_version: "3",
         exported_at: new Date().toISOString(),
         // Note: sessions exclude token_hash — never export credential material.
         sessions,
         conversations,
         preferences,
         notifications: notifications.map(row => ({ ...row, payload: JSON.parse(row.payload) as unknown })),
+        inbox_notifications: inboxNotifications,
       });
     }
 
@@ -414,15 +496,18 @@ export class ProductUserDO extends DurableObject {
       const sessionsDeleted = this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM session_state").toArray()[0] as unknown as { n: number };
       const conversationsDeleted = this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM conversation_refs").toArray()[0] as unknown as { n: number };
       const notificationsDeleted = this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM notification_queue").toArray()[0] as unknown as { n: number };
+      const inboxNotificationsDeleted = this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM product_user_inbox_notifications").toArray()[0] as unknown as { n: number };
       this.ctx.storage.sql.exec("DELETE FROM session_state");
       this.ctx.storage.sql.exec("DELETE FROM conversation_refs");
       this.ctx.storage.sql.exec("DELETE FROM preferences");
       this.ctx.storage.sql.exec("DELETE FROM notification_queue");
+      this.ctx.storage.sql.exec("DELETE FROM product_user_inbox_notifications");
       return Response.json({
         erased_at: new Date().toISOString(),
         sessions_deleted: sessionsDeleted?.n ?? 0,
         conversations_deleted: conversationsDeleted?.n ?? 0,
         notifications_deleted: notificationsDeleted?.n ?? 0,
+        inbox_notifications_deleted: inboxNotificationsDeleted?.n ?? 0,
       });
     }
 

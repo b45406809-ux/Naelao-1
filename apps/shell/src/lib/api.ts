@@ -408,6 +408,39 @@ export interface ProductUserBillingStatus {
   }>;
 }
 
+export interface ProductUserInboxNotification {
+  id: string;
+  kind: "billing_payment_failed";
+  title: string;
+  body: string;
+  status: "unread" | "read";
+  read_at: string | null;
+  created_at: string;
+}
+
+export async function listMyProductInbox(
+  spaceId: string,
+  session: SessionCredentials,
+  opts?: { status?: "unread" | "read"; cursor?: string },
+): Promise<{ data: ProductUserInboxNotification[]; next_cursor?: string }> {
+  const query = new URLSearchParams({ limit: "50", ...(opts?.status ? { status: opts.status } : {}), ...(opts?.cursor ? { cursor: opts.cursor } : {}) });
+  const result = await apiFetch<{ data: ProductUserInboxNotification[]; next_cursor?: string }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/product-users/me/inbox?${query.toString()}`,
+    { session, cache: "no-store" },
+  );
+  return result;
+}
+
+export async function markMyProductInboxNotificationRead(
+  spaceId: string,
+  session: SessionCredentials,
+  notificationId: string,
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/product-users/me/inbox`, {
+    method: "POST", session, body: JSON.stringify({ action: "mark_read", notification_id: notificationId }),
+  });
+}
+
 /** Read only the signed-in Product user's own subscription and non-PII payment-notice outcomes. */
 export async function getProductUserBillingStatus(spaceId: string, session: SessionCredentials): Promise<ProductUserBillingStatus> {
   return apiFetch<ProductUserBillingStatus>(`/v1/spaces/${encodeURIComponent(spaceId)}/customer-billing-status`, { session });

@@ -9102,6 +9102,103 @@ function isProductUserBillingStatusExport(value: unknown): value is ProductUserB
   return true;
 }
 
+// Product-user billing notices live in the exact ProductUserDO actor, never the owner-visible
+// Space inbox or Space archive. The Notifications queue uses this HMAC-only bridge after it
+// rechecks the current subscription and creates only a minimized billing notice.
+app.use("/internal/product-user-inbox-notifications", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.post("/internal/product-user-inbox-notifications", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{
+    product_id?: string; end_user_id?: string; provider?: string; provider_subscription_id?: string;
+    provider_updated_at?: string | null; notification_id?: string; title?: string; body?: string;
+  }>().catch(() => ({} as { product_id?: string; end_user_id?: string; provider?: string; provider_subscription_id?: string;
+    provider_updated_at?: string | null; notification_id?: string; title?: string; body?: string }));
+  if (!tenantId || !body.product_id || !/^[A-Za-z0-9_-]{1,128}$/.test(body.product_id)
+      || !body.end_user_id || !/^[A-Za-z0-9_-]{1,128}$/.test(body.end_user_id)
+      || !["lemon_squeezy", "whop"].includes(body.provider ?? "")
+      || !body.provider_subscription_id || !/^[A-Za-z0-9._:-]{1,200}$/.test(body.provider_subscription_id)
+      || (body.provider_updated_at != null && (typeof body.provider_updated_at !== "string" || !Number.isFinite(Date.parse(body.provider_updated_at))))
+      || !body.notification_id || !/^dunning-[a-f0-9]{64}$/.test(body.notification_id)
+      || body.title !== "Payment needs attention" || body.body !== "A payment for your product subscription failed. Sign in to review your current plan status and payment options.")
+    return c.json({ error_code: "product_user_inbox_notice_invalid" }, 400);
+  const current = await c.env.PLATFORM_DB.prepare(`
+    SELECT 1 AS current FROM products p
+    JOIN orgs o ON o.id=p.tenant_id AND o.status='active'
+    JOIN product_end_users u ON u.product_space_id=p.id AND u.end_user_id=?
+    JOIN product_user_subscriptions s ON s.product_id=p.id AND s.end_user_id=u.end_user_id
+    WHERE p.id=? AND p.tenant_id=? AND p.status='active' AND u.deleted_at IS NULL
+      AND u.suspended_at IS NULL AND u.erasure_started_at IS NULL AND s.status='past_due'
+      AND s.provider=? AND s.provider_subscription_id=?
+      AND (? IS NULL OR s.provider_event_at=? OR s.provider_event_at IS NULL)
+  `).bind(body.end_user_id, body.product_id, tenantId, body.provider, body.provider_subscription_id,
+    body.provider_updated_at ?? null, body.provider_updated_at ?? null).first<{ current: number }>();
+  if (!current) return c.body(null, 204);
+  const stub = await productUserDoStub(c.env, body.product_id, body.end_user_id, tenantId);
+  let delivered: Response;
+  try {
+    delivered = await stub.fetch(new Request("http://product-user-do/inbox-notifications", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "deliver", notification_id: body.notification_id,
+        kind: "billing_payment_failed", title: body.title, body: body.body }),
+    }));
+  } catch { return c.json({ error_code: "product_user_inbox_unavailable" }, 503); }
+  if (!delivered.ok) return c.json({ error_code: "product_user_inbox_unavailable" }, 503);
+  return new Response(delivered.body, { status: delivered.status, headers: { "content-type": "application/json" } });
+});
+
+// Product-session inbox view. Identity, product, tenant and actor are derived from verified
+// claims; browser input can select only a bounded cursor/status and one notification to mark read.
+app.get("/spaces/:spaceId/product-users/me/inbox", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { role, userId, tenantId } = getCallerIdentity(c);
+  if (role !== "product_end_user" || !userId) return c.json({ error_code: "not_an_end_user" }, 404);
+  const root = await resolveProductIdentity(c.env, spaceId);
+  if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found" }, 404);
+  const profile = await c.env.PLATFORM_DB.prepare(
+    "SELECT suspended_at,deleted_at,erasure_started_at FROM product_end_users WHERE product_space_id=? AND end_user_id=?"
+  ).bind(root.id, userId).first<{ suspended_at: string | null; deleted_at: string | null; erasure_started_at: string | null }>();
+  if (!profile) return c.json({ error_code: "not_found" }, 404);
+  if (profile.erasure_started_at) return c.json({ error_code: "product_user_erasure_started" }, 410);
+  if (profile.deleted_at || profile.suspended_at || !await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
+    return c.json({ error_code: "forbidden" }, 403);
+  const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
+  const query = new URLSearchParams();
+  const limit = c.req.query("limit");
+  const cursor = c.req.query("cursor");
+  const status = c.req.query("status");
+  if (limit) query.set("limit", limit);
+  if (cursor) query.set("cursor", cursor);
+  if (status) query.set("status", status);
+  let response: Response;
+  try { response = await stub.fetch(new Request(`http://product-user-do/inbox-notifications?${query.toString()}`)); }
+  catch { return c.json({ error_code: "product_user_inbox_unavailable" }, 502); }
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+});
+
+app.post("/spaces/:spaceId/product-users/me/inbox", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { role, userId, tenantId } = getCallerIdentity(c);
+  if (role !== "product_end_user" || !userId) return c.json({ error_code: "not_an_end_user" }, 404);
+  const body = await c.req.json<{ action?: string; notification_id?: string }>().catch(() => ({} as { action?: string; notification_id?: string }));
+  if (body.action !== "mark_read" || !body.notification_id || !/^dunning-[a-f0-9]{64}$/.test(body.notification_id))
+    return c.json({ error_code: "product_user_inbox_action_invalid" }, 400);
+  const root = await resolveProductIdentity(c.env, spaceId);
+  if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found" }, 404);
+  const profile = await c.env.PLATFORM_DB.prepare(
+    "SELECT suspended_at,deleted_at,erasure_started_at FROM product_end_users WHERE product_space_id=? AND end_user_id=?"
+  ).bind(root.id, userId).first<{ suspended_at: string | null; deleted_at: string | null; erasure_started_at: string | null }>();
+  if (!profile) return c.json({ error_code: "not_found" }, 404);
+  if (profile.erasure_started_at) return c.json({ error_code: "product_user_erasure_started" }, 410);
+  if (profile.deleted_at || profile.suspended_at || !await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
+    return c.json({ error_code: "forbidden" }, 403);
+  const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
+  let response: Response;
+  try { response = await stub.fetch(new Request("http://product-user-do/inbox-notifications", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  })); } catch { return c.json({ error_code: "product_user_inbox_unavailable" }, 502); }
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+});
+
 app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { role, userId, tenantId } = getCallerIdentity(c);
@@ -9398,12 +9495,13 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   let eraseRes: Response;
   try { eraseRes = await stub.fetch(new Request("http://do/erase", { method: "DELETE" })); }
   catch { return c.json({ error_code: "product_user_record_erasure_unavailable" }, 503); }
-  let erased: { erased_at?: unknown; sessions_deleted?: unknown; conversations_deleted?: unknown; notifications_deleted?: unknown } | null = null;
+  let erased: { erased_at?: unknown; sessions_deleted?: unknown; conversations_deleted?: unknown; notifications_deleted?: unknown; inbox_notifications_deleted?: unknown } | null = null;
   try { erased = await eraseRes.json(); } catch { /* Keep the account fence until the DO confirms cleanup. */ }
   if (!eraseRes.ok || !erased || typeof erased.erased_at !== "string"
     || !Number.isSafeInteger(erased.sessions_deleted) || Number(erased.sessions_deleted) < 0
     || !Number.isSafeInteger(erased.conversations_deleted) || Number(erased.conversations_deleted) < 0
-    || !Number.isSafeInteger(erased.notifications_deleted) || Number(erased.notifications_deleted) < 0)
+    || !Number.isSafeInteger(erased.notifications_deleted) || Number(erased.notifications_deleted) < 0
+    || !Number.isSafeInteger(erased.inbox_notifications_deleted) || Number(erased.inbox_notifications_deleted) < 0)
     return c.json({ error_code: "product_user_record_erasure_failed" }, 503);
 
   if (!row.deleted_at) {
@@ -9431,7 +9529,8 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   }
 
   return c.json({ erased: true, erased_at: erased.erased_at, sessions_deleted: erased.sessions_deleted,
-    conversations_deleted: erased.conversations_deleted, notifications_deleted: erased.notifications_deleted ?? 0 });
+    conversations_deleted: erased.conversations_deleted, notifications_deleted: erased.notifications_deleted ?? 0,
+    inbox_notifications_deleted: erased.inbox_notifications_deleted ?? 0 });
 });
 
 // Platform member language preference. Stored on the authenticated platform user record,

@@ -44,6 +44,10 @@ vars = { ENVIRONMENT = "production", RESEND_API_URL = "https://api.resend.com" }
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
 
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
 [[env.staging.queues.consumers]]
 queue = "naelao-notifications-queue-staging"
 max_batch_size = 10
@@ -70,6 +74,10 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials-staging"
 
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces-staging"
+
 [[env.production.queues.consumers]]
 queue = "naelao-notifications-queue-production"
 max_batch_size = 10
@@ -95,3 +103,7 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 [[env.production.services]]
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials-production"
+
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces-production"
