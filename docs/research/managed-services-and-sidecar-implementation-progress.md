@@ -1,10 +1,16 @@
 # Managed services and sidecar implementation progress
 
+## Cross-plan checkpoint — 2026-11-15 (P03 exact Product-user inbox; code 9a46241f)
+
+Platform P03 now has an exact Product-user in-app dunning notice path: stable generic notice creation, queue freshness checks, tenant-HMAC bridge, ProductUserDO persistence/read state, authenticated session-scoped API, Router allowlist, Shell Personal-settings caller, and export/erasure handling. Local evidence: Spaces **20/20**, Notifications **2/2**, Workflow **3/3**, Router **71/71**, Shell API **3/3**, five package typechecks, three-environment Wrangler dry runs and variable parity **82/82**. An existing broader binding-parity suite still fails 8 unrelated expectations; no live/deployed acceptance is claimed. Code `9a46241f` and this record await safe push. This platform slice does not change S2–S9/U01–U12 status. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+The microapp/voice plan additions from `origin/plan/microapps-ui-sdk-voice` (`df3386257262a88888d647daa4d10f3af2ff9596`) are copied into active platform plan sections 9 and 11; no merge occurred. Exact next action: finish the safe push for this coherent checkpoint, then continue the builder/platform notification caller trace recorded in the platform progress ledger. Resume S3–S9/U01–U12 from their existing exact next actions after that P03 pass; do not repeat closed managed-service audits.
+
 ## Cross-plan checkpoint — 2026-11-15 (P04 authenticated export caller; code c1eb6c4e)
 
 Shell Product-user Personal settings now download the bounded authenticated portability export as a local JSON file. The exact product scope is session-authorized, responses bypass browser cache, and oversized exports are rejected without partial download. Focused Shell client tests **2/2**, Shell TypeScript check, and `git diff --check` pass. Direct installed binaries were used because pnpm 11.25.0 attempted to replace the workspace dependency tree while the repository pins 9.12.0; no dependencies were changed. This platform P04 caller does not change S2–S9/U01–U12 runtime statuses or imply live acceptance.
 
-The Fish Live 3, business MicroApp, UI SDK and voice plan additions from `origin/plan/microapps-ui-sdk-voice` (`df3386257262a88888d647daa4d10f3af2ff9596`) are already copied into the active platform plan sections 9 and 11; no merge occurred. Code `c1eb6c4e` and this checkpoint remain local until the next safe push. Preserve untracked `infra/scripts/__pycache__/`; all rollouts remain disabled.
+The Fish Live 3, business MicroApp, UI SDK and voice plan additions from `origin/plan/microapps-ui-sdk-voice` (`df3386257262a88888d647daa4d10f3af2ff9596`) are already copied into the active platform plan sections 9 and 11; no merge occurred. Code `c1eb6c4e` is included in the next safe push with `9a46241f`. Preserve untracked `infra/scripts/__pycache__/`; all rollouts remain disabled.
 
 Exact next action: trace P03 dunning delivery from Billing dispatch/Notifications outcomes through the existing Product-user inbox and implement any missing exact-user persisted delivery path, with export/erasure, retry and caller coverage. Then continue the existing S3–S9/U01–U12 queue without repeating completed audits.
 
