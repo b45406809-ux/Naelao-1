@@ -10,23 +10,23 @@ import { createTelnyxExtensionMediaRuntime, dispatchTelnyxExtensionStreamEvent,
   extensionAudioMaxCost, TelnyxExtensionVoiceUsageJournal } from "./telnyx-extension-voice-runtime.js";
 import { sweepTelnyxExtensionAudioUsage } from "./telnyx-extension-audio-reconciliation.js";
 
-async function activeSession() {
+async function activeSession(voiceProfileId = "economy-eve") {
   const f = fixture();
   const identity = await ensureIdentity(f.env, scope);
   await f.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,
       provider_number_sid,phone_number,policy_json,status)
-    VALUES('voice-line',?,'extension','byo','telnyx','acct','12345','+14155550100','{"allowTelnyxExtensionVoice":true}','active')`)
-    .bind(identity.id).run();
+    VALUES('voice-line',?,'extension','byo','telnyx','acct','12345','+14155550100',?,'active')`)
+    .bind(identity.id, JSON.stringify({ allowTelnyxExtensionVoice: true, extensionVoiceProfileId: voiceProfileId })).run();
   await f.db.prepare(`INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status)
     VALUES('voice-line','install-voice',?,'active')`).bind("a".repeat(64)).run();
   const now = Math.floor(Date.now() / 1000);
   const callControlId = "voice-call-control";
   await f.db.prepare(`INSERT INTO assistant_telnyx_extension_calls(call_control_id,binding_id,caller,state,turn_count,
-      started_at,expires_at,created_at,updated_at,extension_installation_id,handler_sha256,settings_revision,settings_pinned)
-    VALUES(?,'voice-line','+14155550199','processing',0,?,?,?,?,?, ?,4,1)`)
-    .bind(callControlId, now, now + 120, now, now, "install-voice", "a".repeat(64)).run();
+      started_at,expires_at,created_at,updated_at,extension_installation_id,handler_sha256,settings_revision,settings_pinned,extension_voice_profile_id)
+    VALUES(?,'voice-line','+14155550199','processing',0,?,?,?,?,?, ?,4,1,?)`)
+    .bind(callControlId, now, now + 120, now, now, "install-voice", "a".repeat(64), voiceProfileId).run();
   const pin = { tenantId: scope.tenantId, spaceId: scope.spaceId, projectId: null, bindingId: "voice-line", callControlId,
-    installationId: "install-voice", handlerSha256: "a".repeat(64), settingsRevision: 4, expiresAt: now + 120 };
+    installationId: "install-voice", handlerSha256: "a".repeat(64), settingsRevision: 4, voiceProfileId, expiresAt: now + 120 };
   const created = await createTelnyxExtensionStreamSession(f.env.PLATFORM_DB, pin, now);
   const ticket = await grantTelnyxExtensionStreamConsent(f.env.PLATFORM_DB, pin, created.sessionId, now);
   const claimed = await claimTelnyxExtensionStreamTicket(f.env.PLATFORM_DB, pin.bindingId, ticket, now);
@@ -58,7 +58,7 @@ describe("Telnyx extension voice runtime", () => {
   });
 
   it("runs a consented transcript through bounded STT, the pinned extension and admitted TTS", async () => {
-    const { f, session, now: initialNow } = await activeSession();
+    const { f, session, now: initialNow } = await activeSession("economy-ara");
     f.env.TELNYX_EXTENSION_STREAMING_ENABLED = "true";
     f.env.TELNYX_EXTENSION_STREAMING_ACCEPTED = "true";
     f.env.TELNYX_EXTENSION_AUDIO_MAX_COST_USD = "0.25";
@@ -78,8 +78,10 @@ describe("Telnyx extension voice runtime", () => {
       return url.pathname.endsWith("/reserve") ? Response.json({ reserved: true }) : Response.json({ settled: true });
     }) } as unknown as Fetcher;
     let generation = 0;
+    const credentialRequests: Array<{ url?: string; body?: Record<string, unknown> }> = [];
     f.env.CREDENTIALS_WORKER = { fetch: vi.fn(async request => {
-      const body = await request.clone().json() as { url?: string };
+      const body = await request.clone().json() as { url?: string; body?: Record<string, unknown> };
+      credentialRequests.push(body);
       const url = body.url ?? "";
       if (url.includes("/audio/transcriptions")) return Response.json({ text: "I need help with an order.", usage: { cost: 0.0001, total_tokens: 20 } });
       if (url.includes("/audio/speech")) return new Response(new Uint8Array(12_800), { status: 200,
@@ -105,6 +107,8 @@ describe("Telnyx extension voice runtime", () => {
     expect(events.map(event => event.type)).toEqual(["call.started", "call.interrupted", "transcript.final"]);
     expect(events[2]?.payload).toMatchObject({ call_ref: session.callRef, sequence: 0, text: "I need help with an order." });
     expect(events[2]?.payload).not.toHaveProperty("caller");
+    expect(credentialRequests.find(request => request.url?.includes("/audio/speech"))?.body)
+      .toMatchObject({ model: "x-ai/grok-voice-tts-1.0", voice: "ara", response_format: "pcm", rate: 16_000 });
     expect(sent.some(frame => frame.event === "clear")).toBe(true);
     const usage = await f.db.prepare("SELECT record_json FROM assistant_telnyx_extension_audio_usage WHERE session_id=? ORDER BY request_id")
       .bind(session.sessionId).all<{ record_json: string }>();

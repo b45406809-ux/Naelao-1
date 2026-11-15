@@ -65,7 +65,7 @@ describe("Telnyx live call command contract", () => {
       apiKey: "test-api-key-123456", publicKey, verifiedNumberId: "12345", verifiedPhoneNumber: "+14155550100",
     }) })) } as unknown as Fetcher;
     await f.db.prepare("INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,phone_number,policy_json,status) VALUES(?,?,'extension','byo','telnyx','account','12345','+14155550100',?,'active')")
-      .bind("public-extension", identity.id, JSON.stringify(defaultPhonePolicy)).run();
+      .bind("public-extension", identity.id, JSON.stringify({ ...defaultPhonePolicy, extensionVoiceProfileId: "economy-ara" })).run();
     await f.db.prepare("INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status) VALUES('public-extension','ext-1',?,'active')")
       .bind("a".repeat(64)).run();
 
@@ -92,6 +92,10 @@ describe("Telnyx live call command contract", () => {
       eventId: "public-event-1", eventType: "call.initiated", payload: { call_control_id: callControlId, direction: "incoming", from: { phone_number: "+14155550101" }, to: { phone_number: "+14155550100" } },
     });
     expect(initiated).toMatchObject({ accepted: true, extension_call: true });
+    expect(await f.db.prepare("SELECT extension_voice_profile_id FROM assistant_telnyx_extension_calls WHERE call_control_id=?")
+      .bind(callControlId).first()).toEqual({ extension_voice_profile_id: "economy-ara" });
+    await f.db.prepare("UPDATE assistant_phone_bindings SET policy_json=? WHERE id='public-extension'")
+      .bind(JSON.stringify({ ...defaultPhonePolicy, extensionVoiceProfileId: "economy-leo" })).run();
     expect(await f.db.prepare("SELECT COUNT(*) AS n FROM assistant_telnyx_extension_stream_sessions").first()).toEqual({ n: 0 });
     expect(await dispatchTelnyxVoiceEvent(f.env, binding!, identity, {
       eventId: "public-event-1-retry", eventType: "call.initiated", payload: { call_control_id: callControlId, direction: "incoming", from: { phone_number: "+14155550101" }, to: { phone_number: "+14155550100" } },
@@ -117,8 +121,8 @@ describe("Telnyx live call command contract", () => {
     expect(extensionBodies.slice(1)).toEqual(expect.arrayContaining([
       expect.objectContaining({ settingsRevision: 7, expectedInstallationId: "ext-1", expectedHandlerSha256: "a".repeat(64) }),
     ]));
-    expect(await f.db.prepare("SELECT state,extension_installation_id,handler_sha256,settings_revision,settings_pinned FROM assistant_telnyx_extension_calls WHERE call_control_id=?").bind(callControlId).first())
-      .toEqual({ state: "ended", extension_installation_id: "ext-1", handler_sha256: "a".repeat(64), settings_revision: 7, settings_pinned: 1 });
+    expect(await f.db.prepare("SELECT state,extension_installation_id,handler_sha256,settings_revision,settings_pinned,extension_voice_profile_id FROM assistant_telnyx_extension_calls WHERE call_control_id=?").bind(callControlId).first())
+      .toEqual({ state: "ended", extension_installation_id: "ext-1", handler_sha256: "a".repeat(64), settings_revision: 7, settings_pinned: 1, extension_voice_profile_id: "economy-ara" });
     await f.db.prepare("UPDATE assistant_phone_extension_handlers SET installation_id='ext-2',handler_sha256=? WHERE binding_id='public-extension'")
       .bind("b".repeat(64)).run();
     expect(await f.db.prepare("SELECT extension_installation_id,handler_sha256 FROM assistant_telnyx_extension_calls WHERE call_control_id=?").bind(callControlId).first())

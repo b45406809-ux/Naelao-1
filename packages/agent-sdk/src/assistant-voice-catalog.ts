@@ -54,8 +54,10 @@ export const ASSISTANT_VOICE_CATALOG: readonly ApprovedAssistantVoice[] = Object
 ]);
 
 export function approvedAssistantVoice(profileId: string | null | undefined, modelClass: ModelClass): ApprovedAssistantVoice | null {
-  const selected = profileId ? ASSISTANT_VOICE_CATALOG.find((voice) => voice.id === profileId) : undefined;
-  if (selected) return selected.modelClass === modelClass ? selected : null;
+  if (profileId != null && profileId !== "") {
+    const selected = ASSISTANT_VOICE_CATALOG.find((voice) => voice.id === profileId);
+    return selected?.modelClass === modelClass ? selected : null;
+  }
   return ASSISTANT_VOICE_CATALOG.find((voice) => voice.modelClass === modelClass) ?? null;
 }
 

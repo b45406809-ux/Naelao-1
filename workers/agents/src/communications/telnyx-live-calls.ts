@@ -164,14 +164,16 @@ export async function dispatchTelnyxVoiceEvent(env: AgentsEnv, binding: Assistan
 
 type ExtensionVoiceEvent = { eventId: string; eventType: string; payload: Record<string, unknown> };
 type ExtensionCall = { call_control_id: string; binding_id: string; caller: string; state: string; turn_count: number; expires_at: number;
-  extension_installation_id: string | null; handler_sha256: string | null; settings_revision: number | null; settings_pinned: number };
+  extension_installation_id: string | null; handler_sha256: string | null; settings_revision: number | null; settings_pinned: number;
+  extension_voice_profile_id: string };
 
 function extensionStreamPin(identity: CommunicationIdentity, binding: AssistantPhoneBinding, call: ExtensionCall): ExtensionStreamSessionPin {
   if (!call.extension_installation_id || !call.handler_sha256 || call.settings_pinned !== 1)
     throw new Error("telnyx_extension_stream_pin_unavailable");
   return { tenantId: identity.tenant_id, spaceId: identity.space_id, projectId: identity.project_id,
     bindingId: binding.id, callControlId: call.call_control_id, installationId: call.extension_installation_id,
-    handlerSha256: call.handler_sha256, settingsRevision: call.settings_revision, expiresAt: call.expires_at };
+    handlerSha256: call.handler_sha256, settingsRevision: call.settings_revision, voiceProfileId: call.extension_voice_profile_id,
+    expiresAt: call.expires_at };
 }
 
 async function pendingExtensionStreamSession(env: AgentsEnv, bindingId: string, callControlId: string) {
@@ -269,6 +271,7 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
       .bind(binding.id).first<{ binding_id: string; installation_id: string; handler_sha256: string }>();
     const scope = scopeFor(identity);
     const policy = validatePhonePolicy(JSON.parse(binding.policy_json));
+    const voiceProfileId = policy.extensionVoiceProfileId ?? "economy-eve";
     if (!Number.isSafeInteger(now + policy.maxCallSeconds)) throw new Error("telnyx_extension_duration_invalid");
     if (!handler || !handler.installation_id || !/^[a-f0-9]{64}$/.test(handler.handler_sha256)
       || !await scopeAccess(env, scope, true) || !(await channelPreferences(env, scope)).enabled.phone
@@ -295,17 +298,17 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
       WHERE binding_id=? AND state IN ('consent_pending','ready','claimed') AND expires_at<=?`)
       .bind(now, binding.id, now).run();
     const inserted = await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_telnyx_extension_calls(
-        call_control_id,binding_id,caller,state,turn_count,started_at,expires_at,created_at,updated_at,extension_installation_id,handler_sha256,settings_revision,settings_pinned)
-      SELECT ?,?,?,'answering',0,?,?,?,?,?,?,?,1
+        call_control_id,binding_id,caller,state,turn_count,started_at,expires_at,created_at,updated_at,extension_installation_id,handler_sha256,settings_revision,settings_pinned,extension_voice_profile_id)
+      SELECT ?,?,?,'answering',0,?,?,?,?,?,?,?,1,?
       FROM assistant_phone_extension_handlers h
       WHERE h.binding_id=? AND h.status='active' AND h.installation_id=? AND h.handler_sha256=?
         AND (SELECT COUNT(*) FROM assistant_telnyx_extension_calls c
           WHERE c.binding_id=? AND c.state!='ended') < ?`)
       .bind(callControlId, binding.id, caller, now, now + policy.maxCallSeconds, now, now, handler.installation_id,
-        handler.handler_sha256, settingsRevision, binding.id, handler.installation_id, handler.handler_sha256,
+        handler.handler_sha256, settingsRevision, voiceProfileId, binding.id, handler.installation_id, handler.handler_sha256,
         binding.id, maxConcurrentTelnyxExtensionCalls).run();
-    const row = await env.PLATFORM_DB.prepare("SELECT binding_id,caller,state,extension_installation_id,handler_sha256,settings_revision,settings_pinned FROM assistant_telnyx_extension_calls WHERE call_control_id=?")
-      .bind(callControlId).first<{ binding_id: string; caller: string; state: string; extension_installation_id: string | null; handler_sha256: string | null; settings_revision: number | null; settings_pinned: number }>();
+    const row = await env.PLATFORM_DB.prepare("SELECT binding_id,caller,state,extension_installation_id,handler_sha256,settings_revision,settings_pinned,extension_voice_profile_id FROM assistant_telnyx_extension_calls WHERE call_control_id=?")
+      .bind(callControlId).first<{ binding_id: string; caller: string; state: string; extension_installation_id: string | null; handler_sha256: string | null; settings_revision: number | null; settings_pinned: number; extension_voice_profile_id: string }>();
     if (!inserted.meta.changes) {
       if (row?.binding_id === binding.id && row.caller === caller) return { accepted: true, duplicate: true };
       if (!row) {
@@ -316,7 +319,8 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
       return { accepted: true, rejected: "extension_handler_changed_during_admission" };
     }
     if (!row || row.binding_id !== binding.id || row.caller !== caller || row.extension_installation_id !== handler.installation_id
-      || row.handler_sha256 !== handler.handler_sha256 || row.settings_pinned !== 1 || row.settings_revision !== settingsRevision)
+      || row.handler_sha256 !== handler.handler_sha256 || row.settings_pinned !== 1 || row.settings_revision !== settingsRevision
+      || row.extension_voice_profile_id !== voiceProfileId)
       throw new Error("telnyx_extension_call_binding_conflict");
     const quota = await env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?")
       .bind(binding.id, policy.maxDailyInboundCalls).run();
@@ -328,7 +332,8 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
     }
     const admittedCall: ExtensionCall = { call_control_id: callControlId, binding_id: binding.id, caller, state: row.state,
       turn_count: 0, expires_at: now + policy.maxCallSeconds, extension_installation_id: row.extension_installation_id,
-      handler_sha256: row.handler_sha256, settings_revision: row.settings_revision, settings_pinned: row.settings_pinned };
+      handler_sha256: row.handler_sha256, settings_revision: row.settings_revision, settings_pinned: row.settings_pinned,
+      extension_voice_profile_id: row.extension_voice_profile_id };
     if (extensionVoiceRuntimeReady(env) && policy.allowTelnyxExtensionVoice === true) {
       try { await createTelnyxExtensionStreamSession(env.PLATFORM_DB, extensionStreamPin(identity, binding, admittedCall), now); }
       catch {

@@ -407,12 +407,17 @@ describe("assistant telephone safety and lifecycle", () => {
   it("keeps numbers optional and rejects invalid limits and transfer addresses", () => {
     expect(defaultPhonePolicy.voicemail).toBe(false);
     expect(defaultPhonePolicy.greeting).toBe("");
+    expect(defaultPhonePolicy.extensionVoiceProfileId).toBe("economy-eve");
+    expect(validatePhonePolicy({ ...defaultPhonePolicy, extensionVoiceProfileId: "economy-ara" }).extensionVoiceProfileId)
+      .toBe("economy-ara");
     for (const patch of [
       { maxCallSeconds: 0 },
       { maxDailyActions: 0 },
       { maxDailyInboundMessages: 1001 },
       { transferTo: "http://evil" },
       { voicemail: "yes" },
+      { extensionVoiceProfileId: "balanced-harper" },
+      { extensionVoiceProfileId: "unreviewed-voice" },
     ])
       expect(() =>
         validatePhonePolicy({ ...defaultPhonePolicy, ...patch })

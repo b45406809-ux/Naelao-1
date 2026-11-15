@@ -1,4 +1,5 @@
 import type { CommunicationIdentity } from "./core.js";
+import { approvedAssistantVoice } from "@naelao/agent-sdk";
 
 type SessionScope = Pick<CommunicationIdentity, "tenant_id" | "space_id" | "project_id">;
 
@@ -11,6 +12,7 @@ export interface ExtensionStreamSessionPin {
   installationId: string;
   handlerSha256: string;
   settingsRevision: number | null;
+  voiceProfileId: string;
   expiresAt: number;
 }
 
@@ -43,6 +45,7 @@ function validPin(pin: ExtensionStreamSessionPin): boolean {
     && typeof pin.installationId === "string" && !!pin.installationId && pin.installationId.length <= 160
     && /^[a-f0-9]{64}$/.test(pin.handlerSha256)
     && (pin.settingsRevision === null || Number.isSafeInteger(pin.settingsRevision) && pin.settingsRevision >= 0)
+    && typeof pin.voiceProfileId === "string" && approvedAssistantVoice(pin.voiceProfileId, "economy")?.sampleRate === 16_000
     && Number.isSafeInteger(pin.expiresAt) && pin.expiresAt > 0;
 }
 
@@ -54,18 +57,19 @@ export async function createTelnyxExtensionStreamSession(db: D1Database, pin: Ex
   const callRef = `call_${crypto.randomUUID().replace(/-/g, "")}`;
   const result = await db.prepare(`INSERT OR IGNORE INTO assistant_telnyx_extension_stream_sessions(
       session_id,call_ref,tenant_id,space_id,project_id,binding_id,call_control_id,extension_installation_id,
-      handler_sha256,settings_revision,consent_state,state,expires_at,created_at,updated_at)
-    SELECT ?,?,?,?,?,?,?,?,?,?,'pending','consent_pending',?,?,?
+      handler_sha256,settings_revision,extension_voice_profile_id,consent_state,state,expires_at,created_at,updated_at)
+    SELECT ?,?,?,?,?,?,?,?,?,?,?,'pending','consent_pending',?,?,?
     FROM assistant_telnyx_extension_calls c
     JOIN assistant_phone_bindings b ON b.id=c.binding_id
     JOIN assistant_communication_identities i ON i.id=b.identity_id
     WHERE c.call_control_id=? AND c.binding_id=? AND c.settings_pinned=1 AND c.state IN ('answering','processing','gathering')
       AND c.extension_installation_id=? AND c.handler_sha256=? AND c.settings_revision IS ? AND c.expires_at>=?
+      AND c.extension_voice_profile_id=?
       AND b.provider='telnyx' AND b.payer='byo' AND b.purpose='extension' AND b.status='active'
       AND i.status='active' AND i.tenant_id=? AND i.space_id=? AND i.project_id IS ?`)
     .bind(sessionId, callRef, pin.tenantId, pin.spaceId, pin.projectId, pin.bindingId, pin.callControlId,
-      pin.installationId, pin.handlerSha256, pin.settingsRevision, pin.expiresAt, now, now,
-      pin.callControlId, pin.bindingId, pin.installationId, pin.handlerSha256, pin.settingsRevision, pin.expiresAt,
+      pin.installationId, pin.handlerSha256, pin.settingsRevision, pin.voiceProfileId, pin.expiresAt, now, now,
+      pin.callControlId, pin.bindingId, pin.installationId, pin.handlerSha256, pin.settingsRevision, pin.expiresAt, pin.voiceProfileId,
       pin.tenantId, pin.spaceId, pin.projectId).run();
   if (result.meta.changes !== 1) throw new Error("telnyx_extension_stream_admission_not_found");
   return { sessionId, callRef };
@@ -91,6 +95,7 @@ export async function grantTelnyxExtensionStreamConsent(db: D1Database, pin: Ext
           AND c.extension_installation_id=assistant_telnyx_extension_stream_sessions.extension_installation_id
           AND c.handler_sha256=assistant_telnyx_extension_stream_sessions.handler_sha256
           AND c.settings_revision IS assistant_telnyx_extension_stream_sessions.settings_revision
+          AND c.extension_voice_profile_id=assistant_telnyx_extension_stream_sessions.extension_voice_profile_id
           AND c.state IN ('answering','processing','gathering') AND c.expires_at>?
           AND h.status='active' AND h.installation_id=c.extension_installation_id AND h.handler_sha256=c.handler_sha256)
       AND EXISTS (SELECT 1 FROM assistant_phone_bindings b JOIN assistant_communication_identities i ON i.id=b.identity_id
@@ -152,7 +157,7 @@ export async function claimTelnyxExtensionStreamTicket(db: D1Database, bindingId
     .bind(now, now, bindingId, ticketHash, now, now, now).run();
   if (claimed.meta.changes !== 1) return null;
   const session = await db.prepare(`SELECT session_id,call_ref,tenant_id,space_id,project_id,binding_id,call_control_id,
-      extension_installation_id,handler_sha256,settings_revision,expires_at,ticket_claimed_at
+      extension_installation_id,handler_sha256,settings_revision,extension_voice_profile_id,expires_at,ticket_claimed_at
     FROM assistant_telnyx_extension_stream_sessions WHERE binding_id=? AND media_ticket_sha256=?
       AND state='claimed' AND ticket_claimed_at=? LIMIT 1`)
     .bind(bindingId, ticketHash, now).first<Record<string, unknown>>();
@@ -160,6 +165,7 @@ export async function claimTelnyxExtensionStreamTicket(db: D1Database, bindingId
     || typeof session.tenant_id !== "string" || typeof session.space_id !== "string"
     || typeof session.binding_id !== "string" || typeof session.call_control_id !== "string"
     || typeof session.extension_installation_id !== "string" || typeof session.handler_sha256 !== "string"
+    || typeof session.extension_voice_profile_id !== "string" || approvedAssistantVoice(session.extension_voice_profile_id, "economy")?.sampleRate !== 16_000
     || typeof session.expires_at !== "number" || typeof session.ticket_claimed_at !== "number"
     || !(session.project_id === null || typeof session.project_id === "string")
     || !(session.settings_revision === null || typeof session.settings_revision === "number")) return null;
@@ -167,6 +173,7 @@ export async function claimTelnyxExtensionStreamTicket(db: D1Database, bindingId
     spaceId: session.space_id, projectId: session.project_id as string | null, bindingId: session.binding_id,
     callControlId: session.call_control_id, installationId: session.extension_installation_id,
     handlerSha256: session.handler_sha256, settingsRevision: session.settings_revision as number | null,
+    voiceProfileId: session.extension_voice_profile_id,
     expiresAt: session.expires_at, ticketClaimedAt: session.ticket_claimed_at };
 }
 
@@ -183,6 +190,7 @@ export async function isTelnyxExtensionStreamSessionCurrent(db: D1Database, sess
       AND c.state IN ('answering','processing','gathering') AND c.expires_at>?
       AND c.settings_pinned=1 AND c.extension_installation_id=s.extension_installation_id
       AND c.handler_sha256=s.handler_sha256 AND c.settings_revision IS s.settings_revision
+      AND c.extension_voice_profile_id=s.extension_voice_profile_id
       AND h.status='active' AND h.installation_id=c.extension_installation_id AND h.handler_sha256=c.handler_sha256
       AND b.provider='telnyx' AND b.payer='byo' AND b.purpose='extension' AND b.status='active'
       AND json_extract(b.policy_json,'$.allowTelnyxExtensionVoice')=1
@@ -206,6 +214,7 @@ export async function activateTelnyxExtensionStreamSession(db: D1Database, sessi
           AND c.extension_installation_id=assistant_telnyx_extension_stream_sessions.extension_installation_id
           AND c.handler_sha256=assistant_telnyx_extension_stream_sessions.handler_sha256
           AND c.settings_revision IS assistant_telnyx_extension_stream_sessions.settings_revision
+          AND c.extension_voice_profile_id=assistant_telnyx_extension_stream_sessions.extension_voice_profile_id
           AND c.state IN ('processing','gathering') AND c.expires_at>?
           AND h.status='active' AND h.installation_id=c.extension_installation_id AND h.handler_sha256=c.handler_sha256
           AND b.provider='telnyx' AND b.payer='byo' AND b.purpose='extension' AND b.status='active'

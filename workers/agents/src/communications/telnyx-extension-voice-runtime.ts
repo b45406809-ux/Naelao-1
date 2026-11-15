@@ -122,7 +122,7 @@ export interface TelnyxExtensionMediaRuntimeOptions {
 
 /** Bounded, extension-only STT/TTS loop. It has no OwnerVoice ticket, agent, turn store or bridge. */
 export function createTelnyxExtensionMediaRuntime(options: TelnyxExtensionMediaRuntimeOptions) {
-  const profile = approvedAssistantVoice(undefined, "economy");
+  const profile = approvedAssistantVoice(options.session.voiceProfileId, "economy");
   const maxCostUsd = extensionAudioMaxCost(options.env);
   if (!profile || profile.sampleRate !== 16_000 || !maxCostUsd || !options.env.BILLING_WORKER || !options.env.CREDENTIALS_WORKER)
     throw new Error("telnyx_extension_audio_runtime_unavailable");

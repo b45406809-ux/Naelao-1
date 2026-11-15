@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import { assistantMailApi, type SessionCredentials } from "@/lib/api";
 import { spaceCompatibilityHref } from "@/lib/space-extension-dashboard";
 import { phoneExtensionLineReadiness } from "./phone-extension-readiness";
+import { ASSISTANT_VOICE_CATALOG, ASSISTANT_VOICE_CATALOG_RESEARCH } from "@naelao/agent-sdk";
 interface Phone {
   provider?: "twilio" | "telnyx";
   provider_number_id?: string | null;
@@ -16,6 +17,7 @@ interface Phone {
     allowWebsiteVerification?: boolean;
     allowSpeechInput?: boolean;
     allowTelnyxExtensionVoice?: boolean;
+  extensionVoiceProfileId?: string;
     maxDailyActions: number;
     maxDailyInboundMessages: number;
     maxDailyInboundCalls: number;
@@ -42,6 +44,7 @@ type PhoneHistoryPage = { data: Row[]; next_cursor: string | null };
 type TelnyxInventoryNumber = { phone_number: string; country_code: string; number_type: string | null; features: string[]; locality: string | null; region: string | null; upfront_cost_minor: number; monthly_cost_minor: number; currency: string };
 type PhoneHandlerCandidate = { installation_id: string; extension_id: string; name: string; version: string; handler_sha256: string };
 type RecentExtensionCall = {
+  voice_profile_id: string;
   installation_id: string | null;
   handler_sha256: string | null;
   settings_revision: number | null;
@@ -95,7 +98,7 @@ export function AssistantPhonePanel({
       telnyx_webhook_url?: string | null;
       telnyx_order?: { operation_id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null } | null;
       telnyx_release?: { operation_id: string; status: string; phone_number: string; next_reconcile_at: string | null; error_code: string | null } | null;
-      extension_lines?:Array<{id:string;provider:"twilio"|"telnyx";phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string;policy:{allowTelnyxExtensionVoice?:boolean}|null}>;
+      extension_lines?:Array<{id:string;provider:"twilio"|"telnyx";phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string;policy:{allowTelnyxExtensionVoice?:boolean;extensionVoiceProfileId?:string}|null}>;
       recent_telnyx_extension_calls?: RecentExtensionCall[];
       recent_twilio_extension_calls?: RecentTwilioExtensionCall[];
       phone_handler_candidates?: PhoneHandlerCandidate[];
@@ -412,6 +415,25 @@ export function AssistantPhonePanel({
             }} />{" "}
             Permit future caller-consented voice processing (Telnyx streaming currently disabled)
           </label>}
+          {line.provider === "telnyx" && line.policy && <>
+            <label style={{ display: "block", marginTop: 8 }}>Caller-consented speech voice for new calls
+              <select value={line.policy.extensionVoiceProfileId ?? "economy-eve"} onChange={(event) => {
+                const profile = ASSISTANT_VOICE_CATALOG.find(item => item.id === event.target.value
+                  && item.modelClass === "economy" && item.sampleRate === 16_000);
+                if (!profile) return;
+                if (!window.confirm(`Use ${profile.name} for newly admitted calls on this line? The published list rate is $${profile.priceUsdPerMillionCharacters} per million generated characters. Existing calls keep their pinned profile. Provider availability and actual rates are unverified; caller consent, the owner preference and the disabled streaming rollout still gate live use.`)) return;
+                void act("phone-policy", { binding_id: line.id,
+                  policy: { ...line.policy, extensionVoiceProfileId: profile.id } });
+              }}>
+                {ASSISTANT_VOICE_CATALOG.filter(item => item.modelClass === "economy" && item.sampleRate === 16_000).map(profile =>
+                  <option key={profile.id} value={profile.id}>{profile.name} · ${profile.priceUsdPerMillionCharacters}/1M characters · {profile.languages.join(", ")}</option>)}
+              </select>
+            </label>
+            <small style={{ display: "block", marginTop: 4 }}>Host-approved list-rate snapshot dated {ASSISTANT_VOICE_CATALOG_RESEARCH.date};
+              <a href={ASSISTANT_VOICE_CATALOG_RESEARCH.sources[0]!.url} target="_blank" rel="noreferrer">source</a>.
+              Speech profile and usage are separate from carrier costs. This selects output voice only; transcription model/language remain host-controlled.
+            </small>
+          </>}
           {line.provider === "telnyx" && state?.telnyx_extension_voice_limits && <small style={{ display: "block", marginTop: 4 }}>
             {state.telnyx_extension_voice_limits.max_estimated_audio_cost_usd === null
               ? "Voice speech budget is not configured; keypad calls remain available."
@@ -481,8 +503,9 @@ export function AssistantPhonePanel({
                   : "host speech usage not recorded";
                 const speechReceipts = (call.speech_usage_unresolved ?? 0) > 0
                   ? ` · ${call.speech_usage_unresolved} speech usage receipt${call.speech_usage_unresolved === 1 ? "" : "s"} unresolved` : "";
+                const voiceProfile = ASSISTANT_VOICE_CATALOG.find(item => item.id === call.voice_profile_id);
                 return <li key={`${call.started_at}:${index}`}>
-                  {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {call.settings_pinned ? call.settings_revision === null ? "no settings schema at call start" : `published settings r${call.settings_revision}` : "settings revision unavailable"} · voice consent {call.voice_consent_state ?? "not requested"} · voice runtime {call.voice_runtime_state ?? "not started"} · {speechCost}{speechReceipts} · {costLabel}
+                  {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {call.settings_pinned ? call.settings_revision === null ? "no settings schema at call start" : `published settings r${call.settings_revision}` : "settings revision unavailable"} · output voice {voiceProfile?.name ?? call.voice_profile_id} · voice consent {call.voice_consent_state ?? "not requested"} · voice runtime {call.voice_runtime_state ?? "not started"} · {speechCost}{speechReceipts} · {costLabel}
                 </li>;
               })}</ol>
             </section>;

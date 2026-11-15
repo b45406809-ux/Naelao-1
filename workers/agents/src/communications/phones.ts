@@ -28,6 +28,7 @@ import {
 import { telnyxCallControlIdHash } from "./telnyx-voice-cost.js";
 import { getProviderApiCostObservation } from "./managed-service-cost-observations.js";
 import { extensionAudioMaxCost } from "./telnyx-extension-voice-runtime.js";
+import { approvedAssistantVoice } from "@naelao/agent-sdk";
 
 type ExtensionCallCostSummary = {
   status: "reported" | "unavailable" | "not_linked";
@@ -91,6 +92,8 @@ export interface AssistantPhonePolicy {
   /** Owner preference for a future, caller-consented Telnyx extension audio path. The
    *  independent streaming rollout flag remains off until its host media pipeline is accepted. */
   allowTelnyxExtensionVoice?: boolean;
+  /** Host-approved economy voice used for newly admitted caller-consented extension streams. */
+  extensionVoiceProfileId?: string;
   maxDailyActions: number;
   maxDailyInboundMessages: number;
   maxDailyInboundCalls: number;
@@ -103,6 +106,7 @@ export const defaultPhonePolicy: AssistantPhonePolicy = {
   allowWebsiteVerification: false,
   allowSpeechInput: false,
   allowTelnyxExtensionVoice: false,
+  extensionVoiceProfileId: "economy-eve",
   maxDailyActions: 20,
   maxDailyInboundMessages: 100,
   maxDailyInboundCalls: 20,
@@ -145,10 +149,15 @@ export function validatePhonePolicy(value: unknown): AssistantPhonePolicy {
     throw new Error("invalid_phone_policy");
   if (p.allowTelnyxExtensionVoice !== undefined && typeof p.allowTelnyxExtensionVoice !== "boolean")
     throw new Error("invalid_phone_policy");
+  const extensionVoiceProfileId = p.extensionVoiceProfileId === undefined ? "economy-eve" : p.extensionVoiceProfileId;
+  const extensionVoice = typeof extensionVoiceProfileId === "string"
+    ? approvedAssistantVoice(extensionVoiceProfileId, "economy") : null;
+  if (!extensionVoice || extensionVoice.sampleRate !== 16_000) throw new Error("invalid_phone_policy");
   return {
     allowWebsiteVerification: p.allowWebsiteVerification === true,
     allowSpeechInput: p.allowSpeechInput === true,
     allowTelnyxExtensionVoice: p.allowTelnyxExtensionVoice === true,
+    extensionVoiceProfileId,
     maxDailyActions: p.maxDailyActions,
     maxDailyInboundMessages: p.maxDailyInboundMessages,
     maxDailyInboundCalls: p.maxDailyInboundCalls,
@@ -642,7 +651,7 @@ export async function handlePhoneAction(
       .bind(identity.id).first<{ id:string;status:string;phone_number:string;next_reconcile_at:string|null;last_error:string|null }>();
     const phoneHandlerCandidates = manager ? await listPhoneHandlerCandidates(env, scope) : [];
     const recentExtensionCallRows = manager
-      ? (await env.PLATFORM_DB.prepare(`SELECT c.call_control_id,c.binding_id,c.extension_installation_id,c.handler_sha256,
+      ? (await env.PLATFORM_DB.prepare(`SELECT c.call_control_id,c.binding_id,c.extension_installation_id,c.handler_sha256,c.extension_voice_profile_id,
           c.settings_revision,c.settings_pinned,c.caller,c.state,c.turn_count,c.started_at,c.duration_seconds,
           (SELECT s.consent_state FROM assistant_telnyx_extension_stream_sessions s
             WHERE s.binding_id=c.binding_id AND s.call_control_id=c.call_control_id LIMIT 1) AS voice_consent_state,
@@ -665,7 +674,7 @@ export async function handlePhoneAction(
           WHERE b.identity_id=? AND b.purpose='extension' AND c.started_at>=?
           ORDER BY c.started_at DESC,c.call_control_id DESC LIMIT 50`)
           .bind(identity.id, Math.floor(Date.now() / 1000) - 7 * 86_400)
-          .all<{ call_control_id:string;binding_id:string;extension_installation_id:string|null;handler_sha256:string|null;
+          .all<{ call_control_id:string;binding_id:string;extension_installation_id:string|null;handler_sha256:string|null;extension_voice_profile_id:string;
             settings_revision:number|null;settings_pinned:number;caller:string;state:string;turn_count:number;started_at:number;duration_seconds:number|null;
             voice_consent_state:"pending"|"granted"|"denied"|"revoked"|null;
             voice_runtime_state:"consent_pending"|"ready"|"claimed"|"active"|"ended"|"indeterminate"|null;
@@ -701,6 +710,7 @@ export async function handlePhoneAction(
       binding_id: row.binding_id,
       installation_id: row.extension_installation_id,
       handler_sha256: row.handler_sha256,
+      voice_profile_id: row.extension_voice_profile_id,
       settings_revision: row.settings_revision,
       settings_pinned: row.settings_pinned === 1,
       state: row.state, turn_count: row.turn_count, started_at: row.started_at,
