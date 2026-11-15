@@ -12,21 +12,22 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (P04 product-user per-app uninstall; pushed a4958c701f4da4cbc5bad8196b84fd88e6ac69b7)
+## Latest checkpoint — 2026-11-15 (P04 product-user portability and erasure; pushed 7c765c219406adb455156e3364e4b40451f44572)
 
-Code `a4958c701f4da4cbc5bad8196b84fd88e6ac69b7` is pushed and `ls-remote` verified on
-`origin/Mcbt5s-Backup-2`. Migration 148 persists an exact-user uninstall tombstone. The authenticated
-product-user DELETE waits for extension runtime work to drain, erases the user's MicroApp actor before
-removing/anonymizing that user's install row, and retains a retryable receipt after partial failure.
-It preserves the owner-shared package install, blocks later activation/calls and actor re-registration,
-and fences export/preview/restore while pending or after completion. The app listing reports
-uninstalling/uninstalled. Reinstallation under the same actor identity is currently unsupported because
-the durable actor key has no install generation; do not imply otherwise.
+Code `7c765c219406adb455156e3364e4b40451f44572` is pushed and `ls-remote` verified on
+`origin/Mcbt5s-Backup-2`. ProductUserDO export v2 now includes its durable notification queue, and
+account erasure deletes those notifications and reports the count. The self-service DELETE now
+requires a successful, well-formed ProductUserDO erasure receipt before deleting recovery tokens or
+anonymizing the account row. A non-2xx, malformed, or unavailable response leaves the erasure fence
+and PII intact for retry. Code `a4958c701f4da4cbc5bad8196b84fd88e6ac69b7` immediately before it adds
+per-app USER_PRIVATE/SPACE_USER uninstall: migration 148, runtime-work drain, actor erasure before
+install removal, durable retries, archive fencing and owner-install preservation.
 
-Local evidence: focused Spaces migration/erasure/archive/route suites **37/37**, Router product-user
-routing suite **6/6**, Spaces and Router `tsc --noEmit`, and `git diff --check`. Local SQLite/Worker
-mocks only; no deployment, browser or live acceptance. Rollouts remain disabled. Preserve untracked
-`infra/scripts/__pycache__/`.
+Local evidence for the latest code: ProductUserDO, account route and MicroApp erasure suites **17/17**;
+Spaces `tsc --noEmit`; `git diff --check`. The preceding uninstall checkpoint passed focused Spaces
+migration/erasure/archive/route **37/37**, Router **6/6**, both typechecks. These are local Worker/
+SQLite mocks only; no deployment, browser or live acceptance. Rollouts remain disabled. Preserve
+untracked `infra/scripts/__pycache__/`.
 
 Fetched `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596`; its
 Fish Live 3 and business MicroApp/UI SDK/voice requirements are already copied into active platform
@@ -35,13 +36,18 @@ differs, so no branch merge or duplicate appendix was added.
 
 P04 remains PARTIAL for other service stores, retention/key/jurisdiction choices, cross-service
 consistency, isolated recovery and measured/deployed RPO/RTO. `PROJECT_USER` remains unsupported.
-The actor-generation/reinstall behavior is a real product contract decision; U05's
-Container-to-Computer trusted-observation bridge remains uncoded, not a credential blocker.
+Same-identity app reinstallation is unsupported because the erased actor key has no install generation;
+this is an unresolved product/identity contract. P01's runner and P02's source preflight already fail
+closed; their open gates are operator-attested D1 baselines, actual resource separation, named service
+ownership, resource receipts and deployed acceptance. U05's Container-to-Computer trusted-observation
+bridge remains uncoded, not a credential blocker.
 
-Exact next action: inspect the current production migration workflow for P01's fail-closed completion
-contract. Trace every migration invocation and resulting status/receipt, implement any reachable code
-gap, and add a failure-path check. Then continue P02 and the remaining P04/S2–S9/U01–U12/P03–P24
-requirements in dependency order.
+Exact next action: resume S2/MS01/MS02's recorded provider lifecycle caller pass at
+`workers/agents/src/communications/userport-agentport-sync.ts`. Trace UserPort alias/owner-link
+disconnect, reauthorization and scheduled AgentPort cleanup against the live row and operation journal;
+close the next reachable sync/revoke/relink gap with failure/replay coverage. Do not repeat the already
+completed P01 runner or P02 resource-map audit. Then continue S3–S9/U01–U12 and the platform plan's
+remaining P04/P03–P24 work in dependency order.
 
 ## Previous checkpoint — 2026-11-15 (P04 product-user actor and chat erasure; pushed c20d13003be80befa7bb7cd45c18f2f5ee424cc2)
 

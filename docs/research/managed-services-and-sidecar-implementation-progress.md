@@ -1,6 +1,37 @@
 # Managed services and sidecar implementation progress
 
-## Continuation checkpoint — 2026-11-15 (P04 per-app product-user uninstall; pushed a4958c701f4da4cbc5bad8196b84fd88e6ac69b7)
+## Continuation checkpoint — 2026-11-15 (P04 ProductUserDO notifications and erasure receipt; pushed 7c765c219406adb455156e3364e4b40451f44572)
+
+Code `7c765c219406adb455156e3364e4b40451f44572` is pushed and remote-verified on
+`origin/Mcbt5s-Backup-2`. ProductUserDO export v2 includes queued notification payloads and metadata;
+its idempotent erasure deletes that queue and reports `notifications_deleted`. The account DELETE now
+requires a successful, well-formed ProductUserDO receipt before it deletes password-reset/verification
+tokens or anonymizes the account D1 row. A failed, malformed or unavailable DO response returns 503
+while retaining the durable account erasure fence and PII for retry. This closes an independently
+scoped user store and prevents a non-2xx DO response from being treated as successful erasure.
+
+Fresh verification: ProductUserDO, account route and MicroApp erasure suites **17/17**; Spaces
+`tsc --noEmit`; `git diff --check`. Local mocks/SQLite only; no deployed D1, browser or live acceptance.
+Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+The preceding pushed code `a4958c701f4da4cbc5bad8196b84fd88e6ac69b7` implements exact-user
+per-app uninstall with migration 148, drain-before-erase, retry receipt, install removal after actor
+erasure, archive fencing and owner-install preservation. Same-identity reinstallation remains
+unsupported pending an actor-generation/product contract.
+
+The fetched source branch `origin/plan/microapps-ui-sdk-voice` at
+`df3386257262a88888d647daa4d10f3af2ff9596` contains no uncopied Fish Live 3 or business
+MicroApp/UI SDK/voice plan requirements; those are already included in platform-plan sections 9 and
+11. No merge occurred. P01 migration execution and P02 resource preflight already fail closed;
+operator baselines, actual resource separation/ownership/receipts and deployed acceptance remain open.
+
+Exact next action: resume S2/MS01/MS02 at
+`workers/agents/src/communications/userport-agentport-sync.ts` and trace alias/owner-link disconnect,
+reauthorization and scheduled AgentPort cleanup. Implement the next reachable sync/revoke/relink gap
+with failure/replay coverage; do not repeat the completed P01/P02 code audits. Continue S3–S9/U01–U12
+and other P03–P24 work in dependency order.
+
+## Previous checkpoint — 2026-11-15 (P04 per-app product-user uninstall; pushed a4958c701f4da4cbc5bad8196b84fd88e6ac69b7)
 
 Code `a4958c701f4da4cbc5bad8196b84fd88e6ac69b7` is pushed and remote-verified on
 `origin/Mcbt5s-Backup-2`. SpaceDO migration 148 persists exact-user per-app uninstall receipts. The

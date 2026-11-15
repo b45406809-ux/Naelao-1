@@ -1,6 +1,26 @@
 # Platform completion and guided templates progress
 
-## Continuation checkpoint — 2026-11-15 (P04 per-app product-user uninstall; pushed a4958c701f4da4cbc5bad8196b84fd88e6ac69b7)
+## Continuation checkpoint — 2026-11-15 (P04 ProductUserDO notification store; pushed 7c765c219406adb455156e3364e4b40451f44572)
+
+Code `7c765c219406adb455156e3364e4b40451f44572` is pushed and remote-verified. ProductUserDO
+portability export v2 includes its persisted notification queue; account erasure deletes that queue and
+reports a count. The account route now holds the D1 erasure marker and PII until ProductUserDO returns
+a successful, valid cleanup receipt, preventing a provider error response from being ignored.
+Verification: ProductUserDO/account-route/MicroApp erasure suites **17/17**, Spaces typecheck and
+`git diff --check`. Local mocks/SQLite only; no deployment or live acceptance.
+
+Preceding pushed code `a4958c70` adds durable authenticated per-app user uninstall, retry, archive
+fencing, actor erasure before install removal and owner-install preservation. Same-identity reinstall
+remains unsupported under the current actor key contract. `origin/plan/microapps-ui-sdk-voice`
+(`df3386257262a88888d647daa4d10f3af2ff9596`) has no uncopied plan requirements; its microapp/UI
+SDK/voice sections are already copied into sections 9 and 11. P01/P02 code preflights remain
+fail-closed, pending actual operator/resource evidence.
+
+Exact next action: continue S2/MS01/MS02 provider lifecycle at the UserPort alias-to-AgentPort
+sync/revoke/owner-link code path and implement its next reachable caller gap. Then resume remaining
+S3–S9/U01–U12 and P03–P24. Keep rollouts disabled.
+
+## Previous checkpoint — 2026-11-15 (P04 per-app product-user uninstall; pushed a4958c701f4da4cbc5bad8196b84fd88e6ac69b7)
 
 Code `a4958c701f4da4cbc5bad8196b84fd88e6ac69b7` is pushed and remote-verified on
 `origin/Mcbt5s-Backup-2`. Migration 148 persists retryable exact-user uninstall state. Product-user
