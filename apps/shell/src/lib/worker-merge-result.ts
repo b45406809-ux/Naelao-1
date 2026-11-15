@@ -60,7 +60,7 @@ const parseValidationReceipt = (value: unknown): WorkerManualValidationView | nu
   if (!record(value) || !safeReportedPath(value.path) || !["passed", "failed", "uncertain", "blocked"].includes(String(value.status)) ||
       typeof value.branch !== "string" || value.branch.length > 128 || !Number.isSafeInteger(value.revision) ||
       typeof value.manifestHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.manifestHash) ||
-      !Number.isSafeInteger(value.targetRevision) ||
+      !Number.isSafeInteger(value.targetRevision) || Number(value.targetRevision) < 1 ||
       typeof value.targetManifestHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.targetManifestHash) ||
       typeof value.commandHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.commandHash) ||
       !Number.isSafeInteger(value.durationMs) || Number(value.durationMs) < 0 || typeof value.completedAt !== "string") return null;
