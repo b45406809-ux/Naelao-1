@@ -1468,6 +1468,15 @@ api.all("/spaces/:spaceId/projects/:projectId/runtime-installations/:installatio
 api.all("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
+api.all("/spaces/:spaceId/projects/:projectId/main-runtime-private-state", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/projects/:projectId/main-runtime-private-state/backups", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/projects/:projectId/main-runtime-private-state/backups/:backupId/restore", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
 api.all("/spaces/:spaceId/projects/:projectId/modal-operations", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );

@@ -3,7 +3,7 @@ import { signJwt } from "@naelao/auth";
 import { app, type Env } from "./index";
 
 describe("project managed-runtime routing", () => {
-  it("routes project runtime profiles, Modal status, transfer receipts and retention to Agents before the Spaces catch-all", async () => {
+  it("routes project runtime, recovery and Modal status callers to Agents before the Spaces catch-all", async () => {
     const secret = "router-managed-runtime-test-secret";
     const paths: string[] = [];
     const agentsFetch = vi.fn(async (request: Request) => {
@@ -23,6 +23,10 @@ describe("project managed-runtime routing", () => {
     const base = "/v1/spaces/space-1/projects/project-1";
     const responses = await Promise.all([
       app.request(`${base}/main-runtime-profile`, { headers }, env),
+      app.request(`${base}/main-runtime-private-state`, { headers }, env),
+      app.request(`${base}/main-runtime-private-state`, { method: "PUT", headers, body: JSON.stringify({ paths: [], expected_version: 0 }) }, env),
+      app.request(`${base}/main-runtime-private-state/backups`, { method: "POST", headers, body: JSON.stringify({ request_id: "request-1" }) }, env),
+      app.request(`${base}/main-runtime-private-state/backups/backup-1/restore`, { method: "POST", headers, body: "{}" }, env),
       app.request(`${base}/modal-operations`, { headers }, env),
       app.request(`${base}/runtime-installations/install-1/containers/web/profile`, { headers }, env),
       app.request(`${base}/runtime-installations/install-1/containers/web/profile/reset`, { method: "POST", headers, body: "{}" }, env),
@@ -31,18 +35,22 @@ describe("project managed-runtime routing", () => {
       app.request(`${base}/workspace-retention`, { headers }, env),
       app.request(`${base}/main-runtime-restart-recipes`, { headers }, env),
     ]);
-    expect(responses.map(response => response.status)).toEqual([200, 200, 200, 200, 200, 200, 200, 200]);
+    expect(responses.map(response => response.status)).toEqual(Array.from({ length: 12 }, () => 200));
     expect(paths.sort()).toEqual([
       "GET /spaces/space-1/projects/project-1/runtime-installations/install-1/containers/web/profile",
       "POST /spaces/space-1/projects/project-1/runtime-installations/install-1/containers/web/profile/reset",
       "PUT /spaces/space-1/projects/project-1/runtime-installations/install-1/containers/web/execution-profile",
       "GET /spaces/space-1/projects/project-1/runtime-installations/install-1/containers/web/artifact-transfers",
       "GET /spaces/space-1/projects/project-1/main-runtime-profile",
+      "GET /spaces/space-1/projects/project-1/main-runtime-private-state",
+      "PUT /spaces/space-1/projects/project-1/main-runtime-private-state",
+      "POST /spaces/space-1/projects/project-1/main-runtime-private-state/backups",
+      "POST /spaces/space-1/projects/project-1/main-runtime-private-state/backups/backup-1/restore",
       "GET /spaces/space-1/projects/project-1/modal-operations",
       "GET /spaces/space-1/projects/project-1/main-runtime-restart-recipes",
       "GET /spaces/space-1/projects/project-1/workspace-retention",
     ].sort());
-    expect(agentsFetch).toHaveBeenCalledTimes(8);
+    expect(agentsFetch).toHaveBeenCalledTimes(12);
     expect(spacesFetch).not.toHaveBeenCalled();
   });
 });
