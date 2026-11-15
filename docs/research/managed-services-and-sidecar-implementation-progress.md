@@ -1,6 +1,16 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-15 (P03 builder/platform private inbox; code c40d0421 pushed)
+## Latest cross-plan checkpoint — 2026-11-15 (PW04 paired rename/edit review; code 885fc5cc pushed)
+
+PW04 now exposes a unique exact-content rename candidate for review, supports an explicitly reviewer-selected pair for generic delete/edit conflicts, displays both paths and versions, binds both source/target hashes, and publishes the two-path change atomically through the checked Coordinator. Ambiguous or content-edited rename identity is not guessed; the worker branch remains recoverable. Malformed reported paths fail closed and completed manual resolutions replay their stored receipt.
+
+Local evidence: Agents Coordinator/manual-resolution/route suites **106/106**, Shell API tests **3/3**, Agents and Shell typechecks, and `git diff --check`. Local Workers/SQLite and route mocks only; no browser, deployed Container, runtime concurrency or live acceptance. Code `885fc5cc477259db6f53ad410acc5429ce44b950` is pushed and remote-verified at `origin/Mcbt5s-Backup-2`. Planner/worker requirements from source commit `45575a395df9571eb075f0a479c65144e767be7c` are incorporated in platform §12 and managed §20. This does not change managed S2–S9/U01–U12 status. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+U05's proposed candidate-allocation next action remains superseded by the current source mismatch: project-main Containers and Computer `live_mount` verification do not share allocation, image, reservation or trusted-observation authority. No candidate bridge is fabricated; U06's writer/drain/flush/reconnect/handoff contract remains unsupported.
+
+Exact next action: safely extend PW04's exact-side-copy path beyond its current 256 KiB cap only within a bounded, backend-only R2-to-Coordinator transfer. Trace request/body and memory limits first, preserve hashes and stale-head checks, and test per-file and paired-total caps. If the platform transport cannot safely carry the selected bound, record that exact contract limit and proceed to the next independently implementable P06 or S3–S9/P01–P24 gap.
+
+## Previous cross-plan checkpoint — 2026-11-15 (P03 builder/platform private inbox; code c40d0421 pushed)
 
 The builder Dashboard now has a reachable private inbox for rows in `PLATFORM_DB.notifications`. The Router uses the verified platform JWT `tid` and `sub`, admits only platform-user roles, lists bounded unread/all pages through a stable timestamp+ID cursor, and marks read idempotently only for the exact tenant/user. Out-of-scope IDs return the same 404 as missing IDs; action URLs are not exposed. The Dashboard caller presents plain text, separates read/unread state, and supports older-page loading. ProductUserDO notifications and SpaceDO notifications remain separate identity stores.
 
@@ -8,7 +18,7 @@ Local evidence: Router platform-notification helper and route tests **7/7**, Rou
 
 U05 reconciliation supersedes the earlier candidate-allocation next action: `project_main_runtime_registry` is the Cloudflare Container execution lane, while the verifier's `sandbox_computers`/`live_mount` candidate, immutable image/template/region, credit/budget holds and trusted observations belong to a separate Cloudflare Computer lane. There is no source-owned bridge or trusted main Container observation producer. This is an unsupported runtime/platform contract, not a credential blocker. Do not fabricate candidates or attestations; keep live workspace disabled. U06's writer admission, drain/flush, reconnect fence and handoff contract also remains unsupported.
 
-Exact next action: continue P05 §11.5 by tracing the signed MicroApp Canvas/dashboard path through the installed Shell and current typed host business-action APIs; implement the next reachable caller gap with authorization/failure coverage. Continue independent S3–S9/U01–U12/P01–P24 code while preserving the U05/U06 runtime contract gates.
+This Canvas caller action was completed in code `5d08d7f1`; see the latest cross-plan checkpoint above.
 
 ## Previous checkpoint — 2026-11-15 (PW04 bounded binary conflict choice; code bac46733 pushed)
 
