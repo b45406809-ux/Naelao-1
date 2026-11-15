@@ -9180,37 +9180,66 @@ async function productUserMicroAppErasureSpaces(env: Env, tenantId: string, prod
   } catch { return null; }
 }
 
-async function eraseProductUserMicroAppsAcrossProduct(env: Env, tenantId: string,
+async function eraseProductUserSpaceDataAcrossProduct(env: Env, tenantId: string,
   userId: string, spaceIds: string[]): Promise<{ complete: true } | { complete: false; status: 202 | 503;
     pendingSpaces: number; pendingActors: number; errorCode: string }> {
   const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
   let pendingSpaces = 0, pendingActors = 0, errorCode = "micro_app_erasure_incomplete", hasHardFailure = false;
   for (const spaceId of spaceIds) {
-    let response: Response | null = null;
+    let stub: Awaited<ReturnType<typeof spaceDoStub>> | null = null;
     try {
-      const stub = await spaceDoStub(env, spaceId, tenantId);
-      response = await stub.fetch(new Request("http://space-do/product-user-micro-app-erasure", {
+      stub = await spaceDoStub(env, spaceId, tenantId);
+    } catch { /* Keep the durable account fence in place and retry this Space. */ }
+    if (!stub) {
+      pendingSpaces++;
+      hasHardFailure = true;
+      errorCode = "product_user_space_erasure_unavailable";
+      continue;
+    }
+
+    let spacePending = false;
+    try {
+      const response = await stub.fetch(new Request("http://space-do/product-user-micro-app-erasure", {
         method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
           "x-naelao-user-id": userId, "x-naelao-internal-token": token },
         body: JSON.stringify({ spaceId, userId }),
       }));
-    } catch { /* Continue so reachable Spaces receive their durable erasure tombstone. */ }
-    if (!response) { pendingSpaces++; errorCode = "micro_app_erasure_unavailable"; hasHardFailure = true; continue; }
-    const result = await readBoundedResponseJson<{ erased?: unknown; status?: unknown; pending_actors?: unknown;
-      unresolved_installations?: unknown; error_code?: unknown }>(response, 16 * 1024).catch(() => null);
-    if (response.status === 202 && result?.status === "pending") {
-      pendingSpaces++;
-      if (Number.isSafeInteger(result.pending_actors) && Number(result.pending_actors) > 0)
-        pendingActors += Number(result.pending_actors);
-      continue;
+      const result = await readBoundedResponseJson<{ erased?: unknown; status?: unknown; pending_actors?: unknown;
+        unresolved_installations?: unknown; error_code?: unknown }>(response, 16 * 1024).catch(() => null);
+      if (response.status === 202 && result?.status === "pending") {
+        spacePending = true;
+        if (Number.isSafeInteger(result.pending_actors) && Number(result.pending_actors) > 0)
+          pendingActors += Number(result.pending_actors);
+      } else if (!(response.ok && result?.erased === true && result.status === "complete")) {
+        spacePending = true;
+        hasHardFailure = true;
+        if (typeof result?.error_code === "string") errorCode = result.error_code;
+        else errorCode = "micro_app_erasure_incomplete";
+        if (Number.isSafeInteger(result?.pending_actors) && Number(result?.pending_actors) > 0)
+          pendingActors += Number(result?.pending_actors);
+      }
+    } catch {
+      spacePending = true;
+      hasHardFailure = true;
+      errorCode = "micro_app_erasure_unavailable";
     }
-    if (response.ok && result?.erased === true && result.status === "complete") continue;
-    pendingSpaces++;
-    hasHardFailure = true;
-    if (typeof result?.error_code === "string") errorCode = result.error_code;
-    else if (response.status === 503) errorCode = "micro_app_erasure_incomplete";
-    if (Number.isSafeInteger(result?.pending_actors) && Number(result?.pending_actors) > 0)
-      pendingActors += Number(result?.pending_actors);
+
+    // G-AO31 is an existing idempotent SpaceDO operation. Run it even when actor cleanup is
+    // pending so the account-level retry can make progress on every independent store.
+    try {
+      const response = await stub.fetch(new Request(`http://space-do/me/data?user_id=${encodeURIComponent(userId)}`, { method: "DELETE" }));
+      const result = await readBoundedResponseJson<{ erased?: unknown }>(response, 16 * 1024).catch(() => null);
+      if (!response.ok || result?.erased !== true) {
+        spacePending = true;
+        hasHardFailure = true;
+        errorCode = "product_user_conversation_erasure_failed";
+      }
+    } catch {
+      spacePending = true;
+      hasHardFailure = true;
+      errorCode = "product_user_conversation_erasure_unavailable";
+    }
+    if (spacePending) pendingSpaces++;
   }
   return pendingSpaces === 0 ? { complete: true } : { complete: false,
     status: hasHardFailure ? 503 : 202,
@@ -9218,17 +9247,16 @@ async function eraseProductUserMicroAppsAcrossProduct(env: Env, tenantId: string
 }
 
 // DELETE /spaces/:spaceId/product-users/me — self-service account deletion. It fences the exact
-// Product user and erases every attached Space's MicroApp actor state before shared account data.
-// Thread/message history remains a distinct SpaceDO erasure scope (G-AO31), not silently dropped.
+// Product user and erases every attached Space's MicroApp actor and G-AO31 chat state before
+// shared account data.
 // Tier 2/3 follow-up — export existed, deletion
 // didn't. Self-service only: end_user_id is derived from the caller's OWN verified claims, never
 // a client-supplied field (same precedent as GET/PATCH above) — there is no builder-initiated
 // erasure path here, matching the fact this route lives under /product-users/me, not an
 // admin-facing /product-users/:endUserId. Erases ProductUserDO's session/conversation/preference
-// state, then anonymizes (never hard-deletes — see migration 0058's own comment on why) the D1
-// roster row's PII. The generic membership migration owns cross-Space identity cleanup; this
-// route does not delete SpaceDO's thread/message history — a separate erasure scope (see G-AO31) — a real,
-// documented boundary for a future pass, not silently dropped.
+// state and SpaceDO's sessions/messages/agent state, then anonymizes (never hard-deletes — see
+// migration 0058) the D1 roster row's PII. Separate provider, membership, retention and archive
+// stores retain their own P04 lifecycle requirements.
 app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { role, userId, tenantId } = getCallerIdentity(c);
@@ -9255,7 +9283,7 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
 
   const eraseSpaces = await productUserMicroAppErasureSpaces(c.env, tenantId, root.id, spaceId);
   if (!eraseSpaces) return c.json({ error_code: "micro_app_erasure_scope_unavailable" }, 503);
-  const microAppErasure = await eraseProductUserMicroAppsAcrossProduct(c.env, tenantId, userId, eraseSpaces);
+  const microAppErasure = await eraseProductUserSpaceDataAcrossProduct(c.env, tenantId, userId, eraseSpaces);
   if (!microAppErasure.complete) {
     if (microAppErasure.status === 202) return c.json({ erased: false, erasure_status: "pending",
       micro_app_cleanup_pending: true, pending_spaces: microAppErasure.pendingSpaces,

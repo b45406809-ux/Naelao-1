@@ -79,9 +79,9 @@ function harness() {
   registerProductUserMicroAppRoutes(app as never);
   const platformDb = { prepare: (query: string) => ({ bind: (...params: unknown[]) => ({ first: async () => {
     if (query.includes("FROM spaces s JOIN orgs")) return { product_id: "product-a", parent_space_id: null };
+    if (query.includes("space_members")) return params[3] === "user-a" ? { role: "member" } : null;
     if (query.includes("FROM product_end_users")) return { erasure_started_at: accountErasureStarted ? "now" : null };
     if (query.includes("FROM products")) return { id: "product-a" };
-    if (query.includes("space_members")) return params[3] === "user-a" ? { role: "member" } : null;
     if (query.includes("extension_publisher_keys")) return publisherActive ? { active: 1 } : null;
     return null;
   } }) }) };

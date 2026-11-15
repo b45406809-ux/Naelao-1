@@ -814,30 +814,49 @@ function matchProductEndUserPath(path: string): string | null {
  *  and-egg here (we don't know the owning tenantId until AFTER verifying) is why this is gated
  *  by a direct platform-secret header, not requireInternalHmac — same precedent as
  *  /internal/space-types/seed. */
+async function resolveProductEndUserProductId(env: Env, productId: string): Promise<string | null> {
+  const direct = await env.PLATFORM_DB.prepare(
+    "SELECT id FROM products WHERE id = ? AND status = 'active'"
+  ).bind(productId).first<{ id: string }>();
+  if (direct?.id) return direct.id;
+
+  const requested = await env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, product_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(productId).first<{ tenant_id: string; product_id: string | null }>();
+  if (!requested) return null;
+  if (!requested.product_id) return productId;
+
+  const product = await env.PLATFORM_DB.prepare(
+    "SELECT id FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
+  ).bind(requested.product_id, requested.tenant_id).first<{ id: string }>();
+  return product?.id ?? null;
+}
+
+async function productEndUserErasureStarted(env: Env, productId: string, endUserId: string): Promise<boolean | null> {
+  try {
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT erasure_started_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+    ).bind(productId, endUserId).first<{ erasure_started_at: string | null }>();
+    return row ? row.erasure_started_at !== null : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProductUserErasureRetry(method: string, path: string): boolean {
+  const stripped = path.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return method.toUpperCase() === "DELETE" && /^\/spaces\/[^/]+\/product-users\/me$/.test(stripped);
+}
+
 async function resolveProductEndUserClaims(
   env: Env,
   productId: string,
   endUserId: string,
   sessionToken: string
-): Promise<NaelaoJwtClaims | null> {
+): Promise<{ claims: NaelaoJwtClaims; productId: string } | null> {
   // Product sessions establish identity; end-user Spaces still require their own membership.
-  const direct = await env.PLATFORM_DB.prepare(
-    "SELECT id FROM products WHERE id = ? AND status = 'active'"
-  ).bind(productId).first<{ id: string }>();
-  let sessionProductId = productId;
-  if (!direct?.id) {
-    const requested = await env.PLATFORM_DB.prepare(
-      "SELECT tenant_id, product_id FROM spaces WHERE id = ? AND status != 'deleted'"
-    ).bind(productId).first<{ tenant_id: string; product_id: string | null }>();
-    if (!requested) return null;
-    if (requested.product_id) {
-      const product = await env.PLATFORM_DB.prepare(
-        "SELECT id FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
-      ).bind(requested.product_id, requested.tenant_id).first<{ id: string }>();
-      if (!product) return null;
-      sessionProductId = product.id;
-    }
-  }
+  const sessionProductId = await resolveProductEndUserProductId(env, productId);
+  if (!sessionProductId) return null;
   const res = await env.SPACES_WORKER.fetch(
     new Request("http://spaces/internal/product-sessions/verify", {
       method: "POST",
@@ -851,14 +870,17 @@ async function resolveProductEndUserClaims(
 
   const now = Math.floor(Date.now() / 1000);
   return {
-    sub: endUserId,
-    tid: result.tenant_id,
-    email: "",
-    role: "product_end_user",
-    scopes: [],
-    iat: now,
-    exp: now + 3600,
-    jti: "",
+    productId: sessionProductId,
+    claims: {
+      sub: endUserId,
+      tid: result.tenant_id,
+      email: "",
+      role: "product_end_user",
+      scopes: [],
+      iat: now,
+      exp: now + 3600,
+      jti: "",
+    },
   };
 }
 
@@ -993,6 +1015,11 @@ api.use("*", async (c, next) => {
       if (!ticketRes.ok) throw unauthorized("Invalid or expired stream ticket");
       const { valid, tenant_id } = await ticketRes.json<{ valid: boolean; tenant_id?: string }>();
       if (!valid || !tenant_id) throw unauthorized("Invalid or expired stream ticket");
+      const sessionProductId = await resolveProductEndUserProductId(c.env, productId).catch(() => null);
+      if (!sessionProductId) return c.json({ error_code: "product_user_status_unavailable" }, 503);
+      const erasureStarted = await productEndUserErasureStarted(c.env, sessionProductId, queryEndUserId);
+      if (erasureStarted === null) return c.json({ error_code: "product_user_status_unavailable" }, 503);
+      if (erasureStarted) return c.json({ error_code: "product_user_erasure_started" }, 410);
       const now = Math.floor(Date.now() / 1000);
       c.set("claims", { sub: queryEndUserId, tid: tenant_id, email: "", role: "product_end_user" as const, scopes: [], iat: now, exp: now + 3600, jti: "" });
       return next();
@@ -1004,9 +1031,13 @@ api.use("*", async (c, next) => {
   const productId = matchProductEndUserPath(c.req.path);
 
   if (sessionToken && endUserId && productId) {
-    const claims = await resolveProductEndUserClaims(c.env, productId, endUserId, sessionToken);
-    if (!claims) throw unauthorized("Invalid or expired product session");
-    c.set("claims", claims);
+    const resolved = await resolveProductEndUserClaims(c.env, productId, endUserId, sessionToken);
+    if (!resolved) throw unauthorized("Invalid or expired product session");
+    const erasureStarted = await productEndUserErasureStarted(c.env, resolved.productId, endUserId);
+    if (erasureStarted === null) return c.json({ error_code: "product_user_status_unavailable" }, 503);
+    if (erasureStarted && !isProductUserErasureRetry(c.req.method, c.req.path))
+      return c.json({ error_code: "product_user_erasure_started" }, 410);
+    c.set("claims", resolved.claims);
     return next();
   }
 

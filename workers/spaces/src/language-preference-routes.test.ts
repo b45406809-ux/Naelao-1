@@ -116,6 +116,7 @@ function testEnv() {
   const productUserCalls: string[] = [];
   const spaceDoCalls: Array<{ path: string; userId: string | null }> = [];
   const microAppArchiveSpaceIds: string[] = [];
+  const spaceDataEraseUsers: string[] = [];
   const microAppErasureResponses: Response[] = [];
   const PRODUCT_USER_DO = {
     idFromName: (name: string) => name,
@@ -136,13 +137,17 @@ function testEnv() {
       if (path === "/product-user-micro-app-archives") microAppArchiveSpaceIds.push(query.get("space_id") ?? "");
       if (path === "/product-user-micro-app-erasure" && request.method === "POST")
         return microAppErasureResponses.shift() ?? Response.json({ erased: true, status: "complete" });
+      if (path === "/me/data" && request.method === "DELETE") {
+        spaceDataEraseUsers.push(query.get("user_id") ?? "");
+        return Response.json({ erased: true, sessions_deleted: 1, messages_deleted: 2 });
+      }
       if (path.endsWith("/preview")) return Response.json({ preview_id: "preview-a", results: [] });
       if (path.endsWith("/restore")) return Response.json({ status: "applied", results: [] });
       return Response.json({ snapshots: [], omissions: { privateScopeInstallations: 0, uninitializedActors: 0, unsupportedInstallations: 0 } });
     } }),
   };
   return { PLATFORM_DB, PRODUCT_USER_DO, SPACE_DO, productProfiles, productUserCalls, spaceDoCalls, microAppErasureResponses,
-    microAppArchiveSpaceIds, clearedAuthData, PLATFORM_SECRET: "test-secret" };
+    microAppArchiveSpaceIds, spaceDataEraseUsers, clearedAuthData, PLATFORM_SECRET: "test-secret" };
 }
 
 const env = testEnv();
@@ -210,6 +215,7 @@ describe("language preference profile routes", () => {
     const response = await call("/spaces/business-a/product-users/me", "DELETE", "product_end_user", "user-a");
     expect(response.status).toBe(200);
     expect(env.productUserCalls).toContain("/erase");
+    expect(env.spaceDataEraseUsers).toEqual(["user-a", "user-a", "user-a"]);
     expect(await response.json()).toMatchObject({ erased: true, sessions_deleted: 1, conversations_deleted: 2 });
     expect(env.clearedAuthData.map((sql) => sql.split(" ")[2])).toEqual([
       "password_reset_tokens", "email_verification_tokens", "whatsapp_auth_challenges", "dunning_notification_attempts",
@@ -229,6 +235,7 @@ describe("language preference profile routes", () => {
     expect(localEnv.productUserCalls).not.toContain("/erase");
     expect(localEnv.clearedAuthData).toHaveLength(0);
     expect(localEnv.productProfiles.get("product-a:user-a")?.email).toBe("a@example.invalid");
+    expect(localEnv.spaceDataEraseUsers).toHaveLength(3);
 
     const retry = await call("/spaces/business-a/product-users/me", "DELETE", "product_end_user", "user-a", undefined, "tenant-a", localEnv);
     expect(retry.status).toBe(200);
@@ -258,6 +265,7 @@ describe("language preference profile routes", () => {
     expect(localEnv.productProfiles.get("product-a:user-a")?.erasure_started_at).toBe("now");
     expect(localEnv.productUserCalls).not.toContain("/erase");
     expect(localEnv.clearedAuthData).toHaveLength(0);
+    expect(localEnv.spaceDataEraseUsers).toHaveLength(3);
   });
 
   it("does not resolve a product user's profile across a tenant boundary", async () => {

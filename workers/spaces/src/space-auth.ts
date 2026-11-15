@@ -52,7 +52,13 @@ export async function resolveEndUserSpaceRole(
        JOIN space_members sm ON sm.space_id = s.id
        WHERE s.id = ? AND s.status != 'deleted'
          AND (? IS NULL OR s.tenant_id = ?)
-         AND sm.end_user_id = ? AND sm.suspended_at IS NULL`
+         AND sm.end_user_id = ? AND sm.suspended_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM product_end_users peu
+            WHERE peu.product_space_id = COALESCE(s.product_id, s.id)
+              AND peu.end_user_id = sm.end_user_id
+              AND (peu.erasure_started_at IS NOT NULL OR peu.deleted_at IS NOT NULL)
+         )`
     ).bind(spaceId, tenantId ?? null, tenantId ?? null, endUserId).first<{ role: string }>();
     if (direct) {
       const role = direct.role === "moderator" ? "admin" : direct.role;
