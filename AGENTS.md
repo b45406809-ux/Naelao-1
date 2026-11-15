@@ -16,34 +16,32 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (section 11.2 signed business action; pushed)
+## Latest checkpoint — 2026-11-15 (P04 signed MicroApp archive; pushed)
 
-Code `ad20fc8fd65b2ed2d63971ba3a5b0def789d6851` is pushed to `origin/Mcbt5s-Backup-2`; the
-pre-push fetch confirmed `9cbc0810` was an ancestor. The SDK now defines a strict signed business-action
-contract and Canvas client. Space and Project UI API routes and assistant MCP share the same host
-executor. The first supported operation, `inventory.receiveStock.v1`, rechecks the signed release,
-current active installation/version, actor role and declared permission, validates input/output,
-updates quantity with expected-version CAS, and commits an idempotency receipt, actor audit and durable
-quantity/reason event in one SQLite transaction. Generic CRUD cannot overwrite protected quantity/version
-fields or delete the action's inventory table. The signed install review surfaces action policy/schemas;
-the iframe receives no session credentials. The audit route limits business event details to owners/admins.
+Pushed code checkpoints `c46592dad1cfa7eb10228ec41a11d70c7335a872` and
+`e90ccab71cac7af34d076ede31521fe6198a00f5` add bounded, owner-authorized MicroApp business-data
+archive export/preview/restore to the existing Space archive lifecycle. Snapshots bind exact
+tenant/Space/Project, installation, release, artifact, manifest, app and scope identity. They include
+supported business tables, action receipts/events and audit, use additive conflict-safe restore, and
+retain retry receipts. The second checkpoint checks foreign keys during preview and apply so an orphan
+row cannot pass preview and leave partial restore state. Private/user, legacy unsigned/unsupported stores
+remain excluded and are reported; no code is installed or activated during restore.
 
-Local evidence: Agent SDK **40/40** focused tests/typecheck/build; Spaces **102/102** focused tests and
-typecheck; Shell typecheck and `git diff --check` passed. These are local SDK and SQLite/mock checks.
-No browser, deployed Worker/DO, provider, invoice or live acceptance ran. This is one local inventory
-write action, not a complete business microapp system. Sales/adjustments, approvals, external/paid
-effects, a finished customer dashboard screen, AI code editing, Vercel UI SDK evaluation and live
-multi-tenant acceptance remain open. Idempotency receipts hard-stop at 10,000 and have no cleanup or
-retention policy. P04 archive/recovery does not yet cover MicroAppDO business rows and receipts.
-Keep all rollout gates disabled and preserve `infra/scripts/__pycache__/`.
+Fresh local evidence: Spaces archive and MicroApp integration suites **30/30**, Spaces typecheck;
+Shell archive panel **2/2** and typecheck; `git diff --check` passed. Tests use local SQLite, mock
+Durable Object namespaces and fake R2. No browser, deployed DO/R2, isolated recovery drill, provider or
+live acceptance ran. P04 remains PARTIAL for other service stores, user-private and legacy stores,
+retention/legal hold, configured regional keys/R2, cross-DO point-in-time consistency, RPO/RTO and
+deployed recovery. Both active plans remain separate and in force; all rollouts stay disabled. Preserve
+untracked `infra/scripts/__pycache__/`.
 
-Exact next action: continue P04 recovery by reconciling archive callers and stores, then add bounded,
-owner-authorized export/restore for MicroAppDO business data, action receipts/events and audit within
-the existing archive lifecycle. Bind the export to tenant/Space/Project and installation/release scope;
-preview conflicts, restore additively, preserve idempotency semantics, and test authorization, size,
-interrupted export/restore and no cross-scope leakage. Then continue the next independent P04/P03/P20,
-guided-template, voice-dashboard, shared-Space and S2–S9/U01–U12 implementation gap without repeating
-closed audits. Fetch before each push; never force-push or enable rollout.
+Exact next action: continue platform P01 release/environment safety. Its ordered migration runner,
+checksums, durable lock/ledger, required-schema probes, rendered deployment checks and rollback/forward-
+repair runbook already have local implementation; do not duplicate them. Record those code requirements
+as implemented locally and keep the exact D1 adoption, resource separation, isolated staging, and live
+promotion gates external. Then proceed to the next concrete uncoded commercial/recovery requirement and
+continue S2–S9/U01–U12 plus P01–P24 without repeating closed audits. Fetch before every push; never
+force-push or enable rollout.
 
 ## Previous checkpoint — 2026-11-15 (P06 bounded extension voice runtime; microapp plan copied; pushed)
 
