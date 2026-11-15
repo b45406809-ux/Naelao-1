@@ -1,29 +1,34 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal operation status caller; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host trust boundary and build artifact; pushed)
 
-Code `e8bfdd81` is pushed to `origin/Mcbt5s-Backup-2`; fetch confirmed `34d1486e` was an ancestor.
-The migration 0256 journal now has a fixed-25-row newest-first status projection returning operation
-ID/state, region/revision, credit reservation/usage/overrun, bounded error code and timestamps only.
-The authenticated Agents route enforces verified tenant/Space/Project membership and owner/admin
-authority; Router dispatches it before the Spaces catch-all; Project Computers renders the saved
-metadata without contacting Modal or exposing create/termination controls. Provider IDs, request
-payloads, idempotency keys and actor IDs are omitted.
+Joint-mission code `aa0f6b7b` is pushed to `origin/Mcbt5s-Backup-2`; fetch before push confirmed the
+remote at `fa5d3998` with no advance. The Modal Node host now verifies a short-lived request signature
+that binds method, path/query, exact scope, operation and idempotency identities, and the bounded body
+hash. Regression tests reject changed body, operation, method, path and Space before provider access.
+A pinned Node 22, non-root container build and health check are defined; `.dockerignore` narrows context
+to workspace manifests and Modal host source, and a test-only CI workflow builds but never publishes
+or deploys the image.
 
-Local evidence: Agents journal/route tests **8/8**, Router managed-runtime dispatch **1/1**, Agents,
-Router and Shell typechecks, and `git diff --check`. These are SQLite/mocked routing checks only; no
-browser, deployment, Modal provider or live acceptance ran. Modal create remains disabled pending
-reliable per-sandbox usage reconciliation and an approved customer pricing/metering decision; Beta/
-private-gRPC and hosted-provider acceptance remain separate gates. P21 outboxes and P22 local cache/
-Space cleanup are implemented; provider/deployed gates remain. Preserve untracked
-`infra/scripts/__pycache__/` and keep rollouts disabled.
+Local evidence: Modal host **8/8**, host typecheck/build, Agents host-client **3/3**, Agents typecheck,
+and `git diff --check`. The local container build could not download Corepack's pinned pnpm because of
+`SELF_SIGNED_CERT_IN_CHAIN`; the CI container job remains unrun. No image, provider, deployment or live
+acceptance is claimed. Modal create remains disabled pending Beta/private-gRPC acceptance, a supported
+per-sandbox usage receipt and approved customer pricing. U09 private-state route reachability is pushed
+in `fa5d3998`; preserve untracked `infra/scripts/__pycache__/` and keep all rollouts disabled.
 
-Exact next action: fix the U09 Shell caller reachability gap found during routing: `/main-runtime-private-state`
-and `/main-runtime-private-state/backups` currently miss explicit Router mappings and fall into the
-Spaces catch-all instead of Agents. Add the two authenticated mappings and routing regression coverage;
-keep owner/admin checks, R2/key gates and rollout settings unchanged. Then continue independent
-S3–S9/U01–U12/P01–P24 work.
+P06 reconciliation: the signed bounded-phone-menu microapp and owner operations view are already
+implemented and revision-pinned. Conversational/public extension streaming, complete customer voice
+lifecycle, first-party signing/catalog/provisioning, complete invoice/quality evidence and live carrier
+acceptance remain partial.
 
+Exact next action: implement P06 public Telnyx extension media streaming on the existing verified
+PCMU/WebSocket transport, binding the stream to the admitted extension installation, handler digest
+and published settings revision. Persist bounded call state and enforce consent, duration, concurrency,
+interruption, cleanup and uncertain-event handling. Add mocked authorization, stale-pin, duplicate,
+recovery and cleanup checks; keep the public-streaming flag disabled and leave the separate OwnerVoice
+bridge untouched. Then continue the remaining independent S2–S9/U01–U12/P01–P24 code work and record
+any true provider, pricing, policy or live gates precisely.
 ## Previous checkpoint — 2026-11-14 (P05 guided setup lifecycle; pushed)
 
 Code `c0daaf86a2c8c05b2e211eccc360367c3c9adf44` is pushed to `origin/Mcbt5s-Backup-2`. Space Template
