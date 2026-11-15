@@ -12,7 +12,33 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c3554588e4147eacf352a5ad12e65746b0d6)
+## Latest checkpoint — 2026-11-15 (§5 guided-template expected-usage authoring; code checkpoint d9d3138388be16b16dda5859c1884b0445dc5ff4)
+
+Code `d9d3138388be16b16dda5859c1884b0445dc5ff4` is pushed to `origin/Mcbt5s-Backup-2` and
+remote-verified. Foundry Studio now edits, previews and saves bounded expected monthly conversations,
+interactions, and optional managed-model calls in its authoring draft and signed export. The Agent SDK
+and Spaces export/activation paths validate the exact fields; prices and customer budgets are rejected.
+Activation preview returns the signed defaults and recalculates with current verified managed-model
+rates. The Shell labels author assumptions and lets the customer copy them into editable inputs. USD
+total remains unknown and no spend limit/access is created.
+
+Local verification: SDK/Foundry suites **10/10**, Spaces guided-authoring/cost/activation suites
+**49/49**, Agent SDK/Spaces/Shell TypeScript checks and `git diff --check` pass. The first root-level
+Spaces test command lacked the package `cloudflare:workers` alias; rerunning with `workers/spaces/`
+Vitest config passed. Local tests only; no browser, deployed Worker, Marketplace, or provider acceptance
+ran. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`. The copied
+microapp/UI SDK/voice plan remains in the platform plan from `df3386257262a88888d647daa4d10f3af2ff9596`;
+no merge occurred. §5 and P05 remain PARTIAL for cost completeness, lifecycle, provider/payer policy and
+live acceptance.
+
+Exact next action: continue S3/U05's uncoded product-side candidate reservation. Trace the current
+owner-authorized main-runtime allocation and budget reservation APIs, then bind a durable candidate to
+tenant/Space/Project, current allocation generation, immutable image/template digest, authorization and
+budget reservation. Reject caller-supplied attestations and leave candidates unqualified until a
+trusted runtime observation producer exists. Add persistence, authorization, stale/concurrent-allocation
+tests. Do not claim mount readiness or U06 sync/drain/flush support.
+
+## Previous checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c3554588e4147eacf352a5ad12e65746b0d6)
 
 Code checkpoint `2742c3554588e4147eacf352a5ad12e65746b0d6` is pushed to `origin/Mcbt5s-Backup-2`;
 `ls-remote` confirmed. It adds an owner-selected host-approved economy voice profile to Telnyx extension-line

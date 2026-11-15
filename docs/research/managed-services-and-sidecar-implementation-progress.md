@@ -1,6 +1,31 @@
 # Managed services and sidecar implementation progress
 
-## Continuation checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c3554588e4147eacf352a5ad12e65746b0d6)
+## Continuation checkpoint — 2026-11-15 (§5 guided-template expected-usage authoring; code checkpoint d9d3138388be16b16dda5859c1884b0445dc5ff4)
+
+Code `d9d3138388be16b16dda5859c1884b0445dc5ff4` is pushed to `origin/Mcbt5s-Backup-2`; `ls-remote`
+confirmed the branch tip. Foundry Studio authors and persists bounded monthly conversation/interaction
+assumptions and optional model-call volume in the product draft and signed SpaceBlueprint export. SDK
+and Spaces validate the contract, reject author price/budget fields, return defaults in activation
+preview, and recompute model credits only from currently verified rates. Shell identifies the source
+as template-author planning assumptions and lets the installer copy them to editable customer inputs.
+No price, access grant or enforceable budget is created; USD total stays null.
+
+Local evidence: SDK/Foundry **10/10**, Spaces guided-authoring/cost/activation **49/49**, direct SDK,
+Spaces and Shell `tsc --noEmit`, and `git diff --check` pass. Root-level Vitest initially missed the
+Spaces `cloudflare:workers` alias; package-configured rerun passed. No browser, deployment, Marketplace,
+live provider or production acceptance ran. Rollouts remain disabled; preserve untracked
+`infra/scripts/__pycache__/`. P05/§5 remain PARTIAL for full fixed/metered/provider/runtime cost rates,
+budgets, lifecycle/payer/revocation policy and live acceptance. The copied microapp/UI SDK/voice plan
+text remains in the active platform plan; it was not merged from its source branch.
+
+Exact next action: continue S3/U05's uncoded product-side candidate reservation. Trace the existing
+owner-authorized main-runtime allocation and budget reservation APIs. Bind durable candidates to exact
+tenant/Space/Project, current allocation generation, immutable image/template digest, current
+authorization and budget reservation. Reject caller-provided attestations and leave candidates
+unqualified until a trusted runtime observation producer exists; test persistence, authorization,
+stale/concurrent allocation. Do not claim mount readiness or U06 sync/drain/flush support.
+
+## Previous checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c3554588e4147eacf352a5ad12e65746b0d6)
 
 Code `2742c3554588e4147eacf352a5ad12e65746b0d6` persists an owner-selected host-approved economy voice profile in extension-line
 policy and migration 0260. Each admitted Telnyx extension call and consented stream session pins the

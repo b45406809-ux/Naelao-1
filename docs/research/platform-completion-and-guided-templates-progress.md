@@ -1,6 +1,31 @@
 # Platform completion and guided templates progress
 
-## Continuation checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c3554588e4147eacf352a5ad12e65746b0d6)
+## Continuation checkpoint — 2026-11-15 (§5 guided-template expected-usage authoring; code checkpoint d9d3138388be16b16dda5859c1884b0445dc5ff4)
+
+Code `d9d3138388be16b16dda5859c1884b0445dc5ff4` is pushed to `origin/Mcbt5s-Backup-2` and
+`ls-remote` verified. Foundry Studio now edits, previews and saves bounded expected monthly
+conversations, interactions and optional managed-model calls in the authoring draft and signed export.
+The Agent SDK and Spaces validate the contract and reject author prices/customer budgets. Activation
+preview returns the signed defaults and recalculates model credits using current verified rates; Shell
+labels author assumptions and lets customers copy them into editable estimate inputs. Total USD stays
+unknown; assumptions do not grant model access or enforce spend.
+
+Local verification: Agent SDK/Foundry **10/10**, Spaces guided-authoring/cost/activation **49/49**,
+SDK/Spaces/Shell typechecks and `git diff --check` pass. A root-level Spaces test invocation lacked its
+`cloudflare:workers` alias; the configured package rerun passed. No browser, deployed Worker,
+Marketplace or live provider acceptance ran. P05 and §5 remain PARTIAL for cost completeness, lifecycle,
+provider/payer/revocation policy, and live acceptance. Rollouts remain disabled; preserve untracked
+`infra/scripts/__pycache__/`. The microapp/UI SDK/voice plan text remains copied into the active plan;
+no branch merge occurred.
+
+Exact next action: continue S3/U05 by tracing the existing owner-authorized main-runtime allocation and
+budget reservation APIs, then implement durable product-side candidate reservations bound to exact
+tenant/Space/Project, allocation generation, immutable image/template digest, current authorization
+and budget reservation. Reject caller-supplied attestations and leave candidates unqualified until a
+trusted runtime observation producer exists. Add persistence, authorization, stale/concurrent
+allocation tests; do not imply mount readiness or U06 sync/drain/flush support.
+
+## Previous checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c3554588e4147eacf352a5ad12e65746b0d6)
 
 The owner can select a host-approved 16 kHz economy profile for new Telnyx extension calls. Migration
 0260 stores the selected profile on the admitted call and consented stream session; runtime resolves
@@ -1937,7 +1962,9 @@ review and continue without repeating the source copy (`edf08814`).
 
 Code `b3feecb5` adds visual authoring of bounded fields; `bf55151a` extends it to multiple selected
 projects and separate validated setup groups, reusing the signed SDK schema and activation preview.
-The editor still does not author dependencies/actions or prices.
+Code `d9d31383` adds bounded expected monthly usage assumptions to the saved Foundry draft and signed
+export, with host-side verified-rate recalculation and an explicit author-assumption label. Authors
+still cannot set prices or customer budgets, and the editor does not author dependencies/actions.
 
 §5 remains PARTIAL. This does not implement general package updates, changed-permission/pricing
 approval, rollback, revocation/uninstall effects on generated projects/extensions/provider
@@ -1984,7 +2011,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Versioned platform/Product-user outboxes and deterministic Workflow dispatch remain. Migration 0252 scopes Product-user dunning provider outcomes to the exact product/end user/subscription; Notifications rechecks active tenancy, current `past_due` status, provider event version and verified recipient before sending. The authenticated Spaces/Router/Shell caller exposes the current user's subscription, durable outbox status (`pending`/`leased`/queue handoff) and recent non-PII provider outcomes (`c4d9b6ca`); erasure deletes scoped provider receipts. Fresh Billing dunning/status **13/13**, Spaces status caller **2/2**, affected typechecks, and an SQLite cross-scope query check pass locally. | Grace/restriction/escalation and retry-cadence policy, inbox delivery, provider acceptance and live acceptance remain. |
 | P04 | PARTIAL | Bounded encrypted Space archives include signed shared/project MicroApp business data, receipts/events/audit (c46592da, e90ccab7), runtime settings/recipes/private fallback (ef77e193), coverage ledger (a47fbedb), and canonical Knowledge docs/chunks, ACL and required KB_BUCKET bytes (e475eb6b) with deletion fences and explicit reindex. USER_PRIVATE has no reachable exact-user authenticated archive caller and stays out of owner archives. | Other service/provider/inbound stores, exact-user identity, legacy/unsigned stores, regional keys/jurisdiction, retention/legal hold, cross-DO consistency, RPO/RTO and deployed recovery remain. Provider snapshots and physical purge are unsupported. |
-| P05 | PARTIAL | Signed SpaceBlueprint requirements/review, setup drafts and durable activation/recovery are local. Knowledge intent flows to created Projects; migration 137 grants are owner-approved and default-empty; 75feeabb prevents grant resurrection. c2963702 adds exact generated-Project cleanup preview/confirmation; 0a4021ba adds bounded durable status. | Broader uninstall/update effects, license/provider payer and revocation policy, verified rates, and deployed/live acceptance remain. Space-shared provider links cannot be represented safely: connection rows/routes require project_id, Space-level install currently supports phone only, and signed declarations lack beneficiary, payer, shared-authority and drain/revoke semantics. |
+| P05 | PARTIAL | Signed SpaceBlueprint requirements/review, setup drafts, durable activation/recovery and cost disclosure are local. Knowledge intent flows to created Projects; migration 137 grants are owner-approved and default-empty; 75feeabb prevents grant resurrection. c2963702 adds exact generated-Project cleanup preview/confirmation; 0a4021ba adds bounded durable status. Code `d9d31383` adds signed author-provided workload assumptions, validated export/preview, current verified model-rate recalculation and Shell reuse; this creates no author price, budget or access grant, and total USD remains unknown. | Broader uninstall/update effects, complete fixed/metered/provider/runtime rates, license/provider payer and revocation policy, and deployed/live acceptance remain. Space-shared provider links cannot be represented safely: connection rows/routes require project_id, Space-level install currently supports phone only, and signed declarations lack beneficiary, payer, shared-authority and drain/revoke semantics. |
 | P06 | PARTIAL | Owner voice dashboards, bounded keypad handlers, signed handler discovery/readiness, per-installation history, synthetic call/DTMF and Twilio speech tests, draft/publish revisions and rollback drafts are local. Twilio and Telnyx calls pin admitted signed installation, handler digest and published settings revision (`7e9d3c2b`). Code `1f429ee9` adds owner Telnyx voice preference, a default-off caller consent flow, durable grant/deny, one-use ticket and a separate WebSocket start-pin validator. DTMF remains the only active extension runtime; the new media boundary fails closed without processing audio. | Naelao publisher/key custody, signed distribution/catalog policy, host STT/TTS and speech budget/interruption/cleanup runtime, managed provisioning, full cost/quality evidence and live carrier acceptance remain. Delayed Twilio connectivity prices are not invoices. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
