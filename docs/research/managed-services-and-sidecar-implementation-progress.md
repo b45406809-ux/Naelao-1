@@ -1,6 +1,18 @@
 # Managed services and sidecar implementation progress
 
-## Continuation checkpoint — 2026-11-15 (§5 guided-template expected-usage authoring; code checkpoint d9d3138388be16b16dda5859c1884b0445dc5ff4)
+## Continuation checkpoint — 2026-11-15 (U05 runtime-contract trace; P04 user-private MicroApp archive foundation; pushed verification checkpoint 6f6ec9020a8808141a1919f7ffb226ea60e78e71)
+
+Implementation `4a8dd06d2f8407e1272ab0e5c0d71f7b4ba50826` and archive rejection regression `6f6ec9020a8808141a1919f7ffb226ea60e78e71` are pushed to `origin/Mcbt5s-Backup-2`; the remote tip was fetched and verified at `6f6ec902`. User-scope MicroApp snapshots require a persisted exact `userId`, matching actor metadata, signed release proof and declared signed gadget scope. Space-owner archive restore rejects user scopes. Router now reaches the existing authenticated product-user `/export` endpoint through one exact allowlist suffix; that endpoint does not yet include MicroApp snapshots.
+
+The fetched source branch `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596` adds no new requirement text: Fish Live 3 and business MicroApp/UI SDK/voice sections 9 and 11 are already copied into the active plan. Its differences are stale provenance and older P04 wording. No branch merge occurred.
+
+U05 is an uncoded runtime contract/adapter gap, not a credentials-only blocker. The current project main registry represents a Cloudflare Container allocation with a workflow budget reservation. The verifier requires a separate Cloudflare Computer `live_mount`, exact immutable template/image and region, managed-service credit reservation, and trusted runtime observation. No bridge binds these objects or produces observations. Do not create a misleading candidate reservation or positive attestation. Rollouts remain disabled.
+
+Verification: Router allowlist suite **55/55** and typecheck; Spaces MicroApp/archive/remediation suites **33/33**, Spaces typecheck, `git diff --check`. Local only; no browser, deployed Worker, or live provider acceptance. Preserve untracked `infra/scripts/__pycache__/`.
+
+P04 remains PARTIAL. Exact product-user identity exists and the account export is now router-reachable. User-private MicroApp archive/restore still lacks a reachable current-installation listing/caller; exact-user MicroApp state remains outside Space-owner archives. Next: derive active user installation and declared gadget IDs for the authenticated product user; wire actor initialization and bounded self-service export; add same-user/same-install preview/additive restore with replay/audit protection and cross-user, cross-install, removed-install tests. Then continue remaining P04 stores and S3–S9/U01–U12/P01–P24.
+
+## Previous checkpoint — 2026-11-15 (§5 guided-template expected-usage authoring; code checkpoint d9d3138388be16b16dda5859c1884b0445dc5ff4)
 
 Code `d9d3138388be16b16dda5859c1884b0445dc5ff4` is pushed to `origin/Mcbt5s-Backup-2`; `ls-remote`
 confirmed the branch tip. Foundry Studio authors and persists bounded monthly conversation/interaction
@@ -18,12 +30,7 @@ live provider or production acceptance ran. Rollouts remain disabled; preserve u
 budgets, lifecycle/payer/revocation policy and live acceptance. The copied microapp/UI SDK/voice plan
 text remains in the active platform plan; it was not merged from its source branch.
 
-Exact next action: continue S3/U05's uncoded product-side candidate reservation. Trace the existing
-owner-authorized main-runtime allocation and budget reservation APIs. Bind durable candidates to exact
-tenant/Space/Project, current allocation generation, immutable image/template digest, current
-authorization and budget reservation. Reject caller-provided attestations and leave candidates
-unqualified until a trusted runtime observation producer exists; test persistence, authorization,
-stale/concurrent allocation. Do not claim mount readiness or U06 sync/drain/flush support.
+This next action was superseded by the U05 source trace and P04 user-private archive work recorded above.
 
 ## Previous checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c3554588e4147eacf352a5ad12e65746b0d6)
 
