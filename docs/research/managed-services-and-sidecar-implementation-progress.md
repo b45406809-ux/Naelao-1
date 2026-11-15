@@ -1,30 +1,28 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d gated Modal host and durable journal; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host scope authorization; pushed)
 
-Code `ab5d80a5fd9b90d02e0eb3bf6084e879ff25235b` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
-confirmed remote `8239cb51561778a73df07bb259e02d836ad17040` with no advance. Migration 0256 adds an
-exact Project-scoped operation journal, stable idempotency, revision CAS and bounded actor-attributed
-events. Lifecycle persists before billing/provider effects and keeps ambiguous create/terminate results
-unreplayed. New `workers/modal-host` is an isolated Node 22 process using pinned `modal@0.11.1`; its
-HMAC API validates scope, digest-pinned image, GPU/region/resource bounds, deterministic operation
-names and blocks guest network. Host credentials never enter Workers. All three SDK/host gates default
-off.
+Code `36e3ad53` is pushed to `origin/Mcbt5s-Backup-2`; fetch confirmed prior remote
+`bb7070bf9c407ab84ffe88ff158b03c11ab17d38` was an ancestor. On top of `ab5d80a5`, the Modal host now
+requires a fresh HMAC binding tenant, Space and Project on every request. For GET/DELETE it first
+resolves the deterministic sandbox name from that signed scope and operation identity, and rejects any
+provider ID that does not match. POST requires the body scope to equal the signed scope. This closes a
+cross-scope inspect/terminate gap. Migration 0256's Project-scoped operation journal, revision CAS and
+three false-by-default rollout/contract gates are unchanged.
 
-Local evidence: host tests **6/6**, host build/typecheck, Agents Modal suites **13/13**, Agents typecheck,
-release migration tests **20/20**, both release validators report **256** migrations and schema 0256,
-plus `git diff --check`. No live SDK call or provider, deployed host, owner caller, deployment or browser
-acceptance ran. S5/MS08d is PARTIAL: missing owner-facing reachable create/status caller, artifacts and
-approved execution/volume contract remain uncoded; Modal does not expose a per-sandbox settled-cost
-receipt through this current SDK integration, so usage settlement cannot be claimed. Beta/private gRPC
-acceptance and pricing/metering/customer-billing policy are external gates, not credentials blockers.
-Rollout flags remain false; preserve untracked `infra/scripts/__pycache__/`.
+Verification: Modal host boundary **7/7**, Agents Modal host-client/lifecycle/journal **13/13**, host
+typecheck, Agents typecheck and `git diff --check`. These are local fake-provider tests; no provider,
+deployed host, owner caller, browser, deployment or live acceptance ran. S5/MS08d remains PARTIAL: there
+is no owner-facing operation-status/create caller or artifact/command/volume handoff, and the SDK path
+has no per-sandbox settled-cost receipt. Do not add a paid create flow before usage reconciliation and
+customer pricing/metering policy are resolved. Modal Beta/private-gRPC adoption also remains a platform
+acceptance gate; no credentials are blocking this local code. Preserve untracked
+`infra/scripts/__pycache__/` and keep rollouts disabled.
 
-Exact next action: implement P21 durable verification/reset email delivery tracking in
-`workers/spaces/src/product-end-user-routes.ts`, reusing current notification/outbox code. Keep external
-responses neutral, store no raw reset/verification tokens, and add bounded retry/outcome persistence and
-failure-injection coverage. Then resume remaining S3–S9/U01–U12/P01–P24 work without repeating closed
-audits.
+Exact next action: add an authenticated, owner/admin-only, read-only list/status path for existing Modal
+journal records, filtered by exact tenant/Space/Project, and expose it in Shell Project Computers. Return
+bounded metadata only; do not make provider calls or expose create/terminate controls. Then continue the
+next independent uncoded S3–S9/U01–U12/P01–P24 requirement.
 
 ## Previous checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
 

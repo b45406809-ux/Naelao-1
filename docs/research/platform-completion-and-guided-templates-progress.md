@@ -1,30 +1,26 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d gated Modal host and journal; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host scope authorization; pushed)
 
-Code `ab5d80a5fd9b90d02e0eb3bf6084e879ff25235b` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
-confirmed remote `8239cb51561778a73df07bb259e02d836ad17040`. Migration 0256 adds project-bound Modal
-operation intent/event tables with stable idempotency and revision fencing. The provider-neutral
-lifecycle records before external effects and retains unknown results. `workers/modal-host` is a
-separate Node 22 service using `modal@0.11.1`; HMAC, digest-pinned image, GPU/region/resource allowlists,
-deterministic names and network blocking are tested. `MODAL_HOST_ENABLED`, beta acceptance, and private
-gRPC acceptance all remain false. Modal credentials remain host-only.
+Code `36e3ad53` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch confirmed
+`bb7070bf9c407ab84ffe88ff158b03c11ab17d38` as an ancestor. Building on `ab5d80a5`, every Modal host
+operation now carries a fresh HMAC binding exact tenant/Space/Project scope. GET/DELETE first resolve
+the deterministic provider name under that scope and the operation identity and reject mismatched IDs;
+POST body scope must equal the signed headers. This closes a cross-project/tenant inspect/terminate gap.
 
-Local evidence: host tests **6/6**, build/typecheck, Agents Modal suites **13/13**, Agents typecheck,
-release migration tests **20/20**, release/deployment validators confirm schema 0256 and **256** pinned
-migrations, and `git diff --check`. No live provider, deployment, browser or deployed tests ran. P01
-release code remains locally verified; P02 deployed resource identities/receipts remain external. S5/
-MS08d remains PARTIAL: no reachable owner create/status caller or artifact/command/volume handoff exists,
-and this SDK integration has no per-sandbox settled-cost receipt. These are remaining code/product
-gaps plus a Beta/private-gRPC and metering/price-policy gate, not credential blockers. P01/P02, P03/P20
-policy choices, P04 deployed recovery, P05 Space provider authority and P06 live/streaming/catalog gaps
-remain as recorded below. Keep all rollouts disabled; preserve untracked
-`infra/scripts/__pycache__/`.
+Local evidence: Modal host tests **7/7**, Agents host-client/lifecycle/journal tests **13/13**, host and
+Agents typechecks, and `git diff --check`. No live SDK/provider, deployment, browser or deployed
+acceptance ran. All Modal rollout, Beta and private-gRPC flags remain false. P21 is locally implemented
+for encrypted outbox persistence/retry and delivery receipts; its prior recorded next action was stale.
+P22's independent local cache-entry purge and whole-Space cleanup status gaps are closed; AutoRAG
+provider-index deletion and deployed store acceptance remain unverified. P01/P02, commercial/recovery
+policy and remaining P05/P06 gaps keep the statuses in the matrix below. Preserve untracked
+`infra/scripts/__pycache__/` and keep rollouts disabled.
 
-Exact next action: implement P21 durable delivery outcomes and retry for verification/reset email in
-`workers/spaces/src/product-end-user-routes.ts`, preserving neutral public responses and ensuring raw
-tokens do not enter durable records/logs. Add bounded persistence, failure/retry checks, then continue
-independent P01–P24/S3–S9/U01–U12 code gaps.
+Exact next action: add an authenticated owner/admin read-only status view for existing Modal journal
+operations, scoped to tenant/Space/Project through an Agents route and Shell Project Computers caller.
+Expose only bounded metadata; do not call Modal or expose paid create/termination controls. Then continue
+the next independent uncoded requirement across S3–S9/U01–U12 and P01–P24. Do not claim Modal support.
 
 ## Previous checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
 
