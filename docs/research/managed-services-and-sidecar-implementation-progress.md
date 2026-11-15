@@ -1,6 +1,38 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (cross-plan P05 generated Project cleanup; pushed)
+## Latest checkpoint — 2026-11-15 (cross-plan P05 cleanup resumes after reload; §11.2 reconciled)
+
+Code `c2963702f6795b0c126f4f7fa769f67f35ee22c7` added owner/admin preview and confirmation for the
+exact validated template-generated Project. Code `0a4021bacd999ba502b65d19704c44108c42abff` adds an
+owner/admin status caller for bounded Project IDs; progress is rebuilt from the durable erasure
+tombstone after reopening. Only phase/page/time/provider-deletion counts are returned; raw cursors and
+tombstone IDs remain internal. Shared extensions, tenant provider connections, licenses and external
+charges remain unchanged. P05 is still PARTIAL for broader uninstall and payer/revocation/resource rules.
+
+Local evidence: Shell cleanup/status callers **2/2**, Spaces archive/status **5/5**, Router forwarding
+**1/1**, Shell/Spaces/Router typechecks, `git diff --check`. No browser, deployed Worker/R2 or provider
+acceptance ran. No S/U code changed here; prior row-specific gates and disabled rollout stand. Preserve
+untracked `infra/scripts/__pycache__/`.
+
+§11.2 source reconciliation found existing pushed action code `ad20fc8f`: one signed v1 `receiveStock`
+contract uses the same host transaction for Canvas HTTP and assistant MCP, with exact release/install
+pin, owner/admin actor authorization, schema validation, CAS, idempotent receipt, event/audit and
+protected generic CRUD. Local focused checks: Spaces/routes **24/24**, SDK **5/5**, Spaces/SDK typechecks.
+It is local evidence for one domain action; generalized approval and external effects remain partial.
+
+P07 source reconciliation: pushed `0da0abdb` already selects private local worker models only from the
+authorized machine's owner-declared capability profile and never queries the cloud catalog on a private
+route. `CustomModelManifest` binds only a base model and LoRA adapter; there is no trusted tool/modality/
+context capability source for custom worker selection. No selection code was added on an unverifiable
+assertion; P07 remains PARTIAL for that model-evidence contract and live acceptance, not credentials.
+
+Exact next action: continue P04's uncoded MicroApp user-private archive scope. Trace user-private actor
+identity and reachable authenticated callers, then implement exact-user-bound export/preview/additive
+restore only where verified request identity proves ownership. Do not place user data in a Space-owner
+archive without user authorization. If there is no supported caller, document the identity contract gap
+and continue another independent P04 store.
+
+## Previous checkpoint — 2026-11-15 (cross-plan P05 generated Project cleanup; pushed)
 
 Code commit `c2963702f6795b0c126f4f7fa769f67f35ee22c7` is pushed to
 `origin/Mcbt5s-Backup-2`; fetch confirmed the prior remote tip was an ancestor and the remote now

@@ -16,7 +16,40 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (P05 generated Project cleanup caller; pushed)
+## Latest checkpoint — 2026-11-15 (P05 cleanup resumes after reload; §11.2 reconciled; pushed)
+
+Code `c2963702f6795b0c126f4f7fa769f67f35ee22c7` adds owner/admin preview and confirmation for cleanup
+of the exact validated generated Project. Code `0a4021bacd999ba502b65d19704c44108c42abff` adds
+owner/admin-scoped cleanup receipts so the Shell rehydrates pending/partial/complete status after
+reopening. Spaces reads durable tombstones only for bounded requested IDs and omits raw R2 cursors and
+tombstone identifiers. Provider deletion counts remain separate; shared extensions, tenant connections,
+licenses and charges are not cancelled. P05 remains PARTIAL for full uninstall and unresolved
+payer/revocation/resource policy.
+
+Local evidence: Shell cleanup/status API **2/2**, Spaces cleanup/status **5/5**, Router status forwarding
+**1/1**; Shell/Spaces/Router typechecks and `git diff --check` passed. No browser, deployed Worker/R2 or
+provider acceptance ran. Preserve untracked `infra/scripts/__pycache__/`; rollouts stay disabled.
+
+Source reconciliation: §11.2 is not uncoded. Pushed `ad20fc8f` defines a signed v1 `receiveStock` action
+with server schemas and the same transactional host operation for Canvas HTTP and assistant MCP, exact
+installation/release pin, owner/admin actor checks, compare-and-set, idempotent receipts, event/audit,
+and generic-CRUD protection. Local tests passed Spaces/routes **24/24**, SDK **5/5**, and Spaces/SDK
+typechecks. This is one local action, not general approval or external-side-effect support; do not
+duplicate it or claim the whole section live.
+
+P07 source reconciliation confirms local-machine profile selection already exists in `0da0abdb`; current
+`CustomModelManifest` only binds a base model and LoRA adapter, with no capability evidence for tools,
+modalities or context. No capability-based custom worker selection was added because current source has
+no trusted profile to filter against. Keep P07 PARTIAL; this is an evidence-contract gap, not missing
+credentials.
+
+Exact next action: continue P04's uncoded MicroApp user-private archive scope. Trace the current
+user-private actor key and reachable authenticated callers, then add exact-user-bound snapshot/export/
+preview/additive-restore only where verified identity can prove ownership. Keep those records out of
+Space-owner archives absent user authorization; if no supported caller exists, record the precise
+identity contract gap and advance to another independent P04 store.
+
+## Previous checkpoint — 2026-11-15 (P05 generated Project cleanup caller; pushed)
 
 Code commit `c2963702f6795b0c126f4f7fa769f67f35ee22c7` is pushed to
 `origin/Mcbt5s-Backup-2`; a fresh fetch confirmed the prior remote tip was its ancestor, and the
