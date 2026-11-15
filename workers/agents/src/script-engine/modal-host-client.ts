@@ -1,7 +1,13 @@
+import { signHmac } from "@naelao/crypto";
 import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import type { ModalSandboxClient } from "./modal-lifecycle.js";
 
 export type ModalHostScope = { tenantId: string; spaceId: string; projectId: string };
+
+async function mintModalScopeToken(secret: string, scope: ModalHostScope, timestamp: string): Promise<string> {
+  const payload = JSON.stringify(["modal-scope-v1", scope.tenantId, scope.spaceId, scope.projectId, timestamp]);
+  return `t=${timestamp},v1=${await signHmac(payload, secret)}`;
+}
 
 export function createModalHostClient(input: {
   hostUrl: string;
@@ -25,6 +31,7 @@ export function createModalHostClient(input: {
   }
   const fetcher = input.fetchImpl ?? fetch;
   async function request(path: string, method: "GET" | "POST" | "DELETE", body?: Record<string, unknown>) {
+    const timestamp = Date.now().toString();
     const response = await fetcher(new Request(new URL(path, base), {
       method,
       redirect: "error",
@@ -32,6 +39,9 @@ export function createModalHostClient(input: {
       headers: {
         "x-naelao-tenant-id": input.scope.tenantId,
         "x-naelao-internal-token": await mintInternalToken(input.platformSecret, input.scope.tenantId),
+        "x-naelao-space-id": input.scope.spaceId,
+        "x-naelao-project-id": input.scope.projectId,
+        "x-naelao-modal-scope-token": await mintModalScopeToken(input.platformSecret, input.scope, timestamp),
         "x-naelao-operation-id": input.operationId,
         "idempotency-key": input.idempotencyKey,
         ...(body ? { "content-type": "application/json" } : {}),

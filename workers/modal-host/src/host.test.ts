@@ -13,8 +13,12 @@ const config: ModalHostConfig = { enabled: true, betaAccepted: true, privateGrpc
 function headers(overrides: Record<string, string> = {}): Headers {
   const timestamp = String(now);
   const signature = createHmac("sha256", secret).update(`internal:${scope.tenantId}:${timestamp}`).digest("hex");
+  const scopeSignature = createHmac("sha256", secret)
+    .update(JSON.stringify(["modal-scope-v1", scope.tenantId, scope.spaceId, scope.projectId, timestamp])).digest("hex");
   return new Headers({ "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId,
     "x-naelao-internal-token": `t=${timestamp},v1=${signature}`, "x-naelao-operation-id": "modal:operation-1",
+    "x-naelao-space-id": scope.spaceId, "x-naelao-project-id": scope.projectId,
+    "x-naelao-modal-scope-token": `t=${timestamp},v1=${scopeSignature}`,
     "idempotency-key": "create-1", ...overrides });
 }
 function request(method: string, path: string, body?: unknown, requestHeaders = headers()): Request {
@@ -75,7 +79,9 @@ describe("Modal Node host boundary", () => {
   it("recovers a lost create response through lookup and exposes only state, not invented cost", async () => {
     const modal = provider();
     vi.mocked(modal.create).mockRejectedValueOnce(new Error("response lost"));
-    vi.mocked(modal.findByName).mockResolvedValueOnce(null).mockResolvedValueOnce({ id: "sbx_provider_1", state: "running" });
+    vi.mocked(modal.findByName).mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "sbx_provider_1", state: "running" })
+      .mockResolvedValueOnce({ id: "sbx_provider_1", state: "running" });
     const handler = createModalHostHandler(config, modal, () => now);
     expect((await handler(request("POST", "/v1/sandboxes", { scope, spec }))).status).toBe(200);
     expect(modal.create).toHaveBeenCalledOnce();
@@ -85,6 +91,7 @@ describe("Modal Node host boundary", () => {
 
   it("supports safe state lookup and termination with encoded provider IDs", async () => {
     const modal = provider();
+    vi.mocked(modal.findByName).mockResolvedValue({ id: "sbx:provider-1", state: "running" });
     const handler = createModalHostHandler(config, modal, () => now);
     const inspected = await handler(request("GET", "/v1/sandboxes/sbx%3Aprovider-1"));
     expect(inspected.status).toBe(200);
@@ -92,5 +99,23 @@ describe("Modal Node host boundary", () => {
     expect((await handler(request("DELETE", "/v1/sandboxes/sbx%3Aprovider-1"))).status).toBe(204);
     expect(modal.terminate).toHaveBeenCalledWith("sbx:provider-1");
     expect((await handler(request("GET", "/v1/sandboxes/sbx%2Fprovider-1"))).status).toBe(400);
+  });
+
+  it("requires a signed exact tenant/Space/Project scope and proves provider-ID ownership before read or terminate", async () => {
+    const modal = provider();
+    const handler = createModalHostHandler(config, modal, () => now);
+    const forgedSpace = headers({ "x-naelao-space-id": "space-b" });
+    expect((await handler(request("GET", "/v1/sandboxes/sbx_provider_1", undefined, forgedSpace))).status).toBe(403);
+
+    expect((await handler(request("GET", "/v1/sandboxes/sbx_provider_1"))).status).toBe(404);
+    expect((await handler(request("DELETE", "/v1/sandboxes/sbx_provider_1"))).status).toBe(404);
+    expect(modal.inspect).not.toHaveBeenCalled();
+    expect(modal.terminate).not.toHaveBeenCalled();
+
+    vi.mocked(modal.findByName).mockResolvedValue({ id: "sbx_provider_1", state: "running" });
+    expect((await handler(request("GET", "/v1/sandboxes/sbx_provider_1"))).status).toBe(200);
+    expect((await handler(request("DELETE", "/v1/sandboxes/sbx_provider_1"))).status).toBe(204);
+    expect(modal.inspect).toHaveBeenCalledOnce();
+    expect(modal.terminate).toHaveBeenCalledOnce();
   });
 });

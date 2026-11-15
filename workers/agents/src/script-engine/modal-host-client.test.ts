@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { verifyHmac } from "@naelao/crypto";
 import { verifyInternalToken } from "@naelao/http";
 import { createModalHostClient } from "./modal-host-client.js";
 
@@ -19,6 +20,14 @@ describe("Modal host client", () => {
     expect(new URL(requests[0]!.url).pathname).toBe("/v1/sandboxes");
     expect(requests[0]!.headers.get("x-naelao-tenant-id")).toBe(scope.tenantId);
     expect(await verifyInternalToken(requests[0]!.headers.get("x-naelao-internal-token") ?? undefined, scope.tenantId, secret)).toBe(true);
+    expect(requests[0]!.headers.get("x-naelao-space-id")).toBe(scope.spaceId);
+    expect(requests[0]!.headers.get("x-naelao-project-id")).toBe(scope.projectId);
+    const scopeToken = requests[0]!.headers.get("x-naelao-modal-scope-token") ?? "";
+    const timestamp = scopeToken.match(/(?:^|,)t=(\d+)(?:,|$)/)?.[1];
+    const scopeSignature = scopeToken.match(/(?:^|,)v1=([a-f0-9]{64})(?:,|$)/)?.[1];
+    expect(timestamp && scopeSignature && await verifyHmac(
+      JSON.stringify(["modal-scope-v1", scope.tenantId, scope.spaceId, scope.projectId, timestamp]), scopeSignature, secret,
+    )).toBe(true);
     expect(requests[0]!.headers.get("x-naelao-operation-id")).toBe("modal:operation-1");
     expect(requests[0]!.headers.get("idempotency-key")).toBe("owner-request-1");
     expect(await requests[0]!.json()).toEqual({ scope, spec: {

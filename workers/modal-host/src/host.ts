@@ -48,6 +48,21 @@ function verifyInternalToken(header: string | null, tenantId: string, secret: st
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
+function verifyScopeToken(header: string | null, scope: ModalHostScope, secret: string, now: number): boolean {
+  if (!header || header.length > 128 || !secret) return false;
+  const parts = header.split(",");
+  if (parts.length !== 2) return false;
+  const timestamp = parts.find((part) => part.startsWith("t="))?.slice(2) ?? "";
+  const signature = parts.find((part) => part.startsWith("v1="))?.slice(3) ?? "";
+  if (!/^\d{1,16}$/.test(timestamp) || !/^[0-9a-f]{64}$/i.test(signature)) return false;
+  const sentAt = Number(timestamp);
+  if (!Number.isSafeInteger(sentAt) || Math.abs(now - sentAt) > 60_000) return false;
+  const payload = JSON.stringify(["modal-scope-v1", scope.tenantId, scope.spaceId, scope.projectId, timestamp]);
+  const expected = createHmac("sha256", secret).update(payload).digest();
+  const supplied = Buffer.from(signature, "hex");
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
 async function boundedJson(request: Request): Promise<Record<string, unknown> | null> {
   const reader = request.body?.getReader();
   if (!reader) return null;
@@ -118,6 +133,13 @@ export function createModalHostHandler(config: ModalHostConfig, provider: ModalH
     const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
     if (!SCOPE_ID.test(tenantId) || !verifyInternalToken(request.headers.get("x-naelao-internal-token"), tenantId, config.platformSecret, now()))
       return json(403, { error_code: "forbidden" });
+    const scope: ModalHostScope = {
+      tenantId,
+      spaceId: request.headers.get("x-naelao-space-id") ?? "",
+      projectId: request.headers.get("x-naelao-project-id") ?? "",
+    };
+    if (!validScope(scope) || !verifyScopeToken(request.headers.get("x-naelao-modal-scope-token"), scope, config.platformSecret, now()))
+      return json(403, { error_code: "forbidden" });
     const operationId = request.headers.get("x-naelao-operation-id") ?? "";
     const idempotencyKey = request.headers.get("idempotency-key") ?? "";
     if (!IDEMPOTENCY.test(operationId) || !IDEMPOTENCY.test(idempotencyKey)) return json(400, { error_code: "modal_operation_identity_invalid" });
@@ -125,9 +147,10 @@ export function createModalHostHandler(config: ModalHostConfig, provider: ModalH
     if (request.method === "POST" && url.pathname === "/v1/sandboxes") {
       if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) return json(415, { error_code: "content_type_invalid" });
       const body = await boundedJson(request);
-      if (!body || !validScope(body.scope) || body.scope.tenantId !== tenantId || !validSpec(body.spec, config))
+      if (!body || !validScope(body.scope) || body.scope.tenantId !== tenantId
+        || body.scope.spaceId !== scope.spaceId || body.scope.projectId !== scope.projectId || !validSpec(body.spec, config))
         return json(400, { error_code: "modal_sandbox_request_invalid" });
-      const name = operationName(body.scope, operationId, idempotencyKey);
+      const name = operationName(scope, operationId, idempotencyKey);
       try {
         const existing = await provider.findByName(name);
         const sandbox = existing ?? await provider.create(name, body.spec);
@@ -152,6 +175,10 @@ export function createModalHostHandler(config: ModalHostConfig, provider: ModalH
     if (!PROVIDER_ID.test(providerId)) return json(400, { error_code: "modal_provider_id_invalid" });
     if (request.method === "GET") {
       try {
+        // Never trust a caller-supplied provider ID as proof of tenant ownership. Resolve the
+        // deterministic name under the signed project and operation scope before reading state.
+        const owned = await provider.findByName(operationName(scope, operationId, idempotencyKey));
+        if (!owned || owned.id !== providerId) return json(404, { error_code: "not_found" });
         const receipt = await provider.inspect(providerId);
         if (!(receipt.state === "running" || receipt.state === "stopped" || receipt.state === "unknown"))
           return json(502, { error_code: "modal_host_receipt_invalid" });
@@ -160,7 +187,12 @@ export function createModalHostHandler(config: ModalHostConfig, provider: ModalH
       catch { return json(503, { error_code: "modal_provider_unavailable" }); }
     }
     if (request.method === "DELETE") {
-      try { await provider.terminate(providerId); return new Response(null, { status: 204 }); }
+      try {
+        const owned = await provider.findByName(operationName(scope, operationId, idempotencyKey));
+        if (!owned || owned.id !== providerId) return json(404, { error_code: "not_found" });
+        await provider.terminate(providerId);
+        return new Response(null, { status: 204 });
+      }
       catch { return json(503, { error_code: "modal_provider_outcome_unknown" }); }
     }
     return json(405, { error_code: "method_not_allowed" });
