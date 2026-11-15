@@ -17,6 +17,8 @@ export type WorkerManualValidationView = {
   targetRevision: number;
   targetManifestHash: string;
   commandHash: string;
+  executionId: string;
+  publicationStatus?: "published" | "not_published" | "uncertain";
   durationMs: number;
   completedAt: string;
   exitCode?: number;
@@ -28,7 +30,7 @@ export type WorkerMergeResultView = {
   /** Paths reported by the worker; these are advisory and are not a verified diff. */
   modifiedFiles: string[];
   workspaceMerge: {
-    status: "unapplied" | "partially_resolved" | "manually_resolved";
+    status: "unapplied" | "partially_resolved" | "manually_resolved" | "integrated";
     conflicts: WorkerMergeConflictView[];
     omitted: number;
     manualResolutions: Array<{
@@ -69,10 +71,14 @@ const parseValidationReceipt = (value: unknown): WorkerManualValidationView | nu
       !Number.isSafeInteger(value.targetRevision) || Number(value.targetRevision) < 1 ||
       typeof value.targetManifestHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.targetManifestHash) ||
       typeof value.commandHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.commandHash) ||
+      value.executionId !== undefined && (typeof value.executionId !== "string" || value.executionId.length < 1 || value.executionId.length > 128) ||
       !Number.isSafeInteger(value.durationMs) || Number(value.durationMs) < 0 || typeof value.completedAt !== "string") return null;
   return { path: value.path, paths: paths as string[], status: value.status as WorkerManualValidationView["status"], branch: value.branch,
     revision: Number(value.revision), manifestHash: value.manifestHash.toLowerCase(), commandHash: value.commandHash.toLowerCase(),
     targetRevision: Number(value.targetRevision), targetManifestHash: value.targetManifestHash.toLowerCase(),
+    executionId: typeof value.executionId === "string" ? value.executionId : `legacy-${value.branch}-${value.revision}`.slice(0, 128),
+    ...(value.publicationStatus === "published" || value.publicationStatus === "not_published" || value.publicationStatus === "uncertain"
+      ? { publicationStatus: value.publicationStatus } : {}),
     durationMs: Number(value.durationMs), completedAt: value.completedAt.slice(0, 64),
     ...(Number.isSafeInteger(value.exitCode) ? { exitCode: Number(value.exitCode) } : {}),
     ...(typeof value.reason === "string" ? { reason: value.reason.slice(0, 100) } : {}) };
@@ -92,7 +98,7 @@ export function parseWorkerMergeResult(
   if (!record(value) || !record(value.workspaceMerge)) return null;
   const workspaceMerge = value.workspaceMerge;
   if (
-    !["unapplied", "partially_resolved", "manually_resolved"].includes(
+    !["unapplied", "partially_resolved", "manually_resolved", "integrated"].includes(
       String(workspaceMerge.status)
     ) ||
     !Array.isArray(workspaceMerge.conflicts)
@@ -119,7 +125,6 @@ export function parseWorkerMergeResult(
       },
     ];
   });
-  if (!conflicts.length) return null;
   const modifiedFiles = Array.isArray(value.modifiedFiles)
     ? [...new Set(value.modifiedFiles.filter(safeReportedPath))].slice(0, 100)
     : [];
@@ -182,6 +187,7 @@ export function parseWorkerMergeResult(
         return receipt ? [receipt] : [];
       })
     : [];
+  if (!conflicts.length && workspaceMerge.status !== "integrated" && !manualResolutions.length && !validationReceipts.length) return null;
   return {
     workerOutput: value.workerOutput ?? null,
     modifiedFiles,

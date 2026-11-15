@@ -109,4 +109,22 @@ describe("worker merge result presentation", () => {
     expect(report?.workerOutput).toBe("original output");
     expect(report?.modifiedFiles).toEqual(["src/app.ts"]);
   });
+
+  it("shows a passed candidate check for an integrated worker result without conflicts", () => {
+    const report = parseWorkerMergeResult(JSON.stringify({
+      workerOutput: "integrated output",
+      workspaceMerge: {
+        status: "integrated",
+        conflicts: [],
+        validationReceipts: [{ path: "naelao-worker-validation.json", paths: ["naelao-worker-validation.json"],
+          status: "passed", branch: "race/worker-validation/abc", revision: 8, manifestHash: "a".repeat(64),
+          targetRevision: 4, targetManifestHash: "b".repeat(64), commandHash: "c".repeat(64),
+          executionId: "worker-integration-exec-1", runId: "worker-integration-run-1", durationMs: 120,
+          completedAt: "2026-11-15T00:00:00.000Z", publicationStatus: "published" }],
+      },
+    }));
+    expect(report?.workspaceMerge).toMatchObject({ status: "integrated", conflicts: [], validationReceipts: [{
+      status: "passed", branch: "race/worker-validation/abc", revision: 8, targetRevision: 4, publicationStatus: "published",
+    }] });
+  });
 });

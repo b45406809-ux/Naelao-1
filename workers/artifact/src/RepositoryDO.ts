@@ -360,6 +360,7 @@ export class RepositoryDO extends DurableObject<Env> {
     branch: string,
     expectedHead: string | null,
     changes: Array<{ path: string; expectedHash: string | null; contentBase64: string | null }>,
+    expectedWorkspaceHead?: { revision: number; manifestHash: string },
   ): Promise<number> {
     if (!this.env.WORKSPACE_COORDINATOR || !this.env.PLATFORM_SECRET) throw new Error("workspace_publication_requires_coordinator_binding");
     if (changes.length > 100) throw new Error("workspace_publication_limit_exceeded:too_many_files");
@@ -384,18 +385,26 @@ export class RepositoryDO extends DurableObject<Env> {
     if (receipt.status !== 404) throw new Error(`workspace_publication_receipt_unavailable:${receipt.status}`);
     const headResponse = await this.coordinatorRequest(scope, `/v1/head?branch=${branchQuery}`);
     if (!headResponse.ok) throw new Error(`workspace_publication_head_unavailable:${headResponse.status}`);
-    const head = await headResponse.json() as { head?: { revision?: number } };
+    const head = await headResponse.json() as { head?: { revision?: number; manifestHash?: string } };
     const revision = head.head?.revision;
-    if (!Number.isSafeInteger(revision)) throw new Error("workspace_publication_head_invalid");
+    const manifestHash = head.head?.manifestHash;
+    if (!Number.isSafeInteger(revision) || expectedWorkspaceHead && (typeof manifestHash !== "string" || !/^[a-f0-9]{64}$/.test(manifestHash))) {
+      throw new Error("workspace_publication_head_invalid");
+    }
+    if (expectedWorkspaceHead && (revision !== expectedWorkspaceHead.revision || manifestHash !== expectedWorkspaceHead.manifestHash)) {
+      throw new Error("workspace_publication_head_changed");
+    }
     const runtimeId = `repository:${scope.projectId}`;
     const openedResponse = await this.coordinatorRequest(scope, "/v1/open", {
       scope: { ...scope, jurisdiction: this.env.DATA_JURISDICTION === "eu" ? "eu" : "global" }, branch,
       actorId: `repository:${scope.projectId}`, runtimeId, allocationGeneration: 1, mode: "checked_handoff",
     });
     if (!openedResponse.ok) throw new Error(`workspace_publication_open_failed:${openedResponse.status}`);
-    const opened = await openedResponse.json() as { session?: { id?: string; fence?: number; allocationGeneration?: number }; head?: { revision?: number } };
+    const opened = await openedResponse.json() as { session?: { id?: string; fence?: number; allocationGeneration?: number }; head?: { revision?: number; manifestHash?: string } };
     const session = opened.session;
-    if (typeof session?.id !== "string" || !Number.isSafeInteger(session.fence) || opened.head?.revision !== revision) {
+    if (typeof session?.id !== "string" || !Number.isSafeInteger(session.fence) || opened.head?.revision !== revision ||
+        manifestHash !== undefined && opened.head?.manifestHash !== manifestHash || expectedWorkspaceHead &&
+        (opened.head?.revision !== expectedWorkspaceHead.revision || opened.head?.manifestHash !== expectedWorkspaceHead.manifestHash)) {
       if (session?.id) await this.coordinatorRequest(scope, "/v1/close", { sessionId: session.id, runtimeId }).catch(() => undefined);
       throw new Error("workspace_publication_head_changed");
     }
@@ -1245,19 +1254,40 @@ export class RepositoryDO extends DurableObject<Env> {
         const source = state.refs[sourceName];
         if (!source || target === undefined)
           return jsonError("Reference not found", 404);
+        const hasExpectedWorkspaceHead = body.expected_workspace_revision !== undefined || body.expected_workspace_manifest_hash !== undefined;
+        if (hasExpectedWorkspaceHead && (!Number.isSafeInteger(body.expected_workspace_revision) || Number(body.expected_workspace_revision) < 1 ||
+            typeof body.expected_workspace_manifest_hash !== "string" || !/^[a-f0-9]{64}$/.test(body.expected_workspace_manifest_hash))) {
+          return jsonError("Invalid expected workspace head");
+        }
+        const expectedWorkspaceHead = hasExpectedWorkspaceHead ? {
+          revision: Number(body.expected_workspace_revision), manifestHash: body.expected_workspace_manifest_hash as string,
+        } : undefined;
+        if (expectedWorkspaceHead && this.env.UNIFIED_WORKSPACE_ENABLED !== "true") return jsonError("Expected workspace heads require unified checked publication", 409);
+        const assertExpectedWorkspaceHead = async () => {
+          if (!expectedWorkspaceHead) return;
+          const response = await this.coordinatorRequest(scope, `/v1/head?branch=${encodeURIComponent(targetName)}`);
+          if (!response.ok) throw new Error(`workspace_publication_head_unavailable:${response.status}`);
+          const value = await response.json() as { head?: { revision?: number; manifestHash?: string } };
+          if (value.head?.revision !== expectedWorkspaceHead.revision || value.head.manifestHash !== expectedWorkspaceHead.manifestHash) {
+            throw new Error("workspace_publication_head_changed");
+          }
+        };
         if (body.expected_head !== undefined && body.expected_head !== target)
           return jsonError("Head changed", 409);
         if (body.expected_source !== undefined && body.expected_source !== source)
           return jsonError("Source head changed", 409);
-        if (target === source || this.ancestors(state, target).has(source))
+        if (target === source || this.ancestors(state, target).has(source)) {
+          await assertExpectedWorkspaceHead();
           return Response.json({ commit_id: target, fast_forward: false, merged: true, already_integrated: true, branch: targetName });
+        }
         if (!target || this.ancestors(state, source).has(target)) {
           const previousEntries = target ? state.commits[target]!.entries : {};
           const nextEntries = state.commits[source]!.entries;
           let workspaceRevision: number | undefined;
           if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") {
             const delta = await this.gitDelta(scope, previousEntries, nextEntries);
-            if (delta.length) workspaceRevision = await this.publishGitChanges(scope, targetName, target ?? null, delta);
+            if (delta.length) workspaceRevision = await this.publishGitChanges(scope, targetName, target ?? null, delta, expectedWorkspaceHead);
+            else await assertExpectedWorkspaceHead();
           }
           state.refs[targetName] = source;
           state.worktrees[targetName] = structuredClone(
@@ -1395,7 +1425,8 @@ export class RepositoryDO extends DurableObject<Env> {
         let workspaceRevision: number | undefined;
         if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") {
           const delta = await this.gitDelta(scope, ours, merged);
-          if (delta.length) workspaceRevision = await this.publishGitChanges(scope, targetName, target, delta);
+          if (delta.length) workspaceRevision = await this.publishGitChanges(scope, targetName, target, delta, expectedWorkspaceHead);
+          else await assertExpectedWorkspaceHead();
         }
         state.refs[targetName] = encoded.oid;
         if (this.env.UNIFIED_WORKSPACE_ENABLED !== "true") await this.publishWorkspaceState(scope, state, targetName, ours);

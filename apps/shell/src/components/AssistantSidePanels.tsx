@@ -477,9 +477,12 @@ function WorkerResultView({ result, maxOutput = 8_000, resolution }: { result: s
   const workerOutput = formatWorkerOutput(mergeResult.workerOutput);
   const resolved = new Map(mergeResult.workspaceMerge.manualResolutions.map(item => [item.path, item]));
   const validationByPath = new Map(mergeResult.workspaceMerge.validationReceipts.map(item => [item.path, item]));
-  const passedValidationCount = mergeResult.workspaceMerge.manualResolutions.filter(item => item.validation?.status === "passed").length;
+  const passedValidationCount = mergeResult.workspaceMerge.manualResolutions.filter(item => item.validation?.status === "passed").length +
+    mergeResult.workspaceMerge.validationReceipts.filter(item => item.publicationStatus !== undefined && item.status === "passed").length;
   return <section aria-label="Worker workspace merge review" style={{ marginTop: 8, padding: 9, border: "1px solid var(--border, #64748b44)", borderRadius: 7 }}>
-    <p role="status" style={{ margin: 0, fontWeight: 600 }}>{mergeResult.workspaceMerge.status === "manually_resolved"
+    <p role="status" style={{ margin: 0, fontWeight: 600 }}>{mergeResult.workspaceMerge.status === "integrated"
+      ? "Worker changes passed the project-owned check on the pinned integration candidate and were published. The original worker branch is retained."
+      : mergeResult.workspaceMerge.status === "manually_resolved"
       ? "All reported file conflicts have a checked manual resolution. The original worker branch is retained."
       : mergeResult.workspaceMerge.status === "partially_resolved"
         ? "Some file conflicts have checked manual resolutions; remaining worker changes are still unapplied."
@@ -489,6 +492,10 @@ function WorkerResultView({ result, maxOutput = 8_000, resolution }: { result: s
         ? ` · ${mergeResult.workspaceMerge.validationReceipts.filter(item => item.status !== "passed").length} failed, blocked, or uncertain`
         : passedValidationCount === 0 ? " · none recorded" : ""}.
     </p>
+    {mergeResult.workspaceMerge.validationReceipts.filter(item => item.publicationStatus).map((receipt, index) => <p key={`${receipt.executionId}:${index}`} style={{ margin: "4px 0", color: "var(--text3)", fontSize: 10, overflowWrap: "anywhere" }}>
+      Project check {receipt.status} on {receipt.branch} revision {receipt.revision} ({receipt.manifestHash.slice(0, 12)}…) against target revision {receipt.targetRevision} ({receipt.targetManifestHash.slice(0, 12)}…); publication {receipt.publicationStatus?.replaceAll("_", " ")}.
+      {receipt.reason ? ` ${receipt.reason.replaceAll("_", " ")}.` : ""}
+    </p>)}
     {mergeResult.modifiedFiles.length > 0 && <div style={{ margin: "4px 0", fontSize: 11 }}>
       <strong>Worker-reported changed paths</strong>
       <ul style={{ margin: "3px 0", paddingLeft: 20 }}>{mergeResult.modifiedFiles.map(path => <li key={path}><code>{path}</code></li>)}</ul>

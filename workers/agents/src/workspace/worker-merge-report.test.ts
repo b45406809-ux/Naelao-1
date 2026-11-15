@@ -32,4 +32,15 @@ describe("worker merge conflict report", () => {
     expect(report.guidance).toContain("checked workspace coordinator");
     expect(report.workspaceMerge.conflicts).toHaveLength(50);
   });
+
+  it("keeps a content-free check receipt on a successful integrated result with no conflicts", () => {
+    const receipt = { path: "naelao-worker-validation.json", paths: ["naelao-worker-validation.json"], status: "passed" as const,
+      branch: "race/worker-validation/abc", revision: 8, manifestHash: "a".repeat(64), targetRevision: 4,
+      targetManifestHash: "b".repeat(64), commandHash: "c".repeat(64), executionId: "worker-integration-exec-1",
+      runId: "worker-integration-run-1", durationMs: 120, completedAt: "2026-11-15T00:00:00.000Z",
+      publicationStatus: "published" as const };
+    const report = withWorkerMergeConflicts({ summary: "completed" }, [], { validationReceipts: [receipt], published: true });
+    expect(report.workspaceMerge).toMatchObject({ status: "integrated", conflicts: [], validationReceipts: [receipt] });
+    expect(report.guidance).toContain("project-owned check passed");
+  });
 });

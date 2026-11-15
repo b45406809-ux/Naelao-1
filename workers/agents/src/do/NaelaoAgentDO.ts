@@ -36,6 +36,11 @@ type WorkerMergeConflictDetail = {
   targetHash?: string | null;
   sourceHash?: string | null;
 };
+type WorkerMergeOutcome = {
+  conflicts: WorkerMergeConflictDetail[];
+  validationReceipts: import("../workspace/worker-integration-validation.js").WorkerIntegrationValidationReceipt[];
+  published: boolean;
+};
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
 // timeout watchdog, and SQLite-persisted run state.
@@ -120,6 +125,8 @@ import { isWorkspaceManualValidationCommand, publishWorkspaceManualResolution, r
   isWorkspaceManualConflictChangeSet, isWorkspaceManualResolutionChange, workspaceManualResolutionErrorResponse, type WorkspaceManualResolutionChange,
   type WorkspaceManualValidationReceipt, type WorkspaceManualValidationRequest } from "../workspace/workspace-manual-resolution.js";
 import { withWorkerMergeConflicts } from "../workspace/worker-merge-report.js";
+import { runCheckedWorkerIntegration, WORKER_VALIDATION_CONFIG_PATH,
+  type WorkerIntegrationHead, type WorkerIntegrationConflict, type WorkerIntegrationValidationReceipt } from "../workspace/worker-integration-validation.js";
 import { withWorkspaceManifestRead } from "../script-engine/workspace-r2-compat.js";
 import {
   buildConversationContext,
@@ -3648,6 +3655,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const payload = await response.json() as { branchBase?: { parentBranch?: string } };
       if (payload.branchBase?.parentBranch !== parentBranch) throw new Error("workspace_coordinator_branch_parent_mismatch");
     };
+    const readCoordinatorBranchBase = async (branch: string): Promise<{ parentBranch: string; revision: number; manifestHash: string }> => {
+      if (!coordinatorScope) throw new Error("workspace_coordinator_branch_unavailable");
+      const response = await workspaceCoordinatorRequest(workspaceBindings, coordinatorScope, `/v1/head?branch=${encodeURIComponent(branch)}`, {});
+      if (!response.ok) throw new Error(`workspace_coordinator_branch_head_failed:${response.status}`);
+      const payload = await response.json() as { branchBase?: { parentBranch?: string; revision?: number; manifestHash?: string } };
+      const base = payload.branchBase;
+      if (!base || typeof base.parentBranch !== "string" || !Number.isSafeInteger(base.revision) || Number(base.revision) < 1 ||
+          typeof base.manifestHash !== "string" || !/^[a-f0-9]{64}$/.test(base.manifestHash)) throw new Error("workspace_coordinator_branch_base_invalid");
+      return { parentBranch: base.parentBranch, revision: Number(base.revision), manifestHash: base.manifestHash };
+    };
 
     if (this.env.SPACES_WORKER) {
       hooks.persistGoalTasks = async (tasks) => {
@@ -3772,6 +3789,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const branch = `workers/${subId.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 96)}`;
       const baselineKey = `worker-branch-base:${subId}`;
       const sourceBranch = baseBranch ?? "main";
+      const persistWorkerBranchOrigin = async () => {
+        if (!unifiedProjectWorkspace) return;
+        const origin = await readCoordinatorBranchBase(branch);
+        if (origin.parentBranch !== sourceBranch) throw new Error("worker_branch_origin_parent_mismatch");
+        const value = { branch, ...origin };
+        const key = `worker-branch-origin:${subId}`;
+        const recorded = await this.ctx.storage.get<typeof value>(key);
+        if (recorded && JSON.stringify(recorded) !== JSON.stringify(value)) throw new Error("worker_branch_origin_changed");
+        if (!recorded) await this.ctx.storage.put(key, value);
+      };
       if (await this.ctx.storage.get(baselineKey)) {
         if (unifiedProjectWorkspace) {
           const recordedParent = await this.ctx.storage.get<string>(`worker-branch-root:${subId}`);
@@ -3780,6 +3807,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const head = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(branch)}`, { headers: await this.internalHeaders(tenantId) }));
           if (!head.ok) throw new Error("worker_branch_replay_unavailable");
           await assertCoordinatorBranchParent(branch, sourceBranch);
+          await persistWorkerBranchOrigin();
         }
         return branch;
       }
@@ -3808,6 +3836,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           if (!head.ok) throw new Error("worker_branch_replay_unavailable");
           if (unifiedProjectWorkspace) await assertCoordinatorBranchParent(branch, sourceBranch);
         }
+        await persistWorkerBranchOrigin();
       }
       if (unifiedProjectWorkspace) {
         const snapshot = await readCoordinatorBranch(branch);
@@ -3864,52 +3893,249 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return branch;
     };
 
-    // Three-way file merge. A worker may update the root task workspace only if the planner or
-    // another worker has not changed that path since the worker's fork. Conflicts are returned to
-    // the planner and the canonical workspace is never overwritten by a losing worker.
-    const mergeWorkerWorkspace = async (subId: string, workerBranch: string, baseBranch?: string): Promise<WorkerMergeConflictDetail[]> => {
-      if (!runtimeEnv) return [];
-      if (unifiedProjectWorkspace) {
-        if (!this.env.ARTIFACT_WORKER) throw new Error("worker_branch_repository_required");
-        const targetBranch = baseBranch ?? runtimeEnv.workspaceBranch ?? "main";
-        const repository = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId!)}/repository`;
-        const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
-        const metadata = { agent_role: agentId, user_goal: "Merge isolated subagent branch", task_id: subId,
-          rationale: `Checked three-way merge of ${workerBranch} into ${targetBranch}`, thread_id: parentThreadId ?? parentRunId,
-          tool_turn_id: `${subId}:checked-merge` };
-        const reconciled = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/reconcile`, {
-          method: "POST", headers, body: JSON.stringify({ branch: workerBranch, metadata }),
-        }));
-        if (!reconciled.ok) throw new Error(`worker_branch_reconcile_failed:${reconciled.status}`);
-        const targetHeadResponse = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(targetBranch)}`, { headers }));
-        if (!targetHeadResponse.ok) throw new Error(`worker_branch_target_head_unavailable:${targetHeadResponse.status}`);
-        const targetHead = await readBoundedResponseJson<{ commit_id?: string | null }>(targetHeadResponse, 64 * 1024);
-        const sourceHeadResponse = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(workerBranch)}`, { headers }));
-        if (!sourceHeadResponse.ok) throw new Error(`worker_branch_source_head_unavailable:${sourceHeadResponse.status}`);
-        const sourceHead = await readBoundedResponseJson<{ commit_id?: string | null }>(sourceHeadResponse, 64 * 1024);
-        const merged = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/merge`, {
-          method: "POST", headers, body: JSON.stringify({ target: targetBranch, source: workerBranch,
-            expected_head: targetHead.commit_id ?? null, expected_source: sourceHead.commit_id ?? null, metadata }),
-        }));
-        if (merged.status === 409) {
-          const conflict = await readBoundedResponseJson<{
-            error?: string;
-            conflicts?: string[];
-            conflict_details?: WorkerMergeConflictDetail[];
-          }>(merged, 256 * 1024).catch((): { error?: string; conflicts?: string[]; conflict_details?: WorkerMergeConflictDetail[] } => ({}));
-          if (conflict.conflict_details?.length) return conflict.conflict_details.slice(0, 100);
-          if (conflict.conflicts?.length) return conflict.conflicts.slice(0, 100).map(path => ({ path, reason: "overlapping_change" }));
-          const reason = conflict.error === "Source head changed" ? "stale_source_head"
-            : conflict.error === "Head changed" ? "stale_target_head" : "branch_head_changed";
-          return [{ path: "<branch-head-changed>", reason }];
-        }
-        if (!merged.ok) throw new Error(`worker_branch_checked_merge_failed:${merged.status}`);
-        return [];
+    // Automatic worker integration validates a task-scoped candidate before publishing. A
+    // project-owned command is read from the pinned target commit; tests run in a separate race
+    // runtime and their workspace writes invalidate the receipt instead of reaching the target.
+    const mergeWorkerWorkspace = async (subId: string, workerBranch: string, baseBranch?: string): Promise<WorkerMergeOutcome> => {
+      if (!runtimeEnv) return { conflicts: [], validationReceipts: [], published: false };
+      if (!unifiedProjectWorkspace || !projectId || !this.env.ARTIFACT_WORKER || !coordinatorScope || !userId) {
+        return { conflicts: [{ path: "<checked-workspace-coordinator>", reason: "checked_coordinator_required" }], validationReceipts: [], published: false };
       }
-      // A legacy branch prefix has no transaction capable of publishing a complete worker
-      // changeset against a checked head. Keep the worker branch intact and require the canonical
-      // Coordinator path instead of partially copying files into the target prefix.
-      return [{ path: "<checked-workspace-coordinator>", reason: "checked_coordinator_required" }];
+      const targetBranch = baseBranch ?? runtimeEnv.workspaceBranch ?? "main";
+      const repository = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/repository`;
+      const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+      const metadata = { agent_role: agentId, user_goal: "Validate and integrate isolated worker branch", task_id: subId,
+        rationale: `Run the project-owned check on the exact candidate before publishing to ${targetBranch}`, thread_id: parentThreadId ?? parentRunId,
+        tool_turn_id: `${subId}:checked-worker-integration` };
+      const canWrite = async () => (await import("../communications/core.js")).scopeAccess(this.env as never,
+        { tenantId, spaceId, projectId, userId, role: runtimeEnv.effectiveRole ?? "viewer" }, true).catch(() => false);
+      const reconcile = async (branch: string) => {
+        if (!await canWrite()) throw new Error("worker_access_revoked");
+        const response = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/reconcile`, { method: "POST", headers,
+          body: JSON.stringify({ branch, metadata }) }));
+        if (!response.ok) throw new Error(`worker_integration_reconcile_failed:${response.status}`);
+      };
+      const readHead = async (branch: string): Promise<WorkerIntegrationHead | null> => {
+        if (!await canWrite()) return null;
+        const reconciledResponse = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/reconcile`, { method: "POST", headers,
+          body: JSON.stringify({ branch, metadata }) }));
+        if (!reconciledResponse.ok) return null;
+        const reconciled = await readBoundedResponseJson<{ commit_id?: string | null; workspace_branch?: string; workspace_revision?: number }>(reconciledResponse, 64 * 1024);
+        const [repositoryResponse, coordinatorResponse] = await Promise.all([
+          this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(branch)}`, { headers })),
+          workspaceCoordinatorRequest(workspaceBindings, coordinatorScope, `/v1/head?branch=${encodeURIComponent(branch)}`, {}),
+        ]);
+        if (!repositoryResponse.ok || !coordinatorResponse.ok) return null;
+        const repositoryHead = await readBoundedResponseJson<{ commit_id?: string | null }>(repositoryResponse, 64 * 1024);
+        const canonical = await readBoundedResponseJson<{ head?: { branch?: string; revision?: number; manifestHash?: string };
+          branchBase?: { parentBranch?: string; revision?: number; manifestHash?: string } }>(coordinatorResponse, 64 * 1024);
+        const head = canonical.head, base = canonical.branchBase;
+        if (reconciled.workspace_branch !== branch || !Number.isSafeInteger(reconciled.workspace_revision) ||
+            repositoryHead.commit_id !== reconciled.commit_id || head?.branch !== branch || head.revision !== reconciled.workspace_revision ||
+            !Number.isSafeInteger(head.revision) || typeof head.manifestHash !== "string" ||
+            !/^[a-f0-9]{64}$/.test(head.manifestHash) || repositoryHead.commit_id !== null &&
+            (typeof repositoryHead.commit_id !== "string" || !/^[a-f0-9]{40}$/.test(repositoryHead.commit_id)) ||
+            base && (typeof base.parentBranch !== "string" || !Number.isSafeInteger(base.revision) || typeof base.manifestHash !== "string" || !/^[a-f0-9]{64}$/.test(base.manifestHash))) return null;
+        return { branch, commitId: repositoryHead.commit_id ?? null, revision: head.revision!, manifestHash: head.manifestHash,
+          ...(base ? { branchBase: { parentBranch: base.parentBranch!, revision: base.revision!, manifestHash: base.manifestHash! } } : {}) };
+      };
+      const pinnedTarget = await readHead(targetBranch);
+      const pinnedSource = await readHead(workerBranch);
+      if (!pinnedTarget?.commitId || !pinnedSource?.commitId) {
+        return { conflicts: [{ path: "<worker-integration-head>", reason: "pinned_integration_head_unavailable" }], validationReceipts: [], published: false };
+      }
+      const actorAttempt = this.ctx.storage.sql.exec(`SELECT attempt FROM sub_agents WHERE id=?`, subId).toArray() as Array<{ attempt: number }>;
+      const attempt = Number.isSafeInteger(actorAttempt[0]?.attempt) && actorAttempt[0]!.attempt > 0 ? actorAttempt[0]!.attempt : 1;
+      const identityDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
+        tenantId, spaceId, projectId, subId, attempt, workerBranch, targetBranch,
+        pinnedTarget.commitId, pinnedTarget.revision, pinnedTarget.manifestHash,
+        pinnedSource.commitId, pinnedSource.revision, pinnedSource.manifestHash,
+        pinnedSource.branchBase?.parentBranch, pinnedSource.branchBase?.revision, pinnedSource.branchBase?.manifestHash,
+      ]))))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+      const candidateBranch = `race/worker-candidate/${identityDigest.slice(0, 32)}`;
+      const validationBranch = `race/worker-validation/${identityDigest.slice(0, 32)}`;
+      const executionDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
+        tenantId, spaceId, projectId, subId, attempt, targetBranch, workerBranch,
+        pinnedTarget.commitId, pinnedTarget.revision, pinnedTarget.manifestHash,
+        pinnedSource.commitId, pinnedSource.revision, pinnedSource.manifestHash,
+        pinnedSource.branchBase?.parentBranch, pinnedSource.branchBase?.revision, pinnedSource.branchBase?.manifestHash,
+      ]))))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+      const executionId = `worker-integration-${executionDigest.slice(0, 40)}`;
+      const runId = `worker-integration-run-${executionDigest.slice(0, 32)}`;
+      const resultKey = `worker-integration-result:${executionDigest}`;
+      const saveIntegrationReceipt = async (receipt: WorkerIntegrationValidationReceipt) => {
+        const key = `worker-integration-receipts:${subId}`;
+        const rows = await this.ctx.storage.get<WorkerIntegrationValidationReceipt[]>(key) ?? [];
+        await this.ctx.storage.put(key, [...rows.filter(item => item.executionId !== receipt.executionId), receipt].slice(-10));
+      };
+      const storedReceipts = await this.ctx.storage.get<WorkerIntegrationValidationReceipt[]>(`worker-integration-receipts:${subId}`) ?? [];
+      const priorPublished = storedReceipts.find(item => item.sourceBranch === workerBranch && item.sourceCommitId === pinnedSource.commitId &&
+        item.targetBranch === targetBranch && item.publicationStatus === "published");
+      if (priorPublished) return { conflicts: [], validationReceipts: [priorPublished], published: true };
+      const publicationCrash = storedReceipts.find(item => item.sourceBranch === workerBranch && item.sourceCommitId === pinnedSource.commitId &&
+        item.targetBranch === targetBranch && item.status === "passed" && item.publicationStatus === "not_published" && item.candidateCommitId);
+      if (publicationCrash?.candidateCommitId === pinnedTarget.commitId && publicationCrash.manifestHash === pinnedTarget.manifestHash) {
+        const confirmed = { ...publicationCrash, publicationStatus: "published" as const };
+        await saveIntegrationReceipt(confirmed);
+        return { conflicts: [], validationReceipts: [confirmed], published: true };
+      }
+      if (publicationCrash && (publicationCrash.targetCommitId !== pinnedTarget.commitId || publicationCrash.targetRevision !== pinnedTarget.revision ||
+          publicationCrash.targetManifestHash !== pinnedTarget.manifestHash)) {
+        const uncertain = { ...publicationCrash, status: "uncertain" as const, publicationStatus: "uncertain" as const,
+          reason: "worker_integration_interrupted_publication_outcome_uncertain" };
+        await saveIntegrationReceipt(uncertain);
+        return { conflicts: [{ path: WORKER_VALIDATION_CONFIG_PATH, reason: uncertain.reason }], validationReceipts: [uncertain], published: false };
+      }
+      const previous = await this.ctx.storage.get<{ state: "running" | "complete"; result?: WorkerMergeOutcome }>(resultKey);
+      if (previous?.state === "complete" && previous.result) return previous.result;
+      if (previous?.state === "running") {
+        const receipts = await this.ctx.storage.get<WorkerIntegrationValidationReceipt[]>(`worker-integration-receipts:${subId}`) ?? [];
+        let receipt = receipts.find(item => item.executionId === executionId);
+        if (receipt?.publicationStatus === "published") return { conflicts: [], validationReceipts: [receipt], published: true };
+        if (receipt?.status === "passed" && receipt.candidateCommitId) {
+          const currentTarget = await readHead(targetBranch).catch(() => null);
+          if (currentTarget?.commitId === receipt.candidateCommitId && currentTarget.manifestHash === receipt.manifestHash) {
+            receipt = { ...receipt, publicationStatus: "published" };
+            await saveIntegrationReceipt(receipt);
+            const result: WorkerMergeOutcome = { conflicts: [], validationReceipts: [receipt], published: true };
+            await this.ctx.storage.put(resultKey, { state: "complete", result });
+            return result;
+          }
+          if (currentTarget?.commitId !== receipt.targetCommitId || currentTarget.revision !== receipt.targetRevision ||
+              currentTarget.manifestHash !== receipt.targetManifestHash) {
+            receipt = { ...receipt, status: "uncertain", publicationStatus: "uncertain", reason: "worker_integration_interrupted_publication_outcome_uncertain" };
+            await saveIntegrationReceipt(receipt);
+          }
+        }
+        return { conflicts: [{ path: WORKER_VALIDATION_CONFIG_PATH, reason: receipt?.reason ?? "worker_integration_interrupted" }],
+          validationReceipts: receipt ? [receipt] : [], published: false };
+      }
+      let recordedSourceBase = await this.ctx.storage.get<{ branch: string; parentBranch: string; revision: number; manifestHash: string }>(`worker-branch-origin:${subId}`);
+      // Older stable worker branches predate the local origin receipt. Their coordinator branch
+      // base is immutable, so pin that authoritative value once and require it on every retry.
+      if (!recordedSourceBase) {
+        const sourceHead = await readHead(workerBranch);
+        const base = sourceHead?.branchBase;
+        const recordedRoot = await this.ctx.storage.get<string>(`worker-branch-root:${subId}`);
+        if (!base || recordedRoot && recordedRoot !== "" && recordedRoot !== base.parentBranch) {
+          return { conflicts: [{ path: "<worker-branch-base>", reason: "pinned_worker_base_unavailable" }], validationReceipts: [], published: false };
+        }
+        recordedSourceBase = { branch: workerBranch, parentBranch: base.parentBranch, revision: base.revision, manifestHash: base.manifestHash };
+        await this.ctx.storage.put(`worker-branch-origin:${subId}`, recordedSourceBase);
+      }
+      if (recordedSourceBase.branch !== workerBranch || !Number.isSafeInteger(recordedSourceBase.revision) ||
+          recordedSourceBase.revision < 1 || !/^[a-f0-9]{64}$/.test(recordedSourceBase.manifestHash)) {
+        return { conflicts: [{ path: "<worker-branch-base>", reason: "pinned_worker_base_unavailable" }], validationReceipts: [], published: false };
+      }
+      await this.ctx.storage.put(resultKey, { state: "running", startedAt: Date.now() });
+      const complete = async (result: WorkerMergeOutcome): Promise<WorkerMergeOutcome> => {
+        await this.ctx.storage.put(resultKey, { state: "complete", result });
+        return result;
+      };
+      try {
+        await reconcile(targetBranch);
+        await reconcile(workerBranch);
+        const result = await runCheckedWorkerIntegration({ targetBranch, sourceBranch: workerBranch, candidateBranch, validationBranch, executionId, runId,
+          pinnedTarget, pinnedSource,
+          expectedSourceBase: { parentBranch: recordedSourceBase.parentBranch, revision: recordedSourceBase.revision, manifestHash: recordedSourceBase.manifestHash } }, {
+          readHead,
+          readProjectValidationConfig: async (branch, commitId) => {
+            const response = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/file?branch=${encodeURIComponent(branch)}&at=${encodeURIComponent(commitId)}&path=${encodeURIComponent(WORKER_VALIDATION_CONFIG_PATH)}`, { headers }));
+            if (response.status === 404) return null;
+            if (!response.ok) throw new Error(`worker_validation_config_read_failed:${response.status}`);
+            return readBoundedResponseText(response, 4 * 1024).catch(() => "");
+          },
+          createBranch: async (branch, sourceBranch, sourceCommitId) => {
+            if (!await canWrite()) throw new Error("worker_access_revoked");
+            const response = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/branch`, { method: "POST", headers,
+              body: JSON.stringify({ name: branch, from: sourceCommitId, temporary: true }) }));
+            if (!response.ok && response.status !== 409) throw new Error(`worker_integration_branch_create_failed:${response.status}`);
+            // The logical parent is verified by runCheckedWorkerIntegration through the canonical head receipt.
+            void sourceBranch;
+          },
+          mergeCandidate: async ({ targetBranch: candidate, sourceBranch: source, expectedTargetCommitId, expectedSourceCommitId }) => {
+            if (!await canWrite()) throw new Error("worker_access_revoked");
+            const response = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/merge`, { method: "POST", headers,
+              body: JSON.stringify({ target: candidate, source, expected_head: expectedTargetCommitId, expected_source: expectedSourceCommitId, metadata }) }));
+            if (response.status === 409) {
+              const conflict = await readBoundedResponseJson<{ conflicts?: string[]; conflict_details?: WorkerMergeConflictDetail[]; error?: string }>(response, 256 * 1024)
+                .catch((): { conflicts?: string[]; conflict_details?: WorkerMergeConflictDetail[]; error?: string } => ({}));
+              return { conflicts: conflict.conflict_details?.slice(0, 50) ?? conflict.conflicts?.slice(0, 50).map(path => ({ path, reason: "overlapping_change" })) ??
+                [{ path: "<branch-head-changed>", reason: conflict.error === "Source head changed" ? "stale_source_head" : "stale_target_head" }] };
+            }
+            if (!response.ok) throw new Error(`worker_candidate_merge_failed:${response.status}`);
+            return {};
+          },
+          runValidation: async ({ command, commandHash, branch, revision, manifestHash }) => {
+            const binding = { commandHash, branch, revision, manifestHash, runId };
+            const journalKey = `worker-integration-validation:${executionId}`;
+            const prior = await this.ctx.storage.get<{ state: "running" | "complete"; binding: typeof binding; result?: { status: "passed" | "failed" | "uncertain" | "blocked"; exitCode?: number; durationMs: number; reason?: string } }>(journalKey);
+            if (prior) {
+              if (JSON.stringify(prior.binding) !== JSON.stringify(binding)) return { status: "blocked", durationMs: 0, reason: "validation_execution_scope_mismatch" };
+              if (prior.state === "complete" && prior.result) return prior.result;
+              return { status: "uncertain", durationMs: 0, reason: "validation_execution_interrupted" };
+            }
+            await this.ctx.storage.put(journalKey, { state: "running", binding, startedAt: Date.now() });
+            const finish = async (value: { status: "passed" | "failed" | "uncertain" | "blocked"; exitCode?: number; durationMs: number; reason?: string }) => {
+              await this.ctx.storage.put(journalKey, { state: "complete", binding, result: value, completedAt: new Date().toISOString() });
+              return value;
+            };
+            const startedAt = Date.now();
+            if (!userId || !await canWrite()) return finish({ status: "blocked", durationMs: 0, reason: "project_access_revoked" });
+            const role = runtimeEnv.effectiveRole ?? "viewer";
+            const gate = await this.enforceRunGates({ tenantId, spaceId, projectId, userId, callerRole: role,
+              sessionId: parentThreadId ?? parentRunId, agentId, runId });
+            if (!gate.ok || !gate.effectiveRole || gate.effectiveRole === "viewer" || gate.maxTier !== undefined && gate.maxTier < 6) {
+              return finish({ status: "blocked", durationMs: Date.now() - startedAt, reason: "native_execution_authority_required" });
+            }
+            const engineEnv = await this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId, undefined,
+              runtimeEnv.airGappedOnly === true, undefined, branch, role);
+            if (!engineEnv?.codeRunner) return finish({ status: "blocked", durationMs: Date.now() - startedAt, reason: "native_runner_unavailable" });
+            engineEnv.runId = runId;
+            engineEnv.taskId = runId;
+            engineEnv.humanInvokerId = userId;
+            engineEnv.effectiveRole = gate.effectiveRole;
+            if (gate.maxTier !== undefined) engineEnv.maxTier = gate.maxTier;
+            new ScriptToolSurface(engineEnv, ["code-exec"]);
+            if (!engineEnv.nativeExecutionAllowed || engineEnv.maxTier !== undefined && engineEnv.maxTier < 6) {
+              return finish({ status: "blocked", durationMs: Date.now() - startedAt, reason: "native_execution_authority_required" });
+            }
+            try {
+              const execution = await engineEnv.codeRunner.run({ name: "code-exec.execute_bash", code: BASH_HARNESS,
+                args: { commands: command, timeout: 55 }, tier: 6, tenantId, spaceId, agentId, projectId,
+                userId, runId, executionId, workspaceBranch: branch, maxTier: engineEnv.maxTier ?? 6 });
+              const output = execution.output && typeof execution.output === "object" ? execution.output as { exit_code?: unknown } : undefined;
+              if (execution.ok && output?.exit_code === 0) return finish({ status: "passed", exitCode: 0, durationMs: execution.duration_ms });
+              const error = execution.error ?? "";
+              const failed = /Command failed with exit code (\d+)/.exec(error);
+              const blocked = /container_execution_denied|execution_ceiling_exceeded|environment_native_execution_denied|container_capacity_reservation_required|Tier-6 container runtime not available|no ToolSandboxDO|native_execution/.test(error);
+              const uncertain = /reconciliation_required|may_require_reconciliation|deadline_exceeded|cancelled|guest_cleanup_unverified|workspace_checkpoint/.test(error);
+              return finish({ status: failed ? "failed" : blocked ? "blocked" : uncertain ? "uncertain" : "uncertain",
+                ...(failed ? { exitCode: Number(failed[1]) } : {}), durationMs: execution.duration_ms,
+                reason: failed ? "project_check_failed" : blocked ? "native_execution_unavailable" : "native_execution_outcome_uncertain" });
+            } catch {
+              return finish({ status: "uncertain", durationMs: Date.now() - startedAt, reason: "native_execution_outcome_uncertain" });
+            }
+          },
+          publishCandidate: async ({ targetBranch: target, candidateBranch: candidate, expectedTarget, expectedSourceCommitId }) => {
+            if (!await canWrite()) throw new Error("worker_access_revoked");
+            const response = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/merge`, { method: "POST", headers,
+              body: JSON.stringify({ target, source: candidate, expected_head: expectedTarget.commitId, expected_source: expectedSourceCommitId,
+                expected_workspace_revision: expectedTarget.revision, expected_workspace_manifest_hash: expectedTarget.manifestHash, metadata }) }));
+            if (!response.ok) throw new Error(`worker_candidate_publication_failed:${response.status}`);
+          },
+          saveReceipt: async receipt => {
+            await saveIntegrationReceipt(receipt);
+          },
+        });
+        const conflicts: WorkerMergeConflictDetail[] = result.conflicts.map((conflict: WorkerIntegrationConflict) => ({ path: conflict.path, reason: conflict.reason }));
+        if (result.status !== "published" && !conflicts.length) conflicts.push({ path: WORKER_VALIDATION_CONFIG_PATH, reason: result.receipt.reason ?? result.status });
+        const outcome: WorkerMergeOutcome = { conflicts, validationReceipts: [result.receipt], published: result.status === "published" };
+        return await complete(outcome);
+      } catch (error) {
+        const reason = (error instanceof Error ? error.message : "worker_integration_unavailable").slice(0, 96).replace(/[^A-Za-z0-9_.:-]/g, "_");
+        return await complete({ conflicts: [{ path: WORKER_VALIDATION_CONFIG_PATH, reason }], validationReceipts: [], published: false });
+      }
     };
 
     hooks.finalizeWorkspace = async () => {
@@ -4007,11 +4233,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               const rootBranch = await this.ctx.storage.get<string>(`worker-branch-root:${id}`);
               const parentBranch = await this.ctx.storage.get<string>(`worker-branch-parent:${id}`);
               const conflicts: WorkerMergeConflictDetail[] = [];
-              if (rootBranch !== undefined && rootBranch !== workerBranch) conflicts.push(...await mergeWorkerWorkspace(id, workerBranch, rootBranch || undefined));
+              const validationReceipts: WorkerIntegrationValidationReceipt[] = [];
+              const outcomes: WorkerMergeOutcome[] = [];
+              if (rootBranch !== undefined && rootBranch !== workerBranch) outcomes.push(await mergeWorkerWorkspace(id, workerBranch, rootBranch || undefined));
               if (parentBranch !== undefined && parentBranch !== workerBranch && parentBranch !== rootBranch) {
-                conflicts.push(...await mergeWorkerWorkspace(id, workerBranch, parentBranch || undefined));
+                outcomes.push(await mergeWorkerWorkspace(id, workerBranch, parentBranch || undefined));
               }
-              return [...new Map(conflicts.map(conflict => [`${conflict.path}\0${conflict.reason}\0${conflict.baseHash ?? ""}\0${conflict.targetHash ?? ""}\0${conflict.sourceHash ?? ""}`, conflict])).values()];
+              for (const outcome of outcomes) { conflicts.push(...outcome.conflicts); validationReceipts.push(...outcome.validationReceipts); }
+              return {
+                conflicts: [...new Map(conflicts.map(conflict => [`${conflict.path}\0${conflict.reason}\0${conflict.baseHash ?? ""}\0${conflict.targetHash ?? ""}\0${conflict.sourceHash ?? ""}`, conflict])).values()],
+                validationReceipts,
+                published: outcomes.length > 0 && outcomes.every(outcome => outcome.published),
+              };
             });
         } finally {
           await this.releaseConcurrencySlot(concurrencyKey, parentRunId);
@@ -4746,7 +4979,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     effort?: string,
     abortSignal?: AbortSignal,
     runtimeEnv?: ScriptEngineEnv,
-    mergeWorkerWorkspace?: (subId: string, branch: string) => Promise<WorkerMergeConflictDetail[]>
+    mergeWorkerWorkspace?: (subId: string, branch: string) => Promise<WorkerMergeOutcome>
   ): Promise<{ id: string }> {
     const fanout = childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true);
     if (!tasks.length || tasks.length > fanout) throw new Error(`sub-agent fan-out must be within 1..${fanout}`);
@@ -4995,8 +5228,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           let output: unknown = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
           if (ok && workspaceBranch) {
             if (mergeWorkerWorkspace && workspaceBranch.startsWith("workers/")) {
-              const conflicts = await mergeWorkerWorkspace(subId, workspaceBranch);
-              if (conflicts.length) output = withWorkerMergeConflicts(output, conflicts);
+              const mergeOutcome = await mergeWorkerWorkspace(subId, workspaceBranch);
+              if (mergeOutcome.conflicts.length || mergeOutcome.validationReceipts.length || mergeOutcome.published) {
+                output = withWorkerMergeConflicts(output, mergeOutcome.conflicts, {
+                  validationReceipts: mergeOutcome.validationReceipts,
+                  published: mergeOutcome.published,
+                });
+              }
             }
           }
           const modifiedFiles = output && typeof output === "object" && Array.isArray((output as Record<string, unknown>)["modifiedFiles"])

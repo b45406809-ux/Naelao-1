@@ -537,8 +537,12 @@ describe("unified workspace transition guards", () => {
     const storage = new Map<string, unknown>();
     const repositoryObjects = new Map<string, Uint8Array>();
     const published: unknown[] = [];
+    let returnWorkspaceManifest = false;
     const repo = new RepositoryDO({ storage: {
-      get: async (key: string) => storage.get(key),
+      get: async (key: string) => {
+        const value = storage.get(key);
+        return key === "repository" && value ? structuredClone(value) : value;
+      },
       put: async (key: string, value: unknown) => { storage.set(key, value); },
     } } as never, {
       UNIFIED_WORKSPACE_ENABLED: "true", PLATFORM_SECRET: "platform-secret",
@@ -548,7 +552,7 @@ describe("unified workspace transition guards", () => {
           const path = new URL(request.url).pathname;
           if (path === "/v1/read-policy") return Response.json({ mode: "coordinator" });
           if (path === "/v1/receipt") return Response.json({ error_code: "publication_not_found" }, { status: 404 });
-          if (path === "/v1/head") return Response.json({ head: { revision: 1 } });
+          if (path === "/v1/head") return Response.json({ head: { revision: 1, ...(returnWorkspaceManifest ? { manifestHash: "e".repeat(64) } : {}) } });
           if (path === "/v1/branch") return Response.json({ branch: { branch: "workers/child", revision: 1 }, created: true });
           if (path === "/v1/open") return Response.json({ session: { id: "ws_123e4567-e89b-12d3-a456-426614174000", fence: 4, allocationGeneration: 1 }, head: { revision: 1 } });
           if (path === "/v1/stage") { published.push(await request.clone().json()); return Response.json({ stageId: "staged" }); }
@@ -598,6 +602,18 @@ describe("unified workspace transition guards", () => {
     }) }));
     expect(workerCommit.status).toBe(201);
     const workerHead = await workerCommit.json() as { commit_id: string };
+    const publishedBeforeStaleMerge = published.length;
+    returnWorkspaceManifest = true;
+    const staleWorkspaceMerge = await repo.fetch(new Request("http://repo/merge", { method: "POST", headers, body: JSON.stringify({
+      target: "main", source: "workers/child", expected_head: ownerHead.commit_id, expected_source: workerHead.commit_id,
+      expected_workspace_revision: 2, expected_workspace_manifest_hash: "f".repeat(64), metadata,
+    }) }));
+    expect(staleWorkspaceMerge.status).toBe(409);
+    expect(await staleWorkspaceMerge.json()).toMatchObject({ error: "workspace_publication_head_changed" });
+    expect(published).toHaveLength(publishedBeforeStaleMerge);
+    const unchangedTarget = await repo.fetch(new Request("http://repo/head?branch=main", { headers }));
+    expect(await unchangedTarget.json()).toMatchObject({ commit_id: ownerHead.commit_id });
+    returnWorkspaceManifest = false;
     const staleSource = await repo.fetch(new Request("http://repo/merge", { method: "POST", headers, body: JSON.stringify({
       target: "main", source: "workers/child", expected_head: ownerHead.commit_id, expected_source: seeded.commit_id, metadata,
     }) }));
@@ -615,6 +631,15 @@ describe("unified workspace transition guards", () => {
       { path: "worker.txt", expectedHash: null, contentBase64: btoa("subagent result") },
       { path: "README.md", expectedHash: await sha256Text(ownerText), contentBase64: btoa("OWNER\nmiddle\nWORKER\n") },
     ]) });
+
+    returnWorkspaceManifest = true;
+    const staleWorkspaceReplay = await repo.fetch(new Request("http://repo/merge", { method: "POST", headers, body: JSON.stringify({
+      target: "main", source: "workers/child", expected_head: mergeResult.commit_id, expected_source: workerHead.commit_id,
+      expected_workspace_revision: 1, expected_workspace_manifest_hash: "f".repeat(64), metadata,
+    }) }));
+    expect(staleWorkspaceReplay.status).toBe(409);
+    expect(await staleWorkspaceReplay.json()).toMatchObject({ error: "workspace_publication_head_changed" });
+    returnWorkspaceManifest = false;
 
     const replay = await repo.fetch(new Request("http://repo/merge", { method: "POST", headers, body: JSON.stringify({
       target: "main", source: "workers/child", expected_head: mergeResult.commit_id, expected_source: workerHead.commit_id, metadata,
