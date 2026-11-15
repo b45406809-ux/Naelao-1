@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Button, Card, CardDesc, CardTitle } from "@naelao/ui";
 import { MicroAppCanvas } from "@/components/viewports/MicroAppCanvas";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
+import { BusinessActionsPanel } from "@/components/BusinessActionsPanel";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { selectInstalledExtension } from "@/lib/space-extension-dashboard";
@@ -251,6 +252,7 @@ export default function ExtensionsPage() {
       </div>
       {active.settings_schema && active.capabilities.includes("extension.settings.read") && <ExtensionSettingsForm spaceId={activeSpaceId} appId={active.app_id} schema={active.settings_schema} session={credentials} canConfigure={active.capabilities.includes("extension.settings.configure")}
         loadAudit={() => callSpaceExtensionSettingsAudit(activeSpaceId, active.installation_id, credentials)} />}
+      {active.business_action_apps?.length ? <BusinessActionsPanel spaceId={activeSpaceId} appIds={active.business_action_apps} session={credentials} /> : null}
       <MicroAppCanvas spaceId={activeSpaceId} appId={active.app_id} projectId={active.app_id} projectScoped={false} session={credentials}
         capabilities={active.capabilities} {...(active.business_action_apps ? { businessActionApps: active.business_action_apps } : {})} onAction={() => {}} />
     </> : loading ? <p role="status">Loading installed extensions…</p> : error ? <div role="alert">{error} <Button variant="secondary" onClick={() => void refresh()}>Retry</Button></div> : apps.length ? <>
