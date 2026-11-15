@@ -1,6 +1,32 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (cross-plan P05 cleanup resumes after reload; §11.2 reconciled)
+## Latest checkpoint — 2026-11-15 (P04 archive coverage and identity boundary; pushed)
+
+Code `a47fbedb4bda8eb7f954bb440214d79c5bff29e2` is pushed to `origin/Mcbt5s-Backup-2`. SpaceDO
+migration 144 records a versioned per-archive coverage summary; export/retry and owner/admin data-ops
+status return its counts for Space rows, captured objects, Project workspace/runtime snapshots, signed
+MicroApp actors and private/unsupported/uninitialized MicroApp omissions. The Shell displays the
+summary after reload and identifies older archives that lack it. Archive bytes and restore authority
+are unchanged.
+
+The P04 user-private trace found `USER_PRIVATE`/`SPACE_USER`/`PROJECT_USER` scope declarations and
+user-keyed storage helpers, but no reachable exact-user MicroApp execution/archive caller. Current
+gadget routes use Space-wide or project-bound actors; Space archive skips user-scoped installations.
+Do not export personal state into an owner archive. This is an identity/runtime contract gap, not a
+credential blocker.
+
+Local evidence: Space archive/migration suites **27/27**, Spaces/Shell typechecks, `git diff --check`.
+No browser, deployed D1/DO/R2 or recovery drill. P04 remains PARTIAL for other service/inbound stores,
+user-private state, policy/key/jurisdiction, cross-DO point-in-time consistency, RPO/RTO and deployed
+acceptance. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: add a bounded authenticated archive bridge for the separate Knowledge Worker store
+(`kb_documents`, `kb_chunks` and required KB_BUCKET source objects), scoped to tenant/Space/Project.
+Fence export and additive restore against current deletion tombstones; do not restore Vectorize or
+AutoRAG state or replay provider effects. Connect it to owner archive preview/status/restore and add
+authorization, retry and tombstone-race coverage.
+
+## Previous checkpoint — 2026-11-15 (cross-plan P05 cleanup resumes after reload; §11.2 reconciled)
 
 Code `c2963702f6795b0c126f4f7fa769f67f35ee22c7` added owner/admin preview and confirmation for the
 exact validated template-generated Project. Code `0a4021bacd999ba502b65d19704c44108c42abff` adds an

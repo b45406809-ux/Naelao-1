@@ -1,6 +1,31 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (P05 cleanup resumes after reload; §11.2 reconciled)
+## Latest checkpoint — 2026-11-15 (P04 archive coverage and identity boundary; pushed)
+
+Code `a47fbedb4bda8eb7f954bb440214d79c5bff29e2` is pushed to `origin/Mcbt5s-Backup-2`. Migration
+144 persists a versioned coverage summary per verified Space archive. Export/retry and owner/admin
+status expose Space row/table totals, captured objects, Project workspace/runtime-setting snapshots,
+signed MicroApp actors and private/unsupported/uninitialized MicroApp omissions. Shell displays these
+counts after reload and identifies older archives without recorded coverage. Archive bytes and restore
+authority are unchanged.
+
+P04 user-private trace: validators and storage keys support user scopes, but reachable gadget routes
+construct only Space-wide/project-bound actors, and Space archive skips user-scoped installations.
+There is no authenticated exact-user MicroApp archive/runtime path. Personal state stays outside a
+Space-owner archive pending that identity contract; this is not a credential blocker.
+
+Verification: Space archive/migration suites **27/27**, Spaces/Shell typechecks, `git diff --check`.
+These are local SQLite/Worker mocks. No browser, deployed D1/DO/R2 or recovery drill ran. P04 remains
+PARTIAL for other service/inbound stores, personal state, approved retention/key/jurisdiction policy,
+cross-DO point-in-time consistency, RPO/RTO and deployed acceptance. All rollouts remain disabled.
+
+Exact next action: extend the Space archive into the separate Knowledge Worker store with bounded
+tenant/Space/Project snapshots of canonical `kb_documents`, `kb_chunks` and required KB_BUCKET source
+objects. Fence export/restore against deletion tombstones, restore additively, and leave Vectorize and
+AutoRAG state for the existing indexing/reconciliation paths. Wire preview/status/restore with
+authorization, retry and tombstone-race tests.
+
+## Previous checkpoint — 2026-11-15 (P05 cleanup resumes after reload; §11.2 reconciled)
 
 Code `c2963702f6795b0c126f4f7fa769f67f35ee22c7` adds exact generated-Project archive/cleanup preview
 and explicit owner/admin confirmation. Code `0a4021bacd999ba502b65d19704c44108c42abff` lets the
@@ -1822,7 +1847,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P01 | PARTIAL | Release runner, ordered fail-closed migration phase, schema probes and promotion health gates are local. Current inventory pins **255** migrations through `0255_project_main_private_state_recovery`; release runner tests pass **20/20**, and release/deployment validators pass. | Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. No migration was applied remotely. |
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Versioned platform/Product-user outboxes and deterministic Workflow dispatch remain. Migration 0252 scopes Product-user dunning provider outcomes to the exact product/end user/subscription; Notifications rechecks active tenancy, current `past_due` status, provider event version and verified recipient before sending. The authenticated Spaces/Router/Shell caller exposes the current user's subscription, durable outbox status (`pending`/`leased`/queue handoff) and recent non-PII provider outcomes (`c4d9b6ca`); erasure deletes scoped provider receipts. Fresh Billing dunning/status **13/13**, Spaces status caller **2/2**, affected typechecks, and an SQLite cross-scope query check pass locally. | Grace/restriction/escalation and retry-cadence policy, inbox delivery, provider acceptance and live acceptance remain. |
-| P04 | PARTIAL | Bounded encrypted Space archives now include signed shared/project MicroApp business tables, action receipts/events and audit via identity-bound export/preview/additive restore (`c46592da`, `e90ccab7`); preview and apply enforce FK integrity. Existing workspace state, Project runtime settings/recipes, and owner-selected encrypted private fallback (`ef77e193`) are reused. | Other service/provider/inbound stores, user-private and legacy/unsigned app stores, regional key/R2 provisioning, retention/legal hold, cross-DO point-in-time consistency, RPO/RTO and isolated/deployed recovery remain. Provider snapshots stay excluded and physical purge is unsupported. |
+| P04 | PARTIAL | Bounded encrypted Space archives include signed shared/project MicroApp business tables, action receipts/events and audit via identity-bound export/preview/additive restore (`c46592da`, `e90ccab7`), workspace state, Project runtime settings/recipes and owner-selected encrypted private fallback (`ef77e193`). Migration 144 (`a47fbedb`) persists exact per-archive coverage counts/omissions and owner/admin status reloads them. `USER_PRIVATE` is declared but has no reachable exact-user runtime/archive caller; user-scoped extension installs remain excluded from owner archives. | Knowledge and other service/provider/inbound stores, user-private runtime/identity contract, legacy/unsigned app stores, regional key/R2 provisioning, retention/legal hold, cross-DO point-in-time consistency, RPO/RTO and isolated/deployed recovery remain. Provider snapshots stay excluded and physical purge is unsupported. |
 | P05 | PARTIAL | Signed SpaceBlueprint knowledge/action requirements, trusted candidate review, setup drafts, durable activation/recovery, and owner-selected Knowledge intent carried to each created Project are local. Migration 137 stores default-empty per-Project grants; activation never writes a grant, and the owner saves through the publication-checked grant API. `75feeabb` prevents grant resurrection during archive restore. Code `c2963702` adds exact generated-Project owner/admin cleanup preview/confirmation; `0a4021ba` adds durable progress rehydration through a bounded metadata-only status endpoint. Shared installs and external billing are explicitly unchanged. | Actual broader update/uninstall lifecycle, cleanup/retained license/provider-charge semantics, Space-wide provider authority/payer/revocation contract, complete verified rates and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice dashboards, bounded keypad handlers, signed handler discovery/readiness, per-installation history, synthetic call/DTMF and Twilio speech tests, draft/publish revisions and rollback drafts are local. Twilio and Telnyx calls pin admitted signed installation, handler digest and published settings revision (`7e9d3c2b`). Code `1f429ee9` adds owner Telnyx voice preference, a default-off caller consent flow, durable grant/deny, one-use ticket and a separate WebSocket start-pin validator. DTMF remains the only active extension runtime; the new media boundary fails closed without processing audio. | Naelao publisher/key custody, signed distribution/catalog policy, host STT/TTS and speech budget/interruption/cleanup runtime, managed provisioning, full cost/quality evidence and live carrier acceptance remain. Delayed Twilio connectivity prices are not invoices. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |

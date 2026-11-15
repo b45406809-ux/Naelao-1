@@ -16,7 +16,35 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (P05 cleanup resumes after reload; §11.2 reconciled; pushed)
+## Latest checkpoint — 2026-11-15 (P04 archive coverage and identity boundary; pushed)
+
+Code `a47fbedb4bda8eb7f954bb440214d79c5bff29e2` is pushed to `origin/Mcbt5s-Backup-2`. Migration
+144 persists a versioned coverage summary for each verified Space archive; export/retry and data-ops
+status expose captured Space rows, objects, workspace/runtime snapshots, signed MicroApp actors and
+per-user/unsupported/uninitialized MicroApp omissions. The Shell displays the summary after reload and
+labels older records whose coverage was not stored. No archive bytes or restore authority changed.
+
+Trace result: `USER_PRIVATE`, `SPACE_USER` and `PROJECT_USER` appear in scope validators/storage keys,
+but reachable gadget execution routes construct only Space-wide or project-bound actors. Space archive
+deliberately excludes user-scoped extension installations. There is no exact-user authenticated
+MicroApp archive/export caller or complete user-private runtime path, so personal data remains outside
+the Space-owner archive pending that identity/runtime contract; this is not a provider credential gate.
+
+Local evidence: Space archive and migration suites **27/27**, Spaces and Shell typechecks, and
+`git diff --check`. Direct local binaries were used because pnpm refused its auto-install cleanup in
+the non-interactive environment. No browser, deployed D1/DO/R2 or recovery drill ran. P04 remains
+PARTIAL for other service/inbound stores, user-private state, policy/key/jurisdiction decisions,
+cross-DO point-in-time consistency, RPO/RTO and deployed acceptance. Preserve untracked
+`infra/scripts/__pycache__/`; keep rollout disabled.
+
+Exact next action: extend P04 to the separate Knowledge Worker store. Build a bounded, tenant/Space/
+Project-bound snapshot for canonical `kb_documents`, `kb_chunks` and required KB_BUCKET source objects;
+fence export and restore against current deletion tombstones, and restore additively without restoring
+Vectorize/AutoRAG state or replaying provider effects. Wire it through the existing owner archive
+preview/status/restore path, with authorization, retry and tombstone-race tests. Reassess scope before
+including any user-owned or provider data.
+
+## Previous checkpoint — 2026-11-15 (P05 cleanup resumes after reload; §11.2 reconciled; pushed)
 
 Code `c2963702f6795b0c126f4f7fa769f67f35ee22c7` adds owner/admin preview and confirmation for cleanup
 of the exact validated generated Project. Code `0a4021bacd999ba502b65d19704c44108c42abff` adds
