@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0256_modal_sandbox_operation_journal",
+  "requiredSchemaVersion": "0257_telnyx_extension_stream_sessions",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1027,6 +1027,10 @@
     {
       "filename": "0256_modal_sandbox_operation_journal.sql",
       "sha256": "1bdec40e6f1fac4fd8e5e06edc3648ba0148438d50e3d02fb72d0169cbaba8d3"
+    },
+    {
+      "filename": "0257_telnyx_extension_stream_sessions.sql",
+      "sha256": "37ceee58ebde4f538cd261617d4f63a65c43bf0e88d2f94bb49c3cb2592ac5cb"
     }
   ]
 }
