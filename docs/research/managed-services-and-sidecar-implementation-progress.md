@@ -1,5 +1,13 @@
 # Managed services and sidecar implementation progress
 
+## Continuation checkpoint — 2026-11-15 (S2 UserPort owner-link unlink recovery; code 70c2e2d34daa99f254c598234885b0332629460b)
+
+When an owner-link unlink encounters an irrecoverable held sync record, it now revokes persisted AgentPort accounts by exact stored IDs while retaining the unsafe operation as `held` for review. Recoverable held syncs still enter scheduled cleanup. The API returns `cleanupBlocked` and `cleanupPending`; it does not claim that an unknown side effect was cleaned.
+
+Evidence: UserPort↔AgentPort lifecycle/route suite **17/17**, Agents typecheck, `git diff --check`; local SQLite/Worker mocks only. No live AgentPort/provider or deployed acceptance. Code SHA `70c2e2d34daa99f254c598234885b0332629460b` is committed and will be pushed with this record. S2 stays IMPLEMENTED_LOCAL for supported provider lanes; provider/commercial acceptance is still distinct. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: continue S3/U05 by tracing `project_main_runtime_registry` allocation through the owner-authorized Workspace Coordinator and live-capability verifier. Implement the missing candidate allocation/reservation caller bound to exact tenant/Space/Project, current allocation generation, selected template/image digest, current authorization and budget/credit holds. Keep candidates unqualified until trusted observations exist; test authorization, stale/concurrent allocations, and rejection of fabricated attestation. U06 write/drain/flush remains unsupported.
+
 ## Continuation checkpoint — 2026-11-15 (P04 product-user billing portability; pushed 2bec4bc861c33e0f272b9c5f11ed79120e12ccf2)
 
 Product-user `/export` now includes current Billing subscription summary, scoped dunning notification outcomes, and dispatch status via the existing tenant-HMAC Billing service binding. It validates the exact allowlisted response shape, caps it at 16 KiB and ten rows per status list, suppresses caching, and fails closed for absent, failing, malformed, or excessive Billing responses. Provider subscription IDs, recipients, and provider receipt IDs remain excluded. Default, staging, and production Spaces Billing bindings already exist.

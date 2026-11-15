@@ -1,5 +1,11 @@
 # Platform completion and guided templates progress
 
+## Continuation checkpoint — 2026-11-15 (S2 UserPort owner-link unlink recovery; code 70c2e2d34daa99f254c598234885b0332629460b)
+
+The S2 UserPort↔AgentPort caller now completes cleanup of independently persisted account IDs even when a related held sync journal is malformed. It preserves that operation as blocked for review, reports `cleanupBlocked` and `cleanupPending`, and continues recoverable cleanup without replaying the malformed request. Focused lifecycle/route suite **17/17**, Agents typecheck, and diff hygiene pass. Local mocks only; no live AgentPort or deployed acceptance. Code SHA `70c2e2d34daa99f254c598234885b0332629460b` is committed and will be pushed with this record. S2 remains local-only for supported lanes.
+
+Exact next action: begin the S3/U05 product-side candidate allocation/reservation implementation using the existing owner-authorized project-main lifecycle and capability verifier. Bind exact tenant/Space/Project, current generation, selected image/template digest, authorization and existing reservations. Keep the candidate unqualified absent trusted runtime observations; add stale/concurrent/authorization/no-fabricated-evidence coverage. U06 remains a separate unsupported runtime-writer contract.
+
 ## Continuation checkpoint — 2026-11-15 (P04 product-user billing portability; pushed 2bec4bc861c33e0f272b9c5f11ed79120e12ccf2)
 
 The authenticated Product-user export now carries a bounded summary of subscription, dunning outcomes, and dispatch states from Billing. Spaces sends the exact session-derived product/user pair under tenant HMAC, validates an allowlisted response capped at 16 KiB and ten rows per list, and refuses partial exports if Billing is unavailable, failing, malformed, or excessive. Exports are `private, no-store`; provider subscription IDs, recipient addresses, and provider receipt IDs stay private. Existing default/staging/production Billing bindings are wired.
