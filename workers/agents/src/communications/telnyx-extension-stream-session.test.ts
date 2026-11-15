@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { fixture, scope } from "../../../../tests/fixtures/assistant-communications.js";
 import { ensureIdentity } from "./core.js";
 import {
+  activateTelnyxExtensionStreamSession, advanceTelnyxExtensionTranscriptSequence,
   claimTelnyxExtensionStreamTicket, createTelnyxExtensionStreamSession,
-  denyTelnyxExtensionStreamConsent, grantTelnyxExtensionStreamConsent, isTelnyxExtensionStreamSessionCurrent,
+  denyTelnyxExtensionStreamConsent, endTelnyxExtensionStreamSession,
+  grantTelnyxExtensionStreamConsent, isTelnyxExtensionStreamSessionCurrent,
 } from "./telnyx-extension-stream-session.js";
 
 async function admittedCall() {
@@ -11,7 +13,7 @@ async function admittedCall() {
   const identity = await ensureIdentity(f.env, scope);
   await f.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,
       provider_number_sid,phone_number,policy_json,status)
-    VALUES('stream-line',?,'extension','byo','telnyx','account','12345','+14155550100','{}','active')`)
+    VALUES('stream-line',?,'extension','byo','telnyx','account','12345','+14155550100','{"allowTelnyxExtensionVoice":true}','active')`)
     .bind(identity.id).run();
   await f.db.prepare(`INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status)
     VALUES('stream-line','install-1',?,'active')`).bind("a".repeat(64)).run();
@@ -78,6 +80,25 @@ describe("Telnyx extension stream session tickets", () => {
     expect(await claimTelnyxExtensionStreamTicket(f.env.PLATFORM_DB, pin.bindingId, ticket, now + 61)).toBeNull();
   });
 
+  it("activates only the pinned live stream and admits final transcripts in monotonic order", async () => {
+    const { f, pin, now } = await admittedCall();
+    const session = await createTelnyxExtensionStreamSession(f.env.PLATFORM_DB, pin, now);
+    const ticket = await grantTelnyxExtensionStreamConsent(f.env.PLATFORM_DB, pin, session.sessionId, now);
+    const claimed = await claimTelnyxExtensionStreamTicket(f.env.PLATFORM_DB, pin.bindingId, ticket, now);
+    expect(claimed).not.toBeNull();
+    expect(await activateTelnyxExtensionStreamSession(f.env.PLATFORM_DB, claimed!, now)).toBe(true);
+    expect(await isTelnyxExtensionStreamSessionCurrent(f.env.PLATFORM_DB, claimed!, now)).toBe(true);
+    expect(await advanceTelnyxExtensionTranscriptSequence(f.env.PLATFORM_DB, claimed!, 1, now)).toBe(false);
+    expect(await advanceTelnyxExtensionTranscriptSequence(f.env.PLATFORM_DB, claimed!, 0, now)).toBe(true);
+    expect(await advanceTelnyxExtensionTranscriptSequence(f.env.PLATFORM_DB, claimed!, 0, now)).toBe(false);
+    expect(await advanceTelnyxExtensionTranscriptSequence(f.env.PLATFORM_DB, claimed!, 1, now)).toBe(true);
+    await envDisableOwnerPreference(f, pin.bindingId);
+    expect(await isTelnyxExtensionStreamSessionCurrent(f.env.PLATFORM_DB, claimed!, now)).toBe(false);
+    await endTelnyxExtensionStreamSession(f.env.PLATFORM_DB, session.sessionId, now);
+    expect(await f.db.prepare("SELECT state,last_transcript_sequence FROM assistant_telnyx_extension_stream_sessions WHERE session_id=?")
+      .bind(session.sessionId).first()).toEqual({ state: "ended", last_transcript_sequence: 1 });
+  });
+
   it("does not create a session for mismatched scope or an unpinned call", async () => {
     const { f, pin, now } = await admittedCall();
     await expect(createTelnyxExtensionStreamSession(f.env.PLATFORM_DB, { ...pin, tenantId: "other-tenant" }, now))
@@ -88,3 +109,7 @@ describe("Telnyx extension stream session tickets", () => {
       .rejects.toThrow("telnyx_extension_stream_admission_not_found");
   });
 });
+
+async function envDisableOwnerPreference(f: Awaited<ReturnType<typeof admittedCall>>["f"], bindingId: string) {
+  await f.db.prepare("UPDATE assistant_phone_bindings SET policy_json='{}' WHERE id=?").bind(bindingId).run();
+}

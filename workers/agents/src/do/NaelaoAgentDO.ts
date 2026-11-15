@@ -19,7 +19,7 @@ import { clearChannelExtensionConversationSessions, clearChannelExtensionSession
 import { resolveExtensionProjectKnowledge } from "../channels/extension-knowledge-selection.js";
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { createScaleDownProcessor } from "../shared/scaledown.js";
-import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, validateVoiceExtensionStreamResponse, type DocumentProcessingGateway } from "@naelao/agent-sdk";
+import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, validateVoiceExtensionStreamEvent, validateVoiceExtensionStreamResponse, type DocumentProcessingGateway } from "@naelao/agent-sdk";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
 
 type AssistantApprovalPolicySnapshot = {
@@ -9869,7 +9869,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       settingsSource?: "active" | "draft";
       expectedInstallationId?: string; expectedHandlerSha256?: string;
       eventType?: "call.received" | "call.digits" | "call.speech" | "transcript.final";
-      event?: { id: string; type: string; payload: Record<string, unknown> };
+      event?: { schema_version?: number; id: string; type: string; payload: Record<string, unknown> };
     }>(new Response(request.body), 16_384);
     const hasExpectedHandler = body.expectedInstallationId !== undefined || body.expectedHandlerSha256 !== undefined;
     if (hasExpectedHandler && (typeof body.expectedInstallationId !== "string" || !body.expectedInstallationId
@@ -9916,11 +9916,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "phone_simulation_input_invalid" }, { status: 400 });
     const event = simulation
       ? { id: `simulation-${crypto.randomUUID()}`, type: eventType, payload: {
-        caller: "simulation",
+        ...(eventType === "transcript.final" ? {} : { caller: "simulation" }),
         ...(eventType === "call.speech" ? { speech: input } : {}), ...(eventType === "call.digits" ? { digits } : {}),
         ...(eventType === "transcript.final" ? { call_ref: `call_${crypto.randomUUID().replace(/-/g, "")}`, sequence: 0, text: input } : {}),
       } }
       : body.event;
+    const streamEvent = row.provider === "telnyx" && event
+      && ["call.started", "call.interrupted", "transcript.final"].includes(event.type)
+      ? validateVoiceExtensionStreamEvent({ schema_version: simulation ? 1 : event.schema_version,
+        id: event.id, type: event.type, payload: event.payload })
+      : null;
+    if (row.provider === "telnyx" && event && ["call.started", "call.interrupted", "transcript.final"].includes(event.type)
+      && !streamEvent) return Response.json({ error_code: "phone_stream_event_invalid" }, { status: 400 });
     if (!simulation && row.provider === "telnyx" && event?.type.startsWith("call.")
       && (!hasExpectedHandler || !hasSettingsRevision))
       return Response.json({ error_code: "phone_call_pin_required" }, { status: 409 });
@@ -9982,6 +9989,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           provider: "phone",
           event: { id: event.id, type: "message.received", occurredAt: new Date().toISOString(), payload: {
             ...event.payload, voice_event: event.type, provider: row.provider,
+            ...(streamEvent ? { voice_stream_event: streamEvent } : {}),
             speech_input_allowed: row.provider === "twilio" && (() => { try { return JSON.parse(row.policy_json).allowSpeechInput === true; } catch { return false; } })(),
           } },
           conversation: { id: `simulation:${crypto.randomUUID()}` },
@@ -10049,11 +10057,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Use a keyed surrogate for the caller so state can continue across calls and SMS without
     // storing the phone number itself in the extension session database.
     const caller = typeof event.payload.caller === "string" ? event.payload.caller : "unknown";
-    const conversationDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([body.spaceId, body.bindingId, caller])));
+    const conversationIdentity = streamEvent ? `voice:${streamEvent.payload.call_ref}` : caller;
+    const conversationDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([body.spaceId, body.bindingId, conversationIdentity])));
     const conversationId = Array.from(new Uint8Array(conversationDigest), byte => byte.toString(16).padStart(2, "0")).join("");
     let sessionState: unknown = null;
     let namedStates: Record<string, unknown> = {};
-    if (handler.session) {
+    // Voice transcript events may contain personal content. Until the voice extension contract
+    // defines an owner-visible retention policy, keep their cross-turn state memory-only and do
+    // not read or persist the extension's durable session update for these events.
+    const persistentSession = streamEvent ? undefined : handler.session;
+    if (persistentSession) {
       try {
         sessionState = readChannelExtensionSession(this.ctx.storage.sql, {
           projectId: sessionScope, installationId: row.installation_id, conversationId,
@@ -10073,13 +10086,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         provider: "phone",
         event: { id: event.id, type: "message.received", occurredAt: new Date().toISOString(), payload: {
           ...event.payload, voice_event: event.type, provider: row.provider,
+          ...(streamEvent ? { voice_stream_event: streamEvent } : {}),
           speech_input_allowed: row.provider === "twilio" && (() => { try { return JSON.parse(row.policy_json).allowSpeechInput === true; } catch { return false; } })(),
         } },
         conversation: { id: conversationId },
         ...(handler.settings ? { settings: { schemaVersion: handler.settings.schemaVersion, revision: handler.settings.revision, values: handler.settings.values } } : {}),
-        ...(handler.session ? {
-          session: { state: sessionState, maxBytes: handler.session.maxBytes },
-          sessions: { states: namedStates, maxBytes: handler.session.maxBytes },
+        ...(persistentSession ? {
+          session: { state: sessionState, maxBytes: persistentSession.maxBytes },
+          sessions: { states: namedStates, maxBytes: persistentSession.maxBytes },
         } : {}),
       },
     });
@@ -10095,16 +10109,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       try { response = JSON.parse(result.channel_replies[0]!); }
       catch { return failEvent("phone_response_invalid"); }
     }
-    if (handler.session) {
+    if (persistentSession) {
       try {
         this.ctx.storage.transactionSync(() => {
           if (result.channel_session_update !== undefined) writeChannelExtensionSession(this.ctx.storage.sql, {
             projectId: sessionScope, installationId: row.installation_id, conversationId,
-            value: result.channel_session_update, maxBytes: handler.session!.maxBytes, ttlDays: handler.session!.ttlDays,
+            value: result.channel_session_update, maxBytes: persistentSession.maxBytes, ttlDays: persistentSession.ttlDays,
           });
           if (result.channel_session_updates?.length) writeChannelExtensionNamedSessions(this.ctx.storage.sql, {
             projectId: sessionScope, installationId: row.installation_id, conversationId,
-            updates: result.channel_session_updates, maxBytes: handler.session!.maxBytes, ttlDays: handler.session!.ttlDays,
+            updates: result.channel_session_updates, maxBytes: persistentSession.maxBytes, ttlDays: persistentSession.ttlDays,
           });
           const receipt = JSON.stringify(isSms ? response : { response });
           if (new TextEncoder().encode(receipt).byteLength > 8_192) throw new Error("phone_receipt_too_large");
@@ -10113,8 +10127,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         });
       } catch { return failEvent("phone_session_save_failed"); }
     } else {
-      const receipt = JSON.stringify(isSms ? response : { response });
-      if (new TextEncoder().encode(receipt).byteLength > 8_192) return failEvent("phone_receipt_too_large");
+      // Voice stream actions can echo private caller content. Keep only the dedupe status for a
+      // transcript/interruption event; a retry becomes outcome-unknown and is never re-executed.
+      const receipt = streamEvent?.type === "transcript.final" ? null : JSON.stringify(isSms ? response : { response });
+      if (receipt && new TextEncoder().encode(receipt).byteLength > 8_192) return failEvent("phone_receipt_too_large");
       this.ctx.storage.sql.exec("UPDATE phone_extension_events SET status='completed',response_json=?,updated_at=? WHERE installation_id=? AND event_id=? AND status='running'",
         receipt, Date.now(), row.installation_id, event.id);
     }

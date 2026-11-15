@@ -54,6 +54,7 @@ export function createVaultProxy(options: VaultProxyOptions) {
         `http://credentials/v1/internal/spaces/${encodeURIComponent(options.spaceId)}/outbound`,
         {
           method: "POST",
+          ...(init.signal ? { signal: init.signal } : {}),
           headers: {
             "content-type": "application/json",
             "x-naelao-tenant-id": options.tenantId,

@@ -133,9 +133,12 @@ describe("Telnyx live call command contract", () => {
     expect(await f.db.prepare("SELECT id FROM assistant_live_calls").first()).toBeNull();
   });
 
-  it("records caller consent before creating a Telnyx stream ticket and preserves keypad fallback", async () => {
+  it("starts a pinned extension stream only after owner consent, runtime readiness and external acceptance", async () => {
     const f = fixture();
+    f.env.PUBLIC_AGENTS_URL = "https://agents.test";
     f.env.TELNYX_EXTENSION_STREAMING_ENABLED = "true";
+    f.env.TELNYX_EXTENSION_STREAMING_ACCEPTED = "true";
+    f.env.TELNYX_EXTENSION_AUDIO_MAX_COST_USD = "0.25";
     f.fetch.mockImplementation((request: Request) => Promise.resolve(request.url.includes("assistant-access")
       ? Response.json({ effective_role: "owner" })
       : Response.json({ preferences: { enabled: { phone: true, email: true } } })));
@@ -150,9 +153,12 @@ describe("Telnyx live call command contract", () => {
       .bind("consent-extension", identity.id, JSON.stringify({ ...defaultPhonePolicy, allowTelnyxExtensionVoice: true })).run();
     await f.db.prepare("INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status) VALUES('consent-extension','ext-1',?,'active')")
       .bind("a".repeat(64)).run();
+    f.env.BILLING_WORKER = { fetch: vi.fn(async () => Response.json({ reserved: true, settled: true })) } as unknown as Fetcher;
     f.env.AGENTS_WORKER = { fetch: vi.fn(async request => {
-      const body = await request.json() as { pinCall?: boolean };
-      return body.pinCall ? Response.json({ settings_revision: 7 }) : Response.json({ response: { actions: [
+      const body = await request.json() as { pinCall?: boolean; event?: { type?: string } };
+      if (body.pinCall) return Response.json({ settings_revision: 7 });
+      if (body.event?.type === "call.started") return Response.json({ response: { schema_version: 1, actions: [{ type: "listen", input: "speech" }] } });
+      return Response.json({ response: { actions: [
         { type: "say", text: "Welcome." }, { type: "gather", input: "dtmf", digits: 1, text: "Press one." },
       ] } });
     }) } as unknown as Fetcher;
@@ -168,7 +174,7 @@ describe("Telnyx live call command contract", () => {
         payload: { call_control_id: callControlId, digits } });
     };
 
-    expect(await call("consent-yes", "1")).toMatchObject({ accepted: true, gathering: true });
+    expect(await call("consent-yes", "1")).toMatchObject({ accepted: true, connected: true, voice_consent: "granted" });
     expect(await call("consent-no", "2")).toMatchObject({ accepted: true, gathering: true });
     const sessions = await f.db.prepare(`SELECT call_control_id,consent_state,state,media_ticket_sha256
       FROM assistant_telnyx_extension_stream_sessions ORDER BY call_control_id`).all();
@@ -176,10 +182,47 @@ describe("Telnyx live call command contract", () => {
       expect.objectContaining({ call_control_id: "consent-no", consent_state: "denied", state: "ended", media_ticket_sha256: null }),
       expect.objectContaining({ call_control_id: "consent-yes", consent_state: "granted", state: "ready", media_ticket_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
     ]);
-    expect(carrier.mock.calls.some(([url]) => String(url).includes("/actions/streaming_start"))).toBe(false);
+    expect(carrier.mock.calls.some(([url]) => String(url).includes("/actions/streaming_start"))).toBe(true);
     const gathered = carrier.mock.calls.filter(([url]) => String(url).includes("/actions/gather_using_speak"));
-    expect(gathered).toHaveLength(4);
+    expect(gathered).toHaveLength(3);
     expect(JSON.parse(String(gathered[0]?.[1]?.body))).toMatchObject({ minimum_digits: 1, maximum_digits: 1, valid_digits: "12" });
+  });
+
+  it("keeps the DTMF path untouched when live acceptance has not been recorded", async () => {
+    const f = fixture();
+    f.env.PUBLIC_AGENTS_URL = "https://agents.test";
+    f.env.TELNYX_EXTENSION_STREAMING_ENABLED = "true";
+    f.env.TELNYX_EXTENSION_STREAMING_ACCEPTED = "false";
+    f.env.TELNYX_EXTENSION_AUDIO_MAX_COST_USD = "0.25";
+    f.fetch.mockImplementation((request: Request) => Promise.resolve(request.url.includes("assistant-access")
+      ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } })));
+    const identity = await ensureIdentity(f.env, scope);
+    const pair = generateKeyPairSync("ed25519");
+    const publicKey = pair.publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
+    f.env.CREDENTIALS_WORKER = { fetch: vi.fn(async () => Response.json({ value: JSON.stringify({
+      apiKey: "test-api-key-123456", publicKey, verifiedNumberId: "12345", verifiedPhoneNumber: "+14155550100",
+    }) })) } as unknown as Fetcher;
+    await f.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,
+      provider_number_sid,phone_number,policy_json,status) VALUES(?,?,'extension','byo','telnyx','account','12345','+14155550100',?,'active')`)
+      .bind("disabled-consent-extension", identity.id, JSON.stringify({ ...defaultPhonePolicy, allowTelnyxExtensionVoice: true })).run();
+    await f.db.prepare("INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status) VALUES('disabled-consent-extension','ext-1',?,'active')")
+      .bind("a".repeat(64)).run();
+    const extension = vi.fn(async request => {
+      const body = await request.json() as { pinCall?: boolean };
+      return body.pinCall ? Response.json({ settings_revision: 7 }) : Response.json({ response: { actions: [
+        { type: "say", text: "Welcome." }, { type: "gather", input: "dtmf", digits: 1, text: "Press one." },
+      ] } });
+    });
+    f.env.AGENTS_WORKER = { fetch: extension } as unknown as Fetcher;
+    const carrier = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: { result: "accepted" } }));
+    vi.stubGlobal("fetch", carrier);
+    const binding = await f.db.prepare("SELECT * FROM assistant_phone_bindings WHERE id='disabled-consent-extension'").first<AssistantPhoneBinding>();
+    await dispatchTelnyxVoiceEvent(f.env, binding!, identity, { eventId: "disabled-1", eventType: "call.initiated",
+      payload: { call_control_id: "disabled-call", direction: "incoming", from: "+14155550101", to: "+14155550100" } });
+    await dispatchTelnyxVoiceEvent(f.env, binding!, identity, { eventId: "disabled-2", eventType: "call.answered", payload: { call_control_id: "disabled-call" } });
+    expect(await f.db.prepare("SELECT COUNT(*) AS n FROM assistant_telnyx_extension_stream_sessions").first()).toEqual({ n: 0 });
+    expect(carrier.mock.calls.some(([url]) => String(url).includes("/actions/streaming_start"))).toBe(false);
+    expect(carrier.mock.calls.some(([url]) => String(url).includes("/actions/gather_using_speak"))).toBe(true);
   });
 
   it("rejects public extension calls atomically at the per-binding concurrency ceiling", async () => {

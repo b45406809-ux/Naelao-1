@@ -27,6 +27,7 @@ import {
 } from "./phone-provider.js";
 import { telnyxCallControlIdHash } from "./telnyx-voice-cost.js";
 import { getProviderApiCostObservation } from "./managed-service-cost-observations.js";
+import { extensionAudioMaxCost } from "./telnyx-extension-voice-runtime.js";
 
 type ExtensionCallCostSummary = {
   status: "reported" | "unavailable" | "not_linked";
@@ -644,14 +645,31 @@ export async function handlePhoneAction(
       ? (await env.PLATFORM_DB.prepare(`SELECT c.call_control_id,c.binding_id,c.extension_installation_id,c.handler_sha256,
           c.settings_revision,c.settings_pinned,c.caller,c.state,c.turn_count,c.started_at,c.duration_seconds,
           (SELECT s.consent_state FROM assistant_telnyx_extension_stream_sessions s
-            WHERE s.binding_id=c.binding_id AND s.call_control_id=c.call_control_id LIMIT 1) AS voice_consent_state
+            WHERE s.binding_id=c.binding_id AND s.call_control_id=c.call_control_id LIMIT 1) AS voice_consent_state,
+          (SELECT s.state FROM assistant_telnyx_extension_stream_sessions s
+            WHERE s.binding_id=c.binding_id AND s.call_control_id=c.call_control_id LIMIT 1) AS voice_runtime_state,
+          (SELECT SUM(CASE json_extract(u.record_json,'$.state')
+              WHEN 'settled' THEN json_extract(u.record_json,'$.costUsd')
+              WHEN 'settle_retry' THEN COALESCE(json_extract(u.record_json,'$.costUsd'),json_extract(u.record_json,'$.estimatedCostUsd'))
+              WHEN 'pending' THEN json_extract(u.record_json,'$.estimatedCostUsd')
+              WHEN 'held' THEN json_extract(u.record_json,'$.estimatedCostUsd')
+              WHEN 'reserving' THEN json_extract(u.record_json,'$.estimatedCostUsd') ELSE 0 END)
+            FROM assistant_telnyx_extension_audio_usage u
+            JOIN assistant_telnyx_extension_stream_sessions s ON s.session_id=u.session_id
+            WHERE s.binding_id=c.binding_id AND s.call_control_id=c.call_control_id) AS speech_usage_cost_estimate_usd,
+          (SELECT COUNT(*) FROM assistant_telnyx_extension_audio_usage u
+            JOIN assistant_telnyx_extension_stream_sessions s ON s.session_id=u.session_id
+            WHERE s.binding_id=c.binding_id AND s.call_control_id=c.call_control_id
+              AND json_extract(u.record_json,'$.state') IN ('reserving','held','pending','settle_retry')) AS speech_usage_unresolved
           FROM assistant_telnyx_extension_calls c JOIN assistant_phone_bindings b ON b.id=c.binding_id
           WHERE b.identity_id=? AND b.purpose='extension' AND c.started_at>=?
           ORDER BY c.started_at DESC,c.call_control_id DESC LIMIT 50`)
           .bind(identity.id, Math.floor(Date.now() / 1000) - 7 * 86_400)
           .all<{ call_control_id:string;binding_id:string;extension_installation_id:string|null;handler_sha256:string|null;
             settings_revision:number|null;settings_pinned:number;caller:string;state:string;turn_count:number;started_at:number;duration_seconds:number|null;
-            voice_consent_state:"pending"|"granted"|"denied"|"revoked"|null }>())
+            voice_consent_state:"pending"|"granted"|"denied"|"revoked"|null;
+            voice_runtime_state:"consent_pending"|"ready"|"claimed"|"active"|"ended"|"indeterminate"|null;
+            speech_usage_cost_estimate_usd:number|null;speech_usage_unresolved:number }>())
           .results
       : [];
     const recentTwilioExtensionCalls = manager
@@ -687,6 +705,8 @@ export async function handlePhoneAction(
       settings_pinned: row.settings_pinned === 1,
       state: row.state, turn_count: row.turn_count, started_at: row.started_at,
       duration_seconds: row.duration_seconds, caller_hint: maskedPhoneCaller(row.caller), voice_consent_state: row.voice_consent_state,
+      voice_runtime_state: row.voice_runtime_state, speech_usage_cost_estimate_usd: row.speech_usage_cost_estimate_usd,
+      speech_usage_unresolved: row.speech_usage_unresolved,
       cost_report: extensionCallCosts.get(`${row.binding_id}\0${row.call_control_id}`)
         ?? { status: "not_linked" as const, provider_cost_micros: null, currency: null, leg_count: null },
     }));
@@ -707,6 +727,11 @@ export async function handlePhoneAction(
     }
     return {
       phone: metadata(currentPhone),
+      telnyx_extension_voice_limits: {
+        streaming_enabled: env.TELNYX_EXTENSION_STREAMING_ENABLED === "true",
+        external_acceptance_recorded: env.TELNYX_EXTENSION_STREAMING_ACCEPTED === "true",
+        max_estimated_audio_cost_usd: extensionAudioMaxCost(env),
+      },
       telnyx_agentport_shared: agentPortShare?.agentport_link_status === "active",
       telnyx_agentport_link_status: agentPortShare?.agentport_link_status ?? null,
       telnyx_agentport_operation: agentPortShare?.operation_name ? { operation_name:agentPortShare.operation_name,

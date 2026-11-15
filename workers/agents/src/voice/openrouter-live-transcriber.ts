@@ -10,7 +10,7 @@ const MIN_VOICE_MS = 120;
 const RMS_THRESHOLD = 520;
 
 export interface UtteranceTranscriber {
-  transcribe(input: { requestId: string; data: string; format: "wav" }): Promise<string>;
+  transcribe(input: { requestId: string; data: string; format: "wav"; signal?: AbortSignal }): Promise<string>;
 }
 export interface LiveTranscriberOptions {
   provider: UtteranceTranscriber;
@@ -49,6 +49,7 @@ export class OpenRouterLiveTranscriber implements Transcriber {
     const now = this.options.now ?? Date.now;
     let active: Uint8Array[] = [], activeBytes = 0, activeStart = 0, lastVoice = 0, voiceBytes = 0;
     let queued: Uint8Array[] | null = null, queuedBytes = 0, processing = false, closed = false;
+    const requests = new Set<AbortController>();
     const fail = (reason: string) => sessionOptions.onFatalError?.(new Error(reason));
     const copy = (chunk: ArrayBuffer) => new Uint8Array(chunk.slice(0));
     const append = (target: Uint8Array[], chunk: Uint8Array) => target.push(chunk);
@@ -57,10 +58,13 @@ export class OpenRouterLiveTranscriber implements Transcriber {
       const pcm = new Uint8Array(size); let offset = 0;
       for (const chunk of chunks) { pcm.set(chunk, offset); offset += chunk.byteLength; }
       const payload = base64(wav(pcm));
+      const controller = new AbortController(); requests.add(controller);
+      const deadline = setTimeout(() => controller.abort(), 20_000);
       try {
-        const text = await this.options.provider.transcribe({ requestId: this.options.requestId(), data: payload, format: "wav" });
+        const text = await this.options.provider.transcribe({ requestId: this.options.requestId(), data: payload, format: "wav", signal: controller.signal });
         if (!closed && text.trim()) sessionOptions.onUtterance?.(text.slice(0, 2_000));
       } catch { if (!closed) fail("openrouter_transcription_unavailable"); }
+      finally { clearTimeout(deadline); requests.delete(controller); }
     };
     const drain = async () => {
       if (processing || closed) return;
@@ -101,7 +105,7 @@ export class OpenRouterLiveTranscriber implements Transcriber {
         if (activeBytes >= MAX_UTTERANCE_BYTES || time - activeStart >= MAX_UTTERANCE_MS) finish();
         else if (lastVoice && time - lastVoice >= END_SILENCE_MS) finish();
       },
-      close() { closed = true; active = []; queued = null; activeBytes = queuedBytes = 0; },
+      close() { closed = true; for (const request of requests) request.abort(); requests.clear(); active = []; queued = null; activeBytes = queuedBytes = 0; },
     };
   }
 }

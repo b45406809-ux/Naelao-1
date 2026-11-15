@@ -115,6 +115,16 @@ export async function denyTelnyxExtensionStreamConsent(db: D1Database, scope: Se
   return result.meta.changes === 1;
 }
 
+/** Revoke a granted, unused media ticket when local admission or the installed handler is not ready. */
+export async function revokeTelnyxExtensionStreamConsent(db: D1Database, sessionId: string,
+  now = Math.floor(Date.now() / 1000)): Promise<boolean> {
+  const result = await db.prepare(`UPDATE assistant_telnyx_extension_stream_sessions
+    SET consent_state='revoked',state='ended',media_ticket_sha256=NULL,ticket_expires_at=NULL,updated_at=?
+    WHERE session_id=? AND state='ready' AND consent_state='granted' AND ticket_claimed_at IS NULL`)
+    .bind(now, sessionId).run();
+  return result.meta.changes === 1;
+}
+
 /** Atomically consumes the opaque ticket after rechecking the active line, call and published handler pin. */
 export async function claimTelnyxExtensionStreamTicket(db: D1Database, bindingId: string, ticket: string,
   now = Math.floor(Date.now() / 1000)): Promise<ClaimedExtensionStreamSession | null> {
@@ -169,19 +179,80 @@ export async function isTelnyxExtensionStreamSessionCurrent(db: D1Database, sess
     JOIN assistant_phone_extension_handlers h ON h.binding_id=c.binding_id
     JOIN assistant_phone_bindings b ON b.id=s.binding_id
     JOIN assistant_communication_identities i ON i.id=b.identity_id
-    WHERE s.session_id=? AND s.state='claimed' AND s.consent_state='granted' AND s.expires_at>?
+    WHERE s.session_id=? AND s.state IN ('claimed','active') AND s.consent_state='granted' AND s.expires_at>?
       AND c.state IN ('answering','processing','gathering') AND c.expires_at>?
       AND c.settings_pinned=1 AND c.extension_installation_id=s.extension_installation_id
       AND c.handler_sha256=s.handler_sha256 AND c.settings_revision IS s.settings_revision
       AND h.status='active' AND h.installation_id=c.extension_installation_id AND h.handler_sha256=c.handler_sha256
       AND b.provider='telnyx' AND b.payer='byo' AND b.purpose='extension' AND b.status='active'
+      AND json_extract(b.policy_json,'$.allowTelnyxExtensionVoice')=1
       AND i.status='active' AND i.tenant_id=s.tenant_id AND i.space_id=s.space_id AND i.project_id IS s.project_id`)
     .bind(session.sessionId, now, now).first<{ ok: number }>();
   return row?.ok === 1;
 }
 
+/** Promote the one-use ticket claim only after the provider start frame and full call pin pass. */
+export async function activateTelnyxExtensionStreamSession(db: D1Database, session: ClaimedExtensionStreamSession,
+  now = Math.floor(Date.now() / 1000)): Promise<boolean> {
+  const result = await db.prepare(`UPDATE assistant_telnyx_extension_stream_sessions SET state='active',updated_at=?
+    WHERE session_id=? AND state='claimed' AND consent_state='granted' AND expires_at>?
+      AND EXISTS (
+        SELECT 1 FROM assistant_telnyx_extension_calls c
+        JOIN assistant_phone_extension_handlers h ON h.binding_id=c.binding_id
+        JOIN assistant_phone_bindings b ON b.id=c.binding_id
+        JOIN assistant_communication_identities i ON i.id=b.identity_id
+        WHERE c.call_control_id=assistant_telnyx_extension_stream_sessions.call_control_id
+          AND c.binding_id=assistant_telnyx_extension_stream_sessions.binding_id AND c.settings_pinned=1
+          AND c.extension_installation_id=assistant_telnyx_extension_stream_sessions.extension_installation_id
+          AND c.handler_sha256=assistant_telnyx_extension_stream_sessions.handler_sha256
+          AND c.settings_revision IS assistant_telnyx_extension_stream_sessions.settings_revision
+          AND c.state IN ('processing','gathering') AND c.expires_at>?
+          AND h.status='active' AND h.installation_id=c.extension_installation_id AND h.handler_sha256=c.handler_sha256
+          AND b.provider='telnyx' AND b.payer='byo' AND b.purpose='extension' AND b.status='active'
+          AND json_extract(b.policy_json,'$.allowTelnyxExtensionVoice')=1
+          AND i.status='active' AND i.tenant_id=assistant_telnyx_extension_stream_sessions.tenant_id
+          AND i.space_id=assistant_telnyx_extension_stream_sessions.space_id
+          AND i.project_id IS assistant_telnyx_extension_stream_sessions.project_id)`)
+    .bind(now, session.sessionId, now, now).run();
+  return result.meta.changes === 1;
+}
+
+/** Accept only the next final-transcript sequence for a live, still-authorized call. */
+export async function advanceTelnyxExtensionTranscriptSequence(db: D1Database,
+  session: ClaimedExtensionStreamSession, sequence: number, now = Math.floor(Date.now() / 1000)): Promise<boolean> {
+  if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence > 1_000_000) return false;
+  const result = await db.prepare(`UPDATE assistant_telnyx_extension_stream_sessions SET last_transcript_sequence=?,updated_at=?
+    WHERE session_id=? AND state='active' AND consent_state='granted' AND expires_at>?
+      AND last_transcript_sequence+1=?
+      AND EXISTS (
+        SELECT 1 FROM assistant_telnyx_extension_calls c
+        JOIN assistant_phone_extension_handlers h ON h.binding_id=c.binding_id
+        JOIN assistant_phone_bindings b ON b.id=c.binding_id
+        JOIN assistant_communication_identities i ON i.id=b.identity_id
+        WHERE c.call_control_id=assistant_telnyx_extension_stream_sessions.call_control_id
+          AND c.binding_id=assistant_telnyx_extension_stream_sessions.binding_id AND c.settings_pinned=1
+          AND c.extension_installation_id=assistant_telnyx_extension_stream_sessions.extension_installation_id
+          AND c.handler_sha256=assistant_telnyx_extension_stream_sessions.handler_sha256
+          AND c.settings_revision IS assistant_telnyx_extension_stream_sessions.settings_revision
+          AND c.state IN ('processing','gathering') AND c.expires_at>?
+          AND h.status='active' AND h.installation_id=c.extension_installation_id AND h.handler_sha256=c.handler_sha256
+          AND b.provider='telnyx' AND b.payer='byo' AND b.purpose='extension' AND b.status='active'
+          AND json_extract(b.policy_json,'$.allowTelnyxExtensionVoice')=1
+          AND i.status='active' AND i.tenant_id=assistant_telnyx_extension_stream_sessions.tenant_id
+          AND i.space_id=assistant_telnyx_extension_stream_sessions.space_id
+          AND i.project_id IS assistant_telnyx_extension_stream_sessions.project_id)`)
+    .bind(sequence, now, session.sessionId, now, sequence, now).run();
+  return result.meta.changes === 1;
+}
+
+export async function endTelnyxExtensionStreamSession(db: D1Database, sessionId: string,
+  now = Math.floor(Date.now() / 1000)): Promise<void> {
+  await db.prepare(`UPDATE assistant_telnyx_extension_stream_sessions SET state='ended',updated_at=?
+    WHERE session_id=? AND state IN ('claimed','active')`).bind(now, sessionId).run();
+}
+
 export async function markTelnyxExtensionStreamIndeterminate(db: D1Database, sessionId: string,
   now = Math.floor(Date.now() / 1000)): Promise<void> {
   await db.prepare(`UPDATE assistant_telnyx_extension_stream_sessions SET state='indeterminate',updated_at=?
-    WHERE session_id=? AND state='claimed'`).bind(now, sessionId).run();
+    WHERE session_id=? AND state IN ('claimed','active')`).bind(now, sessionId).run();
 }

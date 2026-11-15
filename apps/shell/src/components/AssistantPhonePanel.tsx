@@ -52,6 +52,9 @@ type RecentExtensionCall = {
   duration_seconds: number | null;
   caller_hint: string | null;
   voice_consent_state?: "pending" | "granted" | "denied" | "revoked" | null;
+  voice_runtime_state?: "consent_pending" | "ready" | "claimed" | "active" | "ended" | "indeterminate" | null;
+  speech_usage_cost_estimate_usd?: number | null;
+  speech_usage_unresolved?: number;
   cost_report: {
     status: "reported" | "unavailable" | "not_linked";
     provider_cost_micros: number | null;
@@ -81,6 +84,7 @@ export function AssistantPhonePanel({
   const [state, setState] = React.useState<{
       phone: Phone | null;
       enabled: boolean;
+      telnyx_extension_voice_limits?: { streaming_enabled: boolean; external_acceptance_recorded: boolean; max_estimated_audio_cost_usd: number | null };
       telnyx_agentport_shared?: boolean;
       telnyx_agentport_link_status?: string | null;
       telnyx_agentport_operation?: { operation_name: string; status: string | null; error_code: string | null } | null;
@@ -167,6 +171,7 @@ export function AssistantPhonePanel({
       const result = await call<{
         phone: Phone | null;
         enabled: boolean;
+        telnyx_extension_voice_limits?: { streaming_enabled: boolean; external_acceptance_recorded: boolean; max_estimated_audio_cost_usd: number | null };
         managed_available?: boolean;
         managed_reason?: string;
         managed_price_version?: string | null;
@@ -393,12 +398,25 @@ export function AssistantPhonePanel({
           <button type="button" onClick={() => { if (window.confirm("Detach this number and restore its prior carrier callbacks?")) void act("phone-detach", { binding_id: line.id, confirm: true }); }}>Detach number</button>
           {line.provider === "telnyx" && line.policy && <label style={{ display: "block", marginTop: 8 }}>
             <input type="checkbox" checked={line.policy.allowTelnyxExtensionVoice === true} onChange={(event) => {
-              if (event.target.checked && !window.confirm("Allow caller-consented voice processing for this extension line when Telnyx streaming is accepted? Callers must explicitly consent. Audio streaming is currently disabled; calls continue to use keypad input.")) return;
+              const limits = state?.telnyx_extension_voice_limits;
+              const ceiling = limits?.max_estimated_audio_cost_usd;
+              const costDisclosure = ceiling === null || ceiling === undefined
+                ? "The host speech budget is not configured, so live voice remains unavailable."
+                : `The host uses an estimated speech admission ceiling of up to $${ceiling.toFixed(2)} per call; actual provider charges may differ, and Telnyx carrier charges are separate.`;
+              const rolloutDisclosure = limits?.streaming_enabled && limits.external_acceptance_recorded
+                ? "Streaming is available under the current rollout configuration."
+                : "Audio streaming is currently disabled; calls continue to use keypad input.";
+              if (event.target.checked && !window.confirm(`Allow caller-consented voice processing for this extension line? Callers must explicitly consent each call. ${costDisclosure} ${rolloutDisclosure}`)) return;
               void act("phone-policy", { binding_id: line.id,
                 policy: { ...line.policy, allowTelnyxExtensionVoice: event.target.checked } });
             }} />{" "}
             Permit future caller-consented voice processing (Telnyx streaming currently disabled)
           </label>}
+          {line.provider === "telnyx" && state?.telnyx_extension_voice_limits && <small style={{ display: "block", marginTop: 4 }}>
+            {state.telnyx_extension_voice_limits.max_estimated_audio_cost_usd === null
+              ? "Voice speech budget is not configured; keypad calls remain available."
+              : `Host STT/TTS admission ceiling: estimated $${state.telnyx_extension_voice_limits.max_estimated_audio_cost_usd.toFixed(2)} per call. Actual provider charges may differ; carrier charges are separate.`}
+          </small>}
           {line.status === "active" && line.handler_status === "active" && <div>
             <label>Test event <select value={simulationType} onChange={event => setSimulationTypes(current => ({ ...current, [line.id]: event.target.value as "call.received" | "call.digits" | "call.speech" | "transcript.final" }))}>
               <option value="call.received">Start call greeting</option>
@@ -427,7 +445,7 @@ export function AssistantPhonePanel({
       })}
       {((state?.extension_lines?.some(line => line.provider === "telnyx") ?? false) || (state?.recent_telnyx_extension_calls?.length ?? 0) > 0) && <details style={{ marginTop: 12 }}>
         <summary>Recent customer extension calls · Telnyx</summary>
-        <p>The latest 50 call records from the last 7 days. Caller IDs are masked. Costs appear only when a signed Telnyx report is linked. No linked report means the amount is unknown, not zero. These provider-reported amounts are not invoices or customer charges.</p>
+        <p>The latest 50 call records from the last 7 days. Caller IDs are masked. Telnyx cost reports are provider observations, not invoices or customer charges. Speech usage is a host estimate from model receipts, separate from Telnyx cost; unresolved receipts remain visible.</p>
         {state?.recent_telnyx_extension_calls?.length ? (() => {
           const groups = new Map<string, RecentExtensionCall[]>();
           for (const call of state.recent_telnyx_extension_calls) {
@@ -458,8 +476,13 @@ export function AssistantPhonePanel({
                   : cost.status === "unavailable"
                     ? "Provider cost report unavailable"
                     : "No linked provider report · amount unknown, not zero";
+                const speechCost = typeof call.speech_usage_cost_estimate_usd === "number" && Number.isFinite(call.speech_usage_cost_estimate_usd)
+                  ? `host speech estimate $${call.speech_usage_cost_estimate_usd.toFixed(6)}`
+                  : "host speech usage not recorded";
+                const speechReceipts = (call.speech_usage_unresolved ?? 0) > 0
+                  ? ` · ${call.speech_usage_unresolved} speech usage receipt${call.speech_usage_unresolved === 1 ? "" : "s"} unresolved` : "";
                 return <li key={`${call.started_at}:${index}`}>
-                  {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {call.settings_pinned ? call.settings_revision === null ? "no settings schema at call start" : `published settings r${call.settings_revision}` : "settings revision unavailable"} · voice consent {call.voice_consent_state ?? "not requested"} · {costLabel}
+                  {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {call.settings_pinned ? call.settings_revision === null ? "no settings schema at call start" : `published settings r${call.settings_revision}` : "settings revision unavailable"} · voice consent {call.voice_consent_state ?? "not requested"} · voice runtime {call.voice_runtime_state ?? "not started"} · {speechCost}{speechReceipts} · {costLabel}
                 </li>;
               })}</ol>
             </section>;

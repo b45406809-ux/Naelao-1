@@ -32,7 +32,7 @@ export function createOpenRouterAudio(options: OpenRouterAudioOptions) {
     return { costUsd: cost(result.data?.total_cost), tokens: tokens as number };
   }
   return {
-    async transcribe(input: { model: string; requestId: string; data: string; format: "wav" | "mp3" | "ogg" | "webm"; language?: string; priceUsdPerSecond?: number }): Promise<string> {
+    async transcribe(input: { model: string; requestId: string; data: string; format: "wav" | "mp3" | "ogg" | "webm"; language?: string; priceUsdPerSecond?: number; signal?: AbortSignal }): Promise<string> {
       requestId(input.requestId);
       const model = modelId(input.model);
       // 20 seconds of 16 kHz mono PCM plus a WAV header is about 854 KiB in base64.
@@ -49,21 +49,23 @@ export function createOpenRouterAudio(options: OpenRouterAudioOptions) {
       if (!Number.isFinite(rate) || rate < 0 || rate > 1) throw new Error("audio_rate_invalid");
       const estimatedCostUsd = Math.max(0.00001, Math.ceil(durationSeconds) * rate);
       const reservation = await options.authorize({ model, operation: "transcription", inputBytes: new TextEncoder().encode(JSON.stringify(body)).length, estimatedTokens, estimatedCostUsd, requestId: input.requestId });
-      let settled = false;
+      let settled = false, generationId: string | undefined;
       try {
-        const response = await options.vault.fetchWithAuth(`${BASE}/audio/transcriptions`, { credentialName: options.credentialName, method: "POST", headers: { "content-type": "application/json" }, body, idempotencyKey: input.requestId });
+        const response = await options.vault.fetchWithAuth(`${BASE}/audio/transcriptions`, { credentialName: options.credentialName, method: "POST", headers: { "content-type": "application/json" }, body, idempotencyKey: input.requestId, ...(input.signal ? { signal: input.signal } : {}) });
+        const headerGenerationId = response.headers.get("x-generation-id");
+        if (headerGenerationId && /^[A-Za-z0-9_-]{1,200}$/.test(headerGenerationId)) generationId = headerGenerationId;
         const result = await readBoundedResponseJson<{ text?: unknown; usage?: { cost?: unknown; total_tokens?: unknown; input_tokens?: unknown; output_tokens?: unknown } }>(response, 128 * 1024);
         // Account for a valid receipt even when the provider's text is malformed.
         const usage = result.usage;
         const tokens = usage?.total_tokens ?? (typeof usage?.input_tokens === "number" && typeof usage?.output_tokens === "number" ? usage.input_tokens + usage.output_tokens : undefined);
         const actualTokens = tokens === undefined ? estimatedTokens : tokens;
         if (typeof actualTokens !== "number" || !Number.isSafeInteger(actualTokens) || actualTokens < 0 || actualTokens > 10_000_000) throw new Error("audio_usage_unavailable");
-        await reservation.settle(cost(usage?.cost), undefined, actualTokens); settled = true;
+        await reservation.settle(cost(usage?.cost), generationId, actualTokens); settled = true;
         if (typeof result.text !== "string" || result.text.length > 32_000) throw new Error("invalid_audio_transcript");
         return result.text;
-      } catch (error) { if (!settled) await reservation.pending(); throw error; }
+      } catch (error) { if (!settled) await reservation.pending(generationId); throw error; }
     },
-    async speak(input: { model: string; requestId: string; text: string; voice?: string; instructions?: string; speed?: number; rate?: 8000 | 16000 | 24000 | 48000; channels?: 1 | 2; priceUsdPerMillionCharacters?: number; references?: { data: string; transcript?: string }[] }): Promise<{ stream: ReadableStream<Uint8Array>; generationId: string; contentType: string }> {
+    async speak(input: { model: string; requestId: string; text: string; voice?: string; instructions?: string; speed?: number; rate?: 8000 | 16000 | 24000 | 48000; channels?: 1 | 2; priceUsdPerMillionCharacters?: number; references?: { data: string; transcript?: string }[]; signal?: AbortSignal }): Promise<{ stream: ReadableStream<Uint8Array>; generationId: string; contentType: string }> {
       requestId(input.requestId);
       const model = modelId(input.model);
       if (typeof input.text !== "string" || !input.text.trim() || input.text.length > 2000) throw new Error("invalid_speech_text");
@@ -82,7 +84,7 @@ export function createOpenRouterAudio(options: OpenRouterAudioOptions) {
       const estimatedTokens = Math.min(10_000, Math.max(256, Math.ceil(input.text.length * 2)));
       const reservation = await options.authorize({ model, operation: "speech", inputBytes: new TextEncoder().encode(JSON.stringify(body)).length, inputCharacters: input.text.length, estimatedTokens, estimatedCostUsd, requestId: input.requestId });
       let response: Response;
-      try { response = await options.vault.fetchWithAuth(`${BASE}/audio/speech`, { credentialName: options.credentialName, responseMode: "audio", method: "POST", headers: { "content-type": "application/json" }, body, idempotencyKey: input.requestId }); }
+      try { response = await options.vault.fetchWithAuth(`${BASE}/audio/speech`, { credentialName: options.credentialName, responseMode: "audio", method: "POST", headers: { "content-type": "application/json" }, body, idempotencyKey: input.requestId, ...(input.signal ? { signal: input.signal } : {}) }); }
       catch (error) { await reservation.pending(); throw error; }
       const id = response.headers.get("x-generation-id"), contentType = response.headers.get("content-type") ?? "";
       if (!id || !/^[A-Za-z0-9_-]{1,200}$/.test(id) || !response.body || !/^(audio\/(pcm|l16)|application\/octet-stream)(;|$)/i.test(contentType)) {

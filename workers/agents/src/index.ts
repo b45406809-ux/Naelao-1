@@ -495,6 +495,11 @@ export interface AgentsEnv extends Cloudflare.Env {
   /** Explicit rollout gate for caller-consented Telnyx extension streaming. Keep false until
    * host STT/TTS admission, speech budgets, interruption, timeout, cleanup and live acceptance pass. */
   TELNYX_EXTENSION_STREAMING_ENABLED?: string;
+  /** Separate external-acceptance gate. Feature code is not routable for provider calls until
+   * Telnyx/runtime/billing/isolation acceptance has been recorded and this remains explicitly false. */
+  TELNYX_EXTENSION_STREAMING_ACCEPTED?: string;
+  /** Hard host-side OpenRouter speech estimate ceiling per extension call; not a customer quote. */
+  TELNYX_EXTENSION_AUDIO_MAX_COST_USD?: string;
   /** Immutable owner-confirmed retail rate schedule identifier for managed Telnyx service. */
   TELNYX_MANAGED_PRICE_VERSION?: string;
   TELNYX_MANAGED_API_KEY?: string;
@@ -10786,6 +10791,10 @@ export default {
         if (backedUp.pending || backedUp.failed) console.warn("workspace_erasure_backup_attention", backedUp);
       }
       await resumePendingWorkspaceErasures(env, _ctx).catch(() => { console.warn("Workspace erasure reconciliation postponed"); });
+      _ctx.waitUntil(import("./communications/telnyx-extension-audio-reconciliation.js")
+        .then(module => module.sweepTelnyxExtensionAudioUsage(env))
+        .then(result => { if (result.unresolved) console.warn("Telnyx extension audio usage reconciliation attention", result); })
+        .catch(() => { console.warn("Telnyx extension audio usage reconciliation postponed"); }));
       if (env.SCRIPTS_R2) await expireToolOutputs(env.AGENT_CACHE, env.SCRIPTS_R2);
       await sweepExpiredWorkspaceBlobs(env).catch(() => { console.warn("Sandbox workspace blob cleanup postponed"); });
       await reconcilePendingWorkspacePublications(env).then(result => {

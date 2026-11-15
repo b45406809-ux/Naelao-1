@@ -279,12 +279,76 @@ describe("phone extension scope dispatch", () => {
     } });
     const call = f.runChannel.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(call).toMatchObject({ channel: { provider: "phone", event: { payload: {
-      voice_event: "transcript.final", text: "Where is my order?", caller: "simulation", provider: "telnyx",
+      voice_event: "transcript.final", text: "Where is my order?", provider: "telnyx",
     } } } });
     expect(f.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='phone_extension_events'").toArray()).toEqual([]);
 
     f.runChannel.mockImplementationOnce(async () => ({ ok: true, channel_replies: [JSON.stringify({ schema_version: 1,
       actions: [{ type: "transfer", target: "+263771234567" }] })] }));
     expect((await invokeSimulation(f.agent, "Transfer me", true, "transcript.final")).status).toBe(409);
+  });
+
+  it("does not persist Telnyx transcript events through a handler's durable session state", async () => {
+    const f = setup(null, "telnyx");
+    f.internals.loadActiveChannelHandler = vi.fn(async () => ({
+      name: "voice", code: "export async function run() {}", maxConcurrency: 1, knowledgeCollections: [],
+      settings: { schemaVersion: 2 as const, revision: 7, values: {} }, session: { maxBytes: 2_000, ttlDays: 30 }, limits: {},
+    }));
+    const privateText = "my private order and address";
+    f.runChannel.mockImplementationOnce(async input => {
+      const call = input as unknown as { channel: Record<string, unknown> };
+      expect(call.channel).not.toHaveProperty("session");
+      expect(call.channel).not.toHaveProperty("sessions");
+      return { ok: true, channel_replies: [JSON.stringify({ schema_version: 1,
+        actions: [{ type: "listen", input: "speech" }] })], channel_session_update: { transcript: privateText } };
+    });
+    const callRef = `call_${"b".repeat(32)}`;
+    const response = await f.agent.fetch(new Request("http://agent/phone-extension", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": await mintInternalToken(secret, "tenant") },
+      body: JSON.stringify({ spaceId: "space", bindingId: "binding", expectedInstallationId: "install",
+        expectedHandlerSha256: "a".repeat(64), settingsRevision: 7,
+        event: { schema_version: 1, id: `telnyx-call-${"c".repeat(32)}`, type: "transcript.final",
+          payload: { call_ref: callRef, sequence: 0, text: privateText } } }),
+    }));
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).not.toContain(privateText);
+    const stored = f.storage.sql.exec("SELECT status,response_json FROM phone_extension_events").toArray();
+    expect(stored).toEqual([{ status: "completed", response_json: null }]);
+    expect(f.storage.sql.exec("SELECT COUNT(*) AS count FROM channel_extension_sessions").toArray()).toEqual([{ count: 0 }]);
+    const retry = await f.agent.fetch(new Request("http://agent/phone-extension", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": await mintInternalToken(secret, "tenant") },
+      body: JSON.stringify({ spaceId: "space", bindingId: "binding", expectedInstallationId: "install",
+        expectedHandlerSha256: "a".repeat(64), settingsRevision: 7,
+        event: { schema_version: 1, id: `telnyx-call-${"c".repeat(32)}`, type: "transcript.final",
+          payload: { call_ref: callRef, sequence: 0, text: privateText } } }),
+    }));
+    expect(retry.status).toBe(409);
+    expect(await retry.json()).toEqual({ error_code: "phone_event_outcome_unknown" });
+    expect(f.runChannel).toHaveBeenCalledOnce();
+  });
+
+  it("replays the non-transcript call-start response without rerunning the handler", async () => {
+    const f = setup(null, "telnyx");
+    f.runChannel.mockImplementationOnce(async () => ({ ok: true,
+      channel_replies: [JSON.stringify({ schema_version: 1, actions: [{ type: "listen", input: "speech" }] })] }));
+    const makeRequest = async () => {
+      const token = await mintInternalToken(secret, "tenant");
+      return new Request("http://agent/phone-extension", { method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+        body: JSON.stringify({ spaceId: "space", bindingId: "binding", expectedInstallationId: "install",
+          expectedHandlerSha256: "a".repeat(64), settingsRevision: 7,
+          event: { schema_version: 1, id: `telnyx-call-${"d".repeat(32)}`, type: "call.started",
+            payload: { call_ref: `call_${"e".repeat(32)}` } } }),
+      });
+    };
+    const first = await f.agent.fetch(await makeRequest());
+    expect(first.status).toBe(200);
+    const firstBody = await first.json();
+    const second = await f.agent.fetch(await makeRequest());
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual(firstBody);
+    expect(f.runChannel).toHaveBeenCalledOnce();
   });
 });
