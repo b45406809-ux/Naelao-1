@@ -5,6 +5,7 @@ import type { NaelaoJwtClaims } from "@naelao/types";
 import { loadSavedLanguagePreference } from "./preferred-language";
 import { transcribeAudio } from "./routes/transcribe";
 import { readBoundedRequestBytes } from "./routes/bounded-request-body";
+import { listPlatformNotifications, markPlatformNotificationRead } from "./platform-notifications";
 import { isErasureLifecycleAccess, isTenantActive } from "./tenant-status";
 export { RateLimitDO } from "./RateLimitDO";
 
@@ -969,6 +970,13 @@ function agentActionKey(method: string, path: string, spaceId: string): string {
 
 // ── Protected API routes ─────────────────────────────────────────────────────
 const api = new Hono<{ Bindings: Env }>();
+const PLATFORM_NOTIFICATION_ROLES = new Set(["owner", "admin", "editor", "viewer"]);
+
+function platformNotificationIdentity(claims: NaelaoJwtClaims | undefined): { tenantId: string; userId: string } | null {
+  if (!claims || !PLATFORM_NOTIFICATION_ROLES.has(claims.role) || !claims.tid || !claims.sub) return null;
+  return { tenantId: claims.tid, userId: claims.sub };
+}
+
 api.use("*", async (c, next) => {
   const desk = readDeskSession(c.req.header("cookie"));
   const cookieAuth = !c.req.header("authorization") && desk;
@@ -1585,6 +1593,56 @@ api.all("/billing/checkout", proxyBilling);
 api.all("/billing/portal", proxyBilling);
 api.all("/billing/dunning-notifications", proxyBilling);
 api.all("/billing/notification-deliveries", proxyBilling);
+
+// Builder/platform notifications are keyed by the verified platform JWT identity in
+// PLATFORM_DB. Keep them distinct from SpaceDO notifications and ProductUserDO inbox records;
+// end-user and agent identities cannot read rows from this table.
+api.get("/me/notifications", async (c) => {
+  const identity = platformNotificationIdentity(c.get("claims"));
+  if (!identity) return c.json({ error_code: "forbidden" }, 403);
+  const status = c.req.query("status") ?? "unread";
+  const rawLimit = c.req.query("limit") ?? "50";
+  const cursor = c.req.query("cursor");
+  if ((status !== "all" && status !== "unread") || !/^\d{1,3}$/.test(rawLimit)) {
+    return c.json({ error_code: "platform_notification_query_invalid" }, 400);
+  }
+  try {
+    const result = await listPlatformNotifications(c.env.PLATFORM_DB, {
+      ...identity,
+      status,
+      limit: Number(rawLimit),
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    c.header("cache-control", "private, no-store");
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof Error && error.message === "platform_notification_cursor_invalid") {
+      return c.json({ error_code: "platform_notification_cursor_invalid" }, 400);
+    }
+    if (error instanceof Error && error.message === "platform_notification_query_invalid") {
+      return c.json({ error_code: "platform_notification_query_invalid" }, 400);
+    }
+    throw error;
+  }
+});
+
+api.post("/me/notifications/:notificationId/read", async (c) => {
+  const identity = platformNotificationIdentity(c.get("claims"));
+  if (!identity) return c.json({ error_code: "forbidden" }, 403);
+  const notificationId = c.req.param("notificationId");
+  let found: boolean;
+  try {
+    found = await markPlatformNotificationRead(c.env.PLATFORM_DB, { ...identity, notificationId });
+  } catch (error) {
+    if (error instanceof Error && error.message === "platform_notification_id_invalid") {
+      return c.json({ error_code: "platform_notification_id_invalid" }, 400);
+    }
+    throw error;
+  }
+  if (!found) return c.json({ error_code: "notification_not_found" }, 404);
+  return new Response(null, { status: 204, headers: { "cache-control": "private, no-store" } });
+});
+
 // Owner-only runtime distribution evidence. The analytics worker performs a second role and
 // platform-secret check before querying the private agent-event dataset.
 api.get("/analytics/runtime-economics", async (c) => {

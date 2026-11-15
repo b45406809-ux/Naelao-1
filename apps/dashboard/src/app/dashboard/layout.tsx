@@ -8,11 +8,13 @@ import { listApiKeys } from "@/lib/api";
 
 const NAV_ITEMS: SidebarNavEntry[] = [
   { key: "dashboard", icon: "home", label: "Overview" },
+  { key: "notifications", icon: "explore", label: "Notifications" },
   { key: "templates", icon: "spaces", label: "Templates" },
   { key: "settings", icon: "settings", label: "Settings" },
 ];
 
 function activeKeyFor(pathname: string | null): string {
+  if (pathname?.startsWith("/dashboard/notifications")) return "notifications";
   if (pathname?.startsWith("/dashboard/templates")) return "templates";
   if (pathname?.startsWith("/dashboard/settings") || pathname?.startsWith("/dashboard/api-keys")) return "settings";
   return "dashboard";
@@ -20,6 +22,7 @@ function activeKeyFor(pathname: string | null): string {
 
 const ROUTE_FOR_KEY: Record<string, string> = {
   dashboard: "/dashboard",
+  notifications: "/dashboard/notifications",
   templates: "/dashboard/templates",
   settings: "/dashboard/settings",
 };

@@ -118,6 +118,34 @@ export async function updateMyPreferences(
   return apiFetch("/me/preferences", { method: "PATCH", body: JSON.stringify(patch) });
 }
 
+export interface PlatformNotification {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface PlatformNotificationPage {
+  data: PlatformNotification[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export async function listMyPlatformNotifications(options: {
+  status?: "all" | "unread";
+  cursor?: string | null;
+} = {}): Promise<PlatformNotificationPage> {
+  const query = new URLSearchParams({ status: options.status ?? "unread", limit: "50" });
+  if (options.cursor) query.set("cursor", options.cursor);
+  return apiFetch(`/me/notifications?${query.toString()}`);
+}
+
+export async function markMyPlatformNotificationRead(notificationId: string): Promise<void> {
+  await apiFetch<void>(`/me/notifications/${pathSegment(notificationId)}/read`, { method: "POST" });
+}
+
 // ── Core fetch wrapper ───────────────────────────────────────────────────────
 
 export async function apiFetch<T>(
