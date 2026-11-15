@@ -587,14 +587,22 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     try {
       const preview = this.ctx.storage.transactionSync(() => {
         this.ctx.storage.sql.exec("SAVEPOINT micro_app_archive_preview");
-        try { return this.mergeMicroAppArchiveRows(plan); }
+        try {
+          const merged = this.mergeMicroAppArchiveRows(plan);
+          this.assertMicroAppArchiveForeignKeys();
+          return merged;
+        }
         finally {
           this.ctx.storage.sql.exec("ROLLBACK TO micro_app_archive_preview");
           this.ctx.storage.sql.exec("RELEASE micro_app_archive_preview");
         }
       });
       return Response.json({ preview, restore_mode: "idempotent_merge_missing_rows" }, { headers: { "cache-control": "no-store" } });
-    } catch { return Response.json({ error_code: "micro_app_archive_preview_failed" }, { status: 409 }); }
+    } catch (error) {
+      const code = error instanceof Error && error.message === "micro_app_archive_foreign_key_conflict"
+        ? error.message : "micro_app_archive_preview_failed";
+      return Response.json({ error_code: code }, { status: 409 });
+    }
   }
 
   private async applyArchiveRestore(request: Request): Promise<Response> {
@@ -625,6 +633,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         const receiptCount = [...this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM gadget_archive_restore_receipts")][0]?.count ?? 0;
         if (receiptCount >= MAX_ARCHIVE_RESTORE_RECEIPTS) throw new Error("micro_app_archive_restore_receipt_limit_exceeded");
         const merged = this.mergeMicroAppArchiveRows(plan);
+        this.assertMicroAppArchiveForeignKeys();
         this.ctx.storage.sql.exec("INSERT INTO gadget_action_audit(actor_id,operation,table_name,target_hash,created_at) VALUES(?,?,?,?,?)",
           body.restoredBy, "business:archive_restore", "gadget_business_action_events", null, Date.now());
         this.ctx.storage.sql.exec("DELETE FROM gadget_action_audit WHERE id <= (SELECT COALESCE(MAX(id),0)-1000 FROM gadget_action_audit)");
@@ -633,10 +642,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         result = { ...merged, replayed: false };
       });
     } catch (error) {
-      return Response.json({ error_code: error instanceof Error && error.message === "micro_app_archive_restore_conflict"
-        ? error.message : error instanceof Error && error.message === "micro_app_archive_restore_receipt_limit_exceeded"
-          ? error.message : "micro_app_archive_restore_failed" }, { status: error instanceof Error && error.message === "micro_app_archive_restore_conflict"
-            || error instanceof Error && error.message === "micro_app_archive_restore_receipt_limit_exceeded" ? 409 : 503 });
+      const code = error instanceof Error && ["micro_app_archive_restore_conflict", "micro_app_archive_restore_receipt_limit_exceeded",
+        "micro_app_archive_foreign_key_conflict"].includes(error.message) ? error.message : "micro_app_archive_restore_failed";
+      return Response.json({ error_code: code }, { status: code === "micro_app_archive_restore_failed" ? 503 : 409 });
     }
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   }
@@ -733,6 +741,11 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       skipped[table.name] = table.rows.length - count;
     }
     return { inserted, skipped };
+  }
+
+  private assertMicroAppArchiveForeignKeys(): void {
+    const violations = [...this.ctx.storage.sql.exec<Record<string, SqlStorageValue>>("SELECT * FROM pragma_foreign_key_check")];
+    if (violations.length) throw new Error("micro_app_archive_foreign_key_conflict");
   }
 
   private async archiveSha256(value: string): Promise<string> {

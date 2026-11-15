@@ -162,7 +162,7 @@ describe("Gadget MCP record operations", () => {
     const sourceStorage = createDOStorage(), source = microAppWithStorage(sourceStorage, secret);
     const initialized = await source.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId: signed.appId, scope: "PROJECT_BOUND", gadgetTier: 2, extensionInstallationId: signed.scope.installationId,
-        defaultSchemaSql: "CREATE TABLE todos(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE scoped_records(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,installation_id TEXT NOT NULL)",
+        defaultSchemaSql: "CREATE TABLE todos(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE scoped_records(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,installation_id TEXT NOT NULL); CREATE TABLE archive_parents(id TEXT PRIMARY KEY); CREATE TABLE archive_children(id TEXT PRIMARY KEY,parent_id TEXT NOT NULL REFERENCES archive_parents(id))",
         html: signed.html, releaseProof: signed.releaseProof }) }));
     expect(initialized.status).toBe(201);
     sourceStorage.sql.exec("INSERT INTO todos(id,payload) VALUES(?,?)", "source-row", new Uint8Array([0, 7, 255]));
@@ -192,7 +192,7 @@ describe("Gadget MCP record operations", () => {
     const targetStorage = createDOStorage(), target = microAppWithStorage(targetStorage, secret);
     const targetInit = await target.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId: signed.appId, scope: "PROJECT_BOUND", gadgetTier: 2, extensionInstallationId: signed.scope.installationId,
-        defaultSchemaSql: "CREATE TABLE todos(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE scoped_records(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,installation_id TEXT NOT NULL)",
+        defaultSchemaSql: "CREATE TABLE todos(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE scoped_records(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,installation_id TEXT NOT NULL); CREATE TABLE archive_parents(id TEXT PRIMARY KEY); CREATE TABLE archive_children(id TEXT PRIMARY KEY,parent_id TEXT NOT NULL REFERENCES archive_parents(id))",
         html: signed.html, releaseProof: signed.releaseProof }) }));
     expect(targetInit.status).toBe(201);
     targetStorage.sql.exec("INSERT INTO todos(id,payload) VALUES(?,?)", "source-row", "current-value");
@@ -212,6 +212,19 @@ describe("Gadget MCP record operations", () => {
     const schemaMismatch = await target.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
       body: JSON.stringify({ snapshot: incompatibleSchema }) }));
     expect(schemaMismatch.status).toBe(409);
+    const interruptedSnapshot = structuredClone(restoreSnapshot);
+    interruptedSnapshot.tables.find(table => table.name === "archive_children")!.rows.push({ id: "orphan", parent_id: "missing-parent" });
+    const interruptedPreview = await target.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: interruptedSnapshot }) }));
+    expect(interruptedPreview.status).toBe(409);
+    expect(await interruptedPreview.json()).toMatchObject({ error_code: "micro_app_archive_foreign_key_conflict" });
+    const interruptedRestore = await target.fetch(new Request("http://gadget/internal/archive/restore", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: interruptedSnapshot, restoreId: "f".repeat(64), restoredBy: "owner-a" }) }));
+    expect(interruptedRestore.status).toBe(409);
+    expect(await interruptedRestore.json()).toMatchObject({ error_code: "micro_app_archive_foreign_key_conflict" });
+    expect(targetStorage.sql.exec("SELECT id FROM archive_children").toArray()).toHaveLength(0);
+    expect(targetStorage.sql.exec("SELECT action_id FROM gadget_business_action_receipts").toArray()).toHaveLength(0);
+    expect(targetStorage.sql.exec("SELECT restore_id FROM gadget_archive_restore_receipts").toArray()).toHaveLength(0);
     const preview = await target.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
       body: JSON.stringify({ snapshot: restoreSnapshot }) }));
     expect(preview.status).toBe(200);
@@ -239,7 +252,7 @@ describe("Gadget MCP record operations", () => {
     const other = await signedMicroAppArchiveFixture(secret, "install-other");
     const otherInit = await wrongInstallation.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId: other.appId, scope: "PROJECT_BOUND", gadgetTier: 2, extensionInstallationId: other.scope.installationId,
-        defaultSchemaSql: "CREATE TABLE todos(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE scoped_records(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,installation_id TEXT NOT NULL)",
+        defaultSchemaSql: "CREATE TABLE todos(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE scoped_records(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,installation_id TEXT NOT NULL); CREATE TABLE archive_parents(id TEXT PRIMARY KEY); CREATE TABLE archive_children(id TEXT PRIMARY KEY,parent_id TEXT NOT NULL REFERENCES archive_parents(id))",
         html: other.html, releaseProof: other.releaseProof }) }));
     expect(otherInit.status).toBe(201);
     const crossInstall = await wrongInstallation.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
