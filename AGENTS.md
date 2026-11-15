@@ -43,12 +43,24 @@ the active platform plan; the only plan-file differences are stale metadata and 
 No plan content needed copying and no branch merge occurred. The active plan's newer P04 evidence is
 retained. Code `a50e1c6d14f41987ec310e0b8c1aea748c0e7bd6` was pushed as a fast-forward to `origin/Mcbt5s-Backup-2`; `ls-remote` confirmed the branch tip is this SHA.
 
-Exact next action: implement owner-controlled, per-Project Knowledge selection for Space-shared channel
-extensions using the existing owner-published collections. Persist by Space, Project, installation and
-exact publication; let owner/admin callers list, grant and revoke only current published IDs; make the
-Agents host intersect the active signed manifest with that selection before external search. Default
-new grants to off, preserve current project-scoped behavior, and keep provider-connection sharing
-separately gated. Then continue the remaining P01–P24/S2–S9/U01–U12 code gaps.
+Source reconciliation found that owner-controlled Project Knowledge selection is already implemented
+and pushed in `6d189f450ee61fa9dc74227dab7f95c12b12670d`: migration 137 persists per-tenant/Space/
+Project/installation revisioned grants and audit events; authenticated owner/admin routes validate
+current publications and exact signed declarations; Project Settings exposes grant/revoke; the Agents
+host fetches the current grant and intersects it with the active signed manifest before Knowledge
+search. Access defaults to none and uninstall revokes the grants. The broader P05 provider connection
+beneficiary/payer/sharing/revocation contract remains partial.
+
+Revalidation passed Spaces Knowledge route/DO/migration/template/activation tests **71/71**, Agents
+resolver **3/3**, Knowledge publication/search **6/6**, and Spaces/Agents/Knowledge/Shell typechecks.
+These are local Worker/D1 mocks; no deployed multi-user or live Knowledge acceptance ran.
+
+Exact next action: trace the P16 Discord attachment path from provider event through storage to the
+owner-approved extension `read_image` handler. Check current official CDN authorization and expiry. If
+the active provider binding can authorize ordinary attachments, implement host-mediated retrieval with
+strict size/MIME/expiry bounds and tests; otherwise record the precise contract restriction and move to
+the next independent P01–P24/S2–S9/U01–U12 gap. Never pass a provider URL or credential to an isolated
+package.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 

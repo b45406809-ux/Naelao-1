@@ -32,12 +32,23 @@ and no branch merge occurred. The active P04 source reconciliation remains autho
 `a50e1c6d14f41987ec310e0b8c1aea748c0e7bd6` is pushed to `origin/Mcbt5s-Backup-2` as a fast-forward;
 `ls-remote` confirmed the remote tip matches.
 
-Exact next action: implement owner-controlled, per-Project Knowledge selection for Space-shared channel
-extensions over existing owner-published collections. Persist selection by Space, Project, installation
-and exact publication; add owner/admin list/grant/revoke routes limited to current published IDs; enforce
-the selection at the Agents host by intersecting it with the current signed manifest before external
-search. Default new grants to off and preserve existing project-scoped access. Keep P05 provider-account
-sharing separately gated, then resume remaining P01–P24/S2–S9/U01–U12 gaps.
+Source reconciliation found the exact Project Knowledge selection requirement already implemented and
+pushed in `6d189f450ee61fa9dc74227dab7f95c12b12670d`. Migration 137 persists per-tenant/Space/Project/
+installation revisioned policy and grants with bounded audit history. Owner/admin routes accept only
+currently published IDs declared by the active signed Space-shared channel package. Project Settings
+lists current publications and grants/revokes with expected-revision fencing. The Agents host reads the
+selection for the exact Project and installation and intersects it with the active signed declaration
+before searching; new grants default to none, and uninstall revokes stored grants. This narrow P05
+selection slice is implemented locally. Space-shared provider-account beneficiary/payer/revocation
+semantics remain unresolved and distinct.
+
+Revalidation: Spaces route, DO persistence/revocation, migration, template and activation suites
+**71/71**; Agents resolver **3/3**; Knowledge external publication/search **6/6**; Spaces/Agents/
+Knowledge/Shell typechecks. These are local Worker and D1 mocks, not deployed multi-user or live
+Knowledge acceptance. Exact next action: trace P16 Discord attachments from provider event through
+storage to the owner-approved `read_image` handler, verify the current official CDN authorization and
+expiry contract, and implement only a provider-authorized, bounded host retrieval path; otherwise record
+the restriction and advance to the next independent P01–P24/S2–S9/U01–U12 gap.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 

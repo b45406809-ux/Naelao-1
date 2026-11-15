@@ -27,11 +27,20 @@ remaining differences are stale metadata and older P04 wording; no content was m
 was performed. The active P04 evidence is retained. Code `a50e1c6d14f41987ec310e0b8c1aea748c0e7bd6`
 is pushed to `origin/Mcbt5s-Backup-2` as a fast-forward; `ls-remote` confirmed the remote tip matches.
 
-Exact next action: implement owner-controlled, per-Project Knowledge selection for Space-shared channel
-extensions on existing owner-published collections. Persist the grant by Space, Project, installation
-and publication; provide owner/admin list/grant/revoke for current published IDs; enforce it in the
-Agents host by intersecting it with the active signed manifest before external search. Default new
-grants to off and preserve project-scoped access. Continue independent P01–P24/S2–S9/U01–U12 gaps.
+Source reconciliation found owner-controlled Project Knowledge selection is implemented and pushed in
+`6d189f450ee61fa9dc74227dab7f95c12b12670d`. Revisioned policy, grant and event tables bind tenant,
+Space, Project and Space-shared installation. Authenticated owner/admin routes recheck current published
+collections and exact signed declaration; Project Settings provides grant/revoke; the Agents host
+intersects grants with the active signed manifest before external Knowledge search. Defaults are no
+access and uninstall revokes grants. Local revalidation passed Spaces **71/71**, Agents resolver **3/3**,
+Knowledge publication/search **6/6**, and Spaces/Agents/Knowledge/Shell typechecks. No deployed or live
+multi-user acceptance ran. This closes the Project Knowledge selection slice; broader shared provider
+beneficiary, payer and revocation policy remains unresolved.
+
+Exact next action: continue P16 by tracing the Discord attachment path from provider event through
+storage to the owner-approved `read_image` handler. Verify current official CDN authorization and expiry;
+implement only if the host's active provider binding can authorize bounded retrieval. Otherwise record
+the exact provider restriction and proceed to another uncoded P01–P24/S2–S9/U01–U12 requirement.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 
