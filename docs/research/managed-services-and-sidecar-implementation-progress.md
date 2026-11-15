@@ -1,12 +1,20 @@
 # Managed services and sidecar implementation progress
 
-## Cross-plan checkpoint — 2026-11-15 (PW04 bounded binary conflict choice; code bac46733 pushed)
+## Latest cross-plan checkpoint — 2026-11-15 (PW04 automatic candidate validation; code e73c1289 pushed)
+
+Automatic `mergeWorkerWorkspace()` now validates an integrated candidate before target publication. The root `naelao-worker-validation.json` contract is loaded from the pinned target and must remain unchanged in the candidate. Immutable worker fork base, current target/source Coordinator and Git heads, candidate, and separate `race/` validation branch are bound and rechecked. Current access/Code/Tier 6 admission, deterministic execution identity, durable check/merge receipts, validator-write detection, and expected Git plus Coordinator publication heads fail closed. A target change causes a distinct future candidate; indeterminate publication is reconciled only by exact candidate identity and otherwise remains uncertain. Code `e73c1289d9265591c6b7348f3e8cd4dfacfa4532` is pushed and verified on `origin/Mcbt5s-Backup-2`.
+
+Local evidence: Agents integration/report suites **11/11**, Artifact Repository **15/15**, Shell parser **4/4**; Agents/Artifact/Shell `tsc --noEmit`; `git diff --check`. No real ToolSandbox, deployed Worker, browser or live acceptance. PW04/PW06 remain PARTIAL for remaining rename/large-file review, operation cancellation/revocation, runtime isolation/cost settlement, observability and deployed concurrency/recovery acceptance. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: continue S3/U05's missing product-side Cloudflare candidate allocation/reservation caller. Persist only unqualified candidates bound to tenant/Space/Project, current main allocation generation, selected template/image digest, current authorization and budget reservation; test concurrent/stale allocation and reject caller-fabricated observations. Then continue remaining S3–S9/U01–U12 and P01–P24 in dependency order.
+
+## Previous checkpoint — 2026-11-15 (PW04 bounded binary conflict choice; code bac46733 pushed)
 
 Bounded unsupported-text/binary conflicts can now preserve the exact target or worker object by SHA-256 through Shell, Agents, and checked WorkspaceCoordinator publication. The Shell only sends the choice and expected hashes; the Agent rereads the scoped branch object and verifies size/hash before encoding the Coordinator request. Selection is idempotency-bound, exact-review validation remains required, paired case-path changes remain atomic, and durable receipts record copied path/side/hash. Objects above 256 KiB, unavailable objects and integrity failures remain blocked. Code `bac4673352c18ee631068069a6484a73226992c3` is pushed and remote-verified on `origin/Mcbt5s-Backup-2`.
 
 Local evidence: Agents manual-resolution, Coordinator and route suites **97/97**; Shell API/result parser **6/6**; Agents/Shell typechecks and `git diff --check`. Coordinator tests verify exact binary bytes and paired-delete atomicity; route tests mock the publication adapter. No deployment, browser, real ToolSandbox or live acceptance. Route-level revocation/uncertainty/lost-write recovery remains locally covered at `d3ad78b1`; paired path review at `80cc4e83`. Automatic worker merge still lacks an integrated check before publication; cost settlement, runtime isolation and live acceptance remain open, not credentials blockers. Rollout stays disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: replace the automatic `mergeWorkerWorkspace()` direct target merge with a task-scoped integration candidate. Reconcile pinned target/worker heads on that candidate, run a bounded authorized project check on its exact revision, persist the result, recheck both heads and publish only after a passed receipt; failed/uncertain checks must not mutate the target. Trace the current project-owned check-command contract and add an API/schema incompatibility fixture proving failure leaves target unchanged. Then continue S3–S9/U01–U12/P01–P24.
+This checkpoint's automatic candidate-validation action was completed and pushed in `e73c1289`; see the latest checkpoint above. Continue from its recorded S3/U05 product-side candidate allocation/reservation task.
 
 ## Previous checkpoint — 2026-11-15 (PW05 worker review status; code cb485279 pushed)
 
