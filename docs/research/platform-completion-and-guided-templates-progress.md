@@ -1,6 +1,27 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (P04 archive and P03 billing status; pushed)
+## Latest checkpoint — 2026-11-15 (P05 generated Project cleanup caller; pushed)
+
+Code commit `c2963702f6795b0c126f4f7fa769f67f35ee22c7` is pushed to
+`origin/Mcbt5s-Backup-2`; fetch confirmed the prior remote tip was an ancestor and the remote now
+matches this SHA. Template status exposes a preview and explicit confirmation for every validated
+generated Project ID, then calls the existing owner/admin DELETE route to archive the exact Project
+and begin bounded workspace cleanup. UI status supports continuation/retry and shows provider cleanup
+receipts. Space-shared extensions, tenant provider connections, licenses and external charges are
+explicitly out of scope. P05 remains PARTIAL for full package uninstall and unresolved payer, revocation
+and provider-resource semantics.
+
+Verification: Shell caller test **1/1**, Spaces deletion route **4/4**, Shell typecheck and
+`git diff --check` passed locally. No browser, deployed worker/R2 or live provider acceptance ran.
+Rollouts remain disabled.
+
+Exact next action: implement section 11.2's named typed business-action contract through a single
+host-authorized operation shared by UI and assistant/MCP callers; enforce installation/actor scope,
+current permissions and revocation, input/output schemas, version fencing, audit and idempotent effects.
+Add a concrete action and local authorization/replay tests, then continue voice dashboard and shared-
+Space requirements.
+
+## Previous checkpoint — 2026-11-15 (P04 archive and P03 billing status; pushed)
 
 Pushed code checkpoints `c46592dad1cfa7eb10228ec41a11d70c7335a872` and
 `e90ccab71cac7af34d076ede31521fe6198a00f5` add bounded, owner-authorized MicroApp business-data

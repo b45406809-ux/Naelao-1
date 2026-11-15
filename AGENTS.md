@@ -16,7 +16,28 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (P04 archive and P03 billing status; pushed)
+## Latest checkpoint — 2026-11-15 (P05 generated Project cleanup caller; pushed)
+
+Code commit `c2963702f6795b0c126f4f7fa769f67f35ee22c7` is pushed to
+`origin/Mcbt5s-Backup-2`; a fresh fetch confirmed the prior remote tip was its ancestor, and the
+remote now points at this SHA. Template status exposes a reviewed cleanup action for each validated
+generated Project ID. Owner/admin confirmation calls the existing DELETE route, archives that exact
+Project, and reports bounded progress/retry and project-scoped provider deletion status. It clearly
+leaves Space-shared installs, tenant connections, licenses and outside charges alone. P05 remains
+PARTIAL for broader uninstall, payer/revocation and provider reconciliation semantics.
+
+Local evidence: Shell cleanup API caller **1/1**, existing Spaces project deletion route **4/4**, Shell
+typecheck and `git diff --check` passed. These are local code tests; no browser, deployed Worker/R2 or
+provider acceptance ran. Preserve the pre-existing untracked `infra/scripts/__pycache__/`; rollouts
+remain disabled.
+
+Exact next action: implement platform-plan §11.2's typed named business-action contract through one
+host-authorized action shared by UI and assistant/MCP. Reconcile the existing MicroAppDO, gadget-MCP
+routes and callers; enforce installation/actor scope, permission and current revocation, input/output
+schemas, expected-version fencing, audit and idempotent side effects, then add one concrete action and
+local authorization/replay tests. Continue other P/S/U gaps after this slice.
+
+## Previous checkpoint — 2026-11-15 (P04 archive and P03 billing status; pushed)
 
 Pushed code checkpoints `c46592dad1cfa7eb10228ec41a11d70c7335a872` and
 `e90ccab71cac7af34d076ede31521fe6198a00f5` add bounded, owner-authorized MicroApp business-data

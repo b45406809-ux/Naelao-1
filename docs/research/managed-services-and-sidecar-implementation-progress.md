@@ -1,6 +1,26 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (P04 archive and P03 billing status; pushed)
+## Latest checkpoint — 2026-11-15 (cross-plan P05 generated Project cleanup; pushed)
+
+Code commit `c2963702f6795b0c126f4f7fa769f67f35ee22c7` is pushed to
+`origin/Mcbt5s-Backup-2`; fetch confirmed the prior remote tip was an ancestor and the remote now
+matches this SHA. The guided-template owner status now offers a preview/explicit confirmation for
+each validated generated Project ID, then invokes the existing owner/admin archive-and-workspace-
+cleanup endpoint. The UI reports bounded continuation/retry and provider cleanup status. This action
+does not uninstall Space-shared extensions, delete tenant connections or cancel licenses/charges.
+P05 remains partial for full uninstall, payer/revocation policy and provider reconciliation.
+
+Local verification: Shell cleanup caller **1/1**, Spaces deletion route **4/4**, Shell typecheck and
+`git diff --check`. No browser, deployed Worker/R2 or provider acceptance ran. No managed-services
+requirement status changed in this slice; preserve existing S/U evidence and disabled rollouts. The
+only untracked item remains `infra/scripts/__pycache__/`.
+
+Exact next action: implement platform-plan §11.2's typed named business-action contract through one
+host-authorized UI and assistant/MCP action, including installation/actor scope, current permission
+and revocation checks, schemas, version fencing, audit, idempotency and tests. Then continue independent
+S2–S9/U01–U12 and P01–P24 gaps.
+
+## Previous checkpoint — 2026-11-15 (P04 archive and P03 billing status; pushed)
 
 Pushed code checkpoints `c46592dad1cfa7eb10228ec41a11d70c7335a872` and
 `e90ccab71cac7af34d076ede31521fe6198a00f5` add bounded, owner-authorized MicroApp business-data
