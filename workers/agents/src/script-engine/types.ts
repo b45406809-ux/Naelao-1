@@ -499,6 +499,8 @@ export interface TieredCodeRunner {
      *  ctx.mcp loopback (mcp-hub is HMAC-gated) without ever exposing the platform secret itself
      *  to the isolate. */
     tenantId: string;
+    /** Stable idempotency identity for a host-managed native execution/recovery attempt. */
+    executionId?: string;
     runId?: string;
     taskId?: string;
     /** Original human invoker, preserved for user-private connector resolution. */

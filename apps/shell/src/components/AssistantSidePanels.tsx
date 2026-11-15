@@ -308,9 +308,10 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
   onResolved?: (() => void) | undefined;
 }) {
   const [content, setContent] = React.useState("");
+  const [validationCommand, setValidationCommand] = React.useState("");
   const [deleteFile, setDeleteFile] = React.useState(false);
   const [requestKey, setRequestKey] = React.useState<string | null>(null);
-  const [submitted, setSubmitted] = React.useState<{ content: string | null } | null>(null);
+  const [submitted, setSubmitted] = React.useState<{ content: string | null; validationCommand: string } | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [done, setDone] = React.useState(false);
   const [message, setMessage] = React.useState("");
@@ -333,21 +334,23 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
   async function publish() {
     const nextKey = requestKey ?? crypto.randomUUID();
     const nextContent = submitted ? submitted.content : deleteFile ? null : content;
+    const nextValidationCommand = submitted?.validationCommand ?? validationCommand.trim();
     setRequestKey(nextKey);
-    setSubmitted({ content: nextContent });
+    setSubmitted({ content: nextContent, validationCommand: nextValidationCommand });
     setBusy(true);
     setMessage("");
     try {
-      await resolveWorkerWorkspaceConflict(spaceId, workerId, session, {
+      const result = await resolveWorkerWorkspaceConflict(spaceId, workerId, session, {
         sessionId, ...(agentId ? { agentId } : {}), projectId, path: conflict.path,
         expectedTargetHash: conflict.targetHash, expectedSourceHash: conflict.sourceHash,
-        content: nextContent, idempotencyKey: nextKey,
+        content: nextContent, idempotencyKey: nextKey, validationCommand: nextValidationCommand,
       });
       setDone(true);
-      setMessage(`${nextContent === null ? "File deletion" : "Resolution"} published through the checked workspace coordinator. The original worker branch is retained.`);
+      setMessage(`${nextContent === null ? "File deletion" : "Resolution"} passed on review revision ${result.resolution.validation.revision} and was published through the checked workspace coordinator. The original worker branch is retained.`);
       onResolved?.();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The resolution could not be published.");
+      onResolved?.();
     } finally { setBusy(false); }
   }
   return <div style={{ marginTop: 8, borderTop: "1px solid var(--border, #64748b44)", paddingTop: 7 }}>
@@ -381,6 +384,11 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
           onChange={event => setContent(event.target.value)} disabled={busy || locked || done} rows={6} maxLength={65_536}
           aria-label={`Resolution content for ${conflict.path}`} style={{ width: "100%", marginTop: 4, resize: "vertical", font: "11px/1.45 var(--font-mono, monospace)" }} />
       </>}
+      <label style={{ display: "block", fontSize: 11, fontWeight: 600, marginTop: 6 }} htmlFor={`worker-validation-${workerId}-${encodeURIComponent(conflict.path)}`}>Package test command</label>
+      <input id={`worker-validation-${workerId}-${encodeURIComponent(conflict.path)}`} value={locked ? submitted.validationCommand : validationCommand}
+        onChange={event => setValidationCommand(event.target.value)} disabled={busy || locked || done} maxLength={256} placeholder="pnpm test"
+        aria-label={`Package test command for ${conflict.path}`} style={{ width: "100%", marginTop: 4 }} />
+      <p style={{ margin: "3px 0", fontSize: 10, color: "var(--text3)" }}>The supported package test command runs against an isolated copy of this reviewed revision before publication. Current execution authorization and configured project and tenant quota gates apply; this receipt does not show per-run infrastructure cost.</p>
       {previewReady && <details style={{ marginTop: 6 }}>
         <summary style={{ cursor: "pointer", fontSize: 11 }}>Review target-to-resolution diff</summary>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 6, marginTop: 5 }}>
@@ -389,8 +397,8 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
         </div>
       </details>}
       {!done && <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
-        <button type="button" className="btn btn-primary btn-sm" disabled={busy || !sessionId || !previewReady || !locked && !deleteFile && content.length === 0}
-          onClick={() => void publish()}>{busy ? "Publishing…" : locked ? "Retry same resolution" : "Publish checked resolution"}</button>
+        <button type="button" className="btn btn-primary btn-sm" disabled={busy || !sessionId || !previewReady || !locked && (!deleteFile && content.length === 0 || !validationCommand.trim())}
+          onClick={() => void publish()}>{busy ? "Running test and publishing…" : locked ? "Retry same test and resolution" : "Run test and publish"}</button>
         {locked && !busy && <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setRequestKey(null); setSubmitted(null); setMessage(""); }}>Edit resolution</button>}
       </div>}
       {message && <p role={done ? "status" : "alert"} style={{ margin: "5px 0 0", fontSize: 11, color: done ? "var(--accent)" : "var(--danger, #dc2626)" }}>{message}</p>}
@@ -408,13 +416,19 @@ function WorkerResultView({ result, maxOutput = 8_000, resolution }: { result: s
   }
   const workerOutput = formatWorkerOutput(mergeResult.workerOutput);
   const resolved = new Map(mergeResult.workspaceMerge.manualResolutions.map(item => [item.path, item]));
+  const validationByPath = new Map(mergeResult.workspaceMerge.validationReceipts.map(item => [item.path, item]));
+  const passedValidationCount = mergeResult.workspaceMerge.manualResolutions.filter(item => item.validation?.status === "passed").length;
   return <section aria-label="Worker workspace merge review" style={{ marginTop: 8, padding: 9, border: "1px solid var(--border, #64748b44)", borderRadius: 7 }}>
     <p role="status" style={{ margin: 0, fontWeight: 600 }}>{mergeResult.workspaceMerge.status === "manually_resolved"
       ? "All reported file conflicts have a checked manual resolution. The original worker branch is retained."
       : mergeResult.workspaceMerge.status === "partially_resolved"
         ? "Some file conflicts have checked manual resolutions; remaining worker changes are still unapplied."
         : "Worker changes were not integrated. Both worker and target branches remain available for review."}</p>
-    <p style={{ margin: "4px 0", color: "var(--text3)", fontSize: 11 }}>Integrated tests: no validation receipt is recorded for this result.</p>
+    <p style={{ margin: "4px 0", color: "var(--text3)", fontSize: 11 }}>
+      Integrated test receipts: {passedValidationCount} passed{mergeResult.workspaceMerge.validationReceipts.length > 0
+        ? ` · ${mergeResult.workspaceMerge.validationReceipts.filter(item => item.status !== "passed").length} failed, blocked, or uncertain`
+        : passedValidationCount === 0 ? " · none recorded" : ""}.
+    </p>
     {mergeResult.modifiedFiles.length > 0 && <div style={{ margin: "4px 0", fontSize: 11 }}>
       <strong>Worker-reported changed paths</strong>
       <ul style={{ margin: "3px 0", paddingLeft: 20 }}>{mergeResult.modifiedFiles.map(path => <li key={path}><code>{path}</code></li>)}</ul>
@@ -432,6 +446,9 @@ function WorkerResultView({ result, maxOutput = 8_000, resolution }: { result: s
         </details>
         {resolved.has(conflict.path) ? <p role="status" style={{ margin: "5px 0 0", fontSize: 11, color: "var(--accent)" }}>
           Reviewed resolution {resolved.get(conflict.path)!.deleted ? "deleted this path" : resolved.get(conflict.path)!.status} at revision {resolved.get(conflict.path)!.revision} on {resolved.get(conflict.path)!.reviewBranch}.
+          {resolved.get(conflict.path)!.validation && <> Tests passed on review revision {resolved.get(conflict.path)!.validation!.revision} ({resolved.get(conflict.path)!.validation!.manifestHash.slice(0, 12)}…) against target revision {resolved.get(conflict.path)!.validation!.targetRevision} ({resolved.get(conflict.path)!.validation!.targetManifestHash.slice(0, 12)}…).</>}
+        </p> : validationByPath.has(conflict.path) ? <p role="status" style={{ margin: "5px 0 0", fontSize: 11, color: validationByPath.get(conflict.path)!.status === "passed" ? "var(--accent)" : "var(--danger, #dc2626)" }}>
+          Validation {validationByPath.get(conflict.path)!.status} on review revision {validationByPath.get(conflict.path)!.revision} ({validationByPath.get(conflict.path)!.manifestHash.slice(0, 12)}…) against target revision {validationByPath.get(conflict.path)!.targetRevision} ({validationByPath.get(conflict.path)!.targetManifestHash.slice(0, 12)}…). {validationByPath.get(conflict.path)!.reason?.replaceAll("_", " ") ?? "The resolution was not published."}
         </p> : conflict.otherPath ? <p style={{ margin: "5px 0 0", fontSize: 11, color: "var(--text3)" }}>This paired-path conflict needs a coordinated rename or delete review; single-file resolution is not offered here.</p>
           : resolution?.sessionId && resolution.projectId ? <WorkerConflictResolutionEditor spaceId={resolution.spaceId} session={resolution.session}
             sessionId={resolution.sessionId ?? ""} agentId={resolution.agentId} projectId={resolution.projectId ?? ""}

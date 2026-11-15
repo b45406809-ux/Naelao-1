@@ -18,6 +18,8 @@ export type WorkspaceManualResolutionInput = {
   expectedSourceHash: string | null;
   content: string | null;
   idempotencyKey: string;
+  validationCommand?: string;
+  validate?: (request: WorkspaceManualValidationRequest) => Promise<WorkspaceManualValidationReceipt>;
 };
 
 export type WorkspaceCoordinatorCall = (
@@ -45,6 +47,46 @@ export type WorkspaceConflictPreview = {
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const MAX_RESOLUTION_BYTES = 256 * 1024;
+const MAX_VALIDATION_COMMAND_BYTES = 256;
+const VALIDATION_COMMAND = /^(?:npm|pnpm|yarn|bun) (?:run )?test(?::[A-Za-z0-9][A-Za-z0-9:._-]{0,63})?(?: -- [A-Za-z0-9@/_.:= -]{1,160})?$/;
+
+export type WorkspaceManualValidationReceipt = {
+  path: string;
+  status: "passed" | "failed" | "uncertain" | "blocked";
+  branch: string;
+  revision: number;
+  manifestHash: string;
+  targetRevision: number;
+  targetManifestHash: string;
+  commandHash: string;
+  executionId: string;
+  runId: string;
+  durationMs: number;
+  completedAt: string;
+  exitCode?: number;
+  reason?: string;
+};
+
+export type WorkspaceManualValidationRequest = {
+  path: string;
+  reviewBranch: string;
+  validationBranch: string;
+  targetBranch: string;
+  revision: number;
+  manifestHash: string;
+  targetRevision: number;
+  targetManifestHash: string;
+  command: string;
+  commandHash: string;
+  executionId: string;
+  runId: string;
+};
+
+export function isWorkspaceManualValidationCommand(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 &&
+    new TextEncoder().encode(value).byteLength <= MAX_VALIDATION_COMMAND_BYTES &&
+    value === value.trim() && VALIDATION_COMMAND.test(value);
+}
 
 async function readBranchText(
   scope: WorkspaceScope,
@@ -268,6 +310,31 @@ async function coordinatorFailure(
   throw new Error(`${operation}:${response.status}:${detail}`);
 }
 
+async function readBranchHead(
+  branch: string,
+  coordinator: WorkspaceCoordinatorCall,
+  operation: string,
+): Promise<{ revision: number; manifestHash: string; branchBase?: { parentBranch: string; revision: number; manifestHash: string } }> {
+  const response = await coordinator(`/v1/head?branch=${encodeURIComponent(branch)}`);
+  if (!response.ok) throw new Error(`${operation}:${response.status}`);
+  const payload = await response.json() as { head?: { branch?: unknown; revision?: unknown; manifestHash?: unknown };
+    branchBase?: { parentBranch?: unknown; revision?: unknown; manifestHash?: unknown } };
+  if (payload.head?.branch !== branch || !Number.isSafeInteger(payload.head.revision) ||
+      typeof payload.head.manifestHash !== "string" || !HASH.test(payload.head.manifestHash)) {
+    throw new Error(`${operation}_invalid`);
+  }
+  let branchBase: { parentBranch: string; revision: number; manifestHash: string } | undefined;
+  if (payload.branchBase !== undefined) {
+    if (typeof payload.branchBase.parentBranch !== "string" || !Number.isSafeInteger(payload.branchBase.revision) ||
+        typeof payload.branchBase.manifestHash !== "string" || !HASH.test(payload.branchBase.manifestHash)) {
+      throw new Error(`${operation}_base_invalid`);
+    }
+    branchBase = { parentBranch: payload.branchBase.parentBranch, revision: payload.branchBase.revision as number,
+      manifestHash: payload.branchBase.manifestHash };
+  }
+  return { revision: payload.head.revision as number, manifestHash: payload.head.manifestHash, ...(branchBase ? { branchBase } : {}) };
+}
+
 /** Publish reviewer-authored content on a retained branch, then merge only through the Coordinator. */
 export async function publishWorkspaceManualResolution(
   input: WorkspaceManualResolutionInput,
@@ -276,6 +343,7 @@ export async function publishWorkspaceManualResolution(
   reviewBranch: string;
   checkpoint: WorkspacePublicationReceipt;
   merge: WorkspacePublicationReceipt;
+  validation?: WorkspaceManualValidationReceipt;
 }> {
   if (
     !validateWorkspaceScope(input.scope) ||
@@ -297,7 +365,8 @@ export async function publishWorkspaceManualResolution(
         HASH.test(input.expectedSourceHash))
     ) ||
     !ID.test(input.idempotencyKey) ||
-    !(input.content === null || typeof input.content === "string")
+    !(input.content === null || typeof input.content === "string") ||
+    input.validate !== undefined && (!isWorkspaceManualValidationCommand(input.validationCommand) || typeof input.validate !== "function")
   ) {
     throw new Error("invalid_workspace_manual_resolution");
   }
@@ -424,9 +493,45 @@ export async function publishWorkspaceManualResolution(
     )
       throw new Error("workspace_manual_resolution_checkpoint_invalid");
 
+    let validation: WorkspaceManualValidationReceipt | undefined;
+    if (input.validate) {
+      const reviewHead = await readBranchHead(reviewBranch, coordinator, "workspace_manual_validation_review_head");
+      const targetHead = await readBranchHead(input.targetBranch, coordinator, "workspace_manual_validation_target_head");
+      if (!reviewHead.branchBase || reviewHead.branchBase.parentBranch !== input.targetBranch ||
+          reviewHead.branchBase.revision !== targetHead.revision || reviewHead.branchBase.manifestHash !== targetHead.manifestHash) {
+        throw new Error("workspace_manual_validation_stale_target");
+      }
+      const commandBytes = new TextEncoder().encode(input.validationCommand!);
+      const commandHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", commandBytes))]
+        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      const validationBranch = `race/manual-validation/${operationId.slice(0, 48)}`;
+      const commandOperationHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
+        input.scope, input.workerId, input.attempt, input.targetBranch, input.path, input.idempotencyKey, commandHash,
+      ]))))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      const executionId = `manual-validation-${commandOperationHash.slice(0, 40)}`;
+      const runId = `manual-validation-run-${commandOperationHash.slice(0, 32)}`;
+      validation = await input.validate({ path: input.path, reviewBranch, validationBranch, targetBranch: input.targetBranch, revision: reviewHead.revision,
+        manifestHash: reviewHead.manifestHash, targetRevision: targetHead.revision, targetManifestHash: targetHead.manifestHash,
+        command: input.validationCommand!,
+        commandHash, executionId, runId });
+      if (validation.path !== input.path || validation.branch !== validationBranch || validation.revision !== reviewHead.revision || validation.manifestHash !== reviewHead.manifestHash ||
+          validation.targetRevision !== targetHead.revision || validation.targetManifestHash !== targetHead.manifestHash ||
+          validation.commandHash !== commandHash || validation.executionId !== executionId || validation.runId !== runId) {
+        throw new Error("workspace_manual_validation_receipt_mismatch");
+      }
+      if (validation.status !== "passed") throw new Error(`workspace_manual_validation_${validation.status}`);
+      const afterValidation = await readBranchHead(reviewBranch, coordinator, "workspace_manual_validation_review_head");
+      const targetAfterValidation = await readBranchHead(input.targetBranch, coordinator, "workspace_manual_validation_target_head");
+      if (afterValidation.revision !== reviewHead.revision || afterValidation.manifestHash !== reviewHead.manifestHash ||
+          targetAfterValidation.revision !== targetHead.revision || targetAfterValidation.manifestHash !== targetHead.manifestHash) {
+        throw new Error("workspace_manual_validation_stale_review_or_target");
+      }
+    }
+
     const mergeResponse = await coordinator("/v1/merge", {
       sessionId,
       targetBranch: input.targetBranch,
+      ...(validation ? { expectedTargetRevision: validation.targetRevision, expectedTargetManifestHash: validation.targetManifestHash } : {}),
       allocationGeneration: 1,
       fence,
       idempotencyKey: `manual-merge-${operationId}`,
@@ -445,6 +550,7 @@ export async function publishWorkspaceManualResolution(
     }
     return {
       reviewBranch,
+      ...(validation ? { validation } : {}),
       checkpoint: checkpoint ?? {
         id: `manual-replay-${input.idempotencyKey}`,
       idempotencyKey: `manual-${operationId}`,

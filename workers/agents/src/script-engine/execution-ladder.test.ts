@@ -376,6 +376,26 @@ describe("Execution Ladder & Code Runner", () => {
     expect(ids).toEqual(["sandbox:s1:p1:branch:race/task/model-a"]);
   });
 
+  it("preserves a host-supplied execution identity for sandbox reconciliation", async () => {
+    const requests: Request[] = [];
+    const toolSandbox = {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: vi.fn(async (request: Request) => {
+        requests.push(request);
+        return Response.json({ ok: true, result: { exit_code: 0 } });
+      }) }),
+    };
+    const runner = buildCodeRunner({ toolSandbox: toolSandbox as never, authorizeContainer: async () => true, platformSecret: "secret" });
+
+    const result = await runner.run({ name: "Bash", code: "npm test", tier: 6, args: { commands: "npm test" },
+      tenantId: "t1", spaceId: "s1", projectId: "p1", agentId: "a1", userId: "u1", runId: "validation-run",
+      executionId: "validation-worker-attempt-1", workspaceBranch: "race/manual-validation/abc", maxTier: 6 });
+
+    expect(result.ok).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(JSON.parse(requests[0]!.headers.get("x-naelao-container-scope")!).executionId).toBe("validation-worker-attempt-1");
+  });
+
   it("rehydrates lockfiles through the signed, branch-scoped sandbox protocol", async () => {
     const requests: Request[] = [];
     const stub = { fetch: vi.fn(async (request: Request) => {

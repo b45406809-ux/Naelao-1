@@ -1704,8 +1704,12 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const sessionId = body.sessionId;
     const targetBranch = body.targetBranch;
     const idempotencyKey = body.idempotencyKey;
+    const expectedTargetRevision = body.expectedTargetRevision;
+    const expectedTargetManifestHash = body.expectedTargetManifestHash;
+    const hasExpectedTarget = expectedTargetRevision !== undefined || expectedTargetManifestHash !== undefined;
     if (typeof sessionId !== "string" || !/^ws_[0-9a-f-]{36}$/.test(sessionId) || !validateWorkspaceBranch(targetBranch) || typeof idempotencyKey !== "string" || !ID.test(idempotencyKey) ||
-        !Number.isSafeInteger(body.allocationGeneration) || !Number.isSafeInteger(body.fence)) return fail("invalid_merge");
+        !Number.isSafeInteger(body.allocationGeneration) || !Number.isSafeInteger(body.fence) ||
+        hasExpectedTarget && (!Number.isSafeInteger(expectedTargetRevision) || Number(expectedTargetRevision) < 1 || typeof expectedTargetManifestHash !== "string" || !HASH.test(expectedTargetManifestHash))) return fail("invalid_merge");
     const session = await this.ctx.storage.get<Session>(sessionKey(sessionId));
     if (!session) return fail("workspace_session_not_found", 404);
     if (await this.contentGcLocked()) return fail("workspace_gc_in_progress", 423);
@@ -1716,12 +1720,16 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (!workingHead) return fail("workspace_branch_not_found", 404);
     const changeSetHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ actorId: session.actorId, sourceBranch: session.branch, targetBranch,
       sourceManifestHash: workingHead.manifestHash, baseManifestHash: session.baseManifestHash,
+      ...(hasExpectedTarget ? { expectedTargetRevision, expectedTargetManifestHash } : {}),
       allocationGeneration: session.allocationGeneration, fence: session.fence, mergeAlgorithm: THREE_WAY_TEXT_MERGE_ALGORITHM })));
     const prior = await this.ctx.storage.get<WorkspacePublicationReceipt>(mergeReceiptKey(targetBranch, idempotencyKey));
     if (prior) return prior.changeSetHash === changeSetHash ? json({ publication: prior }) : fail("idempotency_conflict", 409);
     if (session.status !== "active") return fail("stale_fence", 409);
     const targetHead = await this.ctx.storage.get<WorkspaceHead>(headKey(targetBranch));
     if (!targetHead) return fail("workspace_branch_not_found", 404);
+    if (hasExpectedTarget && (targetHead.revision !== expectedTargetRevision || targetHead.manifestHash !== expectedTargetManifestHash)) {
+      return fail("expected_target_head_mismatch", 409);
+    }
     const baseObject = await this.env.SCRIPTS_R2!.get(manifestKey(targetHead.scope, session.baseManifestHash));
     const parentObject = await this.env.SCRIPTS_R2!.get(manifestKey(targetHead.scope, targetHead.manifestHash));
     const workingObject = await this.env.SCRIPTS_R2!.get(manifestKey(targetHead.scope, workingHead.manifestHash));

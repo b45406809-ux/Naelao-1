@@ -7,6 +7,21 @@ export type WorkerMergeConflictView = {
   sourceHash: string | null;
 };
 
+export type WorkerManualValidationView = {
+  path: string;
+  status: "passed" | "failed" | "uncertain" | "blocked";
+  branch: string;
+  revision: number;
+  manifestHash: string;
+  targetRevision: number;
+  targetManifestHash: string;
+  commandHash: string;
+  durationMs: number;
+  completedAt: string;
+  exitCode?: number;
+  reason?: string;
+};
+
 export type WorkerMergeResultView = {
   workerOutput: unknown;
   /** Paths reported by the worker; these are advisory and are not a verified diff. */
@@ -22,7 +37,9 @@ export type WorkerMergeResultView = {
       reviewBranch: string;
       completedAt: string;
       deleted: boolean;
+      validation: WorkerManualValidationView | null;
     }>;
+    validationReceipts: WorkerManualValidationView[];
   };
 };
 
@@ -38,6 +55,22 @@ const safeReportedPath = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 512 &&
   !/[\u0000-\u001f\u007f]/u.test(value) && !value.startsWith("/") &&
   !value.split(/[\\/]/u).some(part => part === ".." || part === "");
+
+const parseValidationReceipt = (value: unknown): WorkerManualValidationView | null => {
+  if (!record(value) || !safeReportedPath(value.path) || !["passed", "failed", "uncertain", "blocked"].includes(String(value.status)) ||
+      typeof value.branch !== "string" || value.branch.length > 128 || !Number.isSafeInteger(value.revision) ||
+      typeof value.manifestHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.manifestHash) ||
+      !Number.isSafeInteger(value.targetRevision) ||
+      typeof value.targetManifestHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.targetManifestHash) ||
+      typeof value.commandHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.commandHash) ||
+      !Number.isSafeInteger(value.durationMs) || Number(value.durationMs) < 0 || typeof value.completedAt !== "string") return null;
+  return { path: value.path, status: value.status as WorkerManualValidationView["status"], branch: value.branch,
+    revision: Number(value.revision), manifestHash: value.manifestHash.toLowerCase(), commandHash: value.commandHash.toLowerCase(),
+    targetRevision: Number(value.targetRevision), targetManifestHash: value.targetManifestHash.toLowerCase(),
+    durationMs: Number(value.durationMs), completedAt: value.completedAt.slice(0, 64),
+    ...(Number.isSafeInteger(value.exitCode) ? { exitCode: Number(value.exitCode) } : {}),
+    ...(typeof value.reason === "string" ? { reason: value.reason.slice(0, 100) } : {}) };
+};
 
 /** Decode the bounded worker result envelope without trusting arbitrary stored JSON fields. */
 export function parseWorkerMergeResult(
@@ -105,6 +138,7 @@ export function parseWorkerMergeResult(
               typeof item.completedAt !== "string"
             )
               return [];
+            const validation = parseValidationReceipt(item.validation);
             return [
               {
                 path: item.path.slice(0, 512),
@@ -113,10 +147,17 @@ export function parseWorkerMergeResult(
                 reviewBranch: item.reviewBranch.slice(0, 128),
                 completedAt: item.completedAt.slice(0, 64),
                 deleted: item.deleted === true,
+                validation: validation?.status === "passed" ? validation : null,
               },
             ];
           }
         )
+    : [];
+  const validationReceipts = Array.isArray(workspaceMerge.validationReceipts)
+    ? workspaceMerge.validationReceipts.slice(-50).flatMap(item => {
+        const receipt = parseValidationReceipt(item);
+        return receipt ? [receipt] : [];
+      })
     : [];
   return {
     workerOutput: value.workerOutput ?? null,
@@ -126,6 +167,7 @@ export function parseWorkerMergeResult(
         workspaceMerge.status as WorkerMergeResultView["workspaceMerge"]["status"],
       conflicts,
       manualResolutions,
+      validationReceipts,
       omitted:
         reportedOmitted +
         Math.max(0, workspaceMerge.conflicts.length - rawConflicts.length) +

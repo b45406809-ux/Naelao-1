@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { readWorkspaceConflictPreview } from "./workspace-manual-resolution.js";
+import {
+  isWorkspaceManualValidationCommand,
+  readWorkspaceConflictPreview,
+} from "./workspace-manual-resolution.js";
 import { sha256Hex } from "./workspace-contract.js";
 
 const scope = {
@@ -8,6 +11,26 @@ const scope = {
   projectId: "project",
   jurisdiction: "global" as const,
 };
+
+describe("workspace manual validation command", () => {
+  it.each(["npm test", "pnpm test", "yarn test:unit", "bun run test -- --runInBand"]) (
+    "accepts bounded package test command %s",
+    (command) => {
+      expect(isWorkspaceManualValidationCommand(command)).toBe(true);
+    }
+  );
+
+  it.each([
+    "npm install",
+    "pnpm test; curl https://example.invalid",
+    "npm test && rm -rf .",
+    "pnpm test\nnode malicious.js",
+    " pnpm test",
+    `pnpm test -- ${"x".repeat(300)}`,
+  ])("rejects unsafe or unbounded command %s", (command) => {
+    expect(isWorkspaceManualValidationCommand(command)).toBe(false);
+  });
+});
 
 describe("workspace manual conflict previews", () => {
   it("reads integrity-checked text from current target and retained worker branches", async () => {

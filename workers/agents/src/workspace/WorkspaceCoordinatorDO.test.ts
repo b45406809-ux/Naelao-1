@@ -1329,6 +1329,78 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(await (await call(instance, `/v1/head?branch=${encodeURIComponent(first.reviewBranch)}`)).status).toBe(200);
   });
 
+  it("validates the exact retained review revision before publishing a manual resolution", async () => {
+    const { instance, merge } = await createMergeConflictCase({ path: "src/validated.ts", base: "base\n", worker: "worker edit\n", owner: "target edit\n" });
+    expect(merge.status).toBe(409);
+    const targetHash = await sha256Hex(new TextEncoder().encode("target edit\n"));
+    const sourceHash = await sha256Hex(new TextEncoder().encode("worker edit\n"));
+    const validationCalls: Array<{ revision: number; manifestHash: string }> = [];
+    const result = await publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-validated", attempt: 1,
+      targetBranch: "main", sourceBranch: "runs/review-conflict", path: "src/validated.ts", expectedTargetHash: targetHash,
+      expectedSourceHash: sourceHash, content: "reviewed and validated\n", idempotencyKey: "manual-validated-1", validationCommand: "pnpm test",
+      validate: async request => {
+        expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
+        const fork = await call(instance, "/v1/branch", { scope, sourceBranch: request.reviewBranch, branch: request.validationBranch });
+        expect(fork.status).toBe(200);
+        const validationHead = await (await call(instance, `/v1/head?branch=${encodeURIComponent(request.validationBranch)}`)).json() as { head: { revision: number; manifestHash: string } };
+        expect(validationHead.head).toMatchObject({ revision: request.revision, manifestHash: request.manifestHash });
+        validationCalls.push({ revision: request.revision, manifestHash: request.manifestHash });
+        return { path: request.path, status: "passed", branch: request.validationBranch, revision: request.revision,
+          manifestHash: request.manifestHash, targetRevision: request.targetRevision, targetManifestHash: request.targetManifestHash,
+          commandHash: request.commandHash, executionId: request.executionId, runId: request.runId,
+          durationMs: 10, completedAt: new Date().toISOString(), exitCode: 0 };
+      } }, (path, body) => call(instance, path, body));
+
+    expect(validationCalls).toHaveLength(1);
+    expect(result.validation).toMatchObject({ status: "passed", revision: validationCalls[0]!.revision,
+      manifestHash: validationCalls[0]!.manifestHash, branch: expect.stringMatching(/^race\/manual-validation\//) });
+    expect(result.merge.status).toBe("published");
+  });
+
+  it("does not publish when validation fails on the pinned review revision", async () => {
+    const { instance, merge } = await createMergeConflictCase({ path: "src/failing-validation.ts", base: "base\n", worker: "worker edit\n", owner: "target edit\n" });
+    expect(merge.status).toBe(409);
+    const targetHash = await sha256Hex(new TextEncoder().encode("target edit\n"));
+    const sourceHash = await sha256Hex(new TextEncoder().encode("worker edit\n"));
+    await expect(publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-validation-fails", attempt: 1,
+      targetBranch: "main", sourceBranch: "runs/review-conflict", path: "src/failing-validation.ts", expectedTargetHash: targetHash,
+      expectedSourceHash: sourceHash, content: "reviewed but broken\n", idempotencyKey: "manual-validation-fails-1", validationCommand: "pnpm test",
+      validate: async request => ({ path: request.path, status: "failed", branch: request.validationBranch, revision: request.revision,
+        manifestHash: request.manifestHash, targetRevision: request.targetRevision, targetManifestHash: request.targetManifestHash,
+        commandHash: request.commandHash, executionId: request.executionId, runId: request.runId,
+        durationMs: 12, completedAt: new Date().toISOString(), exitCode: 1, reason: "test_command_failed" }) },
+    (path, body) => call(instance, path, body))).rejects.toThrow("workspace_manual_validation_failed");
+    expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
+  });
+
+  it("rejects a target head race after validation at the Coordinator merge boundary", async () => {
+    const { instance, storage, merge } = await createMergeConflictCase({ path: "src/race-checked.ts", base: "base\n", worker: "worker edit\n", owner: "target edit\n" });
+    expect(merge.status).toBe(409);
+    const targetHash = await sha256Hex(new TextEncoder().encode("target edit\n"));
+    const sourceHash = await sha256Hex(new TextEncoder().encode("worker edit\n"));
+    let raced = false;
+    const requestCoordinator = async (path: string, body?: Record<string, unknown>) => {
+      if (path === "/v1/merge" && !raced) {
+        raced = true;
+        const current = storage.values.get("head:main") as { revision: number; parentRevision: number | null; updatedAt: string };
+        storage.values.set("head:main", { ...current, revision: current.revision + 1, parentRevision: current.revision, updatedAt: new Date().toISOString() });
+      }
+      return call(instance, path, body);
+    };
+    await expect(publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-target-race", attempt: 1,
+      targetBranch: "main", sourceBranch: "runs/review-conflict", path: "src/race-checked.ts", expectedTargetHash: targetHash,
+      expectedSourceHash: sourceHash, content: "validated resolution\n", idempotencyKey: "manual-target-race-1", validationCommand: "pnpm test",
+      validate: async request => ({ path: request.path, status: "passed", branch: request.validationBranch, revision: request.revision,
+        manifestHash: request.manifestHash, targetRevision: request.targetRevision, targetManifestHash: request.targetManifestHash,
+        commandHash: request.commandHash, executionId: request.executionId, runId: request.runId,
+        durationMs: 10, completedAt: new Date().toISOString(), exitCode: 0 }) }, requestCoordinator)).rejects.toThrow("workspace_manual_resolution_merge_failed:409");
+    expect(raced).toBe(true);
+    expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 3 } });
+    expect(await (await call(instance, "/v1/read?branch=main&path=src%2Frace-checked.ts")).json()).toMatchObject({
+      entries: [{ sha256: targetHash }],
+    });
+  });
+
   it("publishes a reviewer deletion while retaining the original worker file", async () => {
     const { instance, objects } = setup();
     const bytes = new TextEncoder().encode("target version\n");

@@ -2834,6 +2834,20 @@ export interface WorkerWorkspaceConflictResolution {
   revision: number;
   publicationId: string;
   completedAt: string;
+  validation: {
+    status: "passed";
+    branch: string;
+    revision: number;
+    manifestHash: string;
+    targetRevision: number;
+    targetManifestHash: string;
+    commandHash: string;
+    executionId: string;
+    runId: string;
+    durationMs: number;
+    completedAt: string;
+    exitCode?: number;
+  };
 }
 
 export interface WorkerWorkspaceConflictPreviewVersion {
@@ -2865,13 +2879,13 @@ export async function resolveWorkerWorkspaceConflict(
   spaceId: string,
   workerId: string,
   session: SessionCredentials,
-  input: { sessionId: string; agentId?: string | null; projectId: string; path: string; expectedTargetHash: string | null; expectedSourceHash: string | null; content: string | null; idempotencyKey: string }
+  input: { sessionId: string; agentId?: string | null; projectId: string; path: string; expectedTargetHash: string | null; expectedSourceHash: string | null; content: string | null; idempotencyKey: string; validationCommand: string }
 ): Promise<{ resolution: WorkerWorkspaceConflictResolution; replay?: boolean }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/sub-agents/${encodeURIComponent(workerId)}/workspace-conflicts/resolve`, {
     method: "POST", session, body: JSON.stringify({ session_id: input.sessionId, ...(input.agentId ? { agent_id: input.agentId } : {}),
       project_id: input.projectId, path: input.path, expected_target_hash: input.expectedTargetHash,
       expected_source_hash: input.expectedSourceHash, content: input.content,
-      idempotency_key: input.idempotencyKey }),
+      idempotency_key: input.idempotencyKey, validation_command: input.validationCommand }),
   });
 }
 

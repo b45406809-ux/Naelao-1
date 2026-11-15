@@ -116,7 +116,8 @@ import { putBytesCas, putTextCas, readBytesWithHash, readTextWithHash } from "..
 import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
 import { handleWorkspaceCheckedPublish } from "../workspace/workspace-checked-publish-route.js";
 import { validateWorkspaceScope, validateWorkspacePath, type WorkspaceScope } from "../workspace/workspace-contract.js";
-import { publishWorkspaceManualResolution, readWorkspaceConflictPreview, workspaceManualResolutionErrorResponse } from "../workspace/workspace-manual-resolution.js";
+import { isWorkspaceManualValidationCommand, publishWorkspaceManualResolution, readWorkspaceConflictPreview,
+  workspaceManualResolutionErrorResponse, type WorkspaceManualValidationReceipt, type WorkspaceManualValidationRequest } from "../workspace/workspace-manual-resolution.js";
 import { withWorkerMergeConflicts } from "../workspace/worker-merge-report.js";
 import { withWorkspaceManifestRead } from "../script-engine/workspace-r2-compat.js";
 import {
@@ -5065,19 +5066,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const scope = body.scope;
     const actorId = body.actorId;
     const role = body.callerRole;
+    const sessionId = body.sessionId;
     const workerId = body.workerId;
     const path = body.path;
     const expectedTargetHash = body.expectedTargetHash;
     const expectedSourceHash = body.expectedSourceHash;
     const content = body.content;
     const idempotencyKey = body.idempotencyKey;
+    const validationCommand = body.validationCommand;
     if (!validateWorkspaceScope(scope) || scope.tenantId !== tenantId || typeof actorId !== "string" ||
         !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(actorId) || typeof role !== "string" || role.length > 64 ||
+        typeof sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(sessionId) ||
         typeof workerId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(workerId) ||
         typeof path !== "string" || !validateWorkspacePath(path) ||
         !(expectedTargetHash === null || (typeof expectedTargetHash === "string" && /^[a-f0-9]{64}$/.test(expectedTargetHash))) ||
         !(expectedSourceHash === null || (typeof expectedSourceHash === "string" && /^[a-f0-9]{64}$/.test(expectedSourceHash))) ||
-        !(content === null || typeof content === "string") || typeof idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(idempotencyKey)) {
+        !(content === null || typeof content === "string") || typeof idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(idempotencyKey) ||
+        !isWorkspaceManualValidationCommand(validationCommand)) {
       return Response.json({ error_code: "invalid_workspace_manual_resolution" }, { status: 400 });
     }
     const resolutionBytes = content === null ? null : new TextEncoder().encode(content);
@@ -5086,7 +5091,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     const contentDigest = resolutionBytes === null ? "delete" : [...new Uint8Array(await crypto.subtle.digest("SHA-256", resolutionBytes))]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
-    const requestHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([path, expectedTargetHash, expectedSourceHash, contentDigest]))))]
+    const validationCommandHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(validationCommand)))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const requestHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([path, expectedTargetHash, expectedSourceHash, contentDigest, validationCommandHash]))))]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
     const { spaceId, projectId } = scope;
     const agentsEnv = this.env as unknown as import("../index.js").AgentsEnv;
@@ -5099,8 +5106,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (agentsEnv.UNIFIED_WORKSPACE_ENABLED !== "true") return Response.json({ error_code: "workspace_global_kill_switch_active" }, { status: 423 });
     if (!agentsEnv.WORKSPACE_COORDINATOR) return Response.json({ error_code: "workspace_coordinator_unavailable" }, { status: 503 });
 
-    const rows = this.ctx.storage.sql.exec(`SELECT status,result,workspace_branch,attempt,configuration_json FROM sub_agents WHERE id=?`, workerId)
-      .toArray() as Array<{ status: string; result: string | null; workspace_branch: string | null; attempt: number; configuration_json: string | null }>;
+    const rows = this.ctx.storage.sql.exec(`SELECT status,result,workspace_branch,attempt,configuration_json,parent_run_id FROM sub_agents WHERE id=?`, workerId)
+      .toArray() as Array<{ status: string; result: string | null; workspace_branch: string | null; attempt: number; configuration_json: string | null; parent_run_id: string }>;
     const row = rows[0];
     if (!row) return Response.json({ error_code: "worker_not_found" }, { status: 404 });
     let configuration: Record<string, unknown>;
@@ -5132,6 +5139,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     const targetBranch = await this.ctx.storage.get<string>(`worker-branch-parent:${workerId}`);
     if (!row.workspace_branch || !targetBranch || !validateWorkspacePath(path)) return Response.json({ error_code: "worker_branch_metadata_unavailable" }, { status: 409 });
+    const operationId = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
+      scope, workerId, row.attempt, targetBranch, path, idempotencyKey,
+    ]))))].map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 48);
+    const operationBindingKey = `workspace-manual-validation-operation:${workerId}:${row.attempt}:${operationId}`;
+    const operationIndexKey = `workspace-manual-validation-operations:${workerId}:${row.attempt}`;
+    const operationClaim = await this.ctx.storage.transaction(async tx => {
+      const prior = await tx.get<{ requestHash: string }>(operationBindingKey);
+      if (prior) return prior.requestHash === requestHash ? "same" as const : "conflict" as const;
+      const index = await tx.get<string[]>(operationIndexKey) ?? [];
+      if (!Array.isArray(index) || index.some(item => typeof item !== "string") || index.length >= 50) return "limit" as const;
+      index.push(operationId);
+      await tx.put(operationIndexKey, index);
+      await tx.put(operationBindingKey, { requestHash, path, targetBranch, idempotencyKey, createdAt: Date.now() });
+      return "created" as const;
+    });
+    if (operationClaim === "conflict") return Response.json({ error_code: "workspace_manual_resolution_idempotency_conflict" }, { status: 409, headers: { "cache-control": "no-store" } });
+    if (operationClaim === "limit") return Response.json({ error_code: "workspace_manual_resolution_limit_reached" }, { status: 429, headers: { "cache-control": "no-store" } });
     const coordinatorEnv = agentsEnv as unknown as import("../workspace/workspace-client.js").WorkspaceCoordinatorBindings;
     const checkedCoordinator = async (route: string, payload?: Record<string, unknown>) => {
       if (["/v1/branch", "/v1/open", "/v1/checkpoint", "/v1/merge"].includes(route)) {
@@ -5141,17 +5165,178 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       return workspaceCoordinatorRequest(coordinatorEnv, scope, route, { ...(payload ? { body: payload } : {}) });
     };
+    const validationJournalKey = (executionId: string) => `workspace-manual-validation:${workerId}:${row.attempt}:${executionId}`;
+    const pathDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path)))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const uncertainPathKey = `workspace-manual-validation-uncertain:${workerId}:${row.attempt}:${pathDigest}`;
+    const runManualValidation = async (validation: WorkspaceManualValidationRequest): Promise<WorkspaceManualValidationReceipt> => {
+      const makeReceipt = (status: WorkspaceManualValidationReceipt["status"], extra: Partial<WorkspaceManualValidationReceipt> = {}): WorkspaceManualValidationReceipt => ({
+        path, status, branch: validation.validationBranch, revision: validation.revision, manifestHash: validation.manifestHash,
+        targetRevision: validation.targetRevision, targetManifestHash: validation.targetManifestHash,
+        commandHash: validation.commandHash, executionId: validation.executionId, runId: validation.runId,
+        durationMs: Math.max(0, Date.now() - validationStartedAt), completedAt: new Date().toISOString(), ...extra,
+      });
+      const validationStartedAt = Date.now();
+      const key = validationJournalKey(validation.executionId);
+      const recordReceipt = async (receipt: WorkspaceManualValidationReceipt) => {
+        await this.ctx.storage.put(key, receipt);
+        if (receipt.status === "uncertain") await this.ctx.storage.put(uncertainPathKey, { executionId: receipt.executionId, recordedAt: receipt.completedAt });
+        return receipt;
+      };
+      const readBranch = async (branch: string) => {
+        const response = await checkedCoordinator(`/v1/head?branch=${encodeURIComponent(branch)}`);
+        if (!response.ok) return null;
+        const value = await readBoundedResponseJson<{ head?: { branch?: string; revision?: number; manifestHash?: string };
+          branchBase?: { parentBranch?: string; revision?: number; manifestHash?: string } }>(response, 32 * 1024);
+        const base = value.branchBase;
+        if (base && (typeof base.parentBranch !== "string" || !Number.isSafeInteger(base.revision) || typeof base.manifestHash !== "string")) return null;
+        return value.head?.branch === branch && Number.isSafeInteger(value.head.revision) && typeof value.head.manifestHash === "string"
+          ? { revision: value.head.revision!, manifestHash: value.head.manifestHash,
+            ...(base ? { branchBase: { parentBranch: base.parentBranch!, revision: base.revision!, manifestHash: base.manifestHash! } } : {}) } : null;
+      };
+      const stillAuthorized = await (await import("../communications/core.js")).scopeAccess(agentsEnv,
+        { tenantId, spaceId, projectId, userId: actorId, role }, true).catch(() => false);
+      if (!stillAuthorized) return recordReceipt(makeReceipt("blocked", { reason: "project_access_revoked" }));
+
+      const branchCreated = await checkedCoordinator("/v1/branch", { scope, sourceBranch: validation.reviewBranch, branch: validation.validationBranch });
+      if (!branchCreated.ok) return recordReceipt(makeReceipt("blocked", { reason: "validation_branch_unavailable" }));
+      const [reviewHead, validationHead, targetHead] = await Promise.all([
+        readBranch(validation.reviewBranch), readBranch(validation.validationBranch), readBranch(validation.targetBranch),
+      ]);
+      if (!reviewHead || !validationHead || reviewHead.revision !== validation.revision || reviewHead.manifestHash !== validation.manifestHash ||
+          !reviewHead.branchBase || reviewHead.branchBase.parentBranch !== validation.targetBranch ||
+          reviewHead.branchBase.revision !== validation.targetRevision || reviewHead.branchBase.manifestHash !== validation.targetManifestHash ||
+          !validationHead.branchBase || validationHead.branchBase.parentBranch !== validation.reviewBranch ||
+          validationHead.branchBase.revision !== validation.revision || validationHead.branchBase.manifestHash !== validation.manifestHash ||
+          !targetHead || targetHead.revision !== validation.targetRevision || targetHead.manifestHash !== validation.targetManifestHash ||
+          validationHead.revision !== validation.revision || validationHead.manifestHash !== validation.manifestHash) {
+        return recordReceipt(makeReceipt("blocked", { reason: "validation_revision_mismatch" }));
+      }
+
+      const saved = await this.ctx.storage.get<WorkspaceManualValidationReceipt | { status: "running"; startedAt: number }>(key);
+      if (saved && saved.status !== "running") {
+        if (saved.path !== path || saved.branch !== validation.validationBranch || saved.revision !== validation.revision || saved.manifestHash !== validation.manifestHash ||
+            saved.targetRevision !== validation.targetRevision || saved.targetManifestHash !== validation.targetManifestHash ||
+            saved.commandHash !== validation.commandHash || saved.executionId !== validation.executionId || saved.runId !== validation.runId) {
+          return recordReceipt(makeReceipt("blocked", { reason: "validation_receipt_scope_mismatch" }));
+        }
+        return saved;
+      }
+      const uncertainPath = await this.ctx.storage.get<{ executionId: string }>(uncertainPathKey);
+      if (uncertainPath && uncertainPath.executionId !== validation.executionId) {
+        return recordReceipt(makeReceipt("blocked", { reason: "prior_validation_outcome_uncertain" }));
+      }
+      const claim = await this.ctx.storage.transaction(async tx => {
+        const current = await tx.get<WorkspaceManualValidationReceipt | { status: "running"; startedAt: number }>(key);
+        if (current && current.status !== "running") return { receipt: current };
+        if (current && Date.now() - current.startedAt < 70_000) return { busy: true };
+        await tx.put(key, { status: "running", startedAt: Date.now() });
+        return { run: true };
+      });
+      if (claim.receipt) return claim.receipt;
+      if (claim.busy) throw new Error("workspace_manual_validation_in_progress");
+
+      const agentId = typeof configuration.agentId === "string" ? configuration.agentId : "";
+      if (!agentId) return recordReceipt(makeReceipt("blocked", { reason: "worker_agent_identity_unavailable" }));
+      const gate = await this.enforceRunGates({ tenantId, spaceId, projectId, userId: actorId, callerRole: role, sessionId, agentId, runId: validation.runId });
+      if (!gate.ok) return recordReceipt(makeReceipt("blocked", { reason: "native_execution_admission_denied" }));
+      if (!gate.effectiveRole || gate.effectiveRole === "viewer" || gate.maxTier !== undefined && gate.maxTier < 6) {
+        return recordReceipt(makeReceipt("blocked", { reason: "native_execution_authority_required" }));
+      }
+      const engineEnv = await this.buildScriptEngineEnv(spaceId, agentId, tenantId, actorId, projectId, undefined, false, undefined, validation.validationBranch, role);
+      if (!engineEnv?.codeRunner) return recordReceipt(makeReceipt("blocked", { reason: "native_runner_unavailable" }));
+      engineEnv.runId = validation.runId;
+      engineEnv.taskId = validation.runId;
+      engineEnv.humanInvokerId = actorId;
+      engineEnv.effectiveRole = gate.effectiveRole;
+      if (engineEnv.memoryRoleRank) engineEnv.memoryRoleRank.value = roleRankFor(gate.effectiveRole);
+      if (gate.maxTier !== undefined) engineEnv.maxTier = gate.maxTier;
+      new ScriptToolSurface(engineEnv, ["code-exec"]);
+      if (!engineEnv.nativeExecutionAllowed || engineEnv.maxTier !== undefined && engineEnv.maxTier < 6) {
+        return recordReceipt(makeReceipt("blocked", { reason: "native_execution_authority_required" }));
+      }
+      let execution: Awaited<ReturnType<NonNullable<typeof engineEnv.codeRunner>["run"]>>;
+      try {
+        execution = await engineEnv.codeRunner.run({ name: "code-exec.execute_bash", code: BASH_HARNESS,
+          args: { commands: validation.command, timeout: 55 }, tier: 6, tenantId, spaceId, agentId, projectId,
+          userId: actorId, runId: validation.runId, executionId: validation.executionId, workspaceBranch: validation.validationBranch,
+          maxTier: engineEnv.maxTier ?? 6 });
+      } catch {
+        return recordReceipt(makeReceipt("uncertain", { reason: "native_execution_outcome_uncertain" }));
+      }
+      const output = execution.output && typeof execution.output === "object" ? execution.output as { exit_code?: unknown } : undefined;
+      let receipt: WorkspaceManualValidationReceipt;
+      if (execution.ok && output?.exit_code === 0) {
+        receipt = makeReceipt("passed", { exitCode: 0, durationMs: execution.duration_ms });
+      } else {
+        const error = execution.error ?? "";
+        const failed = /Command failed with exit code (\d+)/.exec(error);
+        const blocked = /container_execution_denied|execution_ceiling_exceeded|environment_native_execution_denied|container_capacity_reservation_required|Tier-6 container runtime not available|no ToolSandboxDO/.test(error);
+        const uncertain = /reconciliation_required|may_require_reconciliation|deadline_exceeded|cancelled|guest_cleanup_unverified|workspace_checkpoint/.test(error);
+        const status = failed ? "failed" : uncertain ? "uncertain" : blocked ? "blocked" : "uncertain";
+        receipt = makeReceipt(status, { ...(failed ? { exitCode: Number(failed[1]) } : {}), durationMs: execution.duration_ms,
+          reason: failed ? "test_command_failed" : blocked ? "native_execution_unavailable" : "native_execution_outcome_uncertain" });
+      }
+      const [reviewAfter, validationAfter, targetAfter] = await Promise.all([
+        readBranch(validation.reviewBranch), readBranch(validation.validationBranch), readBranch(validation.targetBranch),
+      ]);
+      if (!reviewAfter || reviewAfter.revision !== validation.revision || reviewAfter.manifestHash !== validation.manifestHash ||
+          !validationAfter || validationAfter.revision !== validation.revision || validationAfter.manifestHash !== validation.manifestHash ||
+          !targetAfter || targetAfter.revision !== validation.targetRevision || targetAfter.manifestHash !== validation.targetManifestHash ||
+          !reviewAfter.branchBase || reviewAfter.branchBase.parentBranch !== validation.targetBranch ||
+          reviewAfter.branchBase.revision !== validation.targetRevision || reviewAfter.branchBase.manifestHash !== validation.targetManifestHash ||
+          !validationAfter.branchBase || validationAfter.branchBase.parentBranch !== validation.reviewBranch ||
+          validationAfter.branchBase.revision !== validation.revision || validationAfter.branchBase.manifestHash !== validation.manifestHash) {
+        receipt = { ...receipt, status: "blocked", reason: "validation_revision_changed", completedAt: new Date().toISOString() };
+      }
+      return recordReceipt(receipt);
+    };
+    const appendValidationReceipt = (receipt: WorkspaceManualValidationReceipt) => {
+      const currentRows = this.ctx.storage.sql.exec(`SELECT result,status,workspace_branch,configuration_json FROM sub_agents WHERE id=?`, workerId)
+        .toArray() as Array<{ result: string | null; status: string; workspace_branch: string | null; configuration_json: string | null }>;
+      const current = currentRows[0];
+      let currentOutput: Record<string, unknown> | null = null;
+      try { currentOutput = JSON.parse(current?.result ?? "null") as Record<string, unknown> | null; } catch { return false; }
+      const currentMerge = currentOutput?.workspaceMerge as Record<string, unknown> | undefined;
+      if (!current || current.status !== "done" || !currentOutput || Array.isArray(currentOutput) || !currentMerge ||
+          current.configuration_json !== row.configuration_json || current.workspace_branch !== row.workspace_branch) return false;
+      const receipts = Array.isArray(currentMerge.validationReceipts)
+        ? currentMerge.validationReceipts as Array<Record<string, unknown>> : [];
+      const filtered = receipts.filter(item => item.executionId !== receipt.executionId);
+      currentOutput.workspaceMerge = { ...currentMerge, validationReceipts: [...filtered, receipt].slice(-50) };
+      this.ctx.storage.sql.exec(`UPDATE sub_agents SET result=?,updated_at=? WHERE id=?`, JSON.stringify(currentOutput), Date.now(), workerId);
+      return true;
+    };
+    const validationExecutionId = `manual-validation-${[...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
+      scope, workerId, row.attempt, targetBranch, path, idempotencyKey, validationCommandHash,
+    ]))))].map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 40)}`;
     let published: Awaited<ReturnType<typeof publishWorkspaceManualResolution>>;
     try {
       published = await publishWorkspaceManualResolution({ scope, actorId, workerId, attempt: row.attempt, targetBranch,
         sourceBranch: row.workspace_branch, path, expectedTargetHash: expectedTargetHash as string | null,
-        expectedSourceHash: expectedSourceHash as string | null, content, idempotencyKey },
+        expectedSourceHash: expectedSourceHash as string | null, content, idempotencyKey,
+        validationCommand, validate: runManualValidation },
       checkedCoordinator);
     } catch (error) {
+      const errorCode = error instanceof Error ? error.message : "";
+      const journal = await this.ctx.storage.get<unknown>(validationJournalKey(validationExecutionId));
+      const expectedValidationBranch = `race/manual-validation/${operationId}`;
+      const receipt = journal && typeof journal === "object" && "status" in journal &&
+        ["passed", "failed", "uncertain", "blocked"].includes(String(journal.status)) &&
+        "path" in journal && journal.path === path && "branch" in journal && journal.branch === expectedValidationBranch &&
+        "executionId" in journal && journal.executionId === validationExecutionId &&
+        "commandHash" in journal && journal.commandHash === validationCommandHash
+        ? journal as WorkspaceManualValidationReceipt : null;
+      if (receipt) appendValidationReceipt(receipt);
+      if (errorCode.startsWith("workspace_manual_validation_")) {
+        return Response.json({ error_code: errorCode, ...(receipt ? { validation: receipt } : {}), reviewBranch: `manual/${operationId}` },
+          { status: errorCode.endsWith("_failed") ? 422 : 409, headers: { "cache-control": "no-store" } });
+      }
       return workspaceManualResolutionErrorResponse(error);
     }
+    if (!published.validation) return Response.json({ error_code: "workspace_manual_validation_receipt_required" }, { status: 409 });
     const resolution = { path, idempotencyKey, requestHash, reviewBranch: published.reviewBranch, targetBranch, deleted: content === null,
-      status: published.merge.status, revision: published.merge.revision, publicationId: published.merge.id, completedAt: new Date().toISOString() };
+      status: published.merge.status, revision: published.merge.revision, publicationId: published.merge.id, completedAt: new Date().toISOString(), validation: published.validation };
     const latestRows = this.ctx.storage.sql.exec(`SELECT result,status,workspace_branch,configuration_json FROM sub_agents WHERE id=?`, workerId)
       .toArray() as Array<{ result: string | null; status: string; workspace_branch: string | null; configuration_json: string | null }>;
     const latest = latestRows[0];

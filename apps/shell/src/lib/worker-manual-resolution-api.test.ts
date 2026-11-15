@@ -28,6 +28,7 @@ describe("worker conflict resolution caller", () => {
         expectedSourceHash: "b".repeat(64),
         content: "reviewed source\n",
         idempotencyKey: "retry-stable-1",
+        validationCommand: "pnpm test",
       }
     );
 
@@ -48,6 +49,7 @@ describe("worker conflict resolution caller", () => {
       expected_source_hash: "b".repeat(64),
       content: "reviewed source\n",
       idempotency_key: "retry-stable-1",
+      validation_command: "pnpm test",
     });
   });
 
