@@ -1,6 +1,32 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (P06 bounded Telnyx extension media runtime; pushed)
+## Latest checkpoint — 2026-11-15 (section 11.2 signed microapp action; P04 recovery next; pushed)
+
+Joint code `ad20fc8fd65b2ed2d63971ba3a5b0def789d6851` is pushed to `origin/Mcbt5s-Backup-2`; the
+pre-push fetch confirmed `9cbc0810` as an ancestor. The signed SDK action contract, Space/Project host
+routes, Canvas bridge and assistant MCP now invoke one `inventory.receiveStock.v1` executor. It enforces
+owner/admin roles, exact installed signed release and current pin, action permission, schemas,
+expected-version CAS, idempotency and actor audit. Stock mutation, replay receipt and a durable actor/
+quantity/reason event commit together. Generic CRUD is blocked from protected quantity/version fields
+and table deletion. The signed package review shows the named action's permission and schemas.
+
+Local evidence: SDK **40/40** focused tests, typecheck/build; Spaces **102/102** focused tests and
+typecheck; Shell typecheck and `git diff --check`. No browser, deployment, live provider or external
+acceptance. One local named write operation is implemented, not the complete section 11 outcome. Other
+business operations, approval/external effect state, finished product dashboard, Vercel UI SDK
+evaluation, storage retention/cleanup, backup/recovery and deployed two-customer acceptance remain.
+The business-action idempotency table intentionally fails closed at 10,000 rows but lacks a cleanup/
+retention contract. P04 does not currently archive MicroAppDO business rows, receipts or events. All
+rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: continue platform P04 by reconciling the existing archive boundaries and adding
+bounded, owner-authorized MicroAppDO business-data/receipt/event export and additive restore through the
+existing archive workflow. Bind records to tenant/Space/Project and installation/release identity;
+preview conflicts, retain replay safety, and add authorization, size, interruption, migration and
+cross-scope tests. Then continue independent P04/commercial, guided-template, voice/dashboard,
+shared-Space and S2–S9/U01–U12 gaps.
+
+## Previous checkpoint — 2026-11-15 (P06 bounded Telnyx extension media runtime; pushed)
 
 Code `b39d2da47211bc1b743064e2df9fc020905d16d3` is pushed to `origin/Mcbt5s-Backup-2`; fetch before
 push confirmed `0c249321` as ancestor. Migration 0258 adds sequential transcript fencing and a

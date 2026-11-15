@@ -1,6 +1,33 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (P06 host voice runtime; section 11 source added; pushed)
+## Latest checkpoint — 2026-11-15 (section 11.2 signed microapp action; P04 recovery next; pushed)
+
+Joint code `ad20fc8fd65b2ed2d63971ba3a5b0def789d6851` is pushed to `origin/Mcbt5s-Backup-2`; the
+pre-push fetch confirmed `9cbc0810` as an ancestor. A signed versioned SDK contract and host client
+define `inventory.receiveStock.v1`. Canvas UI and assistant MCP route through the same Space/Project
+host executor. It validates current actor role and active installation/release pin, signed action
+permission, request/response schemas, idempotency key and expected row version. Quantity CAS, receipt,
+hashed actor audit and a durable receipt event with reason/quantity transition are atomic. Generic CRUD
+cannot mutate protected stock columns or delete the action table. Space-shared package review exposes
+the action permissions and schemas; permission names alone cannot activate the capability.
+
+Local evidence: SDK focused suites **40/40**, typecheck/build; Spaces focused suites **102/102**,
+typecheck; Shell typecheck and `git diff --check`. No browser, deployed Worker/DO, provider, invoice,
+or live acceptance ran. Section 11.2 remains PARTIAL: only one local write action exists; sales and
+adjustment actions, explicit approval/outcome states, provider egress, a finished user-facing operation
+screen, generic install-specific role grants, backup/recovery, Vercel UI SDK evaluation and deployed
+multi-customer authorization remain open. Receipts fail closed at 10,000 without a cleanup or approved
+retention policy. P04 archive currently excludes MicroAppDO business rows and action receipts/events.
+Rollout gates remain false.
+
+Exact next action: reconcile P04's actual archive implementation and add bounded owner-authorized
+MicroAppDO business records/receipt/event export and additive restore through the existing archive
+workflow. Bind records to exact tenant/Space/Project and installation/release; preview conflicts,
+preserve idempotency, and test authorization, limits, interruption, migration and cross-scope isolation.
+Continue commercial/recovery and remaining guided templates, voice dashboards, shared-Space and
+S2–S9/U01–U12 requirements afterward; do not restart completed audits. Fetch before every push.
+
+## Previous checkpoint — 2026-11-15 (P06 host voice runtime; section 11 source added; pushed)
 
 Joint code checkpoint `b39d2da47211bc1b743064e2df9fc020905d16d3` is pushed to
 `origin/Mcbt5s-Backup-2`; pre-push fetch confirmed `0c249321` as an ancestor. The separate BYO Telnyx
