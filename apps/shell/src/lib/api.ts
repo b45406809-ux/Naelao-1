@@ -1362,6 +1362,18 @@ export interface ProjectWorkspaceCleanupResult {
   providerDeletion?: { queued: number; pending: number; unresolved: number };
 }
 
+export interface ProjectWorkspaceCleanupStatusItem {
+  projectId: string;
+  status: "pending" | "cleaning" | "complete";
+  phase: "legacy" | "bridge" | "complete";
+  cleanupPage: number;
+  jurisdiction: "global" | "eu";
+  requestedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  providerDeletion: { total: number; deleted: number; pending: number; unresolved: number };
+}
+
 /** Owner/admin-confirmed, retryable archive and project workspace cleanup. Provider connections
  * and Space-shared extension installs are outside this project-scoped operation. */
 export async function archiveAndCleanupProjectWorkspace(
@@ -1373,6 +1385,20 @@ export async function archiveAndCleanupProjectWorkspace(
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}`, {
     method: "DELETE", session,
     body: JSON.stringify({ confirm: true, ...(cursor ? { cursor } : {}) }),
+  });
+}
+
+/** Owner/admin-only bounded cleanup receipts for exact generated Project IDs. */
+export async function getProjectWorkspaceCleanupStatus(
+  spaceId: string,
+  projectIds: string[],
+  session: SessionCredentials,
+): Promise<{ items: ProjectWorkspaceCleanupStatusItem[] }> {
+  if (projectIds.length > 256) throw new Error("workspace_cleanup_status_scope_too_large");
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/workspace-cleanup-status`, {
+    method: "POST", session,
+    body: JSON.stringify({ projectIds }),
+    cache: "no-store",
   });
 }
 

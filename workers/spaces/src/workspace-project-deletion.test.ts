@@ -3,6 +3,49 @@ import { mintInternalToken } from "@naelao/http";
 import spacesWorker from "./index.js";
 
 describe("project workspace deletion route", () => {
+  it("returns bounded cleanup progress only to Space owners/admins and omits internal cursors", async () => {
+    const secret = "project-workspace-delete-test-secret";
+    const queries: Array<{ sql: string; values: unknown[] }> = [];
+    const env = {
+      ENVIRONMENT: "test", PLATFORM_SECRET: secret,
+      PLATFORM_DB: {
+        prepare: (sql: string) => {
+          const statement: { sql: string; values: unknown[]; bind: (...args: unknown[]) => unknown;
+            first: () => Promise<{ found: number }>; all: () => Promise<{ success: boolean; results: Array<Record<string, unknown>> }> } = {
+            sql, values: [], bind: (...values: unknown[]) => { statement.values = values; return statement; },
+            first: async () => ({ found: 1 }),
+            all: async () => {
+              queries.push({ sql, values: statement.values });
+              if (sql.includes("FROM workspace_erasure_tombstones")) return { success: true, results: [{ project_id: "generated-a",
+                status: "cleaning", cleanup_phase: "bridge", cleanup_page: 3, jurisdiction: "global", requested_at: "2026-11-15T00:00:00.000Z",
+                updated_at: "2026-11-15T00:01:00.000Z", completed_at: null, cleanup_cursor: "secret-r2-cursor", tombstone_id: "internal-id" }] };
+              return { success: true, results: [{ project_id: "generated-a", total: 2, deleted: 1, pending: 1, unresolved: 0 }] };
+            },
+          };
+          return statement;
+        },
+      },
+    } as never;
+    const send = async (role: string) => spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/workspace-cleanup-status", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a",
+        "x-naelao-role": role, "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+      body: JSON.stringify({ projectIds: ["generated-a", "generated-a"] }),
+    }), env);
+
+    const response = await send("owner");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ items: [{ projectId: "generated-a", status: "cleaning", phase: "bridge", cleanupPage: 3,
+      jurisdiction: "global", requestedAt: "2026-11-15T00:00:00.000Z", updatedAt: "2026-11-15T00:01:00.000Z",
+      providerDeletion: { total: 2, deleted: 1, pending: 1, unresolved: 0 } }] });
+    expect(queries).toHaveLength(2);
+    expect(queries.every(query => query.values.slice(0, 2).join(",") === "tenant-a,space-a")).toBe(true);
+    expect(queries[0]?.values).toEqual(["tenant-a", "space-a", "generated-a"]);
+
+    const member = await send("member");
+    expect(member.status).toBe(403);
+    expect(queries).toHaveLength(2);
+  });
+
   it("archives before scoped cleanup and forwards retry cursors without touching tenant connections", async () => {
     const secret = "project-workspace-delete-test-secret";
     const spaceCalls: Array<{ method: string; path: string }> = [];

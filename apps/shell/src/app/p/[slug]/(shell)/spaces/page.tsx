@@ -6,7 +6,7 @@ import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal,
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, previewSpaceTemplateInstallationLifecycle, applySpaceTemplateInstallationLifecycle, archiveAndCleanupProjectWorkspace, previewSpaceSharedExtensionImport, importSpaceSharedExtension, previewSpaceSharedExtensionInstall, installSpaceSharedExtension, type ProjectWorkspaceCleanupResult, type SpaceTemplateInstallationRecord, type SpaceTemplateInstallationLifecyclePreview, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing, type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReview } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, getProjectWorkspaceCleanupStatus, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, previewSpaceTemplateInstallationLifecycle, applySpaceTemplateInstallationLifecycle, archiveAndCleanupProjectWorkspace, previewSpaceSharedExtensionImport, importSpaceSharedExtension, previewSpaceSharedExtensionInstall, installSpaceSharedExtension, type ProjectWorkspaceCleanupResult, type ProjectWorkspaceCleanupStatusItem, type SpaceTemplateInstallationRecord, type SpaceTemplateInstallationLifecyclePreview, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing, type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReview } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel, type BlueprintSetupField } from "@naelao/agent-sdk";
 import { createLatestRequestFence, parseTemplateExpectedUsageInput } from "@/lib/template-usage-estimate";
@@ -41,6 +41,7 @@ interface TemplateProjectCleanupProgress {
   confirmed: boolean;
   cursor?: string | undefined;
   result?: ProjectWorkspaceCleanupResult;
+  serverStatus?: ProjectWorkspaceCleanupStatusItem;
   error?: string | undefined;
 }
 
@@ -181,6 +182,30 @@ export default function SpacesPage() {
     try {
       const result = await listSpaceTemplateInstallations(space.id, creds);
       setTemplateStatusRecords(result.installations);
+      const projectIds = [...new Set(result.installations.flatMap(record => safeTemplateProjectIds(record.project_ids)))];
+      if (projectIds.length) {
+        try {
+          const statusItems: ProjectWorkspaceCleanupStatusItem[] = [];
+          for (let offset = 0; offset < projectIds.length; offset += 256) {
+            const status = await getProjectWorkspaceCleanupStatus(space.id, projectIds.slice(offset, offset + 256), creds);
+            statusItems.push(...status.items);
+          }
+          const statusByProject = new Map(statusItems.map(item => [item.projectId, item]));
+          setTemplateProjectCleanup(current => {
+            const next = { ...current };
+            for (const record of result.installations) for (const projectId of safeTemplateProjectIds(record.project_ids)) {
+              const status = statusByProject.get(projectId);
+              if (!status) continue;
+              const key = `${templateUpdateKey(space.id, record.blueprint_id)}:${projectId}`;
+              next[key] = { phase: status.status === "complete" ? "complete" : status.cleanupPage > 0 ? "partial" : "retry",
+                confirmed: true, serverStatus: status };
+            }
+            return next;
+          });
+        } catch (error) {
+          show(`Template cleanup progress could not be refreshed: ${error instanceof Error ? error.message : "request failed"}. The server cleanup state remains retryable.`);
+        }
+      }
     } catch (error) {
       show(`Template status unavailable: ${error instanceof Error ? error.message : "request failed"}`);
       setTemplateStatusSpace(null);
@@ -1274,17 +1299,21 @@ export default function SpacesPage() {
                           </aside>;
                           if (cleanup.phase === "running") return <p role="status" style={{ margin: "6px 0", color: "var(--text3)" }}>Project archived; processing a bounded workspace cleanup page…</p>;
                           if (cleanup.phase === "partial") return <div role="status" style={{ marginTop: 8 }}>
-                            <p style={{ margin: "4px 0", color: "var(--text3)" }}>Project is archived. More workspace cleanup pages remain.</p>
+                            <p style={{ margin: "4px 0", color: "var(--text3)" }}>Project is archived. {cleanup.serverStatus
+                              ? `${cleanup.serverStatus.cleanupPage} cleanup page(s) are recorded; more remain in the durable server cursor.`
+                              : "More bounded workspace cleanup pages remain."}</p>
                             <Button disabled={!creds} onClick={() => void runTemplateGeneratedProjectCleanup(record, projectId)}>Continue cleanup</Button>
                           </div>;
                           if (cleanup.phase === "retry") return <div role="alert" style={{ marginTop: 8 }}>
-                            <p style={{ margin: "4px 0", color: "var(--text3)" }}>Cleanup did not return a final result: {cleanup.error ?? "retry required"}. The server keeps a durable cursor; retry is safe.</p>
+                            <p style={{ margin: "4px 0", color: "var(--text3)" }}>{cleanup.serverStatus
+                              ? `Project is archived; server cleanup is ${cleanup.serverStatus.status} at ${cleanup.serverStatus.phase} after ${cleanup.serverStatus.cleanupPage} page(s). Retry resumes from its durable cursor.`
+                              : `Cleanup did not return a final result: ${cleanup.error ?? "retry required"}. The server keeps a durable cursor; retry is safe.`}</p>
                             <Button disabled={!creds} onClick={() => void runTemplateGeneratedProjectCleanup(record, projectId)}>Retry cleanup</Button>
                           </div>;
-                          const providerDeletion = cleanup.result?.providerDeletion;
+                          const providerDeletion = cleanup.serverStatus?.providerDeletion ?? cleanup.result?.providerDeletion;
                           return <div role="status" style={{ marginTop: 8, color: "var(--text3)" }}>
-                            Supported workspace cleanup is complete. Provider cleanup: {providerDeletion
-                              ? `${providerDeletion.queued} queued, ${providerDeletion.pending} pending, ${providerDeletion.unresolved} unresolved or retained.`
+                            Supported workspace cleanup is complete{cleanup.serverStatus?.completedAt ? ` (${new Date(cleanup.serverStatus.completedAt).toLocaleString()})` : ""}. Provider cleanup: {providerDeletion
+                              ? `${"total" in providerDeletion ? `${providerDeletion.deleted} deleted, ${providerDeletion.total} total` : `${providerDeletion.queued} queued`}, ${providerDeletion.pending} pending, ${providerDeletion.unresolved} unresolved or retained.`
                               : "no provider cleanup summary was returned."} Tenant connections, shared extensions, licenses, and external charges were not cancelled.
                           </div>;
                         })()}

@@ -6373,6 +6373,57 @@ app.delete("/spaces/:spaceId/projects/:projectId", async c => {
   });
 });
 
+// The erasure tombstone is the durable source for cleanup progress. Return only bounded metadata
+// for Project IDs the current Space owner/admin supplied; raw R2 cursors and tombstone IDs remain
+// internal so the status endpoint cannot be used to inspect cleanup implementation details.
+app.use("/spaces/:spaceId/workspace-cleanup-status", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/workspace-cleanup-status", requireSpaceMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/workspace-cleanup-status", async c => {
+  const spaceId = c.req.param("spaceId");
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  const role = identity.role === "product_end_user" && identity.userId
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, tenantId)
+    : identity.role;
+  if (!tenantId || !identity.userId || (role !== "owner" && role !== "admin")) return c.json({ error_code: "space_admin_required" }, 403);
+  let body: { projectIds?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_cleanup_status_request" }, 400); }
+  if (Object.keys(body).some(key => key !== "projectIds") || !Array.isArray(body.projectIds) || body.projectIds.length > 256
+    || body.projectIds.some(projectId => typeof projectId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)))
+    return c.json({ error_code: "invalid_workspace_cleanup_status_request" }, 400);
+  const projectIds = [...new Set(body.projectIds as string[])];
+  if (!projectIds.length) return c.json({ items: [] }, 200, { "cache-control": "private, no-store" });
+  const space = await c.env.PLATFORM_DB.prepare("SELECT 1 AS found FROM spaces WHERE id=? AND tenant_id=? AND status='active'")
+    .bind(spaceId, tenantId).first();
+  if (!space) return c.notFound();
+
+  const placeholders = projectIds.map(() => "?").join(",");
+  const tombstones = await c.env.PLATFORM_DB.prepare(`SELECT project_id,status,cleanup_phase,cleanup_page,jurisdiction,requested_at,updated_at,completed_at
+    FROM workspace_erasure_tombstones WHERE tenant_id=? AND space_id=? AND project_id IN (${placeholders})`)
+    .bind(tenantId, spaceId, ...projectIds).all<{ project_id: string; status: "pending" | "cleaning" | "complete";
+      cleanup_phase: "legacy" | "bridge" | "complete"; cleanup_page: number; jurisdiction: "global" | "eu";
+      requested_at: string; updated_at: string; completed_at: string | null }>();
+  if (!tombstones.success) return c.json({ error_code: "workspace_cleanup_status_unavailable" }, 503);
+  const providerOperations = await c.env.PLATFORM_DB.prepare(`SELECT project_id,COUNT(*) AS total,
+      SUM(CASE WHEN status='confirmed_deleted' THEN 1 ELSE 0 END) AS deleted,
+      SUM(CASE WHEN status IN ('pending','dispatching','deletion_requested','indeterminate') THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN status='retained' THEN 1 ELSE 0 END) AS unresolved
+    FROM sandbox_provider_deletion_operations WHERE tenant_id=? AND space_id=? AND project_id IN (${placeholders}) GROUP BY project_id`)
+    .bind(tenantId, spaceId, ...projectIds).all<{ project_id: string; total: number; deleted: number | null; pending: number | null; unresolved: number | null }>();
+  if (!providerOperations.success) return c.json({ error_code: "workspace_cleanup_status_unavailable" }, 503);
+  const providerByProject = new Map(providerOperations.results.map(row => [row.project_id, row]));
+  return c.json({ items: tombstones.results.map(row => {
+    const provider = providerByProject.get(row.project_id);
+    return { projectId: row.project_id, status: row.status, phase: row.cleanup_phase, cleanupPage: row.cleanup_page,
+      jurisdiction: row.jurisdiction, requestedAt: row.requested_at, updatedAt: row.updated_at,
+      ...(row.completed_at ? { completedAt: row.completed_at } : {}), providerDeletion: {
+        total: Number(provider?.total ?? 0), deleted: Number(provider?.deleted ?? 0),
+        pending: Number(provider?.pending ?? 0), unresolved: Number(provider?.unresolved ?? 0),
+      } };
+  }) }, 200, { "cache-control": "private, no-store" });
+});
+
 // F9: authoritative per-project daily spend, single writer (SpaceDO — one DO per space, so
 // every thread's agent DO debits through the SAME instance regardless of how many concurrent
 // threads a customer-bot project has). GET is a pure gate check (credits=0 semantics via
