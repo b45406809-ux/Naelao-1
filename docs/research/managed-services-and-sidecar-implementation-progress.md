@@ -1,35 +1,37 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host request binding and container build; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host; P06 call concurrency; pushed)
 
-Code `aa0f6b7b` is pushed to `origin/Mcbt5s-Backup-2`; the pre-push fetch found `fa5d3998` as the
-remote ancestor. The separately hosted Node 22 Modal boundary now authenticates each request over its
-method, path/query, exact tenant/Space/Project, operation ID, idempotency key, timestamp and bounded
-body hash. Altered identity, route or spec fails before provider effects. The pinned non-root container
-build and health check are defined with a minimized Docker context; CI runs the host suite, typecheck,
-build and Docker build without publishing or deploying. `tsconfig.build.json` excludes test files from
-the production artifact. Modal and U09 route rollouts remain disabled.
+Code `aa0f6b7b` plus records commit `20171141` and latest code commit `3b1059a4` are pushed to
+`origin/Mcbt5s-Backup-2`; each push fetched first and found the current remote an ancestor. The Modal
+Node host request signature binds method, path/query, exact scope, operation/idempotency IDs, timestamp
+and bounded body hash. Its pinned non-root container and CI test/typecheck/build/container job are
+present, with no publish/deploy step. Telnyx public extension admission now enforces a five-call
+per-binding ceiling in the same guarded INSERT; `indeterminate` calls continue consuming capacity and
+new excess calls are hung up before answer.
 
-Local evidence: Modal host tests **8/8**, host typecheck/build, Agents host-client tests **3/3**, Agents
-typecheck, and `git diff --check`. The local Docker build reached Corepack but could not download the
-pinned pnpm package because the environment returned `SELF_SIGNED_CERT_IN_CHAIN`; no image was built.
-The CI container build has not yet run. No Modal credentials, provider, deployment or live acceptance
-were exercised. Beta/private-gRPC acceptance, a supported per-sandbox metering receipt and approved
-customer pricing remain gates. Preserve untracked `infra/scripts/__pycache__/`.
+Local evidence: Modal host tests **8/8**, Agents Modal host-client tests **3/3**, Telnyx extension
+live-call suite **6/6**, Modal/Agents typechecks and build, `git diff --check`. Local Docker build stopped
+at Corepack download with `SELF_SIGNED_CERT_IN_CHAIN`; no image exists and the CI Docker job is unrun.
+No provider credentials, deployment, browser or live acceptance were exercised. Modal remains gated on
+Beta/private-gRPC acceptance, supported per-sandbox usage receipts and approved pricing. Preserve
+untracked `infra/scripts/__pycache__/` and all rollout flags remain false.
 
-The Shell-routed U09 private-state GET/PUT, capture and restore paths are reachable through Router in
-`fa5d3998`. The signed `bounded-phone-menu` microapp already has owner setup, synthetic tests, call
-status and exact published revision pins; do not repeat that slice. P06 remains partial for public
-streaming, customer voice lifecycle, first-party publishing/provisioning, complete cost evidence and
-live carrier acceptance.
+U09 private-state GET/PUT, capture and restore are reachable through Router (`fa5d3998`). P06's signed
+bounded-phone-menu microapp and owner status view are complete locally and revision-pinned. P06 remains
+partial for streaming/runtime, first-party publisher identity/signing/catalog/provisioning, full customer
+voice lifecycle, complete cost/quality evidence and carrier acceptance. Streaming is an ordinary code
+gap: existing extension SDK events/actions are data-only keypad turns, while the existing PCMU/WebSocket
+bridge only accepts owner-authenticated tickets. Do not repurpose that owner session or call this
+credential-blocked.
 
-Exact next action: implement the public Telnyx extension media-stream caller using the existing
-verified PCMU/WebSocket transport primitives, with durable call scope bound to the admitted extension
-installation, handler digest and published settings revision. Add consent, bounded duration/concurrency,
-interruption/cleanup and failure recovery at the host boundary, keep the public-streaming flag off, and
-add mock coverage for stale pins, duplicate events, lost responses and cross-tenant denial. Do not
-change the separate owner voice bridge or claim live carrier acceptance. Then continue remaining
-S2–S9/U01–U12/P01–P24 gaps without repeating completed audits.
+Exact next action: implement a versioned extension-scoped streaming session contract and reachable
+caller. Bind session scope to tenant/Space/Project, BYO binding/call ID, admitted installation, handler
+SHA and published settings revision; use a short-lived one-time Telnyx websocket ticket; keep media and
+provider authority in the host, not the guest extension or OwnerVoice namespace. Add transcript,
+interruption, structured host actions, caller consent, budget/deadline, cleanup and duplicate/uncertain
+recovery coverage. Keep public streaming disabled, then continue remaining independent S2–S9/U01–U12/
+P01–P24 gaps.
 ## Previous checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
 
 Code `ef77e19375b134c724be5fec95ba771573e1ba10` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
