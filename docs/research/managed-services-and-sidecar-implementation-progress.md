@@ -1,6 +1,14 @@
 # Managed services and sidecar implementation progress
 
-## Cross-plan checkpoint — 2026-11-15 (PW05 worker review status; code cb485279 pushed)
+## Cross-plan checkpoint — 2026-11-15 (PW04 exact-revision validation; code 9b469930 pushed)
+
+The active planner/worker plan is incorporated in platform §12 and managed-services §20. Manual text/delete resolution now validates a bounded package test against a deterministic `race/` fork of the exact review manifest, records review and target revision/hash plus run/execution identity and outcome, and requires Coordinator atomic target-head equality before publishing. Durable operation bindings reject changed request reuse and cap validation operations at 50 per worker attempt. Failed, blocked, uncertain and stale outcomes fail closed. Shell displays tested review/target identities. Implementation SHA `5c906170d5d862f05db5dc0289ecf325572b3e10` and parser follow-up `9b469930bf9c68d0957d09bdd97e450a893291f1` are pushed and remote-verified on `origin/Mcbt5s-Backup-2`.
+
+Local evidence: WorkspaceCoordinator/manual resolver/Tier 6 identity **109/109**, Shell API/parser **5/5**, Agents/Shell typechecks and `git diff --check`. No DO-route-to-real-ToolSandbox, deployed or live runtime acceptance. Configured project/tenant quota gates are checked, but per-run infrastructure reservation, settlement and actual cost receipts are absent. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: implement atomic multi-path manual review for paired rename/edit and path-collision conflicts, including exact preview/source/target bindings, current authorization, idempotent receipts, and no-partial-publication tests. Then address PW06 combined crash/cancel/recovery acceptance and continue S3–S9/U01–U12 and P01–P24 in dependency order.
+
+## Previous checkpoint — 2026-11-15 (PW05 worker review status; code cb485279 pushed)
 
 The Shell worker activity view now exposes the logical workspace branch, model-token use against its allocated token budget, attempt number, worker-reported changed paths, and an explicit “no integrated-test receipt” state. It does not claim those paths are a verified diff, that the branch has an isolated runtime, or that tokens equal currency cost. Local verification: Shell worker-merge-result **3/3**, Shell typecheck, and `git diff --check`. Code `cb4852791e1129b7fbc5c869f5ee49b1e0678f73` is pushed and remote-verified; local only, no deployed/runtime/provider acceptance. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
