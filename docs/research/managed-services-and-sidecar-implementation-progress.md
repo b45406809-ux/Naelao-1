@@ -1,5 +1,29 @@
 # Managed services and sidecar implementation progress
 
+## Continuation checkpoint — 2026-11-15 (S2 expired UserPort operation recovery; pushed 317c6c8cbce6dbc3e29903b139a98e207d63c11b)
+
+Code `317c6c8cbce6dbc3e29903b139a98e207d63c11b` is pushed and remote-verified on
+`origin/Mcbt5s-Backup-2`. The scheduled UserPort↔AgentPort operation sweep now finds expired
+`running` sync/revoke leases, moves them to immediately due `uncertain`, and recovers using the
+persisted request through existing exact alias/action/account-set/owner-link checks. AgentPort
+internal requests are bounded to 10 seconds. Migration 0262 adds a partial index for expired
+UserPort connector operation leases. The combined sweep accounts for recovery work against its
+requested limit.
+
+Verification: focused UserPort suite **16/16**, Agents typecheck, release inventory **262** with
+required schema 0262, release-manifest tests **5/5**, and `git diff --check`. Local mocks only; no
+live AgentPort/provider or deployed acceptance. Rollouts remain disabled. Preserve untracked
+`infra/scripts/__pycache__/`.
+
+S2 remains IMPLEMENTED_LOCAL only for supported provider lanes; this closes one previously stranded
+crash-recovery caller gap and does not change external funding, price, provider availability or live
+acceptance gates. S3–S9/U01–U12 remain at their row-specific status in the matrix. The plan branch's
+MicroApp/UI SDK/voice findings remain copied into platform plan sections 9 and 11; no merge occurred.
+
+Exact next action: reconcile P03/P12 dunning producers, queue consumers, entitlement checks,
+notifications and operator recovery against current code; implement the next ordinary reachable
+commercial-recovery gap with failure/retry coverage. Do not repeat completed P01/P02 code audits.
+
 ## Continuation checkpoint — 2026-11-15 (P04 ProductUserDO notifications and erasure receipt; pushed 7c765c219406adb455156e3364e4b40451f44572)
 
 Code `7c765c219406adb455156e3364e4b40451f44572` is pushed and remote-verified on

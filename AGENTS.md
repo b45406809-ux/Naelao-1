@@ -12,6 +12,26 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
+## Latest checkpoint — 2026-11-15 (S2 expired UserPort operation recovery; pushed 317c6c8cbce6dbc3e29903b139a98e207d63c11b)
+
+Code `317c6c8cbce6dbc3e29903b139a98e207d63c11b` is pushed and verified on
+`origin/Mcbt5s-Backup-2`. The scheduled UserPort↔AgentPort reconciler now promotes expired `running`
+sync/revoke leases to immediately due `uncertain` operations, then resumes through the existing exact
+alias, account-set, action and owner-link checks. Internal AgentPort requests have a 10-second bound;
+migration 0262 adds the partial expired-lease index. The combined sweep honors its work limit.
+
+Local evidence: focused UserPort suite **16/16**, Agents typecheck, release manifest inventory **262**,
+release-manifest tests **5/5**, and `git diff --check`. The mocks do not establish live AgentPort or
+provider acceptance. Rollouts remain disabled. Only the preserved untracked
+`infra/scripts/__pycache__/` remains in the worktree after this code push.
+
+Exact next action: continue the platform plan's P03 commercial-integrity queue. Trace current Billing
+dunning producers, queue consumer, entitlement enforcement, notification and operator paths against
+the recorded P03/P12 contract; identify and implement the next ordinary reachable recovery gap with
+failure/retry coverage. Do not repeat the already reconciled P01/P02 code audits. Then resume S3–S9,
+U01–U12 and P03–P24 in the existing progress ledgers, starting with independent code even where
+provider or product gates remain.
+
 ## Latest checkpoint — 2026-11-15 (P04 product-user portability and erasure; pushed 7c765c219406adb455156e3364e4b40451f44572)
 
 Code `7c765c219406adb455156e3364e4b40451f44572` is pushed and `ls-remote` verified on

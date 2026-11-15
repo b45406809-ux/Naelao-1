@@ -1,5 +1,21 @@
 # Platform completion and guided templates progress
 
+## Continuation checkpoint — 2026-11-15 (S2 expired UserPort operation recovery; pushed 317c6c8cbce6dbc3e29903b139a98e207d63c11b)
+
+Code `317c6c8cbce6dbc3e29903b139a98e207d63c11b` is pushed and remote-verified. The scheduled
+UserPort↔AgentPort reconciler recovers expired running connector sync/revoke leases through existing
+exact-scope recovery checks. AgentPort internal requests have a 10-second timeout; migration 0262
+indexes expired operation leases; the combined scheduler limit is covered. Focused UserPort tests
+**16/16**, Agents typecheck, release inventory **262**, release validator tests **5/5**, and
+`git diff --check` pass. Evidence is local Worker/D1/AgentPort mocks only; no live or deployed
+acceptance. Rollouts remain disabled. Preserve untracked `infra/scripts/__pycache__/`.
+
+S2 supported lanes remain IMPLEMENTED_LOCAL with provider and commercial gates open. Continue the
+platform dependency order at P03: inspect current dunning/payment producers, consumers, entitlement,
+notification and operator recovery callers against P03/P12, then implement a reachable independent
+gap and test retries/failures. P01/P02 source code audits are complete; operator resource/baseline and
+deployed acceptance evidence remains external. Then continue other S3–S9/U01–U12 and P03–P24 gaps.
+
 ## Continuation checkpoint — 2026-11-15 (P04 ProductUserDO notification store; pushed 7c765c219406adb455156e3364e4b40451f44572)
 
 Code `7c765c219406adb455156e3364e4b40451f44572` is pushed and remote-verified. ProductUserDO
