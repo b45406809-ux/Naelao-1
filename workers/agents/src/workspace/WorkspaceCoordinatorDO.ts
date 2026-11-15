@@ -41,6 +41,10 @@ interface Env {
   UNIFIED_WORKSPACE_ENABLED?: string;
   ANALYTICS?: AnalyticsEngineDataset;
 }
+type WorkspaceOpsMetricCategory = "" | "published" | "noop" | "conflicted" | "replayed" | "rejected" |
+  "delete_edit" | "rename_edit" | "case_collision" | "file_directory_collision" | "metadata" |
+  "review_required" | "size_limit" | "invalid_encoding" | "binary_content" | "line_limit" | "overlap" | "other";
+type WorkspaceOpsMetricSignal = "checkpoint_lag_ms" | "stale_lease_fence" | "merge_attempt" | "merge_conflict" | "merge_result";
 interface Change { path: string; expectedHash: string | null; contentBase64: string | null; executable?: boolean; contentType?: string; }
 interface StagedChange { path: string; expectedHash: string | null; sha256: string | null; size: number; executable?: boolean; contentType?: string; objectKey?: string; }
 interface StageRecord { sessionId: string; stageId: string; changeSetHash: string; changes: StagedChange[]; createdAt: string; status?: "active" | "consumed"; consumedAt?: string; }
@@ -205,6 +209,23 @@ function base64(value: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < value.length; i += 0x8000) binary += String.fromCharCode(...value.subarray(i, i + 0x8000));
   return btoa(binary);
+}
+function workspaceConflictMetricCategory(reason: unknown): WorkspaceOpsMetricCategory {
+  switch (reason) {
+    case "delete_edit_or_path_collision": return "delete_edit";
+    case "rename_edit_candidate": return "rename_edit";
+    case "case_collision": return "case_collision";
+    case "file_directory_collision": return "file_directory_collision";
+    case "metadata_conflict": return "metadata";
+    case "review_required": return "review_required";
+    case "size_limit": return "size_limit";
+    case "invalid_utf8": return "invalid_encoding";
+    case "binary_content": return "binary_content";
+    case "line_limit": return "line_limit";
+    case "edit_overlap":
+    case "overlapping_change": return "overlap";
+    default: return "other";
+  }
 }
 function keyScope(scope: WorkspaceScope): string {
   return `${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}`;
@@ -1546,10 +1567,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     return await this.verifyBoundLiveCapability(current);
   }
 
-  private writeOpsMetric(signal: "checkpoint_lag_ms" | "stale_lease_fence", value: number, className: "all" | "warning"): void {
+  private writeOpsMetric(signal: WorkspaceOpsMetricSignal, value: number, className: "all" | "warning", category: WorkspaceOpsMetricCategory = ""): void {
     try {
       this.env.ANALYTICS?.writeDataPoint({
-        blobs: [`workspace.ops.${signal}`, className, "phase6", "", "", "", "", "", "workspace-ops-v1"],
+        blobs: [`workspace.ops.${signal}`, className, "phase6", category, "", "", "", "", "workspace-ops-v1"],
         doubles: [Math.max(0, Math.min(value, 9_000_000_000_000))],
       });
     } catch { /* telemetry must not change coordinator behavior */ }
@@ -1726,12 +1747,17 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (session.fence !== body.fence) return fail("stale_fence", 409);
     const workingHead = await this.ctx.storage.get<WorkspaceHead>(headKey(session.branch));
     if (!workingHead) return fail("workspace_branch_not_found", 404);
+    this.writeOpsMetric("merge_attempt", 1, "all");
     const changeSetHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ actorId: session.actorId, sourceBranch: session.branch, targetBranch,
       sourceManifestHash: workingHead.manifestHash, baseManifestHash: session.baseManifestHash,
       ...(hasExpectedTarget ? { expectedTargetRevision, expectedTargetManifestHash } : {}),
       allocationGeneration: session.allocationGeneration, fence: session.fence, mergeAlgorithm: THREE_WAY_TEXT_MERGE_ALGORITHM })));
     const prior = await this.ctx.storage.get<WorkspacePublicationReceipt>(mergeReceiptKey(targetBranch, idempotencyKey));
-    if (prior) return prior.changeSetHash === changeSetHash ? json({ publication: prior }) : fail("idempotency_conflict", 409);
+    if (prior) {
+      const matches = prior.changeSetHash === changeSetHash;
+      this.writeOpsMetric("merge_result", 1, matches ? "all" : "warning", matches ? "replayed" : "rejected");
+      return matches ? json({ publication: prior }) : fail("idempotency_conflict", 409);
+    }
     if (session.status !== "active") return fail("stale_fence", 409);
     const targetHead = await this.ctx.storage.get<WorkspaceHead>(headKey(targetBranch));
     if (!targetHead) return fail("workspace_branch_not_found", 404);
@@ -1922,11 +1948,23 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       return { receipt };
     });
     if ("error" in committed) {
+      this.writeOpsMetric("merge_result", 1, "warning", "rejected");
       if (committed.error === "workspace_gc_in_progress" || committed.error === "workspace_erased") {
         if (newlyStoredManifestKey) await this.env.SCRIPTS_R2!.delete(newlyStoredManifestKey);
       }
       await this.ctx.storage.delete(uploadIntentKey);
       return fail(committed.error, committed.error === "workspace_gc_in_progress" || committed.error === "workspace_migration_barrier_active" ? 423 : committed.error === "workspace_erased" ? 410 : 409);
+    }
+    const resultCategory: WorkspaceOpsMetricCategory = committed.receipt.status === "published" || committed.receipt.status === "noop" || committed.receipt.status === "conflicted"
+      ? committed.receipt.status : "other";
+    this.writeOpsMetric("merge_result", 1, "all", resultCategory);
+    if (committed.receipt.status === "conflicted") {
+      const counts = new Map<WorkspaceOpsMetricCategory, number>();
+      for (const conflict of committed.receipt.conflicts) {
+        const category = workspaceConflictMetricCategory(conflict.reason);
+        counts.set(category, (counts.get(category) ?? 0) + 1);
+      }
+      for (const [category, count] of counts) this.writeOpsMetric("merge_conflict", count, "all", category);
     }
     await this.scheduleMetadataExpiry();
     return json({ publication: committed.receipt }, status === "conflicted" ? 409 : 200);

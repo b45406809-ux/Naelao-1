@@ -30,6 +30,7 @@ class Storage {
 }
 
 function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unifiedEnabled?: boolean; runtimeControl?: "ok" | "flush_failure" | "activation_failure" | "oversized";
+  analytics?: boolean; analyticsFailure?: boolean;
   candidateSelection?: { runtimeId: string; allocationGeneration: number };
   authorityMissing?: string[];
   runtimeControlNamespace?: { idFromName(name: string): unknown; get(id: unknown): Fetcher } } = {}) {
@@ -106,14 +107,20 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
     }
     return Response.json({ aborted: true });
   } } : undefined;
+  const analyticsPoints: Array<{ blobs: string[]; doubles: number[] }> = [];
+  const analytics = options.analytics ? { writeDataPoint(point: { blobs: string[]; doubles: number[] }) {
+    if (options.analyticsFailure) throw new Error("analytics unavailable");
+    analyticsPoints.push(structuredClone(point));
+  } } : undefined;
   const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as unknown as R2Bucket, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false",
+    ...(analytics ? { ANALYTICS: analytics as unknown as AnalyticsEngineDataset } : {}),
     ...(verifier ? { LIVE_CAPABILITY_VERIFIER: verifier as unknown as Fetcher } : {}),
     ...(runtimeControl ? { LIVE_RUNTIME_CONTROL: runtimeControl as unknown as Fetcher } : {}),
     ...(options.runtimeControlNamespace ? { LIVE_RUNTIME_CONTROL_DO: options.runtimeControlNamespace } : {}),
     UNIFIED_WORKSPACE_ENABLED: options.unifiedEnabled ? "true" : "false" };
   const instance = new WorkspaceCoordinatorDO({ storage } as never, env as never);
   return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, metadata, customMetadata, r2, verificationState,
-    runtimeResponseWasCancelled: () => runtimeResponseCancelled };
+    analyticsPoints, runtimeResponseWasCancelled: () => runtimeResponseCancelled };
 }
 
 function testEtag(key: string, bytes: Uint8Array): string {
@@ -149,8 +156,10 @@ async function createMergeConflictCase(input: {
   worker: string | null;
   owner: string;
   contentType?: string;
+  analytics?: boolean;
+  analyticsFailure?: boolean;
 }) {
-  const { instance, objects, storage } = setup();
+  const { instance, objects, storage, analyticsPoints } = setup({ analytics: input.analytics, analyticsFailure: input.analyticsFailure });
   const baseBytes = new TextEncoder().encode(input.base);
   const baseHash = await sha256Hex(baseBytes);
   const baseKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${baseHash}`;
@@ -172,7 +181,7 @@ async function createMergeConflictCase(input: {
   expect(ownerCheckpoint.status).toBe(200);
   const merge = await call(instance, "/v1/merge", { sessionId: worker.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0,
     idempotencyKey: "review-conflict-merge" });
-  return { instance, merge, objects, storage };
+  return { instance, merge, objects, storage, analyticsPoints };
 }
 
 describe("WorkspaceCoordinatorDO checked publication", () => {
@@ -1195,7 +1204,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
   });
 
   it("creates an isolated branch head without changing the source branch", async () => {
-    const { instance } = setup();
+    const { instance, analyticsPoints } = setup({ analytics: true });
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
     const created = await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/agent-a" });
     expect(await created.json()).toMatchObject({ branch: { branch: "runs/agent-a", revision: 1 }, created: true });
@@ -1215,10 +1224,16 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(await merged.json()).toMatchObject({ head: { revision: 3 }, entries: [{ path: "agent.txt" }, { path: "user.txt" }] });
     const replay = await call(instance, "/v1/merge", { sessionId: opened.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0, idempotencyKey: "merge-agent-a" });
     expect(await replay.json()).toMatchObject({ publication: { status: "published", revision: 3 } });
+    expect(analyticsPoints.filter(point => point.blobs[0] === "workspace.ops.merge_attempt")).toHaveLength(2);
+    expect(analyticsPoints.filter(point => point.blobs[0] === "workspace.ops.merge_result").map(point => point.blobs[3]).sort()).toEqual(["published", "replayed"]);
+    const labels = JSON.stringify(analyticsPoints.map(point => point.blobs));
+    expect(labels).not.toContain("agent.txt");
+    expect(labels).not.toContain("tenant");
+    expect(labels).not.toContain("runtime");
   });
 
   it("keeps a conflicting branch staged without partially merging it", async () => {
-    const { instance, objects } = setup();
+    const { instance, objects, analyticsPoints } = setup({ analytics: true });
     const baseBytes = new TextEncoder().encode("base");
     const baseHash = "cae662172fd450bb0cd710a769079c05bfc5d8e35efa6576edc7d0377afdd4a2";
     const childHash = await sha256Hex(new TextEncoder().encode("child"));
@@ -1238,6 +1253,25 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     ] } });
     expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
     expect(await (await call(instance, "/v1/head?branch=runs%2Fconflict")).json()).toMatchObject({ head: { revision: 2 } });
+    expect(analyticsPoints).toContainEqual(expect.objectContaining({ blobs: ["workspace.ops.merge_conflict", "all", "phase6", "overlap", "", "", "", "", "workspace-ops-v1"], doubles: [1] }));
+    expect(analyticsPoints).toContainEqual(expect.objectContaining({ blobs: ["workspace.ops.merge_result", "all", "phase6", "conflicted", "", "", "", "", "workspace-ops-v1"], doubles: [1] }));
+  });
+
+  it("keeps a merge conflict response unchanged when Analytics Engine throws", async () => {
+    const { merge } = await createMergeConflictCase({ path: "notes.txt", base: "base\n", worker: null, owner: "owner edit\n",
+      analytics: true, analyticsFailure: true });
+    expect(merge.status).toBe(409);
+    expect(await merge.json()).toMatchObject({ publication: { status: "conflicted", appliedPaths: [] } });
+  });
+
+  it("records checked no-op merge outcomes with a fixed result category", async () => {
+    const { instance, analyticsPoints } = setup({ analytics: true });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/noop" });
+    const worker = await (await call(instance, "/v1/open", { scope, branch: "runs/noop", actorId: "worker", runtimeId: "runtime", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const response = await call(instance, "/v1/merge", { sessionId: worker.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0, idempotencyKey: "merge-noop" });
+    expect(await response.json()).toMatchObject({ publication: { status: "noop", appliedPaths: [] } });
+    expect(analyticsPoints).toContainEqual(expect.objectContaining({ blobs: ["workspace.ops.merge_result", "all", "phase6", "noop", "", "", "", "", "workspace-ops-v1"], doubles: [1] }));
   });
 
   it("merges bounded nonoverlapping text edits through one checked coordinator revision", async () => {
@@ -1488,7 +1522,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
   });
 
   it("keeps delete-versus-edit conflicts structured and unpublished", async () => {
-    const { instance, merge } = await createMergeConflictCase({ path: "notes.txt", base: "base\n", worker: null, owner: "owner edit\n" });
+    const { instance, merge, analyticsPoints } = await createMergeConflictCase({ path: "notes.txt", base: "base\n", worker: null, owner: "owner edit\n", analytics: true });
     expect(merge.status).toBe(409);
     expect(await merge.json()).toMatchObject({ publication: { status: "conflicted", appliedPaths: [], conflicts: [
       { path: "notes.txt", reason: "delete_edit_or_path_collision", sourceHash: null },
@@ -1496,6 +1530,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
     expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({ entries: [{ path: "notes.txt" }] });
     expect(await (await call(instance, "/v1/read?branch=runs%2Freview-conflict")).json()).toMatchObject({ entries: [] });
+    expect(analyticsPoints).toContainEqual(expect.objectContaining({ blobs: ["workspace.ops.merge_conflict", "all", "phase6", "delete_edit", "", "", "", "", "workspace-ops-v1"], doubles: [1] }));
   });
 
   it("publishes reviewer-authored text through a retained checked branch and retries after publication", async () => {
