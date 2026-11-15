@@ -172,7 +172,7 @@ queue = "naelao-provisioning-queue"
 binding = "EVENTS_QUEUE"
 queue = "naelao-events"
 
-# Billing worker — called at product publish time to auto-create LS product + variant.
+# Billing worker — product checkout/status, publish-time LS products, and usage metering.
 [[services]]
 binding = "BILLING_WORKER"
 service = "naelao-billing"

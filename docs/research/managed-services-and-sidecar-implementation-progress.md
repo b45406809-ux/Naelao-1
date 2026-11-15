@@ -1,5 +1,15 @@
 # Managed services and sidecar implementation progress
 
+## Continuation checkpoint — 2026-11-15 (P04 product-user billing portability; pushed 2bec4bc861c33e0f272b9c5f11ed79120e12ccf2)
+
+Product-user `/export` now includes current Billing subscription summary, scoped dunning notification outcomes, and dispatch status via the existing tenant-HMAC Billing service binding. It validates the exact allowlisted response shape, caps it at 16 KiB and ten rows per status list, suppresses caching, and fails closed for absent, failing, malformed, or excessive Billing responses. Provider subscription IDs, recipients, and provider receipt IDs remain excluded. Default, staging, and production Spaces Billing bindings already exist.
+
+Verification: Spaces route suite **11/11**, Spaces typecheck, and `git diff --check`; local Worker mocks only. No deployment/live Billing acceptance. Code is pushed to `origin/Mcbt5s-Backup-2` at `2bec4bc861c33e0f272b9c5f11ed79120e12ccf2`. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+The fetched source plan commit `df3386257262a88888d647daa4d10f3af2ff9596` changes only the active platform plan. Its 70 added lines already appear in active sections 9 and 11; the active P04 row intentionally retains newer recovery evidence. No uncopied requirements or merge were found.
+
+Exact next action: resume S2/MS01/MS02 at `workers/agents/src/communications/userport-agentport-sync.ts`; trace alias/owner-link disconnect, reauthorization, and scheduled cleanup against current state, then implement the next reachable sync/revoke/relink recovery gap with failure/replay coverage. S3–S9/U01–U12 and remaining P03–P24 continue afterward.
+
 ## Continuation checkpoint — 2026-11-15 (S2 expired UserPort operation recovery; pushed 317c6c8cbce6dbc3e29903b139a98e207d63c11b)
 
 Code `317c6c8cbce6dbc3e29903b139a98e207d63c11b` is pushed and remote-verified on

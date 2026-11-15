@@ -1,5 +1,15 @@
 # Platform completion and guided templates progress
 
+## Continuation checkpoint — 2026-11-15 (P04 product-user billing portability; pushed 2bec4bc861c33e0f272b9c5f11ed79120e12ccf2)
+
+The authenticated Product-user export now carries a bounded summary of subscription, dunning outcomes, and dispatch states from Billing. Spaces sends the exact session-derived product/user pair under tenant HMAC, validates an allowlisted response capped at 16 KiB and ten rows per list, and refuses partial exports if Billing is unavailable, failing, malformed, or excessive. Exports are `private, no-store`; provider subscription IDs, recipient addresses, and provider receipt IDs stay private. Existing default/staging/production Billing bindings are wired.
+
+Verification: Spaces product-user route **11/11**, Spaces typecheck, and `git diff --check`; mocked local evidence only. No deploy or live Billing/provider acceptance. Code SHA `2bec4bc861c33e0f272b9c5f11ed79120e12ccf2` is pushed and remote-verified. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Source-plan reconciliation: `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596` changes only this platform plan. Its 70 new lines are already copied into sections 9 and 11; no uncopied microapp, UI SDK, or voice requirement remains. The active P04 recovery row is intentionally newer; no merge or duplicate appendix was added.
+
+P04 remains partial for other stores, retention/key/jurisdiction decisions, cross-service consistency, isolated recovery, and measured/deployed RPO/RTO. Exact next action: resume S2/MS01/MS02 at `workers/agents/src/communications/userport-agentport-sync.ts`; inspect alias/owner-link disconnect, reauthorization, and scheduled cleanup, then implement the next reachable sync/revoke/relink gap with failure/replay coverage.
+
 ## Continuation checkpoint — 2026-11-15 (S2 expired UserPort operation recovery; pushed 317c6c8cbce6dbc3e29903b139a98e207d63c11b)
 
 Code `317c6c8cbce6dbc3e29903b139a98e207d63c11b` is pushed and remote-verified. The scheduled

@@ -12,7 +12,19 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (S2 expired UserPort operation recovery; pushed 317c6c8cbce6dbc3e29903b139a98e207d63c11b)
+## Latest checkpoint — 2026-11-15 (P04 product-user billing portability; pushed 2bec4bc861c33e0f272b9c5f11ed79120e12ccf2)
+
+Product-user `/export` now includes the safe subscription summary, up to ten scoped dunning notification outcomes, and up to ten dispatch states from the authenticated Billing status endpoint. The caller derives product and user IDs from the active session, uses the existing tenant HMAC service binding, bounds the response to 16 KiB, validates the complete allowlisted shape, and fails closed when Billing is missing, failing, or malformed. The export response is `private, no-store`; provider subscription IDs, recipient addresses, and provider receipt IDs are not exposed. The existing default/staging/production Billing service bindings are present.
+
+Verification: Spaces product-user route suite **11/11**, Spaces typecheck, and `git diff --check`. Local Worker mocks only; no deployment or live Billing/provider acceptance. The code is pushed and verified at `origin/Mcbt5s-Backup-2` SHA `2bec4bc861c33e0f272b9c5f11ed79120e12ccf2`. Rollouts remain disabled; preserve the unrelated untracked `infra/scripts/__pycache__/`.
+
+Plan-source check: fetched `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596`. Its only changed file is the active platform plan; all 70 added lines are already copied into sections 9 and 11. No requirement text is missing, the active P04 recovery evidence is newer than the source branch's P04 summary, and no merge or duplicate appendix is needed.
+
+P04 remains PARTIAL for other service stores, retention/key/jurisdiction policy, cross-service point-in-time consistency, isolated recovery and measured/deployed RPO/RTO. `PROJECT_USER` remains unsupported; same-identity app reinstallation still lacks an actor-generation contract. Provider and deployed acceptance remains separate from the local evidence.
+
+Exact next action: resume S2/MS01/MS02 at `workers/agents/src/communications/userport-agentport-sync.ts`. Trace alias and owner-link disconnect, reauthorization, and scheduled cleanup against current persisted rows and operation journals; close the next reachable sync/revoke/relink gap with failure and replay coverage. Then continue S3–S9/U01–U12 and remaining P03–P24 requirements in dependency order.
+
+## Previous checkpoint — 2026-11-15 (S2 expired UserPort operation recovery; pushed 317c6c8cbce6dbc3e29903b139a98e207d63c11b)
 
 Code `317c6c8cbce6dbc3e29903b139a98e207d63c11b` is pushed and verified on
 `origin/Mcbt5s-Backup-2`. The scheduled UserPort↔AgentPort reconciler now promotes expired `running`
