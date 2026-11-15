@@ -414,6 +414,11 @@ function WorkerResultView({ result, maxOutput = 8_000, resolution }: { result: s
       : mergeResult.workspaceMerge.status === "partially_resolved"
         ? "Some file conflicts have checked manual resolutions; remaining worker changes are still unapplied."
         : "Worker changes were not integrated. Both worker and target branches remain available for review."}</p>
+    <p style={{ margin: "4px 0", color: "var(--text3)", fontSize: 11 }}>Integrated tests: no validation receipt is recorded for this result.</p>
+    {mergeResult.modifiedFiles.length > 0 && <div style={{ margin: "4px 0", fontSize: 11 }}>
+      <strong>Worker-reported changed paths</strong>
+      <ul style={{ margin: "3px 0", paddingLeft: 20 }}>{mergeResult.modifiedFiles.map(path => <li key={path}><code>{path}</code></li>)}</ul>
+    </div>}
     <p style={{ margin: "4px 0", color: "var(--text3)", fontSize: 11 }}>Review these paths before choosing a resolution.</p>
     <ul style={{ margin: "6px 0", paddingLeft: 20 }}>
       {mergeResult.workspaceMerge.conflicts.map((conflict, index) => <li key={`${conflict.path}:${conflict.otherPath ?? ""}:${index}`} style={{ marginBottom: 8, overflowWrap: "anywhere" }}>
@@ -1568,7 +1573,13 @@ function WorkersPanel({
                 {sa.progress_note && <div style={{ marginTop: 3 }}>{sa.progress_note}</div>}
                 {sa.error && <div style={{ marginTop: 5, color: "#dc2626" }}>Error: {sa.error}</div>}
                 {sa.result && <WorkerResultView result={sa.result} maxOutput={8_000} resolution={{ spaceId, session, sessionId, agentId, projectId, workerId: sa.id }} />}
-                {sa.tokens_used !== undefined && <div data-technical-detail="model_routing" style={{ marginTop: 3 }}>{sa.tokens_used.toLocaleString()} tokens</div>}
+                {(sa.tokens_used !== undefined || sa.budget_tokens !== undefined) && <div data-technical-detail="model_routing" style={{ marginTop: 3 }}>
+                  {sa.tokens_used?.toLocaleString() ?? "0"} model tokens{sa.budget_tokens !== undefined ? ` of ${sa.budget_tokens.toLocaleString()} allocated` : ""}
+                </div>}
+                {sa.workspace_branch && <div data-technical-detail="identifiers" style={{ marginTop: 3, fontFamily: "var(--font-mono, monospace)", fontSize: 10 }}>
+                  Workspace branch: {sa.workspace_branch} (logical branch; runtime isolation is not implied)
+                </div>}
+                {sa.attempt !== undefined && <div data-technical-detail="identifiers" style={{ marginTop: 3 }}>Attempt {sa.attempt}</div>}
                 <div data-technical-detail="identifiers" style={{ marginTop: 3, fontFamily: "var(--font-mono, monospace)", fontSize: 10 }}>Run {sa.id.slice(0, 8)}</div>
               </div>
             </details>

@@ -2818,6 +2818,9 @@ export interface SubAgentSummary {
   result?: string | null;
   error?: string | null;
   tokens_used?: number;
+  budget_tokens?: number;
+  workspace_branch?: string | null;
+  attempt?: number;
   created_at: string;
   updated_at: string;
 }

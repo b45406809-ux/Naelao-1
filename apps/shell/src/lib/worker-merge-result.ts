@@ -9,6 +9,8 @@ export type WorkerMergeConflictView = {
 
 export type WorkerMergeResultView = {
   workerOutput: unknown;
+  /** Paths reported by the worker; these are advisory and are not a verified diff. */
+  modifiedFiles: string[];
   workspaceMerge: {
     status: "unapplied" | "partially_resolved" | "manually_resolved";
     conflicts: WorkerMergeConflictView[];
@@ -31,6 +33,11 @@ const safeHash = (value: unknown): string | null =>
   typeof value === "string" && /^[a-f0-9]{64}$/i.test(value)
     ? value.toLowerCase()
     : null;
+
+const safeReportedPath = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value.length <= 512 &&
+  !/[\u0000-\u001f\u007f]/u.test(value) && !value.startsWith("/") &&
+  !value.split(/[\\/]/u).some(part => part === ".." || part === "");
 
 /** Decode the bounded worker result envelope without trusting arbitrary stored JSON fields. */
 export function parseWorkerMergeResult(
@@ -74,6 +81,9 @@ export function parseWorkerMergeResult(
     ];
   });
   if (!conflicts.length) return null;
+  const modifiedFiles = Array.isArray(value.modifiedFiles)
+    ? [...new Set(value.modifiedFiles.filter(safeReportedPath))].slice(0, 100)
+    : [];
   const reportedOmitted =
     Number.isSafeInteger(workspaceMerge.omitted) &&
     Number(workspaceMerge.omitted) > 0
@@ -110,6 +120,7 @@ export function parseWorkerMergeResult(
     : [];
   return {
     workerOutput: value.workerOutput ?? null,
+    modifiedFiles,
     workspaceMerge: {
       status:
         workspaceMerge.status as WorkerMergeResultView["workspaceMerge"]["status"],

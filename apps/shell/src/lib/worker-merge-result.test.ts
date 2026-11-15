@@ -9,6 +9,7 @@ describe("worker merge result presentation", () => {
     const hash = "A".repeat(64);
     const serialized = JSON.stringify({
       workerOutput: { summary: "worker result" },
+      modifiedFiles: ["src/file-0.ts", "../private.txt", "/absolute/path", "src/file-0.ts"],
       workspaceMerge: {
         status: "unapplied",
         omitted: 0,
@@ -24,6 +25,7 @@ describe("worker merge result presentation", () => {
     });
     const report = parseWorkerMergeResult(serialized);
     expect(report?.workerOutput).toEqual({ summary: "worker result" });
+    expect(report?.modifiedFiles).toEqual(["src/file-0.ts"]);
     expect(report?.workspaceMerge).toMatchObject({
       status: "unapplied",
       omitted: 2,
@@ -60,6 +62,7 @@ describe("worker merge result presentation", () => {
     const report = parseWorkerMergeResult(
       JSON.stringify({
         workerOutput: "original output",
+        modifiedFiles: ["src/app.ts", "src/../secret.ts"],
         workspaceMerge: {
           status: "partially_resolved",
           conflicts: [
@@ -93,5 +96,6 @@ describe("worker merge result presentation", () => {
       ],
     });
     expect(report?.workerOutput).toBe("original output");
+    expect(report?.modifiedFiles).toEqual(["src/app.ts"]);
   });
 });
