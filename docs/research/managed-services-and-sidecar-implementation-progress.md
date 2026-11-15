@@ -1,8 +1,8 @@
 # Managed services and sidecar implementation progress
 
-## Continuation checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c355)
+## Continuation checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c3554588e4147eacf352a5ad12e65746b0d6)
 
-Code `2742c355` persists an owner-selected host-approved economy voice profile in extension-line
+Code `2742c3554588e4147eacf352a5ad12e65746b0d6` persists an owner-selected host-approved economy voice profile in extension-line
 policy and migration 0260. Each admitted Telnyx extension call and consented stream session pins the
 exact catalog ID; runtime resolution rejects unknown or wrong-class profiles. Changing the line's
 selection does not retarget an active call. The existing phone dashboard exposes the selection,
@@ -19,7 +19,7 @@ shared modules; direct binaries were used. Preserve `infra/scripts/__pycache__/`
 P06 remains PARTIAL for live provider/model/rate/quality verification, first-party signed phone
 package/catalog distribution and broader dashboard acceptance. The active plan's microapp/UI SDK/
 voice text is copied from `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596`;
-no merge occurred. Code checkpoint SHA: `2742c355` (push pending at this record update).
+no merge occurred. Code checkpoint `2742c3554588e4147eacf352a5ad12e65746b0d6` is pushed to `origin/Mcbt5s-Backup-2`; `ls-remote` confirmed the remote tip.
 
 Exact next action: implement S3/U05's missing product-side candidate allocation/reservation caller.
 Bind durable candidates to exact tenant/Space/Project, current main allocation generation, selected

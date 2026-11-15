@@ -12,9 +12,10 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c355)
+## Latest checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c3554588e4147eacf352a5ad12e65746b0d6)
 
-Code `2742c355` adds an owner-selected host-approved economy voice profile to Telnyx extension-line
+Code checkpoint `2742c3554588e4147eacf352a5ad12e65746b0d6` is pushed to `origin/Mcbt5s-Backup-2`;
+`ls-remote` confirmed. It adds an owner-selected host-approved economy voice profile to Telnyx extension-line
 settings. Migration 0260 pins the selected catalog ID to each admitted extension call and consented
 stream session. The media runtime resolves only an exact approved catalog ID; changing line policy
 leaves an active call on its original profile. The phone dashboard shows the current list-rate source

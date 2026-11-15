@@ -1,6 +1,6 @@
 # Platform completion and guided templates progress
 
-## Continuation checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c355)
+## Continuation checkpoint — 2026-11-15 (P06 Telnyx extension voice-profile pin; code checkpoint 2742c3554588e4147eacf352a5ad12e65746b0d6)
 
 The owner can select a host-approved 16 kHz economy profile for new Telnyx extension calls. Migration
 0260 stores the selected profile on the admitted call and consented stream session; runtime resolves
@@ -14,8 +14,7 @@ TypeScript checks; migration inventory **260/260**; release tests **20/20**, rel
 only: no Telnyx/OpenRouter account availability, live price, quality, deployment or production
 acceptance was checked. One initial parallel run hit a runtime timing wait; isolated and full reruns
 passed. P06 remains PARTIAL for provider/model/price verification, first-party signed package/catalog
-publication and complete dashboard acceptance. Code checkpoint: `2742c355` (push pending at this
-record update).
+publication and complete dashboard acceptance. Code checkpoint `2742c3554588e4147eacf352a5ad12e65746b0d6` is pushed to `origin/Mcbt5s-Backup-2`; `ls-remote` confirmed the remote tip.
 
 The microapp/UI SDK/voice plan copy remains from `origin/plan/microapps-ui-sdk-voice` commit
 `df3386257262a88888d647daa4d10f3af2ff9596`; no merge occurred. Rollouts stay disabled.
