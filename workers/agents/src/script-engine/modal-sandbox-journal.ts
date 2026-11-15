@@ -3,6 +3,24 @@ import type { ModalLifecycleHooks, ModalSandboxRecord } from "./modal-lifecycle.
 export type ModalSandboxBillingHooks = Pick<ModalLifecycleHooks, "reserve" | "settle" | "release">;
 type ModalSandboxScope = Pick<ModalSandboxRecord, "tenantId" | "spaceId" | "projectId">;
 type JournalRow = { request_sha256: string; record_json: string };
+type StatusRow = {
+  operation_id: string; state: string; region: string; revision: number; reserved_credits: number;
+  actual_credits: number | null; overrun_credits: number | null; error_code: string | null;
+  created_at: string; updated_at: string;
+};
+
+export interface ModalSandboxOperationStatus {
+  operationId: string;
+  state: ModalSandboxRecord["state"];
+  region: string;
+  revision: number;
+  reservedCredits: number;
+  actualCredits: number | null;
+  overrunCredits: number | null;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 function validScope(scope: ModalSandboxScope): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scope.tenantId)
@@ -22,6 +40,41 @@ function storedRecord(row: JournalRow, scope: ModalSandboxScope, idempotencyKey:
     throw new Error("modal_operation_journal_corrupt");
   }
   return record;
+}
+
+/** Owner-facing status projection. Never returns request, identity, provider or idempotency data. */
+export async function listModalSandboxOperationStatus(
+  db: Pick<D1Database, "prepare">,
+  scope: ModalSandboxScope,
+): Promise<ModalSandboxOperationStatus[]> {
+  if (!validScope(scope) || typeof scope.projectId !== "string") throw new Error("modal_operation_journal_scope_invalid");
+  const { results = [] } = await db.prepare(`SELECT operation_id,state,region,revision,reserved_credits,actual_credits,
+      overrun_credits,error_code,created_at,updated_at FROM modal_sandbox_operations
+    WHERE tenant_id=? AND space_id=? AND project_id=? ORDER BY created_at DESC,operation_id DESC LIMIT 25`)
+    .bind(scope.tenantId, scope.spaceId, scope.projectId).all<StatusRow>();
+  const states = new Set<ModalSandboxRecord["state"]>(["pending", "reserved", "creating", "running", "stopping", "stopped", "unknown", "failed"]);
+  const safeTimestamp = (value: string) => {
+    const milliseconds = Date.parse(value);
+    if (!Number.isFinite(milliseconds)) throw new Error("modal_operation_journal_corrupt");
+    return new Date(milliseconds).toISOString();
+  };
+  return results.map(row => {
+    if (typeof row.operation_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(row.operation_id)
+      || !states.has(row.state as ModalSandboxRecord["state"]) || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(row.region)
+      || !Number.isSafeInteger(row.revision) || row.revision < 0
+      || !Number.isSafeInteger(row.reserved_credits) || row.reserved_credits < 1
+      || row.actual_credits !== null && (!Number.isSafeInteger(row.actual_credits) || row.actual_credits < 0)
+      || row.overrun_credits !== null && (!Number.isSafeInteger(row.overrun_credits) || row.overrun_credits < 0)
+      || row.error_code !== null && !/^[a-z0-9_:-]{1,96}$/.test(row.error_code)) {
+      throw new Error("modal_operation_journal_corrupt");
+    }
+    return {
+      operationId: row.operation_id, state: row.state as ModalSandboxRecord["state"], region: row.region,
+      revision: row.revision, reservedCredits: row.reserved_credits, actualCredits: row.actual_credits,
+      overrunCredits: row.overrun_credits, errorCode: row.error_code,
+      createdAt: safeTimestamp(row.created_at), updatedAt: safeTimestamp(row.updated_at),
+    };
+  });
 }
 
 /** D1-backed idempotency journal. The pending intent commits before any credit or provider call. */

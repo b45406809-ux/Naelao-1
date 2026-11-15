@@ -1671,6 +1671,22 @@ export interface ProjectMainRuntimeProfile {
   } | null;
   changed?: boolean;
 }
+export interface ModalSandboxOperationStatus {
+  operationId: string;
+  state: "pending" | "reserved" | "creating" | "running" | "stopping" | "stopped" | "unknown" | "failed";
+  region: string;
+  revision: number;
+  reservedCredits: number;
+  actualCredits: number | null;
+  overrunCredits: number | null;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export function getModalSandboxOperationStatus(spaceId: string, projectId: string, session: SessionCredentials) {
+  return apiFetch<{ operations: ModalSandboxOperationStatus[]; source: "saved_operation_journal"; providerContacted: false }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/modal-operations`, { session, cache: "no-store" });
+}
 function projectMainRuntimeProfilePath(spaceId: string, projectId: string) {
   return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/main-runtime-profile`;
 }

@@ -2,6 +2,8 @@
 
 import * as React from "react";
 import {
+  ApiError,
+  getModalSandboxOperationStatus,
   getManagedRuntimeProfile,
   captureProjectMainPrivateState,
   getProjectMainRuntimeProfile,
@@ -17,6 +19,7 @@ import {
   saveWorkspaceRetentionPolicy,
   saveSidecarRuntimeExecutionProfile,
   type ManagedRuntimeProfile,
+  type ModalSandboxOperationStatus,
   type ProjectMainRuntimeProfile,
   type ProjectMainPrivateState,
   type SidecarRuntimeExecutionProfile,
@@ -49,6 +52,8 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
   const [mainProfile, setMainProfile] = React.useState<ProjectMainRuntimeProfile | null>(null);
   const [mainProfileDraft, setMainProfileDraft] = React.useState<ProjectMainRuntimeProfile["profile"] | "">("");
   const [mainProfileError, setMainProfileError] = React.useState("");
+  const [modalOperations, setModalOperations] = React.useState<ModalSandboxOperationStatus[] | null>(null);
+  const [modalOperationsError, setModalOperationsError] = React.useState("");
   const [privateState, setPrivateState] = React.useState<ProjectMainPrivateState | null>(null);
   const [privateStateDraft, setPrivateStateDraft] = React.useState("");
   const [privateStateError, setPrivateStateError] = React.useState("");
@@ -68,6 +73,8 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     setMainProfile(null);
     setMainProfileDraft("");
     setMainProfileError("");
+    setModalOperations(null);
+    setModalOperationsError("");
     setPrivateState(null);
     setPrivateStateDraft("");
     setPrivateStateError("");
@@ -78,7 +85,7 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     setRetentionReasonDraft("");
     setRetentionError("");
     try {
-      const [inventory, savedMainProfile, savedRetentionPolicy, savedPrivateState] = await Promise.all([
+      const [inventory, savedMainProfile, savedRetentionPolicy, savedPrivateState, savedModalOperations] = await Promise.all([
         listContainerInstallations(spaceId, stableSession, projectId),
         getProjectMainRuntimeProfile(spaceId, projectId, stableSession).catch((failure) => {
           setMainProfileError(failure instanceof Error ? failure.message : "Main computer profile unavailable");
@@ -92,6 +99,12 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
           setPrivateStateError(failure instanceof Error ? failure.message : "Private-state recovery settings unavailable");
           return null;
         }),
+        getModalSandboxOperationStatus(spaceId, projectId, stableSession).catch((failure) => {
+          setModalOperationsError(failure instanceof ApiError && failure.status === 403
+            ? "Operation history is available to Project or Space owners and administrators."
+            : "Saved Modal operation history is unavailable.");
+          return null;
+        }),
       ]);
       const { installations } = inventory;
       if (savedMainProfile) {
@@ -103,6 +116,10 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
         setPrivateState(savedPrivateState);
         setPrivateStateDraft(savedPrivateState.paths.join("\n"));
         setPrivateStateError("");
+      }
+      if (savedModalOperations) {
+        setModalOperations(savedModalOperations.operations);
+        setModalOperationsError("");
       }
       if (savedRetentionPolicy) {
         setRetentionPolicy(savedRetentionPolicy);
@@ -344,6 +361,23 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
       {privateStateError && <p role="alert" style={{ color: "var(--danger,#b42318)", fontSize: 12, margin: "6px 0 0" }}>{privateStateError}</p>}
     </div>}
     {mainProfile && <ProjectMainRestartRecipesEditor spaceId={spaceId} projectId={projectId} session={stableSession} />}
+    <div className="section-label" style={{ marginTop: 12 }}>GPU operation history</div>
+    <p style={{ color: "var(--text3)", fontSize: 12, margin: "0 0 8px" }}>
+      This owner/admin view reads saved operation records only and does not contact Modal. Modal GPU creation remains unavailable until usage reconciliation and customer pricing are approved.
+    </p>
+    {modalOperations ? modalOperations.length === 0
+      ? <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>No Modal operation records.</p>
+      : <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+        {modalOperations.map(operation => <div key={operation.operationId} style={{ borderTop: "1px solid var(--border)", paddingTop: 6, fontSize: 12 }}>
+          <strong>{operation.state.replaceAll("_", " ")}</strong> · {operation.region} · revision {operation.revision}
+          <div>Reserved: {operation.reservedCredits.toLocaleString()} credits · provider-reported usage: {operation.actualCredits === null ? "not recorded" : `${operation.actualCredits.toLocaleString()} credits`}
+            {operation.overrunCredits !== null ? ` · overrun ${operation.overrunCredits.toLocaleString()} credits` : ""}</div>
+          <div>Created {new Date(operation.createdAt).toLocaleString()} · updated {new Date(operation.updatedAt).toLocaleString()}
+            {operation.errorCode ? ` · ${operation.errorCode}` : ""}</div>
+        </div>)}
+      </div>
+      : modalOperationsError ? <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>{modalOperationsError}</p>
+        : <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>Loading saved operation history…</p>}
     <div className="section-label">Workspace retention and legal hold</div>
     <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 12px" }}>
       This project policy controls staged-artifact cleanup and canonical workspace-content collection, and an active hold blocks project-erasure admission. It does not retain or delete opaque Cloudflare Container snapshots or third-party backups; snapshot export, extension and physical purge are unsupported or unverified.

@@ -26,6 +26,7 @@ import { exportPendingWorkspaceErasureReceipts, replayWorkspaceErasureBackupPage
 import { readLatestRuntimeSnapshotRetention, sweepRuntimeSnapshotRetention } from "./workspace/runtime-snapshot-retention.js";
 import { privateStateBackupAvailability, readPrivateStateSelection, savePrivateStateSelection,
   sweepPrivateStateBackupRetention, type PrivateStateBackupBindings } from "./workspace/private-state-backup.js";
+import { listModalSandboxOperationStatus } from "./script-engine/modal-sandbox-journal.js";
 import { publishProjectChatUpload, MAX_COORDINATOR_UPLOAD_BYTES, type ChatUploadManifestSnapshot } from "./channels/workspace-chat-uploads.js";
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
 // Fulfills G-D01 through G-D25: Agent worker routes with DO forwarding
@@ -5353,6 +5354,15 @@ app.get("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => 
   const runtimeStatus = await readProjectMainRuntimeStatus(c.env.PLATFORM_DB, { tenantId, spaceId, projectId });
   const snapshotRetention = await readLatestRuntimeSnapshotRetention(c.env.PLATFORM_DB,{tenantId,spaceId,projectId});
   return c.json({ ...profile, runtimeStatus, snapshotRetention, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true", provider: "cloudflare" });
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/modal-operations", async c => {
+  const { spaceId, projectId } = c.req.param();
+  // Operation metadata is commercially and operationally sensitive. Keep this owner/admin-only,
+  // scope every query to the authenticated tenant and exact Space/Project, and never contact Modal.
+  const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  const operations = await listModalSandboxOperationStatus(c.env.PLATFORM_DB, { tenantId, spaceId, projectId });
+  return c.json({ operations, source: "saved_operation_journal", providerContacted: false }, 200, { "cache-control": "private, no-store" });
 });
 
 function privateStateBackupBindings(env: AgentsEnv): PrivateStateBackupBindings {

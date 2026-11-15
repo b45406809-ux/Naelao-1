@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { createFakeD1 } from "../../../../tests/stubs/d1-sqlite.js";
-import { createModalSandboxD1Hooks } from "./modal-sandbox-journal.js";
+import { createModalSandboxD1Hooks, listModalSandboxOperationStatus } from "./modal-sandbox-journal.js";
 import type { ModalSandboxRecord } from "./modal-lifecycle.js";
 
 const record: ModalSandboxRecord = {
@@ -58,5 +58,40 @@ describe("Modal operation journal", () => {
       .rejects.toThrow("modal_sandbox_idempotency_conflict");
     await expect(hooks.load({ tenantId: record.tenantId, spaceId: record.spaceId, projectId: "other-project" }, record.idempotencyKey))
       .resolves.toBeNull();
+  });
+
+  it("returns only safe status fields for the exact tenant, Space and Project", async () => {
+    const { db, hooks } = setup();
+    await hooks.claim(record);
+    await hooks.record({ ...record, providerId: "provider-secret", state: "running", revision: 1,
+      actualCredits: 620, overrunCredits: 120, updatedAt: record.updatedAt + 1000 });
+    await hooks.claim({ ...record, id: "modal:other-project", tenantId: "tenant-a", spaceId: "space-a", projectId: "project-b",
+      actorId: "owner-b", idempotencyKey: "other-project-key" });
+    await hooks.claim({ ...record, id: "modal:other-tenant", tenantId: "tenant-b", spaceId: "space-a", projectId: "project-a",
+      actorId: "owner-c", idempotencyKey: "other-tenant-key" });
+
+    const status = await listModalSandboxOperationStatus(db, { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a" });
+    expect(status).toEqual([{
+      operationId: record.id, state: "running", region: record.region, revision: 1, reservedCredits: 500,
+      actualCredits: 620, overrunCredits: 120, errorCode: null,
+      createdAt: new Date(record.createdAt).toISOString(), updatedAt: new Date(record.updatedAt + 1000).toISOString(),
+    }]);
+    expect(JSON.stringify(status)).not.toContain("provider-secret");
+    expect(status[0]).not.toHaveProperty("idempotencyKey");
+    expect(status[0]).not.toHaveProperty("actorId");
+    expect(status[0]).not.toHaveProperty("request");
+  });
+
+  it("bounds history to 25 rows in deterministic newest-first order", async () => {
+    const { db, hooks } = setup();
+    for (let index = 0; index < 30; index++) {
+      const suffix = String(index).padStart(2, "0");
+      await hooks.claim({ ...record, id: `modal:operation-${suffix}`, idempotencyKey: `create-${suffix}`,
+        createdAt: record.createdAt + index * 1000, updatedAt: record.updatedAt + index * 1000 });
+    }
+    const status = await listModalSandboxOperationStatus(db, { tenantId: record.tenantId, spaceId: record.spaceId, projectId: record.projectId });
+    expect(status).toHaveLength(25);
+    expect(status[0]?.operationId).toBe("modal:operation-29");
+    expect(status.at(-1)?.operationId).toBe("modal:operation-05");
   });
 });
