@@ -2,8 +2,33 @@
 
 import * as React from "react";
 import { parseCanvasMessage } from "@naelao/agent-sdk";
+import { isUncertainBusinessActionFailure, parseBusinessActionList, type BusinessActionDefinition } from "@/components/BusinessActionsPanel";
+import { Button } from "@naelao/ui";
 import { callProjectExtensionBusinessAction, callProjectExtensionCanvasGadgetRead, callProjectExtensionSettings, callSpaceSharedExtensionApi,
   callSpaceSharedExtensionBusinessAction, callSpaceSharedExtensionOperation, type SessionCredentials, type SpaceExtensionHostCapability } from "@/lib/api";
+
+export interface CanvasBusinessActionReview {
+  appId: string;
+  action: BusinessActionDefinition;
+  input: Record<string, unknown>;
+}
+
+export function prepareCanvasBusinessActionReview(appId: unknown, actionId: unknown, input: unknown, allowedApps: string[], actions: BusinessActionDefinition[]): CanvasBusinessActionReview {
+  if (typeof appId !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId) || !allowedApps.includes(appId))
+    throw new Error("business_action_app_not_allowed");
+  if (typeof actionId !== "string" || !/^[a-z][a-zA-Z0-9]{0,63}$/.test(actionId))
+    throw new Error("business_action_id_invalid");
+  const action = actions.find(candidate => candidate.id === actionId);
+  if (!action) throw new Error("business_action_not_available");
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("business_action_input_invalid");
+  let encoded: string;
+  try { encoded = JSON.stringify(input); } catch { throw new Error("business_action_input_invalid"); }
+  if (new TextEncoder().encode(encoded).byteLength > 64_000) throw new Error("business_action_input_too_large");
+  let normalized: unknown;
+  try { normalized = JSON.parse(encoded); } catch { throw new Error("business_action_input_invalid"); }
+  if (!normalized || typeof normalized !== "object" || Array.isArray(normalized)) throw new Error("business_action_input_invalid");
+  return { appId, action, input: normalized as Record<string, unknown> };
+}
 
 export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScoped = false, extensionInstallationId, extensionCanvasId, readableGadgets = [],
   businessActionApps, session, capabilities = [], onAction }: { spaceId: string; appId: string; projectId?: string; projectScoped?: boolean; extensionInstallationId?: string;
@@ -11,6 +36,35 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
   capabilities?: string[]; onAction(action: string, payload?: Record<string, unknown>, requestId?: string): void }) {
   const frame = React.useRef<HTMLIFrameElement>(null);
   const businessActionRequests = React.useRef(new Set<string>());
+  const pendingBusinessActionRef = React.useRef<CanvasBusinessActionReview & { requestId: string; scopeKey: string } | null>(null);
+  const businessActionApprovalActive = React.useRef(false);
+  const confirmingBusinessActionRef = React.useRef(false);
+  const [pendingBusinessAction, setPendingBusinessAction] = React.useState<CanvasBusinessActionReview & { requestId: string; scopeKey: string } | null>(null);
+  const [uncertainBusinessAction, setUncertainBusinessAction] = React.useState(false);
+  const [confirmingBusinessAction, setConfirmingBusinessAction] = React.useState(false);
+  const cancelBusinessActionButton = React.useRef<HTMLButtonElement>(null);
+  const scopeKey = JSON.stringify([spaceId, appId, projectId, projectScoped, session?.sessionToken ?? null]);
+  const scopeKeyRef = React.useRef(scopeKey);
+  scopeKeyRef.current = scopeKey;
+
+  const sendBusinessActionResult = React.useCallback((requestId: string, ok: boolean, value: unknown) => {
+    let result = value;
+    let success = ok;
+    let error: string | undefined;
+    if (ok) {
+      try {
+        const encoded = JSON.stringify(value);
+        if (new TextEncoder().encode(encoded).byteLength > 64_000) {
+          // The operation already returned success. Never report an oversized result as a failed
+          // write because an extension might retry a mutation that has committed.
+          result = { status: "completed", result_omitted: true, error_code: "business_action_result_too_large" };
+        }
+        else result = JSON.parse(encoded) as unknown;
+      } catch { success = false; error = "business_action_result_invalid"; }
+    } else error = typeof value === "string" ? value.slice(0, 200) : "business_action_request_failed";
+    frame.current?.contentWindow?.postMessage({ type: "naelao.extension.business-action.result", id: requestId,
+      ok: success, ...(success ? { result } : { error }) }, "*");
+  }, []);
   const src = projectScoped
     ? `/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/apps/${encodeURIComponent(appId)}/app`
     : `/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}/app`;
@@ -39,23 +93,46 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
         if (!validId || !validAppId || !session || (!validList && !validInvoke) || size > 64_000) return;
         if (businessActionRequests.current.has(businessAction.id as string)) return;
         if (businessActionRequests.current.size >= 4) {
-          frame.current?.contentWindow?.postMessage({ type: "naelao.extension.business-action.result", id: businessAction.id,
-            ok: false, error: "business_action_concurrency_limit" }, "*");
+          sendBusinessActionResult(businessAction.id as string, false, "business_action_concurrency_limit");
           return;
         }
         businessActionRequests.current.add(businessAction.id as string);
-        const result = projectScoped
-          ? callProjectExtensionBusinessAction(spaceId, projectId, targetAppId as string, session, {
-            ...(validInvoke ? { actionId: actionId as string, input: businessAction.input } : {}),
-          })
-          : callSpaceSharedExtensionBusinessAction(spaceId, targetAppId as string, session, {
-            ...(validInvoke ? { actionId: actionId as string, input: businessAction.input } : {}),
+        const requestId = businessAction.id as string;
+        const requestScope = scopeKey;
+        const fetchBusinessActions = () => projectScoped
+          ? callProjectExtensionBusinessAction(spaceId, projectId, targetAppId as string, session, {})
+          : callSpaceSharedExtensionBusinessAction(spaceId, targetAppId as string, session, {});
+        if (validInvoke) {
+          if (businessActionApprovalActive.current) {
+            businessActionRequests.current.delete(requestId);
+            sendBusinessActionResult(requestId, false, "business_action_review_in_progress");
+            return;
+          }
+          businessActionApprovalActive.current = true;
+          void fetchBusinessActions().then(value => {
+            if (scopeKeyRef.current !== requestScope) throw new Error("business_action_installation_changed");
+            const review = prepareCanvasBusinessActionReview(targetAppId, actionId, businessAction.input,
+              allowedBusinessActionApps, parseBusinessActionList(value));
+            const pending = { ...review, requestId, scopeKey: requestScope };
+            pendingBusinessActionRef.current = pending;
+            setPendingBusinessAction(pending);
+          }).catch(error => {
+            businessActionApprovalActive.current = false;
+            businessActionRequests.current.delete(requestId);
+            if (scopeKeyRef.current === requestScope) sendBusinessActionResult(requestId, false,
+              error instanceof Error ? error.message : "business_action_review_unavailable");
           });
-        void result
-          .then(value => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.business-action.result", id: businessAction.id, ok: true, result: value }, "*"))
-          .catch(error => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.business-action.result", id: businessAction.id, ok: false,
-            error: error instanceof Error ? error.message.slice(0, 200) : "business_action_request_failed" }, "*"))
-          .finally(() => businessActionRequests.current.delete(businessAction.id as string));
+          return;
+        }
+        void fetchBusinessActions()
+          .then(value => {
+            if (scopeKeyRef.current === requestScope) sendBusinessActionResult(requestId, true, parseBusinessActionList(value));
+          })
+          .catch(error => {
+            if (scopeKeyRef.current === requestScope) sendBusinessActionResult(requestId, false,
+              error instanceof Error ? error.message : "business_action_request_failed");
+          })
+          .finally(() => businessActionRequests.current.delete(requestId));
         return;
       }
       if (gadgetRead?.type === "naelao.extension.gadget.read") {
@@ -160,6 +237,91 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
     };
     window.addEventListener("naelao:mcp-ui-result", relay);
     return () => { window.removeEventListener("message", receive); window.removeEventListener("naelao:mcp-ui-result", relay); };
-  }, [onAction, projectId, projectScoped, extensionInstallationId, extensionCanvasId, readableGadgets, businessActionApps, session, spaceId, appId, capabilities]);
-  return <iframe ref={frame} data-testid="micro-app-canvas" title="Micro-app" src={src} sandbox="allow-forms allow-modals allow-popups allow-scripts" className="micro-app-frame" />;
+  }, [onAction, projectId, projectScoped, extensionInstallationId, extensionCanvasId, readableGadgets, businessActionApps, session, spaceId, appId, capabilities, scopeKey, sendBusinessActionResult]);
+
+  async function confirmBusinessAction() {
+    const review = pendingBusinessActionRef.current;
+    if (!review || confirmingBusinessActionRef.current) return;
+    if (review.scopeKey !== scopeKeyRef.current || !session || !(businessActionApps ?? [appId]).includes(review.appId)) {
+      cancelBusinessAction("business_action_installation_changed");
+      return;
+    }
+    confirmingBusinessActionRef.current = true;
+    setConfirmingBusinessAction(true);
+    let keepPendingForRetry = false;
+    try {
+      const response = projectScoped
+        ? await callProjectExtensionBusinessAction(spaceId, projectId, review.appId, session, { actionId: review.action.id, input: review.input })
+        : await callSpaceSharedExtensionBusinessAction(spaceId, review.appId, session, { actionId: review.action.id, input: review.input });
+      if (review.scopeKey === scopeKeyRef.current) sendBusinessActionResult(review.requestId, true, response);
+    } catch (error) {
+      if (review.action.effects === "transactional_write" && isUncertainBusinessActionFailure(error)) {
+        keepPendingForRetry = true;
+        setUncertainBusinessAction(true);
+        return;
+      }
+      if (review.scopeKey === scopeKeyRef.current) sendBusinessActionResult(review.requestId, false,
+        error instanceof Error ? error.message : "business_action_request_failed");
+    } finally {
+      confirmingBusinessActionRef.current = false;
+      setConfirmingBusinessAction(false);
+      if (!keepPendingForRetry && pendingBusinessActionRef.current === review) {
+        pendingBusinessActionRef.current = null;
+        businessActionApprovalActive.current = false;
+        businessActionRequests.current.delete(review.requestId);
+        setPendingBusinessAction(null);
+        setUncertainBusinessAction(false);
+      }
+    }
+  }
+
+  function cancelBusinessAction(reason = "business_action_cancelled") {
+    const review = pendingBusinessActionRef.current;
+    if (!review) return;
+    pendingBusinessActionRef.current = null;
+    businessActionApprovalActive.current = false;
+    businessActionRequests.current.delete(review.requestId);
+    const wasUncertain = uncertainBusinessAction;
+    setUncertainBusinessAction(false);
+    setPendingBusinessAction(null);
+    if (review.scopeKey === scopeKeyRef.current) sendBusinessActionResult(review.requestId, false,
+      wasUncertain ? "business_action_outcome_uncertain" : reason);
+  }
+
+  React.useEffect(() => {
+    if (pendingBusinessAction) cancelBusinessActionButton.current?.focus();
+  }, [pendingBusinessAction]);
+
+  React.useEffect(() => {
+    setPendingBusinessAction(null);
+    setUncertainBusinessAction(false);
+    return () => {
+      const pending = pendingBusinessActionRef.current;
+      if (pending) sendBusinessActionResult(pending.requestId, false, "business_action_installation_changed");
+      pendingBusinessActionRef.current = null;
+      businessActionApprovalActive.current = false;
+      businessActionRequests.current.clear();
+    };
+  }, [scopeKey, sendBusinessActionResult]);
+
+  return <>
+    {pendingBusinessAction && <section aria-labelledby="canvas-business-action-title" aria-label="Extension business action review"
+      style={{ border: "2px solid var(--border, #888)", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+      <h2 id="canvas-business-action-title">Review extension action</h2>
+      <p><strong>{pendingBusinessAction.action.name}</strong> · {pendingBusinessAction.appId}</p>
+      <p>{pendingBusinessAction.action.description}</p>
+      {uncertainBusinessAction
+        ? <p role="alert">The response was not received. The action may have completed. Retrying sends the same reviewed values and idempotency key.</p>
+        : <p>{pendingBusinessAction.action.effects === "read_only" ? "This reads data." : "This changes business data."} Confirm the exact request before it runs.</p>}
+      <pre style={{ overflowX: "auto", whiteSpace: "pre-wrap" }}>{JSON.stringify(pendingBusinessAction.input, null, 2)}</pre>
+      {uncertainBusinessAction && <Button variant="secondary" disabled={confirmingBusinessAction || pendingBusinessAction.scopeKey !== scopeKey}
+        onClick={() => cancelBusinessAction("business_action_outcome_uncertain")}>Dismiss without retrying</Button>}{" "}
+      {!uncertainBusinessAction && <Button ref={cancelBusinessActionButton} variant="secondary" disabled={confirmingBusinessAction || pendingBusinessAction.scopeKey !== scopeKey}
+        onClick={() => cancelBusinessAction()}>Cancel</Button>}{" "}
+      <Button disabled={confirmingBusinessAction || pendingBusinessAction.scopeKey !== scopeKey} onClick={() => void confirmBusinessAction()}>
+        {confirmingBusinessAction ? "Running…" : uncertainBusinessAction ? "Retry same request" : "Confirm and run"}
+      </Button>
+    </section>}
+    <iframe ref={frame} data-testid="micro-app-canvas" title="Micro-app" src={src} sandbox="allow-forms allow-modals allow-popups allow-scripts" className="micro-app-frame" />
+  </>;
 }
