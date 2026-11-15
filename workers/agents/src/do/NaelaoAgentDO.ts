@@ -5393,7 +5393,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     if (!published.validation) return Response.json({ error_code: "workspace_manual_validation_receipt_required" }, { status: 409 });
     const deletedPaths = changes.filter(change => change.content === null && change.copyFrom === undefined).map(change => change.path);
+    const copiedVersions = changes.flatMap(change => change.copyFrom ? [{ path: change.path, from: change.copyFrom,
+      hash: (change.copyFrom === "target" ? change.expectedTargetHash : change.expectedSourceHash)! }] : []);
     const resolution = { path, paths: pathList, deletedPaths, idempotencyKey, requestHash, reviewBranch: published.reviewBranch, targetBranch, deleted: content === null && copyFrom === undefined,
+      copiedVersions,
       status: published.merge.status, revision: published.merge.revision, publicationId: published.merge.id, completedAt: new Date().toISOString(), validation: published.validation };
     const latestRows = this.ctx.storage.sql.exec(`SELECT result,status,workspace_branch,configuration_json FROM sub_agents WHERE id=?`, workerId)
       .toArray() as Array<{ result: string | null; status: string; workspace_branch: string | null; configuration_json: string | null }>;

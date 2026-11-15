@@ -35,6 +35,7 @@ export type WorkerMergeResultView = {
       path: string;
       paths: string[];
       deletedPaths: string[];
+      copiedVersions: Array<{ path: string; from: "target" | "worker"; hash: string }>;
       status: "published" | "noop";
       revision: number;
       reviewBranch: string;
@@ -147,12 +148,23 @@ export function parseWorkerMergeResult(
             if (paths.length < 1 || paths.length > 2 || paths.some(path => !safeReportedPath(path)) || new Set(paths).size !== paths.length || !paths.includes(item.path)) return [];
             const deletedPaths = Array.isArray(item.deletedPaths) ? item.deletedPaths : item.deleted === true ? [item.path] : [];
             if (deletedPaths.some(path => !safeReportedPath(path) || !paths.includes(path)) || new Set(deletedPaths).size !== deletedPaths.length) return [];
+            let copiedVersions: Array<{ path: string; from: "target" | "worker"; hash: string }> = [];
+            if (item.copiedVersions !== undefined) {
+              if (!Array.isArray(item.copiedVersions) || item.copiedVersions.length > 2) return [];
+              copiedVersions = item.copiedVersions.flatMap((copy): Array<{ path: string; from: "target" | "worker"; hash: string }> =>
+                record(copy) && safeReportedPath(copy.path) && paths.includes(copy.path) &&
+                  (copy.from === "target" || copy.from === "worker") && safeHash(copy.hash)
+                  ? [{ path: copy.path, from: copy.from, hash: safeHash(copy.hash)! }]
+                  : []);
+              if (copiedVersions.length !== item.copiedVersions.length || new Set(copiedVersions.map(copy => copy.path)).size !== copiedVersions.length) return [];
+            }
             const validation = parseValidationReceipt(item.validation);
             return [
               {
                 path: item.path.slice(0, 512),
                 paths: paths as string[],
                 deletedPaths: deletedPaths as string[],
+                copiedVersions,
                 status: item.status as "published" | "noop",
                 revision: Number(item.revision),
                 reviewBranch: item.reviewBranch.slice(0, 128),

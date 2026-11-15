@@ -2830,6 +2830,7 @@ export interface WorkerWorkspaceConflictResolution {
   paths: string[];
   deleted: boolean;
   deletedPaths: string[];
+  copiedVersions: Array<{ path: string; from: "target" | "worker"; hash: string }>;
   idempotencyKey: string;
   reviewBranch: string;
   targetBranch: string;

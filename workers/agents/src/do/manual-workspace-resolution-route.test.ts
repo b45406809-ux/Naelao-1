@@ -239,7 +239,7 @@ describe("manual workspace conflict route", () => {
     const response = await invoke(agent.instance, { content: null, copyFrom: "worker" });
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toMatchObject({ resolution: { path, status: "published" } });
+    expect(body).toMatchObject({ resolution: { path, status: "published", copiedVersions: [{ path, from: "worker", hash: sourceHash }] } });
     expect(routeMocks.publish).toHaveBeenCalledWith(expect.objectContaining({ content: null, copyFrom: "worker", copyBucket: expect.any(Object) }), expect.any(Function));
     expect(JSON.stringify(body)).not.toContain("base64");
   });
