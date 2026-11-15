@@ -219,6 +219,9 @@ importers:
 
   apps/ui-sdk-poc:
     dependencies:
+      '@naelao/agent-sdk':
+        specifier: workspace:*
+        version: link:../../packages/agent-sdk
       '@ui-sdk/core':
         specifier: 0.1.0-beta.3
         version: 0.1.0-beta.3

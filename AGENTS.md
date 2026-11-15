@@ -9,44 +9,46 @@ Both plans are active and jointly govern this mission:
 
 Reuse the existing requirement IDs and progress ledgers when plans overlap. Do not restart completed
 work or claim a requirement complete from historical notes alone. After compaction, interruption, or
-a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`,
-`docs/research/platform-completion-and-guided-templates-plan.md`,
-`docs/research/managed-services-and-sidecar-implementation-progress.md`,
-`docs/research/platform-completion-and-guided-templates-progress.md`, and this runbook; inspect the
-actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
-the records.
+a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
+worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (§11.5 UI SDK evaluation and isolated POC; pending push)
+## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pending push)
 
-The optional Vercel UI SDK was checked against the published registry packages. `@ui-sdk/react@0.1.0-beta.3`
-is Apache-2.0 but requires React and React DOM >=19 plus `@types/react` >=19.2.10; Shell stays on React 18.
-The GitHub beta.4 source is not published to npm (registry E404). The published `@ui-sdk/web@0.1.0-beta.3`
-is Apache-2.0, depends only on `@ui-sdk/core@^0.1.0-beta.3`, and has no React peer. Added the isolated
-`apps/ui-sdk-poc` Vite app with exact beta.3 pins; Shell dependencies and framework remain untouched.
+Added the signed, bounded, read-only `inventory.listLowStock.v1` action to the MicroApp contract and
+host runtime. It reuses the same owner/admin actor, Space/Project scope, active installation and exact
+release-pin checks as the existing write actions. The host validates its input/output schema, reads
+only one ordered page of at most 100 rows, writes a read audit, and creates no write receipt, event, or
+business-data mutation. Space HTTP and assistant/MCP calls use the same execution path. Signed
+Space-shared package checks require the exact `read` grant for a read-only action and retain the exact
+`write` grant for write actions. The Shell action panel now reviews and explicitly confirms bounded
+read payloads and labels them as non-mutating.
 
-The POC uses invented inventory only. Its agent bridge may set one bounded filter or three bounded voice
-configuration draft fields, and each requested edit opens a native confirmation. Owner review shows exact
-draft values and says provider cost is unknown; approval only changes local demo status and never saves,
-publishes, or calls a provider. It has no model, production endpoint, tenant identity, iframe boundary, or
-host-authorized inventory read. The §11.5 requirement is therefore PARTIAL, not accepted or adopted.
+The §11.5 POC now uses the Agent SDK client and the existing `MicroAppCanvas` host message handler.
+Standalone mode remains synthetic; embedded mode only renders validated host results and has no
+synthetic fallback. Browser simulation used a local fake parent, not a deployed authenticated host.
+The POC remains isolated and is not adopted into the React 18 Shell.
 
-Local evidence: policy tests **4/4**, Vite production build (**99.76 kB JS / 35.55 kB gzip**), and local
-Chromium smoke at 390px/320px verified the accessible UI snapshot, keyboard-confirmed filter, 2-row low-stock
-view, authorized draft edits, denied unlisted voice, exact owner review, explicit unknown-cost text, canceled
-edit with unchanged state, one same-origin only, no horizontal overflow and no page errors. This is a local
-POC check, not deployed multi-tenant, screen-reader, cross-frame, provider, latency/token, or live evidence.
-No benchmark or Naelao cost claim is made. Preserve `infra/scripts/__pycache__/`; all rollouts stay disabled.
+Local evidence: SDK focused tests **7/7** and typecheck; Spaces business-action/manifest/package
+suites **70/70** and typecheck; Shell action-panel tests **5/5** and typecheck; POC bridge tests
+**3/3**; Vite production build **117.70 kB JS / 41.34 kB gzip**. Chromium local checks passed at
+390px and 320px with owner-confirmed filtering; a sandboxed opaque iframe requested only `list` then
+`listLowStock`, rendered two fake host rows, showed no synthetic rows and reported no page errors.
+These results are local tests and a mocked host bridge, not deployed identity, live data, multi-user,
+screen-reader, provider, or production acceptance. Rollouts stay disabled. Preserve the pre-existing
+untracked `infra/scripts/__pycache__/`.
 
-The earlier pushed inventory actions and tier-scoped storage status remain as recorded below. P05 Space-shared
-provider authority still lacks beneficiary/payer/sharing/revocation semantics; P04 exact-user archives still
-lack a reachable authenticated identity caller. These are distinct product/host contracts, not credential
-gates. The copied `origin/plan/microapps-ui-sdk-voice` content remains in the active plan; no branch merge.
+Fetched `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596` and
+compared both active plan files. Its microapp, UI SDK and voice requirements are already present in
+the active platform plan; the only plan-file differences are stale metadata and an older P04 summary.
+No plan content needed copying and no branch merge occurred. The active plan's newer P04 evidence is
+retained. The backup branch was fetched at `fb16c754` before this checkpoint.
 
-Exact next action: add a bounded, read-only `inventory.listStock.v1` business action to the signed Gadget
-contract and host runtime, using the existing exact actor, scope, active installation/release pin and current
-permission checks. Return schema-validated rows to the same HTTP and assistant/MCP callers, write a read audit,
-and prove unauthorized, stale-pin and malformed requests fail without changing data. Then connect the visible
-inventory filter to that authorized read path and continue remaining P01–P24/S2–S9/U01–U12 gaps.
+Exact next action: implement owner-controlled, per-Project Knowledge selection for Space-shared channel
+extensions using the existing owner-published collections. Persist by Space, Project, installation and
+exact publication; let owner/admin callers list, grant and revoke only current published IDs; make the
+Agents host intersect the active signed manifest with that selection before external search. Default
+new grants to off, preserve current project-scoped behavior, and keep provider-connection sharing
+separately gated. Then continue the remaining P01–P24/S2–S9/U01–U12 code gaps.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 

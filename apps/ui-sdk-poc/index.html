@@ -13,8 +13,9 @@
         <h1>Inventory view</h1>
         <p>
           An agent may suggest a filter for this local sample. The page asks
-          before changing the view; no inventory service or business operation
-          is connected.
+          before changing the view. When embedded in an active signed Naelao
+          Canvas, the low-stock filter requests bounded rows through its
+          owner/admin-authorized read action.
         </p>
       </header>
 
@@ -33,9 +34,9 @@
             />
           </ui-input>
           <ui-field-description id="filter-help">
-            Enter “low stock” to show only sample products at or below their
-            reorder point. The agent is limited to this field and these two
-            values: blank or “low stock.”
+            Enter “low stock” to show only rows at or below the bounded stock
+            threshold. The agent is limited to this field and these two values:
+            blank or “low stock.”
           </ui-field-description>
         </ui-field>
         <p id="change-status" class="status" role="status" aria-live="polite">
@@ -47,7 +48,7 @@
         <div class="table-heading">
           <div>
             <h2 id="table-heading">Sample stock</h2>
-            <p>Invented items and counts for this local evaluation.</p>
+            <p id="inventory-description">Invented items and counts in standalone local evaluation mode.</p>
           </div>
           <span id="result-count" class="count" aria-live="polite"></span>
         </div>
@@ -58,7 +59,7 @@
               <tr>
                 <th scope="col">Product</th>
                 <th scope="col">On hand</th>
-                <th scope="col">Reorder point</th>
+                <th scope="col">Version</th>
                 <th scope="col">Status</th>
               </tr>
             </thead>
@@ -113,8 +114,9 @@
       <section class="card boundary" aria-labelledby="boundary-heading">
         <h2 id="boundary-heading">Authority boundary</h2>
         <p>
-          UI actions only update this draft view. They do not call a business
-          API, edit stock, grant access, or prove that an operation completed.
+          UI actions only update this draft view. An embedded active Canvas may
+          call the signed read-only action after the filter is confirmed; it
+          cannot edit stock, grant access, or prove a write completed.
         </p>
         <p>
           To try the bridge in DevTools, use

@@ -10,15 +10,21 @@ export const SPACE_SHARED_PACKAGE_PERMISSIONS = new Set([
   "events.subscribe", "extension.settings.read", "extension.settings.configure", "assistant.phone.read", "assistant.phone.simulate",
 ]);
 
-/** Business-action permissions are allowed only when a validated signed gadget declares the
- * matching action. Do not let the permission string alone opt an otherwise unrelated package
- * into a write capability. The package-shape checks still enforce exact primitive permissions. */
+/** Business-action permissions are allowed only when a validated signed Gadget declares the
+ * matching named action and the primitive grants exactly the read/write effect that action needs.
+ * Do not let a permission string alone opt an unrelated package into Gadget authority. */
 export function isSpaceSharedPackagePermissionAllowed(permission: string, manifest?: ExtensionManifest): boolean {
   if (SPACE_SHARED_PACKAGE_PERMISSIONS.has(permission)) return true;
-  if (permission !== "inventory.stock.receive" || !manifest?.capabilityRequirements.includes("extension.gadget.business_action")) return false;
-  const bundleActions = (manifest.bundle?.primitives ?? []).some(primitive => primitive.kind === "gadget"
-    && primitive.scope === "SPACE_SHARED" && (primitive.businessActions ?? []).some(action => action.permission === permission));
-  const legacyActions = (manifest.gadgets ?? []).some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3
-    && (gadget.businessActions ?? []).some(action => action.permission === permission));
-  return bundleActions || legacyActions;
+  if (!manifest?.capabilityRequirements.includes("extension.gadget.business_action")) return false;
+  const bundleActions = (manifest.bundle?.primitives ?? []).flatMap(primitive => primitive.kind === "gadget"
+    && primitive.scope === "SPACE_SHARED" ? (primitive.businessActions ?? []).map(action => ({ action, permissions: primitive.permissions })) : []);
+  const bundleAllowsPermission = bundleActions.some(({ action, permissions }) => action.permission === permission
+    && permissions.some(grant => grant.scope === "SPACE_SHARED" && grant.resource === permission
+      && grant.actions.includes(action.effects === "read_only" ? "read" : "write")));
+  if (bundleAllowsPermission) return true;
+  // Legacy manifests have no primitive-scoped permission object. Their signed top-level permission
+  // declaration is accepted only when a Space-shared tier-3 Gadget declares the exact action.
+  return !manifest.bundle && manifest.declaredPermissions.includes(permission)
+    && (manifest.gadgets ?? []).some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3
+      && (gadget.businessActions ?? []).some(action => action.permission === permission));
 }

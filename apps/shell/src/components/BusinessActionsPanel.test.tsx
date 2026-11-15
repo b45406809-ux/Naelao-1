@@ -1,6 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { LIST_LOW_STOCK_INPUT_SCHEMA, LIST_LOW_STOCK_OUTPUT_SCHEMA } from "@naelao/agent-sdk";
 import { BusinessActionForm, buildBusinessActionPayload, isUncertainBusinessActionFailure, parseBusinessActionList,
   type BusinessActionDefinition } from "./BusinessActionsPanel";
 import { ApiError } from "@/lib/api";
@@ -22,12 +23,26 @@ const action: BusinessActionDefinition = {
   roles: ["owner", "admin"], effects: "transactional_write", idempotency: "required", approval: "none",
   inputSchema: schema, outputSchema: { type: "object", properties: { productId: { type: "string" } }, required: ["productId"], additionalProperties: false },
 };
+const listAction: BusinessActionDefinition = {
+  id: "listLowStock", name: "List low stock", description: "Read a bounded page of low-stock products.", permission: "inventory.stock.read",
+  roles: ["owner", "admin"], effects: "read_only", idempotency: "none", approval: "none",
+  inputSchema: LIST_LOW_STOCK_INPUT_SCHEMA, outputSchema: LIST_LOW_STOCK_OUTPUT_SCHEMA,
+};
 
 describe("BusinessActionsPanel host UI contract", () => {
   it("accepts only bounded signed action descriptions and the declared scalar schema", () => {
     expect(parseBusinessActionList({ version: 1, actions: [action] })).toEqual([action]);
+    expect(parseBusinessActionList({ version: 1, actions: [listAction] })).toEqual([listAction]);
     expect(() => parseBusinessActionList({ version: 2, actions: [action] })).toThrow("business_action_response_invalid");
     expect(() => parseBusinessActionList({ version: 1, actions: [{ ...action, inputSchema: { ...schema, additionalProperties: true } }] }))
+      .toThrow("business_action_response_invalid");
+    expect(() => parseBusinessActionList({ version: 1, actions: [{ ...listAction, outputSchema: { ...LIST_LOW_STOCK_OUTPUT_SCHEMA,
+      properties: { ...LIST_LOW_STOCK_OUTPUT_SCHEMA.properties, products: { ...LIST_LOW_STOCK_OUTPUT_SCHEMA.properties.products, maxItems: 1000 } } } }] }))
+      .toThrow("business_action_response_invalid");
+    expect(() => parseBusinessActionList({ version: 1, actions: [{ ...listAction, idempotency: "required" }] }))
+      .toThrow("business_action_response_invalid");
+    expect(() => parseBusinessActionList({ version: 1, actions: [{ ...listAction, inputSchema: { ...LIST_LOW_STOCK_INPUT_SCHEMA,
+      properties: { ...LIST_LOW_STOCK_INPUT_SCHEMA.properties, ids: { type: "array", items: { type: "string" }, maxItems: 10 } } } }] }))
       .toThrow("business_action_response_invalid");
   });
 
@@ -48,6 +63,16 @@ describe("BusinessActionsPanel host UI contract", () => {
     expect(markup).toContain("Review Receive stock");
     expect(markup).not.toContain("Confirm and run");
     expect(markup).toContain("idempotencyKey");
+  });
+
+  it("renders read-only actions with bounded data, explicit no-write wording and user review", () => {
+    expect(buildBusinessActionPayload(LIST_LOW_STOCK_INPUT_SCHEMA, { maximumQuantity: "6", limit: "25" }))
+      .toEqual({ maximumQuantity: 6, limit: 25 });
+    const markup = renderToStaticMarkup(<BusinessActionForm spaceId="space-a" appId="inventory" action={listAction}
+      session={{ sessionToken: "cookie", endUserId: "owner-a" }} />);
+    expect(markup).toContain("read only; no data changes");
+    expect(markup).toContain("Review List low stock");
+    expect(markup).not.toContain("Confirm and run");
   });
 
   it("distinguishes a definite rejection from a lost or uncertain response", () => {

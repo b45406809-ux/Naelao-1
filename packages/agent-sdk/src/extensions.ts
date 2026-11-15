@@ -5,15 +5,20 @@ import { validateSetupFieldDefinitions, validateSetupFieldValues } from "./bluep
 import type { BlueprintSetupValue } from "./blueprint-setup-fields.js";
 import type { BlueprintSetupField } from "./types.js";
 import { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, ADJUST_STOCK_INPUT_SCHEMA, ADJUST_STOCK_OUTPUT_SCHEMA,
+  LIST_LOW_STOCK_INPUT_SCHEMA, LIST_LOW_STOCK_OUTPUT_SCHEMA,
   createBusinessActionClient, validateBusinessActionInput, validateBusinessActionOutput, validateExtensionBusinessAction, validateReceiveStockInput,
-  validateReceiveStockOutput, validateAdjustStockInput, validateAdjustStockOutput, type AdjustStockInput, type AdjustStockOutput,
+  validateReceiveStockOutput, validateAdjustStockInput, validateAdjustStockOutput, validateListLowStockInput, validateListLowStockOutput,
+  type AdjustStockInput, type AdjustStockOutput, type ListLowStockInput, type ListLowStockOutput, type ListLowStockProduct,
   type BusinessActionClient, type BusinessActionObjectSchema, type BusinessActionRole, type ExtensionBusinessAction,
   type ReceiveStockInput, type ReceiveStockOutput } from "./business-actions.js";
 export { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, ADJUST_STOCK_INPUT_SCHEMA, ADJUST_STOCK_OUTPUT_SCHEMA,
+  LIST_LOW_STOCK_INPUT_SCHEMA, LIST_LOW_STOCK_OUTPUT_SCHEMA,
   createBusinessActionClient, validateBusinessActionInput, validateBusinessActionOutput, validateExtensionBusinessAction,
-  validateReceiveStockInput, validateReceiveStockOutput, validateAdjustStockInput, validateAdjustStockOutput };
-export type { AdjustStockInput, AdjustStockOutput, BusinessActionClient, BusinessActionObjectSchema, BusinessActionRole,
-  ExtensionBusinessAction, ReceiveStockInput, ReceiveStockOutput };
+  validateReceiveStockInput, validateReceiveStockOutput, validateAdjustStockInput, validateAdjustStockOutput,
+  validateListLowStockInput, validateListLowStockOutput };
+export type { AdjustStockInput, AdjustStockOutput, ListLowStockInput, ListLowStockOutput, ListLowStockProduct,
+  BusinessActionClient, BusinessActionObjectSchema, BusinessActionRole, ExtensionBusinessAction,
+  ReceiveStockInput, ReceiveStockOutput };
 
 export interface ExtensionSettingsSchema { schemaVersion: 1 | 2; fields: BlueprintSetupField[] }
 /** Packages can require owners to publish a validated settings draft before it affects runtime. */
@@ -620,7 +625,8 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
         contractAssert(action.installationScope === raw.scope && action.dataScope === raw.scope, "business_action_scope_mismatch");
         contractAssert((raw.capabilityRequirements as unknown[]).includes("extension.gadget.business_action"), "business_action_capability_required");
         contractAssert((raw.permissions as Array<{ scope: string; actions: string[]; resource: string }>).some(permission =>
-          permission.scope === raw.scope && permission.actions.includes("write") && permission.resource === action.permission), "business_action_permission_required");
+          permission.scope === raw.scope && permission.actions.includes(action.effects === "read_only" ? "read" : "write")
+          && permission.resource === action.permission), "business_action_permission_required");
       }
     }
   }

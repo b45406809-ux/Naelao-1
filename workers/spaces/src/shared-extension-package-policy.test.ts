@@ -7,8 +7,10 @@ describe("Space-shared package permissions", () => {
     const permission = "inventory.stock.receive";
     expect(isSpaceSharedPackagePermissionAllowed(permission)).toBe(false);
     expect(isSpaceSharedPackagePermissionAllowed(permission, {
+      declaredPermissions: [permission],
       capabilityRequirements: ["extension.gadget.business_action"],
-      bundle: { primitives: [{ kind: "gadget", scope: "SPACE_SHARED", businessActions: [{ permission }] }] },
+      bundle: { primitives: [{ kind: "gadget", scope: "SPACE_SHARED", businessActions: [{ permission, effects: "transactional_write" }],
+        permissions: [{ scope: "SPACE_SHARED", actions: ["write"], resource: permission }] }] },
     } as unknown as ExtensionManifest)).toBe(true);
     expect(isSpaceSharedPackagePermissionAllowed(permission, {
       capabilityRequirements: ["extension.gadget.business_action"],
@@ -17,5 +19,20 @@ describe("Space-shared package permissions", () => {
     expect(isSpaceSharedPackagePermissionAllowed(permission, {
       capabilityRequirements: ["extension.gadget.business_action"], bundle: { primitives: [{ kind: "canvas" }] },
     } as unknown as ExtensionManifest)).toBe(false);
+  });
+
+  it("admits read and write permissions only when the signed action and exact primitive grant agree", () => {
+    const read = { id: "listLowStock", permission: "inventory.stock.read", effects: "read_only" };
+    const write = { id: "adjustStock", permission: "inventory.stock.adjust", effects: "transactional_write" };
+    const manifest = (action: typeof read | typeof write, actions: string[]) => ({
+      capabilityRequirements: ["extension.gadget.business_action"],
+      bundle: { primitives: [{ kind: "gadget", scope: "SPACE_SHARED", businessActions: [action],
+        permissions: [{ scope: "SPACE_SHARED", resource: action.permission, actions }] }] },
+    } as unknown as ExtensionManifest);
+    expect(isSpaceSharedPackagePermissionAllowed(read.permission, manifest(read, ["read"]))).toBe(true);
+    expect(isSpaceSharedPackagePermissionAllowed(read.permission, manifest(read, ["write"]))).toBe(false);
+    expect(isSpaceSharedPackagePermissionAllowed(write.permission, manifest(write, ["write"]))).toBe(true);
+    expect(isSpaceSharedPackagePermissionAllowed(write.permission, manifest(write, ["read"]))).toBe(false);
+    expect(isSpaceSharedPackagePermissionAllowed("inventory.stock.read", manifest(write, ["read"]))).toBe(false);
   });
 });

@@ -1,14 +1,16 @@
 import "@ui-sdk/web/field";
 import "@ui-sdk/web/input";
 import { createAgent } from "@ui-sdk/web/agent";
+import { createBusinessActionClient } from "@naelao/agent-sdk";
 import { isAllowedAgentAction, validateSetupDraft } from "./agent-policy.mjs";
+import { readAuthorizedLowStock, resolveBusinessActionEndpoint } from "./inventory-bridge.mjs";
 import "./style.css";
 
 const products = [
-  { name: "Paper clips", onHand: 18, reorderPoint: 20 },
-  { name: "Blue notebooks", onHand: 42, reorderPoint: 15 },
-  { name: "Desk lamps", onHand: 6, reorderPoint: 8 },
-  { name: "Shipping labels", onHand: 120, reorderPoint: 40 },
+  { name: "Paper clips", onHand: 18, version: 1, reorderPoint: 20 },
+  { name: "Blue notebooks", onHand: 42, version: 1, reorderPoint: 15 },
+  { name: "Desk lamps", onHand: 6, version: 1, reorderPoint: 8 },
+  { name: "Shipping labels", onHand: 120, version: 1, reorderPoint: 40 },
 ];
 
 const filter = document.querySelector("ui-input");
@@ -23,6 +25,11 @@ const setupApprovalMessage = document.querySelector("#setup-approval-message");
 const setupStatus = document.querySelector("#setup-status");
 const setupPreview = document.querySelector("#setup-preview");
 let filterValue = nativeInput.value;
+const embeddedCanvas = window.parent !== window;
+const hostActionEndpoint = resolveBusinessActionEndpoint(window.location.pathname, embeddedCanvas);
+const businessActionClient = hostActionEndpoint ? createBusinessActionClient(hostActionEndpoint) : null;
+let authorizedProducts = null;
+let inventoryReadSequence = 0;
 const setupFields = {
   voice: document.querySelector("#voice-profile"),
   greeting: document.querySelector("#greeting"),
@@ -31,6 +38,20 @@ const setupFields = {
 const setupDefaults = Object.fromEntries(Object.entries(setupFields).map(([key, input]) => [key, input.value]));
 
 function renderRows() {
+  if (embeddedCanvas) {
+    const visibleProducts = authorizedProducts ?? [];
+    rows.replaceChildren(...visibleProducts.map((product) => {
+      const row = document.createElement("tr");
+      for (const value of [product.productId, String(product.quantity), String(product.version), product.quantity <= 20 ? "Low stock" : "In range"]) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.append(cell);
+      }
+      return row;
+    }));
+    count.textContent = authorizedProducts === null ? "No authorized read yet" : `${visibleProducts.length} authorized ${visibleProducts.length === 1 ? "row" : "rows"}`;
+    return;
+  }
   const lowStockOnly = filterValue.trim().toLowerCase() === "low stock";
   const visibleProducts = products.filter(
     (product) => !lowStockOnly || product.onHand <= product.reorderPoint,
@@ -42,7 +63,7 @@ function renderRows() {
       for (const value of [
         product.name,
         String(product.onHand),
-        String(product.reorderPoint),
+        String(product.version),
         product.onHand <= product.reorderPoint ? "Reorder" : "In range",
       ]) {
         const cell = document.createElement("td");
@@ -53,6 +74,38 @@ function renderRows() {
     }),
   );
   count.textContent = `${visibleProducts.length} sample ${visibleProducts.length === 1 ? "item" : "items"}`;
+}
+
+async function refreshAuthorizedInventory() {
+  const sequence = ++inventoryReadSequence;
+  if (!businessActionClient) {
+    authorizedProducts = null;
+    renderRows();
+    status.textContent = "No recognized active Canvas host. No synthetic rows are shown in an embedded frame.";
+    return;
+  }
+  if (filterValue.trim().toLowerCase() !== "low stock") {
+    authorizedProducts = null;
+    renderRows();
+    status.textContent = "Choose “low stock” to run the signed read-only action; no server data is requested for this draft filter.";
+    return;
+  }
+  authorizedProducts = null;
+  renderRows();
+  status.textContent = "Requesting the signed read-only low-stock action from this Canvas host…";
+  try {
+    const result = await readAuthorizedLowStock(businessActionClient);
+    if (sequence !== inventoryReadSequence) return;
+    authorizedProducts = result.products;
+    renderRows();
+    status.textContent = `Host-authorized read completed. ${result.products.length} bounded rows returned${result.hasMore ? "; more rows are available through the action cursor" : ""}. No data was changed.`;
+  } catch (error) {
+    if (sequence !== inventoryReadSequence) return;
+    authorizedProducts = [];
+    renderRows();
+    const code = typeof error?.errorCode === "string" ? error.errorCode : error instanceof Error ? error.message : "read_failed";
+    status.textContent = `Authorized inventory read unavailable (${String(code).slice(0, 120)}). Synthetic rows are not shown inside an embedded Canvas.`;
+  }
 }
 
 function requestOwnerConfirmation(step, signal) {
@@ -130,10 +183,13 @@ function requestSetupReview() {
 
 filter.addEventListener("valuechange", (event) => {
   filterValue = event.detail.value;
-  renderRows();
-  status.textContent = event.detail.source === "agent"
-    ? "Owner approved an agent change to this draft view. No business data was changed."
-    : "Draft filter updated locally. No business data was changed.";
+  if (embeddedCanvas) void refreshAuthorizedInventory();
+  else {
+    renderRows();
+    status.textContent = event.detail.source === "agent"
+      ? "Owner approved an agent change to this synthetic draft view. No business data was changed."
+      : "Synthetic draft filter updated locally. No business data was changed.";
+  }
 });
 
 for (const input of Object.values(setupFields)) {
@@ -166,4 +222,12 @@ const agent = createAgent({
 
 renderRows();
 renderSetupPreview();
+if (embeddedCanvas) {
+  document.querySelector(".eyebrow").textContent = "Embedded Canvas · signed host actions only";
+  document.querySelector("#table-heading").textContent = "Host-authorized inventory";
+  document.querySelector("#inventory-description").textContent = "The low-stock filter calls the installed, signed read-only action; no synthetic fallback is used in this frame.";
+  document.querySelector("#boundary-heading + p").textContent = "Filter edits change only the draft view. In an active signed Canvas, low-stock results come from the owner/admin-authorized read action; no business data is written.";
+  if (!businessActionClient) status.textContent = "This embedded page is outside a recognized active Space/Project Canvas route. No synthetic rows are shown.";
+  else status.textContent = "Choose “low stock” to retrieve a bounded page through the signed, owner/admin-authorized read action.";
+}
 Object.assign(window, { uiAgent: agent });

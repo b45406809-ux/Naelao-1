@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateExtensionManifest } from "@naelao/agent-sdk";
+import { LIST_LOW_STOCK_INPUT_SCHEMA, LIST_LOW_STOCK_OUTPUT_SCHEMA, validateExtensionManifest } from "@naelao/agent-sdk";
 import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
   spaceSharedDependencyExpansion, spaceSharedGadgetMigrationRetentionPlan, supportsOwnerApprovedSpaceSharedDependencyExpansion,
   supportsVersionOnlySpaceSharedCodeUpdate, supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
@@ -34,6 +34,26 @@ function gadgetPackage(version: string, migrations: Array<{ version: number; des
   }, { gatekeeperCapabilities: ["extension.project_canvas"] });
 }
 
+function readActionPackage(version: string, migrations: Array<{ version: number; description: string; up: string }> = []) {
+  const action = { schemaVersion: 1, id: "listLowStock", name: "List low stock", description: "Read a bounded stock page.",
+    operation: "inventory.listLowStock.v1", installationScope: "SPACE_SHARED", dataScope: "SPACE_SHARED", table: "inventory",
+    idColumn: "id", quantityColumn: "quantity", versionColumn: "version", permission: "inventory.stock.read", roles: ["owner", "admin"],
+    effects: "read_only", idempotency: "none", approval: "none", inputSchema: LIST_LOW_STOCK_INPUT_SCHEMA,
+    outputSchema: LIST_LOW_STOCK_OUTPUT_SCHEMA };
+  const gadget = { schemaVersion: "1.0", kind: "gadget", id: "inventory", version, scope: "SPACE_SHARED",
+    permissions: [{ scope: "SPACE_SHARED", actions: ["read"], resource: action.permission }],
+    capabilityRequirements: ["extension.gadget.business_action"], lifecycle: {},
+    schemaSql: "CREATE TABLE inventory(id TEXT PRIMARY KEY, quantity INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1)",
+    migrations, businessActions: [action] };
+  return validateExtensionManifest({ id: "ext_update_contract", type: "extension", declaredPermissions: [action.permission],
+    capabilityRequirements: ["extension.project_canvas", "extension.gadget.business_action"], gadgets: [], daemons: [], commands: [],
+    bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_update_contract", version, primitives: [
+      { schemaVersion: "1.0", kind: "canvas", id: "dashboard", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+        component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false }, gadget,
+    ] },
+  }, { gatekeeperCapabilities: ["extension.project_canvas", "extension.gadget.business_action"] });
+}
+
 describe("Space-shared code-only update contract", () => {
   it("allows a signed release-version change for static Canvas and channel handler code", () => {
     expect(supportsVersionOnlySpaceSharedCodeUpdate(
@@ -65,6 +85,12 @@ describe("Space-shared code-only update contract", () => {
       prior[0]!, { ...added, up: "ALTER TABLE records DROP COLUMN status;" },
     ]))).toBe(false);
     expect(supportsVersionOnlySpaceSharedPackageUpdate(current, gadgetPackage("1.1.0", prior))).toBe(false);
+  });
+
+  it("keeps read-only business actions eligible for a reviewed additive package update", () => {
+    expect(supportsVersionOnlySpaceSharedPackageUpdate(readActionPackage("1.0.0"), readActionPackage("1.1.0", [
+      { version: 1, description: "add optional inventory label", up: "ALTER TABLE inventory ADD COLUMN label TEXT;" },
+    ]))).toBe(true);
   });
 
   it("permits code rollback only when signed Gadget migrations are an exact prefix and remain applied", () => {

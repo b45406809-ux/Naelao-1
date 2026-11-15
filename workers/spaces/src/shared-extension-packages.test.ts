@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import { digestExtensionManifest, exportExtensionPublisherPublicKey, extensionPublisherSigningPayload, generateExtensionPublisherKeyPair,
-  RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, signExtensionPublisherRelease, validateExtensionManifest } from "@naelao/agent-sdk";
+  LIST_LOW_STOCK_INPUT_SCHEMA, LIST_LOW_STOCK_OUTPUT_SCHEMA, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA,
+  signExtensionPublisherRelease, validateExtensionManifest } from "@naelao/agent-sdk";
 import spacesWorker from "./index.js";
 
 const secret = "shared-extension-package-route-secret";
@@ -292,11 +293,17 @@ async function installReviewHarness(options: { failNextRootInitialization?: bool
     quantityColumn: "quantity", versionColumn: "version", permission: "inventory.stock.receive", roles: ["owner", "admin"],
     effects: "transactional_write", idempotency: "required", approval: "none",
     inputSchema: RECEIVE_STOCK_INPUT_SCHEMA, outputSchema: RECEIVE_STOCK_OUTPUT_SCHEMA };
+  const readBusinessAction = { schemaVersion: 1, id: "listLowStock", name: "List low stock", description: "Read a bounded page of low-stock products.",
+    operation: "inventory.listLowStock.v1", installationScope: "SPACE_SHARED", dataScope: "SPACE_SHARED", table: "inventory", idColumn: "id",
+    quantityColumn: "quantity", versionColumn: "version", permission: "inventory.stock.read", roles: ["owner", "admin"],
+    effects: "read_only", idempotency: "none", approval: "none", inputSchema: LIST_LOW_STOCK_INPUT_SCHEMA, outputSchema: LIST_LOW_STOCK_OUTPUT_SCHEMA };
   const actionGadget = { schemaVersion: "1.0", kind: "gadget", id: "inventory", version: "1.2.0", scope: "SPACE_SHARED",
-    permissions: [{ scope: "SPACE_SHARED", actions: ["write"], resource: businessAction.permission }],
+    permissions: [{ scope: "SPACE_SHARED", actions: ["write"], resource: businessAction.permission },
+      { scope: "SPACE_SHARED", actions: ["read"], resource: readBusinessAction.permission }],
     capabilityRequirements: ["extension.gadget.business_action"], lifecycle: {}, schemaSql: "CREATE TABLE inventory(id TEXT PRIMARY KEY, quantity INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1)",
-    businessActions: [businessAction] };
+    businessActions: [businessAction, readBusinessAction] };
   const rootBase = options.includeBusinessAction ? validateExtensionManifest({ ...manifest,
+    declaredPermissions: [...manifest.declaredPermissions, readBusinessAction.permission],
     capabilityRequirements: [...manifest.capabilityRequirements, "extension.gadget.business_action"],
     bundle: { ...manifest.bundle!, primitives: [...manifest.bundle!.primitives, actionGadget] },
   }, { gatekeeperCapabilities: [...manifest.capabilityRequirements, "extension.gadget.business_action"] }) : manifest;
@@ -459,15 +466,24 @@ describe("signed Space-shared extension packages", () => {
     const response = await spacesWorker.fetch(await signedRequest(
       "/spaces/space-a/shared-extensions/ext_customer_voice/install-review", "POST", { version: "1.2.0", approved_shared_filesystem: [] }), h.env);
     expect(response.status, JSON.stringify(await response.clone().json())).toBe(200);
-    expect(await response.json()).toMatchObject({ ready_to_install: true, mutates_installation: false,
-      requested_package: { business_actions: [{ gadget_id: "inventory", action: {
+    const review = await response.json() as { ready_to_install: boolean; mutates_installation: boolean;
+      requested_package: { business_actions: Array<{ gadget_id: string; action: { id: string; effects: string; permission: string;
+        inputSchema: unknown; outputSchema: unknown } }> }; dependency_packages: Array<{ business_actions: unknown[] }> };
+    expect(review.ready_to_install).toBe(true);
+    expect(review.mutates_installation).toBe(false);
+    expect(review.requested_package.business_actions).toHaveLength(2);
+    expect(review.requested_package.business_actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ gadget_id: "inventory", action: expect.objectContaining({
         id: "receiveStock", permission: "inventory.stock.receive", roles: ["owner", "admin"],
         effects: "transactional_write", idempotency: "required", approval: "none",
-        inputSchema: { required: ["productId", "quantity", "expectedVersion", "reason", "idempotencyKey"] },
-        outputSchema: { required: ["productId", "quantity", "version", "replayed"] },
-      } }] },
-      dependency_packages: [{ business_actions: [] }],
-    });
+        inputSchema: expect.objectContaining({ required: ["productId", "quantity", "expectedVersion", "reason", "idempotencyKey"] }),
+        outputSchema: expect.objectContaining({ required: ["productId", "quantity", "version", "replayed"] }),
+      }) }),
+      expect.objectContaining({ gadget_id: "inventory", action: expect.objectContaining({ id: "listLowStock", permission: "inventory.stock.read", roles: ["owner", "admin"],
+          effects: "read_only", idempotency: "none", approval: "none", inputSchema: LIST_LOW_STOCK_INPUT_SCHEMA,
+          outputSchema: LIST_LOW_STOCK_OUTPUT_SCHEMA }) }),
+    ]));
+    expect(review.dependency_packages).toMatchObject([{ business_actions: [] }]);
     expect(h.microAppRequests).toHaveLength(0);
   });
 

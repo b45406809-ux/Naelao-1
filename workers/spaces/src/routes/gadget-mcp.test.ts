@@ -124,11 +124,15 @@ describe("gadget MCP host adapter", () => {
       headers: await auth("t", { "x-naelao-user-id": "owner-1", "x-naelao-role": "admin", "content-type": "application/json" }),
       body: JSON.stringify({ productId: "sku-1", quantity: 1, expectedVersion: 1, reason: "PO-1", idempotencyKey: "receipt-2026-0001" }) }, env);
     expect(await allowed.json()).toEqual({ path: "/business-actions/receiveStock", method: "POST" });
+    const allowedRead = await app.request("/spaces/s/apps/inventory/business-actions/listLowStock", { method: "POST",
+      headers: await auth("t", { "x-naelao-user-id": "owner-1", "x-naelao-role": "admin", "content-type": "application/json" }),
+      body: JSON.stringify({ maximumQuantity: 6, limit: 10 }) }, env);
+    expect(await allowedRead.json()).toEqual({ path: "/business-actions/listLowStock", method: "POST" });
     const auditDenied = await app.request("/spaces/s/apps/inventory/action-audit", { headers: member }, env);
     expect(auditDenied.status).toBe(403);
     const audit = await app.request("/spaces/s/apps/inventory/action-audit", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
     expect(await audit.json()).toEqual({ path: "/api/actions/audit", method: "GET" });
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(4);
     expect(forwarded[1]?.headers.get("x-naelao-active-installation-id")).toBe("install-inventory");
     expect(forwarded[1]?.headers.get("x-naelao-active-release-version")).toBe("1.0.0");
   });

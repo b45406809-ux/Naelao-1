@@ -352,6 +352,7 @@ function isSpaceSharedPackageShape(manifest: ExtensionManifest, allowDependencie
       ? part.permissions.length === 0 && part.capabilityRequirements.length === 0
       : part.capabilityRequirements.length === 1 && part.capabilityRequirements[0] === "extension.gadget.business_action"
         && part.permissions.length === actions.length && actions.every(action => part.permissions.some(permission =>
-          permission.scope === part.scope && permission.actions.includes("write") && permission.resource === action.permission));
+          permission.scope === part.scope && permission.actions.includes(action.effects === "read_only" ? "read" : "write")
+          && permission.resource === action.permission));
   }) && (manifest.gadgets ?? []).every(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3);
 }

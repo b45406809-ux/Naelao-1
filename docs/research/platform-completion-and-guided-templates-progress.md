@@ -1,33 +1,37 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (§11.5 UI SDK evaluation and isolated POC; pending push)
+## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pending push)
 
-`@ui-sdk/react@0.1.0-beta.3` is Apache-2.0 but requires React and React DOM >=19 plus `@types/react`
->=19.2.10, so the React 18 Shell was left unchanged. The beta.4 seen in GitHub source is unpublished (npm
-E404). Published `@ui-sdk/web@0.1.0-beta.3` is Apache-2.0 and has only the core beta.3 peer, so a separate
-React-free path is supported. Added `apps/ui-sdk-poc` with exact beta.3 pins; it is not a production Shell
-dependency or deployed feature.
+Added the signed `inventory.listLowStock.v1` read-only action through MicroApp host execution. It shares
+owner/admin, tenant/Space/Project, installation and exact-release checks with the existing business
+actions. Inputs and outputs are schema-validated; reads return one bounded ordered page, are audited,
+and do not create write receipts/events or mutate Gadget rows. Authenticated HTTP and assistant/MCP
+callers reach the same host implementation. Signed Space-shared packages must grant exact `read`
+authority for the read-only action; writes still require exact `write` authority. The owner/admin Shell
+panel previews and confirms the bounded read.
 
-The local synthetic POC covers an inventory filter and a draft voice/greeting/business-hours form. The agent
-bridge is restricted to four named inputs and bounded values; each edit awaits native owner confirmation.
-Before local-only approval, the owner sees exact voice settings and cost shown as unknown. No provider call,
-business API, model, tenant identity, host session, or cross-frame authority is present. §11.5 is PARTIAL,
-including no server-authorized inventory data read, live interaction evidence, screen-reader acceptance,
-multi-tenant/iframe tests, measured latency/token results, or provider quote.
+The isolated UI SDK POC uses the Agent SDK bridge and the current `MicroAppCanvas` source/origin-checked
+host message path. Its standalone mode stays synthetic, and embedded mode never falls back to fixtures.
+The browser exercise used a local fake parent, so it does not establish deployed host authorization.
+§11.5 remains PARTIAL and the UI SDK is not adopted into Shell.
 
-Verification: policy tests **4/4**, Vite build (**99.76 kB JS / 35.55 kB gzip**), Chromium smoke at 390px and
-320px: snapshot, keyboard approval, filter 4→2 rows, allowed/denied voice inputs, exact owner preview and
-unknown-cost statement, cancellation with unchanged value, same-origin requests only, zero page errors, no
-horizontal overflow. This is isolated local synthetic evidence only. No benchmark or production claim.
-Earlier code commits 10a3c9a0, 49efa6db and eb53c39c remain pushed. All rollouts remain false; preserve the
-untracked `infra/scripts/__pycache__/`.
+Local verification: SDK **7/7**, Spaces **70/70**, Shell **5/5**, POC bridge **3/3**; SDK/Spaces/Shell
+typechecks; Vite production build **117.70 kB JS / 41.34 kB gzip**; Chromium owner-confirmation and
+sandboxed frame checks at 390px/320px, no horizontal overflow or browser errors. No deployment, live
+provider, real multi-user, screen-reader or performance acceptance ran. Rollouts remain disabled;
+preserve `infra/scripts/__pycache__/`.
 
-Exact next action: add the signed, bounded read-only `inventory.listStock.v1` action to the MicroApp contract
-and host runtime with current actor/scope/grant/installation/release authorization, authenticated HTTP and
-assistant/MCP callers, schema validation, read audit and no-write denial/stale-pin tests. Then replace the
-POC's static inventory fixture path with a scoped host read only in a testable authenticated caller context,
-and continue remaining P01–P24/S2–S9/U01–U12 gaps. The POC does not establish any deployed, provider, or
-live acceptance.
+Fetched and compared `origin/plan/microapps-ui-sdk-voice` (`df3386257262a88888d647daa4d10f3af2ff9596`).
+The microapp, UI SDK and voice requirements are already copied into the active platform plan. Its only
+remaining differences are stale metadata and older P04 wording; no content was missing and no merge
+was performed. The active P04 evidence is retained. Pre-checkpoint `origin/Mcbt5s-Backup-2` was
+`fb16c754`.
+
+Exact next action: implement owner-controlled, per-Project Knowledge selection for Space-shared channel
+extensions on existing owner-published collections. Persist the grant by Space, Project, installation
+and publication; provide owner/admin list/grant/revoke for current published IDs; enforce it in the
+Agents host by intersecting it with the active signed manifest before external search. Default new
+grants to off and preserve project-scoped access. Continue independent P01–P24/S2–S9/U01–U12 gaps.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 

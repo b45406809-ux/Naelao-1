@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { MicroAppDO } from "./MicroAppDO.js";
 import { digestExtensionManifest, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, ADJUST_STOCK_INPUT_SCHEMA,
-  ADJUST_STOCK_OUTPUT_SCHEMA, validateExtensionManifest } from "@naelao/agent-sdk";
+  ADJUST_STOCK_OUTPUT_SCHEMA, LIST_LOW_STOCK_INPUT_SCHEMA, LIST_LOW_STOCK_OUTPUT_SCHEMA, validateExtensionManifest } from "@naelao/agent-sdk";
 import { signHmac } from "@naelao/crypto";
 import { mintInternalToken } from "@naelao/http";
 
@@ -12,7 +12,7 @@ async function signedBusinessActionFixture(actionInput: Record<string, unknown> 
   const manifestJson = JSON.stringify({ id: extensionId, bundle: { id: extensionId, version, primitives: [
     { kind: "canvas", component: "./inventory.html" },
     { kind: "gadget", id: "inventory", scope: "PROJECT_BOUND", permissions: actions.map(action =>
-      ({ scope: "PROJECT_BOUND", actions: ["write"], resource: action.permission })), businessActions: actions },
+      ({ scope: "PROJECT_BOUND", actions: [action.effects === "read_only" ? "read" : "write"], resource: action.permission })), businessActions: actions },
   ] }, capabilityRequirements: ["extension.gadget.business_action"] });
   const hash = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))]
     .map(byte => byte.toString(16).padStart(2, "0")).join("");
@@ -88,7 +88,12 @@ describe("Gadget MCP record operations", () => {
       table: "inventory", idColumn: "id", quantityColumn: "quantity", versionColumn: "version",
       permission: "inventory.stock.adjust", roles: ["owner", "admin"], effects: "transactional_write", idempotency: "required", approval: "none",
       inputSchema: ADJUST_STOCK_INPUT_SCHEMA, outputSchema: ADJUST_STOCK_OUTPUT_SCHEMA };
-    const actions = [action, adjustAction];
+    const listAction = { schemaVersion: 1, id: "listLowStock", name: "List low stock", description: "Read a bounded page of products at or below the selected stock threshold.",
+      operation: "inventory.listLowStock.v1", installationScope: "PROJECT_BOUND", dataScope: "PROJECT_BOUND",
+      table: "inventory", idColumn: "id", quantityColumn: "quantity", versionColumn: "version",
+      permission: "inventory.stock.read", roles: ["owner", "admin"], effects: "read_only", idempotency: "none", approval: "none",
+      inputSchema: LIST_LOW_STOCK_INPUT_SCHEMA, outputSchema: LIST_LOW_STOCK_OUTPUT_SCHEMA };
+    const actions = [action, adjustAction, listAction];
     const signed = await signedBusinessActionFixture(actions, "gadget-test-secret");
     const unsigned = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId: "inventory_shop", scope: "PROJECT_BOUND", gadgetTier: 2,
@@ -100,6 +105,8 @@ describe("Gadget MCP record operations", () => {
         extensionInstallationId: "install-inventory-1", sourceGadgetId: "inventory", businessActions: actions, html: signed.html, releaseProof: signed.releaseProof }) }));
     expect(initialized.status).toBe(201);
     storage.sql.exec("INSERT INTO inventory(id,quantity,version) VALUES(?,?,?)", "sku-1", 4, 1);
+    storage.sql.exec("INSERT INTO inventory(id,quantity,version) VALUES(?,?,?)", "sku-2", 5, 1);
+    storage.sql.exec("INSERT INTO inventory(id,quantity,version) VALUES(?,?,?)", "sku-3", 20, 1);
 
     const input = { productId: "sku-1", quantity: 3, expectedVersion: 1, reason: "PO-2041", idempotencyKey: "receipt-2026-0001" };
     const headers = (actor: string, role: string) => ({ "content-type": "application/json", "x-naelao-user-id": actor, "x-naelao-role": role,
@@ -113,10 +120,35 @@ describe("Gadget MCP record operations", () => {
     expect(uiCall.status).toBe(200);
     expect(await uiCall.json()).toEqual({ productId: "sku-1", quantity: 7, version: 2, replayed: false });
 
+    const lowStockInput = { maximumQuantity: 10, limit: 1 };
+    const memberRead = await gadget.fetch(new Request("http://gadget/business-actions/listLowStock", { method: "POST",
+      headers: headers("member-a", "member"), body: JSON.stringify(lowStockInput) }));
+    expect(memberRead.status).toBe(403);
+    const staleRead = await gadget.fetch(new Request("http://gadget/business-actions/listLowStock", { method: "POST",
+      headers: { ...headers("owner-a", "admin"), "x-naelao-active-release-version": "0.9.0" }, body: JSON.stringify(lowStockInput) }));
+    expect(staleRead.status).toBe(409);
+    const malformedRead = await gadget.fetch(new Request("http://gadget/business-actions/listLowStock", { method: "POST",
+      headers: headers("owner-a", "admin"), body: JSON.stringify({ ...lowStockInput, maximumQuantity: -1 }) }));
+    expect(malformedRead.status).toBe(400);
+    const beforeReadReceipts = [...sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM gadget_business_action_receipts")][0]?.count ?? 0;
+    const uiRead = await gadget.fetch(new Request("http://gadget/business-actions/listLowStock", { method: "POST",
+      headers: headers("owner-a", "admin"), body: JSON.stringify(lowStockInput) }));
+    expect(uiRead.status).toBe(200);
+    expect(await uiRead.json()).toEqual({ products: [{ productId: "sku-1", quantity: 7, version: 2 }], hasMore: true, nextCursor: "sku-1" });
+
     const call = async (name: string, args: Record<string, unknown>, actor = "owner-a", role = "admin", target = gadget) => target.fetch(new Request("http://gadget/mcp", {
       method: "POST", headers: headers(actor, role), body: JSON.stringify({ jsonrpc: "2.0", id: "action", method: "tools/call",
-        params: { name: ["receiveStock", "adjustStock"].includes(name) ? `app_inventory_shop_action_${name}` : `app_inventory_shop_${name}`, arguments: args } }),
+        params: { name: ["receiveStock", "adjustStock", "listLowStock"].includes(name) ? `app_inventory_shop_action_${name}` : `app_inventory_shop_${name}`, arguments: args } }),
     }));
+    const assistantRead = await call("listLowStock", { ...lowStockInput, afterProductId: "sku-1" });
+    expect((await assistantRead.json() as { result: { structuredContent: unknown } }).result.structuredContent)
+      .toEqual({ products: [{ productId: "sku-2", quantity: 5, version: 1 }], hasMore: false, nextCursor: "" });
+    expect([...sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM gadget_business_action_receipts")][0]?.count).toBe(beforeReadReceipts);
+    const memberTools = await gadget.fetch(new Request("http://gadget/mcp", { method: "POST", headers: headers("member-a", "member"),
+      body: JSON.stringify({ jsonrpc: "2.0", id: "tools-member", method: "tools/list" }) }));
+    expect((await memberTools.json() as { result: { tools: Array<{ name: string }> } }).result.tools.some(tool => tool.name.endsWith("action_listLowStock"))).toBe(false);
+    const memberMcpRead = await call("listLowStock", lowStockInput, "member-a", "member");
+    expect((await memberMcpRead.json() as { error: { message: string } }).error.message).toBe("business_action_forbidden");
     const restarted = new MicroAppDO({ storage: { ...storage, sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never, { PLATFORM_SECRET: "gadget-test-secret" } as never);
     const replay = await call("receiveStock", input, "owner-a", "admin", restarted);
     expect((await replay.json() as { result: { structuredContent: unknown } }).result.structuredContent)
@@ -139,6 +171,10 @@ describe("Gadget MCP record operations", () => {
       .toEqual(RECEIVE_STOCK_OUTPUT_SCHEMA);
     expect(listed.result.tools.find(tool => tool.name === "app_inventory_shop_action_adjustStock")?.outputSchema)
       .toEqual(ADJUST_STOCK_OUTPUT_SCHEMA);
+    expect(listed.result.tools.find(tool => tool.name === "app_inventory_shop_action_listLowStock")?.inputSchema)
+      .toEqual(LIST_LOW_STOCK_INPUT_SCHEMA);
+    expect(listed.result.tools.find(tool => tool.name === "app_inventory_shop_action_listLowStock")?.outputSchema)
+      .toEqual(LIST_LOW_STOCK_OUTPUT_SCHEMA);
 
     const genericWrite = await call("update", { table: "inventory", id: "sku-1", record: { quantity: 99 } });
     expect(genericWrite.status).toBe(400);
@@ -156,7 +192,8 @@ describe("Gadget MCP record operations", () => {
         action_operation: string; quantity_delta: number }>;
     };
     const auditItems = auditBody.items;
-    expect(auditItems.map(item => item.operation)).toEqual(["business:receiveStock:completed", "business:receiveStock:replayed",
+    expect(auditItems.map(item => item.operation)).toEqual(["business:receiveStock:completed",
+      "business:listLowStock:read", "business:listLowStock:read", "business:receiveStock:replayed",
       "business:adjustStock:completed", "business:adjustStock:replayed", "business:receiveStock:idempotency_conflict",
       "business:receiveStock:version_conflict"]);
     expect(auditItems.every(item => item.actor_id === "owner-a" && item.target_hash !== "sku-1")).toBe(true);

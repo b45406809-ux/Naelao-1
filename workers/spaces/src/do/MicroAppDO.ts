@@ -3,7 +3,8 @@ import type { GadgetActorScope, GadgetScope, GadgetTier } from "@naelao/agent-sd
 import { signHmac, verifyHmac } from "@naelao/crypto";
 import { parseBoundedInteger, readBoundedRequestBytes, RequestBodyTooLargeError, verifyInternalToken } from "@naelao/http";
 import { digestExtensionManifest, validateExtensionManifest, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA,
-  validateBusinessActionInput, validateBusinessActionOutput, validateExtensionBusinessAction, type ExtensionBusinessAction } from "@naelao/agent-sdk";
+  validateBusinessActionInput, validateBusinessActionOutput, validateExtensionBusinessAction,
+  type ExtensionBusinessAction, type ListLowStockInput, type ReceiveStockInput, type AdjustStockInput } from "@naelao/agent-sdk";
 import { decodeMicroAppArchiveValue, encodeMicroAppArchiveValue, isMicroAppArchiveSnapshot,
   MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES, MAX_MICRO_APP_ARCHIVE_TABLE_ROWS, type MicroAppArchiveSnapshot } from "./microapp-archive.js";
 
@@ -430,6 +431,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     let input: ReturnType<typeof validateBusinessActionInput>;
     try { input = validateBusinessActionInput(action, rawInput); }
     catch { return { status: 400, errorCode: "business_action_input_invalid" }; }
+    if (action.operation === "inventory.listLowStock.v1")
+      return this.runListLowStockAction(action, input as ListLowStockInput, actorId);
+    const writeInput = input as ReceiveStockInput | AdjustStockInput;
     let columns: ReturnType<MicroAppDO["columns"]>;
     try { columns = this.columns(action.table); }
     catch { return { status: 503, errorCode: "business_action_schema_unavailable" }; }
@@ -439,11 +443,11 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (!idColumn || !idColumn.pk || !/^TEXT$/i.test(idColumn.type.trim()) || !quantityColumn || !/INT/i.test(quantityColumn.type)
       || !versionColumn || !/INT/i.test(versionColumn.type)) return { status: 503, errorCode: "business_action_schema_unavailable" };
     if (typeof this.ctx.storage.transactionSync !== "function") return { status: 503, errorCode: "business_action_atomicity_unavailable" };
-    const requestSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(input))))]
+    const requestSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(writeInput))))]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
-    const targetHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input.productId)))]
+    const targetHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(writeInput.productId)))]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
-    const idempotencyKeySha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input.idempotencyKey)))]
+    const idempotencyKeySha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(writeInput.idempotencyKey)))]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
     const auditOutcome = (state: string, at = Date.now()) => {
       this.ctx.storage.sql.exec("INSERT INTO gadget_action_audit(actor_id,operation,table_name,target_hash,created_at) VALUES(?,?,?,?,?)",
@@ -459,7 +463,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       this.ctx.storage.transactionSync(() => {
         const receipt = [...this.ctx.storage.sql.exec<{ actor_id: string; request_sha256: string; response_json: string }>(
           "SELECT actor_id,request_sha256,response_json FROM gadget_business_action_receipts WHERE action_id=? AND idempotency_key=?",
-          action.id, input.idempotencyKey)][0];
+          action.id, writeInput.idempotencyKey)][0];
         if (receipt) {
           if (receipt.actor_id !== actorId || receipt.request_sha256 !== requestSha256) {
             auditOutcome("idempotency_conflict"); outcome = { status: 409, errorCode: "business_action_idempotency_conflict" }; return;
@@ -472,34 +476,74 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         const count = [...this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM gadget_business_action_receipts")][0]?.count ?? 0;
         if (count >= MAX_BUSINESS_ACTION_RECEIPTS) { outcome = { status: 429, errorCode: "business_action_receipt_limit_reached" }; return; }
         const row = [...this.ctx.storage.sql.exec<{ quantity: number; version: number }>(
-          `SELECT ${quantity} AS quantity,${version} AS version FROM ${table} WHERE ${key}=? LIMIT 1`, input.productId)][0];
+          `SELECT ${quantity} AS quantity,${version} AS version FROM ${table} WHERE ${key}=? LIMIT 1`, writeInput.productId)][0];
         if (!row) { auditOutcome("record_not_found"); outcome = { status: 404, errorCode: "business_action_record_not_found" }; return; }
         if (!Number.isSafeInteger(row.quantity) || row.quantity < 0 || row.quantity > 2_147_483_647
           || !Number.isSafeInteger(row.version) || row.version < 1 || row.version > 2_147_483_646) {
           auditOutcome("record_invalid"); outcome = { status: 409, errorCode: "business_action_record_invalid" }; return;
         }
-        if (row.version !== input.expectedVersion) { auditOutcome("version_conflict"); outcome = { status: 409, errorCode: "business_action_version_conflict" }; return; }
-        const nextQuantity = "quantity" in input ? row.quantity + input.quantity : input.newQuantity, nextVersion = row.version + 1;
+        if (row.version !== writeInput.expectedVersion) { auditOutcome("version_conflict"); outcome = { status: 409, errorCode: "business_action_version_conflict" }; return; }
+        const nextQuantity = "quantity" in writeInput ? row.quantity + writeInput.quantity : writeInput.newQuantity, nextVersion = row.version + 1;
         if (nextQuantity > 2_147_483_647) { auditOutcome("quantity_overflow"); outcome = { status: 409, errorCode: "business_action_quantity_overflow" }; return; }
-        if (this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(input)).byteLength
-          + new TextEncoder().encode(JSON.stringify({ productId: input.productId, quantity: nextQuantity, version: nextVersion, replayed: false })).byteLength + 2048)) {
+        if (this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(writeInput)).byteLength
+          + new TextEncoder().encode(JSON.stringify({ productId: writeInput.productId, quantity: nextQuantity, version: nextVersion, replayed: false })).byteLength + 2048)) {
           outcome = { status: 413, errorCode: "storage_limit_exceeded" }; return;
         }
         const updated = this.ctx.storage.sql.exec(`UPDATE ${table} SET ${quantity}=?,${version}=? WHERE ${key}=? AND ${version}=?`,
-          nextQuantity, nextVersion, input.productId, input.expectedVersion);
+          nextQuantity, nextVersion, writeInput.productId, writeInput.expectedVersion);
         if (updated.rowsWritten !== 1) { auditOutcome("version_conflict"); outcome = { status: 409, errorCode: "business_action_version_conflict" }; return; }
         const data = action.operation === "inventory.receiveStock.v1"
-          ? validateBusinessActionOutput(action, { productId: input.productId, quantity: nextQuantity, version: nextVersion, replayed: false })
-          : validateBusinessActionOutput(action, { productId: input.productId, previousQuantity: row.quantity, quantity: nextQuantity, version: nextVersion, replayed: false });
+          ? validateBusinessActionOutput(action, { productId: writeInput.productId, quantity: nextQuantity, version: nextVersion, replayed: false })
+          : validateBusinessActionOutput(action, { productId: writeInput.productId, previousQuantity: row.quantity, quantity: nextQuantity, version: nextVersion, replayed: false });
         const createdAt = Date.now();
         this.ctx.storage.sql.exec(`INSERT INTO gadget_business_action_receipts(action_id,actor_id,idempotency_key,request_sha256,response_json,created_at) VALUES(?,?,?,?,?,?)`,
-          action.id, actorId, input.idempotencyKey, requestSha256, JSON.stringify(data), createdAt);
+          action.id, actorId, writeInput.idempotencyKey, requestSha256, JSON.stringify(data), createdAt);
         this.ctx.storage.sql.exec(`INSERT INTO gadget_business_action_events(action_id,actor_id,product_id,quantity_received,quantity_before,
           quantity_after,version_before,version_after,reason,idempotency_key_sha256,created_at,action_operation,quantity_delta)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          action.id, actorId, input.productId, "quantity" in input ? input.quantity : 0, row.quantity, nextQuantity, row.version, nextVersion,
-          input.reason, idempotencyKeySha256, createdAt, action.operation, nextQuantity - row.quantity);
+          action.id, actorId, writeInput.productId, "quantity" in writeInput ? writeInput.quantity : 0, row.quantity, nextQuantity, row.version, nextVersion,
+          writeInput.reason, idempotencyKeySha256, createdAt, action.operation, nextQuantity - row.quantity);
         auditOutcome("completed", createdAt);
+        outcome = { status: 200, data };
+      });
+    } catch { return { status: 503, errorCode: "business_action_storage_unavailable" }; }
+    return outcome;
+  }
+
+  private runListLowStockAction(action: ExtensionBusinessAction, input: ListLowStockInput, actorId: string): { status: number; data?: unknown; errorCode?: string } {
+    if (typeof this.ctx.storage.transactionSync !== "function") return { status: 503, errorCode: "business_action_atomicity_unavailable" };
+    let columns: ReturnType<MicroAppDO["columns"]>;
+    try { columns = this.columns(action.table); }
+    catch { return { status: 503, errorCode: "business_action_schema_unavailable" }; }
+    const idColumn = columns.find(column => column.name === action.idColumn);
+    const quantityColumn = columns.find(column => column.name === action.quantityColumn);
+    const versionColumn = columns.find(column => column.name === action.versionColumn);
+    if (!idColumn || !idColumn.pk || !/^TEXT$/i.test(idColumn.type.trim()) || !quantityColumn || !/INT/i.test(quantityColumn.type)
+      || !versionColumn || !/INT/i.test(versionColumn.type)) return { status: 503, errorCode: "business_action_schema_unavailable" };
+    const table = `"${action.table.replaceAll('"', '""')}"`;
+    const key = `"${action.idColumn.replaceAll('"', '""')}"`;
+    const quantity = `"${action.quantityColumn.replaceAll('"', '""')}"`;
+    const version = `"${action.versionColumn.replaceAll('"', '""')}"`;
+    let outcome: { status: number; data?: unknown; errorCode?: string } = { status: 503, errorCode: "business_action_storage_unavailable" };
+    try {
+      this.ctx.storage.transactionSync(() => {
+        const rows = [...this.ctx.storage.sql.exec<{ product_id: string; quantity: number; version: number }>(
+          `SELECT ${key} AS product_id,${quantity} AS quantity,${version} AS version FROM ${table}
+           WHERE ${quantity}<=? AND ${key}>? ORDER BY ${key} LIMIT ?`,
+          input.maximumQuantity, input.afterProductId, input.limit + 1)];
+        const hasMore = rows.length > input.limit;
+        const products = rows.slice(0, input.limit).map(row => ({ productId: row.product_id, quantity: row.quantity, version: row.version }));
+        let data: unknown;
+        try { data = validateBusinessActionOutput(action, { products, hasMore, nextCursor: hasMore ? products.at(-1)?.productId ?? "" : "" }); }
+        catch {
+          this.ctx.storage.sql.exec("INSERT INTO gadget_action_audit(actor_id,operation,table_name,target_hash,created_at) VALUES(?,?,?,?,?)",
+            actorId, `business:${action.id}:invalid_rows`, action.table, null, Date.now());
+          outcome = { status: 409, errorCode: "business_action_record_invalid" };
+          return;
+        }
+        this.ctx.storage.sql.exec("INSERT INTO gadget_action_audit(actor_id,operation,table_name,target_hash,created_at) VALUES(?,?,?,?,?)",
+          actorId, `business:${action.id}:read`, action.table, null, Date.now());
+        this.ctx.storage.sql.exec("DELETE FROM gadget_action_audit WHERE id <= (SELECT COALESCE(MAX(id),0)-1000 FROM gadget_action_audit)");
         outcome = { status: 200, data };
       });
     } catch { return { status: 503, errorCode: "business_action_storage_unavailable" }; }
@@ -869,7 +913,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         if (businessActions.length > 0) {
           const permissions = source && Array.isArray(source.permissions) ? source.permissions : [];
           const scopedPermission = businessActions.every(action => permissions.some(permission => permission.scope === body.scope
-            && Array.isArray(permission.actions) && permission.actions.includes("write") && permission.resource === action.permission));
+            && Array.isArray(permission.actions) && permission.actions.includes(action.effects === "read_only" ? "read" : "write")
+            && permission.resource === action.permission));
           const legacyPermission = businessActions.every(action => manifest.declaredPermissions?.includes(action.permission));
           if (!manifest.capabilityRequirements?.includes("extension.gadget.business_action")
             || !(scopedPermission || legacyPermission)) return Response.json({ error: "gadget_business_action_permission_missing" }, { status: 403 });

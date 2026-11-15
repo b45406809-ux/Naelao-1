@@ -1,40 +1,42 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (§11.5 UI SDK evaluation and isolated POC; pending push)
+## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pending push)
 
-The published Vercel UI SDK packages were checked against npm and installed into an isolated app only.
-`@ui-sdk/react@0.1.0-beta.3` is Apache-2.0 and requires React/React DOM >=19 and `@types/react` >=19.2.10;
-Shell remains React 18. The GitHub beta.4 source is not published (npm E404). The Apache-2.0
-`@ui-sdk/web@0.1.0-beta.3` is a supported custom-element path with only `@ui-sdk/core@^0.1.0-beta.3` as
-peer. `apps/ui-sdk-poc` pins beta.3 and does not change Shell or enable a product integration.
+Implemented signed `inventory.listLowStock.v1` through the existing MicroApp runtime. Owner/admin,
+Space/Project, active installation, exact release pin, input/output schema, ordered 100-row maximum,
+and bounded cursor checks are reused. The same handler serves authenticated HTTP and assistant/MCP.
+Each accepted read records an audit row but creates no write receipt/event and does not mutate Gadget
+data. Signed Space-shared validation accepts the action only with the matching primitive-scoped `read`
+grant. The owner/admin Shell panel previews the exact bounded input and requires a separate confirmation.
 
-The isolated POC has synthetic inventory, an agent-settable low-stock filter and a draft voice/greeting/
-business-hours form. Its allow policy limits controls, values and greeting length; a native confirmation
-precedes each agent edit. The owner sees exact draft values and explicit unknown provider-cost wording before
-local approval. No model, backend, provider, tenant identity, production endpoint, or cross-frame authority is
-connected. §11.5 remains PARTIAL for server-authorized reads, host/iframe identity and grants, deployed
-multi-user, accessibility/screen-reader acceptance, conflict/freshness, measured latency/tokens, and any real
-provider quote. The SDK is not adopted into Shell.
+The Vercel UI SDK POC calls the Agent SDK business-action client inside its iframe. Existing
+`MicroAppCanvas` source/origin checks forward those requests to the authenticated Space/Project route.
+Standalone use stays synthetic; embedded failures show no fixture rows. The Chromium bridge check used
+a local fake parent and therefore proves frame/client behavior only, not deployed host identity or live
+authorization. §11.5 remains PARTIAL; the beta is still isolated from Shell.
 
-Local verification: policy checks **4/4**; Vite build **99.76 kB JS / 35.55 kB gzip**; Chromium at 390px and
-320px verified component snapshot, keyboard-confirmed filter (4 rows to 2), exact approved draft values,
-unlisted-value refusal, owner review/unknown-cost text, canceled edit preserving the old value, same-origin
-requests only, no horizontal overflow and no browser errors. These are local synthetic checks, not deployed,
-screen-reader, cross-frame, provider, benchmark or live acceptance. No cost/performance claims. Rollouts stay
-disabled; preserve `infra/scripts/__pycache__/`.
+Verification: SDK tests **7/7** and typecheck; Spaces focused suites **70/70** and typecheck; Shell
+business-action panel tests **5/5** and typecheck; POC bridge tests **3/3**; Vite build **117.70 kB JS /
+41.34 kB gzip**. Chromium checked standalone widths 390px/320px and a sandboxed opaque iframe: owner
+confirmation, bounded host `list` then `listLowStock`, two mocked host rows only, no page errors and no
+horizontal overflow. `git diff --check` passed. No deployed, live provider, multi-user, screen-reader,
+performance, or production acceptance ran. The first build script tried to invoke pnpm workspace install
+and remove the shared `node_modules` tree; it stopped without changing that tree. The direct SDK
+TypeScript build passed. Preserve the pre-existing untracked `infra/scripts/__pycache__/` and keep all
+rollout flags disabled.
 
-Previously pushed `10a3c9a0` provides signed receiveStock/adjustStock through host HTTP and assistant/MCP;
-`49efa6db`/`eb53c39c` provide tier-aware Space and Project storage status. Those local action contracts are
-write-only today; the §11.5 inventory preview still uses static fixture rows. P05 Space-shared provider
-authority and P04 exact-user archive remain unresolved host contracts, not credential gates. Both active plans
-and their requirement ledgers continue unchanged.
+Fetched `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596`. Both
+active plan files were compared with it: the active platform plan already has its microapp/UI SDK/voice
+requirements; the branch differs only in stale metadata and P04 wording. No requirements were missing
+and no branch merge occurred. The active P04 source reconciliation remains authoritative. Backup tip
+was `fb16c754` at pre-checkpoint fetch.
 
-Exact next action: implement a bounded, read-only `inventory.listStock.v1` action in the signed Gadget contract
-and MicroAppDO. Reuse current actor, tenant/Space/Project, active installation/release pin and permission
-checks; expose the same schema-validated read via authenticated HTTP and assistant/MCP, audit it, and test
-denied/stale/malformed cases plus unchanged persistence. Then wire the inventory UI filter to that path and
-continue the next independent P01–P24/S2–S9/U01–U12 code gap. Do not infer iframe, multi-user, provider or live
-acceptance from the POC.
+Exact next action: implement owner-controlled, per-Project Knowledge selection for Space-shared channel
+extensions over existing owner-published collections. Persist selection by Space, Project, installation
+and exact publication; add owner/admin list/grant/revoke routes limited to current published IDs; enforce
+the selection at the Agents host by intersecting it with the current signed manifest before external
+search. Default new grants to off and preserve existing project-scoped access. Keep P05 provider-account
+sharing separately gated, then resume remaining P01–P24/S2–S9/U01–U12 gaps.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 
