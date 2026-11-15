@@ -1,6 +1,7 @@
 import { receiveAssistantEmail } from "./communications/inbound.js";
 import { registerPhoneWebhooks } from "./communications/phone-webhooks.js";
 import { registerTelnyxWebhook } from "./communications/telnyx-webhook.js";
+import { handleTelnyxExtensionMediaStream } from "./communications/telnyx-extension-media.js";
 import { handleTelnyxMediaStream } from "./voice/telnyx-media-bridge.js";
 import { SCHEDULED_JOB_RUN_HISTORY_LIMIT } from "./scheduled-job-constants.js";
 import { registerCommunicationRoutes } from "./communications/routes.js";
@@ -491,6 +492,9 @@ export interface AgentsEnv extends Cloudflare.Env {
   /** Naelao-owned Telnyx carrier account. Configure only after the managed-carrier contract,
    * regulatory registration, and customer price schedule are approved. */
   TELNYX_MANAGED_ENABLED?: string;
+  /** Explicit rollout gate for caller-consented Telnyx extension streaming. Keep false until
+   * host STT/TTS admission, speech budgets, interruption, timeout, cleanup and live acceptance pass. */
+  TELNYX_EXTENSION_STREAMING_ENABLED?: string;
   /** Immutable owner-confirmed retail rate schedule identifier for managed Telnyx service. */
   TELNYX_MANAGED_PRICE_VERSION?: string;
   TELNYX_MANAGED_API_KEY?: string;
@@ -1321,6 +1325,9 @@ registerPhoneWebhooks(app);
 registerTelnyxWebhook(app);
 app.get("/assistant-phone/telnyx-media/:id/:ticket", c => handleTelnyxMediaStream(
   c.req.raw, c.env, c.req.param("id"), c.req.param("ticket"),
+));
+app.get("/assistant-phone/telnyx-extension-media/:bindingId/:ticket", c => handleTelnyxExtensionMediaStream(
+  c.req.raw, c.env, c.req.param("bindingId"), c.req.param("ticket"),
 ));
 
 // Product sessions authorize a person, not access to every conversation in a product. Apply

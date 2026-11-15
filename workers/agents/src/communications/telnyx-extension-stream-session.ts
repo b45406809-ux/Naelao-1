@@ -159,3 +159,29 @@ export async function claimTelnyxExtensionStreamTicket(db: D1Database, bindingId
     handlerSha256: session.handler_sha256, settingsRevision: session.settings_revision as number | null,
     expiresAt: session.expires_at, ticketClaimedAt: session.ticket_claimed_at };
 }
+
+/** Recheck the complete installed-code, active-call, line and tenant pin when Telnyx sends its
+ *  websocket `start` frame. Ticket admission alone may have happened before a revocation. */
+export async function isTelnyxExtensionStreamSessionCurrent(db: D1Database, session: ClaimedExtensionStreamSession,
+  now = Math.floor(Date.now() / 1000)): Promise<boolean> {
+  const row = await db.prepare(`SELECT 1 AS ok FROM assistant_telnyx_extension_stream_sessions s
+    JOIN assistant_telnyx_extension_calls c ON c.call_control_id=s.call_control_id AND c.binding_id=s.binding_id
+    JOIN assistant_phone_extension_handlers h ON h.binding_id=c.binding_id
+    JOIN assistant_phone_bindings b ON b.id=s.binding_id
+    JOIN assistant_communication_identities i ON i.id=b.identity_id
+    WHERE s.session_id=? AND s.state='claimed' AND s.consent_state='granted' AND s.expires_at>?
+      AND c.state IN ('answering','processing','gathering') AND c.expires_at>?
+      AND c.settings_pinned=1 AND c.extension_installation_id=s.extension_installation_id
+      AND c.handler_sha256=s.handler_sha256 AND c.settings_revision IS s.settings_revision
+      AND h.status='active' AND h.installation_id=c.extension_installation_id AND h.handler_sha256=c.handler_sha256
+      AND b.provider='telnyx' AND b.payer='byo' AND b.purpose='extension' AND b.status='active'
+      AND i.status='active' AND i.tenant_id=s.tenant_id AND i.space_id=s.space_id AND i.project_id IS s.project_id`)
+    .bind(session.sessionId, now, now).first<{ ok: number }>();
+  return row?.ok === 1;
+}
+
+export async function markTelnyxExtensionStreamIndeterminate(db: D1Database, sessionId: string,
+  now = Math.floor(Date.now() / 1000)): Promise<void> {
+  await db.prepare(`UPDATE assistant_telnyx_extension_stream_sessions SET state='indeterminate',updated_at=?
+    WHERE session_id=? AND state='claimed'`).bind(now, sessionId).run();
+}

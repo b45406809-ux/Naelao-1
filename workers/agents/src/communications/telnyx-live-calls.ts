@@ -10,6 +10,12 @@ import { observeTelnyxVoiceCallCost } from "./telnyx-voice-cost.js";
 import { claimLiveCall, liveCallAllowed, liveCallTicket, liveCodeHash, type LiveCall } from "./live-calls.js";
 import { phonePublicOrigin } from "./phone-provider.js";
 import { validateVoiceChannelResponse } from "@naelao/agent-sdk";
+import {
+  createTelnyxExtensionStreamSession,
+  denyTelnyxExtensionStreamConsent,
+  grantTelnyxExtensionStreamConsent,
+  type ExtensionStreamSessionPin,
+} from "./telnyx-extension-stream-session.js";
 
 const internalCallSid = async (bindingId: string, callControlId: string) => {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${bindingId}:${callControlId}`)));
@@ -153,6 +159,20 @@ type ExtensionVoiceEvent = { eventId: string; eventType: string; payload: Record
 type ExtensionCall = { call_control_id: string; binding_id: string; caller: string; state: string; turn_count: number; expires_at: number;
   extension_installation_id: string | null; handler_sha256: string | null; settings_revision: number | null; settings_pinned: number };
 
+function extensionStreamPin(identity: CommunicationIdentity, binding: AssistantPhoneBinding, call: ExtensionCall): ExtensionStreamSessionPin {
+  if (!call.extension_installation_id || !call.handler_sha256 || call.settings_pinned !== 1)
+    throw new Error("telnyx_extension_stream_pin_unavailable");
+  return { tenantId: identity.tenant_id, spaceId: identity.space_id, projectId: identity.project_id,
+    bindingId: binding.id, callControlId: call.call_control_id, installationId: call.extension_installation_id,
+    handlerSha256: call.handler_sha256, settingsRevision: call.settings_revision, expiresAt: call.expires_at };
+}
+
+async function pendingExtensionStreamSession(env: AgentsEnv, bindingId: string, callControlId: string) {
+  return env.PLATFORM_DB.prepare(`SELECT session_id FROM assistant_telnyx_extension_stream_sessions
+    WHERE binding_id=? AND call_control_id=? AND consent_state='pending' AND state='consent_pending'`)
+    .bind(bindingId, callControlId).first<{ session_id: string }>();
+}
+
 async function extensionEventId(bindingId: string, callControlId: string, providerEventId: string) {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${bindingId}:${callControlId}:${providerEventId}`)));
   return `telnyx-call-${[...digest.slice(0, 16)].map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
@@ -264,6 +284,9 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
     }
     await env.PLATFORM_DB.prepare("DELETE FROM assistant_telnyx_extension_calls WHERE updated_at<? AND state IN ('ended','indeterminate')")
       .bind(now - 7 * 86_400).run();
+    await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_extension_stream_sessions SET state='ended',consent_state='revoked',updated_at=?
+      WHERE binding_id=? AND state IN ('consent_pending','ready','claimed') AND expires_at<=?`)
+      .bind(now, binding.id, now).run();
     const inserted = await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_telnyx_extension_calls(
         call_control_id,binding_id,caller,state,turn_count,started_at,expires_at,created_at,updated_at,extension_installation_id,handler_sha256,settings_revision,settings_pinned)
       SELECT ?,?,?,'answering',0,?,?,?,?,?,?,?,1
@@ -296,12 +319,27 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
       await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_quota"));
       return { accepted: true, rejected: "daily_call_limit" };
     }
+    const admittedCall: ExtensionCall = { call_control_id: callControlId, binding_id: binding.id, caller, state: row.state,
+      turn_count: 0, expires_at: now + policy.maxCallSeconds, extension_installation_id: row.extension_installation_id,
+      handler_sha256: row.handler_sha256, settings_revision: row.settings_revision, settings_pinned: row.settings_pinned };
+    if (env.TELNYX_EXTENSION_STREAMING_ENABLED === "true" && policy.allowTelnyxExtensionVoice === true) {
+      try { await createTelnyxExtensionStreamSession(env.PLATFORM_DB, extensionStreamPin(identity, binding, admittedCall), now); }
+      catch {
+        await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='indeterminate',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='answering'")
+          .bind(now, callControlId, binding.id).run();
+        await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_consent_session_unavailable"));
+        return { accepted: true, ended: true, reason: "extension_consent_session_unavailable" };
+      }
+    }
     try {
       await telnyx.callAction(callControlId, "answer", commandId(event.eventId, "extension_answer"));
       return { accepted: true, extension_call: true };
     } catch (error) {
       await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='indeterminate',updated_at=? WHERE call_control_id=? AND state='answering'")
         .bind(now, callControlId).run();
+      await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_extension_stream_sessions SET state='ended',consent_state='revoked',updated_at=?
+        WHERE binding_id=? AND call_control_id=? AND state='consent_pending'`)
+        .bind(now, binding.id, callControlId).run();
       throw error;
     }
   }
@@ -318,6 +356,9 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
     if (duration !== null && (!Number.isSafeInteger(duration) || duration < 0 || duration > 86_400)) throw new Error("telnyx_call_duration_invalid");
     await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='ended',duration_seconds=?,updated_at=? WHERE call_control_id=? AND binding_id=?")
       .bind(duration, now, callControlId, binding.id).run();
+    await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_extension_stream_sessions SET state='ended',consent_state='revoked',updated_at=?
+      WHERE binding_id=? AND call_control_id=? AND state IN ('consent_pending','ready','claimed')`)
+      .bind(now, binding.id, callControlId).run();
     return { accepted: true, ended: true };
   }
   if (existing.settings_pinned !== 1 || !existing.extension_installation_id || !existing.handler_sha256) {
@@ -328,6 +369,32 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
   }
   if (event.eventType === "call.answered") {
     if (existing.state !== "answering") return { accepted: true, duplicate: true };
+    const consentSession = await pendingExtensionStreamSession(env, binding.id, callControlId);
+    if (consentSession && env.TELNYX_EXTENSION_STREAMING_ENABLED === "true"
+      && validatePhonePolicy(JSON.parse(binding.policy_json)).allowTelnyxExtensionVoice === true) {
+      const claimed = await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='gathering',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='answering' AND expires_at>?")
+        .bind(now, callControlId, binding.id, now).run();
+      if (!claimed.meta.changes) return { accepted: true, rejected: "extension_call_expired" };
+      try {
+        await telnyx.callAction(callControlId, "gather_using_speak", commandId(event.eventId, "extension_voice_consent"), {
+          payload: "This extension can accept live voice transcription. Press 1 to consent for this call, or press 2 to continue with keypad only. If voice processing is unavailable, the keypad menu will continue.",
+          voice: "AWS.Polly.Joanna", language: "en-US", minimum_digits: 1, maximum_digits: 1, valid_digits: "12",
+          timeout_millis: Math.min(12_000, Math.max(1_000, (existing.expires_at - now) * 1000)),
+          inter_digit_timeout_millis: 2_000,
+        });
+        return { accepted: true, awaiting_voice_consent: true };
+      } catch (error) {
+        await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='indeterminate',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='gathering'")
+          .bind(now, callControlId, binding.id).run();
+        await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_extension_stream_sessions SET state='ended',consent_state='revoked',updated_at=?
+          WHERE binding_id=? AND call_control_id=? AND state='consent_pending'`).bind(now, binding.id, callControlId).run();
+        throw error;
+      }
+    }
+    if (consentSession) {
+      await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_extension_stream_sessions SET state='ended',consent_state='revoked',updated_at=?
+        WHERE binding_id=? AND call_control_id=? AND state='consent_pending'`).bind(now, binding.id, callControlId).run();
+    }
     const claimed = await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='processing',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='answering' AND expires_at>? ")
       .bind(now, callControlId, binding.id, now).run();
     if (!claimed.meta.changes) return { accepted: true, rejected: "extension_call_expired" };
@@ -345,6 +412,38 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
     return applyExtensionVoicePlan(env, binding, telnyx, callControlId, event.eventId, result, now);
   }
   if (event.eventType === "call.gather.ended") {
+    const consentSession = await pendingExtensionStreamSession(env, binding.id, callControlId);
+    if (consentSession && existing.state === "gathering") {
+      const digits = payload.digits;
+      const explicitAccept = digits === "1" && payload.status !== "call_hangup"
+        && env.TELNYX_EXTENSION_STREAMING_ENABLED === "true"
+        && validatePhonePolicy(JSON.parse(binding.policy_json)).allowTelnyxExtensionVoice === true;
+      if (explicitAccept) {
+        await grantTelnyxExtensionStreamConsent(env.PLATFORM_DB, extensionStreamPin(identity, binding, existing), consentSession.session_id, now);
+      } else {
+        await denyTelnyxExtensionStreamConsent(env.PLATFORM_DB, identity, binding.id, callControlId, now);
+      }
+      if (payload.status === "call_hangup") {
+        await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='ended',updated_at=? WHERE call_control_id=? AND binding_id=?")
+          .bind(now, callControlId, binding.id).run();
+        return { accepted: true, ended: true, voice_consent: "not_granted" };
+      }
+      const claimed = await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='processing',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='gathering' AND expires_at>? ")
+        .bind(now, callControlId, binding.id, now).run();
+      if (!claimed.meta.changes) return { accepted: true, rejected: "extension_call_not_active" };
+      let result: unknown;
+      try {
+        result = await callExtension(env, binding, identity, existing.caller, callControlId, "call.received", event.eventId, {}, {
+          installationId: existing.extension_installation_id!, handlerSha256: existing.handler_sha256!, settingsRevision: existing.settings_revision,
+        });
+      } catch {
+        await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='indeterminate',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='processing'")
+          .bind(now, callControlId, binding.id).run();
+        await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_dispatch_unavailable"));
+        return { accepted: true, ended: true, reason: "extension_dispatch_unavailable" };
+      }
+      return applyExtensionVoicePlan(env, binding, telnyx, callControlId, event.eventId, result, now);
+    }
     if (existing.state === "finishing") {
       await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='ended',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='finishing'")
         .bind(now, callControlId, binding.id).run();

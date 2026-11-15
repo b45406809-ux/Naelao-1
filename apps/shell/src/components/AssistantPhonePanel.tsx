@@ -15,6 +15,7 @@ interface Phone {
   policy: {
     allowWebsiteVerification?: boolean;
     allowSpeechInput?: boolean;
+    allowTelnyxExtensionVoice?: boolean;
     maxDailyActions: number;
     maxDailyInboundMessages: number;
     maxDailyInboundCalls: number;
@@ -50,6 +51,7 @@ type RecentExtensionCall = {
   started_at: number;
   duration_seconds: number | null;
   caller_hint: string | null;
+  voice_consent_state?: "pending" | "granted" | "denied" | "revoked" | null;
   cost_report: {
     status: "reported" | "unavailable" | "not_linked";
     provider_cost_micros: number | null;
@@ -89,7 +91,7 @@ export function AssistantPhonePanel({
       telnyx_webhook_url?: string | null;
       telnyx_order?: { operation_id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null } | null;
       telnyx_release?: { operation_id: string; status: string; phone_number: string; next_reconcile_at: string | null; error_code: string | null } | null;
-      extension_lines?:Array<{id:string;provider:"twilio"|"telnyx";phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
+      extension_lines?:Array<{id:string;provider:"twilio"|"telnyx";phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string;policy:{allowTelnyxExtensionVoice?:boolean}|null}>;
       recent_telnyx_extension_calls?: RecentExtensionCall[];
       recent_twilio_extension_calls?: RecentTwilioExtensionCall[];
       phone_handler_candidates?: PhoneHandlerCandidate[];
@@ -181,6 +183,7 @@ export function AssistantPhonePanel({
           handler_sha256: string | null;
           handler_status: string | null;
           status: string;
+          policy: { allowTelnyxExtensionVoice?: boolean } | null;
         }>;
         recent_telnyx_extension_calls?: RecentExtensionCall[];
         recent_twilio_extension_calls?: RecentTwilioExtensionCall[];
@@ -388,6 +391,14 @@ export function AssistantPhonePanel({
               void act("phone-handler", { binding_id: line.id, installation_id: assignment.installation, handler_sha256: assignment.digest, confirm: true });
           }}>Assign or update extension</button>{" "}
           <button type="button" onClick={() => { if (window.confirm("Detach this number and restore its prior carrier callbacks?")) void act("phone-detach", { binding_id: line.id, confirm: true }); }}>Detach number</button>
+          {line.provider === "telnyx" && line.policy && <label style={{ display: "block", marginTop: 8 }}>
+            <input type="checkbox" checked={line.policy.allowTelnyxExtensionVoice === true} onChange={(event) => {
+              if (event.target.checked && !window.confirm("Allow caller-consented voice processing for this extension line when Telnyx streaming is accepted? Callers must explicitly consent. Audio streaming is currently disabled; calls continue to use keypad input.")) return;
+              void act("phone-policy", { binding_id: line.id,
+                policy: { ...line.policy, allowTelnyxExtensionVoice: event.target.checked } });
+            }} />{" "}
+            Permit future caller-consented voice processing (Telnyx streaming currently disabled)
+          </label>}
           {line.status === "active" && line.handler_status === "active" && <div>
             <label>Test event <select value={simulationType} onChange={event => setSimulationTypes(current => ({ ...current, [line.id]: event.target.value as "call.received" | "call.digits" | "call.speech" | "transcript.final" }))}>
               <option value="call.received">Start call greeting</option>
@@ -448,7 +459,7 @@ export function AssistantPhonePanel({
                     ? "Provider cost report unavailable"
                     : "No linked provider report · amount unknown, not zero";
                 return <li key={`${call.started_at}:${index}`}>
-                  {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {call.settings_pinned ? call.settings_revision === null ? "no settings schema at call start" : `published settings r${call.settings_revision}` : "settings revision unavailable"} · {costLabel}
+                  {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {call.settings_pinned ? call.settings_revision === null ? "no settings schema at call start" : `published settings r${call.settings_revision}` : "settings revision unavailable"} · voice consent {call.voice_consent_state ?? "not requested"} · {costLabel}
                 </li>;
               })}</ol>
             </section>;

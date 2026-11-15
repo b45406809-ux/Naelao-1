@@ -3,7 +3,7 @@ import { fixture, scope } from "../../../../tests/fixtures/assistant-communicati
 import { ensureIdentity } from "./core.js";
 import {
   claimTelnyxExtensionStreamTicket, createTelnyxExtensionStreamSession,
-  denyTelnyxExtensionStreamConsent, grantTelnyxExtensionStreamConsent,
+  denyTelnyxExtensionStreamConsent, grantTelnyxExtensionStreamConsent, isTelnyxExtensionStreamSessionCurrent,
 } from "./telnyx-extension-stream-session.js";
 
 async function admittedCall() {
@@ -42,11 +42,16 @@ describe("Telnyx extension stream session tickets", () => {
     expect(stored?.media_ticket_sha256).not.toBe(ticket);
 
     expect(await claimTelnyxExtensionStreamTicket(f.env.PLATFORM_DB, "another-line", ticket, now)).toBeNull();
-    await expect(claimTelnyxExtensionStreamTicket(f.env.PLATFORM_DB, pin.bindingId, ticket, now)).resolves.toMatchObject({
+    const claimed = await claimTelnyxExtensionStreamTicket(f.env.PLATFORM_DB, pin.bindingId, ticket, now);
+    expect(claimed).toMatchObject({
       tenantId: scope.tenantId, spaceId: scope.spaceId, bindingId: pin.bindingId, callControlId: pin.callControlId,
       installationId: pin.installationId, handlerSha256: pin.handlerSha256, settingsRevision: 7,
       sessionId: session.sessionId, callRef: session.callRef,
     });
+    expect(claimed && await isTelnyxExtensionStreamSessionCurrent(f.env.PLATFORM_DB, claimed, now)).toBe(true);
+    await f.db.prepare("UPDATE assistant_phone_extension_handlers SET handler_sha256=? WHERE binding_id=?")
+      .bind("b".repeat(64), pin.bindingId).run();
+    expect(claimed && await isTelnyxExtensionStreamSessionCurrent(f.env.PLATFORM_DB, claimed, now)).toBe(false);
     expect(await claimTelnyxExtensionStreamTicket(f.env.PLATFORM_DB, pin.bindingId, ticket, now)).toBeNull();
   });
 
