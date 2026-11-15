@@ -132,6 +132,46 @@ describe("Telnyx live call command contract", () => {
     expect(await f.db.prepare("SELECT id FROM assistant_live_calls").first()).toBeNull();
   });
 
+  it("rejects public extension calls atomically at the per-binding concurrency ceiling", async () => {
+    const f = fixture();
+    f.fetch.mockImplementation(async (request: Request) => request.url.includes("assistant-access")
+      ? Response.json({ effective_role: "owner" })
+      : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
+    const identity = await ensureIdentity(f.env, scope);
+    const pair = generateKeyPairSync("ed25519");
+    const publicKey = pair.publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
+    f.env.CREDENTIALS_WORKER = { fetch: vi.fn(async () => Response.json({ value: JSON.stringify({
+      apiKey: "test-api-key-123456", publicKey, verifiedNumberId: "12345", verifiedPhoneNumber: "+14155550100",
+    }) })) } as unknown as Fetcher;
+    await f.db.prepare("INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,phone_number,policy_json,status) VALUES(?,?,'extension','byo','telnyx','account','12345','+14155550100',?,'active')")
+      .bind("concurrency-extension", identity.id, JSON.stringify(defaultPhonePolicy)).run();
+    await f.db.prepare("INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status) VALUES('concurrency-extension','ext-1',?,'active')")
+      .bind("a".repeat(64)).run();
+    const now = Math.floor(Date.now() / 1000);
+    for (let index = 0; index < 5; index++) {
+      await f.db.prepare(`INSERT INTO assistant_telnyx_extension_calls(call_control_id,binding_id,caller,state,turn_count,
+        started_at,expires_at,created_at,updated_at,extension_installation_id,handler_sha256,settings_revision,settings_pinned)
+        VALUES(?,?,'+14155550101','answering',0,?,?,?,?,'ext-1',?,0,1)`)
+        .bind(`active-${index}`, "concurrency-extension", now, now + 120, now, now, "a".repeat(64)).run();
+    }
+    f.env.AGENTS_WORKER = { fetch: vi.fn(async () => Response.json({ settings_revision: 0 })) } as unknown as Fetcher;
+    const carrier = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: { result: "accepted" } }));
+    vi.stubGlobal("fetch", carrier);
+    const binding = await f.db.prepare("SELECT * FROM assistant_phone_bindings WHERE id='concurrency-extension'").first<AssistantPhoneBinding>();
+
+    const result = await dispatchTelnyxVoiceEvent(f.env, binding!, identity, {
+      eventId: "at-cap", eventType: "call.initiated", payload: {
+        call_control_id: "new-call", direction: "incoming", from: "+14155550102", to: "+14155550100",
+      },
+    });
+
+    expect(result).toMatchObject({ accepted: true, rejected: "extension_concurrency_limit" });
+    expect(await f.db.prepare("SELECT COUNT(*) AS count FROM assistant_telnyx_extension_calls WHERE binding_id='concurrency-extension'").first())
+      .toEqual({ count: 5 });
+    expect(String(carrier.mock.calls.at(-1)?.[0])).toContain("/actions/hangup");
+    expect(JSON.parse(String(carrier.mock.calls.at(-1)?.[1]?.body))).toMatchObject({ command_id: expect.stringContaining("extension_concurrency_limit") });
+  });
+
   it("hangs up extension responses that request unsupported speech collection", async () => {
     const f = fixture();
     f.fetch.mockImplementation(async (request: Request) => request.url.includes("assistant-access")

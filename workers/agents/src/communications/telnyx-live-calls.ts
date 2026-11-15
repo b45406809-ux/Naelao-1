@@ -16,6 +16,9 @@ const internalCallSid = async (bindingId: string, callControlId: string) => {
   return `CA${[...digest.slice(0, 16)].map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
 };
 const callIdPattern = /^(?:v\d+:)?[A-Za-z0-9_+=/-]{1,500}$/;
+// Public extension calls share an external number and speech/runtime budget. Keep a host-wide
+// per-binding ceiling until the published extension settings contract exposes an owner limit.
+const maxConcurrentTelnyxExtensionCalls = 5;
 function e164(value: unknown): string | null {
   const phone = typeof value === "string" ? value : value && typeof value === "object" ? (value as { phone_number?: unknown }).phone_number : null;
   return typeof phone === "string" && /^\+[1-9]\d{7,14}$/.test(phone) ? phone : null;
@@ -265,13 +268,20 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
         call_control_id,binding_id,caller,state,turn_count,started_at,expires_at,created_at,updated_at,extension_installation_id,handler_sha256,settings_revision,settings_pinned)
       SELECT ?,?,?,'answering',0,?,?,?,?,?,?,?,1
       FROM assistant_phone_extension_handlers h
-      WHERE h.binding_id=? AND h.status='active' AND h.installation_id=? AND h.handler_sha256=?`)
+      WHERE h.binding_id=? AND h.status='active' AND h.installation_id=? AND h.handler_sha256=?
+        AND (SELECT COUNT(*) FROM assistant_telnyx_extension_calls c
+          WHERE c.binding_id=? AND c.state!='ended') < ?`)
       .bind(callControlId, binding.id, caller, now, now + policy.maxCallSeconds, now, now, handler.installation_id,
-        handler.handler_sha256, settingsRevision, binding.id, handler.installation_id, handler.handler_sha256).run();
+        handler.handler_sha256, settingsRevision, binding.id, handler.installation_id, handler.handler_sha256,
+        binding.id, maxConcurrentTelnyxExtensionCalls).run();
     const row = await env.PLATFORM_DB.prepare("SELECT binding_id,caller,state,extension_installation_id,handler_sha256,settings_revision,settings_pinned FROM assistant_telnyx_extension_calls WHERE call_control_id=?")
       .bind(callControlId).first<{ binding_id: string; caller: string; state: string; extension_installation_id: string | null; handler_sha256: string | null; settings_revision: number | null; settings_pinned: number }>();
     if (!inserted.meta.changes) {
       if (row?.binding_id === binding.id && row.caller === caller) return { accepted: true, duplicate: true };
+      if (!row) {
+        await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_concurrency_limit"));
+        return { accepted: true, rejected: "extension_concurrency_limit" };
+      }
       await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_handler_changed"));
       return { accepted: true, rejected: "extension_handler_changed_during_admission" };
     }
