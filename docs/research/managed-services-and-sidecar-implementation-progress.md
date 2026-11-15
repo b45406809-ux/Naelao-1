@@ -1,31 +1,40 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (§11.2 actions and §11.4 storage status; pushed)
+## Latest checkpoint — 2026-11-15 (§11.5 UI SDK evaluation and isolated POC; pending push)
 
-Pushed 10a3c9a04b7ddb8398637085380b05058f41c6fc adds signed inventory.adjustStock.v1 beside receiveStock.
-Both share the owner/admin human HTTP and assistant/MCP path; schemas, active installation/release pin, CAS,
-idempotency, audit and generic-CRUD protection are host-enforced. Adjustment sets an exact nonnegative
-count. Event migration backfills receives; exact-old-hash archive restore converts legacy rows safely.
-Pushed 49efa6db41265a700e48ddf335953ff827452795 adds the Space-shared tier-3 SQLite usage/cap panel. Pushed eb53c39ca185413e67f220a2e257d2e003ad53b7 adds Project-bound
-Gadget usage through the signed installation list and Project-scoped route; only owner/admin can read, and
-inactive, foreign-app or foreign-Project actors are rejected.
+The published Vercel UI SDK packages were checked against npm and installed into an isolated app only.
+`@ui-sdk/react@0.1.0-beta.3` is Apache-2.0 and requires React/React DOM >=19 and `@types/react` >=19.2.10;
+Shell remains React 18. The GitHub beta.4 source is not published (npm E404). The Apache-2.0
+`@ui-sdk/web@0.1.0-beta.3` is a supported custom-element path with only `@ui-sdk/core@^0.1.0-beta.3` as
+peer. `apps/ui-sdk-poc` pins beta.3 and does not change Shell or enable a product integration.
 
-Local evidence: SDK business-actions 5/5; Spaces action/MCP 25/25 and route/runtime 50/50; Shell
-action/storage 6/6 and storage caller/manifest 4/4; SDK/Spaces/Shell typechecks and diff check. These are
-local mocks/SQLite, not browser, deployed service or provider/live acceptance. All three code commits are
-pushed. Section 11.2 has two local inventory examples; generalized approvals, paid/external effects and
-other domains remain uncoded/contract-dependent. Project-bound tiers are 2/3; user-private tier 1 has no
-owner-readable exact-user caller and remains private.
+The isolated POC has synthetic inventory, an agent-settable low-stock filter and a draft voice/greeting/
+business-hours form. Its allow policy limits controls, values and greeting length; a native confirmation
+precedes each agent edit. The owner sees exact draft values and explicit unknown provider-cost wording before
+local approval. No model, backend, provider, tenant identity, production endpoint, or cross-frame authority is
+connected. §11.5 remains PARTIAL for server-authorized reads, host/iframe identity and grants, deployed
+multi-user, accessibility/screen-reader acceptance, conflict/freshness, measured latency/tokens, and any real
+provider quote. The SDK is not adopted into Shell.
 
-The fetched plan branch origin/plan/microapps-ui-sdk-voice at df3386257262a88888d647daa4d10f3af2ff9596 adds
-no requirements beyond sections 9–11 already copied; no merge occurred. P05 Space-shared provider authority
-is a genuine beneficiary/payer/sharing/revocation contract gap, not credentials. P04 exact-user archive also
-lacks an authenticated user identity caller.
+Local verification: policy checks **4/4**; Vite build **99.76 kB JS / 35.55 kB gzip**; Chromium at 390px and
+320px verified component snapshot, keyboard-confirmed filter (4 rows to 2), exact approved draft values,
+unlisted-value refusal, owner review/unknown-cost text, canceled edit preserving the old value, same-origin
+requests only, no horizontal overflow and no browser errors. These are local synthetic checks, not deployed,
+screen-reader, cross-frame, provider, benchmark or live acceptance. No cost/performance claims. Rollouts stay
+disabled; preserve `infra/scripts/__pycache__/`.
 
-Rollouts remain disabled; preserve infra/scripts/__pycache__/. Exact next action: evaluate §11.5's optional
-Vercel UI SDK from its exact package, license, React peer dependency, security and accessibility evidence.
-Shell is React 18; keep it unchanged. Implement the synthetic-data POC only if a supported pinned
-integration works in isolation; otherwise document why and move to another independent S/U/P code gap.
+Previously pushed `10a3c9a0` provides signed receiveStock/adjustStock through host HTTP and assistant/MCP;
+`49efa6db`/`eb53c39c` provide tier-aware Space and Project storage status. Those local action contracts are
+write-only today; the §11.5 inventory preview still uses static fixture rows. P05 Space-shared provider
+authority and P04 exact-user archive remain unresolved host contracts, not credential gates. Both active plans
+and their requirement ledgers continue unchanged.
+
+Exact next action: implement a bounded, read-only `inventory.listStock.v1` action in the signed Gadget contract
+and MicroAppDO. Reuse current actor, tenant/Space/Project, active installation/release pin and permission
+checks; expose the same schema-validated read via authenticated HTTP and assistant/MCP, audit it, and test
+denied/stale/malformed cases plus unchanged persistence. Then wire the inventory UI filter to that path and
+continue the next independent P01–P24/S2–S9/U01–U12 code gap. Do not infer iframe, multi-user, provider or live
+acceptance from the POC.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 

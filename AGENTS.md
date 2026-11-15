@@ -16,33 +16,37 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (§11.2 actions and §11.4 storage status; pushed)
+## Latest checkpoint — 2026-11-15 (§11.5 UI SDK evaluation and isolated POC; pending push)
 
-Pushed 10a3c9a04b7ddb8398637085380b05058f41c6fc adds signed inventory.adjustStock.v1 beside receiveStock.
-Both share the owner/admin host path for human HTTP and assistant/MCP, with schema validation, current
-release/install pin, compare-and-set, idempotent receipts, audit and generic-CRUD protection. Adjustment
-sets the exact nonnegative count and emits quantity delta. Event migration backfills old receives; archive
-restore accepts only the exact prior event-table hash. Pushed 49efa6db41265a700e48ddf335953ff827452795 adds measured SQLite usage, cap and
-non-billing disclosure for Space-shared tier 3. Pushed eb53c39ca185413e67f220a2e257d2e003ad53b7 extends that view to project-bound Gadgets
-through an owner/admin-only read route that requires the exact active signed installation and Project.
+The optional Vercel UI SDK was checked against the published registry packages. `@ui-sdk/react@0.1.0-beta.3`
+is Apache-2.0 but requires React and React DOM >=19 plus `@types/react` >=19.2.10; Shell stays on React 18.
+The GitHub beta.4 source is not published to npm (registry E404). The published `@ui-sdk/web@0.1.0-beta.3`
+is Apache-2.0, depends only on `@ui-sdk/core@^0.1.0-beta.3`, and has no React peer. Added the isolated
+`apps/ui-sdk-poc` Vite app with exact beta.3 pins; Shell dependencies and framework remain untouched.
 
-Local evidence: SDK tests 5/5, Spaces action/MCP 25/25, Spaces route/runtime 50/50, Shell action/storage 6/6
-plus project-storage 4/4; SDK/Spaces/Shell typechecks and diff check pass. These are local mocks/SQLite, not
-browser, deployed Worker/D1/DO/R2 or provider/live acceptance. All three code commits are pushed to
-origin/Mcbt5s-Backup-2. Preserve infra/scripts/__pycache__/; rollouts stay disabled.
+The POC uses invented inventory only. Its agent bridge may set one bounded filter or three bounded voice
+configuration draft fields, and each requested edit opens a native confirmation. Owner review shows exact
+draft values and says provider cost is unknown; approval only changes local demo status and never saves,
+publishes, or calls a provider. It has no model, production endpoint, tenant identity, iframe boundary, or
+host-authorized inventory read. The §11.5 requirement is therefore PARTIAL, not accepted or adopted.
 
-Fetched origin/plan/microapps-ui-sdk-voice at df3386257262a88888d647daa4d10f3af2ff9596 is compared with the
-active platform plan. Fish Live 3 and sections 9–11 are already copied; no additional plan text exists and
-no merge occurred. P05 Space-shared connections remain project-scoped (Space-level installation currently
-supports phone only); the signed contract lacks beneficiary, payer, shared authority and revocation/drain
-rules. P04 exact-user archive lacks a reachable authenticated user identity caller. Tier 1 Gadgets are
-restricted to private/user scopes and are not disclosed by a Space or Project owner route.
+Local evidence: policy tests **4/4**, Vite production build (**99.76 kB JS / 35.55 kB gzip**), and local
+Chromium smoke at 390px/320px verified the accessible UI snapshot, keyboard-confirmed filter, 2-row low-stock
+view, authorized draft edits, denied unlisted voice, exact owner review, explicit unknown-cost text, canceled
+edit with unchanged state, one same-origin only, no horizontal overflow and no page errors. This is a local
+POC check, not deployed multi-tenant, screen-reader, cross-frame, provider, latency/token, or live evidence.
+No benchmark or Naelao cost claim is made. Preserve `infra/scripts/__pycache__/`; all rollouts stay disabled.
 
-Exact next action: evaluate platform-plan §11.5's optional Vercel UI SDK against the current exact package,
-license, React peer dependencies and isolation/accessibility requirements. Shell uses React 18; do not
-upgrade it to satisfy a peer requirement. Build the plan's isolated synthetic-data POC only with a
-supported, pinned integration path; otherwise record the precise compatibility reason and continue the next
-independent S2–S9/U01–U12/P01–P24 code gap.
+The earlier pushed inventory actions and tier-scoped storage status remain as recorded below. P05 Space-shared
+provider authority still lacks beneficiary/payer/sharing/revocation semantics; P04 exact-user archives still
+lack a reachable authenticated identity caller. These are distinct product/host contracts, not credential
+gates. The copied `origin/plan/microapps-ui-sdk-voice` content remains in the active plan; no branch merge.
+
+Exact next action: add a bounded, read-only `inventory.listStock.v1` business action to the signed Gadget
+contract and host runtime, using the existing exact actor, scope, active installation/release pin and current
+permission checks. Return schema-validated rows to the same HTTP and assistant/MCP callers, write a read audit,
+and prove unauthorized, stale-pin and malformed requests fail without changing data. Then connect the visible
+inventory filter to that authorized read path and continue remaining P01–P24/S2–S9/U01–U12 gaps.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 

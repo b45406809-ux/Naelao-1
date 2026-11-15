@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>UI SDK synthetic inventory POC</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Local evaluation · synthetic data only</p>
+        <h1>Inventory view</h1>
+        <p>
+          An agent may suggest a filter for this local sample. The page asks
+          before changing the view; no inventory service or business operation
+          is connected.
+        </p>
+      </header>
+
+      <section aria-labelledby="filter-heading" class="card">
+        <h2 id="filter-heading">Draft a view</h2>
+        <ui-field name="draft-filter">
+          <ui-field-label>Draft inventory filter</ui-field-label>
+          <ui-input>
+            <input
+              id="draft-filter"
+              type="text"
+              autocomplete="off"
+              aria-describedby="filter-help"
+              placeholder="Try: low stock"
+              value=""
+            />
+          </ui-input>
+          <ui-field-description id="filter-help">
+            Enter “low stock” to show only sample products at or below their
+            reorder point. The agent is limited to this field and these two
+            values: blank or “low stock.”
+          </ui-field-description>
+        </ui-field>
+        <p id="change-status" class="status" role="status" aria-live="polite">
+          No agent changes yet.
+        </p>
+      </section>
+
+      <section aria-labelledby="table-heading" class="card">
+        <div class="table-heading">
+          <div>
+            <h2 id="table-heading">Sample stock</h2>
+            <p>Invented items and counts for this local evaluation.</p>
+          </div>
+          <span id="result-count" class="count" aria-live="polite"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="visually-hidden">Synthetic inventory counts</caption>
+            <thead>
+              <tr>
+                <th scope="col">Product</th>
+                <th scope="col">On hand</th>
+                <th scope="col">Reorder point</th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody id="inventory-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section aria-labelledby="voice-heading" class="card">
+        <h2 id="voice-heading">Voice extension setup draft</h2>
+        <p>
+          An assistant may suggest these synthetic settings. The values remain
+          a local draft until an owner reviews and approves the exact summary.
+        </p>
+        <div id="setup-fields" class="setup-fields">
+          <ui-field name="voice-profile">
+            <ui-field-label>Voice profile</ui-field-label>
+            <ui-input>
+              <input id="voice-profile" type="text" value="neutral" autocomplete="off" />
+            </ui-input>
+            <ui-field-description>Allowed demo values: neutral or warm.</ui-field-description>
+          </ui-field>
+          <ui-field name="greeting">
+            <ui-field-label>Greeting</ui-field-label>
+            <ui-input>
+              <input id="greeting" type="text" value="Hello, thanks for calling the demo store." maxlength="120" autocomplete="off" />
+            </ui-input>
+            <ui-field-description>Use plain text, up to 120 characters.</ui-field-description>
+          </ui-field>
+          <ui-field name="business-hours">
+            <ui-field-label>Business hours</ui-field-label>
+            <ui-input>
+              <input id="business-hours" type="text" value="Weekdays 09:00-17:00" autocomplete="off" />
+            </ui-input>
+            <ui-field-description>Allowed demo values: weekdays or daily, 09:00-17:00.</ui-field-description>
+          </ui-field>
+        </div>
+        <div class="setup-review">
+          <h3>Current draft values</h3>
+          <dl id="setup-preview"></dl>
+          <p id="setup-cost" class="cost-note">
+            Cost impact: unknown. This POC has no provider price or quote and
+            performs no provider operation.
+          </p>
+          <button id="review-setup" type="button">Review and approve local draft</button>
+          <p id="setup-status" class="status" role="status" aria-live="polite">
+            No configuration draft has been approved.
+          </p>
+        </div>
+      </section>
+
+      <section class="card boundary" aria-labelledby="boundary-heading">
+        <h2 id="boundary-heading">Authority boundary</h2>
+        <p>
+          UI actions only update this draft view. They do not call a business
+          API, edit stock, grant access, or prove that an operation completed.
+        </p>
+        <p>
+          To try the bridge in DevTools, use
+          <code>window.uiAgent.snapshot()</code>, then
+          <code>window.uiAgent.act({ steps: [{ ref: "Draft inventory filter", action: "setValue", args: ["low stock"] }] })</code>.
+        </p>
+      </section>
+    </main>
+
+    <dialog id="agent-approval" aria-labelledby="approval-title" aria-describedby="approval-message">
+      <form method="dialog">
+        <h2 id="approval-title">Approve a draft view change?</h2>
+        <p id="approval-message"></p>
+        <div class="dialog-actions">
+          <button value="deny" autofocus>Cancel</button>
+          <button value="allow">Allow this draft change</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="setup-approval" aria-labelledby="setup-approval-title" aria-describedby="setup-approval-message">
+      <form method="dialog">
+        <h2 id="setup-approval-title">Approve this local configuration draft?</h2>
+        <div id="setup-approval-message"></div>
+        <p class="cost-note">
+          Cost impact is unknown: this synthetic POC has no verified provider
+          quote. Approval does not activate a voice service or publish settings.
+        </p>
+        <div class="dialog-actions">
+          <button value="deny" autofocus>Cancel</button>
+          <button value="approve">Approve local draft</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.mjs"></script>
+  </body>
+</html>

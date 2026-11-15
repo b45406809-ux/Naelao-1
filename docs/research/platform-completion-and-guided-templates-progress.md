@@ -1,31 +1,33 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (§11.2 actions and §11.4 storage status; pushed)
+## Latest checkpoint — 2026-11-15 (§11.5 UI SDK evaluation and isolated POC; pending push)
 
-Pushed 10a3c9a04b7ddb8398637085380b05058f41c6fc adds signed inventory.adjustStock.v1 beside receiveStock,
-both through the same owner/admin human HTTP and assistant/MCP path. Schemas, active release/install pin,
-CAS, idempotency, audit and generic-CRUD protection are host-enforced. Event records preserve operation and
-delta, and exact-old-hash archive compatibility maps legacy receive rows. Pushed 49efa6db41265a700e48ddf335953ff827452795 adds Space-shared
-tier-3 SQLite usage/cap reporting. Pushed eb53c39ca185413e67f220a2e257d2e003ad53b7 extends storage status to project-bound Gadgets by
-deriving exact IDs from the active signed bundle and calling the Project route. The route is owner/admin-
-only and rejects unmanaged, inactive, foreign-app and foreign-Project actors.
+`@ui-sdk/react@0.1.0-beta.3` is Apache-2.0 but requires React and React DOM >=19 plus `@types/react`
+>=19.2.10, so the React 18 Shell was left unchanged. The beta.4 seen in GitHub source is unpublished (npm
+E404). Published `@ui-sdk/web@0.1.0-beta.3` is Apache-2.0 and has only the core beta.3 peer, so a separate
+React-free path is supported. Added `apps/ui-sdk-poc` with exact beta.3 pins; it is not a production Shell
+dependency or deployed feature.
 
-Verification: SDK 5/5; Spaces action/MCP 25/25 and route/runtime 50/50; Shell action/storage 6/6 and project
-storage 4/4; affected typechecks and diff check. These are local mocks/SQLite checks. No browser, deployed
-Worker/D1/DO/R2, provider action or live acceptance ran. All three code commits are pushed; no tracked
-uncommitted work. User-private tier-1 Gadgets remain excluded because no exact-user authenticated caller
-exists.
+The local synthetic POC covers an inventory filter and a draft voice/greeting/business-hours form. The agent
+bridge is restricted to four named inputs and bounded values; each edit awaits native owner confirmation.
+Before local-only approval, the owner sees exact voice settings and cost shown as unknown. No provider call,
+business API, model, tenant identity, host session, or cross-frame authority is present. §11.5 is PARTIAL,
+including no server-authorized inventory data read, live interaction evidence, screen-reader acceptance,
+multi-tenant/iframe tests, measured latency/token results, or provider quote.
 
-The fetched origin/plan/microapps-ui-sdk-voice at df3386257262a88888d647daa4d10f3af2ff9596 has no additional
-plan text beyond Fish Live 3 and sections 9–11 already copied; no merge occurred. P05's Space-shared
-provider beneficiary, payer, shared authority and revocation/drain contract remains unresolved and is not
-credential-blocked. The active P04 Knowledge archive remains newer than that branch's note.
+Verification: policy tests **4/4**, Vite build (**99.76 kB JS / 35.55 kB gzip**), Chromium smoke at 390px and
+320px: snapshot, keyboard approval, filter 4→2 rows, allowed/denied voice inputs, exact owner preview and
+unknown-cost statement, cancellation with unchanged value, same-origin requests only, zero page errors, no
+horizontal overflow. This is isolated local synthetic evidence only. No benchmark or production claim.
+Earlier code commits 10a3c9a0, 49efa6db and eb53c39c remain pushed. All rollouts remain false; preserve the
+untracked `infra/scripts/__pycache__/`.
 
-All rollouts remain disabled; preserve infra/scripts/__pycache__/. Exact next action: evaluate §11.5's
-optional Vercel UI SDK against the exact package/license, React peer dependency, security and accessibility
-requirements. Keep Shell on React 18; implement its isolated synthetic-data POC only through a supported
-pinned path. If none is compatible, record why and continue an independent uncoded P01–P24 or S2–S9/U01–U12
-item.
+Exact next action: add the signed, bounded read-only `inventory.listStock.v1` action to the MicroApp contract
+and host runtime with current actor/scope/grant/installation/release authorization, authenticated HTTP and
+assistant/MCP callers, schema validation, read audit and no-write denial/stale-pin tests. Then replace the
+POC's static inventory fixture path with a scoped host read only in a testable authenticated caller context,
+and continue remaining P01–P24/S2–S9/U01–U12 gaps. The POC does not establish any deployed, provider, or
+live acceptance.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 
