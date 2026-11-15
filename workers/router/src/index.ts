@@ -647,7 +647,10 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/coordination-registry(?:\/(?:preview|[^/]+)|\/v2(?:\/(?:preview|[^/]+))?)?$/,
   /^\/spaces\/([^/]+)\/template-listings\/([^/]+)\/fork$/,
   /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,
-  /^\/spaces\/([^/]+)\/product-users\/me$/,
+  // The profile and export both resolve only the ProductUserDO identity verified from this
+  // product session. Keep the suffix exact so unrelated account operations do not inherit the
+  // self-service identity path.
+  /^\/spaces\/([^/]+)\/product-users\/me(?:\/export)?$/,
   /^\/spaces\/([^/]+)\/me\/export$/,
   /^\/spaces\/([^/]+)\/me\/data$/,
   /^\/spaces\/([^/]+)\/projects(\/[^/]+)?$/,
