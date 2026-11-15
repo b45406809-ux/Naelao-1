@@ -21,6 +21,7 @@ import { detectRuntimeAnomaly, isJobOverdue } from "@naelao/events";
 import { presentAutonomyPolicy } from "@naelao/agent-sdk";
 import { isWithinScheduledQuietHours } from "@naelao/types";
 import { workerActivityLabel } from "../lib/worker-activity";
+import { formatWorkerOutput, parseWorkerMergeResult } from "../lib/worker-merge-result";
 import { ChannelConnect, CHANNELS } from "./ChannelConnect";
 import {
   getAssistantPolicy,
@@ -299,6 +300,32 @@ function StopDurableTaskButton({ spaceId, sessionId, taskId, session, onStopped 
   </div>;
 }
 
+function WorkerResultView({ result, maxOutput = 8_000 }: { result: string; maxOutput?: number }) {
+  const mergeResult = parseWorkerMergeResult(result);
+  if (!mergeResult) {
+    return <pre style={{ margin: "6px 0 0", padding: 8, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 7, background: "var(--surface2)", color: "var(--text2)", font: "11px/1.45 var(--font-mono, monospace)" }}>{result.slice(0, maxOutput)}{result.length > maxOutput ? "…" : ""}</pre>;
+  }
+  const workerOutput = formatWorkerOutput(mergeResult.workerOutput);
+  return <section aria-label="Worker workspace merge review" style={{ marginTop: 8, padding: 9, border: "1px solid var(--border, #64748b44)", borderRadius: 7 }}>
+    <p role="status" style={{ margin: 0, fontWeight: 600 }}>Worker changes were not integrated. Both worker and target branches remain available for review.</p>
+    <p style={{ margin: "4px 0", color: "var(--text3)", fontSize: 11 }}>Review these paths before choosing a resolution.</p>
+    <ul style={{ margin: "6px 0", paddingLeft: 20 }}>
+      {mergeResult.workspaceMerge.conflicts.map((conflict, index) => <li key={`${conflict.path}:${conflict.otherPath ?? ""}:${index}`} style={{ marginBottom: 8, overflowWrap: "anywhere" }}>
+        <div><code>{conflict.path}</code>{conflict.otherPath && <> conflicts with <code>{conflict.otherPath}</code></>} <span>· {conflict.reason.replaceAll("_", " ")}</span></div>
+        <details style={{ marginTop: 3 }}><summary style={{ cursor: "pointer" }}>Input hashes</summary>
+          <dl style={{ display: "grid", gridTemplateColumns: "50px minmax(0, 1fr)", gap: "2px 6px", margin: "4px 0", fontSize: 10 }}>
+            <dt>Base</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}><code>{conflict.baseHash ?? "not present"}</code></dd>
+            <dt>Target</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}><code>{conflict.targetHash ?? "not present"}</code></dd>
+            <dt>Worker</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}><code>{conflict.sourceHash ?? "not present"}</code></dd>
+          </dl>
+        </details>
+      </li>)}
+    </ul>
+    {mergeResult.workspaceMerge.omitted > 0 && <p style={{ margin: "4px 0", color: "var(--text3)", fontSize: 11 }}>{mergeResult.workspaceMerge.omitted} additional conflicts omitted.</p>}
+    {workerOutput && <details><summary style={{ cursor: "pointer" }}>Worker result</summary><pre style={{ margin: "5px 0 0", maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", font: "11px/1.45 var(--font-mono, monospace)" }}>{workerOutput.slice(0, maxOutput)}{workerOutput.length > maxOutput ? "…" : ""}</pre></details>}
+  </section>;
+}
+
 function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined; agentId?: string | null | undefined; lastRunId?: string | null | undefined; projectId?: string | null | undefined }) {
   const product = useProduct();
   const [tasks, setTasks] = React.useState<DurableAgentTask[]>([]);
@@ -440,7 +467,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       </div>
       {worker.progress_note && <p style={{ color: "var(--text3)", overflowWrap: "anywhere" }}>{worker.progress_note.slice(0, 400)}</p>}
       {worker.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{worker.error.slice(0, 400)}</p>}
-      {worker.result && <pre style={{ margin: "6px 0 0", padding: 8, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 7, background: "var(--surface2)", color: "var(--text2)", font: "11px/1.45 var(--font-mono, monospace)" }}>{worker.result.slice(0, 4000)}</pre>}
+      {worker.result && <WorkerResultView result={worker.result} maxOutput={4_000} />}
     </article>)}
     {goalError && <p role="status" className="workspace-tab-empty">Task graph and worker messages could not be loaded.</p>}
     {goals.map(goal => <details key={goal.id} className="settings-block" style={{ padding: 12, marginTop: 8 }}>
@@ -1427,7 +1454,7 @@ function WorkersPanel({
                 <div>{workerActivityLabel(sa.status)}.</div>
                 {sa.progress_note && <div style={{ marginTop: 3 }}>{sa.progress_note}</div>}
                 {sa.error && <div style={{ marginTop: 5, color: "#dc2626" }}>Error: {sa.error}</div>}
-                {sa.result && <pre style={{ margin: "6px 0 0", padding: 7, maxHeight: 150, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 7, background: "var(--surface2)", color: "var(--text2)", font: "10.5px/1.45 var(--font-mono, monospace)" }}>{sa.result}</pre>}
+                {sa.result && <WorkerResultView result={sa.result} maxOutput={8_000} />}
                 {sa.tokens_used !== undefined && <div data-technical-detail="model_routing" style={{ marginTop: 3 }}>{sa.tokens_used.toLocaleString()} tokens</div>}
                 <div data-technical-detail="identifiers" style={{ marginTop: 3, fontFamily: "var(--font-mono, monospace)", fontSize: 10 }}>Run {sa.id.slice(0, 8)}</div>
               </div>

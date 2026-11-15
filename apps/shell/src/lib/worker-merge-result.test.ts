@@ -1,0 +1,58 @@
+import { describe, expect, it } from "vitest";
+import {
+  formatWorkerOutput,
+  parseWorkerMergeResult,
+} from "./worker-merge-result";
+
+describe("worker merge result presentation", () => {
+  it("parses bounded conflict reports and validates their hashes and paths", () => {
+    const hash = "A".repeat(64);
+    const serialized = JSON.stringify({
+      workerOutput: { summary: "worker result" },
+      workspaceMerge: {
+        status: "unapplied",
+        omitted: 0,
+        conflicts: Array.from({ length: 52 }, (_, index) => ({
+          path: `src/file-${index}.ts`,
+          ...(index === 0 ? { otherPath: "SRC/file-0.ts" } : {}),
+          reason: index === 0 ? "case_collision" : "overlapping_change",
+          baseHash: hash,
+          targetHash: "not-a-hash",
+          sourceHash: hash,
+        })),
+      },
+    });
+    const report = parseWorkerMergeResult(serialized);
+    expect(report?.workerOutput).toEqual({ summary: "worker result" });
+    expect(report?.workspaceMerge).toMatchObject({
+      status: "unapplied",
+      omitted: 2,
+    });
+    expect(report?.workspaceMerge.conflicts).toHaveLength(50);
+    expect(report?.workspaceMerge.conflicts[0]).toMatchObject({
+      path: "src/file-0.ts",
+      otherPath: "SRC/file-0.ts",
+      reason: "case_collision",
+      baseHash: hash.toLowerCase(),
+      targetHash: null,
+      sourceHash: hash.toLowerCase(),
+    });
+  });
+
+  it("ignores malformed envelopes and formats non-text worker output safely", () => {
+    expect(parseWorkerMergeResult("not json")).toBeNull();
+    expect(
+      parseWorkerMergeResult(
+        JSON.stringify({
+          workspaceMerge: { status: "published", conflicts: [] },
+        })
+      )
+    ).toBeNull();
+    expect(parseWorkerMergeResult("{".repeat(128 * 1024 + 1))).toBeNull();
+    expect(formatWorkerOutput({ summary: "done" })).toContain(
+      '"summary": "done"'
+    );
+    expect(formatWorkerOutput("plain result")).toBe("plain result");
+    expect(formatWorkerOutput(null)).toBe("");
+  });
+});
