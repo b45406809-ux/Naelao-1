@@ -1,31 +1,40 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (P04 signed MicroApp archive; pushed)
+## Latest checkpoint — 2026-11-15 (P04 archive and P03 billing status; pushed)
 
 Pushed code checkpoints `c46592dad1cfa7eb10228ec41a11d70c7335a872` and
 `e90ccab71cac7af34d076ede31521fe6198a00f5` add bounded, owner-authorized MicroApp business-data
 archive export/preview/restore to the existing Space archive lifecycle. Snapshots bind exact
 tenant/Space/Project, installation, release, artifact, manifest, app and scope identity. They include
 supported business tables, action receipts/events and audit, use additive conflict-safe restore, and
-retain retry receipts. The second checkpoint checks foreign keys during preview and apply so an orphan
-row cannot pass preview and leave partial restore state. Private/user, legacy unsigned/unsupported stores
-remain excluded and are reported; no code is installed or activated during restore.
+retain retry receipts. Preview and apply both reject foreign-key violations. Private/user, legacy
+unsigned/unsupported stores remain excluded and are reported; restore installs or activates no code.
 
-Fresh local evidence: Spaces archive and MicroApp integration suites **30/30**, Spaces typecheck;
-Shell archive panel **2/2** and typecheck; `git diff --check` passed. Tests use local SQLite, mock
-Durable Object namespaces and fake R2. No browser, deployed DO/R2, isolated recovery drill, provider or
-live acceptance ran. P04 remains PARTIAL for other service stores, user-private and legacy stores,
-retention/legal hold, configured regional keys/R2, cross-DO point-in-time consistency, RPO/RTO and
-deployed recovery. Both active plans remain separate and in force; all rollouts stay disabled. Preserve
-untracked `infra/scripts/__pycache__/`.
+Pushed code `c4d9b6ca8a91f8499f2e74a3833db9dd4ebeb6ca` adds scoped Product-user dunning dispatch status
+from the durable Billing outbox to the existing authenticated status route and Shell. It distinguishes
+pending/leased/queue handoff from email provider acceptance and inbox delivery. The lookup is constrained
+to tenant, provider, subscription, product and authenticated end user, and exposes no provider IDs or
+receipts. It changes no retry, access, grace or payment policy.
 
-Exact next action: continue platform P01 release/environment safety. Its ordered migration runner,
-checksums, durable lock/ledger, required-schema probes, rendered deployment checks and rollback/forward-
-repair runbook already have local implementation; do not duplicate them. Record those code requirements
-as implemented locally and keep the exact D1 adoption, resource separation, isolated staging, and live
-promotion gates external. Then proceed to the next concrete uncoded commercial/recovery requirement and
-continue S2–S9/U01–U12 plus P01–P24 without repeating closed audits. Fetch before every push; never
-force-push or enable rollout.
+Fresh local evidence: archive suites **30/30**, Shell archive **2/2**, Billing dunning/status **13/13**,
+Spaces status caller **2/2**, Spaces/Billing/Shell typechecks, SQLite scope check and `git diff --check`
+passed. These use SQLite/local mocks, fake DO namespaces and fake R2. No browser, deployed DO/R2,
+provider, invoice, isolated recovery drill or live acceptance ran. P04 remains PARTIAL for other service
+stores, user-private and legacy/unsigned stores, retention/legal hold, regional key/R2 provisioning,
+cross-DO point-in-time consistency, RPO/RTO and deployed recovery. P03 remains PARTIAL for grace,
+restriction/escalation and retry policy decisions, inbox-delivery evidence and provider/live acceptance.
+P01 local release automation is implemented; D1 baselines, resource separation, isolated staging and live
+promotion remain account-owned gates. Both plan files remain separately active. Keep all rollout gates
+false and preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: continue platform P05 guided-template lifecycle. The current owner status links
+validated generated Projects and required extensions; setup detachment is reversible and explicitly
+preserves them. Implement the next safe template-generated Project cleanup caller by reusing the existing
+owner/admin project archive-and-workspace-cleanup API, with exact generated-project scope, preview,
+confirmation and resumable status. Do not uninstall shared extensions, cancel provider resources or stop
+external charges implicitly; keep their ownership and payer/revocation semantics separate. Then proceed
+to the next independent voice, shared-Space, section 11, and S2–S9/U01–U12/P01–P24 code gaps. Fetch
+before every push; never force-push or enable rollout.
 
 ## Previous checkpoint — 2026-11-15 (P06 bounded Telnyx extension media runtime; pushed)
 
