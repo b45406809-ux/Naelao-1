@@ -364,11 +364,27 @@ describe("SpaceDO owner data operations", () => {
     expect(actorCalls).toHaveLength(4);
     const forbidden = await call("user-a", "invalid");
     expect(forbidden.status).toBe(403);
-    storage.sql.exec("UPDATE extension_instances SET status='removed' WHERE instance_id=?", "install-user-a");
+    const userHashBytes = await crypto.subtle.digest("SHA-256",
+      new TextEncoder().encode(JSON.stringify(["product-user-micro-app-user-v1", "tenant-a", "space-a", "user-a"])));
+    const userHash = [...new Uint8Array(userHashBytes)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    storage.sql.exec(`INSERT INTO product_user_micro_app_uninstalls
+      (tenant_id,space_id,user_key_sha256,owner_installation_id,user_installation_id,app_id,gadget_scope,status,created_at,completed_at)
+      VALUES(?,?,?,?,?,?,'USER_PRIVATE','pending',?,NULL)`, "tenant-a", "space-a", userHash, "owner-install", "install-user-a",
+      "private_notes", Date.now());
+    const exportDuringUninstall = await call("user-a");
+    expect(exportDuringUninstall.status).toBe(409);
+    const previewDuringUninstall = await space.fetch(new Request("https://space/product-user-micro-app-archives/preview?tenant_id=tenant-a&space_id=space-a", {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ snapshots: [snapshot] }),
+    }));
+    expect(previewDuringUninstall.status).toBe(410);
+
+    storage.sql.exec("UPDATE product_user_micro_app_uninstalls SET status='complete',completed_at=? WHERE tenant_id=? AND space_id=? AND user_key_sha256=?",
+      Date.now(), "tenant-a", "space-a", userHash);
+    storage.sql.exec("UPDATE extension_instances SET status='removed',user_id=NULL WHERE instance_id=?", "install-user-a");
     const removed = await call("user-a");
     expect(await removed.json()).toEqual({ snapshots: [], omissions: { uninitializedActors: 0, unsupportedInstallations: 0 } });
     const restoreAfterRemoval = await apply();
-    expect(restoreAfterRemoval.status).toBe(409);
+    expect(restoreAfterRemoval.status).toBe(410);
     expect(actorCalls).toHaveLength(4);
   });
 

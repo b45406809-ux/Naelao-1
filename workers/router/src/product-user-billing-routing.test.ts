@@ -112,4 +112,13 @@ describe("Product-user billing status router identity", () => {
     expect(response.status).toBe(401);
     expect(context.forwarded).toHaveLength(0);
   });
+
+  it("forwards the exact product-user MicroApp uninstall caller", async () => {
+    const context = environment();
+    const response = await request(context.env, {},
+      "/v1/spaces/product-1/product-users/me/micro-apps/owner-install/personal_notes/uninstall", "DELETE");
+    expect(response.status).toBe(200);
+    expect(context.forwarded).toHaveLength(1);
+    expect(new URL(context.forwarded[0]!.url).pathname.endsWith("/product-users/me/micro-apps/owner-install/personal_notes/uninstall")).toBe(true);
+  });
 });

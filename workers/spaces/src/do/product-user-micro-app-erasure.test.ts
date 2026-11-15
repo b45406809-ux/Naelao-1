@@ -20,18 +20,20 @@ const manifest = validateExtensionManifest({ id: "ext_user_erase", type: "extens
 function harness() {
   const storage = createDOStorage();
   const erasedActors: string[] = [];
+  let eraseFailures = 0;
   const actorNamespace = {
     idFromName: (name: string) => name,
     get: (id: string) => ({ fetch: async (request: Request) => {
       erasedActors.push(id);
       const body = await request.json() as Record<string, unknown>;
+      if (eraseFailures > 0) { eraseFailures--; return Response.json({ error_code: "actor_storage_unavailable" }, { status: 503 }); }
       return body.userId === userId && new URL(request.url).pathname === "/internal/erase-user"
         ? Response.json({ erased: true }) : Response.json({ error_code: "actor_identity_mismatch" }, { status: 409 });
     } }),
   };
   const space = new SpaceDO({ storage } as never,
     { PLATFORM_SECRET: secret, MICRO_APP_DO: actorNamespace } as never);
-  return { storage, space, erasedActors };
+  return { storage, space, erasedActors, setEraseFailures(value: number) { eraseFailures = value; } };
 }
 
 async function headers(extra: Record<string, string> = {}) {
@@ -95,5 +97,53 @@ describe("product-user MicroApp erasure", () => {
     const archives = await h.space.fetch(new Request(`http://space/product-user-micro-app-archives?tenant_id=${tenantId}&space_id=${spaceId}`,
       { headers: await headers({ "x-naelao-user-id": userId }) }));
     expect(archives.status).toBe(410);
+  });
+
+  it("uninstalls one exact user app with a durable retry receipt and preserves the owner install", async () => {
+    const h = harness();
+    await h.space.fetch(new Request(`http://space/product-user-micro-app-erasure?tenant_id=${tenantId}&space_id=${spaceId}`,
+      { headers: await headers({ "x-naelao-user-id": userId }) }));
+    h.storage.sql.exec(`INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at)
+      VALUES(?,?,?,?,?)`, manifest.id, JSON.stringify(manifest), "owner", "2026-11-15", "2026-11-15");
+    const install = (instanceId: string, scope: "SPACE_SHARED" | "SPACE_USER", ownerUserId: string | null) =>
+      h.storage.sql.exec(`INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,
+        owner_key,installed_by,status,installed_at,removed_at,release_version)
+        VALUES(?,?,?,?,NULL,?,?,?,'owner-key','owner','active',datetime('now'),NULL,NULL)`,
+      instanceId, manifest.id, tenantId, spaceId, ownerUserId, scope, "default");
+    install("owner-install", "SPACE_SHARED", null);
+    install("user-install", "SPACE_USER", userId);
+    const register = async () => h.space.fetch(new Request("http://space/product-user-micro-app-actors/register", { method: "POST", headers: await headers(),
+      body: JSON.stringify({ spaceId, userId, ownerInstallationId: "owner-install", userInstallationId: "user-install",
+        extensionId: manifest.id, appId: "personal_notes", gadgetScope: "SPACE_USER" }) }));
+    expect((await register()).status).toBe(200);
+
+    const uninstallUrl = "http://space/product-user-micro-app-uninstall";
+    const uninstall = async (callerId = userId) => h.space.fetch(new Request(uninstallUrl, { method: "POST",
+      headers: await headers({ "x-naelao-user-id": callerId }),
+      body: JSON.stringify({ spaceId, userId: callerId, ownerInstallationId: "owner-install", appId: "personal_notes" }) }));
+    const wrongUser = await uninstall("other-user");
+    expect(wrongUser.status).toBe(404);
+    h.setEraseFailures(1);
+    const failed = await uninstall();
+    expect(failed.status).toBe(503);
+    const statusUrl = `http://space/product-user-micro-app-uninstall-status?tenant_id=${tenantId}&space_id=${spaceId}&owner_installation_id=owner-install&app_id=personal_notes`;
+    expect(await (await h.space.fetch(new Request(statusUrl, { headers: await headers({ "x-naelao-user-id": userId }) }))).json())
+      .toMatchObject({ status: "pending", user_installation_id: "user-install" });
+    expect(h.storage.sql.exec<{ status: string; user_id: string | null }>(
+      "SELECT status,user_id FROM extension_instances WHERE instance_id='user-install'").toArray()[0])
+      .toEqual({ status: "active", user_id: userId });
+
+    const completed = await uninstall();
+    expect(completed.status).toBe(200);
+    expect(await completed.json()).toMatchObject({ uninstalled: true, status: "complete", replayed: false });
+    expect(h.storage.sql.exec<{ status: string; user_id: string | null }>(
+      "SELECT status,user_id FROM extension_instances WHERE instance_id='user-install'").toArray()[0])
+      .toEqual({ status: "removed", user_id: null });
+    expect(h.storage.sql.exec<{ status: string }>("SELECT status FROM extension_instances WHERE instance_id='owner-install'").toArray()[0])
+      .toEqual({ status: "active" });
+    const replay = await uninstall();
+    expect(await replay.json()).toMatchObject({ uninstalled: true, status: "complete", replayed: true });
+    expect(h.erasedActors).toHaveLength(2);
+    expect((await register()).status).toBe(410);
   });
 });

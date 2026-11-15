@@ -97,6 +97,23 @@ async function installations(stub: { fetch(request: Request): Promise<Response> 
   } catch { return null; }
 }
 
+async function userAppUninstallStatus(env: Env, tenantId: string, spaceId: string, userId: string,
+  ownerInstallationId: string, appId: string): Promise<"none" | "pending" | "complete" | Response> {
+  try {
+    const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId,
+      owner_installation_id: ownerInstallationId, app_id: appId });
+    const response = await (await spaceStub(env, tenantId, spaceId)).fetch(new Request(
+      `http://space-do/product-user-micro-app-uninstall-status?${query}`, { headers: {
+        "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      } }));
+    const result = await readBoundedResponseJson<{ status?: unknown }>(response, 16 * 1024).catch(() => null);
+    if (!response.ok || !result || !["none", "pending", "complete"].includes(String(result.status)))
+      return Response.json({ error_code: "product_user_micro_app_uninstall_status_unavailable" }, { status: 503 });
+    return result.status as "none" | "pending" | "complete";
+  } catch { return Response.json({ error_code: "product_user_micro_app_uninstall_status_unavailable" }, { status: 503 }); }
+}
+
 function declaredUserGadgets(manifest: ExtensionManifest): UserGadget[] {
   const bundle = (manifest.bundle?.primitives ?? []).flatMap(primitive => primitive.kind === "gadget"
     && USER_GADGET_SCOPES.has(primitive.scope) && (primitive.businessActions?.length ?? 0) === 0
@@ -187,6 +204,9 @@ async function readSignedArtifacts(env: Env, spaceId: string, value: SignedPacka
 }
 
 async function activateUserGadget(env: Env, tenantId: string, spaceId: string, userId: string, value: SignedPackage): Promise<Response> {
+  const uninstallStatus = await userAppUninstallStatus(env, tenantId, spaceId, userId, value.row.instance_id, value.appId);
+  if (uninstallStatus instanceof Response) return uninstallStatus;
+  if (uninstallStatus !== "none") return Response.json({ error_code: "product_user_micro_app_uninstalled" }, { status: 410 });
   const stub = await spaceStub(env, tenantId, spaceId);
   const rows = await installations(stub, tenantId, spaceId);
   if (!rows) return Response.json({ error_code: "micro_app_installation_lookup_unavailable" }, { status: 503 });
@@ -282,11 +302,21 @@ async function activeUserActor(env: Env, tenantId: string, spaceId: string, user
   if (!userInstall || userInstall.release_version !== value.row.release_version
     || userInstall.pinned_artifact_sha256 !== value.row.pinned_artifact_sha256)
     return { error: Response.json({ error_code: "micro_app_user_activation_required" }, { status: 409 }) };
+  const uninstallStatus = await userAppUninstallStatus(env, tenantId, spaceId, userId, value.row.instance_id, value.appId);
+  if (uninstallStatus instanceof Response) return { error: uninstallStatus };
+  if (uninstallStatus !== "none") return { error: Response.json({ error_code: "product_user_micro_app_uninstalled" }, { status: 410 }) };
   const actor = gadgetActorId(env.MICRO_APP_DO, { scope: value.gadget.scope, spaceId, appId: value.appId, userId });
   const workId = crypto.randomUUID();
   const lease = await extensionRuntimeWork(env, { action: "acquire", tenantId, spaceId, projectId: null,
     installationId: value.row.instance_id, workId, workKind: "gadget" });
   if (lease.acquired !== true) return { error: Response.json({ error_code: lease.errorCode ?? "extension_installation_inactive" }, { status: 409 }) };
+  const afterAcquireStatus = await userAppUninstallStatus(env, tenantId, spaceId, userId, value.row.instance_id, value.appId);
+  if (afterAcquireStatus instanceof Response || afterAcquireStatus !== "none") {
+    await extensionRuntimeWork(env, { action: "release", tenantId, spaceId, projectId: null,
+      installationId: value.row.instance_id, workId, workKind: "gadget" }).catch(() => undefined);
+    return { error: afterAcquireStatus instanceof Response ? afterAcquireStatus
+      : Response.json({ error_code: "product_user_micro_app_uninstalled" }, { status: 410 }) };
+  }
   return { actor, userInstallationId: userInstall.instance_id, releaseVersion: userInstall.release_version!,
     release: () => extensionRuntimeWork(env, { action: "release", tenantId, spaceId, projectId: null,
       installationId: value.row.instance_id, workId, workKind: "gadget" }) };
@@ -343,10 +373,15 @@ export function registerProductUserMicroAppRoutes(app: Hono<{ Bindings: Env }>):
         const installed = rows.find(candidate => candidate.extension_id === row.extension_id && candidate.scope === "SPACE_USER"
           && candidate.user_id === identity.userId && candidate.instance_key === row.instance_key && candidate.status === "active"
           && candidate.release_version === row.release_version);
+        const uninstallStatus = await userAppUninstallStatus(c.env, identity.tenantId, identity.spaceId, identity.userId, row.instance_id, appId);
+        if (uninstallStatus instanceof Response) return uninstallStatus;
+        const appStatus = uninstallStatus === "complete" ? "uninstalled" : uninstallStatus === "pending" ? "uninstalling"
+          : installed ? "active" : "available";
         apps.push({ installation_id: row.instance_id, extension_id: row.extension_id, release_version: row.release_version,
-          app_id: appId, gadget_scope: gadget.scope, name: gadget.name, status: installed ? "active" : "available",
+          app_id: appId, gadget_scope: gadget.scope, name: gadget.name, status: appStatus,
           activation_url: `/spaces/${encodeURIComponent(identity.spaceId)}/product-users/me/micro-apps/${encodeURIComponent(row.instance_id)}/${encodeURIComponent(appId)}/activate`,
-          app_url: `/spaces/${encodeURIComponent(identity.spaceId)}/product-users/me/micro-apps/${encodeURIComponent(row.instance_id)}/${encodeURIComponent(appId)}/app` });
+          app_url: `/spaces/${encodeURIComponent(identity.spaceId)}/product-users/me/micro-apps/${encodeURIComponent(row.instance_id)}/${encodeURIComponent(appId)}/app`,
+          ...(appStatus === "active" ? { uninstall_url: `/spaces/${encodeURIComponent(identity.spaceId)}/product-users/me/micro-apps/${encodeURIComponent(row.instance_id)}/${encodeURIComponent(appId)}/uninstall` } : {}) });
       }
     }
     return c.json({ apps }, { headers: { "cache-control": "private, no-store" } });
@@ -359,6 +394,27 @@ export function registerProductUserMicroAppRoutes(app: Hono<{ Bindings: Env }>):
       c.req.param("installationId") ?? "", c.req.param("appId") ?? "", identity.userId);
     if (value instanceof Response) return value;
     return activateUserGadget(c.env, identity.tenantId, identity.spaceId, identity.userId, value);
+  });
+
+  app.delete("/spaces/:spaceId/product-users/me/micro-apps/:installationId/:appId/uninstall", async c => {
+    const identity = await authorizeProductUser(c);
+    if (identity instanceof Response) return identity;
+    const ownerInstallationId = c.req.param("installationId") ?? "", appId = c.req.param("appId") ?? "";
+    if (!validPackageIdentity(ownerInstallationId, appId)) return c.json({ error_code: "micro_app_identity_invalid" }, 400);
+    const stub = await spaceStub(c.env, identity.tenantId, identity.spaceId);
+    let response: Response;
+    try {
+      response = await stub.fetch(new Request("http://space-do/product-user-micro-app-uninstall", { method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+          "x-naelao-user-id": identity.userId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+        body: JSON.stringify({ spaceId: identity.spaceId, userId: identity.userId, ownerInstallationId, appId }) }));
+    } catch { return c.json({ error_code: "product_user_micro_app_uninstall_unavailable" }, 503); }
+    const result = await readBoundedResponseJson<{ uninstalled?: unknown; status?: unknown; replayed?: unknown; reason?: unknown }>(response, 16 * 1024)
+      .catch(() => null);
+    if (response.status === 202 && result?.status === "pending") return c.json(result, 202, { "cache-control": "private, no-store" });
+    if (!response.ok || result?.uninstalled !== true || result.status !== "complete")
+      return c.json({ error_code: "product_user_micro_app_uninstall_failed", status: response.status }, response.status === 404 ? 404 : 503);
+    return c.json(result, 200, { "cache-control": "private, no-store" });
   });
 
   app.get("/spaces/:spaceId/product-users/me/micro-apps/:installationId/:appId/app", c => forwardUserApp(c, "/app", "GET"));

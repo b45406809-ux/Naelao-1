@@ -3293,6 +3293,25 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_product_user_micro_app_erasure_actors_pending
       ON product_user_micro_app_erasure_actors(tenant_id,space_id,user_key_sha256,status,app_id);`,
   },
+  {
+    version: 148,
+    description: "persist product-user MicroApp uninstall tombstones and receipts",
+    up: `CREATE TABLE product_user_micro_app_uninstalls (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      user_key_sha256 TEXT NOT NULL CHECK(length(user_key_sha256)=64),
+      owner_installation_id TEXT NOT NULL,
+      user_installation_id TEXT NOT NULL,
+      app_id TEXT NOT NULL,
+      gadget_scope TEXT NOT NULL CHECK(gadget_scope IN ('USER_PRIVATE','SPACE_USER')),
+      status TEXT NOT NULL CHECK(status IN ('pending','complete')),
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      PRIMARY KEY(tenant_id,space_id,user_key_sha256,owner_installation_id,app_id)
+    );
+    CREATE INDEX idx_product_user_micro_app_uninstalls_status
+      ON product_user_micro_app_uninstalls(tenant_id,space_id,user_key_sha256,status,owner_installation_id);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -5841,6 +5860,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return await this.eraseProductUserMicroAppActors(request);
       if (url.pathname === "/product-user-micro-app-actors/register" && method === "POST")
         return await this.registerProductUserMicroAppActor(request);
+      if (url.pathname === "/product-user-micro-app-uninstall" && method === "POST")
+        return await this.uninstallProductUserMicroApp(request);
+      if (url.pathname === "/product-user-micro-app-uninstall-status" && method === "GET")
+        return await this.productUserMicroAppUninstallStatus(request, url.searchParams);
       if (url.pathname === "/product-user-micro-app-archives/preview" && method === "POST")
         return await this.previewProductUserMicroAppArchives(request, url.searchParams);
       if (url.pathname === "/product-user-micro-app-archives/restore" && method === "POST")
@@ -14856,6 +14879,135 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       { headers: { "cache-control": "no-store" } });
   }
 
+  private async productUserMicroAppUninstallStatus(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const userId = request.headers.get("x-naelao-user-id") ?? "";
+    const spaceId = params.get("space_id") ?? "";
+    const ownerInstallationId = params.get("owner_installation_id") ?? "";
+    const appId = params.get("app_id") ?? "";
+    if (!tenantId || !userId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
+      tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (params.get("tenant_id") !== tenantId || [...params.keys()].some(key => !["tenant_id", "space_id", "owner_installation_id", "app_id"].includes(key))
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(ownerInstallationId)
+      || !/^[a-z][a-z0-9_-]{1,64}$/.test(appId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId))
+      return Response.json({ error_code: "product_user_micro_app_uninstall_scope_invalid" }, { status: 400 });
+    const userHash = await sha256Hex(JSON.stringify(["product-user-micro-app-user-v1", tenantId, spaceId, userId]));
+    if (queryOne(this.ctx.storage.sql as never,
+      `SELECT 1 AS erasing FROM product_user_micro_app_erasures WHERE tenant_id=? AND space_id=? AND user_key_sha256=?`,
+      tenantId, spaceId, userHash)) return Response.json({ error_code: "product_user_micro_app_user_erased" }, { status: 410 });
+    const uninstall = queryOne<{ status: string; user_installation_id: string }>(this.ctx.storage.sql as never,
+      `SELECT status,user_installation_id FROM product_user_micro_app_uninstalls
+       WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND owner_installation_id=? AND app_id=?`,
+      tenantId, spaceId, userHash, ownerInstallationId, appId);
+    return Response.json(uninstall ? { status: uninstall.status, app_id: appId,
+      owner_installation_id: ownerInstallationId, user_installation_id: uninstall.user_installation_id }
+      : { status: "none", app_id: appId, owner_installation_id: ownerInstallationId },
+      { headers: { "cache-control": "no-store" } });
+  }
+
+  private async uninstallProductUserMicroApp(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
+      tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    let body: Record<string, unknown>;
+    try {
+      const bytes = await readBoundedRequestBytes(request, 16 * 1024);
+      const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_body");
+      body = parsed as Record<string, unknown>;
+    } catch { return Response.json({ error_code: "product_user_micro_app_uninstall_request_invalid" }, { status: 400 }); }
+    const { spaceId, userId, ownerInstallationId, appId } = body;
+    if (Object.keys(body).some(key => !["spaceId", "userId", "ownerInstallationId", "appId"].includes(key))
+      || typeof spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || typeof userId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId)
+      || request.headers.get("x-naelao-user-id") !== userId
+      || typeof ownerInstallationId !== "string" || !/^[A-Za-z0-9._:-]{1,768}$/.test(ownerInstallationId)
+      || typeof appId !== "string" || !/^[a-z][a-z0-9_-]{1,64}$/.test(appId))
+      return Response.json({ error_code: "product_user_micro_app_uninstall_request_invalid" }, { status: 400 });
+
+    const userHash = await sha256Hex(JSON.stringify(["product-user-micro-app-user-v1", tenantId, spaceId, userId]));
+    const sql = this.ctx.storage.sql as never;
+    if (queryOne(sql, `SELECT 1 AS erasing FROM product_user_micro_app_erasures
+      WHERE tenant_id=? AND space_id=? AND user_key_sha256=?`, tenantId, spaceId, userHash))
+      return Response.json({ error_code: "product_user_micro_app_user_erased" }, { status: 410 });
+
+    let uninstall = queryOne<{ user_installation_id: string; gadget_scope: string; status: string }>(sql,
+      `SELECT user_installation_id,gadget_scope,status FROM product_user_micro_app_uninstalls
+       WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND owner_installation_id=? AND app_id=?`,
+      tenantId, spaceId, userHash, ownerInstallationId, appId);
+    if (uninstall?.status === "complete")
+      return Response.json({ uninstalled: true, status: "complete", replayed: true,
+        owner_installation_id: ownerInstallationId, app_id: appId });
+    if (!uninstall) {
+      const actor = queryOne<{ extension_id: string; user_installation_id: string; gadget_scope: string }>(sql,
+        `SELECT extension_id,user_installation_id,gadget_scope FROM product_user_micro_app_actor_registry
+         WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND project_id='' AND app_id=?
+           AND owner_installation_id=? AND status='active'`, tenantId, spaceId, userHash, appId, ownerInstallationId);
+      if (!actor || !["USER_PRIVATE", "SPACE_USER"].includes(actor.gadget_scope))
+        return Response.json({ error_code: "product_user_micro_app_installation_not_found" }, { status: 404 });
+      const installation = queryOne<{ instance_id: string; extension_id: string; instance_key: string }>(sql,
+        `SELECT instance_id,extension_id,instance_key FROM extension_installation_manifests
+         WHERE instance_id=? AND extension_id=? AND tenant_id=? AND space_id=? AND project_id IS NULL
+           AND user_id=? AND scope='SPACE_USER' AND status IN ('active','disabled','staging')`,
+        actor.user_installation_id, actor.extension_id, tenantId, spaceId, userId);
+      if (!installation) return Response.json({ error_code: "product_user_micro_app_installation_not_found" }, { status: 404 });
+      try {
+        this.ctx.storage.transactionSync(() => {
+          this.ctx.storage.sql.exec(`INSERT INTO product_user_micro_app_uninstalls
+            (tenant_id,space_id,user_key_sha256,owner_installation_id,user_installation_id,app_id,gadget_scope,status,created_at,completed_at)
+            VALUES(?,?,?,?,?,?,?,'pending',?,NULL)`, tenantId, spaceId, userHash, ownerInstallationId,
+            actor.user_installation_id, appId, actor.gadget_scope, Date.now());
+          this.ctx.storage.sql.exec(`UPDATE product_user_micro_app_actor_registry SET status='erased',erased_at=COALESCE(erased_at,?)
+            WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND project_id='' AND app_id=? AND owner_installation_id=?`,
+            Date.now(), tenantId, spaceId, userHash, appId, ownerInstallationId);
+          this.ctx.storage.sql.exec(`DELETE FROM product_user_micro_app_restore_previews
+            WHERE tenant_id=? AND space_id=? AND user_id=?`, tenantId, spaceId, userId);
+        });
+      } catch { return Response.json({ error_code: "product_user_micro_app_uninstall_persist_failed" }, { status: 503 }); }
+      uninstall = { user_installation_id: actor.user_installation_id, gadget_scope: actor.gadget_scope, status: "pending" };
+    }
+
+    try {
+      if (this.activeExtensionRuntimeWorkCount(ownerInstallationId) > 0)
+        return Response.json({ uninstalled: false, status: "pending", reason: "active_work" }, { status: 202 });
+    } catch { return Response.json({ error_code: "product_user_micro_app_uninstall_drain_unavailable" }, { status: 503 }); }
+    if (!this.env.MICRO_APP_DO) return Response.json({ error_code: "micro_app_storage_unavailable" }, { status: 503 });
+    let eraseResponse: Response;
+    try {
+      const actorId = gadgetActorId(this.env.MICRO_APP_DO, { scope: uninstall.gadget_scope as "USER_PRIVATE" | "SPACE_USER",
+        spaceId, appId, userId });
+      eraseResponse = await this.env.MICRO_APP_DO.get(actorId).fetch(new Request("http://micro-app/internal/erase-user", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+        body: JSON.stringify({ tenantId, spaceId, userId, appId, gadgetScope: uninstall.gadget_scope }),
+      }));
+    } catch { return Response.json({ error_code: "product_user_micro_app_uninstall_unavailable" }, { status: 503 }); }
+    const erased = await readBoundedResponseJson<{ erased?: unknown }>(eraseResponse, 16 * 1024).catch(() => null);
+    if (!eraseResponse.ok || erased?.erased !== true)
+      return Response.json({ error_code: "product_user_micro_app_uninstall_failed", status: eraseResponse.status }, { status: 503 });
+
+    try {
+      this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec(`UPDATE product_user_micro_app_uninstalls SET status='complete',completed_at=COALESCE(completed_at,?)
+          WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND owner_installation_id=? AND app_id=? AND status='pending'`,
+          Date.now(), tenantId, spaceId, userHash, ownerInstallationId, appId);
+        const activeActors = queryOne<{ count: number }>(sql,
+          `SELECT COUNT(*) AS count FROM product_user_micro_app_actor_registry
+           WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND user_installation_id=? AND status='active'`,
+          tenantId, spaceId, userHash, uninstall.user_installation_id)?.count ?? 0;
+        if (activeActors === 0) this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=COALESCE(removed_at,datetime('now')),
+          user_id=NULL,installed_by='product-user-uninstall' WHERE instance_id=? AND extension_id=? AND tenant_id=? AND space_id=?
+            AND project_id IS NULL AND scope='SPACE_USER' AND user_id=? AND status IN ('active','disabled','staging')`,
+          uninstall.user_installation_id, queryOne<{ extension_id: string }>(sql,
+            `SELECT extension_id FROM product_user_micro_app_actor_registry WHERE tenant_id=? AND space_id=?
+              AND user_key_sha256=? AND project_id='' AND app_id=? AND owner_installation_id=?`,
+            tenantId, spaceId, userHash, appId, ownerInstallationId)?.extension_id ?? "", tenantId, spaceId, userId);
+      });
+    } catch { return Response.json({ error_code: "product_user_micro_app_uninstall_receipt_failed" }, { status: 503 }); }
+    return Response.json({ uninstalled: true, status: "complete", replayed: false,
+      owner_installation_id: ownerInstallationId, user_installation_id: uninstall.user_installation_id, app_id: appId });
+  }
+
   private async registerProductUserMicroAppActor(request: Request): Promise<Response> {
     const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
     if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
@@ -14881,6 +15033,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const erasure = queryOne<{ status: string }>(this.ctx.storage.sql as never,
       `SELECT status FROM product_user_micro_app_erasures WHERE tenant_id=? AND space_id=? AND user_key_sha256=?`, tenantId, spaceId, userHash);
     if (erasure) return Response.json({ error_code: "product_user_micro_app_user_erased" }, { status: 410 });
+    const uninstall = queryOne<{ status: string }>(this.ctx.storage.sql as never,
+      `SELECT status FROM product_user_micro_app_uninstalls WHERE tenant_id=? AND space_id=? AND user_key_sha256=?
+        AND owner_installation_id=? AND app_id=?`, tenantId, spaceId, userHash, ownerInstallationId, appId);
+    if (uninstall) return Response.json({ error_code: "product_user_micro_app_uninstalled" }, { status: 410 });
+    const erasedActor = queryOne<{ status: string }>(this.ctx.storage.sql as never,
+      `SELECT status FROM product_user_micro_app_actor_registry WHERE tenant_id=? AND space_id=? AND user_key_sha256=?
+        AND project_id='' AND app_id=? AND status='erased'`, tenantId, spaceId, userHash, appId);
+    if (erasedActor) return Response.json({ error_code: "product_user_micro_app_uninstalled" }, { status: 410 });
 
     const owner = queryOne<{ instance_key: string; release_version: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
       `SELECT instance_key,release_version,manifest_json FROM extension_installation_manifests
@@ -15053,6 +15213,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       `SELECT 1 AS erased FROM product_user_micro_app_erasures WHERE tenant_id=? AND space_id=? AND user_key_sha256=?`,
       tenantId, spaceId, userHash))
       return Response.json({ error_code: "product_user_micro_app_user_erasure_in_progress_or_complete" }, { status: 410 });
+    if (queryOne(this.ctx.storage.sql as never,
+      `SELECT 1 AS pending FROM product_user_micro_app_uninstalls
+       WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND status='pending'`, tenantId, spaceId, userHash))
+      return Response.json({ error_code: "product_user_micro_app_uninstall_in_progress" }, { status: 409 });
     if (!this.env.MICRO_APP_DO) return Response.json({ error_code: "micro_app_storage_unavailable" }, { status: 503 });
 
     const installations = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; user_id: string | null;
@@ -15232,6 +15396,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }): Promise<{ actor: DurableObjectId } | Response> {
     const scope = snapshot.scope;
     const projectScope = scope.gadgetScope === "PROJECT_USER";
+    const userHash = await sha256Hex(JSON.stringify(["product-user-micro-app-user-v1", identity.tenantId, identity.spaceId, identity.userId]));
+    if (queryOne(this.ctx.storage.sql as never,
+      `SELECT 1 AS uninstalled FROM product_user_micro_app_uninstalls
+       WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND user_installation_id=? AND app_id=?`,
+      identity.tenantId, identity.spaceId, userHash, scope.installationId, scope.appId))
+      return Response.json({ error_code: "product_user_micro_app_uninstalled" }, { status: 410 });
     const installation = queryOne<{ instance_id: string; extension_id: string; project_id: string | null; user_id: string | null;
       scope: string; instance_key: string; manifest_json: string; release_version: string | null; pinned_artifact_sha256: string | null }>(
       this.ctx.storage.sql as never,

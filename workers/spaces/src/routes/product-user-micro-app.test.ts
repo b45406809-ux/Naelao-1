@@ -35,10 +35,20 @@ function harness() {
     instance_key: "default", status: "active", release_version: "1.0.0", pinned_artifact_sha256: artifactSha256, manifest };
   const rows: Array<Record<string, unknown>> = [ownerRow];
   let ownerActive = true, publisherActive = true, erasureStatus: "none" | "pending" | "complete" = "none", accountErasureStarted = false;
+  let uninstallStatus: "none" | "pending" | "complete" = "none";
   const spaceRequests: Request[] = [], microAppRequests: Request[] = [];
   const spaceStub = { fetch: vi.fn(async (request: Request) => {
     spaceRequests.push(request);
     const url = new URL(request.url), path = url.pathname;
+    if (path === "/product-user-micro-app-uninstall-status" && request.method === "GET")
+      return Response.json({ status: uninstallStatus });
+    if (path === "/product-user-micro-app-uninstall" && request.method === "POST") {
+      const body = await request.json() as { userId: string; ownerInstallationId: string; appId: string };
+      if (body.userId !== "user-a" || body.ownerInstallationId !== "owner-install" || body.appId !== "personal_notes")
+        return Response.json({ error_code: "not_found" }, { status: 404 });
+      uninstallStatus = "complete";
+      return Response.json({ uninstalled: true, status: "complete", replayed: false });
+    }
     if (path === "/product-user-micro-app-erasure" && request.method === "GET") return Response.json({ status: erasureStatus });
     if (path === "/product-user-micro-app-actors/register" && request.method === "POST") return Response.json({ registered: true });
     if (path === "/space-shared-extension-runtime") return Response.json({ managed: true, active: ownerActive, releaseValid: ownerActive,
@@ -100,6 +110,7 @@ function harness() {
     setOwnerActive(value: boolean) { ownerActive = value; }, setPublisherActive(value: boolean) { publisherActive = value; },
     setErasureStatus(value: "none" | "pending" | "complete") { erasureStatus = value; },
     setAccountErasureStarted(value: boolean) { accountErasureStarted = value; },
+    setUninstallStatus(value: "none" | "pending" | "complete") { uninstallStatus = value; },
     async setArtifactDigest() {
       const value = await digest([["./handler.ts", handler], ["./notes.html", html]]);
       release.artifact_sha256 = value;
@@ -192,5 +203,27 @@ describe("product-user MicroApp lifecycle and caller", () => {
     expect(await response.json()).toMatchObject({ error_code: "product_user_erasure_started" });
     expect(h.spaceRequests).toHaveLength(0);
     expect(h.actorFetch).not.toHaveBeenCalled();
+  });
+
+  it("routes exact-user uninstall and denies app access after its tombstone completes", async () => {
+    const h = harness();
+    await h.setArtifactDigest();
+    const activatePath = "/spaces/space-a/product-users/me/micro-apps/owner-install/personal_notes/activate";
+    const active = await h.app.request(activatePath, { method: "POST", headers: await headers() }, h.env);
+    expect(active.status).toBe(201);
+
+    const uninstall = await h.app.request("/spaces/space-a/product-users/me/micro-apps/owner-install/personal_notes/uninstall",
+      { method: "DELETE", headers: await headers() }, h.env);
+    expect(uninstall.status).toBe(200);
+    expect(await uninstall.json()).toMatchObject({ uninstalled: true, status: "complete" });
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/product-user-micro-app-uninstall")).toBe(true);
+    const listing = await h.app.request("/spaces/space-a/product-users/me/micro-apps", { headers: await headers() }, h.env);
+    expect(await listing.json()).toMatchObject({ apps: [{ app_id: "personal_notes", status: "uninstalled" }] });
+
+    const priorActorCalls = h.actorFetch.mock.calls.length;
+    const app = await h.app.request("/spaces/space-a/product-users/me/micro-apps/owner-install/personal_notes/app",
+      { headers: await headers() }, h.env);
+    expect(app.status).toBe(410);
+    expect(h.actorFetch).toHaveBeenCalledTimes(priorActorCalls);
   });
 });
