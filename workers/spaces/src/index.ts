@@ -31,6 +31,8 @@ import { registerProjectMcpRoutes } from "./routes/mcp.js";
 import { extensionRuntimeWork, registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
 import { registerExtensionGadgetRoutes } from "./routes/extension-gadget.js";
 import { gadgetActorId } from "./do/MicroAppDO.js";
+import { isMicroAppArchiveSnapshot, MAX_MICRO_APP_ARCHIVE_SNAPSHOTS,
+  MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES, type MicroAppArchiveOmissions, type MicroAppArchiveSnapshot } from "./do/microapp-archive.js";
 import { registerDynamicPageRoutes } from "./routes/dynamic-pages.js";
 import { registerAssistantChannelRoutes } from "./routes/assistant-channels.js";
 import { registerWebsiteConnectionRoutes } from "./routes/website-connections.js";
@@ -9023,6 +9025,7 @@ app.patch("/spaces/:spaceId/product-users/me", async (c) => {
 // GET /spaces/:spaceId/product-users/me/export — portability export for the authenticated
 // end user. The DO contains session metadata, credits, conversation references, and preferences;
 // D1 contains the user's roster/profile fields. Credentials and password hashes are never returned.
+// Active user-scoped MicroApp actors are exported separately as bounded signed snapshots.
 app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { role, userId, tenantId } = getCallerIdentity(c);
@@ -9035,16 +9038,90 @@ app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
     "SELECT email, display_name, phone_e164, phone_verified_at, first_seen_at, last_seen_at, suspended_at, email_verified_at, preferred_language, deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
   ).bind(root.id, userId).first<{ email: string | null; display_name: string | null; phone_e164: string | null; phone_verified_at: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null; email_verified_at: string | null; preferred_language: string | null; deleted_at: string | null }>();
   if (!profile) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
+  if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
+    return c.json({ error_code: "forbidden", message: "Not a member of this Space" }, 403);
   const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
   const response = await stub.fetch(new Request("http://do/export"));
   if (!response.ok) return c.json({ error_code: "data_export_unavailable" }, 502);
+  const microAppStub = await spaceDoStub(c.env, spaceId, tenantId);
+  let microAppResponse: Response;
+  try {
+    microAppResponse = await microAppStub.fetch(new Request(`http://space-do/product-user-micro-app-archives?${new URLSearchParams({
+      tenant_id: tenantId, space_id: spaceId,
+    })}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
+  } catch { return c.json({ error_code: "micro_app_data_export_unavailable" }, 502); }
+  if (!microAppResponse.ok) return c.json({ error_code: "micro_app_data_export_unavailable" }, 502);
+  const microAppArchiveData = await readBoundedResponseJson<{ snapshots?: unknown; omissions?: unknown }>(microAppResponse,
+    MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES + 32 * 1024).catch(() => null);
+  const rawOmissions = microAppArchiveData?.omissions;
+  const omissionKeys = rawOmissions && typeof rawOmissions === "object" && !Array.isArray(rawOmissions) ? Object.keys(rawOmissions) : [];
+  if (!microAppArchiveData || Object.keys(microAppArchiveData).some(key => !["snapshots", "omissions"].includes(key))
+    || !Array.isArray(microAppArchiveData.snapshots) || microAppArchiveData.snapshots.length > MAX_MICRO_APP_ARCHIVE_SNAPSHOTS
+    || !rawOmissions || typeof rawOmissions !== "object" || Array.isArray(rawOmissions)
+    || omissionKeys.length !== 2 || omissionKeys.some(key => !["uninitializedActors", "unsupportedInstallations"].includes(key))
+    || Object.values(rawOmissions).some(value => !Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 10_000))
+    return c.json({ error_code: "micro_app_data_export_response_invalid" }, 502);
+  const snapshots: MicroAppArchiveSnapshot[] = [];
+  const seenApps = new Set<string>();
+  let snapshotBytes = 0;
+  for (const rawSnapshot of microAppArchiveData.snapshots) {
+    if (!isMicroAppArchiveSnapshot(rawSnapshot, { tenantId, spaceId, userId })
+      || !["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(rawSnapshot.scope.gadgetScope))
+      return c.json({ error_code: "micro_app_data_export_snapshot_invalid" }, 502);
+    const key = `${rawSnapshot.scope.installationId}\u0000${rawSnapshot.scope.projectId ?? ""}\u0000${rawSnapshot.scope.appId}`;
+    if (seenApps.has(key)) return c.json({ error_code: "micro_app_data_export_duplicate_snapshot" }, 502);
+    seenApps.add(key);
+    snapshotBytes += new TextEncoder().encode(JSON.stringify(rawSnapshot)).byteLength;
+    if (snapshotBytes > MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES) return c.json({ error_code: "micro_app_data_export_limit_exceeded" }, 502);
+    snapshots.push(rawSnapshot);
+  }
+  const omissions: MicroAppArchiveOmissions = rawOmissions as MicroAppArchiveOmissions;
   return c.json({
-    export_version: "1",
+    export_version: "2",
     exported_at: new Date().toISOString(),
     profile: { end_user_id: userId, ...profile },
     product_user_data: await response.json(),
+    micro_app_archives: snapshots,
+    micro_app_archive_omissions: omissions,
   });
 });
+
+const forwardProductUserMicroAppArchiveAction = async (c: Context<{ Bindings: Env }>, action: "preview" | "restore") => {
+  const spaceId = c.req.param("spaceId") ?? "", { role, userId, tenantId } = getCallerIdentity(c);
+  if (role !== "product_end_user" || !userId || !tenantId)
+    return c.json({ error_code: "not_an_end_user" }, 404);
+  const root = await resolveProductIdentity(c.env, spaceId);
+  if (!root || root.tenant_id !== tenantId) return c.json({ error_code: "not_found" }, 404);
+  const account = await c.env.PLATFORM_DB.prepare(`SELECT suspended_at,deleted_at FROM product_end_users
+    WHERE product_space_id=? AND end_user_id=?`).bind(root.id, userId)
+    .first<{ suspended_at: string | null; deleted_at: string | null }>();
+  if (!account || account.suspended_at || account.deleted_at) return c.json({ error_code: "not_found" }, 404);
+  if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
+    return c.json({ error_code: "forbidden", message: "Not a member of this Space" }, 403);
+  let body: Uint8Array;
+  try { body = await readBoundedRequestBytes(c.req.raw, MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES + 32 * 1024); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  let response: Response;
+  try {
+    response = await stub.fetch(new Request(`http://space-do/product-user-micro-app-archives/${action}?${new URLSearchParams({
+      tenant_id: tenantId, space_id: spaceId,
+    })}`, { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-user-id": userId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer }));
+  } catch { return c.json({ error_code: `micro_app_restore_${action}_unavailable` }, 502); }
+  const result = await readBoundedResponseJson<Record<string, unknown>>(response, 64 * 1024).catch(() => null);
+  if (!result || !response.ok && typeof result.error_code !== "string")
+    return c.json({ error_code: `micro_app_restore_${action}_response_invalid` }, 502);
+  const status = [200, 400, 403, 409, 413, 422, 429, 503].includes(response.status) ? response.status as 200 | 400 | 403 | 409 | 413 | 422 | 429 | 503 : 502;
+  return c.json(result, status);
+};
+
+app.post("/spaces/:spaceId/product-users/me/micro-app-archives/preview", c =>
+  forwardProductUserMicroAppArchiveAction(c, "preview"));
+app.post("/spaces/:spaceId/product-users/me/micro-app-archives/restore", c =>
+  forwardProductUserMicroAppArchiveAction(c, "restore"));
 
 // DELETE /spaces/:spaceId/product-users/me — GDPR Art. 17, the direct inverse of GET (export)
 // above: erasing exactly what /export reports. Tier 2/3 follow-up — export existed, deletion

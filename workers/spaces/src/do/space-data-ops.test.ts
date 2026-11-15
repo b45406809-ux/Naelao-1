@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { digestExtensionManifest, validateExtensionManifest } from "@naelao/agent-sdk";
+import { signHmac } from "@naelao/crypto";
 import { mintInternalToken } from "@naelao/http";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { captureSpaceArchiveObjectChunked, decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, spaceArchiveKeyringFromBindings, spaceArchiveKeyVersion, verifySpaceArchiveObjectSnapshots } from "./space-backup.js";
@@ -253,6 +254,122 @@ describe("SpaceDO owner data operations", () => {
     const rejectsPrivateUserData = await post({ action: "preview_restore", archive_id: archiveId });
     expect(rejectsPrivateUserData.status).toBe(422);
     expect(await rejectsPrivateUserData.json()).toMatchObject({ error_code: "archive_micro_app_snapshot_invalid" });
+  });
+
+  it("exports only the authenticated user's active user-scoped MicroApp actor archives", async () => {
+    const storage = createDOStorage(), secret = "product-user-micro-app-archive-secret-long-enough";
+    const extensionId = "ext_private_data", version = "1.0.0", artifactSha256 = "c".repeat(64);
+    const manifest = { id: extensionId, type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.canvas"],
+      gadgets: [{ id: "private_notes", name: "Private notes", viewportComponent: "./private-notes.ts", scope: "USER_PRIVATE",
+        gadgetTier: 1, defaultSchemaSql: "CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY)" }], daemons: [], commands: [],
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: extensionId, version,
+        primitives: [{ schemaVersion: "1.0", kind: "canvas", id: "archive_canvas", version, permissions: [],
+          capabilityRequirements: [], lifecycle: {}, layout: "DualPane.DataGrid", component: "./archive.html", dynamicPage: false }] } };
+    const manifestJson = JSON.stringify(validateExtensionManifest(manifest));
+    const manifestSha256 = await digestExtensionManifest(validateExtensionManifest(manifest));
+    const hostSignature = await signHmac(JSON.stringify([extensionId, version, manifestJson, artifactSha256]), secret);
+    const publisherKeyId = "d".repeat(64), publisherId = "pub_private_test";
+    const platformDb = { prepare(sql: string) { return { bind(...values: unknown[]) { return { async first() {
+      if (!sql.includes("extension_publisher_keys")) return null;
+      return values[0] === "tenant-a" && values[1] === "space-a" && values[2] === publisherId && values[3] === publisherKeyId
+        ? { active: 1 } : null;
+    } }; } }; } };
+    const actorCalls: string[] = [], restoreReceipts = new Set<string>();
+    const microAppNamespace = {
+      idFromName(name: string) { return name as unknown as DurableObjectId; },
+      get(id: DurableObjectId) { return { async fetch(request: Request) {
+        const path = new URL(request.url).pathname;
+        actorCalls.push(path);
+        if (path === "/internal/archive/export") {
+          const body = await request.json() as { scope: Record<string, unknown> };
+          return Response.json({ present: true, snapshot: { version: 1, createdAt: new Date().toISOString(), scope: body.scope, tables: [] } });
+        }
+        if (path === "/internal/archive/preview") return Response.json({ preview: { inserted: { notes: 1 }, skipped: { notes: 2 } } });
+        if (path === "/internal/archive/restore") {
+          const body = await request.json() as { restoreId: string };
+          const replayed = restoreReceipts.has(body.restoreId);
+          restoreReceipts.add(body.restoreId);
+          return Response.json({ inserted: { notes: replayed ? 0 : 1 }, skipped: { notes: 2 }, replayed });
+        }
+        return Response.json({ error_code: "not_found" }, { status: 404 });
+      } }; },
+    };
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb as never,
+      MICRO_APP_DO: microAppNamespace as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const headers = { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "user-a", "x-naelao-internal-token": token };
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    storage.sql.exec(`INSERT INTO extension_releases(extension_id,version,manifest_json,artifact_sha256,host_signature,created_by,created_at,
+      publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`, extensionId, version, manifestJson, artifactSha256, hostSignature, "owner-a", "2026-01-01T00:00:00.000Z",
+      publisherId, publisherKeyId, "publisher-signature", "e".repeat(64));
+    storage.sql.exec("INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at) VALUES(?,?,?,?,?)",
+      extensionId, manifestJson, "owner-a", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+    storage.sql.exec(`INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,
+      owner_key,installed_by,status,installed_at,removed_at,release_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      "install-user-a", extensionId, "tenant-a", "space-a", null, "user-a", "SPACE_USER", "default", "owner-a", "owner-a", "active",
+      "2026-01-01T00:00:00.000Z", null, version);
+
+    const call = (userId: string, requestToken = token) => space.fetch(new Request(
+      "https://space/product-user-micro-app-archives?tenant_id=tenant-a&space_id=space-a",
+      { headers: { ...headers, "x-naelao-user-id": userId, "x-naelao-internal-token": requestToken } }));
+    const own = await call("user-a");
+    expect(own.status, JSON.stringify(await own.clone().json())).toBe(200);
+    const data = await own.json() as { snapshots: Array<{ scope: Record<string, unknown> }>; omissions: Record<string, number> };
+    expect(data.snapshots).toHaveLength(1);
+    expect(data.snapshots[0]?.scope).toMatchObject({ tenantId: "tenant-a", spaceId: "space-a", projectId: null,
+      installationId: "install-user-a", extensionId, releaseVersion: version, artifactSha256, manifestSha256,
+      appId: "private_notes", gadgetScope: "USER_PRIVATE", userId: "user-a" });
+    expect(data.omissions).toEqual({ uninitializedActors: 0, unsupportedInstallations: 0 });
+    expect(actorCalls).toEqual(["/internal/archive/export"]);
+
+    const snapshot = data.snapshots[0]!;
+    const previewResponse = await space.fetch(new Request("https://space/product-user-micro-app-archives/preview?tenant_id=tenant-a&space_id=space-a", {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ snapshots: [snapshot] }),
+    }));
+    expect(previewResponse.status, JSON.stringify(await previewResponse.clone().json())).toBe(200);
+    const preview = await previewResponse.json() as { preview_id: string; results: Array<{ would_insert_rows: number; would_preserve_rows: number }> };
+    expect(preview.results).toEqual([{ installation_id: "install-user-a", project_id: null, app_id: "private_notes",
+      would_insert_rows: 1, would_preserve_rows: 2 }]);
+    const apply = () => space.fetch(new Request("https://space/product-user-micro-app-archives/restore?tenant_id=tenant-a&space_id=space-a", {
+      method: "POST", headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ preview_id: preview.preview_id, snapshots: [snapshot] }),
+    }));
+    const restored = await apply();
+    expect(restored.status, JSON.stringify(await restored.clone().json())).toBe(200);
+    expect(await restored.json()).toMatchObject({ status: "applied", replayed: false,
+      results: [{ installation_id: "install-user-a", app_id: "private_notes", inserted_rows: 1, preserved_rows: 2, replayed: false }] });
+    const replay = await apply();
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ status: "applied", replayed: true,
+      results: [{ inserted_rows: 0, preserved_rows: 2, replayed: true }] });
+    expect(actorCalls).toEqual(["/internal/archive/export", "/internal/archive/preview",
+      "/internal/archive/restore", "/internal/archive/restore"]);
+
+    const wrongInstall = structuredClone(snapshot);
+    wrongInstall.scope.installationId = "other-installation";
+    const crossInstall = await space.fetch(new Request("https://space/product-user-micro-app-archives/preview?tenant_id=tenant-a&space_id=space-a", {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ snapshots: [wrongInstall] }),
+    }));
+    expect(crossInstall.status).toBe(409);
+    const wrongUser = structuredClone(snapshot);
+    wrongUser.scope.userId = "user-b";
+    const crossUser = await space.fetch(new Request("https://space/product-user-micro-app-archives/preview?tenant_id=tenant-a&space_id=space-a", {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ snapshots: [wrongUser] }),
+    }));
+    expect(crossUser.status).toBe(422);
+
+    const other = await call("user-b");
+    expect(await other.json()).toEqual({ snapshots: [], omissions: { uninitializedActors: 0, unsupportedInstallations: 0 } });
+    expect(actorCalls).toHaveLength(4);
+    const forbidden = await call("user-a", "invalid");
+    expect(forbidden.status).toBe(403);
+    storage.sql.exec("UPDATE extension_instances SET status='removed' WHERE instance_id=?", "install-user-a");
+    const removed = await call("user-a");
+    expect(await removed.json()).toEqual({ snapshots: [], omissions: { uninitializedActors: 0, unsupportedInstallations: 0 } });
+    const restoreAfterRemoval = await apply();
+    expect(restoreAfterRemoval.status).toBe(409);
+    expect(actorCalls).toHaveLength(4);
   });
 
   it("purges local Space data, keeps a durable erasure tombstone, and rejects later writes and restores", async () => {

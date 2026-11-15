@@ -651,6 +651,9 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // product session. Keep the suffix exact so unrelated account operations do not inherit the
   // self-service identity path.
   /^\/spaces\/([^/]+)\/product-users\/me(?:\/export)?$/,
+  // User MicroApp archive recovery accepts only these explicit preview/apply actions; the
+  // Spaces Worker binds both to the exact product-user claim and active signed installation.
+  /^\/spaces\/([^/]+)\/product-users\/me\/micro-app-archives\/(?:preview|restore)$/,
   /^\/spaces\/([^/]+)\/me\/export$/,
   /^\/spaces\/([^/]+)\/me\/data$/,
   /^\/spaces\/([^/]+)\/projects(\/[^/]+)?$/,

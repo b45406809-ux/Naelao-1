@@ -35,7 +35,7 @@ function testEnv() {
         bind(...values: unknown[]) {
           return {
             async first() {
-              if (sql.includes("FROM spaces s JOIN space_members sm")) return { role: "owner" };
+              if (sql.includes("JOIN space_members sm")) return { role: "owner" };
               if (sql.includes("SELECT tenant_id, product_id FROM spaces")) return spaces.get(String(values[0])) ?? null;
               if (sql.includes("SELECT id, tenant_id FROM products")) {
                 const rootId = String(values[0]);
@@ -92,6 +92,7 @@ function testEnv() {
     },
   };
   const productUserCalls: string[] = [];
+  const spaceDoCalls: Array<{ path: string; userId: string | null }> = [];
   const PRODUCT_USER_DO = {
     idFromName: (name: string) => name,
     get: () => ({ fetch: async (request: Request) => {
@@ -101,7 +102,17 @@ function testEnv() {
       return Response.json({});
     } }),
   };
-  return { PLATFORM_DB, PRODUCT_USER_DO, productUserCalls, clearedAuthData, PLATFORM_SECRET: "test-secret" };
+  const SPACE_DO = {
+    idFromName: (name: string) => name,
+    get: () => ({ fetch: async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      spaceDoCalls.push({ path, userId: request.headers.get("x-naelao-user-id") });
+      if (path.endsWith("/preview")) return Response.json({ preview_id: "preview-a", results: [] });
+      if (path.endsWith("/restore")) return Response.json({ status: "applied", results: [] });
+      return Response.json({ snapshots: [], omissions: { uninitializedActors: 0, unsupportedInstallations: 0 } });
+    } }),
+  };
+  return { PLATFORM_DB, PRODUCT_USER_DO, SPACE_DO, productUserCalls, spaceDoCalls, clearedAuthData, PLATFORM_SECRET: "test-secret" };
 }
 
 const env = testEnv();
@@ -137,10 +148,31 @@ describe("language preference profile routes", () => {
   it("exports the authenticated Space user's profile and active DO data from the Space root", async () => {
     const child = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a");
     expect(child.status).toBe(200);
-    const data = await child.json() as { profile: { end_user_id: string; email: string; phone_e164: string }; product_user_data: { conversations: unknown[]; preferences: Record<string, unknown> } };
+    const data = await child.json() as { export_version: string; profile: { end_user_id: string; email: string; phone_e164: string };
+      product_user_data: { conversations: unknown[]; preferences: Record<string, unknown> };
+      micro_app_archives: unknown[]; micro_app_archive_omissions: { uninitializedActors: number; unsupportedInstallations: number } };
+    expect(data.export_version).toBe("2");
     expect(data.profile).toMatchObject({ end_user_id: "user-a", email: "a@example.invalid", phone_e164: "+14155550100" });
     expect(data.product_user_data).toEqual({ conversations: [], preferences: {} });
+    expect(data.micro_app_archives).toEqual([]);
+    expect(data.micro_app_archive_omissions).toEqual({ uninitializedActors: 0, unsupportedInstallations: 0 });
     expect(env.productUserCalls).toContain("/export");
+    expect(env.spaceDoCalls).toContainEqual({ path: "/product-user-micro-app-archives", userId: "user-a" });
+  });
+
+  it("forwards only the verified product-user identity to archive preview and restore", async () => {
+    const preview = await call("/spaces/business-a/product-users/me/micro-app-archives/preview", "POST", "product_end_user", "user-a",
+      { snapshots: [], user_id: "user-b" });
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toMatchObject({ preview_id: "preview-a" });
+    const restored = await call("/spaces/business-a/product-users/me/micro-app-archives/restore", "POST", "product_end_user", "user-a",
+      { preview_id: "preview-a", snapshots: [], user_id: "user-b" });
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ status: "applied" });
+    expect(env.spaceDoCalls.slice(-2)).toEqual([
+      { path: "/product-user-micro-app-archives/preview", userId: "user-a" },
+      { path: "/product-user-micro-app-archives/restore", userId: "user-a" },
+    ]);
   });
 
   it("erases the product-root identity and phone data when requested from a child business", async () => {

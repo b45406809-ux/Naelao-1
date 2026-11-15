@@ -3231,6 +3231,23 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_project_extension_agent_events_instance
       ON project_extension_agent_maintenance_events(tenant_id,space_id,project_id,instance_id,created_at DESC);`,
   },
+  {
+    version: 146,
+    description: "persist short-lived exact-user MicroApp archive restore previews",
+    up: `CREATE TABLE product_user_micro_app_restore_previews (
+      preview_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      snapshots_sha256 TEXT NOT NULL CHECK(length(snapshots_sha256)=64),
+      preview_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('previewed','applying','partial','applied')),
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_product_user_micro_app_restore_previews_scope
+      ON product_user_micro_app_restore_previews(tenant_id,space_id,user_id,expires_at);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -5771,6 +5788,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           return { instance, manifest: JSON.parse(manifest_json),
           approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) }; }) });
       }
+      if (url.pathname === "/product-user-micro-app-archives" && method === "GET")
+        return await this.exportProductUserMicroAppArchives(request, url.searchParams);
+      if (url.pathname === "/product-user-micro-app-archives/preview" && method === "POST")
+        return await this.previewProductUserMicroAppArchives(request, url.searchParams);
+      if (url.pathname === "/product-user-micro-app-archives/restore" && method === "POST")
+        return await this.restoreProductUserMicroAppArchives(request, url.searchParams);
       if (url.pathname === "/widget-event-subscribers" && method === "POST") {
         const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
         if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
@@ -14750,6 +14773,345 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private async extensionDependencyClosureActive(tenantId: string, spaceId: string, manifest: ExtensionManifest,
     scope: string, projectId?: string): Promise<boolean> {
     return (await this.extensionDependencyClosureSnapshotActive(tenantId, spaceId, manifest, scope, projectId)).resolved;
+  }
+
+  /** Export only the authenticated user's own active user-scoped MicroApp installations.
+   *  The caller is the Spaces Worker after it verifies the product-session identity and Space
+   *  membership. This DO rechecks its internal HMAC, the exact installation owner, active
+   *  signed release, publisher key and the gadget actor's own signed scope before returning data. */
+  private async exportProductUserMicroAppArchives(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const userId = request.headers.get("x-naelao-user-id") ?? "";
+    const spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !userId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
+      tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (params.get("tenant_id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId)
+      || [...params.keys()].some(key => !["tenant_id", "space_id"].includes(key)))
+      return Response.json({ error_code: "product_user_micro_app_archive_scope_invalid" }, { status: 400 });
+    if (!this.env.MICRO_APP_DO) return Response.json({ error_code: "micro_app_storage_unavailable" }, { status: 503 });
+
+    const installations = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; user_id: string | null;
+      scope: string; instance_key: string; manifest_json: string; release_version: string | null; pinned_artifact_sha256: string | null }>(
+      this.ctx.storage.sql as never,
+      `SELECT instance_id,extension_id,project_id,user_id,scope,instance_key,manifest_json,release_version,pinned_artifact_sha256
+         FROM extension_installation_manifests
+        WHERE tenant_id=? AND space_id=? AND user_id=? AND status='active' AND scope IN ('SPACE_USER','PROJECT_USER')
+        ORDER BY instance_id LIMIT 129`, tenantId, spaceId, userId);
+    if (installations.length > 128) return Response.json({ error_code: "product_user_micro_app_installation_limit_exceeded" }, { status: 413 });
+
+    const archives: MicroAppArchiveSnapshot[] = [];
+    let totalBytes = 0, uninitializedActors = 0, unsupportedInstallations = 0;
+    const activePublisherKeys = new Map<string, boolean>();
+    for (const installation of installations) {
+      if (installation.user_id !== userId || installation.scope !== "SPACE_USER" && installation.scope !== "PROJECT_USER"
+        || (installation.scope === "SPACE_USER" ? installation.project_id !== null : !installation.project_id)) {
+        unsupportedInstallations++;
+        continue;
+      }
+      if (!installation.release_version || !/^[a-f0-9]{64}$/.test(installation.pinned_artifact_sha256 ?? "")) {
+        unsupportedInstallations++;
+        continue;
+      }
+      let manifest: ExtensionManifest;
+      try { manifest = validateExtensionManifest(JSON.parse(installation.manifest_json)); }
+      catch { unsupportedInstallations++; continue; }
+      if (!manifest.bundle || manifest.id !== installation.extension_id || manifest.bundle.version !== installation.release_version) {
+        unsupportedInstallations++;
+        continue;
+      }
+      const release = queryOne<PublisherReleaseFields & { manifest_json: string; artifact_sha256: string; host_signature: string }>(
+        this.ctx.storage.sql as never,
+        `SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,
+                publisher_payload_sha256,publisher_revoked_at
+           FROM extension_releases WHERE extension_id=? AND version=?`, installation.extension_id, installation.release_version);
+      if (!release || release.manifest_json !== installation.manifest_json
+        || release.artifact_sha256 !== installation.pinned_artifact_sha256 || !publisherReleaseFieldsValid(release)
+        || await this.signExtensionRelease(installation.extension_id, installation.release_version, release.manifest_json,
+          release.artifact_sha256) !== release.host_signature) {
+        unsupportedInstallations++;
+        continue;
+      }
+      const keyId = release.publisher_key_id;
+      if (!keyId || !this.env.PLATFORM_DB) return Response.json({ error_code: "micro_app_publisher_registry_unavailable" }, { status: 503 });
+      if (!activePublisherKeys.has(keyId)) {
+        try {
+          const active = await this.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
+            WHERE tenant_id=? AND space_id=? AND publisher_id=? AND key_id=? AND status='active'`)
+            .bind(tenantId, spaceId, release.publisher_id, keyId).first<{ active: number }>();
+          activePublisherKeys.set(keyId, Boolean(active));
+        } catch { return Response.json({ error_code: "micro_app_publisher_registry_unavailable" }, { status: 503 }); }
+      }
+      if (!activePublisherKeys.get(keyId)) { unsupportedInstallations++; continue; }
+
+      const manifestSha256 = await digestExtensionManifest(manifest);
+      const prefix = installation.instance_key && installation.instance_key !== "default" ? `${installation.instance_key}_` : "";
+      const declaredGadgets = [
+        ...(manifest.bundle.primitives ?? []).filter(primitive => primitive.kind === "gadget"),
+        ...(manifest.gadgets ?? []).map(gadget => ({ kind: "gadget" as const, ...gadget })),
+      ];
+      const userGadgets = declaredGadgets.filter(gadget =>
+        ["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(gadget.scope ?? "")
+        && (installation.scope === "PROJECT_USER" ? gadget.scope === "PROJECT_USER" : gadget.scope !== "PROJECT_USER"));
+      for (const gadget of userGadgets) {
+        const gadgetScope = gadget.scope as GadgetScope;
+        const appId = `${prefix}${gadget.id}`;
+        if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) {
+          unsupportedInstallations++;
+          continue;
+        }
+        const projectId = gadgetScope === "PROJECT_USER" ? installation.project_id : null;
+        if (gadgetScope === "PROJECT_USER" && !projectId) { unsupportedInstallations++; continue; }
+        const scope: MicroAppArchiveSnapshot["scope"] = {
+          tenantId, spaceId, projectId, installationId: installation.instance_id, extensionId: installation.extension_id,
+          releaseVersion: installation.release_version, artifactSha256: installation.pinned_artifact_sha256!, manifestSha256,
+          appId, gadgetScope, userId,
+        };
+        if (!isMicroAppArchiveSnapshot({ version: 1, createdAt: new Date().toISOString(), scope, tables: [] },
+          { tenantId, spaceId, projectId, userId })) { unsupportedInstallations++; continue; }
+        let response: Response;
+        try {
+          const actor = gadgetScope === "PROJECT_USER"
+            ? gadgetActorId(this.env.MICRO_APP_DO, { scope: gadgetScope, spaceId, projectId: projectId!, appId, userId })
+            : gadgetActorId(this.env.MICRO_APP_DO, { scope: gadgetScope, spaceId, appId, userId });
+          response = await this.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/internal/archive/export", {
+            method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+            body: JSON.stringify({ scope }),
+          }));
+        } catch { return Response.json({ error_code: "micro_app_archive_export_unavailable" }, { status: 503 }); }
+        if (!response.ok) return Response.json({ error_code: "micro_app_archive_export_failed", status: response.status },
+          { status: [403, 409, 413].includes(response.status) ? response.status as 403 | 409 | 413 : 503 });
+        const result = await readBoundedResponseJson<{ present?: unknown; snapshot?: unknown }>(response,
+          MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES + 16 * 1024).catch(() => null);
+        if (!result || typeof result.present !== "boolean"
+          || result.present && !isMicroAppArchiveSnapshot(result.snapshot, { tenantId, spaceId, projectId, userId }))
+          return Response.json({ error_code: "micro_app_archive_snapshot_invalid" }, { status: 503 });
+        if (!result.present) { uninitializedActors++; continue; }
+        const snapshot = result.snapshot as MicroAppArchiveSnapshot;
+        if (snapshot.scope.installationId !== scope.installationId || snapshot.scope.extensionId !== scope.extensionId
+          || snapshot.scope.releaseVersion !== scope.releaseVersion || snapshot.scope.artifactSha256 !== scope.artifactSha256
+          || snapshot.scope.manifestSha256 !== scope.manifestSha256 || snapshot.scope.appId !== scope.appId
+          || snapshot.scope.gadgetScope !== scope.gadgetScope || snapshot.scope.userId !== userId)
+          return Response.json({ error_code: "micro_app_archive_snapshot_scope_mismatch" }, { status: 409 });
+        const snapshotBytes = new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+        if (archives.length >= MAX_MICRO_APP_ARCHIVE_SNAPSHOTS || totalBytes + snapshotBytes > MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES)
+          return Response.json({ error_code: "micro_app_archive_snapshot_limit_exceeded" }, { status: 413 });
+        archives.push(snapshot);
+        totalBytes += snapshotBytes;
+      }
+    }
+    return Response.json({ snapshots: archives, omissions: { uninitializedActors, unsupportedInstallations } },
+      { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async productUserMicroAppArchiveIdentity(request: Request, params: URLSearchParams): Promise<{
+    tenantId: string; spaceId: string; userId: string;
+  } | Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const userId = request.headers.get("x-naelao-user-id") ?? "";
+    const spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !userId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
+      tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (params.get("tenant_id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId)
+      || [...params.keys()].some(key => !["tenant_id", "space_id"].includes(key)))
+      return Response.json({ error_code: "product_user_micro_app_archive_scope_invalid" }, { status: 400 });
+    if (!this.env.MICRO_APP_DO) return Response.json({ error_code: "micro_app_storage_unavailable" }, { status: 503 });
+    return { tenantId, spaceId, userId };
+  }
+
+  private async readProductUserMicroAppArchiveSnapshots(request: Request, identity: { tenantId: string; spaceId: string; userId: string },
+    mode: "preview" | "restore"): Promise<{ snapshots: MicroAppArchiveSnapshot[]; previewId?: string } | Response> {
+    let body: Record<string, unknown>;
+    try {
+      const bytes = await readBoundedRequestBytes(request, MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES + 32 * 1024);
+      const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid_body");
+      body = value as Record<string, unknown>;
+    } catch (error) {
+      return Response.json({ error_code: error instanceof RequestBodyTooLargeError ? "payload_too_large" : "product_user_micro_app_archive_request_invalid" },
+        { status: error instanceof RequestBodyTooLargeError ? 413 : 400 });
+    }
+    const allowed = mode === "preview" ? ["snapshots"] : ["preview_id", "snapshots"];
+    if (Object.keys(body).some(key => !allowed.includes(key)) || mode === "restore"
+      && (typeof body.preview_id !== "string" || !/^[0-9a-f-]{36}$/.test(body.preview_id)))
+      return Response.json({ error_code: "product_user_micro_app_archive_request_invalid" }, { status: 400 });
+    if (!Array.isArray(body.snapshots) || body.snapshots.length < 1 || body.snapshots.length > MAX_MICRO_APP_ARCHIVE_SNAPSHOTS)
+      return Response.json({ error_code: "product_user_micro_app_archive_snapshot_set_invalid" }, { status: 422 });
+    const snapshots: MicroAppArchiveSnapshot[] = [];
+    const seen = new Set<string>();
+    let totalBytes = 0;
+    for (const value of body.snapshots) {
+      if (!isMicroAppArchiveSnapshot(value, { tenantId: identity.tenantId, spaceId: identity.spaceId, userId: identity.userId })
+        || !["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(value.scope.gadgetScope))
+        return Response.json({ error_code: "product_user_micro_app_archive_snapshot_invalid" }, { status: 422 });
+      const key = `${value.scope.installationId}\u0000${value.scope.projectId ?? ""}\u0000${value.scope.appId}`;
+      if (seen.has(key)) return Response.json({ error_code: "product_user_micro_app_archive_snapshot_duplicate" }, { status: 422 });
+      seen.add(key);
+      totalBytes += new TextEncoder().encode(JSON.stringify(value)).byteLength;
+      if (totalBytes > MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES)
+        return Response.json({ error_code: "product_user_micro_app_archive_snapshot_set_too_large" }, { status: 413 });
+      snapshots.push(value);
+    }
+    return { snapshots, ...(typeof body.preview_id === "string" ? { previewId: body.preview_id } : {}) };
+  }
+
+  /** Re-resolve every supplied archive against the currently active, exact user installation. */
+  private async resolveProductUserMicroAppArchiveActor(snapshot: MicroAppArchiveSnapshot, identity: {
+    tenantId: string; spaceId: string; userId: string;
+  }): Promise<{ actor: DurableObjectId } | Response> {
+    const scope = snapshot.scope;
+    const projectScope = scope.gadgetScope === "PROJECT_USER";
+    const installation = queryOne<{ instance_id: string; extension_id: string; project_id: string | null; user_id: string | null;
+      scope: string; instance_key: string; manifest_json: string; release_version: string | null; pinned_artifact_sha256: string | null }>(
+      this.ctx.storage.sql as never,
+      `SELECT instance_id,extension_id,project_id,user_id,scope,instance_key,manifest_json,release_version,pinned_artifact_sha256
+         FROM extension_installation_manifests
+        WHERE instance_id=? AND tenant_id=? AND space_id=? AND user_id=? AND status='active'
+          AND scope IN ('SPACE_USER','PROJECT_USER')`,
+      scope.installationId, identity.tenantId, identity.spaceId, identity.userId);
+    if (!installation || installation.user_id !== identity.userId || installation.extension_id !== scope.extensionId
+      || installation.release_version !== scope.releaseVersion || installation.pinned_artifact_sha256 !== scope.artifactSha256
+      || (projectScope ? installation.scope !== "PROJECT_USER" || installation.project_id !== scope.projectId
+        : installation.scope !== "SPACE_USER" || installation.project_id !== null))
+      return Response.json({ error_code: "product_user_micro_app_installation_unavailable" }, { status: 409 });
+    let manifest: ExtensionManifest;
+    try { manifest = validateExtensionManifest(JSON.parse(installation.manifest_json)); }
+    catch { return Response.json({ error_code: "product_user_micro_app_release_invalid" }, { status: 409 }); }
+    if (!manifest.bundle || manifest.id !== scope.extensionId || manifest.bundle.version !== scope.releaseVersion
+      || await digestExtensionManifest(manifest) !== scope.manifestSha256)
+      return Response.json({ error_code: "product_user_micro_app_manifest_mismatch" }, { status: 409 });
+    const release = queryOne<PublisherReleaseFields & { manifest_json: string; artifact_sha256: string; host_signature: string }>(
+      this.ctx.storage.sql as never,
+      `SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,
+              publisher_payload_sha256,publisher_revoked_at
+         FROM extension_releases WHERE extension_id=? AND version=?`, scope.extensionId, scope.releaseVersion);
+    if (!release || release.manifest_json !== installation.manifest_json || release.artifact_sha256 !== scope.artifactSha256
+      || !publisherReleaseFieldsValid(release) || await this.signExtensionRelease(scope.extensionId, scope.releaseVersion,
+        release.manifest_json, release.artifact_sha256) !== release.host_signature)
+      return Response.json({ error_code: "product_user_micro_app_release_mismatch" }, { status: 409 });
+    const keyId = release.publisher_key_id;
+    if (!keyId || !this.env.PLATFORM_DB) return Response.json({ error_code: "micro_app_publisher_registry_unavailable" }, { status: 503 });
+    try {
+      const active = await this.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
+        WHERE tenant_id=? AND space_id=? AND publisher_id=? AND key_id=? AND status='active'`)
+        .bind(identity.tenantId, identity.spaceId, release.publisher_id, keyId).first<{ active: number }>();
+      if (!active) return Response.json({ error_code: "product_user_micro_app_publisher_revoked" }, { status: 409 });
+    } catch { return Response.json({ error_code: "micro_app_publisher_registry_unavailable" }, { status: 503 }); }
+    const prefix = installation.instance_key && installation.instance_key !== "default" ? `${installation.instance_key}_` : "";
+    const primitiveId = prefix && scope.appId.startsWith(prefix) ? scope.appId.slice(prefix.length) : prefix ? "" : scope.appId;
+    const declarations = [
+      ...(manifest.bundle.primitives ?? []).filter(primitive => primitive.kind === "gadget"),
+      ...(manifest.gadgets ?? []),
+    ];
+    if (!primitiveId || !declarations.some(gadget => gadget.id === primitiveId && gadget.scope === scope.gadgetScope))
+      return Response.json({ error_code: "product_user_micro_app_gadget_not_declared" }, { status: 409 });
+    const actor = projectScope
+      ? gadgetActorId(this.env.MICRO_APP_DO!, { scope: "PROJECT_USER", spaceId: identity.spaceId,
+        projectId: scope.projectId!, appId: scope.appId, userId: identity.userId })
+      : gadgetActorId(this.env.MICRO_APP_DO!, { scope: scope.gadgetScope as "USER_PRIVATE" | "SPACE_USER",
+        spaceId: identity.spaceId, appId: scope.appId, userId: identity.userId });
+    return { actor };
+  }
+
+  private async previewProductUserMicroAppArchives(request: Request, params: URLSearchParams): Promise<Response> {
+    const identity = await this.productUserMicroAppArchiveIdentity(request, params);
+    if (identity instanceof Response) return identity;
+    const parsed = await this.readProductUserMicroAppArchiveSnapshots(request, identity, "preview");
+    if (parsed instanceof Response) return parsed;
+    const snapshotHash = await sha256Hex(JSON.stringify(parsed.snapshots));
+    const results: Array<{ installation_id: string; project_id: string | null; app_id: string; would_insert_rows: number; would_preserve_rows: number }> = [];
+    const countMap = (value: unknown): value is Record<string, number> => Boolean(value && typeof value === "object" && !Array.isArray(value)
+      && Object.entries(value).every(([key, count]) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)
+        && Number.isSafeInteger(count) && Number(count) >= 0));
+    for (const snapshot of parsed.snapshots) {
+      const resolved = await this.resolveProductUserMicroAppArchiveActor(snapshot, identity);
+      if (resolved instanceof Response) return resolved;
+      let response: Response;
+      try { response = await this.env.MICRO_APP_DO!.get(resolved.actor).fetch(new Request("http://micro-app/internal/archive/preview", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, identity.tenantId) },
+        body: JSON.stringify({ snapshot }),
+      })); } catch { return Response.json({ error_code: "product_user_micro_app_restore_preview_unavailable" }, { status: 503 }); }
+      if (!response.ok) return Response.json({ error_code: "product_user_micro_app_restore_preview_rejected", status: response.status },
+        { status: [403, 409, 413, 422].includes(response.status) ? response.status as 403 | 409 | 413 | 422 : 503 });
+      const preview = await readBoundedResponseJson<{ preview?: { inserted?: unknown; skipped?: unknown } }>(response, 32 * 1024).catch(() => null);
+      if (!preview?.preview || !countMap(preview.preview.inserted) || !countMap(preview.preview.skipped))
+        return Response.json({ error_code: "product_user_micro_app_restore_preview_invalid" }, { status: 503 });
+      results.push({ installation_id: snapshot.scope.installationId, project_id: snapshot.scope.projectId, app_id: snapshot.scope.appId,
+        would_insert_rows: Object.values(preview.preview.inserted).reduce((sum, count) => sum + count, 0),
+        would_preserve_rows: Object.values(preview.preview.skipped).reduce((sum, count) => sum + count, 0) });
+    }
+    const previewId = crypto.randomUUID(), createdAt = Date.now(), expiresAt = createdAt + 15 * 60_000;
+    const sql = this.ctx.storage.sql as never;
+    try {
+      this.ctx.storage.sql.exec("DELETE FROM product_user_micro_app_restore_previews WHERE expires_at<=?", createdAt);
+      const count = queryOne<{ count: number }>(sql, "SELECT COUNT(*) AS count FROM product_user_micro_app_restore_previews")?.count ?? 0;
+      if (count >= 10_000) return Response.json({ error_code: "product_user_micro_app_restore_preview_limit" }, { status: 429 });
+      this.ctx.storage.sql.exec(`INSERT INTO product_user_micro_app_restore_previews(preview_id,tenant_id,space_id,user_id,snapshots_sha256,preview_json,status,created_at,expires_at)
+        VALUES(?,?,?,?,?,?,'previewed',?,?)`, previewId, identity.tenantId, identity.spaceId, identity.userId, snapshotHash,
+        JSON.stringify(results), createdAt, expiresAt);
+    } catch { return Response.json({ error_code: "product_user_micro_app_restore_preview_unavailable" }, { status: 503 }); }
+    return Response.json({ preview_id: previewId, expires_at: new Date(expiresAt).toISOString(), restore_mode: "idempotent_merge_missing_rows", results },
+      { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async restoreProductUserMicroAppArchives(request: Request, params: URLSearchParams): Promise<Response> {
+    const identity = await this.productUserMicroAppArchiveIdentity(request, params);
+    if (identity instanceof Response) return identity;
+    const parsed = await this.readProductUserMicroAppArchiveSnapshots(request, identity, "restore");
+    if (parsed instanceof Response) return parsed;
+    const previewId = parsed.previewId!;
+    const snapshotHash = await sha256Hex(JSON.stringify(parsed.snapshots));
+    const preview = queryOne<{ snapshots_sha256: string; status: string; expires_at: number }>(this.ctx.storage.sql as never,
+      "SELECT snapshots_sha256,status,expires_at FROM product_user_micro_app_restore_previews WHERE preview_id=? AND tenant_id=? AND space_id=? AND user_id=?",
+      previewId, identity.tenantId, identity.spaceId, identity.userId);
+    if (!preview || preview.expires_at <= Date.now() || preview.snapshots_sha256 !== snapshotHash
+      || !["previewed", "applying", "partial", "applied"].includes(preview.status))
+      return Response.json({ error_code: "product_user_micro_app_restore_preview_required_or_stale" }, { status: 409 });
+    this.ctx.storage.sql.exec("UPDATE product_user_micro_app_restore_previews SET status='applying' WHERE preview_id=? AND status IN ('previewed','applying','partial','applied')",
+      previewId);
+    const results: Array<{ installation_id: string; project_id: string | null; app_id: string; inserted_rows: number; preserved_rows: number; replayed: boolean }> = [];
+    const countMap = (value: unknown): value is Record<string, number> => Boolean(value && typeof value === "object" && !Array.isArray(value)
+      && Object.entries(value).every(([key, count]) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)
+        && Number.isSafeInteger(count) && Number(count) >= 0));
+    for (const snapshot of parsed.snapshots) {
+      const resolved = await this.resolveProductUserMicroAppArchiveActor(snapshot, identity);
+      if (resolved instanceof Response) {
+        this.ctx.storage.sql.exec("UPDATE product_user_micro_app_restore_previews SET status='partial' WHERE preview_id=?", previewId);
+        return resolved;
+      }
+      const restoreId = await sha256Hex(JSON.stringify(["product-user-micro-app-restore-v1", previewId, snapshotHash,
+        snapshot.scope.installationId, snapshot.scope.projectId, snapshot.scope.appId]));
+      let response: Response;
+      try { response = await this.env.MICRO_APP_DO!.get(resolved.actor).fetch(new Request("http://micro-app/internal/archive/restore", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, identity.tenantId) },
+        body: JSON.stringify({ snapshot, restoreId, restoredBy: identity.userId }),
+      })); } catch {
+        this.ctx.storage.sql.exec("UPDATE product_user_micro_app_restore_previews SET status='partial' WHERE preview_id=?", previewId);
+        return Response.json({ error_code: "product_user_micro_app_restore_unavailable" }, { status: 503 });
+      }
+      if (!response.ok) {
+        this.ctx.storage.sql.exec("UPDATE product_user_micro_app_restore_previews SET status='partial' WHERE preview_id=?", previewId);
+        return Response.json({ error_code: "product_user_micro_app_restore_rejected", status: response.status },
+          { status: [403, 409, 413, 422].includes(response.status) ? response.status as 403 | 409 | 413 | 422 : 503 });
+      }
+      const restored = await readBoundedResponseJson<{ inserted?: unknown; skipped?: unknown; replayed?: unknown }>(response, 32 * 1024).catch(() => null);
+      if (!restored || !countMap(restored.inserted) || !countMap(restored.skipped) || typeof restored.replayed !== "boolean") {
+        this.ctx.storage.sql.exec("UPDATE product_user_micro_app_restore_previews SET status='partial' WHERE preview_id=?", previewId);
+        return Response.json({ error_code: "product_user_micro_app_restore_response_invalid" }, { status: 503 });
+      }
+      results.push({ installation_id: snapshot.scope.installationId, project_id: snapshot.scope.projectId, app_id: snapshot.scope.appId,
+        inserted_rows: Object.values(restored.inserted).reduce((sum, count) => sum + count, 0),
+        preserved_rows: Object.values(restored.skipped).reduce((sum, count) => sum + count, 0), replayed: restored.replayed });
+      this.ctx.storage.sql.exec("UPDATE product_user_micro_app_restore_previews SET preview_json=? WHERE preview_id=?", JSON.stringify(results), previewId);
+    }
+    this.ctx.storage.sql.exec("UPDATE product_user_micro_app_restore_previews SET status='applied',preview_json=? WHERE preview_id=?",
+      JSON.stringify(results), previewId);
+    return Response.json({ preview_id: previewId, status: "applied", results,
+      replayed: results.length > 0 && results.every(result => result.replayed) }, { headers: { "cache-control": "private, no-store" } });
   }
 
   private async spaceSharedExtensionRuntime(params: URLSearchParams): Promise<Response> {
