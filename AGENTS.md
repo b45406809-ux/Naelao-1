@@ -12,13 +12,21 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (S2 UserPort owner-link unlink recovery; code 70c2e2d34daa99f254c598234885b0332629460b)
+## Latest checkpoint — 2026-11-15 (P04 exact-user chat portability; pushed b91a07953d33918c526307635d0412c72f6ff9e2)
+
+Authenticated Product-user export version 3 now includes exact-user chat sessions/messages from the Product's related Spaces alongside existing profile, ProductUserDO, Billing and user-scoped MicroApp data. SpaceDO requires tenant HMAC, exact tenant/Space/user scope, and caps a complete Space response at 1,000 sessions, 2,000 messages and 4 MiB; Product aggregation caps transcripts at 16 MiB and fails closed on missing, malformed or oversized data. The shared bounded-response reader now starts stream cancellation without waiting for an untrusted cancellation promise.
+
+Local verification: Spaces route and SpaceDO tests **15/15**, Spaces typecheck, bounded-response tests **7/7**, HTTP package typecheck, and `git diff --check`. These are local Worker/SQLite mocks only; no deployment, live provider or recovery acceptance. Code SHA `b91a07953d33918c526307635d0412c72f6ff9e2` is pushed and remote-verified. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+P04 remains PARTIAL for other service/provider stores, retention/key/jurisdiction policy, cross-service point-in-time consistency, isolated recovery and measured/deployed RPO/RTO. `PROJECT_USER` and same-identity app reinstall still lack supported contracts. The `origin/plan/microapps-ui-sdk-voice` plan text remains copied into platform plan sections 9 and 11; no source-branch merge occurred. U05's Container-to-Computer trusted-observation bridge is uncoded and mismatched to the present runtime contract, not blocked by credentials; U06 remains unsupported.
+
+Exact next action: continue commercial integrity at P17 by tracing Marketplace-to-Shell identity handoff from current purchase/listing claims through product-session issuance. Add an exact-listing, short-lived, single-use handoff only if existing authorities prove the same account; otherwise record the precise identity-contract gate and move to the next independent code gap. Then continue S3–S9/U01–U12 and P01–P24 without repeating completed audits.
+
+## Previous checkpoint — 2026-11-15 (S2 UserPort owner-link unlink recovery; code 70c2e2d34daa99f254c598234885b0332629460b)
 
 Owner-link revocation no longer aborts before cleaning already-bound AgentPort accounts when one held sync journal cannot be safely replayed. It persists the owner-link fence, schedules only recoverable held operations, marks irrecoverable records held with `userport_connector_sync_recovery_unavailable`, independently revokes exact account IDs from the persisted binding, and returns `cleanupBlocked`/`cleanupPending` so the caller cannot mistake partial cleanup for completion. The normal alias-unlink path still refuses to replay an unapproved held operation.
 
-Verification: UserPort↔AgentPort lifecycle suite **17/17**, Agents typecheck, and `git diff --check`. Route-level local SQLite/Worker mocks only; no live AgentPort/provider or deployed acceptance. Code SHA `70c2e2d34daa99f254c598234885b0332629460b` is committed locally; publish it with the documentation checkpoint below. S2 remains IMPLEMENTED_LOCAL only for supported lanes; provider/commercial acceptance is separate. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
-
-Exact next action: continue S3/U05 at the product-side live candidate lifecycle. Trace current owner-authorized Cloudflare project-main allocation and the capability verifier; implement a candidate allocation/reservation bound to tenant, Space, Project, current allocation generation, selected template/image digest, authorization, and existing budget/credit holds. Keep candidate state unqualified until a trusted runtime observation exists. Add persistence, caller authorization, stale/concurrent allocation and no-fabricated-attestation coverage. Do not claim a live mount, trusted observation, or U06 writer/drain/flush behavior.
+Verification: UserPort↔AgentPort lifecycle suite **17/17**, Agents typecheck, and `git diff --check`. Route-level local SQLite/Worker mocks only; no live AgentPort/provider or deployed acceptance. S2 remains IMPLEMENTED_LOCAL only for supported lanes. The earlier proposed U05 candidate reservation was superseded by source reconciliation: the Container allocation, Computer live-mount verifier, credit holds and trusted observations do not share an identity or producer contract. Do not fabricate a candidate or attestation. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
 
 ## Previous checkpoint — 2026-11-15 (P04 product-user billing portability; pushed 2bec4bc861c33e0f272b9c5f11ed79120e12ccf2)
 
