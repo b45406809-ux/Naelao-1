@@ -12,7 +12,17 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (P04 exact-user chat portability; pushed b91a07953d33918c526307635d0412c72f6ff9e2)
+## Latest checkpoint — 2026-11-15 (P04 exact-user purchase history; pushed 1bbe8ab66479c2f2960cfbbd854f89eaa1a57e0d)
+
+The authenticated Product-user export now includes a bounded purchase-history summary from Billing's immutable `product_user_plan` receipts. Billing returns only provider, plan tier, amount/currency and purchase timestamp, scopes rows to the exact active tenant/product/user, and returns at most ten with an explicit `has_more`. Spaces validates the strict shape and returns 413 rather than silently exporting a truncated history. Provider event, subscription and variant IDs, customer IDs and raw receipts stay private.
+
+Verification: Billing status tests **5/5**, Billing typecheck; Spaces export route tests **13/13**, Spaces typecheck, and `git diff --check`. These are local Worker mocks/typechecks, not deployment or live provider acceptance. Code `1bbe8ab66479c2f2960cfbbd854f89eaa1a57e0d` is pushed and verified on `origin/Mcbt5s-Backup-2`. Preserve untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
+
+P17 trace found that Marketplace/Shell builder JWTs identify a platform user and organization, while product-user sessions use a separate issuer with the end-user ID, tenant and `product_end_user` role; there is no persisted cross-issuer identity link or handoff authority. Email equality and browser state do not prove the same account. A Marketplace-to-Shell SSO handoff remains a product/identity contract gate, not a credentials blocker. P04 remains PARTIAL for other stores, policy, cross-service consistency and recovery acceptance. The microapp/UI SDK/voice plan copy remains in platform-plan sections 9 and 11 from `origin/plan/microapps-ui-sdk-voice`; no branch merge occurred.
+
+Exact next action: continue P05 §11.5 with one real signed MicroApp Canvas dashboard path in the installed Shell view, reusing the scoped host business-action/settings APIs. Keep synthetic POC fixtures out of embedded frames, preserve release/install scope checks, and add caller-level authorization and failure coverage. Then continue the remaining S3–S9/U01–U12 and P01–P24 gaps in dependency order; keep rollout flags false.
+
+## Previous checkpoint — 2026-11-15 (P04 exact-user chat portability; pushed b91a07953d33918c526307635d0412c72f6ff9e2)
 
 Authenticated Product-user export version 3 now includes exact-user chat sessions/messages from the Product's related Spaces alongside existing profile, ProductUserDO, Billing and user-scoped MicroApp data. SpaceDO requires tenant HMAC, exact tenant/Space/user scope, and caps a complete Space response at 1,000 sessions, 2,000 messages and 4 MiB; Product aggregation caps transcripts at 16 MiB and fails closed on missing, malformed or oversized data. The shared bounded-response reader now starts stream cancellation without waiting for an untrusted cancellation promise.
 

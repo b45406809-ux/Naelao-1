@@ -1,6 +1,18 @@
 # Managed services and sidecar implementation progress
 
-## Continuation checkpoint — 2026-11-15 (P04 exact-user chat portability; pushed b91a07953d33918c526307635d0412c72f6ff9e2)
+## Continuation checkpoint — 2026-11-15 (P04 exact-user purchase history; pushed 1bbe8ab66479c2f2960cfbbd854f89eaa1a57e0d)
+
+The authenticated Product-user export now includes a bounded purchase-history summary from Billing's immutable `product_user_plan` receipts. Billing scopes the query to the active tenant/product and exact end user, minimizes rows to provider, plan tier, amount/currency and timestamp, and reports whether more than ten exist. Spaces validates the strict response and rejects truncated history rather than returning a partial export. Internal provider event, subscription and variant IDs, customer IDs and raw receipts remain private.
+
+Verification: Billing status tests **5/5**, Billing typecheck, Spaces export route tests **13/13**, Spaces typecheck and `git diff --check`. Local mocks only; no deployed Billing/Spaces or provider acceptance. Code `1bbe8ab66479c2f2960cfbbd854f89eaa1a57e0d` is pushed and verified. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+P17 source trace confirms Marketplace/Shell builder JWTs and product-user sessions are distinct issuers and identity authorities. Product-user `sub` is the end-user ID with tenant and `product_end_user` role; builder `sub` is the platform user ID with organization and email. There is no persisted cross-issuer link or single-use handoff authority. Do not bridge by matching email or browser state; this is a product/identity contract gate, not a credentials blocker.
+
+P04 remains PARTIAL for other service/provider stores, retention/key/jurisdiction policy, cross-service consistency, isolated recovery and measured/deployed RPO/RTO. The copied Fish Live 3, business MicroApp, UI SDK and voice material remains in active platform-plan sections 9 and 11; no plan branch merge occurred. U05's Container-to-Computer trusted-observation bridge and U06 writer/drain/handoff remain unsupported runtime contracts.
+
+Exact next action: continue P05 §11.5 with one real signed MicroApp Canvas dashboard path in the installed Shell view, reusing scoped host business-action/settings APIs; keep synthetic fixtures out of embedded frames and add caller-level authorization/failure coverage. Then continue S3–S9/U01–U12 and P01–P24 in dependency order without repeating completed audits.
+
+## Previous checkpoint — 2026-11-15 (P04 exact-user chat portability; pushed b91a07953d33918c526307635d0412c72f6ff9e2)
 
 Product-user export v3 includes exact-user chat transcripts from the Product's related Spaces, in addition to its existing profile, ProductUserDO, Billing and user-scoped MicroApp data. The SpaceDO export is tenant-HMAC protected and rejects scope mismatch; complete results are limited to 1,000 sessions, 2,000 messages and 4 MiB per Space, with a 16 MiB aggregate chat cap. Oversized, malformed or unavailable data fails closed. The shared bounded-response reader no longer blocks on an unsettled cancellation promise.
 
