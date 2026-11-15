@@ -1,6 +1,39 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (P06 consent caller and media boundary; P20 reconciled; pushed)
+## Latest checkpoint — 2026-11-15 (P06 host voice runtime; section 11 source added; pushed)
+
+Joint code checkpoint `b39d2da47211bc1b743064e2df9fc020905d16d3` is pushed to
+`origin/Mcbt5s-Backup-2`; pre-push fetch confirmed `0c249321` as an ancestor. The separate BYO Telnyx
+extension path now has caller consent, host STT/TTS with Billing reservations and a configured estimated
+speech ceiling, bounded audio conversion/output, interruption, deadlines, cleanup and a five-minute
+reconciliation sweep. Owner status reports consent, runtime, estimated speech usage and unresolved
+receipts separately from carrier cost. The transcript path does not persist audio/text in D1 or the
+handler's durable session state; duplicate transcript events return outcome-unknown without replay.
+Migration 0258 is release-pinned. Rollout and external acceptance flags remain false.
+
+Focused Agents voice/call/session/media/phone/SpaceDO tests **75/75**, Agents/Shell typechecks, release
+migration tests **39/39**, release/deployment manifest validators and `git diff --check` passed locally.
+All provider and Billing interactions were mocked. No browser, Telnyx/OpenRouter live call, invoice,
+deployed Worker/D1 or production acceptance ran. P06 remains PARTIAL for Telnyx/OpenRouter contract,
+pricing/quality and media behavior acceptance, plus publisher signing/catalog/provisioning. Unknown
+provider outcomes without a resolvable generation receipt remain pending for operator/provider
+reconciliation, not silently released.
+
+The fetched plan branch `plan/microapps-ui-sdk-voice` at `df3386257262a8882a10e0f7b10fe297cefd17d3` added
+Fish Live 3 research and business microapp/UI SDK section 11; the text was copied into this active plan
+without merging the branch. Current `MicroAppDO` provides scoped app storage and schema-column MCP CRUD,
+with Canvas integration, but no shared typed domain-action API that enforces the same rules for UI and
+assistant callers. Fish Live 3 integration and Vercel UI SDK use remain uncoded and contract/evaluation
+gated. The plan is not a support or availability claim.
+
+Exact next action: implement section 11.2's typed named business-action contract from the current
+`MicroAppDO`, `gadget-mcp` routes, extension declarations and UI callers. Start with one concrete action
+that both UI and assistant/MCP invoke through the same host-authorized function; enforce actor and
+installation permissions, current revocation, schemas, expected versions, audit and idempotent effects.
+Then continue release, commercial/recovery, guided setup, voice dashboard and shared-Space gaps without
+repeating closed audits.
+
+## Previous checkpoint — 2026-11-15 (P06 consent caller and media boundary; P20 reconciled; pushed)
 
 Joint code `1f429ee9d970449e3e5d875e3adab0b811e1ac7e` is pushed to
 `origin/Mcbt5s-Backup-2`; fetch confirmed `fb145a18` as an ancestor. Telnyx extension lines now expose

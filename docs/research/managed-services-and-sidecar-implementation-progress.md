@@ -1,6 +1,43 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (P06 consent caller and extension media boundary; pushed)
+## Latest checkpoint — 2026-11-15 (P06 bounded Telnyx extension media runtime; pushed)
+
+Code `b39d2da47211bc1b743064e2df9fc020905d16d3` is pushed to `origin/Mcbt5s-Backup-2`; fetch before
+push confirmed `0c249321` as ancestor. Migration 0258 adds sequential transcript fencing and a
+session-scoped durable audio usage journal; release and deployment manifests require schema 0258. The
+separate consented BYO extension caller now runs host-owned OpenRouter STT/TTS through existing Billing
+reservations, enforces a configured per-call estimated speech budget, converts Telnyx PCMU/8 kHz to
+PCM16/16 kHz, paces and bounds return audio, supports interruption cancellation/clear, exact handler
+pin/current-authority checks, timeouts and cleanup. Unknown side effects are not replayed. D1 extension
+receipts retain usage metadata but neither raw transcript nor audio. Voice turns do not read or persist
+extension durable session state; transcript-event dedupe stores a completed/null-response receipt so a
+retry is returned outcome-unknown rather than re-executed. The scheduled five-minute sweep reconciles
+ended/expired sessions' known usage receipts. Owners see consent/runtime status, estimated speech cost,
+unresolved receipts and the configured estimate ceiling separately from carrier cost.
+
+All rollout gates remain false in dev/staging/prod. Local evidence: focused Agents voice/call/session/
+media/phone/SpaceDO tests **75/75**, Agents/Shell typechecks, release migration tests **39/39**, release
+and deployment validators, `git diff --check`. Tests use local SQLite and mocked Telnyx/OpenRouter/
+Billing. No browser, provider, invoice, deployed D1, deployment or live acceptance ran. External
+acceptance for Telnyx media format/clear behavior and OpenRouter latency/pricing/receipts is not met;
+generation-less ambiguous receipts remain visible and unresolved. P06 is PARTIAL overall for those live
+gates and signed publisher/catalog/provisioning, full cost/quality evidence. These are distinct from the
+completed local host implementation. P20 refund code remains reused at `5a462626`, not duplicated.
+
+The new plan branch `plan/microapps-ui-sdk-voice` at `df3386257262a8882a10e0f7b10fe297cefd17d3` was
+fetched; its Fish Live 3 and section 11 microapp/UI SDK additions were copied into the active platform
+plan without merging that branch. Current MicroAppDO/Canvas and generic MCP CRUD are foundations, not
+the required named domain business-action contract. Fish provider integration and Vercel UI SDK
+adoption remain uncoded/evaluation-gated, not credential-blocked.
+
+Exact next action: implement platform-plan section 11.2's typed, named microapp business-action contract
+through one host-authorized caller shared by the UI and assistant/MCP. First reconcile current
+`workers/spaces/src/do/MicroAppDO.ts`, `workers/spaces/src/routes/gadget-mcp.ts`, extension action
+declarations and UI callers; then add a concrete example with actor/installation authorization, schema
+validation, revocation, version fencing, audit and idempotent retry coverage. Continue other independent
+plan gaps after this slice; do not stop at its tests.
+
+## Previous checkpoint — 2026-11-15 (P06 consent caller and extension media boundary; pushed)
 
 Code `1f429ee9d970449e3e5d875e3adab0b811e1ac7e` is pushed to `origin/Mcbt5s-Backup-2`; fetch before
 push found remote `fb145a18` as an ancestor. Existing extension-line policy now has a default-false

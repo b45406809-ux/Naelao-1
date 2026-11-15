@@ -1,6 +1,6 @@
 # Platform completion and guided templates plan
 
-Status: active implementation plan. The plan arrived on `Mcbt5s-Backup-2` in commit `9e1281ce` and is integrated into `autonomous-managed-services-20261111`. Implementation and evidence are tracked in [managed-services progress](managed-services-and-sidecar-implementation-progress.md); the rows below reconcile historical findings against current source and must not be read as live acceptance.
+Status: active implementation plan. The original plan arrived on `Mcbt5s-Backup-2` in commit `9e1281ce` and is integrated into `autonomous-managed-services-20261111`. Additional Fish Live 3 research and business microapp/UI SDK requirements were copied from plan branch commit `df3386257262a8882a10e0f7b10fe297cefd17d3`; that branch was not merged. Implementation and evidence are tracked in [platform progress](platform-completion-and-guided-templates-progress.md); the rows below reconcile historical findings against current source and must not be read as live acceptance.
 
 The original review used `02a0cf78` on 2026-11-11. Its findings and later design sections are research inputs, not current-code claims. Before changing a row, compare its actual caller, persistence, configuration and tests with the current branch; reuse the existing S1–S9/U01–U12 ledgers and implementations. Push authorized coherent checkpoints to `Mcbt5s-Backup-2` after fetching and safely integrating remote advances.
 

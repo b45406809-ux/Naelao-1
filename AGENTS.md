@@ -16,7 +16,44 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (P06 consent caller; P20 source reconciliation; pushed)
+## Latest checkpoint — 2026-11-15 (P06 bounded extension voice runtime; microapp plan copied; pushed)
+
+Code `b39d2da47211bc1b743064e2df9fc020905d16d3` is pushed to `origin/Mcbt5s-Backup-2`; the pre-push
+fetch confirmed `0c249321` was an ancestor. P06 now has a separate BYO Telnyx extension runtime with
+OpenRouter STT/TTS admission, per-call estimated budget, PCMU/PCM conversion, paced 20 ms output,
+barge-in cancellation/clear, bounded queues and payloads, per-turn and session deadlines, exact pinned
+handler/settings rechecks, no blind replay after unknown outcomes, and close/hangup cleanup. D1 stores
+session-scoped usage receipts, not audio or transcripts; transcript events do not read/write durable
+extension session state or retain their response in replay receipts. The five-minute scheduler retries
+eligible durable Billing/generation receipts and reports old unresolved usage. Owner status separates
+estimated speech admission/cost from carrier charges. Migration `0258` is pinned in release and
+deployment manifests. `TELNYX_EXTENSION_STREAMING_ENABLED` and the separate external-acceptance gate are
+false in development, staging and production; rollout stays disabled.
+
+The pushed platform plan at `origin/plan/microapps-ui-sdk-voice` (`df3386257262a8882a10e0f7b10fe297cefd17d3`)
+was fetched and its Fish Live 3 research plus section 11 business microapp and UI SDK requirements were
+copied into the active platform plan. No branch merge or checkout occurred. Current `MicroAppDO` already
+has scoped instance storage, a sandboxed Canvas integration and generic schema-column MCP CRUD. That is
+not a domain business-action API, unified UI/assistant authorization, arbitrary AI app editing, or
+Vercel UI SDK adoption. Those section 11 requirements remain uncoded or partial.
+
+Local evidence: focused Agents voice/call/session/media/phone/SpaceDO suites **75/75**; Agents and Shell
+typechecks; release migration/manifest/deployment tests **39/39** and validators; `git diff --check`.
+These are local SQLite and mocked provider/Billing tests. No browser, Telnyx, OpenRouter, live invoice,
+deployed D1, deployment, or external acceptance ran. Provider audio format/`clear` behavior, actual
+STT/TTS prices and generation receipts remain unverified; provider receipts without a usable generation
+ID stay unresolved. P06 remains PARTIAL for external acceptance and signed catalog/publisher,
+provisioning and quality evidence. Preserve `infra/scripts/__pycache__/` and the remaining S2–S9/U01–U12/
+P01–P24 gates.
+
+Exact next action: implement section 11.2's typed, named microapp business-action contract. Reconcile
+current `MicroAppDO`, `gadget-mcp` routes and UI callers; make UI and authorized assistant calls execute
+the same host-validated operation with installation/actor scope, permissions, current revocation,
+input/output schemas, audit, idempotency for effects and expected-version checks. Add one local example
+action with authorization and replay tests. Continue remaining independent work afterward; do not stop
+at this action's test checkpoint.
+
+## Previous checkpoint — 2026-11-15 (P06 consent caller; P20 source reconciliation; pushed)
 
 Code commit `1f429ee9d970449e3e5d875e3adab0b811e1ac7e` is pushed to
 `origin/Mcbt5s-Backup-2`. Immediately before push, fetch confirmed remote `fb145a18` was an ancestor;
