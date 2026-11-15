@@ -1714,7 +1714,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (session.fence !== body.fence) return fail("stale_fence", 409);
     const workingHead = await this.ctx.storage.get<WorkspaceHead>(headKey(session.branch));
     if (!workingHead) return fail("workspace_branch_not_found", 404);
-    const changeSetHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ sessionId, targetBranch, sourceManifestHash: workingHead.manifestHash, baseManifestHash: session.baseManifestHash, allocationGeneration: session.allocationGeneration, fence: session.fence, mergeAlgorithm: THREE_WAY_TEXT_MERGE_ALGORITHM })));
+    const changeSetHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ actorId: session.actorId, sourceBranch: session.branch, targetBranch,
+      sourceManifestHash: workingHead.manifestHash, baseManifestHash: session.baseManifestHash,
+      allocationGeneration: session.allocationGeneration, fence: session.fence, mergeAlgorithm: THREE_WAY_TEXT_MERGE_ALGORITHM })));
     const prior = await this.ctx.storage.get<WorkspacePublicationReceipt>(mergeReceiptKey(targetBranch, idempotencyKey));
     if (prior) return prior.changeSetHash === changeSetHash ? json({ publication: prior }) : fail("idempotency_conflict", 409);
     if (session.status !== "active") return fail("stale_fence", 409);
@@ -1857,6 +1859,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     } else if (!conflicts.length) status = "noop";
     const revision = status === "published" ? targetHead.revision + 1 : targetHead.revision;
     const receipt: WorkspacePublicationReceipt = { id, idempotencyKey, status, branch: targetBranch, baseRevision: targetHead.revision, revision,
+      sourceBranch: session.branch, sourceRevision: workingHead.revision, sourceBaseRevision: session.baseRevision,
+      sourceManifestHash: workingHead.manifestHash, targetManifestHash: targetHead.manifestHash,
       appliedPaths: conflicts.length ? [] : changedPaths, conflicts, ...(mergeResolutions.length ? { mergeResolutions } : {}),
       changeSetHash, fence: session.fence, allocationGeneration: session.allocationGeneration };
     const nextHead: WorkspaceHead = { ...targetHead, revision, manifestHash: nextHash, parentRevision: targetHead.revision, publicationId: id, updatedAt: new Date().toISOString() };

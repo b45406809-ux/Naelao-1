@@ -143,3 +143,20 @@ describe("Space Template activation and shared-extension lifecycle routing", () 
     ]) expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
   });
 });
+
+describe("planner worker conflict review routing", () => {
+  it.each([
+    "/spaces/s/assistant/sub-agents/worker-a/workspace-conflicts/preview",
+    "/spaces/s/assistant/sub-agents/worker-a/workspace-conflicts/resolve",
+  ])("resolves product-session identity for %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
+  });
+
+  it("keeps conflict review routes bounded to the exact worker operations", () => {
+    for (const path of [
+      "/spaces/s/assistant/sub-agents/worker-a/workspace-conflicts/resolve/other",
+      "/spaces/s/assistant/sub-agents/worker-a/workspace-conflicts/export",
+      "/spaces/s/assistant/sub-agents/worker-a/workspace-conflicts/preview/other",
+    ]) expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
+  });
+});

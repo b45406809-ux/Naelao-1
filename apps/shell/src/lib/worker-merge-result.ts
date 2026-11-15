@@ -10,9 +10,17 @@ export type WorkerMergeConflictView = {
 export type WorkerMergeResultView = {
   workerOutput: unknown;
   workspaceMerge: {
-    status: "unapplied";
+    status: "unapplied" | "partially_resolved" | "manually_resolved";
     conflicts: WorkerMergeConflictView[];
     omitted: number;
+    manualResolutions: Array<{
+      path: string;
+      status: "published" | "noop";
+      revision: number;
+      reviewBranch: string;
+      completedAt: string;
+      deleted: boolean;
+    }>;
   };
 };
 
@@ -38,7 +46,9 @@ export function parseWorkerMergeResult(
   if (!record(value) || !record(value.workspaceMerge)) return null;
   const workspaceMerge = value.workspaceMerge;
   if (
-    workspaceMerge.status !== "unapplied" ||
+    !["unapplied", "partially_resolved", "manually_resolved"].includes(
+      String(workspaceMerge.status)
+    ) ||
     !Array.isArray(workspaceMerge.conflicts)
   )
     return null;
@@ -69,11 +79,42 @@ export function parseWorkerMergeResult(
     Number(workspaceMerge.omitted) > 0
       ? Math.min(Number(workspaceMerge.omitted), 1_000_000)
       : 0;
+  const manualResolutions = Array.isArray(workspaceMerge.manualResolutions)
+    ? workspaceMerge.manualResolutions
+        .slice(-50)
+        .flatMap(
+          (
+            item
+          ): WorkerMergeResultView["workspaceMerge"]["manualResolutions"] => {
+            if (
+              !record(item) ||
+              typeof item.path !== "string" ||
+              !["published", "noop"].includes(String(item.status)) ||
+              !Number.isSafeInteger(item.revision) ||
+              typeof item.reviewBranch !== "string" ||
+              typeof item.completedAt !== "string"
+            )
+              return [];
+            return [
+              {
+                path: item.path.slice(0, 512),
+                status: item.status as "published" | "noop",
+                revision: Number(item.revision),
+                reviewBranch: item.reviewBranch.slice(0, 128),
+                completedAt: item.completedAt.slice(0, 64),
+                deleted: item.deleted === true,
+              },
+            ];
+          }
+        )
+    : [];
   return {
     workerOutput: value.workerOutput ?? null,
     workspaceMerge: {
-      status: "unapplied",
+      status:
+        workspaceMerge.status as WorkerMergeResultView["workspaceMerge"]["status"],
       conflicts,
+      manualResolutions,
       omitted:
         reportedOmitted +
         Math.max(0, workspaceMerge.conflicts.length - rawConflicts.length) +

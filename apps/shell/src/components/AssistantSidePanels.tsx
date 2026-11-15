@@ -21,7 +21,7 @@ import { detectRuntimeAnomaly, isJobOverdue } from "@naelao/events";
 import { presentAutonomyPolicy } from "@naelao/agent-sdk";
 import { isWithinScheduledQuietHours } from "@naelao/types";
 import { workerActivityLabel } from "../lib/worker-activity";
-import { formatWorkerOutput, parseWorkerMergeResult } from "../lib/worker-merge-result";
+import { formatWorkerOutput, parseWorkerMergeResult, type WorkerMergeConflictView } from "../lib/worker-merge-result";
 import { ChannelConnect, CHANNELS } from "./ChannelConnect";
 import {
   getAssistantPolicy,
@@ -38,6 +38,8 @@ import {
   listAssistantChannels,
   assistantMailApi,
   listSubAgents,
+  readWorkerWorkspaceConflictPreview,
+  resolveWorkerWorkspaceConflict,
   listGoalActivity,
   listConversationGoalActivity,
   listAgentDefinitions,
@@ -300,14 +302,118 @@ function StopDurableTaskButton({ spaceId, sessionId, taskId, session, onStopped 
   </div>;
 }
 
-function WorkerResultView({ result, maxOutput = 8_000 }: { result: string; maxOutput?: number }) {
+function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, projectId, workerId, conflict, onResolved }: {
+  spaceId: string; session: SessionCredentials; sessionId: string; agentId?: string | null | undefined; projectId: string; workerId: string;
+  conflict: WorkerMergeConflictView;
+  onResolved?: (() => void) | undefined;
+}) {
+  const [content, setContent] = React.useState("");
+  const [deleteFile, setDeleteFile] = React.useState(false);
+  const [requestKey, setRequestKey] = React.useState<string | null>(null);
+  const [submitted, setSubmitted] = React.useState<{ content: string | null } | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [done, setDone] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  const [preview, setPreview] = React.useState<Awaited<ReturnType<typeof readWorkerWorkspaceConflictPreview>>["preview"] | null>(null);
+  const [previewError, setPreviewError] = React.useState("");
+  const locked = submitted !== null;
+  const resolutionDraft = locked ? submitted.content : deleteFile ? null : content;
+  const previewReady = Boolean(preview && !preview.stale &&
+    [preview.target, preview.worker].every(version => version.hash === null || version.content !== null));
+  React.useEffect(() => {
+    if (!sessionId || !projectId) return;
+    let cancelled = false;
+    setPreview(null);
+    setPreviewError("");
+    readWorkerWorkspaceConflictPreview(spaceId, workerId, session, { sessionId, ...(agentId ? { agentId } : {}), projectId, path: conflict.path })
+      .then(result => { if (!cancelled) { setPreview(result.preview); setPreviewError(""); } })
+      .catch(error => { if (!cancelled) setPreviewError(error instanceof Error ? error.message : "Could not load conflict versions."); });
+    return () => { cancelled = true; };
+  }, [spaceId, workerId, session, sessionId, agentId, projectId, conflict.path]);
+  async function publish() {
+    const nextKey = requestKey ?? crypto.randomUUID();
+    const nextContent = submitted ? submitted.content : deleteFile ? null : content;
+    setRequestKey(nextKey);
+    setSubmitted({ content: nextContent });
+    setBusy(true);
+    setMessage("");
+    try {
+      await resolveWorkerWorkspaceConflict(spaceId, workerId, session, {
+        sessionId, ...(agentId ? { agentId } : {}), projectId, path: conflict.path,
+        expectedTargetHash: conflict.targetHash, expectedSourceHash: conflict.sourceHash,
+        content: nextContent, idempotencyKey: nextKey,
+      });
+      setDone(true);
+      setMessage(`${nextContent === null ? "File deletion" : "Resolution"} published through the checked workspace coordinator. The original worker branch is retained.`);
+      onResolved?.();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The resolution could not be published.");
+    } finally { setBusy(false); }
+  }
+  return <div style={{ marginTop: 8, borderTop: "1px solid var(--border, #64748b44)", paddingTop: 7 }}>
+    {!projectId ? <p style={{ margin: 0, fontSize: 11, color: "var(--text3)" }}>Open this worker in its project thread with project write access to resolve a file.</p> : <>
+      <details style={{ marginBottom: 7 }}>
+        <summary style={{ cursor: "pointer", fontSize: 11 }}>Compare current target and worker text</summary>
+        {previewError && <p role="status" style={{ fontSize: 11, color: "var(--text3)" }}>{previewError}</p>}
+        {preview?.stale && <p role="alert" style={{ fontSize: 11, color: "var(--danger, #dc2626)" }}>Current branch versions no longer match this conflict record. Publishing is disabled until a fresh conflict review is recorded.</p>}
+        {!preview && !previewError && <p role="status" style={{ fontSize: 11, color: "var(--text3)" }}>Loading current branch versions before resolution is enabled.</p>}
+        {preview && !preview.stale && !previewReady && <p role="status" style={{ fontSize: 11, color: "var(--text3)" }}>At least one existing version is binary, too large, or unavailable as valid text; this editor cannot safely resolve it.</p>}
+        {preview && <div style={{ display: "grid", gap: 6, marginTop: 5 }}>
+          {(["target", "worker"] as const).map(side => {
+            const version = preview[side];
+            return <div key={side} style={{ border: "1px solid var(--border, #64748b44)", borderRadius: 6, padding: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: 10 }}><strong>{side === "target" ? "Current target" : "Retained worker"}</strong><code>{version.hash ?? "file absent"}</code></div>
+              {version.content !== null ? <>
+                <pre style={{ margin: "5px 0", maxHeight: 150, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", font: "10px/1.4 var(--font-mono, monospace)" }}>{version.content}</pre>
+                <button type="button" className="btn btn-ghost btn-sm" disabled={busy || locked || done} onClick={() => { setContent(version.content ?? ""); setDeleteFile(false); }}>Use {side} text as starting point</button>
+              </> : <p style={{ margin: "5px 0 0", fontSize: 10, color: "var(--text3)" }}>{version.unavailableReason ?? "No text content is available."}</p>}
+            </div>;
+          })}
+        </div>}
+      </details>
+      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+        <input type="checkbox" checked={locked ? submitted.content === null : deleteFile} disabled={busy || locked || done} onChange={event => setDeleteFile(event.target.checked)} />
+        Delete this path in the target workspace
+      </label>
+      {!(locked ? submitted.content === null : deleteFile) && <>
+        <label style={{ display: "block", fontSize: 11, fontWeight: 600, marginTop: 5 }} htmlFor={`worker-resolution-${workerId}-${encodeURIComponent(conflict.path)}`}>Reviewer-authored file contents</label>
+        <textarea id={`worker-resolution-${workerId}-${encodeURIComponent(conflict.path)}`} value={locked ? submitted.content ?? "" : content}
+          onChange={event => setContent(event.target.value)} disabled={busy || locked || done} rows={6} maxLength={65_536}
+          aria-label={`Resolution content for ${conflict.path}`} style={{ width: "100%", marginTop: 4, resize: "vertical", font: "11px/1.45 var(--font-mono, monospace)" }} />
+      </>}
+      {previewReady && <details style={{ marginTop: 6 }}>
+        <summary style={{ cursor: "pointer", fontSize: 11 }}>Review target-to-resolution diff</summary>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 6, marginTop: 5 }}>
+          <div><strong style={{ fontSize: 10 }}>Current target</strong><pre aria-label="Current target before resolution" style={{ margin: "4px 0 0", padding: 6, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 5, background: "var(--surface2)", font: "10px/1.4 var(--font-mono, monospace)" }}>{preview?.target.content ?? "[file absent]"}</pre></div>
+          <div><strong style={{ fontSize: 10 }}>Proposed resolution</strong><pre aria-label="Proposed resolution after review" style={{ margin: "4px 0 0", padding: 6, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 5, background: "var(--surface2)", font: "10px/1.4 var(--font-mono, monospace)" }}>{resolutionDraft ?? "[file deleted]"}</pre></div>
+        </div>
+      </details>}
+      {!done && <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
+        <button type="button" className="btn btn-primary btn-sm" disabled={busy || !sessionId || !previewReady || !locked && !deleteFile && content.length === 0}
+          onClick={() => void publish()}>{busy ? "Publishing…" : locked ? "Retry same resolution" : "Publish checked resolution"}</button>
+        {locked && !busy && <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setRequestKey(null); setSubmitted(null); setMessage(""); }}>Edit resolution</button>}
+      </div>}
+      {message && <p role={done ? "status" : "alert"} style={{ margin: "5px 0 0", fontSize: 11, color: done ? "var(--accent)" : "var(--danger, #dc2626)" }}>{message}</p>}
+      <p style={{ margin: "5px 0 0", fontSize: 10, color: "var(--text3)" }}>Publishing updates the project workspace after a current-head and expected-hash check. This action is unavailable while workspace rollout is disabled.</p>
+    </>}
+  </div>;
+}
+
+function WorkerResultView({ result, maxOutput = 8_000, resolution }: { result: string; maxOutput?: number; resolution?: {
+  spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined; agentId?: string | null | undefined; projectId?: string | null | undefined; workerId: string; onResolved?: (() => void) | undefined;
+} }) {
   const mergeResult = parseWorkerMergeResult(result);
   if (!mergeResult) {
     return <pre style={{ margin: "6px 0 0", padding: 8, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 7, background: "var(--surface2)", color: "var(--text2)", font: "11px/1.45 var(--font-mono, monospace)" }}>{result.slice(0, maxOutput)}{result.length > maxOutput ? "…" : ""}</pre>;
   }
   const workerOutput = formatWorkerOutput(mergeResult.workerOutput);
+  const resolved = new Map(mergeResult.workspaceMerge.manualResolutions.map(item => [item.path, item]));
   return <section aria-label="Worker workspace merge review" style={{ marginTop: 8, padding: 9, border: "1px solid var(--border, #64748b44)", borderRadius: 7 }}>
-    <p role="status" style={{ margin: 0, fontWeight: 600 }}>Worker changes were not integrated. Both worker and target branches remain available for review.</p>
+    <p role="status" style={{ margin: 0, fontWeight: 600 }}>{mergeResult.workspaceMerge.status === "manually_resolved"
+      ? "All reported file conflicts have a checked manual resolution. The original worker branch is retained."
+      : mergeResult.workspaceMerge.status === "partially_resolved"
+        ? "Some file conflicts have checked manual resolutions; remaining worker changes are still unapplied."
+        : "Worker changes were not integrated. Both worker and target branches remain available for review."}</p>
     <p style={{ margin: "4px 0", color: "var(--text3)", fontSize: 11 }}>Review these paths before choosing a resolution.</p>
     <ul style={{ margin: "6px 0", paddingLeft: 20 }}>
       {mergeResult.workspaceMerge.conflicts.map((conflict, index) => <li key={`${conflict.path}:${conflict.otherPath ?? ""}:${index}`} style={{ marginBottom: 8, overflowWrap: "anywhere" }}>
@@ -319,6 +425,12 @@ function WorkerResultView({ result, maxOutput = 8_000 }: { result: string; maxOu
             <dt>Worker</dt><dd style={{ margin: 0, overflowWrap: "anywhere" }}><code>{conflict.sourceHash ?? "not present"}</code></dd>
           </dl>
         </details>
+        {resolved.has(conflict.path) ? <p role="status" style={{ margin: "5px 0 0", fontSize: 11, color: "var(--accent)" }}>
+          Reviewed resolution {resolved.get(conflict.path)!.deleted ? "deleted this path" : resolved.get(conflict.path)!.status} at revision {resolved.get(conflict.path)!.revision} on {resolved.get(conflict.path)!.reviewBranch}.
+        </p> : conflict.otherPath ? <p style={{ margin: "5px 0 0", fontSize: 11, color: "var(--text3)" }}>This paired-path conflict needs a coordinated rename or delete review; single-file resolution is not offered here.</p>
+          : resolution?.sessionId && resolution.projectId ? <WorkerConflictResolutionEditor spaceId={resolution.spaceId} session={resolution.session}
+            sessionId={resolution.sessionId ?? ""} agentId={resolution.agentId} projectId={resolution.projectId ?? ""}
+            workerId={resolution.workerId} conflict={conflict} onResolved={resolution.onResolved} /> : null}
       </li>)}
     </ul>
     {mergeResult.workspaceMerge.omitted > 0 && <p style={{ margin: "4px 0", color: "var(--text3)", fontSize: 11 }}>{mergeResult.workspaceMerge.omitted} additional conflicts omitted.</p>}
@@ -467,7 +579,8 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       </div>
       {worker.progress_note && <p style={{ color: "var(--text3)", overflowWrap: "anywhere" }}>{worker.progress_note.slice(0, 400)}</p>}
       {worker.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{worker.error.slice(0, 400)}</p>}
-      {worker.result && <WorkerResultView result={worker.result} maxOutput={4_000} />}
+      {worker.result && <WorkerResultView result={worker.result} maxOutput={4_000} resolution={{ spaceId, session, sessionId, agentId, projectId,
+        workerId: worker.id, onResolved: () => void refresh() }} />}
     </article>)}
     {goalError && <p role="status" className="workspace-tab-empty">Task graph and worker messages could not be loaded.</p>}
     {goals.map(goal => <details key={goal.id} className="settings-block" style={{ padding: 12, marginTop: 8 }}>
@@ -1454,7 +1567,7 @@ function WorkersPanel({
                 <div>{workerActivityLabel(sa.status)}.</div>
                 {sa.progress_note && <div style={{ marginTop: 3 }}>{sa.progress_note}</div>}
                 {sa.error && <div style={{ marginTop: 5, color: "#dc2626" }}>Error: {sa.error}</div>}
-                {sa.result && <WorkerResultView result={sa.result} maxOutput={8_000} />}
+                {sa.result && <WorkerResultView result={sa.result} maxOutput={8_000} resolution={{ spaceId, session, sessionId, agentId, projectId, workerId: sa.id }} />}
                 {sa.tokens_used !== undefined && <div data-technical-detail="model_routing" style={{ marginTop: 3 }}>{sa.tokens_used.toLocaleString()} tokens</div>}
                 <div data-technical-detail="identifiers" style={{ marginTop: 3, fontFamily: "var(--font-mono, monospace)", fontSize: 10 }}>Run {sa.id.slice(0, 8)}</div>
               </div>

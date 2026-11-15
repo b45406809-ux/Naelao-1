@@ -785,6 +785,9 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // authorization there, exactly like the routes above.
   /^\/spaces\/([^/]+)\/assistant\/files\/.+$/,
   /^\/spaces\/([^/]+)\/assistant\/artifacts(\/[^/]+)?$/,
+  // Planner/worker review previews and checked resolutions keep the project-scoped authorization
+  // checks in Agents while resolving the caller through the product session.
+  /^\/spaces\/([^/]+)\/assistant\/sub-agents\/[^/]+\/workspace-conflicts\/(preview|resolve)$/,
   // Notifications inbox — end-user-facing (a business admin reading their own business's
   // notifications), additionally gated by requireSpaceMembership on the spaces worker exactly
   // like the routes above (identity here, authorization there).

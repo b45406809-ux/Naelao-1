@@ -62,6 +62,12 @@ export type WorkspacePublicationReceipt = {
   branch: string;
   baseRevision: number;
   revision: number;
+  /** Exact source branch snapshot used for a checked branch merge. */
+  sourceBranch?: string;
+  sourceRevision?: number;
+  sourceBaseRevision?: number;
+  sourceManifestHash?: string;
+  targetManifestHash?: string;
   appliedPaths: string[];
   conflicts: WorkspaceConflict[];
   mergeResolutions?: WorkspaceMergeResolution[];

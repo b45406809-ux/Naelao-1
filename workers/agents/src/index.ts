@@ -9401,6 +9401,66 @@ app.get("/spaces/:spaceId/assistant/sub-agents", async (c) => {
   return stub.fetch(new Request(`http://agent-do/sub-agents?parent_run_id=${encodeURIComponent(parentRunId)}`));
 });
 
+app.post("/spaces/:spaceId/assistant/sub-agents/:workerId/workspace-conflicts/resolve", async c => {
+  const spaceId = c.req.param("spaceId");
+  const workerId = c.req.param("workerId");
+  const tenantId = await requireVerifiedTenant(c);
+  const identity = getCallerIdentity(c);
+  let body: { session_id?: unknown; agent_id?: unknown; project_id?: unknown; path?: unknown; expected_target_hash?: unknown; expected_source_hash?: unknown; content?: unknown; idempotency_key?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 2 * 1024 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_manual_resolution" }, 400); }
+  const sessionId = body.session_id;
+  const agentId = body.agent_id;
+  const projectId = body.project_id;
+  if (typeof sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(sessionId) ||
+      (agentId !== undefined && (typeof agentId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(agentId))) ||
+      typeof projectId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(projectId) ||
+      typeof body.path !== "string" || !validateWorkspacePath(body.path) ||
+      !(body.expected_target_hash === null || (typeof body.expected_target_hash === "string" && /^[a-f0-9]{64}$/.test(body.expected_target_hash))) ||
+      !(body.expected_source_hash === null || (typeof body.expected_source_hash === "string" && /^[a-f0-9]{64}$/.test(body.expected_source_hash))) ||
+      !(body.content === null || typeof body.content === "string") || typeof body.idempotency_key !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(body.idempotency_key)) {
+    return c.json({ error_code: "invalid_workspace_manual_resolution" }, 400);
+  }
+  if (!identity.userId || !(await requireSpaceMembershipOrSessionAccess(c, spaceId, sessionId))) return c.json({ error_code: "forbidden" }, 403);
+  let actor: { tenantId: string; userId: string };
+  try { actor = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true); }
+  catch { return c.json({ error_code: "forbidden" }, 403); }
+  const doKey = agentId ? `${sessionId}:${agentId}` : sessionId;
+  const stub = await getAgentDO(c.env, tenantId, doKey, c.get("requestId"));
+  return stub.fetch(new Request("http://agent-do/internal/sub-agents/resolve-conflict", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ scope: { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" },
+      actorId: actor.userId, callerRole: identity.role, workerId, path: body.path,
+      expectedTargetHash: body.expected_target_hash, expectedSourceHash: body.expected_source_hash,
+      content: body.content, idempotencyKey: body.idempotency_key }),
+  }));
+});
+
+app.get("/spaces/:spaceId/assistant/sub-agents/:workerId/workspace-conflicts/preview", async c => {
+  const spaceId = c.req.param("spaceId"), workerId = c.req.param("workerId");
+  const tenantId = await requireVerifiedTenant(c), identity = getCallerIdentity(c);
+  const sessionId = c.req.query("session_id") ?? "", agentId = c.req.query("agent_id") ?? "";
+  const projectId = c.req.query("project_id") ?? "", path = c.req.query("path") ?? "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(sessionId) ||
+      (agentId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(agentId)) ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(projectId) || !validateWorkspacePath(path)) {
+    return c.json({ error_code: "invalid_workspace_manual_preview" }, 400);
+  }
+  if (!identity.userId || !(await requireSpaceMembershipOrSessionAccess(c, spaceId, sessionId))) return c.json({ error_code: "forbidden" }, 403);
+  let actor: { tenantId: string; userId: string };
+  try { actor = await requireProjectAccessForManagedProfile(c, spaceId, projectId, false); }
+  catch { return c.json({ error_code: "forbidden" }, 403); }
+  const doKey = agentId ? `${sessionId}:${agentId}` : sessionId;
+  const stub = await getAgentDO(c.env, tenantId, doKey, c.get("requestId"));
+  return stub.fetch(new Request("http://agent-do/internal/sub-agents/conflict-preview", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ scope: { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" },
+      actorId: actor.userId, callerRole: identity.role, workerId, path }),
+  }));
+});
+
 app.get("/spaces/:spaceId/assistant/goal-activity", async (c) => {
   const spaceId = c.req.param("spaceId"), tenantId = await requireVerifiedTenant(c);
   const actorId = getCallerIdentity(c).userId;

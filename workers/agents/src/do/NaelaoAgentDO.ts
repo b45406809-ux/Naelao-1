@@ -115,7 +115,8 @@ import { parseJournal, renderJournal, emptyJournal, journalKey, appendActivity }
 import { putBytesCas, putTextCas, readBytesWithHash, readTextWithHash } from "../script-engine/r2-cas.js";
 import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
 import { handleWorkspaceCheckedPublish } from "../workspace/workspace-checked-publish-route.js";
-import type { WorkspaceScope } from "../workspace/workspace-contract.js";
+import { validateWorkspaceScope, validateWorkspacePath, type WorkspaceScope } from "../workspace/workspace-contract.js";
+import { publishWorkspaceManualResolution, readWorkspaceConflictPreview, workspaceManualResolutionErrorResponse } from "../workspace/workspace-manual-resolution.js";
 import { withWorkerMergeConflicts } from "../workspace/worker-merge-report.js";
 import { withWorkspaceManifestRead } from "../script-engine/workspace-r2-compat.js";
 import {
@@ -1896,6 +1897,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handlePrepareAgentConfig(request);
       }
       if(method==='POST'&&url.pathname==='/internal/worker-view')return this.handleWorkerView(request);
+      if(method==='POST'&&url.pathname==='/internal/sub-agents/resolve-conflict')return this.handleSubAgentConflictResolution(request);
+      if(method==='POST'&&url.pathname==='/internal/sub-agents/conflict-preview')return this.handleSubAgentConflictPreview(request);
       if(method==='POST'&&url.pathname==='/internal/task-blackboard')return this.handleTaskBlackboard(request);
       if(method==='POST'&&url.pathname==='/internal/test/goal-dispatch-pause'&&this.env.ENVIRONMENT==='test')return this.handleTestGoalDispatchPause(request);
       if(method==='GET'&&url.pathname==='/internal/goal-activity')return this.handleGoalActivity(request);
@@ -5049,6 +5052,185 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const rows=this.ctx.storage.sql.exec("SELECT id,goal,status,workspace_branch,progress_note FROM sub_agents WHERE json_extract(configuration_json,'$.tenantId')=? AND json_extract(configuration_json,'$.spaceId')=? AND json_extract(configuration_json,'$.actorId')=? AND json_extract(configuration_json,'$.projectId') IS ? ORDER BY updated_at DESC LIMIT 50",tenant,body.spaceId,body.actorId,body.projectId??null).toArray() as Array<{id:string;goal:string;status:string;workspace_branch:string|null;progress_note:string|null}>;
     if(body.workerId){if(!rows.some(r=>r.id===body.workerId))return Response.json({error_code:"worker_not_found"},{status:404});return Response.json(await this.receiveFromSubAgentImpl(body.workerId));}
     return Response.json({workers:rows.map(r=>({...r,goal:r.goal.slice(0,1000),progress_note:r.progress_note?.slice(0,500)??null}))});
+  }
+
+  private async handleSubAgentConflictResolution(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET)) {
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    }
+    let body: Record<string, unknown>;
+    try { body = JSON.parse(await readBoundedRequestText(request, 2 * 1024 * 1024)) as Record<string, unknown>; }
+    catch { return Response.json({ error_code: "invalid_workspace_manual_resolution" }, { status: 400 }); }
+    const scope = body.scope;
+    const actorId = body.actorId;
+    const role = body.callerRole;
+    const workerId = body.workerId;
+    const path = body.path;
+    const expectedTargetHash = body.expectedTargetHash;
+    const expectedSourceHash = body.expectedSourceHash;
+    const content = body.content;
+    const idempotencyKey = body.idempotencyKey;
+    if (!validateWorkspaceScope(scope) || scope.tenantId !== tenantId || typeof actorId !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(actorId) || typeof role !== "string" || role.length > 64 ||
+        typeof workerId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(workerId) ||
+        typeof path !== "string" || !validateWorkspacePath(path) ||
+        !(expectedTargetHash === null || (typeof expectedTargetHash === "string" && /^[a-f0-9]{64}$/.test(expectedTargetHash))) ||
+        !(expectedSourceHash === null || (typeof expectedSourceHash === "string" && /^[a-f0-9]{64}$/.test(expectedSourceHash))) ||
+        !(content === null || typeof content === "string") || typeof idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(idempotencyKey)) {
+      return Response.json({ error_code: "invalid_workspace_manual_resolution" }, { status: 400 });
+    }
+    const resolutionBytes = content === null ? null : new TextEncoder().encode(content);
+    if (resolutionBytes && (resolutionBytes.byteLength > 256 * 1024 || resolutionBytes.includes(0))) {
+      return Response.json({ error_code: "workspace_manual_resolution_content_invalid" }, { status: 400 });
+    }
+    const contentDigest = resolutionBytes === null ? "delete" : [...new Uint8Array(await crypto.subtle.digest("SHA-256", resolutionBytes))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const requestHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([path, expectedTargetHash, expectedSourceHash, contentDigest]))))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const { spaceId, projectId } = scope;
+    const agentsEnv = this.env as unknown as import("../index.js").AgentsEnv;
+    let authorized = false;
+    try {
+      authorized = await (await import("../communications/core.js")).scopeAccess(agentsEnv,
+        { tenantId, spaceId, projectId, userId: actorId, role }, true);
+    } catch { authorized = false; }
+    if (!authorized) return Response.json({ error_code: "worker_access_revoked" }, { status: 403 });
+    if (agentsEnv.UNIFIED_WORKSPACE_ENABLED !== "true") return Response.json({ error_code: "workspace_global_kill_switch_active" }, { status: 423 });
+    if (!agentsEnv.WORKSPACE_COORDINATOR) return Response.json({ error_code: "workspace_coordinator_unavailable" }, { status: 503 });
+
+    const rows = this.ctx.storage.sql.exec(`SELECT status,result,workspace_branch,attempt,configuration_json FROM sub_agents WHERE id=?`, workerId)
+      .toArray() as Array<{ status: string; result: string | null; workspace_branch: string | null; attempt: number; configuration_json: string | null }>;
+    const row = rows[0];
+    if (!row) return Response.json({ error_code: "worker_not_found" }, { status: 404 });
+    let configuration: Record<string, unknown>;
+    let output: Record<string, unknown>;
+    try {
+      configuration = JSON.parse(row.configuration_json ?? "null") as Record<string, unknown>;
+      output = JSON.parse(row.result ?? "null") as Record<string, unknown>;
+    } catch { return Response.json({ error_code: "worker_conflict_report_unavailable" }, { status: 409 }); }
+    if (!configuration || !output || typeof output !== "object" || Array.isArray(output) || configuration.tenantId !== tenantId || configuration.spaceId !== spaceId ||
+        configuration.projectId !== projectId) {
+      return Response.json({ error_code: "worker_session_scope_mismatch" }, { status: 403 });
+    }
+    if (row.status !== "done" || !row.workspace_branch?.startsWith("workers/")) return Response.json({ error_code: "worker_result_not_resolvable" }, { status: 409 });
+    const merge = output.workspaceMerge as { status?: unknown; conflicts?: unknown; manualResolutions?: unknown; omitted?: unknown } | undefined;
+    if (!merge || !["unapplied", "partially_resolved"].includes(String(merge.status)) || !Array.isArray(merge.conflicts)) {
+      return Response.json({ error_code: "worker_conflict_report_unavailable" }, { status: 409 });
+    }
+    const conflicts = merge.conflicts as Array<{ path?: unknown; otherPath?: unknown; targetHash?: unknown; sourceHash?: unknown }>;
+    const conflict = conflicts.find(item => item.path === path);
+    if (!conflict || conflict.otherPath !== undefined || conflict.targetHash !== expectedTargetHash || conflict.sourceHash !== expectedSourceHash) {
+      return Response.json({ error_code: "workspace_manual_resolution_conflict_mismatch" }, { status: 409 });
+    }
+    const manualResolutions = Array.isArray(merge.manualResolutions)
+      ? merge.manualResolutions as Array<Record<string, unknown>> : [];
+    const replay = manualResolutions.find(item => item.path === path && item.idempotencyKey === idempotencyKey);
+    if (replay) return replay.requestHash === requestHash
+      ? Response.json({ resolution: replay, replay: true }, { headers: { "cache-control": "no-store" } })
+      : Response.json({ error_code: "workspace_manual_resolution_idempotency_conflict" }, { status: 409, headers: { "cache-control": "no-store" } });
+
+    const targetBranch = await this.ctx.storage.get<string>(`worker-branch-parent:${workerId}`);
+    if (!row.workspace_branch || !targetBranch || !validateWorkspacePath(path)) return Response.json({ error_code: "worker_branch_metadata_unavailable" }, { status: 409 });
+    const coordinatorEnv = agentsEnv as unknown as import("../workspace/workspace-client.js").WorkspaceCoordinatorBindings;
+    const checkedCoordinator = async (route: string, payload?: Record<string, unknown>) => {
+      if (["/v1/branch", "/v1/open", "/v1/checkpoint", "/v1/merge"].includes(route)) {
+        const stillAuthorized = await (await import("../communications/core.js")).scopeAccess(agentsEnv,
+          { tenantId, spaceId, projectId, userId: actorId, role }, true).catch(() => false);
+        if (!stillAuthorized) return Response.json({ error_code: "worker_access_revoked" }, { status: 403 });
+      }
+      return workspaceCoordinatorRequest(coordinatorEnv, scope, route, { ...(payload ? { body: payload } : {}) });
+    };
+    let published: Awaited<ReturnType<typeof publishWorkspaceManualResolution>>;
+    try {
+      published = await publishWorkspaceManualResolution({ scope, actorId, workerId, attempt: row.attempt, targetBranch,
+        sourceBranch: row.workspace_branch, path, expectedTargetHash: expectedTargetHash as string | null,
+        expectedSourceHash: expectedSourceHash as string | null, content, idempotencyKey },
+      checkedCoordinator);
+    } catch (error) {
+      return workspaceManualResolutionErrorResponse(error);
+    }
+    const resolution = { path, idempotencyKey, requestHash, reviewBranch: published.reviewBranch, targetBranch, deleted: content === null,
+      status: published.merge.status, revision: published.merge.revision, publicationId: published.merge.id, completedAt: new Date().toISOString() };
+    const latestRows = this.ctx.storage.sql.exec(`SELECT result,status,workspace_branch,configuration_json FROM sub_agents WHERE id=?`, workerId)
+      .toArray() as Array<{ result: string | null; status: string; workspace_branch: string | null; configuration_json: string | null }>;
+    const latest = latestRows[0];
+    let latestOutput: Record<string, unknown> | null = null;
+    try { latestOutput = JSON.parse(latest?.result ?? "null") as Record<string, unknown> | null; }
+    catch { return Response.json({ error_code: "worker_conflict_report_unavailable" }, { status: 409 }); }
+    const latestMerge = latestOutput?.workspaceMerge as { conflicts?: unknown; manualResolutions?: unknown; omitted?: unknown } | undefined;
+    const latestResolutions = Array.isArray(latestMerge?.manualResolutions)
+      ? latestMerge.manualResolutions as Array<Record<string, unknown>> : [];
+    const concurrentReplay = latestResolutions.find(item => item.path === path && item.idempotencyKey === idempotencyKey);
+    if (concurrentReplay) return concurrentReplay.requestHash === requestHash
+      ? Response.json({ resolution: concurrentReplay, replay: true }, { headers: { "cache-control": "no-store" } })
+      : Response.json({ error_code: "workspace_manual_resolution_idempotency_conflict" }, { status: 409, headers: { "cache-control": "no-store" } });
+    if (!latest || latest.status !== "done" || !latestOutput || Array.isArray(latestOutput) || !latestMerge ||
+        latest.configuration_json !== row.configuration_json || latest.workspace_branch !== row.workspace_branch) {
+      return Response.json({ error_code: "worker_result_not_resolvable" }, { status: 409 });
+    }
+    const latestConflicts = Array.isArray(latestMerge.conflicts) ? latestMerge.conflicts as Array<{ path?: unknown; otherPath?: unknown }> : [];
+    const nextManualResolutions = [...latestResolutions, resolution].slice(-50);
+    const allResolved = latestConflicts.every(item => item.otherPath === undefined && nextManualResolutions.some(saved => saved.path === item.path)) && Number(latestMerge.omitted ?? 0) === 0;
+    latestOutput.workspaceMerge = { ...latestMerge, status: allResolved ? "manually_resolved" : "partially_resolved", manualResolutions: nextManualResolutions };
+    this.ctx.storage.sql.exec(`UPDATE sub_agents SET result=?,updated_at=? WHERE id=?`, JSON.stringify(latestOutput), Date.now(), workerId);
+    return Response.json({ resolution }, { headers: { "cache-control": "no-store" } });
+  }
+
+  private async handleSubAgentConflictPreview(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET)) {
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    }
+    let body: Record<string, unknown>;
+    try { body = JSON.parse(await readBoundedRequestText(request, 16 * 1024)) as Record<string, unknown>; }
+    catch { return Response.json({ error_code: "invalid_workspace_manual_preview" }, { status: 400 }); }
+    const scope = body.scope, actorId = body.actorId, role = body.callerRole, workerId = body.workerId, path = body.path;
+    if (!validateWorkspaceScope(scope) || scope.tenantId !== tenantId || typeof actorId !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(actorId) || typeof role !== "string" || role.length > 64 ||
+        typeof workerId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(workerId) ||
+        typeof path !== "string" || !validateWorkspacePath(path)) {
+      return Response.json({ error_code: "invalid_workspace_manual_preview" }, { status: 400 });
+    }
+    const agentsEnv = this.env as unknown as import("../index.js").AgentsEnv;
+    const authorized = await (await import("../communications/core.js")).scopeAccess(agentsEnv,
+      { tenantId, spaceId: scope.spaceId, projectId: scope.projectId, userId: actorId, role }, false).catch(() => false);
+    if (!authorized) return Response.json({ error_code: "worker_access_revoked" }, { status: 403 });
+    if (agentsEnv.UNIFIED_WORKSPACE_ENABLED !== "true") return Response.json({ error_code: "workspace_global_kill_switch_active" }, { status: 423 });
+    if (!agentsEnv.WORKSPACE_COORDINATOR || !this.env.SCRIPTS_R2) return Response.json({ error_code: "workspace_preview_unavailable" }, { status: 503 });
+    const rows = this.ctx.storage.sql.exec(`SELECT status,result,workspace_branch,configuration_json FROM sub_agents WHERE id=?`, workerId)
+      .toArray() as Array<{ status: string; result: string | null; workspace_branch: string | null; configuration_json: string | null }>;
+    const row = rows[0];
+    if (!row) return Response.json({ error_code: "worker_not_found" }, { status: 404 });
+    let configuration: Record<string, unknown> | null = null;
+    let output: Record<string, unknown> | null = null;
+    try {
+      configuration = JSON.parse(row.configuration_json ?? "null") as Record<string, unknown> | null;
+      output = JSON.parse(row.result ?? "null") as Record<string, unknown> | null;
+    } catch { return Response.json({ error_code: "worker_conflict_report_unavailable" }, { status: 409 }); }
+    if (row.status !== "done" || !output || Array.isArray(output)) {
+      return Response.json({ error_code: "worker_result_not_resolvable" }, { status: 409 });
+    }
+    if (!configuration || configuration.tenantId !== tenantId || configuration.spaceId !== scope.spaceId ||
+        configuration.projectId !== scope.projectId) {
+      return Response.json({ error_code: "worker_session_scope_mismatch" }, { status: 403 });
+    }
+    const merge = output?.workspaceMerge as { conflicts?: unknown } | undefined;
+    const conflicts = Array.isArray(merge?.conflicts) ? merge.conflicts as Array<{ path?: unknown; targetHash?: unknown; sourceHash?: unknown }> : [];
+    const conflict = conflicts.find(item => item.path === path);
+    const targetBranch = await this.ctx.storage.get<string>(`worker-branch-parent:${workerId}`);
+    if (!conflict || !targetBranch || !row.workspace_branch?.startsWith("workers/")) return Response.json({ error_code: "worker_conflict_not_found" }, { status: 404 });
+    const coordinatorEnv = agentsEnv as unknown as import("../workspace/workspace-client.js").WorkspaceCoordinatorBindings;
+    try {
+      const preview = await readWorkspaceConflictPreview({ scope, targetBranch, workerBranch: row.workspace_branch, path,
+        expectedTargetHash: typeof conflict.targetHash === "string" ? conflict.targetHash : null,
+        expectedSourceHash: typeof conflict.sourceHash === "string" ? conflict.sourceHash : null },
+      (route, payload) => workspaceCoordinatorRequest(coordinatorEnv, scope, route, { ...(payload ? { body: payload } : {}) }),
+      this.env.SCRIPTS_R2);
+      return Response.json({ preview }, { headers: { "cache-control": "no-store" } });
+    } catch {
+      return Response.json({ error_code: "workspace_preview_unavailable" }, { status: 503, headers: { "cache-control": "no-store" } });
+    }
   }
 
   private async handleSteerWorker(request:Request):Promise<Response>{

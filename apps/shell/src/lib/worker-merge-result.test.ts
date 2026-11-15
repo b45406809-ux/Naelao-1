@@ -55,4 +55,43 @@ describe("worker merge result presentation", () => {
     expect(formatWorkerOutput("plain result")).toBe("plain result");
     expect(formatWorkerOutput(null)).toBe("");
   });
+
+  it("preserves bounded manual-resolution receipts for resolved worker conflicts", () => {
+    const report = parseWorkerMergeResult(
+      JSON.stringify({
+        workerOutput: "original output",
+        workspaceMerge: {
+          status: "partially_resolved",
+          conflicts: [
+            {
+              path: "src/app.ts",
+              reason: "overlapping_change",
+              targetHash: "b".repeat(64),
+            },
+          ],
+          manualResolutions: [
+            {
+              path: "src/app.ts",
+              status: "published",
+              revision: 12,
+              reviewBranch: "manual/abc123",
+              completedAt: "2026-11-15T00:00:00.000Z",
+            },
+          ],
+        },
+      })
+    );
+    expect(report?.workspaceMerge).toMatchObject({
+      status: "partially_resolved",
+      manualResolutions: [
+        {
+          path: "src/app.ts",
+          status: "published",
+          revision: 12,
+          reviewBranch: "manual/abc123",
+        },
+      ],
+    });
+    expect(report?.workerOutput).toBe("original output");
+  });
 });

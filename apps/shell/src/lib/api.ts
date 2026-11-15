@@ -2822,6 +2822,56 @@ export interface SubAgentSummary {
   updated_at: string;
 }
 
+export interface WorkerWorkspaceConflictResolution {
+  path: string;
+  idempotencyKey: string;
+  reviewBranch: string;
+  targetBranch: string;
+  status: "published" | "noop";
+  revision: number;
+  publicationId: string;
+  completedAt: string;
+}
+
+export interface WorkerWorkspaceConflictPreviewVersion {
+  hash: string | null;
+  content: string | null;
+  unavailableReason?: "missing" | "size_limit" | "unsupported_type" | "invalid_text";
+}
+
+export interface WorkerWorkspaceConflictPreview {
+  path: string;
+  target: WorkerWorkspaceConflictPreviewVersion;
+  worker: WorkerWorkspaceConflictPreviewVersion;
+  stale: boolean;
+}
+
+export async function readWorkerWorkspaceConflictPreview(
+  spaceId: string,
+  workerId: string,
+  session: SessionCredentials,
+  input: { sessionId: string; agentId?: string | null; projectId: string; path: string }
+): Promise<{ preview: WorkerWorkspaceConflictPreview }> {
+  const query = new URLSearchParams({ session_id: input.sessionId, project_id: input.projectId, path: input.path });
+  if (input.agentId) query.set("agent_id", input.agentId);
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/sub-agents/${encodeURIComponent(workerId)}/workspace-conflicts/preview?${query}`, { session });
+}
+
+/** Publish a reviewer-authored worker conflict resolution through checked Coordinator publication. */
+export async function resolveWorkerWorkspaceConflict(
+  spaceId: string,
+  workerId: string,
+  session: SessionCredentials,
+  input: { sessionId: string; agentId?: string | null; projectId: string; path: string; expectedTargetHash: string | null; expectedSourceHash: string | null; content: string | null; idempotencyKey: string }
+): Promise<{ resolution: WorkerWorkspaceConflictResolution; replay?: boolean }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/sub-agents/${encodeURIComponent(workerId)}/workspace-conflicts/resolve`, {
+    method: "POST", session, body: JSON.stringify({ session_id: input.sessionId, ...(input.agentId ? { agent_id: input.agentId } : {}),
+      project_id: input.projectId, path: input.path, expected_target_hash: input.expectedTargetHash,
+      expected_source_hash: input.expectedSourceHash, content: input.content,
+      idempotency_key: input.idempotencyKey }),
+  });
+}
+
 export interface GoalActivity {
   id: string;
   verificationRequired: boolean;

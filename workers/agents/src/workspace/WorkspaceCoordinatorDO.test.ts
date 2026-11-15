@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { LiveRuntimeControlDO } from "./LiveRuntimeControlDO.js";
 import { WorkspaceCoordinatorDO } from "./WorkspaceCoordinatorDO.js";
 import { sha256Hex } from "./workspace-contract.js";
+import { publishWorkspaceManualResolution } from "./workspace-manual-resolution.js";
 
 class Storage {
   values = new Map<string, unknown>();
@@ -149,7 +150,7 @@ async function createMergeConflictCase(input: {
   owner: string;
   contentType?: string;
 }) {
-  const { instance, objects } = setup();
+  const { instance, objects, storage } = setup();
   const baseBytes = new TextEncoder().encode(input.base);
   const baseHash = await sha256Hex(baseBytes);
   const baseKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${baseHash}`;
@@ -171,7 +172,7 @@ async function createMergeConflictCase(input: {
   expect(ownerCheckpoint.status).toBe(200);
   const merge = await call(instance, "/v1/merge", { sessionId: worker.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0,
     idempotencyKey: "review-conflict-merge" });
-  return { instance, merge };
+  return { instance, merge, objects, storage };
 }
 
 describe("WorkspaceCoordinatorDO checked publication", () => {
@@ -1302,6 +1303,81 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
     expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({ entries: [{ path: "notes.txt" }] });
     expect(await (await call(instance, "/v1/read?branch=runs%2Freview-conflict")).json()).toMatchObject({ entries: [] });
+  });
+
+  it("publishes reviewer-authored text through a retained checked branch and retries after publication", async () => {
+    const { instance, objects, merge } = await createMergeConflictCase({ path: "src/example.ts", base: "base\n", worker: "worker edit\n", owner: "target edit\n" });
+    expect(merge.status).toBe(409);
+    const targetHash = await sha256Hex(new TextEncoder().encode("target edit\n"));
+    const sourceHash = await sha256Hex(new TextEncoder().encode("worker edit\n"));
+    const input = { scope, actorId: "reviewer", workerId: "worker-a", attempt: 1, targetBranch: "main", path: "src/example.ts",
+      sourceBranch: "runs/review-conflict", expectedTargetHash: targetHash, expectedSourceHash: sourceHash,
+      content: "reviewed implementation\n", idempotencyKey: "manual-review-1" };
+    const requestCoordinator = (path: string, body?: Record<string, unknown>) => call(instance, path, body);
+    const first = await publishWorkspaceManualResolution(input, requestCoordinator);
+    const replay = await publishWorkspaceManualResolution(input, requestCoordinator);
+
+    expect(first.merge).toMatchObject({ status: "published", appliedPaths: ["src/example.ts"], sourceBranch: first.reviewBranch,
+      sourceRevision: 3, sourceBaseRevision: 2, targetManifestHash: expect.any(String) });
+    expect(replay.merge.id).toBe(first.merge.id);
+    const targetRead = await call(instance, "/v1/read?branch=main&path=src%2Fexample.ts");
+    const targetEntry = (await targetRead.json() as { entries: Array<{ objectKey: string }> }).entries[0];
+    expect(new TextDecoder().decode(objects.get(targetEntry.objectKey))).toBe("reviewed implementation\n");
+    const workerRead = await call(instance, "/v1/read?branch=runs%2Freview-conflict&path=src%2Fexample.ts");
+    const workerEntry = (await workerRead.json() as { entries: Array<{ objectKey: string }> }).entries[0];
+    expect(new TextDecoder().decode(objects.get(workerEntry.objectKey))).toBe("worker edit\n");
+    expect(await (await call(instance, `/v1/head?branch=${encodeURIComponent(first.reviewBranch)}`)).status).toBe(200);
+  });
+
+  it("publishes a reviewer deletion while retaining the original worker file", async () => {
+    const { instance, objects } = setup();
+    const bytes = new TextEncoder().encode("target version\n");
+    const hash = await sha256Hex(bytes);
+    const objectKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${hash}`;
+    objects.set(objectKey, bytes);
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [
+      { path: "src/remove.ts", sha256: hash, size: bytes.byteLength, executable: false, objectKey, contentType: "text/typescript" },
+    ] });
+    await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "workers/worker-delete" });
+    const result = await publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-delete", attempt: 1,
+      targetBranch: "main", sourceBranch: "workers/worker-delete", path: "src/remove.ts", expectedTargetHash: hash,
+      expectedSourceHash: hash, content: null, idempotencyKey: "manual-delete-1" },
+    (path, body) => call(instance, path, body));
+
+    expect(result.merge).toMatchObject({ status: "published", appliedPaths: ["src/remove.ts"] });
+    expect(await (await call(instance, "/v1/read?branch=main&path=src%2Fremove.ts")).json()).toMatchObject({ entries: [] });
+    expect(await (await call(instance, "/v1/read?branch=workers%2Fworker-delete&path=src%2Fremove.ts")).json()).toMatchObject({ entries: [{ sha256: hash }] });
+  });
+
+  it("rejects a stale manual target without changing the parent", async () => {
+    const { instance } = await createMergeConflictCase({ path: "src/stale.ts", base: "base\n", worker: "worker\n", owner: "target\n" });
+    const oldTargetHash = await sha256Hex(new TextEncoder().encode("target\n"));
+    const sourceHash = await sha256Hex(new TextEncoder().encode("worker\n"));
+    const opened = await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "runtime-owner", allocationGeneration: 1 });
+    const session = await opened.json() as { session: { id: string }; head: { revision: number } };
+    await call(instance, "/v1/checkpoint", { sessionId: session.session.id, allocationGeneration: 1, fence: 0, baseRevision: session.head.revision,
+      idempotencyKey: "owner-newer-change", changes: [{ path: "src/stale.ts", expectedHash: oldTargetHash, contentBase64: btoa("newer target\n") }] });
+    await expect(publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-stale", attempt: 1, targetBranch: "main",
+      sourceBranch: "runs/review-conflict", path: "src/stale.ts", expectedTargetHash: oldTargetHash, expectedSourceHash: sourceHash,
+      content: "reviewed\n", idempotencyKey: "manual-stale-1" },
+    (path, body) => call(instance, path, body))).rejects.toThrow("workspace_manual_resolution_stale_target");
+    expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 3 } });
+  });
+
+  it("rejects a stale worker source before creating a review branch", async () => {
+    const { instance, storage } = await createMergeConflictCase({ path: "src/source.ts", base: "base\n", worker: "worker\n", owner: "target\n" });
+    const oldTargetHash = await sha256Hex(new TextEncoder().encode("target\n"));
+    const oldSourceHash = await sha256Hex(new TextEncoder().encode("worker\n"));
+    const opened = await call(instance, "/v1/open", { scope, branch: "runs/review-conflict", actorId: "worker", runtimeId: "runtime-worker", allocationGeneration: 1 });
+    const session = await opened.json() as { session: { id: string }; head: { revision: number } };
+    await call(instance, "/v1/checkpoint", { sessionId: session.session.id, allocationGeneration: 1, fence: 0, baseRevision: session.head.revision,
+      idempotencyKey: "worker-newer-change", changes: [{ path: "src/source.ts", expectedHash: oldSourceHash, contentBase64: btoa("newer worker\n") }] });
+    await expect(publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-source", attempt: 1,
+      targetBranch: "main", sourceBranch: "runs/review-conflict", path: "src/source.ts", expectedTargetHash: oldTargetHash,
+      expectedSourceHash: oldSourceHash, content: "reviewed\n", idempotencyKey: "manual-source-stale-1" },
+    (path, body) => call(instance, path, body))).rejects.toThrow("workspace_manual_resolution_stale_source");
+    expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
+    expect([...storage.values.keys()].some(key => key.startsWith("head:manual/"))).toBe(false);
   });
 
   it.each([
