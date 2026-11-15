@@ -1,8 +1,10 @@
 import { bm25Score, reciprocalRankFusion, type GroundedSearchHit } from "@naelao/rag";
+import { buildRetrievalPredicate } from "@naelao/security";
 
 const MAX_QUERY_CHARS = 1_000;
 const MAX_CANDIDATES = 200;
 const MAX_BM25_CONTENT_CHARS = 16_384;
+const MAX_FTS_CANDIDATES = 200;
 
 function assertSearchInput(query: string, candidates: GroundedSearchHit[]): void {
   if (typeof query !== "string" || !query.trim() || query.length > MAX_QUERY_CHARS) {
@@ -43,4 +45,63 @@ export function sparseRank(query: string, candidates: GroundedSearchHit[]): Grou
     const hit = byId.get(id);
     return hit ? [{ ...hit, score }] : [];
   });
+}
+
+/** Generate lexical candidates independently from Vectorize. Tenant, Space, Project, role,
+ * document publication and user allowlist checks live in the SQL query, before any candidate is
+ * returned to the caller or fused with dense results. FTS syntax is built only from bounded
+ * alphanumeric tokens, never from raw query operators. */
+export async function queryScopedFtsCandidates(input: {
+  db: Pick<D1Database, "prepare">;
+  query: string;
+  tenantId: string;
+  spaceId: string;
+  projectId: string;
+  userId: string;
+  roleRank: number;
+  limit?: number;
+}): Promise<GroundedSearchHit[]> {
+  if (!input.query.trim() || input.query.length > 1_000 || !input.tenantId || !input.spaceId
+    || !input.projectId || !input.userId || !Number.isFinite(input.roleRank)) {
+    throw new Error("complete bounded Knowledge lexical scope is required");
+  }
+  const terms = input.query.normalize("NFKC").match(/[\p{L}\p{N}_]+/gu)?.slice(0, 32) ?? [];
+  if (!terms.length) return [];
+  const quotedTerms = terms.map((term) => `"${term.slice(0, 64)}"`);
+  const termAlternatives = quotedTerms.join(" OR ");
+  const phrase = quotedTerms.length > 1 ? ` OR "${terms.map((term) => term.slice(0, 64)).join(" ")}"` : "";
+  const matchExpression = phrase ? `(${termAlternatives})${phrase}` : termAlternatives;
+  const limit = input.limit ?? MAX_FTS_CANDIDATES;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_FTS_CANDIDATES) {
+    throw new RangeError(`FTS candidate limit must be from 1 to ${MAX_FTS_CANDIDATES}`);
+  }
+  const scope = buildRetrievalPredicate("k", input);
+  const { results } = await input.db.prepare(`
+    SELECT k.id,k.content,k.r2_key,k.byte_start,k.byte_end,k.line_start,k.line_end,d.title
+    FROM kb_chunks_fts
+    JOIN kb_chunks k ON k.rowid=kb_chunks_fts.rowid
+    JOIN kb_documents d ON d.id=k.document_id AND d.tenant_id=k.tenant_id AND d.space_id=k.space_id
+    WHERE kb_chunks_fts MATCH ? AND ${scope.sql}
+      AND k.deleted_at IS NULL AND d.status='indexed'
+      AND (d.allowed_user_ids_json IS NULL
+        OR (json_valid(d.allowed_user_ids_json) AND json_type(d.allowed_user_ids_json)='array'
+          AND (json_array_length(d.allowed_user_ids_json)=0
+            OR EXISTS (SELECT 1 FROM json_each(d.allowed_user_ids_json) acl WHERE acl.value=?))))
+    ORDER BY bm25(kb_chunks_fts) ASC,k.id ASC
+    LIMIT ?
+  `).bind(matchExpression, ...scope.binds, input.userId, limit).all<{
+    id: string; content: string; r2_key: string; byte_start: number; byte_end: number;
+    line_start: number; line_end: number; title: string | null;
+  }>();
+  return results.map((row) => ({
+    id: row.id,
+    score: 0,
+    content: row.content,
+    r2Key: row.r2_key,
+    byteStart: row.byte_start,
+    byteEnd: row.byte_end,
+    lineStart: row.line_start,
+    lineEnd: row.line_end,
+    title: row.title ?? "",
+  }));
 }

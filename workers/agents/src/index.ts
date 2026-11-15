@@ -355,6 +355,8 @@ export { CompanyAutomationWorkflow } from "./workflows/company-automation-workfl
 
 export interface AgentsEnv extends Cloudflare.Env {
   ENVIRONMENT: string;
+  /** Full assistant-response caching stays off until exact caller and source freshness gates pass. */
+  KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
   UNIFIED_WORKSPACE_ENABLED?: string;
   OPENROUTER_API_KEY?: string;
@@ -1943,32 +1945,33 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   if (durableVoice && (!c.env.AGENT_TASK_WORKFLOW || !c.env.TASK_DO)) return c.json({error_code:"durable_voice_unavailable"},503);
   // A voice action must use its own task receipt, never a semantic-cache response.
   // G-AZ19: Semantic response cache check — skip for async tasks (checked per-request only)
-  try {
-    if (durableVoice) throw new Error("voice_cache_bypass");
-    const cacheResp = await c.env.KNOWLEDGE_WORKER.fetch(
-      new Request("http://knowledge-worker/internal/semantic-cache/lookup", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-naelao-tenant-id": tenantId,
-          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
-        },
-        body: JSON.stringify({ query: body.goal, spaceId }),
-      })
-    );
-    if (cacheResp.ok) {
-      const cacheData = await cacheResp.json<{ hit: boolean; response?: string; similarity?: number }>();
-      if (cacheData.hit && cacheData.response) {
-        console.log(`[SemanticCache] Cache hit for spaceId=${spaceId} similarity=${cacheData.similarity}`);
-        return c.json(
-          JSON.parse(cacheData.response),
-          200,
-          { "X-Cache": "HIT", "X-Cache-Similarity": String(cacheData.similarity ?? 0) }
-        );
+  if (!durableVoice && c.env.KNOWLEDGE_RESPONSE_CACHE_ENABLED === "true") {
+    try {
+      const cacheResp = await c.env.KNOWLEDGE_WORKER.fetch(
+        new Request("http://knowledge-worker/internal/semantic-cache/lookup", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-naelao-tenant-id": tenantId,
+            "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+          },
+          body: JSON.stringify({ query: body.goal, spaceId }),
+        })
+      );
+      if (cacheResp.ok) {
+        const cacheData = await cacheResp.json<{ hit: boolean; response?: string; similarity?: number }>();
+        if (cacheData.hit && cacheData.response) {
+          console.log(`[SemanticCache] Cache hit for spaceId=${spaceId} similarity=${cacheData.similarity}`);
+          return c.json(
+            JSON.parse(cacheData.response),
+            200,
+            { "X-Cache": "HIT", "X-Cache-Similarity": String(cacheData.similarity ?? 0) }
+          );
+        }
       }
+    } catch {
+      // Cache lookup errors must never block the main request
     }
-  } catch {
-    // Cache lookup errors must never block the main request
   }
 
   // §A1.17 Phase Q: "closing the tab should never lose an in-flight run" — the durable
@@ -2160,7 +2163,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   }).catch(() => {}));
 
   // G-AZ19: Store successful agent response in semantic cache for future hits
-  if (doResponse.ok) {
+  if (doResponse.ok && c.env.KNOWLEDGE_RESPONSE_CACHE_ENABLED === "true") {
     c.executionCtx.waitUntil(
       mintInternalToken(c.env.PLATFORM_SECRET, tenantId).then((token) =>
         c.env.KNOWLEDGE_WORKER.fetch(

@@ -6,8 +6,8 @@
 // panel): a KB entry is chunked, embedded, and searchable across every conversation in this
 // space/project going forward; a chat upload is a raw file scoped to the ONE conversation that
 // attached it, read directly by the agent's own filesystem tools. This page used to be reachable
-// only through a since-removed "Attach a file" button buried in the input bar, which silently
-// capped every entry at 2MB of plain text — genuine document management belongs here instead.
+// only through a since-removed "Attach a file" button buried in the input bar. Space-wide entries
+// use the server's 1 MiB synchronous limit; larger entries belong to a project-scoped KB.
 
 import * as React from "react";
 import { Button, FormInput, Card, CardTitle, CardDesc, Badge, useToast, Toast } from "@naelao/ui";
@@ -23,6 +23,7 @@ import {
   type KbDocument,
   type KbSearchResult,
 } from "@/lib/api";
+import { knowledgeContentByteLength, SPACE_KNOWLEDGE_MAX_CONTENT_BYTES } from "@/lib/knowledge-upload-limits";
 
 const STATUS_COLOR: Record<KbDocument["status"], "green" | "amber" | "red"> = {
   indexed: "green",
@@ -81,9 +82,14 @@ export default function KnowledgePage() {
 
   async function handleAdd() {
     if (!creds || !title.trim() || !content.trim()) return;
+    const submittedContent = content.trim();
+    if (knowledgeContentByteLength(submittedContent) > SPACE_KNOWLEDGE_MAX_CONTENT_BYTES) {
+      show("Space-wide Knowledge content is limited to 1 MiB. Add larger documents from a project Knowledge Base, which supports up to 5 MiB.");
+      return;
+    }
     setSaving(true);
     try {
-      await createKbDocument(activeSpaceId, creds, { title: title.trim(), content: content.trim(), content_type: "text" });
+      await createKbDocument(activeSpaceId, creds, { title: title.trim(), content: submittedContent, content_type: "text" });
       setTitle("");
       setContent("");
       setShowAdd(false);
@@ -98,16 +104,15 @@ export default function KnowledgePage() {
 
   // Real file-browse, alongside the manual paste — reads a selected file's TEXT client-side and
   // pre-fills title (from the filename) + content, rather than making a person retype/copy-paste
-  // a document they already have as a file. Same text-only, 2MB guard the prior (deliberately
-  // removed, see this file's own header comment) input-bar uploader had — real binary/PDF parsing
-  // stays a separate, larger KB-pipeline feature.
+  // a document they already have as a file. Space-wide documents are limited to 1 MiB by the API;
+  // real binary/PDF parsing stays a separate, larger KB-pipeline feature.
   function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = ""; // allow re-selecting the same file next time
     if (!file) return;
     const looksText = /^text\//.test(file.type) || file.type === "" || /\.(md|txt|csv|json|ts|tsx|js|jsx|py|yaml|yml|log)$/i.test(file.name);
-    if (!looksText || file.size > 2_000_000) {
-      setFileError(`Can't read "${file.name}" — only text files up to 2MB are supported here.`);
+    if (!looksText || file.size > SPACE_KNOWLEDGE_MAX_CONTENT_BYTES) {
+      setFileError(`Can't read "${file.name}" — Space-wide Knowledge accepts text files up to 1 MiB.`);
       return;
     }
     setFileError(null);
@@ -217,8 +222,11 @@ export default function KnowledgePage() {
               rows={8}
               style={{ resize: "vertical" }}
             />
+            <div style={{ fontSize: 12, color: "var(--text3)" }}>
+              Space-wide text limit: 1 MiB ({knowledgeContentByteLength(content.trim()).toLocaleString()} bytes entered). Project Knowledge supports up to 5 MiB.
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <Button onClick={() => void handleAdd()} disabled={saving || !title.trim() || !content.trim()}>
+              <Button onClick={() => void handleAdd()} disabled={saving || !title.trim() || !content.trim() || knowledgeContentByteLength(content.trim()) > SPACE_KNOWLEDGE_MAX_CONTENT_BYTES}>
                 {saving ? "Adding…" : "Add"}
               </Button>
               <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFilePick} />

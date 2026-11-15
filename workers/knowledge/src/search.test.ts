@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { hybridRank, sparseRank } from "./search.js";
+import { describe, expect, it, vi } from "vitest";
+import { hybridRank, queryScopedFtsCandidates, sparseRank } from "./search.js";
 import type { GroundedSearchHit } from "@naelao/rag";
 
 function hit(id: string, content: string): GroundedSearchHit {
@@ -28,5 +28,51 @@ describe("Knowledge Worker sparse ranking bounds", () => {
     const lateMatch = hit("late", `${"noise ".repeat(4_000)} audit`);
     expect(sparseRank("audit", [lateMatch])).toEqual([]);
     expect(() => sparseRank("audit", [{ ...large, content: 1 as never }])).toThrow(TypeError);
+  });
+});
+
+describe("independent permissioned FTS candidate generation", () => {
+  it("scopes FTS rows by tenant, Space, Project, role, document status and user ACL before ranking", async () => {
+    const all = vi.fn(async () => ({ results: [{
+      id: "allowed_chunk_0", content: "exact audit identifier", r2_key: "kb/allowed", byte_start: 0,
+      byte_end: 22, line_start: 1, line_end: 1, title: "Allowed source",
+    }] }));
+    let boundArgs: unknown[] = [];
+    const prepare = vi.fn((sql: string) => ({
+      bind: vi.fn((...args: unknown[]) => { boundArgs = args; return { all: () => all() }; }),
+      sql,
+    }));
+    const db = { prepare } as unknown as D1Database;
+    const results = await queryScopedFtsCandidates({
+      db, query: 'audit* OR "private"', tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a",
+      userId: "user-a", roleRank: 20,
+    });
+
+    expect(results).toEqual([expect.objectContaining({ id: "allowed_chunk_0", title: "Allowed source", score: 0 })]);
+    const sql = prepare.mock.calls[0]?.[0] ?? "";
+    expect(sql).toContain("kb_chunks_fts MATCH ?");
+    expect(sql).toContain("k.tenant_id = ? AND k.space_id = ? AND k.project_id = ? AND k.required_role_rank <= ?");
+    expect(sql).toContain("d.status='indexed'");
+    expect(sql).toContain("json_each(d.allowed_user_ids_json) acl WHERE acl.value=?");
+    expect(sql).toContain("ORDER BY bm25(kb_chunks_fts) ASC");
+    expect(sql.match(/k\.tenant_id = \? AND k\.space_id = \? AND k\.project_id = \? AND k\.required_role_rank <= \?/g)).toHaveLength(1);
+    expect(sql.indexOf("AND k.deleted_at IS NULL")).toBeLessThan(sql.indexOf("ORDER BY bm25"));
+    expect(boundArgs).toEqual([
+      '("audit" OR "OR" OR "private") OR "audit OR private"', "tenant-a", "space-a", "project-a", 20, "user-a", 200,
+    ]);
+  });
+
+  it("does not invoke FTS for punctuation-only queries and enforces a bounded candidate count", async () => {
+    const prepare = vi.fn();
+    const db = { prepare } as unknown as D1Database;
+    await expect(queryScopedFtsCandidates({
+      db, query: "*** !!!", tenantId: "tenant-a", spaceId: "space-a", projectId: "_space",
+      userId: "user-a", roleRank: 20,
+    })).resolves.toEqual([]);
+    expect(prepare).not.toHaveBeenCalled();
+    await expect(queryScopedFtsCandidates({
+      db, query: "policy", tenantId: "tenant-a", spaceId: "space-a", projectId: "_space",
+      userId: "user-a", roleRank: 20, limit: 201,
+    })).rejects.toThrow(/candidate limit/);
   });
 });

@@ -12,7 +12,7 @@ import { buildRetrievalPredicate, checkSsrf, isRetrievalRecordAllowed, isSpaceNe
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
 import { createParseV5Request } from "./parse-v5.js";
-import { sparseRank } from "./search.js";
+import { queryScopedFtsCandidates, sparseRank } from "./search.js";
 import { reportKnowledgeStorageWrite } from "./storage-usage.js";
 import { acquireKnowledgeDocumentMutationLease, hasKnowledgeDocumentDeletionSince, hasPendingKnowledgeDocumentDeletion, processKnowledgeDocumentDeletion,
   reconcileKnowledgeDocumentDeletions, releaseKnowledgeDocumentMutationLease, renewKnowledgeDocumentMutationLease, type KnowledgeDeletionBindings,
@@ -51,6 +51,8 @@ interface KnowledgeEnv {
   COHERE_API_KEY?: string;
   RETRIEVAL_POLICY_VERSION?: string;
   RETRIEVAL_CONFIDENCE_THRESHOLD?: string;
+  /** Response/retrieval caches remain off until caller and source/grant freshness are acceptance-tested. */
+  KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
   KNOWLEDGE_ANALYTICS?: AnalyticsEngineDataset;
 }
 
@@ -1642,7 +1644,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   }
   const deletionPending = await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId);
   const cacheGeneration = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null);
-  const cacheReadsAllowed = !deletionPending && cacheGeneration !== null;
+  const cacheReadsAllowed = c.env.KNOWLEDGE_RESPONSE_CACHE_ENABLED === "true" && !deletionPending && cacheGeneration !== null;
   const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${userId}:${mode}:${policyVersion}:${cacheGeneration ?? crypto.randomUUID()}`;
   // Semantic answer cache is checked before any document or web retrieval. Its Vectorize filter
   // enforces space isolation in hardware and the helper applies the strict >.96 threshold.
@@ -1660,7 +1662,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       cache_id: semanticHit.id, similarity: semanticHit.score, retrieval_mode: "semantic-cache",
       confidence: semanticHit.score, live_grounding: false });
   }
-  let denseCandidates: Promise<GroundedSearchHit[]>;
+  let lexicalSearchAvailable = true;
   const result = await googleModeSearch(query.trim(), scope, {
     now: Date.now,
     cache: {
@@ -1681,8 +1683,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
         await safeKvPut(c.env.KB_CACHE, key, JSON.stringify({ createdAt: Date.now(), expiresAt, hits }), { expirationTtl: 3600 });
       },
     },
-    dense: async (_q, scoped) => {
-      denseCandidates = timed("dense_search_ms", async () => {
+    dense: async (_q, scoped) => timed("dense_search_ms", async () => {
       const callerRole = (c.req.header("x-naelao-role") ?? "viewer") as KnowledgeRole;
       if (!(callerRole in KNOWLEDGE_ROLE_MASK)) throw unauthorized("Invalid knowledge role");
       const found = await searchPermissionedKnowledge(c.env.KB_VECTORS, queryEmbedding.embedding, {
@@ -1707,11 +1708,25 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
         }, { tenantId, spaceId, projectId: scope.projectId, userId, roleRank });
         return allowed ? [rowToHit(row, match.score ?? 0)] : [];
       });
-      });
-      return denseCandidates;
-    },
-    // BM25 operates only on the ACL-prefiltered candidate population, never a broad FTS result.
-    sparse: async (q) => timed("sparse_search_ms", async () => sparseRank(q, await denseCandidates)),
+    }),
+    sparse: async (q, scoped) => timed("sparse_search_ms", async () => {
+      try {
+        const lexicalCandidates = await queryScopedFtsCandidates({
+          db: c.env.PLATFORM_DB,
+          query: q,
+          tenantId: scoped.tenantId,
+          spaceId: scoped.spaceId,
+          projectId: scoped.projectId,
+          userId,
+          roleRank: scoped.roleRank,
+        });
+        return sparseRank(q, lexicalCandidates);
+      } catch {
+        lexicalSearchAvailable = false;
+        console.warn("[kb] permissioned lexical candidate search unavailable");
+        return [];
+      }
+    }),
     web: async (q, scoped) => timed("web_grounding_ms", async () => {
       if (!c.env.TAVILY_API_KEY) return [];
       const response = await fetch(TAVILY_SEARCH_URL, { method: "POST", headers: { "content-type": "application/json" },
@@ -1724,7 +1739,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
         content: item.content ?? "", r2Key: "", byteStart: 0, byteEnd: 0, title: item.title ?? "", url: item.url ?? "" }));
     }),
     emitTelemetry: (event) => {
-      const payload = { ...event, ...telemetry, retrieval_mode: mode, result_count: 0 };
+      const payload = { ...event, ...telemetry, retrieval_mode: mode, lexical_search: lexicalSearchAvailable ? "available" : "unavailable", result_count: 0 };
       c.env.KNOWLEDGE_ANALYTICS?.writeDataPoint({ blobs: [tenantId, spaceId, scope.projectId, JSON.stringify(payload)], doubles: [event.latencyMs, event.confidence] });
       console.log(JSON.stringify({ event: "knowledge.retrieval", ...payload }));
     },
@@ -1751,7 +1766,8 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     return c.json({ data: [], citations: [], context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION,
       cached: false, retrieval_mode: mode, confidence: 0, live_grounding: false, latency_ms: result.latencyMs });
   }
-  return c.json({ data, citations, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION, cached: result.cacheHit, retrieval_mode: mode, confidence: result.confidence,
+  return c.json({ data, citations, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION, cached: result.cacheHit, retrieval_mode: mode,
+    lexical_search: lexicalSearchAvailable ? "available" : "unavailable", confidence: result.confidence,
     live_grounding: result.liveGrounding, latency_ms: result.latencyMs });
 });
 
@@ -1793,6 +1809,7 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
   }
   const tenantId = requireTenant(c);
   if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, body.spaceId, tenantId))) throw notFound("Space");
+  if (c.env.KNOWLEDGE_RESPONSE_CACHE_ENABLED !== "true") return c.json({ hit: false, reason: "cache_disabled" });
   if (await knowledgeEgressDenied(c.env, body.spaceId)) return airGapResponse(c);
   if (await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, body.spaceId)) {
     return c.json({ hit: false, reason: "knowledge_deletion_pending" });
@@ -1856,6 +1873,7 @@ app.post("/internal/semantic-cache/store", async (c) => {
   }
   const tenantId = requireTenant(c);
   if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, body.spaceId, tenantId))) throw notFound("Space");
+  if (c.env.KNOWLEDGE_RESPONSE_CACHE_ENABLED !== "true") return c.json({ stored: false, reason: "cache_disabled" });
   if (await knowledgeEgressDenied(c.env, body.spaceId)) return airGapResponse(c);
   if (await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, body.spaceId)) {
     return c.json({ stored: false, reason: "knowledge_deletion_pending" });

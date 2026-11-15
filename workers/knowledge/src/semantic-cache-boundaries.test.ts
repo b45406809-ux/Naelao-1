@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function fixture(owned: boolean, options: { matches?: VectorizeMatch[]; cachedResponse?: string; pendingDeletion?: boolean; spaceSuspended?: boolean; airGapped?: boolean } = {}) {
+function fixture(owned: boolean, options: { matches?: VectorizeMatch[]; cachedResponse?: string; pendingDeletion?: boolean; spaceSuspended?: boolean; airGapped?: boolean; cacheEnabled?: boolean } = {}) {
   const query = vi.fn(async () => ({ matches: options.matches ?? [] }));
   const upsert = vi.fn(async () => ({ count: 1 }));
   const deleteByIds = vi.fn(async () => undefined);
@@ -21,6 +21,7 @@ function fixture(owned: boolean, options: { matches?: VectorizeMatch[]; cachedRe
   return {
     env: {
       ENVIRONMENT: "test", PLATFORM_SECRET: "secret", PLATFORM_DB: { prepare },
+      KNOWLEDGE_RESPONSE_CACHE_ENABLED: options.cacheEnabled === false ? "false" : "true",
       AI: { run: aiRun },
       SEMANTIC_CACHE_VECTORS: { query, upsert, deleteByIds },
       SEMANTIC_CACHE_KV: {
@@ -42,6 +43,23 @@ async function signedRequest(path: string, body?: unknown, method = "POST"): Pro
 }
 
 describe("semantic response cache tenant and request bounds", () => {
+  it("keeps response reads and writes disabled unless the feature gate is explicitly true", async () => {
+    const f = fixture(true, { cacheEnabled: false, matches: [{ id: "cached", score: 0.999 }] });
+    const lookupResponse = await worker.fetch(await signedRequest("/internal/semantic-cache/lookup", {
+      query: "question", spaceId: "space-a",
+    }), f.env, {} as ExecutionContext);
+    await expect(lookupResponse.json()).resolves.toMatchObject({ hit: false, reason: "cache_disabled" });
+    expect(f.aiRun).not.toHaveBeenCalled();
+    expect(f.query).not.toHaveBeenCalled();
+
+    const storeResponse = await worker.fetch(await signedRequest("/internal/semantic-cache/store", {
+      query: "question", spaceId: "space-a", response: "answer",
+    }), f.env, {} as ExecutionContext);
+    await expect(storeResponse.json()).resolves.toMatchObject({ stored: false, reason: "cache_disabled" });
+    expect(f.aiRun).not.toHaveBeenCalled();
+    expect(f.upsert).not.toHaveBeenCalled();
+  });
+
   it("refuses foreign-space lookup and storage before AI or Vectorize", async () => {
     const lookup = fixture(false);
     const lookupResponse = await worker.fetch(await signedRequest("/internal/semantic-cache/lookup", { query: "question", spaceId: "space-b" }), lookup.env, {} as ExecutionContext);

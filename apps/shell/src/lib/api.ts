@@ -1,6 +1,7 @@
 import { ApiError, requestJson } from "./request";
 import type { ExtensionBusinessAction, ProjectKind } from "@naelao/agent-sdk";
 import type { SpaceCoordinationAuditHistoryPageV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPageV2, SpaceCoordinationPolicyHistoryPageV2, SpaceCoordinationPolicyV2, SpaceCoordinationPublicationProposal, SpaceCoordinationPublicationProposalPage, SpaceCoordinationProposalAction, SpaceCoordinationSingletonPolicy, SpaceCoordinationSingletonPolicyHistory, SpaceCoordinationUseRequestPage, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
+import { assertKnowledgeContentWithinScope } from "./knowledge-upload-limits";
 // Product Shell API client — a signed-in product end user talks to the platform via a
 // product-scoped nps_... session token (ProductUserDO-backed), never the builder's platform JWT.
 // Ported from apps/portal/src/lib/api.ts's proven hybrid-auth pattern (Three-Tier Platform
@@ -3570,6 +3571,7 @@ export async function createKbDocument(
   session: SessionCredentials,
   input: { title: string; content: string; content_type?: string; source_url?: string; project_id?: string }
 ): Promise<KbDocument> {
+  assertKnowledgeContentWithinScope(input.content, input.project_id);
   return apiFetch(`/v1/spaces/${spaceId}/kb/documents`, { method: "POST", body: JSON.stringify(input), session });
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function bindings(owned: boolean, pendingDeletion = false) {
+function bindings(owned: boolean, pendingDeletion = false, ftsFails = false) {
   const run = vi.fn(async () => ({ data: [[0.1, 0.2]] }));
   const query = vi.fn(async () => ({ matches: [] }));
   const cacheQuery = vi.fn(async () => ({ matches: [{ id: "cached-answer", score: 0.999 }] }));
@@ -14,7 +14,10 @@ function bindings(owned: boolean, pendingDeletion = false) {
         : sql.includes("kb_document_deletion_operations")
           ? pendingDeletion ? { document_id: "doc-1" } : null
           : { config_json: "{}" }),
-      all: vi.fn(async () => ({ results: [] })),
+      all: vi.fn(async () => {
+        if (ftsFails && sql.includes("kb_chunks_fts")) throw new Error("FTS unavailable");
+        return { results: [] };
+      }),
       run: vi.fn(async () => ({ meta: { changes: 1 } })),
     })),
   }));
@@ -71,5 +74,20 @@ describe("knowledge search tenant and query bounds", () => {
     await expect(response.json()).resolves.toMatchObject({ data: [], cached: false });
     expect(env.cacheQuery).not.toHaveBeenCalled();
     expect(env.groundedCacheGet).not.toHaveBeenCalled();
+  });
+
+  it("keeps semantic answer-cache reads disabled by default", async () => {
+    const env = bindings(true);
+    const response = await worker.fetch!(await searchRequest("policy"), env as never, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(env.cacheQuery).not.toHaveBeenCalled();
+  });
+
+  it("reports lexical unavailability while preserving permissioned dense search", async () => {
+    const env = bindings(true, false, true);
+    const response = await worker.fetch!(await searchRequest("policy"), env as never, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ retrieval_mode: "hybrid", lexical_search: "unavailable" });
+    expect(env.query).toHaveBeenCalledOnce();
   });
 });

@@ -61,13 +61,14 @@ migrations_dir = "../../infra/migrations"
 ENVIRONMENT = "development"
 RETRIEVAL_POLICY_VERSION = "1"
 RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85"
+KNOWLEDGE_RESPONSE_CACHE_ENABLED = "false"
 
 [[queues.producers]]
 binding = "EVENTS_QUEUE"
 queue = "naelao-events"
 
 [env.staging]
-vars = { ENVIRONMENT = "staging", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85" }
+vars = { ENVIRONMENT = "staging", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85", KNOWLEDGE_RESPONSE_CACHE_ENABLED = "false" }
 
 [env.staging.triggers]
 crons = ["*/5 * * * *"]
@@ -81,7 +82,7 @@ binding = "BILLING_WORKER"
 service = "naelao-billing-staging"
 
 [env.production]
-vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85" }
+vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85", KNOWLEDGE_RESPONSE_CACHE_ENABLED = "false" }
 
 [env.production.triggers]
 crons = ["*/5 * * * *"]

@@ -53,6 +53,7 @@ import {
   type ProjectUsageSummary,
   type ThreadSummary,
 } from "@/lib/api";
+import { knowledgeContentByteLength, PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES } from "@/lib/knowledge-upload-limits";
 import { Button, Card, CardDesc, CardLabel, CardTitle, CardValue, FormInput, FormSelect, FormTextarea, Modal, Toast, useToast } from "@naelao/ui";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
@@ -344,17 +345,20 @@ export default function ProjectDetailPage() {
     }
   }
 
-  // Step 13b: upload a FILE into the project KB, not just paste text. Reads a text-readable file
-  // and pre-fills the title (from the filename) + content, then the person clicks Add. Same
-  // text-only/2MB guard as the space-wide Knowledge Base page (real PDF/office parsing is a
-  // separate, larger pipeline feature — a binary is rejected rather than ingested as garbage).
+  // Upload a text-readable file into this project's private KB. This scope supports the worker's
+  // 5 MiB asynchronous ingestion limit; PDF/office parsing remains a separate capability.
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   async function handlePickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = ""; // allow re-picking the same file
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      show("File is over 2MB — paste the relevant part instead, or upload a smaller file.");
+    const looksText = /^text\//.test(file.type) || file.type === "" || /\.(md|txt|csv|json|html|xml|log|ya?ml)$/i.test(file.name);
+    if (!looksText) {
+      show("Only readable text files are supported by this upload form.");
+      return;
+    }
+    if (file.size > PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES) {
+      show("Project Knowledge text files are limited to 5 MiB.");
       return;
     }
     try {
@@ -373,11 +377,16 @@ export default function ProjectDetailPage() {
   async function handleAddDoc(e: React.FormEvent) {
     e.preventDefault();
     if (!creds || !newDocTitle.trim() || !newDocContent.trim()) return;
+    const submittedContent = newDocContent.trim();
+    if (knowledgeContentByteLength(submittedContent) > PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES) {
+      show("Project Knowledge content is limited to 5 MiB.");
+      return;
+    }
     setAddingDoc(true);
     try {
       await createKbDocument(activeSpaceId, creds, {
         title: newDocTitle.trim(),
-        content: newDocContent.trim(),
+        content: submittedContent,
         project_id: params.projectId,
       });
       setNewDocTitle("");
@@ -864,8 +873,11 @@ export default function ProjectDetailPage() {
           rows={4}
           required
         />
+        <div style={{ fontSize: 12, color: "var(--text3)" }}>
+          Project-private text limit: 5 MiB ({knowledgeContentByteLength(newDocContent.trim()).toLocaleString()} bytes entered).
+        </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Button size="sm" disabled={addingDoc}>
+          <Button size="sm" disabled={addingDoc || knowledgeContentByteLength(newDocContent.trim()) > PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES}>
             {addingDoc ? "Adding…" : "Add document"}
           </Button>
           <input ref={fileInputRef} type="file" accept=".txt,.md,.csv,.json,.html,.xml,.log,text/*" style={{ display: "none" }} onChange={handlePickFile} />
