@@ -1,6 +1,12 @@
 # Mature knowledge platform implementation progress
 
-## Checkpoint — 2026-11-15 (K01 limits, K11 independent FTS and K20 cache containment; 1041cd0 pushed)
+## Latest checkpoint — 2026-11-15 (PW06 worker cancellation fenced; 79d671a3 pushed)
+
+Code `79d671a329b056c3cd2e861aeabb3996e488de9d` fences late worker responses and signed session updates by durable status and attempt. Local cancellation/integration tests **20/20**, Agents typecheck and `git diff --check` passed. The cross-DO race after publication is already accepted by Artifact Worker/Workspace Coordinator remains a lifecycle contract gap; no deployed acceptance. Preserve untracked `infra/scripts/__pycache__/` and keep rollouts disabled.
+
+Exact next action: close K02/K03 by adding a file-hash-bound, bounded PDF parse preview and correction step to both reachable Knowledge add forms using the current PDF parser. Preserve Space/Project size and scope limits, display extraction warnings, and cover the real caller/API lifecycle. Continue K04–K30 and other active-plan gaps afterward.
+
+## Previous checkpoint — 2026-11-15 (K01 limits, K11 independent FTS and K20 cache containment; 1041cd0 pushed)
 
 Source plan `mature-knowledge-platform-plan.md` was fetched from `plan/microapps-ui-sdk-voice` commit `9358830e` and copied verbatim to this branch (SHA-256 `2b36b7483040b8e62836eadc66f8d14bf83825b761b7436a919a66e69f71ebb2`). No branch switch or merge occurred. Requirements K01–K30 are incorporated into platform plan §14. Code `1041cd0ffe58b212d11329a9ea0f4d155c4d3780` is pushed and remote-verified on `origin/Mcbt5s-Backup-2`; source baseline inspected at `89b428f8`.
 
@@ -11,8 +17,8 @@ Statuses describe local code, not deployment or live acceptance. `IN_PROGRESS` m
 | ID | Status | Current source evidence and remaining action |
 | --- | --- | --- |
 | K01 Scope-specific ingestion limits | IMPLEMENTED_LOCAL | Shared UTF-8 byte helper and `createKbDocument` guard match backend's 1 MiB Space-wide and 5 MiB Project workflow limits. Both add forms check pasted text and selected text files and display the scope limit. Helper tests 3/3; Shell typecheck passed. |
-| K02 Supported formats and preview | IN_PROGRESS | Backend text/code/URL/PDF enum and `parse-v5.ts`; both reachable forms are text-only; no parse preview or correction step. Add PDF journey separately and disclose limits. |
-| K03 Parser safety and provenance | IN_PROGRESS | PDF extraction, injection moderation, content hashes, source coordinates and structural Markdown chunking exist. Parser/model version lineage, previews and broader extraction review are incomplete. |
+| K02 Supported formats and preview | IN_PROGRESS | Backend text/code/URL/PDF enum and `parse-v5.ts`; both reachable forms are text-only; no parse preview or correction step. Exact next action: wire both add forms to bounded PDF preview bound to selected-file SHA-256, then require explicit confirmation before ingest. |
+| K03 Parser safety and provenance | IN_PROGRESS | PDF extraction, injection moderation, content hashes, source coordinates and structural Markdown chunking exist. Parser/model version lineage, preview warning/correction UI and broader extraction review remain uncoded. |
 | K04 Idempotent durable ingestion | IN_PROGRESS | Mutation leases, queue workflow for larger Project documents, processing/deletion states and retries exist. Review lost queue responses, changed-content fencing and parser/lineage identity. |
 | K05 Collection authority model | IN_PROGRESS | Canonical records are per document/Space/Project with role rank and user allowlist; extension publication/grants exist. Named collections, separate discover/use/manage/share rights and full ownership/version APIs remain uncoded. |
 | K06 Attachment and channel scope | IN_PROGRESS | Project Knowledge extension grants are explicit and default-denied. Verify conversation attachment non-promotion and every voice/web/email/WhatsApp caller against effective grants. |
@@ -54,4 +60,4 @@ Official sources reviewed: Cloudflare [filtering](https://developers.cloudflare.
 
 Local evidence: Knowledge Worker full suite **95/95**, Knowledge typecheck, Agents typecheck, Shell typecheck, upload-limit helper **3/3**, SQLite FTS5 phrase query smoke check, Cloudflare AI Search filtering/hybrid/multitenancy/data-source/pricing docs reviewed, TOML parsed with cache false in development/staging/production, and `git diff --check`. No deployed D1/Worker, browser, provider, invoice or live acceptance; do not infer FTS migration deployment or real scale. No AI Search adapter is selected or enabled. Rollouts remain off.
 
-Exact next action: close the recorded PW06 worker-cancellation race in `spawnSubAgentBatch`: gate merge/validation on durable non-terminated state and make terminal cancellation survive late success/failure; add cancel-during-validation coverage. Then implement K02/K03 reachable PDF preview and parser lineage, and continue all remaining S2–S9/U01–U12/P/PW/K gaps.
+The prior PW06 cancellation task was completed locally and pushed in `79d671a3`; the in-flight publication boundary remains explicitly partial. Resume the K02/K03 PDF preview task above, then continue all remaining S2–S9/U01–U12/P/PW/K gaps.

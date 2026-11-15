@@ -1,12 +1,22 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-15 (Knowledge K01/K11; code 1041cd0 pushed; PW06 race next)
+## Latest cross-plan checkpoint — 2026-11-15 (PW06 durable worker cancellation fences; code 79d671a3 pushed)
+
+Durable worker cancellation now prevents a late child response from entering checked branch integration and fences completion/failure writes by `status='running'` and expected `attempt`. The signed delegation callback carries the attempt; the parent rejects callbacks after termination or a superseding retry. Validation and publication adapters recheck the durable attempt before work, receipts and the checked publication request.
+
+Local evidence: delegated admission and checked integration suites **20/20**, Agents TypeScript check, and `git diff --check`. Code `79d671a329b056c3cd2e861aeabb3996e488de9d` is pushed and verified on `origin/Mcbt5s-Backup-2`. Cancellation after Artifact Worker/Workspace Coordinator has already accepted publication cannot be made atomic by the parent status fence; that cross-DO commit-boundary contract remains open. No deployed Worker, real Container/runtime, browser or live acceptance. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+PW06 remains PARTIAL for already-accepted in-flight publication semantics, broader revocation, per-run currency/compute reservation and settlement, actual runtime isolation, and deployed concurrency/recovery acceptance. P06 remains PARTIAL for signed distribution, managed provisioning and provider/carrier acceptance. U05/U06 remain unsupported runtime-contract gates. These are not credentials-only blockers.
+
+Exact next action: implement K02/K03 PDF ingestion preview in both reachable Knowledge forms. Reuse the current scoped PDF parser/API; preserve the 1 MiB Space-wide and 5 MiB Project-private ceilings; bind the preview to the file hash; show extracted text, parser warnings/limits and a correction step before ingestion; add caller and API tests. Then continue the open S2–S9/U01–U12/P/PW/K code gaps.
+
+## Previous cross-plan checkpoint — 2026-11-15 (Knowledge K01/K11; code 1041cd0 pushed; PW06 race next)
 
 Fetched `mature-knowledge-platform-plan.md` from `plan/microapps-ui-sdk-voice` at `9358830e`, copied it without branch switch/merge, and incorporated K01–K30 in platform §14 with a dedicated ledger. Local Knowledge work now aligns 1 MiB Space-wide and 5 MiB Project-private UTF-8 limits across API/UI, adds ACL-filtered independent D1 FTS5 lexical candidates to the Vectorize/RRF path, and gates full Agents response caching off because its tenant/Space key lacks caller and source/grant freshness. Cloudflare AI Search was evaluated from current docs; it remains unselected and disabled.
 
 Code `1041cd0ffe58b212d11329a9ea0f4d155c4d3780` is pushed and remote-verified on `origin/Mcbt5s-Backup-2`. Local evidence: Knowledge suite **95/95**, Knowledge/Agents/Shell typechecks, upload helper **3/3**, FTS5 syntax smoke check, Wrangler TOML config check with cache flags false in all environments, `git diff --check`. No deployed D1/Worker/runtime, provider, invoice or live acceptance; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: close PW06 late worker-cancellation race (durable terminal-state gate before merge/validation and guarded completion updates; tests for late success/failure and cancel during validation). Then continue K02/K03 and the open S2–S9/U01–U12/P/PW/K work. Keep rollouts disabled.
+This checkpoint's next action was completed in code `79d671a3`; continue K02/K03 above. Other S2–S9/U01–U12/P/PW/K gaps remain open.
 
 ## Previous cross-plan checkpoint — 2026-11-15 (PW06 validation outcome telemetry; code 276aa6a9 pushed)
 

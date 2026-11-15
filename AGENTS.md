@@ -10,7 +10,17 @@ All three plans below are active and jointly govern this mission:
 
 The requirements from `docs/research/planner-worker-isolation-and-conflict-resolution-plan.md` at commit `45575a395df9571eb075f0a479c65144e767be7c` are incorporated into platform plan section 12 and managed plan section 20; PW01–PW06 track the reconciled requirements. The latest fetched planner source ref is `45575a395df9571eb075f0a479c65144e767be7c`; no planning branch was checked out or merged. Reuse existing requirement IDs and progress ledgers when plans overlap. Do not restart completed work or claim completion from historical notes alone. After compaction, interruption, or a new session, read all three active plans, all three progress records, and this runbook; inspect the actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (K01 upload limits, K11 independent lexical retrieval, K20 cache containment; code 1041cd0 pushed)
+## Latest checkpoint — 2026-11-15 (PW06 durable worker cancellation fences; code 79d671a3 pushed)
+
+Worker cancellation now fences checked integration, test execution, publication requests and completion writes against the durable worker `status` and monotonic `attempt`. Late success/failure responses cannot start a merge or replace `terminated`; signed child session updates carry the attempt and are rejected after termination or supersession. The checked-integration helper rechecks active state around validation and before receipt/publication.
+
+Local evidence: delegated admission and checked integration suites **20/20**, Agents typecheck, and `git diff --check`. Code `79d671a329b056c3cd2e861aeabb3996e488de9d` is pushed and verified on `origin/Mcbt5s-Backup-2`. This does not atomically cancel a publication already accepted by Artifact Worker/Workspace Coordinator before termination; close that commit-boundary contract or define/review its lifecycle semantics. No deployed Worker, real Container, browser, or live acceptance. Keep rollouts disabled and preserve untracked `infra/scripts/__pycache__/`.
+
+PW06 remains PARTIAL for in-flight publication cancellation semantics, broader revocation, currency/compute reservation and settlement, real runtime isolation, and deployed concurrency/recovery acceptance. P06 remains PARTIAL for signed distribution, managed provisioning and live provider/carrier evidence. U05/U06 remain unsupported runtime-contract gates. These are code/product/runtime gaps, not credentials-only blockers.
+
+Exact next action: implement K02/K03 reachable PDF ingestion preview in both Space-wide and Project-private Knowledge forms. Trace the existing PDF parser API and lifecycle first; add a scope-correct bounded PDF selection, preview/correction step that displays extraction limits and parser warnings before ingestion, preserve existing upload ceilings, bind preview to the submitted file hash, and add API/UI tests. Then record parser/version lineage and continue remaining independent S2–S9/U01–U12/P/PW/K work.
+
+## Previous checkpoint — 2026-11-15 (K01 upload limits, K11 independent lexical retrieval, K20 cache containment; code 1041cd0 pushed)
 
 K01 now enforces the API's 1 MiB Space-wide and 5 MiB Project-private UTF-8 upload limits in both reachable Knowledge forms. K11 adds independent permissioned FTS5 lexical candidates to the existing Vectorize/RRF search. K20 gates full assistant-response cache reads/writes off in all environments until caller scope and source/grant freshness are implemented; this closes the existing tenant/Space cache boundary without silently changing retrieval providers.
 
@@ -18,7 +28,7 @@ Knowledge checkpoint `1041cd0ffe58b212d11329a9ea0f4d155c4d3780` is pushed and re
 
 PW06 remains PARTIAL for cancellation/revocation lifecycle, currency/compute reservation and settlement, real runtime isolation and deployed concurrency/recovery acceptance. P06 remains PARTIAL for signed distribution, managed provisioning and live provider/carrier evidence. U05/U06 are unsupported runtime-contract gates, not credentials-only blockers.
 
-Exact next action: close the observed PW06 cancellation race in delegated workers: after the parent records termination, a late child response can still enter `mergeWorkerWorkspace()` and the completion UPDATE can overwrite `terminated` with `done`. Gate automatic validation/publication on the durable non-terminated worker state, preserve terminal cancellation in completion handling, and add regression coverage for late success/failure plus cancellation during validation. Continue other independent plan gaps afterward; fetch before every push and never enable rollouts.
+This checkpoint's next action was completed in code `79d671a3`; continue from K02/K03 above. The in-flight publication contract and other PW06/managed-services acceptance gaps remain open.
 
 ## Knowledge-platform reconciliation — 2026-11-15 (source plan 9358830e fetched; code 1041cd0 pushed)
 
@@ -1499,7 +1509,7 @@ the current owner phone panel, exact-installation Space route and Agents host va
 Focused Agents tests pass **46/46**, the Space route tests **18/18**, and Agents/Spaces/Shell typechecks
 pass. These are local tests only; no carrier call occurred. The prior P17 and simulator next-action
 notes are historical; current source reconciliation is already recorded in the two progress files.
-After compaction, interruption or a new session, read both plans, both progress records and this
+After compaction, interruption or a new session, read all three active plans, all three progress records and this
 runbook; inspect the actual branch and worktree; resume from the exact current action at the top. Do not deploy,
 purchase, reset, clean, switch branches or force-push.
 The user authorized normal commits and pushes of each coherent checkpoint to `Mcbt5s-Backup-2`:
@@ -1569,14 +1579,14 @@ actual invoices, billed-idle/CPU-size feeds, approved policies and live evidence
 that audit without new source evidence. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9 and
 U01–U12 keep their row-level status and gaps. §5, §9.5 and §10 remain PARTIAL. P01/P02 fail closed on
 actual environment separation, ownership/resource receipts and operator-attested D1 baselines; other
-product, policy, runtime contract and live acceptance gates remain in both progress records.
+product, policy, runtime contract and live acceptance gates remain in all three progress records.
 
 Historical next action: continue §9.5 through the signed extension and bounded Telnyx `say`/DTMF
 callers. Its phone simulator/package work is recorded in later checkpoints; resume from the active
 P24 action at the top. Keep public streaming and provider/live acceptance gated.
 The earlier §10.2 expected-version-fenced, audience-confirmed amendment is already implemented and
-pushed as `bfc22ce6`; do not repeat it. After compaction, interruption or a new session, read both
-plans, both progress records and this runbook; inspect the actual worktree, branch and dirty state;
+pushed as `bfc22ce6`; do not repeat it. After compaction, interruption or a new session, read all three
+active plans and all three progress records and this runbook; inspect the actual worktree, branch and dirty state;
 resume from that exact action. Older next-action notes below are historical; this checkpoint and the
 two progress records govern.
 
@@ -1992,7 +2002,7 @@ Latest continuation (2026-11-12): U01 code `afc0c4fe` is pushed to `origin/Mcbt5
 
 ## Autonomous continuation and verification
 
-- After compaction, interruption or a new session, read both active plans, both progress records
+- After compaction, interruption or a new session, read all three active plans and all three progress records
   and this runbook, inspect the actual worktree/branch/dirty files, and resume the exact next action.
   Reconcile earlier status with current source and
   newer evidence. Preserve original transcripts. Historical guidance is archived at
