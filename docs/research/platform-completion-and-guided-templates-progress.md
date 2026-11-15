@@ -1,35 +1,34 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host; P06 call concurrency; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host; P06 stream contract; pushed)
 
-Joint-mission code `aa0f6b7b`, records checkpoint `20171141`, and code checkpoint `3b1059a4` are pushed
-to `origin/Mcbt5s-Backup-2`; each push fetched first and preserved the remote ancestor. The Modal Node
-host signature binds exact method, path/query, tenant/Space/Project, operation and idempotency IDs,
-timestamp and bounded body hash. The non-root pinned image and test-only CI build are defined. BYO
-Telnyx extension admission uses one guarded SQL insert to enforce five concurrent calls per binding;
-indeterminate calls consume a slot and excess calls are hung up before answer.
+Joint mission code `aa0f6b7b`, records `20171141`, call-concurrency code `3b1059a4`, record `2f365d13`,
+and stream SDK `ed426ee1` are pushed to `origin/Mcbt5s-Backup-2`; fetch-before-push preserved the
+remote ancestor. SDK V1 now specifies bounded, provider-neutral transcript/keypad/interruption/tool-result/
+end events and speak/listen/configured-handoff/end actions. It rejects raw media, carrier IDs, arbitrary
+destinations and overlong data. Telnyx BYO extension admission atomically caps each binding at five
+concurrent calls; indeterminate calls hold capacity. Modal's request-bound signature, pinned non-root
+image definition and non-publishing CI build are also present.
 
-Local evidence: Modal host tests **8/8**, Agents host-client **3/3**, Telnyx live-call tests **6/6**,
-Modal/Agents typechecks and build, `git diff --check`. Local Docker build could not fetch pinned pnpm
-because of `SELF_SIGNED_CERT_IN_CHAIN`; the CI Docker job has not run and no image was produced. No
-provider, browser, deployment or live acceptance. Modal stays gated on Beta/private-gRPC acceptance,
-per-sandbox usage evidence and approved prices. Preserve untracked `infra/scripts/__pycache__/` and
-keep all rollouts disabled.
+Local evidence: SDK stream tests **6/6** and typecheck; Telnyx extension tests **6/6** and Agents
+typecheck; Modal host **8/8**, Agents host client **3/3**, host/Agents builds and typechecks,
+`git diff --check`. The local Docker build stopped at Corepack due to `SELF_SIGNED_CERT_IN_CHAIN`; no
+image exists and CI Docker has not run. No provider, browser, deployment or live acceptance is claimed.
+Modal remains disabled pending Beta/private-gRPC, usage-reconciliation and pricing decisions; preserve
+untracked `infra/scripts/__pycache__/` and keep all rollouts disabled.
 
-P06 reconciliation: the signed bounded-phone-menu setup/dashboard and owner operations view already
-exist with exact published revision pins. Telnyx public calls now have a bounded concurrency cap, but
-conversational streaming remains uncoded. The extension SDK/runtime accepts only data-only keypad
-turns; existing PCMU/WebSocket media code is owner-session scoped. This is missing implementation and
-runtime contract, not a credential blocker. First-party publisher identity/signing/catalog/provisioning,
-full customer voice lifecycle, complete cost/quality evidence and live carrier acceptance also remain
-partial.
+P06 dashboard and bounded-phone-menu settings are already implemented and revision pinned. The stream
+SDK is only a contract: it is not connected to a media session or extension handler. OwnerVoice's
+existing websocket ticket is not valid for customer extensions. This is missing implementation, not a
+credential blocker. First-party publisher identity/signing/catalog/provisioning, the complete customer
+voice lifecycle, invoice/quality evidence and carrier live acceptance remain partial.
 
-Exact next action: implement the versioned extension-scoped streaming session contract and caller.
-Persist/bind tenant/Space/Project, BYO line and call-control identity, installation, handler SHA and
-published settings revision; authenticate the media websocket with a short-lived one-time call ticket;
-keep media/provider authority at the host and do not cross into OwnerVoice. Add transcript/interruption
-and structured host-action handling, caller consent, budget/deadline, cleanup, duplicate and uncertain
-outcome coverage. Leave streaming disabled. Continue other uncoded S2–S9/U01–U12/P01–P24 requirements.
+Exact next action: implement a separate public extension call-session and one-time media-ticket record,
+bound to tenant/Space/Project, Telnyx line/call-control ID, admitted installation, handler digest and
+published settings revision. Add a dedicated websocket caller that claims the ticket once, validates
+stream events/actions and invokes only that pinned extension. Add caller consent, speech budget and
+deadline enforcement, interruption and cleanup, and duplicate/uncertain recovery. Do not invoke the
+OwnerVoice bridge or enable the feature flag. Then continue all other uncoded S2–S9/U01–U12/P01–P24 work.
 ## Previous checkpoint — 2026-11-14 (P05 guided setup lifecycle; pushed)
 
 Code `c0daaf86a2c8c05b2e211eccc360367c3c9adf44` is pushed to `origin/Mcbt5s-Backup-2`. Space Template

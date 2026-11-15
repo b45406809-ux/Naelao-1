@@ -16,39 +16,38 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal boundary; P06 call concurrency; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d Modal boundary; P06 stream contract; pushed)
 
-Code `aa0f6b7b` and the records checkpoint `20171141` are pushed to `origin/Mcbt5s-Backup-2`;
-`3b1059a4` is the latest pushed code checkpoint. The Modal Node boundary now signs each request over
-its method, path/query, exact tenant/Space/Project, operation and idempotency identities, timestamp and
-bounded body hash. The non-root pinned container and no-publish/no-deploy CI job are defined. The
-Telnyx extension admission INSERT now atomically enforces five concurrent calls per BYO binding,
-counting indeterminate calls; excess calls are hung up before answering. The Shell-routed U09 private
-state paths are reachable in `fa5d3998`.
+Code `aa0f6b7b`, record checkpoint `20171141`, call-cap checkpoint `3b1059a4`, call-cap record
+`2f365d13`, and stream SDK checkpoint `ed426ee1` are pushed to `origin/Mcbt5s-Backup-2`. The
+versioned SDK stream contract now validates bounded partial/final transcripts, keypad input,
+interruption, tool result and call-end events plus speak/listen/configured-handoff/end actions. It
+excludes raw audio, provider call IDs and arbitrary destinations. Public BYO Telnyx admission atomically
+caps each binding at five calls, counting indeterminate calls. The Modal host request signature and
+pinned non-root container/CI build are present. The U09 private-state caller routes are reachable.
 
-Local evidence: Modal host **8/8**, Agents Modal client **3/3**, Telnyx live-call tests **6/6**, host
-and Agents typechecks/builds, `git diff --check`. Docker build did not complete because Corepack could
-not download pinned pnpm (`SELF_SIGNED_CERT_IN_CHAIN`); CI Docker job is unrun. No image, deployment,
-provider, browser or live acceptance is claimed. Modal create remains gated on Beta/private-gRPC
-acceptance, supported per-sandbox usage evidence and approved pricing. Keep rollouts disabled and
-preserve untracked `infra/scripts/__pycache__/`.
+Local evidence: SDK stream tests **6/6** and typecheck; Telnyx extension call tests **6/6** and Agents
+typecheck; Modal host tests **8/8**, Agents host-client **3/3**, Modal/Agents build/typechecks,
+`git diff --check`. The container build could not download pinned pnpm because of
+`SELF_SIGNED_CERT_IN_CHAIN`; no image was produced, and the CI Docker job remains unrun. No provider,
+browser, deployment or live acceptance is claimed. Modal create is gated on Beta/private-gRPC support,
+usage reconciliation evidence and approved pricing. Keep all rollout flags disabled and preserve
+untracked `infra/scripts/__pycache__/`.
 
-P06 remains partial. Public Telnyx calls are bounded keypad sessions pinned to installation, handler
-SHA and published settings revision. Streaming is still uncoded: the public extension SDK accepts only
-data-only call/DTMF events and `say`/`gather`/`hangup` results; the existing PCMU/WebSocket bridge is
-bound to owner-authenticated sessions. This is an implementation/runtime-contract gap, not a provider
-credential blocker. The signed bounded-phone-menu microapp and owner operations view are already
-implemented; do not repeat them. First-party publisher identity/signing/catalog, full customer voice
-lifecycle, complete cost/quality evidence and live carrier acceptance remain open.
+P06 is still partial: the new stream schema is SDK-only and has no reachable media caller. Current
+extension invocations support data-only keypad turns; the old PCMU bridge accepts owner-session
+credentials and must not be reused. This missing host/runtime integration is uncoded implementation,
+not an external credential blocker. The signed bounded-phone-menu dashboard and owner status view are
+already implemented. First-party publisher identity/signing/catalog, full customer voice lifecycle,
+complete cost/quality evidence and carrier acceptance remain open.
 
-Exact next action: define and implement a versioned, extension-scoped streaming session contract and
-reachable host caller. Bind every session to tenant/Space/Project, BYO binding/call ID, admitted
-installation, handler SHA and published settings revision; authenticate the Telnyx websocket with a
-short-lived one-time call ticket; keep audio transport and provider authority in the host and never use
-the OwnerVoice namespace. Add transcript/interruption and structured host-action contracts, consent,
-budget, timeout, cleanup and duplicate/uncertain recovery checks. Keep the feature flag off. Then
-continue other uncoded S2–S9/U01–U12/P01–P24 work; do not label unwritten runtime code as externally
-blocked.
+Exact next action: integrate the stream contract into the isolated public extension runtime. Add a
+durable call-session/one-time media-ticket boundary bound to tenant/Space/Project, line and provider call,
+installation, handler digest and published settings revision; create a distinct Telnyx media websocket
+caller that verifies and claims that ticket, dispatches validated stream events to the pinned extension,
+and validates host actions without touching OwnerVoice. Enforce caller consent, the five-call cap, host
+budget/deadline, interruption, cleanup and uncertain outcomes. Keep the feature flag off; then continue
+other uncoded S2–S9/U01–U12/P01–P24 requirements.
 ## Previous checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
 
 Code `ef77e19375b134c724be5fec95ba771573e1ba10` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
