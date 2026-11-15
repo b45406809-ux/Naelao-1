@@ -197,7 +197,10 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     }
     this.ensureBaseSchema();
     const url = new URL(request.url);
+    if (this.metadata("product_user_erased") === "1" && !(request.method === "POST" && url.pathname === "/internal/erase-user"))
+      return Response.json({ error_code: "micro_app_user_erased" }, { status: 410 });
     try {
+      if (request.method === "POST" && url.pathname === "/internal/erase-user") return await this.eraseUserActor(request);
       if (request.method === "POST" && url.pathname === "/initialize") return await this.initialize(request);
       if (request.method === "POST" && url.pathname === "/internal/archive/export") return await this.exportArchiveSnapshot(request);
       if (request.method === "POST" && url.pathname === "/internal/archive/preview") return await this.previewArchiveRestore(request);
@@ -867,7 +870,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   private async initialize(request: Request): Promise<Response> {
     const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string;
       migrations?: Array<{ version: number; description: string; up: string }>; html?: string; releaseProof?: CanvasReleaseProof;
-      extensionInstallationId?: string; sourceGadgetId?: string; userId?: string; businessActions?: unknown }>();
+      extensionInstallationId?: string; sourceGadgetId?: string; userId?: string; tenantId?: string; spaceId?: string; businessActions?: unknown }>();
     if (!body.appId || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.appId) || !body.scope || !body.gadgetTier) return Response.json({ error: "valid appId, scope and gadgetTier are required" }, { status: 400 });
     if ((body.gadgetTier === 1 && !["USER_PRIVATE", "PROJECT_USER", "SPACE_USER"].includes(body.scope)) ||
       (body.gadgetTier === 2 && !["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope)) ||
@@ -886,6 +889,13 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const existingUserId = this.metadata("user_id");
     if (existingUserId !== undefined && existingUserId !== body.userId)
       return Response.json({ error: "gadget_user_identity_immutable" }, { status: 409 });
+    if (body.tenantId !== undefined && (typeof body.tenantId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.tenantId))
+      || body.spaceId !== undefined && (typeof body.spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.spaceId))
+      || (body.tenantId === undefined) !== (body.spaceId === undefined))
+      return Response.json({ error: "gadget_storage_identity_invalid" }, { status: 400 });
+    const existingTenantId = this.metadata("tenant_id"), existingSpaceId = this.metadata("space_id");
+    if (existingTenantId !== undefined && existingTenantId !== body.tenantId || existingSpaceId !== undefined && existingSpaceId !== body.spaceId)
+      return Response.json({ error: "gadget_storage_identity_immutable" }, { status: 409 });
     const existingExtensionInstallationId = this.metadata("extension_installation_id");
     if (body.extensionInstallationId !== undefined && (!/^[A-Za-z0-9._:-]{1,768}$/.test(body.extensionInstallationId)
       || !body.releaseProof || existingExtensionInstallationId && existingExtensionInstallationId !== body.extensionInstallationId))
@@ -954,6 +964,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       }
     this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?),('html_sha256',?)", body.appId, body.scope, String(body.gadgetTier), html, htmlSha256);
     if (body.userId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('user_id',?)", body.userId);
+      if (body.tenantId && body.spaceId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('tenant_id',?),('space_id',?)", body.tenantId, body.spaceId);
       this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('business_actions_json',?)", JSON.stringify(businessActions));
       if (body.extensionInstallationId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('extension_installation_id',?)", body.extensionInstallationId);
       if (body.sourceGadgetId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('source_gadget_id',?)", body.sourceGadgetId);
@@ -963,6 +974,44 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     else apply();
     if (body.releaseProof) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('release_proof',?)", JSON.stringify(body.releaseProof));
     return Response.json({ initialized: true, appId: body.appId, scope: body.scope, gadgetTier: body.gadgetTier }, { status: 201 });
+  }
+
+  private async eraseUserActor(request: Request): Promise<Response> {
+    const parsed = await this.readArchiveRequest(request);
+    if (parsed instanceof Response) return parsed;
+    const { tenantId, spaceId, userId, appId, gadgetScope, projectId } = parsed;
+    if (Object.keys(parsed).some(key => !["tenantId", "spaceId", "userId", "appId", "gadgetScope", "projectId"].includes(key))
+      || typeof tenantId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(tenantId)
+      || typeof spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || typeof userId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(userId)
+      || typeof appId !== "string" || !/^[a-z][a-z0-9_-]{1,64}$/.test(appId)
+      || gadgetScope !== "USER_PRIVATE" && gadgetScope !== "SPACE_USER" && gadgetScope !== "PROJECT_USER"
+      || gadgetScope === "PROJECT_USER" && (typeof projectId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId))
+      || gadgetScope !== "PROJECT_USER" && projectId !== undefined)
+      return Response.json({ error_code: "micro_app_user_erasure_scope_invalid" }, { status: 400 });
+    const identityHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(
+      JSON.stringify(["product-user-micro-app-erasure-v1", tenantId, spaceId, userId, projectId ?? null, appId, gadgetScope]))))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const existingErasureHash = this.metadata("product_user_erasure_identity_sha256");
+    if (existingErasureHash) return existingErasureHash === identityHash
+      ? Response.json({ erased: true, replayed: true })
+      : Response.json({ error_code: "micro_app_user_erasure_identity_mismatch" }, { status: 409 });
+
+    const existingAppId = this.metadata("app_id"), existingUserId = this.metadata("user_id"), existingScope = this.metadata("scope");
+    if (existingAppId && existingAppId !== appId || existingUserId && existingUserId !== userId
+      || existingScope && existingScope !== gadgetScope
+      || this.metadata("tenant_id") && this.metadata("tenant_id") !== tenantId
+      || this.metadata("space_id") && this.metadata("space_id") !== spaceId)
+      return Response.json({ error_code: "micro_app_user_erasure_actor_mismatch" }, { status: 409 });
+    if (existingAppId && (!existingUserId || !existingScope))
+      return Response.json({ error_code: "micro_app_user_erasure_actor_identity_missing" }, { status: 409 });
+
+    await this.ctx.storage.deleteAll();
+    this.initialized = false;
+    this.ensureBaseSchema();
+    this.ctx.storage.sql.exec("INSERT INTO gadget_metadata(key,value) VALUES('product_user_erased','1'),('product_user_erasure_identity_sha256',?)", identityHash);
+    await this.ctx.storage.deleteAlarm();
+    return Response.json({ erased: true, replayed: false });
   }
 
   private async applyExtensionSchemaUpdate(request: Request): Promise<Response> {

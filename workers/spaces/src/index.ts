@@ -9040,7 +9040,8 @@ app.patch("/spaces/:spaceId/product-users/me", async (c) => {
 // GET /spaces/:spaceId/product-users/me/export — portability export for the authenticated
 // end user. The DO contains session metadata, credits, conversation references, and preferences;
 // D1 contains the user's roster/profile fields. Credentials and password hashes are never returned.
-// Active user-scoped MicroApp actors are exported separately as bounded signed snapshots.
+// Active user-scoped MicroApp actors across this Product's Spaces are exported separately as
+// bounded signed snapshots; each snapshot retains its exact Space and installation identity.
 app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { role, userId, tenantId } = getCallerIdentity(c);
@@ -9050,48 +9051,60 @@ app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
   const root = await resolveProductIdentity(c.env, spaceId);
   if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
   const profile = await c.env.PLATFORM_DB.prepare(
-    "SELECT email, display_name, phone_e164, phone_verified_at, first_seen_at, last_seen_at, suspended_at, email_verified_at, preferred_language, deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
-  ).bind(root.id, userId).first<{ email: string | null; display_name: string | null; phone_e164: string | null; phone_verified_at: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null; email_verified_at: string | null; preferred_language: string | null; deleted_at: string | null }>();
+    "SELECT email, display_name, phone_e164, phone_verified_at, first_seen_at, last_seen_at, suspended_at, email_verified_at, preferred_language, deleted_at, erasure_started_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+  ).bind(root.id, userId).first<{ email: string | null; display_name: string | null; phone_e164: string | null; phone_verified_at: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null; email_verified_at: string | null; preferred_language: string | null; deleted_at: string | null; erasure_started_at: string | null }>();
   if (!profile) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
+  if (profile.erasure_started_at) return c.json({ error_code: "product_user_erasure_started" }, 410);
   if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
     return c.json({ error_code: "forbidden", message: "Not a member of this Space" }, 403);
   const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
   const response = await stub.fetch(new Request("http://do/export"));
   if (!response.ok) return c.json({ error_code: "data_export_unavailable" }, 502);
-  const microAppStub = await spaceDoStub(c.env, spaceId, tenantId);
-  let microAppResponse: Response;
-  try {
-    microAppResponse = await microAppStub.fetch(new Request(`http://space-do/product-user-micro-app-archives?${new URLSearchParams({
-      tenant_id: tenantId, space_id: spaceId,
-    })}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
-      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
-  } catch { return c.json({ error_code: "micro_app_data_export_unavailable" }, 502); }
-  if (!microAppResponse.ok) return c.json({ error_code: "micro_app_data_export_unavailable" }, 502);
-  const microAppArchiveData = await readBoundedResponseJson<{ snapshots?: unknown; omissions?: unknown }>(microAppResponse,
-    MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES + 32 * 1024).catch(() => null);
-  const rawOmissions = microAppArchiveData?.omissions;
-  const omissionKeys = rawOmissions && typeof rawOmissions === "object" && !Array.isArray(rawOmissions) ? Object.keys(rawOmissions) : [];
-  if (!microAppArchiveData || Object.keys(microAppArchiveData).some(key => !["snapshots", "omissions"].includes(key))
-    || !Array.isArray(microAppArchiveData.snapshots) || microAppArchiveData.snapshots.length > MAX_MICRO_APP_ARCHIVE_SNAPSHOTS
-    || !rawOmissions || typeof rawOmissions !== "object" || Array.isArray(rawOmissions)
-    || omissionKeys.length !== 2 || omissionKeys.some(key => !["uninitializedActors", "unsupportedInstallations"].includes(key))
-    || Object.values(rawOmissions).some(value => !Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 10_000))
-    return c.json({ error_code: "micro_app_data_export_response_invalid" }, 502);
+  const exportSpaces = await productUserMicroAppErasureSpaces(c.env, tenantId, root.id, spaceId);
+  if (!exportSpaces) return c.json({ error_code: "micro_app_data_export_scope_unavailable" }, 502);
   const snapshots: MicroAppArchiveSnapshot[] = [];
   const seenApps = new Set<string>();
   let snapshotBytes = 0;
-  for (const rawSnapshot of microAppArchiveData.snapshots) {
-    if (!isMicroAppArchiveSnapshot(rawSnapshot, { tenantId, spaceId, userId })
-      || !["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(rawSnapshot.scope.gadgetScope))
-      return c.json({ error_code: "micro_app_data_export_snapshot_invalid" }, 502);
-    const key = `${rawSnapshot.scope.installationId}\u0000${rawSnapshot.scope.projectId ?? ""}\u0000${rawSnapshot.scope.appId}`;
-    if (seenApps.has(key)) return c.json({ error_code: "micro_app_data_export_duplicate_snapshot" }, 502);
-    seenApps.add(key);
-    snapshotBytes += new TextEncoder().encode(JSON.stringify(rawSnapshot)).byteLength;
-    if (snapshotBytes > MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES) return c.json({ error_code: "micro_app_data_export_limit_exceeded" }, 502);
-    snapshots.push(rawSnapshot);
+  const omissions: MicroAppArchiveOmissions = { privateScopeInstallations: 0, uninitializedActors: 0, unsupportedInstallations: 0 };
+  const internalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+  for (const exportSpaceId of exportSpaces) {
+    let microAppResponse: Response;
+    try {
+      const microAppStub = await spaceDoStub(c.env, exportSpaceId, tenantId);
+      microAppResponse = await microAppStub.fetch(new Request(`http://space-do/product-user-micro-app-archives?${new URLSearchParams({
+        tenant_id: tenantId, space_id: exportSpaceId,
+      })}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
+        "x-naelao-internal-token": internalToken } }));
+    } catch { return c.json({ error_code: "micro_app_data_export_unavailable" }, 502); }
+    if (!microAppResponse.ok) return c.json({ error_code: "micro_app_data_export_unavailable" }, 502);
+    const archiveData = await readBoundedResponseJson<{ snapshots?: unknown; omissions?: unknown }>(microAppResponse,
+      MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES + 32 * 1024).catch(() => null);
+    const rawOmissions = archiveData?.omissions;
+    const omissionKeys = rawOmissions && typeof rawOmissions === "object" && !Array.isArray(rawOmissions) ? Object.keys(rawOmissions) : [];
+    if (!archiveData || Object.keys(archiveData).some(key => !["snapshots", "omissions"].includes(key))
+      || !Array.isArray(archiveData.snapshots) || archiveData.snapshots.length > MAX_MICRO_APP_ARCHIVE_SNAPSHOTS
+      || !rawOmissions || typeof rawOmissions !== "object" || Array.isArray(rawOmissions)
+      || omissionKeys.length !== 3 || omissionKeys.some(key => !["privateScopeInstallations", "uninitializedActors", "unsupportedInstallations"].includes(key))
+      || Object.values(rawOmissions).some(value => !Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 10_000))
+      return c.json({ error_code: "micro_app_data_export_response_invalid" }, 502);
+    for (const rawSnapshot of archiveData.snapshots) {
+      if (!isMicroAppArchiveSnapshot(rawSnapshot, { tenantId, spaceId: exportSpaceId, userId })
+        || !["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(rawSnapshot.scope.gadgetScope))
+        return c.json({ error_code: "micro_app_data_export_snapshot_invalid" }, 502);
+      const key = `${exportSpaceId}\u0000${rawSnapshot.scope.installationId}\u0000${rawSnapshot.scope.projectId ?? ""}\u0000${rawSnapshot.scope.appId}`;
+      if (seenApps.has(key)) return c.json({ error_code: "micro_app_data_export_duplicate_snapshot" }, 502);
+      seenApps.add(key);
+      snapshotBytes += new TextEncoder().encode(JSON.stringify(rawSnapshot)).byteLength;
+      if (snapshotBytes > MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES || snapshots.length >= MAX_MICRO_APP_ARCHIVE_SNAPSHOTS)
+        return c.json({ error_code: "micro_app_data_export_limit_exceeded" }, 502);
+      snapshots.push(rawSnapshot);
+    }
+    omissions.privateScopeInstallations += Number((rawOmissions as MicroAppArchiveOmissions).privateScopeInstallations);
+    omissions.uninitializedActors += Number((rawOmissions as MicroAppArchiveOmissions).uninitializedActors);
+    omissions.unsupportedInstallations += Number((rawOmissions as MicroAppArchiveOmissions).unsupportedInstallations);
+    if (omissions.privateScopeInstallations > 10_000 || omissions.uninitializedActors > 10_000 || omissions.unsupportedInstallations > 10_000)
+      return c.json({ error_code: "micro_app_data_export_omission_limit_exceeded" }, 502);
   }
-  const omissions: MicroAppArchiveOmissions = rawOmissions as MicroAppArchiveOmissions;
   return c.json({
     export_version: "2",
     exported_at: new Date().toISOString(),
@@ -9108,10 +9121,11 @@ const forwardProductUserMicroAppArchiveAction = async (c: Context<{ Bindings: En
     return c.json({ error_code: "not_an_end_user" }, 404);
   const root = await resolveProductIdentity(c.env, spaceId);
   if (!root || root.tenant_id !== tenantId) return c.json({ error_code: "not_found" }, 404);
-  const account = await c.env.PLATFORM_DB.prepare(`SELECT suspended_at,deleted_at FROM product_end_users
+  const account = await c.env.PLATFORM_DB.prepare(`SELECT suspended_at,deleted_at,erasure_started_at FROM product_end_users
     WHERE product_space_id=? AND end_user_id=?`).bind(root.id, userId)
-    .first<{ suspended_at: string | null; deleted_at: string | null }>();
+    .first<{ suspended_at: string | null; deleted_at: string | null; erasure_started_at: string | null }>();
   if (!account || account.suspended_at || account.deleted_at) return c.json({ error_code: "not_found" }, 404);
+  if (account.erasure_started_at) return c.json({ error_code: "product_user_erasure_started" }, 410);
   if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
     return c.json({ error_code: "forbidden", message: "Not a member of this Space" }, 403);
   let body: Uint8Array;
@@ -9138,8 +9152,75 @@ app.post("/spaces/:spaceId/product-users/me/micro-app-archives/preview", c =>
 app.post("/spaces/:spaceId/product-users/me/micro-app-archives/restore", c =>
   forwardProductUserMicroAppArchiveAction(c, "restore"));
 
-// DELETE /spaces/:spaceId/product-users/me — GDPR Art. 17, the direct inverse of GET (export)
-// above: erasing exactly what /export reports. Tier 2/3 follow-up — export existed, deletion
+/** A product account is shared across its independently sharded customer Spaces, while each
+ *  SpaceDO owns its own user-scoped MicroApp actors. Include the requested Space when it exists,
+ *  every Space directly attached to this Product, and their workspace descendants so account
+ *  erasure cannot stop at the product identity DO. Include deleted Space rows too: their DOs
+ *  may still contain user state even though callers can no longer reach them. */
+async function productUserMicroAppErasureSpaces(env: Env, tenantId: string, productId: string,
+  requestedSpaceId: string): Promise<string[] | null> {
+  try {
+    const result = await env.PLATFORM_DB.prepare(`WITH RECURSIVE product_user_erasure_spaces(id,tenant_id,parent_space_id,depth) AS (
+        SELECT id,tenant_id,parent_space_id,0 FROM spaces
+         WHERE tenant_id=? AND (product_id=? OR parent_space_id=?)
+        UNION
+        SELECT child.id,child.tenant_id,child.parent_space_id,parent.depth+1
+          FROM spaces child JOIN product_user_erasure_spaces parent ON child.parent_space_id=parent.id
+         WHERE child.tenant_id=? AND parent.depth<32
+      )
+      SELECT id FROM product_user_erasure_spaces
+      UNION SELECT id FROM spaces WHERE id=? AND tenant_id=?`).bind(
+      tenantId, productId, productId, tenantId, requestedSpaceId, tenantId).all<{ id: string }>();
+    const spaces = new Set<string>();
+    for (const row of result.results ?? []) {
+      if (typeof row.id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(row.id)) return null;
+      spaces.add(row.id);
+    }
+    return [...spaces].sort();
+  } catch { return null; }
+}
+
+async function eraseProductUserMicroAppsAcrossProduct(env: Env, tenantId: string,
+  userId: string, spaceIds: string[]): Promise<{ complete: true } | { complete: false; status: 202 | 503;
+    pendingSpaces: number; pendingActors: number; errorCode: string }> {
+  const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+  let pendingSpaces = 0, pendingActors = 0, errorCode = "micro_app_erasure_incomplete", hasHardFailure = false;
+  for (const spaceId of spaceIds) {
+    let response: Response | null = null;
+    try {
+      const stub = await spaceDoStub(env, spaceId, tenantId);
+      response = await stub.fetch(new Request("http://space-do/product-user-micro-app-erasure", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+          "x-naelao-user-id": userId, "x-naelao-internal-token": token },
+        body: JSON.stringify({ spaceId, userId }),
+      }));
+    } catch { /* Continue so reachable Spaces receive their durable erasure tombstone. */ }
+    if (!response) { pendingSpaces++; errorCode = "micro_app_erasure_unavailable"; hasHardFailure = true; continue; }
+    const result = await readBoundedResponseJson<{ erased?: unknown; status?: unknown; pending_actors?: unknown;
+      unresolved_installations?: unknown; error_code?: unknown }>(response, 16 * 1024).catch(() => null);
+    if (response.status === 202 && result?.status === "pending") {
+      pendingSpaces++;
+      if (Number.isSafeInteger(result.pending_actors) && Number(result.pending_actors) > 0)
+        pendingActors += Number(result.pending_actors);
+      continue;
+    }
+    if (response.ok && result?.erased === true && result.status === "complete") continue;
+    pendingSpaces++;
+    hasHardFailure = true;
+    if (typeof result?.error_code === "string") errorCode = result.error_code;
+    else if (response.status === 503) errorCode = "micro_app_erasure_incomplete";
+    if (Number.isSafeInteger(result?.pending_actors) && Number(result?.pending_actors) > 0)
+      pendingActors += Number(result?.pending_actors);
+  }
+  return pendingSpaces === 0 ? { complete: true } : { complete: false,
+    status: hasHardFailure ? 503 : 202,
+    pendingSpaces, pendingActors, errorCode };
+}
+
+// DELETE /spaces/:spaceId/product-users/me — self-service account deletion. It fences the exact
+// Product user and erases every attached Space's MicroApp actor state before shared account data.
+// Thread/message history remains a distinct SpaceDO erasure scope (G-AO31), not silently dropped.
+// Tier 2/3 follow-up — export existed, deletion
 // didn't. Self-service only: end_user_id is derived from the caller's OWN verified claims, never
 // a client-supplied field (same precedent as GET/PATCH above) — there is no builder-initiated
 // erasure path here, matching the fact this route lives under /product-users/me, not an
@@ -9156,10 +9237,32 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   }
   const root = await resolveProductIdentity(c.env, spaceId);
   if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
+  const requestedSpace = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  if (requestedSpace && spaceId !== root.id
+    && !await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
+    return c.json({ error_code: "forbidden", message: "Not a member of this Space" }, 403);
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
-  ).bind(root.id, userId).first<{ deleted_at: string | null }>();
+    "SELECT deleted_at,erasure_started_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+  ).bind(root.id, userId).first<{ deleted_at: string | null; erasure_started_at: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
+  await c.env.PLATFORM_DB.prepare(`UPDATE product_end_users SET erasure_started_at=COALESCE(erasure_started_at,datetime('now'))
+    WHERE product_space_id=? AND end_user_id=?`).bind(root.id, userId).run();
+  const fence = await c.env.PLATFORM_DB.prepare(`SELECT erasure_started_at FROM product_end_users
+    WHERE product_space_id=? AND end_user_id=?`).bind(root.id, userId).first<{ erasure_started_at: string | null }>();
+  if (!fence?.erasure_started_at) return c.json({ error_code: "product_user_erasure_fence_unavailable" }, 503);
+
+  const eraseSpaces = await productUserMicroAppErasureSpaces(c.env, tenantId, root.id, spaceId);
+  if (!eraseSpaces) return c.json({ error_code: "micro_app_erasure_scope_unavailable" }, 503);
+  const microAppErasure = await eraseProductUserMicroAppsAcrossProduct(c.env, tenantId, userId, eraseSpaces);
+  if (!microAppErasure.complete) {
+    if (microAppErasure.status === 202) return c.json({ erased: false, erasure_status: "pending",
+      micro_app_cleanup_pending: true, pending_spaces: microAppErasure.pendingSpaces,
+      pending_actors: microAppErasure.pendingActors }, 202);
+    return c.json({ error_code: microAppErasure.errorCode, pending_spaces: microAppErasure.pendingSpaces,
+      pending_actors: microAppErasure.pendingActors }, 503);
+  }
 
   await eraseAssistantCommunications(c.env,tenantId,root.id,userId,true);
   await eraseWebsiteConnections(c.env, tenantId, { userId, productSpaceId: root.id });

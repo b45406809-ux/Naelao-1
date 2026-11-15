@@ -27,6 +27,7 @@ export interface DOSqlStorage {
 export interface DOStorage {
   sql: DOSqlStorage;
   transactionSync<T>(closure: () => T): T;
+  deleteAll(): Promise<void>;
   getAlarm(): Promise<number | null>;
   setAlarm(scheduledTime: number | Date): Promise<void>;
   deleteAlarm(): Promise<void>;
@@ -77,6 +78,15 @@ function buildStorage(db: InstanceType<typeof DatabaseSync>): DOStorage {
         db.exec("ROLLBACK");
         throw err;
       }
+    },
+    async deleteAll() {
+      db.exec("PRAGMA foreign_keys=OFF");
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>;
+      for (const { name } of tables) db.exec(`DROP TABLE IF EXISTS "${name.replaceAll('"', '""')}"`);
+      const views = db.prepare("SELECT name FROM sqlite_master WHERE type='view'").all() as Array<{ name: string }>;
+      for (const { name } of views) db.exec(`DROP VIEW IF EXISTS "${name.replaceAll('"', '""')}"`);
+      db.exec("PRAGMA foreign_keys=ON");
+      alarm = null;
     },
     async getAlarm() { return alarm; },
     async setAlarm(scheduledTime: number | Date) { alarm = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime; },

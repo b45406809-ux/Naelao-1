@@ -403,6 +403,36 @@ describe("Gadget MCP record operations", () => {
     expect(await crossUser.json()).toMatchObject({ error_code: "micro_app_archive_installation_mismatch" });
   });
 
+  it("erases a user actor once, replays safely, and permanently blocks reinitialization", async () => {
+    const secret = "microapp-user-erasure-secret";
+    const signed = await signedMicroAppArchiveFixture(secret, "install-erasure", "USER_PRIVATE", "user-a");
+    const storage = createDOStorage(), actor = microAppWithStorage(storage, secret);
+    const initialized = await actor.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ appId: signed.appId, scope: "USER_PRIVATE", gadgetTier: 1, userId: "user-a", tenantId: signed.scope.tenantId,
+        spaceId: signed.scope.spaceId, extensionInstallationId: signed.scope.installationId, sourceGadgetId: "archive_canvas",
+        defaultSchemaSql: "CREATE TABLE todos(id TEXT PRIMARY KEY)", html: signed.html, releaseProof: signed.releaseProof }) }));
+    expect(initialized.status).toBe(201);
+    storage.sql.exec("INSERT INTO todos(id) VALUES(?)", "private-row");
+
+    const token = await mintInternalToken(secret, signed.scope.tenantId);
+    const erase = (userId = "user-a", headers: Record<string, string> = {}) => actor.fetch(new Request("http://gadget/internal/erase-user", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": signed.scope.tenantId,
+        "x-naelao-internal-token": token, ...headers },
+      body: JSON.stringify({ tenantId: signed.scope.tenantId, spaceId: signed.scope.spaceId, userId, appId: signed.appId, gadgetScope: "USER_PRIVATE" }),
+    }));
+    expect((await erase("user-a", { "x-naelao-internal-token": "invalid" })).status).toBe(403);
+    const erased = await erase();
+    expect(erased.status).toBe(200);
+    expect(await erased.json()).toMatchObject({ erased: true, replayed: false });
+    expect(storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='todos'").toArray()).toHaveLength(0);
+    expect(await (await erase()).json()).toMatchObject({ erased: true, replayed: true });
+    expect((await erase("user-b")).status).toBe(409);
+    expect((await actor.fetch(new Request("http://gadget/api/data?key=private-row"))).status).toBe(410);
+    const reinitialize = await actor.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ appId: signed.appId, scope: "USER_PRIVATE", gadgetTier: 1, userId: "user-a" }) }));
+    expect(reinitialize.status).toBe(410);
+  });
+
   it("maintains bounded Canvas cursors and actor-attributed collaboration events", async () => {
     const storage = createDOStorage();
     const sql = { exec<T = unknown>(query: string, ...args: unknown[]) {

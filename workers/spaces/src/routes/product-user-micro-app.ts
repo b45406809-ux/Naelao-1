@@ -32,17 +32,59 @@ async function authorizeProductUser(c: Context<{ Bindings: Env }>): Promise<{ te
   const { tenantId, userId, role } = userIdentity(c), spaceId = c.req.param("spaceId") ?? "";
   if (role !== "product_end_user" || !tenantId || !userId || !spaceId)
     return c.json({ error_code: "product_user_required" }, 404);
-  const space = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+  const space = await c.env.PLATFORM_DB.prepare(`SELECT s.product_id,s.parent_space_id FROM spaces s JOIN orgs o ON o.id=s.tenant_id
     WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
   if (!space) return c.notFound();
   if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
     return c.json({ error_code: "space_membership_required" }, 403);
+  let productId = (space as { product_id?: string | null }).product_id ?? null;
+  const parentSpaceId = (space as { parent_space_id?: string | null }).parent_space_id ?? null;
+  if (!productId && parentSpaceId) {
+    productId = (await c.env.PLATFORM_DB.prepare("SELECT id FROM products WHERE id=? AND tenant_id=? AND status='active'")
+      .bind(parentSpaceId, tenantId).first<{ id: string }>())?.id ?? null;
+  }
+  if (!productId) return c.json({ error_code: "product_user_erasure_status_unavailable" }, { status: 503 });
+  const product = await c.env.PLATFORM_DB.prepare("SELECT id FROM products WHERE id=? AND tenant_id=? AND status='active'")
+    .bind(productId, tenantId).first<{ id: string }>();
+  if (!product) return c.json({ error_code: "product_user_erasure_status_unavailable" }, { status: 503 });
+  const account = await c.env.PLATFORM_DB.prepare(`SELECT erasure_started_at FROM product_end_users
+    WHERE product_space_id=? AND end_user_id=?`).bind(productId, userId).first<{ erasure_started_at: string | null }>();
+  if (!account) return c.json({ error_code: "product_user_erasure_status_unavailable" }, { status: 503 });
+  if (account.erasure_started_at) return c.json({ error_code: "product_user_erasure_started" }, { status: 410 });
+  const erasure = await userErasureState(c.env, tenantId, spaceId, userId);
+  if (erasure instanceof Response) return erasure;
+  if (erasure !== "none") return c.json({ error_code: "product_user_micro_app_erasure_started" }, { status: 410 });
   return { tenantId, userId, spaceId };
 }
 
 async function spaceStub(env: Env, tenantId: string, spaceId: string) {
   const name = await getDOName("space", spaceId, tenantId, env.PLATFORM_SECRET);
   return env.SPACE_DO.get(env.SPACE_DO.idFromName(name));
+}
+
+async function userErasureState(env: Env, tenantId: string, spaceId: string, userId: string): Promise<string | Response> {
+  try {
+    const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId });
+    const response = await (await spaceStub(env, tenantId, spaceId)).fetch(new Request(`http://space-do/product-user-micro-app-erasure?${query}`,
+      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) } }));
+    const result = await readBoundedResponseJson<{ status?: unknown }>(response, 16 * 1024).catch(() => null);
+    if (!response.ok || !result || !["none", "pending", "complete"].includes(String(result.status)))
+      return Response.json({ error_code: "micro_app_erasure_status_unavailable" }, { status: 503 });
+    return String(result.status);
+  } catch { return Response.json({ error_code: "micro_app_erasure_status_unavailable" }, { status: 503 }); }
+}
+
+async function registerUserActor(env: Env, tenantId: string, spaceId: string, userId: string, ownerInstallationId: string,
+  userInstallationId: string, extensionId: string, appId: string, gadgetScope: "USER_PRIVATE" | "SPACE_USER"): Promise<Response | null> {
+  try {
+    const response = await (await spaceStub(env, tenantId, spaceId)).fetch(new Request("http://space-do/product-user-micro-app-actors/register", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) },
+      body: JSON.stringify({ spaceId, userId, ownerInstallationId, userInstallationId, extensionId, appId, gadgetScope }),
+    }));
+    return response.ok ? null : response;
+  } catch { return Response.json({ error_code: "micro_app_actor_registry_unavailable" }, { status: 503 }); }
 }
 
 async function installations(stub: { fetch(request: Request): Promise<Response> }, tenantId: string, spaceId: string): Promise<InstallationRow[] | null> {
@@ -153,6 +195,10 @@ async function activateUserGadget(env: Env, tenantId: string, spaceId: string, u
   if (existing?.status === "active") {
     if (existing.release_version !== value.row.release_version || existing.pinned_artifact_sha256 !== value.row.pinned_artifact_sha256)
       return Response.json({ error_code: "micro_app_user_installation_release_stale" }, { status: 409 });
+    const registered = await registerUserActor(env, tenantId, spaceId, userId, value.row.instance_id, existing.instance_id,
+      value.row.extension_id, value.appId, value.gadget.scope);
+    if (registered) return Response.json({ error_code: "micro_app_actor_registry_unavailable", status: registered.status },
+      { status: registered.status === 410 ? 410 : 503 });
     return Response.json({ installation_id: value.row.instance_id, user_installation_id: existing.instance_id,
       app_id: value.appId, gadget_scope: value.gadget.scope, status: "active", already_active: true },
       { headers: { "cache-control": "private, no-store" } });
@@ -184,10 +230,21 @@ async function activateUserGadget(env: Env, tenantId: string, spaceId: string, u
     || installed.release.artifactSha256 !== release.artifact_sha256 || installed.release.hostSignature !== hostSignature)
     return Response.json({ error_code: "micro_app_user_installation_attestation_invalid" }, { status: 503 });
 
+  const registered = await registerUserActor(env, tenantId, spaceId, userId, value.row.instance_id,
+    installed.installationId, value.row.extension_id, value.appId, value.gadget.scope);
+  if (registered) {
+    await stub.fetch(new Request("http://space-do/extension-installation/abort", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) },
+      body: JSON.stringify({ installationId: installed.installationId, tenantId, spaceId, scope: "SPACE_USER", userId }) })).catch(() => undefined);
+    return Response.json({ error_code: "micro_app_actor_registry_unavailable", status: registered.status },
+      { status: registered.status === 410 ? 410 : 503 });
+  }
+
   const actorId = gadgetActorId(env.MICRO_APP_DO, { scope: value.gadget.scope, spaceId, appId: value.appId, userId });
   const initialized = await env.MICRO_APP_DO.get(actorId).fetch(new Request("http://micro-app/initialize", { method: "POST",
     headers: { "content-type": "application/json" }, body: JSON.stringify({ appId: value.appId, scope: value.gadget.scope,
-      gadgetTier: 1, userId, defaultSchemaSql: value.gadget.schema, migrations: value.gadget.migrations,
+      gadgetTier: 1, tenantId, spaceId, userId, defaultSchemaSql: value.gadget.schema, migrations: value.gadget.migrations,
       extensionInstallationId: installed.installationId, sourceGadgetId: value.gadget.id, html: artifact.html, releaseProof }) }));
   const abort = async () => stub.fetch(new Request("http://space-do/extension-installation/abort", { method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,

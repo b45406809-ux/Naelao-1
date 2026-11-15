@@ -34,11 +34,13 @@ function harness() {
   const ownerRow = { instance_id: "owner-install", extension_id: manifest.id, project_id: null, user_id: null, scope: "SPACE_SHARED",
     instance_key: "default", status: "active", release_version: "1.0.0", pinned_artifact_sha256: artifactSha256, manifest };
   const rows: Array<Record<string, unknown>> = [ownerRow];
-  let ownerActive = true, publisherActive = true;
+  let ownerActive = true, publisherActive = true, erasureStatus: "none" | "pending" | "complete" = "none", accountErasureStarted = false;
   const spaceRequests: Request[] = [], microAppRequests: Request[] = [];
   const spaceStub = { fetch: vi.fn(async (request: Request) => {
     spaceRequests.push(request);
     const url = new URL(request.url), path = url.pathname;
+    if (path === "/product-user-micro-app-erasure" && request.method === "GET") return Response.json({ status: erasureStatus });
+    if (path === "/product-user-micro-app-actors/register" && request.method === "POST") return Response.json({ registered: true });
     if (path === "/space-shared-extension-runtime") return Response.json({ managed: true, active: ownerActive, releaseValid: ownerActive,
       dependenciesResolved: ownerActive, installationId: "owner-install", extensionId: manifest.id, releaseVersion: "1.0.0",
       publisherId: "pub_notes", publisherKeyId: "a".repeat(64) });
@@ -76,7 +78,9 @@ function harness() {
   app.onError(error => errorResponse(error, "product_user_micro_app_test"));
   registerProductUserMicroAppRoutes(app as never);
   const platformDb = { prepare: (query: string) => ({ bind: (...params: unknown[]) => ({ first: async () => {
-    if (query.includes("FROM spaces s JOIN orgs")) return { active: 1 };
+    if (query.includes("FROM spaces s JOIN orgs")) return { product_id: "product-a", parent_space_id: null };
+    if (query.includes("FROM product_end_users")) return { erasure_started_at: accountErasureStarted ? "now" : null };
+    if (query.includes("FROM products")) return { id: "product-a" };
     if (query.includes("space_members")) return params[3] === "user-a" ? { role: "member" } : null;
     if (query.includes("extension_publisher_keys")) return publisherActive ? { active: 1 } : null;
     return null;
@@ -94,6 +98,8 @@ function harness() {
   } as never;
   return { app, env, rows, release, spaceRequests, microAppRequests, actorFetch,
     setOwnerActive(value: boolean) { ownerActive = value; }, setPublisherActive(value: boolean) { publisherActive = value; },
+    setErasureStatus(value: "none" | "pending" | "complete") { erasureStatus = value; },
+    setAccountErasureStarted(value: boolean) { accountErasureStarted = value; },
     async setArtifactDigest() {
       const value = await digest([["./handler.ts", handler], ["./notes.html", html]]);
       release.artifact_sha256 = value;
@@ -167,5 +173,24 @@ describe("product-user MicroApp lifecycle and caller", () => {
     const response = await h.app.request("/spaces/space-a/product-users/me/micro-apps", { headers: await headers("admin") }, h.env);
     expect(response.status).toBe(404);
     expect(h.spaceRequests).toHaveLength(0);
+  });
+
+  it("blocks product-user MicroApp callers as soon as account erasure starts", async () => {
+    const h = harness();
+    h.setErasureStatus("pending");
+    const response = await h.app.request("/spaces/space-a/product-users/me/micro-apps", { headers: await headers() }, h.env);
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({ error_code: "product_user_micro_app_erasure_started" });
+    expect(h.actorFetch).not.toHaveBeenCalled();
+  });
+
+  it("uses the product-wide D1 erasure fence before contacting any SpaceDO", async () => {
+    const h = harness();
+    h.setAccountErasureStarted(true);
+    const response = await h.app.request("/spaces/space-a/product-users/me/micro-apps", { headers: await headers() }, h.env);
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({ error_code: "product_user_erasure_started" });
+    expect(h.spaceRequests).toHaveLength(0);
+    expect(h.actorFetch).not.toHaveBeenCalled();
   });
 });

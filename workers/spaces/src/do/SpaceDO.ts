@@ -3248,6 +3248,51 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_product_user_micro_app_restore_previews_scope
       ON product_user_micro_app_restore_previews(tenant_id,space_id,user_id,expires_at);`,
   },
+  {
+    version: 147,
+    description: "register user-scoped MicroApp actors and persist retryable user erasure tombstones",
+    up: `CREATE TABLE product_user_micro_app_actor_registry (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      user_key_sha256 TEXT NOT NULL CHECK(length(user_key_sha256)=64),
+      project_id TEXT NOT NULL DEFAULT '',
+      app_id TEXT NOT NULL,
+      gadget_scope TEXT NOT NULL CHECK(gadget_scope IN ('USER_PRIVATE','SPACE_USER','PROJECT_USER')),
+      extension_id TEXT NOT NULL,
+      owner_installation_id TEXT NOT NULL,
+      user_installation_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('active','erased')),
+      created_at INTEGER NOT NULL,
+      erased_at INTEGER,
+      PRIMARY KEY(tenant_id,space_id,user_key_sha256,project_id,app_id)
+    );
+    CREATE INDEX idx_product_user_micro_app_actor_registry_status
+      ON product_user_micro_app_actor_registry(tenant_id,space_id,user_key_sha256,status);
+    CREATE TABLE product_user_micro_app_erasures (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      user_key_sha256 TEXT NOT NULL CHECK(length(user_key_sha256)=64),
+      status TEXT NOT NULL CHECK(status IN ('pending','complete')),
+      unresolved_installations INTEGER NOT NULL DEFAULT 0 CHECK(unresolved_installations >= 0),
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      PRIMARY KEY(tenant_id,space_id,user_key_sha256)
+    );
+    CREATE TABLE product_user_micro_app_erasure_actors (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      user_key_sha256 TEXT NOT NULL CHECK(length(user_key_sha256)=64),
+      project_id TEXT NOT NULL DEFAULT '',
+      app_id TEXT NOT NULL,
+      gadget_scope TEXT NOT NULL CHECK(gadget_scope IN ('USER_PRIVATE','SPACE_USER','PROJECT_USER')),
+      status TEXT NOT NULL CHECK(status IN ('pending','erased')),
+      created_at INTEGER NOT NULL,
+      erased_at INTEGER,
+      PRIMARY KEY(tenant_id,space_id,user_key_sha256,project_id,app_id)
+    );
+    CREATE INDEX idx_product_user_micro_app_erasure_actors_pending
+      ON product_user_micro_app_erasure_actors(tenant_id,space_id,user_key_sha256,status,app_id);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -5790,6 +5835,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (url.pathname === "/product-user-micro-app-archives" && method === "GET")
         return await this.exportProductUserMicroAppArchives(request, url.searchParams);
+      if (url.pathname === "/product-user-micro-app-erasure" && method === "GET")
+        return await this.productUserMicroAppErasureStatus(request, url.searchParams);
+      if (url.pathname === "/product-user-micro-app-erasure" && method === "POST")
+        return await this.eraseProductUserMicroAppActors(request);
+      if (url.pathname === "/product-user-micro-app-actors/register" && method === "POST")
+        return await this.registerProductUserMicroAppActor(request);
       if (url.pathname === "/product-user-micro-app-archives/preview" && method === "POST")
         return await this.previewProductUserMicroAppArchives(request, url.searchParams);
       if (url.pathname === "/product-user-micro-app-archives/restore" && method === "POST")
@@ -14775,6 +14826,214 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return (await this.extensionDependencyClosureSnapshotActive(tenantId, spaceId, manifest, scope, projectId)).resolved;
   }
 
+  private async productUserMicroAppErasureIdentity(request: Request, params: URLSearchParams): Promise<{
+    tenantId: string; spaceId: string; userId: string; userHash: string;
+  } | Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const userId = request.headers.get("x-naelao-user-id") ?? "";
+    const spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !userId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
+      tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (params.get("tenant_id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId)
+      || [...params.keys()].some(key => !["tenant_id", "space_id"].includes(key)))
+      return Response.json({ error_code: "product_user_micro_app_erasure_scope_invalid" }, { status: 400 });
+    const userHash = await sha256Hex(JSON.stringify(["product-user-micro-app-user-v1", tenantId, spaceId, userId]));
+    return { tenantId, spaceId, userId, userHash };
+  }
+
+  private async productUserMicroAppErasureStatus(request: Request, params: URLSearchParams): Promise<Response> {
+    const identity = await this.productUserMicroAppErasureIdentity(request, params);
+    if (identity instanceof Response) return identity;
+    const erasure = queryOne<{ status: string; unresolved_installations: number }>(this.ctx.storage.sql as never,
+      `SELECT status,unresolved_installations FROM product_user_micro_app_erasures
+       WHERE tenant_id=? AND space_id=? AND user_key_sha256=?`, identity.tenantId, identity.spaceId, identity.userHash);
+    if (!erasure) return Response.json({ status: "none" }, { headers: { "cache-control": "no-store" } });
+    const pending = queryOne<{ count: number }>(this.ctx.storage.sql as never,
+      `SELECT COUNT(*) AS count FROM product_user_micro_app_erasure_actors
+       WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND status='pending'`, identity.tenantId, identity.spaceId, identity.userHash)?.count ?? 0;
+    return Response.json({ status: erasure.status, pending_actors: pending, unresolved_installations: erasure.unresolved_installations },
+      { headers: { "cache-control": "no-store" } });
+  }
+
+  private async registerProductUserMicroAppActor(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
+      tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    let body: Record<string, unknown>;
+    try {
+      const bytes = await readBoundedRequestBytes(request, 16 * 1024);
+      const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_body");
+      body = parsed as Record<string, unknown>;
+    } catch { return Response.json({ error_code: "product_user_micro_app_actor_registration_invalid" }, { status: 400 }); }
+    const { spaceId, userId, ownerInstallationId, userInstallationId, extensionId, appId, gadgetScope } = body;
+    if (Object.keys(body).some(key => !["spaceId", "userId", "ownerInstallationId", "userInstallationId", "extensionId", "appId", "gadgetScope"].includes(key))
+      || typeof spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || typeof userId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId)
+      || typeof ownerInstallationId !== "string" || !/^[A-Za-z0-9._:-]{1,768}$/.test(ownerInstallationId)
+      || typeof userInstallationId !== "string" || !/^[A-Za-z0-9._:-]{1,768}$/.test(userInstallationId)
+      || typeof extensionId !== "string" || !/^ext_[a-z0-9_-]{2,62}$/.test(extensionId)
+      || typeof appId !== "string" || !/^[a-z][a-z0-9_-]{1,64}$/.test(appId)
+      || gadgetScope !== "USER_PRIVATE" && gadgetScope !== "SPACE_USER")
+      return Response.json({ error_code: "product_user_micro_app_actor_registration_invalid" }, { status: 400 });
+    const userHash = await sha256Hex(JSON.stringify(["product-user-micro-app-user-v1", tenantId, spaceId, userId]));
+    const erasure = queryOne<{ status: string }>(this.ctx.storage.sql as never,
+      `SELECT status FROM product_user_micro_app_erasures WHERE tenant_id=? AND space_id=? AND user_key_sha256=?`, tenantId, spaceId, userHash);
+    if (erasure) return Response.json({ error_code: "product_user_micro_app_user_erased" }, { status: 410 });
+
+    const owner = queryOne<{ instance_key: string; release_version: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
+      `SELECT instance_key,release_version,manifest_json FROM extension_installation_manifests
+       WHERE instance_id=? AND extension_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED'
+         AND project_id IS NULL AND status='active'`, ownerInstallationId, extensionId, tenantId, spaceId);
+    const userInstall = queryOne<{ instance_key: string; release_version: string | null; project_id: string | null }>(this.ctx.storage.sql as never,
+      `SELECT instance_key,release_version,project_id FROM extension_installation_manifests
+       WHERE instance_id=? AND extension_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_USER'
+         AND project_id IS NULL AND user_id=? AND status IN ('active','staging')`, userInstallationId, extensionId, tenantId, spaceId, userId);
+    if (!owner || !userInstall || owner.release_version !== userInstall.release_version
+      || owner.instance_key !== userInstall.instance_key) return Response.json({ error_code: "product_user_micro_app_installation_unavailable" }, { status: 409 });
+    let manifest: ExtensionManifest;
+    try { manifest = validateExtensionManifest(JSON.parse(owner.manifest_json)); }
+    catch { return Response.json({ error_code: "product_user_micro_app_manifest_invalid" }, { status: 409 }); }
+    const prefix = owner.instance_key && owner.instance_key !== "default" ? `${owner.instance_key}_` : "";
+    const declared = [
+      ...(manifest.bundle?.primitives ?? []).filter((primitive): primitive is Extract<typeof primitive, { kind: "gadget" }> => primitive.kind === "gadget"),
+      ...(manifest.gadgets ?? []),
+    ].find(gadget => `${prefix}${gadget.id}` === appId && gadget.scope === gadgetScope
+      && (gadget.scope === "USER_PRIVATE" || gadget.scope === "SPACE_USER")
+      && ("gadgetTier" in gadget ? gadget.gadgetTier === 1 : true));
+    if (!declared) return Response.json({ error_code: "product_user_micro_app_gadget_not_declared" }, { status: 409 });
+    const now = Date.now();
+    this.ctx.storage.sql.exec(`INSERT INTO product_user_micro_app_actor_registry
+      (tenant_id,space_id,user_key_sha256,project_id,app_id,gadget_scope,extension_id,owner_installation_id,user_installation_id,status,created_at,erased_at)
+      VALUES(?,?,?,'',?,?,?,?,?,'active',?,NULL)
+      ON CONFLICT(tenant_id,space_id,user_key_sha256,project_id,app_id) DO UPDATE SET
+        extension_id=excluded.extension_id,owner_installation_id=excluded.owner_installation_id,
+        user_installation_id=excluded.user_installation_id,status='active',erased_at=NULL`,
+      tenantId, spaceId, userHash, appId, gadgetScope, extensionId, ownerInstallationId, userInstallationId, now);
+    return Response.json({ registered: true });
+  }
+
+  private async eraseProductUserMicroAppActors(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
+      tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    let body: Record<string, unknown>;
+    try {
+      const bytes = await readBoundedRequestBytes(request, 16 * 1024);
+      const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_body");
+      body = parsed as Record<string, unknown>;
+    } catch { return Response.json({ error_code: "product_user_micro_app_erasure_request_invalid" }, { status: 400 }); }
+    const { spaceId, userId } = body;
+    if (Object.keys(body).some(key => !["spaceId", "userId"].includes(key))
+      || typeof spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || typeof userId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId))
+      return Response.json({ error_code: "product_user_micro_app_erasure_request_invalid" }, { status: 400 });
+    const userHash = await sha256Hex(JSON.stringify(["product-user-micro-app-user-v1", tenantId, spaceId, userId]));
+    let erasure = queryOne<{ status: string; unresolved_installations: number }>(this.ctx.storage.sql as never,
+      `SELECT status,unresolved_installations FROM product_user_micro_app_erasures WHERE tenant_id=? AND space_id=? AND user_key_sha256=?`, tenantId, spaceId, userHash);
+    if (!erasure) {
+      let unresolved = 0;
+      this.ctx.storage.transactionSync(() => {
+        const candidates = new Map<string, { projectId: string; appId: string; scope: "USER_PRIVATE" | "SPACE_USER" | "PROJECT_USER" }>();
+        const add = (projectId: string | null, appId: string, scope: "USER_PRIVATE" | "SPACE_USER" | "PROJECT_USER") => {
+          if (!/^[a-z][a-z0-9_-]{1,64}$/.test(appId) || scope === "PROJECT_USER" && !projectId) { unresolved++; return; }
+          candidates.set(`${projectId ?? ""}\u0000${appId}`, { projectId: projectId ?? "", appId, scope });
+        };
+        const registered = queryAll<{ project_id: string; app_id: string; gadget_scope: string }>(this.ctx.storage.sql as never,
+          `SELECT project_id,app_id,gadget_scope FROM product_user_micro_app_actor_registry
+           WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND status='active'`, tenantId, spaceId, userHash);
+        for (const actor of registered) {
+          if (["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(actor.gadget_scope))
+            add(actor.project_id || null, actor.app_id, actor.gadget_scope as "USER_PRIVATE" | "SPACE_USER" | "PROJECT_USER");
+          else unresolved++;
+        }
+        const installations = queryAll<{ instance_key: string; scope: string; project_id: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
+          `SELECT instance_key,scope,project_id,manifest_json FROM extension_installation_manifests
+           WHERE tenant_id=? AND space_id=? AND user_id=? AND scope IN ('SPACE_USER','PROJECT_USER')`, tenantId, spaceId, userId);
+        for (const installation of installations) {
+          try {
+            const manifest = validateExtensionManifest(JSON.parse(installation.manifest_json));
+            const prefix = installation.instance_key && installation.instance_key !== "default" ? `${installation.instance_key}_` : "";
+            const declared = [
+              ...(manifest.bundle?.primitives ?? []).filter((primitive): primitive is Extract<typeof primitive, { kind: "gadget" }> => primitive.kind === "gadget"),
+              ...(manifest.gadgets ?? []),
+            ];
+            for (const gadget of declared) {
+              if (!["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(gadget.scope ?? "")) continue;
+              if (installation.scope === "PROJECT_USER" && gadget.scope !== "PROJECT_USER"
+                || installation.scope === "SPACE_USER" && gadget.scope === "PROJECT_USER") continue;
+              add(gadget.scope === "PROJECT_USER" ? installation.project_id : null,
+                `${prefix}${gadget.id}`, gadget.scope as "USER_PRIVATE" | "SPACE_USER" | "PROJECT_USER");
+            }
+          } catch { unresolved++; }
+        }
+        const now = Date.now();
+        this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO product_user_micro_app_erasures
+          (tenant_id,space_id,user_key_sha256,status,unresolved_installations,created_at,completed_at)
+          VALUES(?,?,?,'pending',?,?,NULL)`, tenantId, spaceId, userHash, unresolved, now);
+        for (const actor of candidates.values()) this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO product_user_micro_app_erasure_actors
+          (tenant_id,space_id,user_key_sha256,project_id,app_id,gadget_scope,status,created_at,erased_at)
+          VALUES(?,?,?,?,?,?,'pending',?,NULL)`, tenantId, spaceId, userHash, actor.projectId, actor.appId, actor.scope, now);
+        this.ctx.storage.sql.exec(`UPDATE extension_instances SET
+          status=CASE WHEN status IN ('active','disabled','staging') THEN 'removed' ELSE status END,
+          removed_at=COALESCE(removed_at,datetime('now')),user_id=NULL,installed_by='product-user-erasure'
+          WHERE tenant_id=? AND space_id=? AND user_id=? AND scope IN ('SPACE_USER','PROJECT_USER')`, tenantId, spaceId, userId);
+        this.ctx.storage.sql.exec("DELETE FROM product_user_micro_app_restore_previews WHERE tenant_id=? AND space_id=? AND user_id=?",
+          tenantId, spaceId, userId);
+      });
+      erasure = { status: "pending", unresolved_installations: unresolved };
+    }
+
+    const pending = queryAll<{ project_id: string; app_id: string; gadget_scope: string }>(this.ctx.storage.sql as never,
+      `SELECT project_id,app_id,gadget_scope FROM product_user_micro_app_erasure_actors
+       WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND status='pending' ORDER BY app_id LIMIT 32`, tenantId, spaceId, userHash);
+    if (pending.length && !this.env.MICRO_APP_DO)
+      return Response.json({ error_code: "micro_app_storage_unavailable" }, { status: 503 });
+    let erasedNow = 0;
+    for (const actor of pending) {
+      let actorScope: "USER_PRIVATE" | "SPACE_USER" | "PROJECT_USER";
+      if (!["USER_PRIVATE", "SPACE_USER", "PROJECT_USER"].includes(actor.gadget_scope))
+        return Response.json({ error_code: "micro_app_erasure_actor_scope_invalid" }, { status: 503 });
+      actorScope = actor.gadget_scope as typeof actorScope;
+      let response: Response;
+      try {
+        const actorId = actorScope === "PROJECT_USER"
+          ? gadgetActorId(this.env.MICRO_APP_DO!, { scope: actorScope, spaceId, projectId: actor.project_id, appId: actor.app_id, userId })
+          : gadgetActorId(this.env.MICRO_APP_DO!, { scope: actorScope, spaceId, appId: actor.app_id, userId });
+        response = await this.env.MICRO_APP_DO!.get(actorId).fetch(new Request("http://micro-app/internal/erase-user", {
+          method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+            "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+          body: JSON.stringify({ tenantId, spaceId, userId, appId: actor.app_id, gadgetScope: actorScope,
+            ...(actor.project_id ? { projectId: actor.project_id } : {}) }),
+        }));
+      } catch { return Response.json({ error_code: "micro_app_user_actor_erasure_unavailable" }, { status: 503 }); }
+      const result = await readBoundedResponseJson<{ erased?: unknown }>(response, 16 * 1024).catch(() => null);
+      if (!response.ok || result?.erased !== true)
+        return Response.json({ error_code: "micro_app_user_actor_erasure_failed", status: response.status }, { status: 503 });
+      const now = Date.now();
+      this.ctx.storage.sql.exec(`UPDATE product_user_micro_app_erasure_actors SET status='erased',erased_at=?
+        WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND project_id=? AND app_id=? AND status='pending'`,
+        now, tenantId, spaceId, userHash, actor.project_id, actor.app_id);
+      this.ctx.storage.sql.exec(`UPDATE product_user_micro_app_actor_registry SET status='erased',erased_at=?
+        WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND project_id=? AND app_id=?`,
+        now, tenantId, spaceId, userHash, actor.project_id, actor.app_id);
+      erasedNow++;
+    }
+    const remaining = queryOne<{ count: number }>(this.ctx.storage.sql as never,
+      `SELECT COUNT(*) AS count FROM product_user_micro_app_erasure_actors
+       WHERE tenant_id=? AND space_id=? AND user_key_sha256=? AND status='pending'`, tenantId, spaceId, userHash)?.count ?? 0;
+    if (remaining > 0) return Response.json({ erased: false, status: "pending", erased_now: erasedNow,
+      pending_actors: remaining, unresolved_installations: erasure.unresolved_installations }, { status: 202 });
+    if (erasure.unresolved_installations > 0)
+      return Response.json({ erased: false, status: "pending", erased_now: erasedNow, pending_actors: 0,
+        unresolved_installations: erasure.unresolved_installations, error_code: "micro_app_erasure_inventory_incomplete" }, { status: 503 });
+    this.ctx.storage.sql.exec(`UPDATE product_user_micro_app_erasures SET status='complete',completed_at=COALESCE(completed_at,?)
+      WHERE tenant_id=? AND space_id=? AND user_key_sha256=?`, Date.now(), tenantId, spaceId, userHash);
+    return Response.json({ erased: true, status: "complete", replayed: pending.length === 0 });
+  }
+
   /** Export only the authenticated user's own active user-scoped MicroApp installations.
    *  The caller is the Spaces Worker after it verifies the product-session identity and Space
    *  membership. This DO rechecks its internal HMAC, the exact installation owner, active
@@ -14789,6 +15048,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId)
       || [...params.keys()].some(key => !["tenant_id", "space_id"].includes(key)))
       return Response.json({ error_code: "product_user_micro_app_archive_scope_invalid" }, { status: 400 });
+    const userHash = await sha256Hex(JSON.stringify(["product-user-micro-app-user-v1", tenantId, spaceId, userId]));
+    if (queryOne(this.ctx.storage.sql as never,
+      `SELECT 1 AS erased FROM product_user_micro_app_erasures WHERE tenant_id=? AND space_id=? AND user_key_sha256=?`,
+      tenantId, spaceId, userHash))
+      return Response.json({ error_code: "product_user_micro_app_user_erasure_in_progress_or_complete" }, { status: 410 });
     if (!this.env.MICRO_APP_DO) return Response.json({ error_code: "micro_app_storage_unavailable" }, { status: 503 });
 
     const installations = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; user_id: string | null;
@@ -14917,6 +15181,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId)
       || [...params.keys()].some(key => !["tenant_id", "space_id"].includes(key)))
       return Response.json({ error_code: "product_user_micro_app_archive_scope_invalid" }, { status: 400 });
+    const userHash = await sha256Hex(JSON.stringify(["product-user-micro-app-user-v1", tenantId, spaceId, userId]));
+    if (queryOne(this.ctx.storage.sql as never,
+      `SELECT 1 AS erased FROM product_user_micro_app_erasures WHERE tenant_id=? AND space_id=? AND user_key_sha256=?`,
+      tenantId, spaceId, userHash))
+      return Response.json({ error_code: "product_user_micro_app_user_erasure_in_progress_or_complete" }, { status: 410 });
     if (!this.env.MICRO_APP_DO) return Response.json({ error_code: "micro_app_storage_unavailable" }, { status: 503 });
     return { tenantId, spaceId, userId };
   }

@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0260_telnyx_extension_voice_profile_pin",
+  "requiredSchemaVersion": "0261_product_user_erasure_fence",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1043,6 +1043,10 @@
     {
       "filename": "0260_telnyx_extension_voice_profile_pin.sql",
       "sha256": "77d22d382698455c9d071e4d6a89519615de425609d807f2b7b84cb10b887444"
+    },
+    {
+      "filename": "0261_product_user_erasure_fence.sql",
+      "sha256": "1de516e69ed6770f1140536b42127e3fe6cd7ab37ae8bf9b781e9ca060561d16"
     }
   ]
 }
