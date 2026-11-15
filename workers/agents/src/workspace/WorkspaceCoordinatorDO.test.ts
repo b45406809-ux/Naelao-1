@@ -1294,6 +1294,87 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(await (await call(instance, "/v1/read?branch=runs%2Fcase-collision")).json()).toMatchObject({ entries: [{ path: "Readme.md" }] });
   });
 
+  it("publishes a paired path-collision resolution as one checked change set", async () => {
+    const { instance, objects } = setup();
+    expect((await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] })).status).toBe(200);
+    expect((await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/pair-collision" })).status).toBe(200);
+    const worker = await (await call(instance, "/v1/open", { scope, branch: "runs/pair-collision", actorId: "worker", runtimeId: "runtime-worker", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const owner = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "runtime-owner", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const workerContent = "worker filename\n";
+    const ownerContent = "owner filename\n";
+    const workerHash = await sha256Hex(new TextEncoder().encode(workerContent));
+    const ownerHash = await sha256Hex(new TextEncoder().encode(ownerContent));
+    expect((await call(instance, "/v1/checkpoint", { sessionId: worker.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "pair-worker-add", changes: [{ path: "Readme.md", expectedHash: null, contentBase64: btoa(workerContent) }] })).status).toBe(200);
+    expect((await call(instance, "/v1/checkpoint", { sessionId: owner.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "pair-owner-add", changes: [{ path: "README.md", expectedHash: null, contentBase64: btoa(ownerContent) }] })).status).toBe(200);
+    const conflict = await call(instance, "/v1/merge", { sessionId: worker.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0, idempotencyKey: "pair-collision" });
+    expect(await conflict.json()).toMatchObject({ publication: { status: "conflicted", conflicts: [{ path: "Readme.md", otherPath: "README.md" }] } });
+    const paths = ["README.md", "Readme.md"];
+    const result = await publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-pair", attempt: 1,
+      targetBranch: "main", sourceBranch: "runs/pair-collision", path: "Readme.md", expectedTargetHash: null, expectedSourceHash: workerHash,
+      content: "reviewed filename\n", idempotencyKey: "manual-pair-collision-1", validationCommand: "pnpm test",
+      changes: [
+        { path: "Readme.md", expectedTargetHash: null, expectedSourceHash: workerHash, content: "reviewed filename\n" },
+        { path: "README.md", expectedTargetHash: ownerHash, expectedSourceHash: null, content: null },
+      ],
+      validate: async request => {
+        expect(request.paths).toEqual(paths);
+        const fork = await call(instance, "/v1/branch", { scope, sourceBranch: request.reviewBranch, branch: request.validationBranch });
+        expect(fork.status).toBe(200);
+        return { path: request.path, paths: request.paths, status: "passed", branch: request.validationBranch,
+          revision: request.revision, manifestHash: request.manifestHash, targetRevision: request.targetRevision,
+          targetManifestHash: request.targetManifestHash, commandHash: request.commandHash, executionId: request.executionId,
+          runId: request.runId, durationMs: 10, completedAt: new Date().toISOString(), exitCode: 0 };
+      } }, (path, body) => call(instance, path, body));
+
+    expect(result.paths).toEqual(paths);
+    expect(result.merge).toMatchObject({ status: "published", appliedPaths: paths });
+    expect(await (await call(instance, "/v1/read?branch=main&path=README.md")).json()).toMatchObject({ entries: [] });
+    const finalEntry = (await (await call(instance, "/v1/read?branch=main&path=Readme.md")).json() as { entries: Array<{ objectKey: string; sha256: string }> }).entries[0]!;
+    expect(new TextDecoder().decode(objects.get(finalEntry.objectKey))).toBe("reviewed filename\n");
+    const workerEntry = (await (await call(instance, "/v1/read?branch=runs%2Fpair-collision&path=Readme.md")).json() as { entries: Array<{ objectKey: string }> }).entries[0]!;
+    expect(new TextDecoder().decode(objects.get(workerEntry.objectKey))).toBe(workerContent);
+  });
+
+  it("does not stage any paired-path resolution when one expected target hash is stale", async () => {
+    const { instance, objects } = setup();
+    expect((await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] })).status).toBe(200);
+    expect((await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/pair-stale" })).status).toBe(200);
+    const worker = await (await call(instance, "/v1/open", { scope, branch: "runs/pair-stale", actorId: "worker", runtimeId: "runtime-worker", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const owner = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "runtime-owner", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const workerContent = "worker filename\n";
+    const ownerContent = "owner filename\n";
+    const workerHash = await sha256Hex(new TextEncoder().encode(workerContent));
+    const ownerHash = await sha256Hex(new TextEncoder().encode(ownerContent));
+    expect((await call(instance, "/v1/checkpoint", { sessionId: worker.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "pair-stale-worker-add", changes: [{ path: "Readme.md", expectedHash: null, contentBase64: btoa(workerContent) }] })).status).toBe(200);
+    expect((await call(instance, "/v1/checkpoint", { sessionId: owner.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "pair-stale-owner-add", changes: [{ path: "README.md", expectedHash: null, contentBase64: btoa(ownerContent) }] })).status).toBe(200);
+    const validate = vi.fn(async () => { throw new Error("stale paired target must not be validated"); });
+    const paths = ["README.md", "Readme.md"];
+    const input = { scope, actorId: "reviewer", workerId: "worker-pair-stale", attempt: 1, targetBranch: "main", sourceBranch: "runs/pair-stale",
+      path: "Readme.md", expectedTargetHash: null, expectedSourceHash: workerHash, content: "reviewed filename\n", idempotencyKey: "manual-pair-stale-1",
+      validationCommand: "pnpm test", changes: [
+        { path: "Readme.md", expectedTargetHash: null, expectedSourceHash: workerHash, content: "reviewed filename\n" },
+        { path: "README.md", expectedTargetHash: "f".repeat(64), expectedSourceHash: null, content: null },
+      ], validate };
+    await expect(publishWorkspaceManualResolution(input, (path, body) => call(instance, path, body)))
+      .rejects.toThrow("workspace_manual_resolution_stale_target:");
+    expect(validate).not.toHaveBeenCalled();
+    const operationDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
+      scope, input.workerId, input.attempt, input.targetBranch, paths, input.idempotencyKey,
+    ])));
+    const operationHex = [...new Uint8Array(operationDigest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const reviewBranch = `manual/${operationHex.slice(0, 48)}`;
+    const reviewEntries = (await (await call(instance, `/v1/read?branch=${encodeURIComponent(reviewBranch)}`)).json() as { entries: Array<{ path: string; objectKey: string }> }).entries;
+    expect(reviewEntries.map(entry => entry.path)).toEqual(["README.md"]);
+    expect(new TextDecoder().decode(objects.get(reviewEntries[0]!.objectKey))).toBe(ownerContent);
+    const targetEntries = (await (await call(instance, "/v1/read?branch=main")).json() as { entries: Array<{ path: string }> }).entries;
+    expect(targetEntries.map(entry => entry.path)).toEqual(["README.md"]);
+    expect(ownerHash).toBe(reviewEntries.length ? await sha256Hex(objects.get(reviewEntries[0]!.objectKey)!) : null);
+  });
+
   it("keeps delete-versus-edit conflicts structured and unpublished", async () => {
     const { instance, merge } = await createMergeConflictCase({ path: "notes.txt", base: "base\n", worker: null, owner: "owner edit\n" });
     expect(merge.status).toBe(409);
@@ -1339,13 +1420,24 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
       targetBranch: "main", sourceBranch: "runs/review-conflict", path: "src/validated.ts", expectedTargetHash: targetHash,
       expectedSourceHash: sourceHash, content: "reviewed and validated\n", idempotencyKey: "manual-validated-1", validationCommand: "pnpm test",
       validate: async request => {
+        const legacyBranchDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
+          scope, "worker-validated", 1, "main", "src/validated.ts", "manual-validated-1",
+        ])));
+        const legacyBranchHash = [...new Uint8Array(legacyBranchDigest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+        expect(request.reviewBranch).toBe(`manual/${legacyBranchHash.slice(0, 48)}`);
+        const legacyCommandHash = await sha256Hex(new TextEncoder().encode("pnpm test"));
+        const legacyExecutionDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
+          scope, "worker-validated", 1, "main", "src/validated.ts", "manual-validated-1", legacyCommandHash,
+        ])));
+        const legacyExecutionHash = [...new Uint8Array(legacyExecutionDigest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+        expect(request.executionId).toBe(`manual-validation-${legacyExecutionHash.slice(0, 40)}`);
         expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
         const fork = await call(instance, "/v1/branch", { scope, sourceBranch: request.reviewBranch, branch: request.validationBranch });
         expect(fork.status).toBe(200);
         const validationHead = await (await call(instance, `/v1/head?branch=${encodeURIComponent(request.validationBranch)}`)).json() as { head: { revision: number; manifestHash: string } };
         expect(validationHead.head).toMatchObject({ revision: request.revision, manifestHash: request.manifestHash });
         validationCalls.push({ revision: request.revision, manifestHash: request.manifestHash });
-        return { path: request.path, status: "passed", branch: request.validationBranch, revision: request.revision,
+        return { path: request.path, paths: request.paths, status: "passed", branch: request.validationBranch, revision: request.revision,
           manifestHash: request.manifestHash, targetRevision: request.targetRevision, targetManifestHash: request.targetManifestHash,
           commandHash: request.commandHash, executionId: request.executionId, runId: request.runId,
           durationMs: 10, completedAt: new Date().toISOString(), exitCode: 0 };
@@ -1365,7 +1457,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     await expect(publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-validation-fails", attempt: 1,
       targetBranch: "main", sourceBranch: "runs/review-conflict", path: "src/failing-validation.ts", expectedTargetHash: targetHash,
       expectedSourceHash: sourceHash, content: "reviewed but broken\n", idempotencyKey: "manual-validation-fails-1", validationCommand: "pnpm test",
-      validate: async request => ({ path: request.path, status: "failed", branch: request.validationBranch, revision: request.revision,
+      validate: async request => ({ path: request.path, paths: request.paths, status: "failed", branch: request.validationBranch, revision: request.revision,
         manifestHash: request.manifestHash, targetRevision: request.targetRevision, targetManifestHash: request.targetManifestHash,
         commandHash: request.commandHash, executionId: request.executionId, runId: request.runId,
         durationMs: 12, completedAt: new Date().toISOString(), exitCode: 1, reason: "test_command_failed" }) },
@@ -1390,7 +1482,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     await expect(publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-target-race", attempt: 1,
       targetBranch: "main", sourceBranch: "runs/review-conflict", path: "src/race-checked.ts", expectedTargetHash: targetHash,
       expectedSourceHash: sourceHash, content: "validated resolution\n", idempotencyKey: "manual-target-race-1", validationCommand: "pnpm test",
-      validate: async request => ({ path: request.path, status: "passed", branch: request.validationBranch, revision: request.revision,
+      validate: async request => ({ path: request.path, paths: request.paths, status: "passed", branch: request.validationBranch, revision: request.revision,
         manifestHash: request.manifestHash, targetRevision: request.targetRevision, targetManifestHash: request.targetManifestHash,
         commandHash: request.commandHash, executionId: request.executionId, runId: request.runId,
         durationMs: 10, completedAt: new Date().toISOString(), exitCode: 0 }) }, requestCoordinator)).rejects.toThrow("workspace_manual_resolution_merge_failed:409");

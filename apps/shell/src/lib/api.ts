@@ -2827,6 +2827,9 @@ export interface SubAgentSummary {
 
 export interface WorkerWorkspaceConflictResolution {
   path: string;
+  paths: string[];
+  deleted: boolean;
+  deletedPaths: string[];
   idempotencyKey: string;
   reviewBranch: string;
   targetBranch: string;
@@ -2836,6 +2839,7 @@ export interface WorkerWorkspaceConflictResolution {
   completedAt: string;
   validation: {
     status: "passed";
+    paths: string[];
     branch: string;
     revision: number;
     manifestHash: string;
@@ -2861,6 +2865,14 @@ export interface WorkerWorkspaceConflictPreview {
   target: WorkerWorkspaceConflictPreviewVersion;
   worker: WorkerWorkspaceConflictPreviewVersion;
   stale: boolean;
+  paired?: { path: string; target: WorkerWorkspaceConflictPreviewVersion; worker: WorkerWorkspaceConflictPreviewVersion };
+}
+
+export interface WorkerWorkspaceConflictResolutionChange {
+  path: string;
+  expectedTargetHash: string | null;
+  expectedSourceHash: string | null;
+  content: string | null;
 }
 
 export async function readWorkerWorkspaceConflictPreview(
@@ -2879,12 +2891,13 @@ export async function resolveWorkerWorkspaceConflict(
   spaceId: string,
   workerId: string,
   session: SessionCredentials,
-  input: { sessionId: string; agentId?: string | null; projectId: string; path: string; expectedTargetHash: string | null; expectedSourceHash: string | null; content: string | null; idempotencyKey: string; validationCommand: string }
+  input: { sessionId: string; agentId?: string | null; projectId: string; path: string; expectedTargetHash: string | null; expectedSourceHash: string | null; content: string | null; changes?: WorkerWorkspaceConflictResolutionChange[]; idempotencyKey: string; validationCommand: string }
 ): Promise<{ resolution: WorkerWorkspaceConflictResolution; replay?: boolean }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/sub-agents/${encodeURIComponent(workerId)}/workspace-conflicts/resolve`, {
     method: "POST", session, body: JSON.stringify({ session_id: input.sessionId, ...(input.agentId ? { agent_id: input.agentId } : {}),
       project_id: input.projectId, path: input.path, expected_target_hash: input.expectedTargetHash,
       expected_source_hash: input.expectedSourceHash, content: input.content,
+      ...(input.changes ? { changes: input.changes } : {}),
       idempotency_key: input.idempotencyKey, validation_command: input.validationCommand }),
   });
 }

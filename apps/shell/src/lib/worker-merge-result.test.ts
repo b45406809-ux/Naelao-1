@@ -68,18 +68,21 @@ describe("worker merge result presentation", () => {
           conflicts: [
             {
               path: "src/app.ts",
-              reason: "overlapping_change",
+              otherPath: "src/legacy-app.ts",
+              reason: "case_collision",
               targetHash: "b".repeat(64),
             },
           ],
           manualResolutions: [
             {
               path: "src/app.ts",
+              paths: ["src/app.ts", "src/legacy-app.ts"],
+              deletedPaths: ["src/legacy-app.ts"],
               status: "published",
               revision: 12,
               reviewBranch: "manual/abc123",
               completedAt: "2026-11-15T00:00:00.000Z",
-              validation: { path: "src/app.ts", status: "passed", branch: "race/manual-validation/abc123", revision: 12,
+              validation: { path: "src/app.ts", paths: ["src/app.ts", "src/legacy-app.ts"], status: "passed", branch: "race/manual-validation/abc123", revision: 12,
                 manifestHash: "c".repeat(64), targetRevision: 9, targetManifestHash: "e".repeat(64),
                 commandHash: "d".repeat(64), durationMs: 231, completedAt: "2026-11-15T00:00:00.000Z" },
             },
@@ -92,10 +95,12 @@ describe("worker merge result presentation", () => {
       manualResolutions: [
         {
           path: "src/app.ts",
+          paths: ["src/app.ts", "src/legacy-app.ts"],
+          deletedPaths: ["src/legacy-app.ts"],
           status: "published",
           revision: 12,
           reviewBranch: "manual/abc123",
-          validation: { status: "passed", revision: 12, targetRevision: 9, targetManifestHash: "e".repeat(64) },
+          validation: { status: "passed", paths: ["src/app.ts", "src/legacy-app.ts"], revision: 12, targetRevision: 9, targetManifestHash: "e".repeat(64) },
         },
       ],
     });

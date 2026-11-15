@@ -9,6 +9,7 @@ export type WorkerMergeConflictView = {
 
 export type WorkerManualValidationView = {
   path: string;
+  paths: string[];
   status: "passed" | "failed" | "uncertain" | "blocked";
   branch: string;
   revision: number;
@@ -32,6 +33,8 @@ export type WorkerMergeResultView = {
     omitted: number;
     manualResolutions: Array<{
       path: string;
+      paths: string[];
+      deletedPaths: string[];
       status: "published" | "noop";
       revision: number;
       reviewBranch: string;
@@ -57,14 +60,16 @@ const safeReportedPath = (value: unknown): value is string =>
   !value.split(/[\\/]/u).some(part => part === ".." || part === "");
 
 const parseValidationReceipt = (value: unknown): WorkerManualValidationView | null => {
+  const paths = record(value) ? (Array.isArray(value.paths) ? value.paths : [value.path]) : [];
   if (!record(value) || !safeReportedPath(value.path) || !["passed", "failed", "uncertain", "blocked"].includes(String(value.status)) ||
+      paths.length < 1 || paths.length > 2 || paths.some(path => !safeReportedPath(path)) || new Set(paths).size !== paths.length || !paths.includes(value.path) ||
       typeof value.branch !== "string" || value.branch.length > 128 || !Number.isSafeInteger(value.revision) ||
       typeof value.manifestHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.manifestHash) ||
       !Number.isSafeInteger(value.targetRevision) || Number(value.targetRevision) < 1 ||
       typeof value.targetManifestHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.targetManifestHash) ||
       typeof value.commandHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.commandHash) ||
       !Number.isSafeInteger(value.durationMs) || Number(value.durationMs) < 0 || typeof value.completedAt !== "string") return null;
-  return { path: value.path, status: value.status as WorkerManualValidationView["status"], branch: value.branch,
+  return { path: value.path, paths: paths as string[], status: value.status as WorkerManualValidationView["status"], branch: value.branch,
     revision: Number(value.revision), manifestHash: value.manifestHash.toLowerCase(), commandHash: value.commandHash.toLowerCase(),
     targetRevision: Number(value.targetRevision), targetManifestHash: value.targetManifestHash.toLowerCase(),
     durationMs: Number(value.durationMs), completedAt: value.completedAt.slice(0, 64),
@@ -138,10 +143,16 @@ export function parseWorkerMergeResult(
               typeof item.completedAt !== "string"
             )
               return [];
+            const paths = Array.isArray(item.paths) ? item.paths : [item.path];
+            if (paths.length < 1 || paths.length > 2 || paths.some(path => !safeReportedPath(path)) || new Set(paths).size !== paths.length || !paths.includes(item.path)) return [];
+            const deletedPaths = Array.isArray(item.deletedPaths) ? item.deletedPaths : item.deleted === true ? [item.path] : [];
+            if (deletedPaths.some(path => !safeReportedPath(path) || !paths.includes(path)) || new Set(deletedPaths).size !== deletedPaths.length) return [];
             const validation = parseValidationReceipt(item.validation);
             return [
               {
                 path: item.path.slice(0, 512),
+                paths: paths as string[],
+                deletedPaths: deletedPaths as string[],
                 status: item.status as "published" | "noop",
                 revision: Number(item.revision),
                 reviewBranch: item.reviewBranch.slice(0, 128),

@@ -2,6 +2,7 @@ import {
   validateWorkspaceBranch,
   validateWorkspacePath,
   validateWorkspaceScope,
+  sha256Hex,
   type WorkspacePublicationReceipt,
   type WorkspaceScope,
 } from "./workspace-contract.js";
@@ -18,9 +19,42 @@ export type WorkspaceManualResolutionInput = {
   expectedSourceHash: string | null;
   content: string | null;
   idempotencyKey: string;
+  changes?: WorkspaceManualResolutionChange[];
   validationCommand?: string;
   validate?: (request: WorkspaceManualValidationRequest) => Promise<WorkspaceManualValidationReceipt>;
 };
+
+export type WorkspaceManualResolutionChange = {
+  path: string;
+  expectedTargetHash: string | null;
+  expectedSourceHash: string | null;
+  content: string | null;
+};
+
+export function isWorkspaceManualResolutionChange(value: unknown): value is WorkspaceManualResolutionChange {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const change = value as Record<string, unknown>;
+  if (!validateWorkspacePath(change.path) ||
+      !(change.expectedTargetHash === null || typeof change.expectedTargetHash === "string" && HASH.test(change.expectedTargetHash)) ||
+      !(change.expectedSourceHash === null || typeof change.expectedSourceHash === "string" && HASH.test(change.expectedSourceHash)) ||
+      !(change.content === null || typeof change.content === "string")) return false;
+  if (change.content === null) return true;
+  const bytes = new TextEncoder().encode(change.content);
+  return bytes.byteLength <= MAX_RESOLUTION_BYTES && !bytes.includes(0);
+}
+
+export function isWorkspaceManualConflictChangeSet(
+  path: string,
+  otherPath: string | undefined,
+  changes: WorkspaceManualResolutionChange[],
+): boolean {
+  if (!validateWorkspacePath(path) || changes.length < 1 || changes.length > 2 ||
+      changes.some(change => !isWorkspaceManualResolutionChange(change)) ||
+      new Set(changes.map(change => change.path)).size !== changes.length || !changes.some(change => change.path === path)) return false;
+  if (otherPath === undefined) return changes.length === 1;
+  return validateWorkspacePath(otherPath) && otherPath !== path && changes.length === 2 &&
+    changes.some(change => change.path === otherPath) && changes.some(change => change.content === null);
+}
 
 export type WorkspaceCoordinatorCall = (
   path: string,
@@ -42,6 +76,7 @@ export type WorkspaceConflictPreview = {
   target: WorkspaceConflictPreviewVersion;
   worker: WorkspaceConflictPreviewVersion;
   stale: boolean;
+  paired?: { path: string; target: WorkspaceConflictPreviewVersion; worker: WorkspaceConflictPreviewVersion };
 };
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
@@ -52,6 +87,7 @@ const VALIDATION_COMMAND = /^(?:npm|pnpm|yarn|bun) (?:run )?test(?::[A-Za-z0-9][
 
 export type WorkspaceManualValidationReceipt = {
   path: string;
+  paths: string[];
   status: "passed" | "failed" | "uncertain" | "blocked";
   branch: string;
   revision: number;
@@ -69,6 +105,7 @@ export type WorkspaceManualValidationReceipt = {
 
 export type WorkspaceManualValidationRequest = {
   path: string;
+  paths: string[];
   reviewBranch: string;
   validationBranch: string;
   targetBranch: string;
@@ -86,6 +123,25 @@ export function isWorkspaceManualValidationCommand(value: unknown): value is str
   return typeof value === "string" && value.length > 0 &&
     new TextEncoder().encode(value).byteLength <= MAX_VALIDATION_COMMAND_BYTES &&
     value === value.trim() && VALIDATION_COMMAND.test(value);
+}
+
+function normalizeResolutionChanges(input: WorkspaceManualResolutionInput): WorkspaceManualResolutionChange[] | null {
+  const changes = input.changes ?? [{ path: input.path, expectedTargetHash: input.expectedTargetHash,
+    expectedSourceHash: input.expectedSourceHash, content: input.content }];
+  if (!Array.isArray(changes) || changes.length < 1 || changes.length > 2 ||
+      changes.some(change => !isWorkspaceManualResolutionChange(change)) ||
+      new Set(changes.map(change => change.path)).size !== changes.length) return null;
+  const primary = changes.find(change => change.path === input.path);
+  if (!primary || primary.expectedTargetHash !== input.expectedTargetHash || primary.expectedSourceHash !== input.expectedSourceHash || primary.content !== input.content) return null;
+  const normalized = [...changes].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  let totalBytes = 0;
+  for (const change of normalized) {
+    if (change.content === null) continue;
+    const bytes = new TextEncoder().encode(change.content);
+    totalBytes += bytes.byteLength;
+    if (totalBytes > MAX_RESOLUTION_BYTES * 2) return null;
+  }
+  return normalized;
 }
 
 async function readBranchText(
@@ -216,8 +272,9 @@ export async function readWorkspaceConflictPreview(
     targetBranch: string;
     workerBranch: string;
     path: string;
-    expectedTargetHash: string | null;
-    expectedSourceHash: string | null;
+    pairedPath?: string;
+    expectedTargetHash?: string | null;
+    expectedSourceHash?: string | null;
   },
   coordinator: WorkspaceCoordinatorCall,
   bucket: {
@@ -231,12 +288,13 @@ export async function readWorkspaceConflictPreview(
     !validateWorkspaceBranch(input.targetBranch) ||
     !validateWorkspaceBranch(input.workerBranch) ||
     !validateWorkspacePath(input.path) ||
-    !(
+    input.pairedPath !== undefined && (!validateWorkspacePath(input.pairedPath) || input.pairedPath === input.path) ||
+    input.expectedTargetHash !== undefined && !(
       input.expectedTargetHash === null ||
       (typeof input.expectedTargetHash === "string" &&
         HASH.test(input.expectedTargetHash))
     ) ||
-    !(
+    input.expectedSourceHash !== undefined && !(
       input.expectedSourceHash === null ||
       (typeof input.expectedSourceHash === "string" &&
         HASH.test(input.expectedSourceHash))
@@ -244,7 +302,7 @@ export async function readWorkspaceConflictPreview(
   ) {
     throw new Error("invalid_workspace_manual_preview");
   }
-  const [target, worker] = await Promise.all([
+  const [target, worker, pairedTarget, pairedWorker] = await Promise.all([
     readBranchText(
       input.scope,
       input.targetBranch,
@@ -259,14 +317,16 @@ export async function readWorkspaceConflictPreview(
       coordinator,
       bucket
     ),
+    input.pairedPath ? readBranchText(input.scope, input.targetBranch, input.pairedPath, coordinator, bucket) : Promise.resolve(undefined),
+    input.pairedPath ? readBranchText(input.scope, input.workerBranch, input.pairedPath, coordinator, bucket) : Promise.resolve(undefined),
   ]);
   return {
     path: input.path,
     target,
     worker,
-    stale:
-      target.hash !== input.expectedTargetHash ||
-      worker.hash !== input.expectedSourceHash,
+    stale: input.expectedTargetHash !== undefined && target.hash !== input.expectedTargetHash ||
+      input.expectedSourceHash !== undefined && worker.hash !== input.expectedSourceHash,
+    ...(input.pairedPath && pairedTarget && pairedWorker ? { paired: { path: input.pairedPath, target: pairedTarget, worker: pairedWorker } } : {}),
   };
 }
 
@@ -281,8 +341,11 @@ function encodeBase64(bytes: Uint8Array): string {
 }
 
 async function branchFor(
-  input: WorkspaceManualResolutionInput
+  input: WorkspaceManualResolutionInput,
+  paths: string[],
 ): Promise<string> {
+  // Keep the existing single-path branch identity stable for interrupted-request recovery.
+  const pathIdentity: string | string[] = paths.length === 1 ? paths[0]! : paths;
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(
@@ -291,7 +354,7 @@ async function branchFor(
         input.workerId,
         input.attempt,
         input.targetBranch,
-        input.path,
+        pathIdentity,
         input.idempotencyKey,
       ])
     )
@@ -341,10 +404,12 @@ export async function publishWorkspaceManualResolution(
   coordinator: WorkspaceCoordinatorCall
 ): Promise<{
   reviewBranch: string;
+  paths: string[];
   checkpoint: WorkspacePublicationReceipt;
   merge: WorkspacePublicationReceipt;
   validation?: WorkspaceManualValidationReceipt;
 }> {
+  const changes = normalizeResolutionChanges(input);
   if (
     !validateWorkspaceScope(input.scope) ||
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(input.actorId) ||
@@ -366,25 +431,16 @@ export async function publishWorkspaceManualResolution(
     ) ||
     !ID.test(input.idempotencyKey) ||
     !(input.content === null || typeof input.content === "string") ||
+    !changes ||
     input.validate !== undefined && (!isWorkspaceManualValidationCommand(input.validationCommand) || typeof input.validate !== "function")
   ) {
     throw new Error("invalid_workspace_manual_resolution");
   }
-  const bytes =
-    input.content === null ? null : new TextEncoder().encode(input.content);
-  if (bytes && (bytes.byteLength > MAX_RESOLUTION_BYTES || bytes.includes(0)))
-    throw new Error("workspace_manual_resolution_content_invalid");
-
-  const reviewBranch = await branchFor(input);
+  const paths = changes.map(change => change.path);
+  const reviewBranch = await branchFor(input, paths);
   const operationId = reviewBranch.slice("manual/".length);
-  if (
-    !(await branchHasResolution(
-      input.sourceBranch,
-      input.path,
-      input.expectedSourceHash,
-      coordinator
-    ))
-  ) {
+  const sourceMatches = await Promise.all(changes.map(change => branchHasResolution(input.sourceBranch, change.path, change.expectedSourceHash, coordinator)));
+  if (sourceMatches.some(matches => !matches)) {
     throw new Error("workspace_manual_resolution_stale_source");
   }
   const branch = await coordinator("/v1/branch", {
@@ -401,22 +457,10 @@ export async function publishWorkspaceManualResolution(
   // A previous request can finish both Coordinator publications and lose the Worker result
   // write. The deterministic review branch plus exact resolved bytes let a retry resume from
   // that durable state instead of applying the original expected hash a second time.
-  const resolutionBytes = bytes;
-  const resolutionHash =
-    resolutionBytes === null
-      ? null
-      : await (async () => {
-          const digest = await crypto.subtle.digest("SHA-256", resolutionBytes);
-          return [...new Uint8Array(digest)]
-            .map((byte) => byte.toString(16).padStart(2, "0"))
-            .join("");
-        })();
-  const alreadyApplied = await branchHasResolution(
-    reviewBranch,
-    input.path,
-    resolutionHash,
-    coordinator
-  );
+  const resolvedHashes = await Promise.all(changes.map(async change => ({ path: change.path,
+    hash: change.content === null ? null : await sha256Hex(new TextEncoder().encode(change.content)) })));
+  const appliedState = await Promise.all(resolvedHashes.map(change => branchHasResolution(reviewBranch, change.path, change.hash, coordinator)));
+  const alreadyApplied = appliedState.every(Boolean);
 
   const runtimeId = "workspace-manual-review";
   const opened = await coordinator("/v1/open", {
@@ -460,13 +504,8 @@ export async function publishWorkspaceManualResolution(
           fence,
           baseRevision,
           idempotencyKey: `manual-${operationId}`,
-          changes: [
-            {
-              path: input.path,
-              expectedHash: input.expectedTargetHash,
-              contentBase64: bytes === null ? null : encodeBase64(bytes),
-            },
-          ],
+          changes: changes.map(change => ({ path: change.path, expectedHash: change.expectedTargetHash,
+            contentBase64: change.content === null ? null : encodeBase64(new TextEncoder().encode(change.content)) })),
         });
     const checkpointBody = checkpointResponse
       ? ((await checkpointResponse.json().catch(() => ({}))) as {
@@ -475,9 +514,7 @@ export async function publishWorkspaceManualResolution(
       : {};
     const checkpoint = checkpointBody.publication;
     if (checkpointResponse && checkpoint?.status === "conflicted") {
-      const actualHash =
-        checkpoint?.conflicts?.find((conflict) => conflict.path === input.path)
-          ?.actualHash ?? null;
+      const actualHash = checkpoint?.conflicts?.find(conflict => changes.some(change => change.path === conflict.path))?.actualHash ?? null;
       throw new Error(
         `workspace_manual_resolution_stale_target:${actualHash ?? "missing"}`
       );
@@ -506,15 +543,15 @@ export async function publishWorkspaceManualResolution(
         .map((byte) => byte.toString(16).padStart(2, "0")).join("");
       const validationBranch = `race/manual-validation/${operationId.slice(0, 48)}`;
       const commandOperationHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
-        input.scope, input.workerId, input.attempt, input.targetBranch, input.path, input.idempotencyKey, commandHash,
+        input.scope, input.workerId, input.attempt, input.targetBranch, paths.length === 1 ? paths[0] : paths, input.idempotencyKey, commandHash,
       ]))))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
       const executionId = `manual-validation-${commandOperationHash.slice(0, 40)}`;
       const runId = `manual-validation-run-${commandOperationHash.slice(0, 32)}`;
-      validation = await input.validate({ path: input.path, reviewBranch, validationBranch, targetBranch: input.targetBranch, revision: reviewHead.revision,
+      validation = await input.validate({ path: input.path, paths, reviewBranch, validationBranch, targetBranch: input.targetBranch, revision: reviewHead.revision,
         manifestHash: reviewHead.manifestHash, targetRevision: targetHead.revision, targetManifestHash: targetHead.manifestHash,
         command: input.validationCommand!,
         commandHash, executionId, runId });
-      if (validation.path !== input.path || validation.branch !== validationBranch || validation.revision !== reviewHead.revision || validation.manifestHash !== reviewHead.manifestHash ||
+      if (validation.path !== input.path || JSON.stringify(validation.paths) !== JSON.stringify(paths) || validation.branch !== validationBranch || validation.revision !== reviewHead.revision || validation.manifestHash !== reviewHead.manifestHash ||
           validation.targetRevision !== targetHead.revision || validation.targetManifestHash !== targetHead.manifestHash ||
           validation.commandHash !== commandHash || validation.executionId !== executionId || validation.runId !== runId) {
         throw new Error("workspace_manual_validation_receipt_mismatch");
@@ -550,6 +587,7 @@ export async function publishWorkspaceManualResolution(
     }
     return {
       reviewBranch,
+      paths,
       ...(validation ? { validation } : {}),
       checkpoint: checkpoint ?? {
         id: `manual-replay-${input.idempotencyKey}`,

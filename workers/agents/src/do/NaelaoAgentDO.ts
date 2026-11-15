@@ -117,7 +117,8 @@ import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
 import { handleWorkspaceCheckedPublish } from "../workspace/workspace-checked-publish-route.js";
 import { validateWorkspaceScope, validateWorkspacePath, type WorkspaceScope } from "../workspace/workspace-contract.js";
 import { isWorkspaceManualValidationCommand, publishWorkspaceManualResolution, readWorkspaceConflictPreview,
-  workspaceManualResolutionErrorResponse, type WorkspaceManualValidationReceipt, type WorkspaceManualValidationRequest } from "../workspace/workspace-manual-resolution.js";
+  isWorkspaceManualConflictChangeSet, isWorkspaceManualResolutionChange, workspaceManualResolutionErrorResponse, type WorkspaceManualResolutionChange,
+  type WorkspaceManualValidationReceipt, type WorkspaceManualValidationRequest } from "../workspace/workspace-manual-resolution.js";
 import { withWorkerMergeConflicts } from "../workspace/worker-merge-report.js";
 import { withWorkspaceManifestRead } from "../script-engine/workspace-r2-compat.js";
 import {
@@ -5072,6 +5073,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const expectedTargetHash = body.expectedTargetHash;
     const expectedSourceHash = body.expectedSourceHash;
     const content = body.content;
+    const rawChanges = body.changes;
     const idempotencyKey = body.idempotencyKey;
     const validationCommand = body.validationCommand;
     if (!validateWorkspaceScope(scope) || scope.tenantId !== tenantId || typeof actorId !== "string" ||
@@ -5082,18 +5084,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         !(expectedTargetHash === null || (typeof expectedTargetHash === "string" && /^[a-f0-9]{64}$/.test(expectedTargetHash))) ||
         !(expectedSourceHash === null || (typeof expectedSourceHash === "string" && /^[a-f0-9]{64}$/.test(expectedSourceHash))) ||
         !(content === null || typeof content === "string") || typeof idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(idempotencyKey) ||
+        (rawChanges !== undefined && (!Array.isArray(rawChanges) || rawChanges.length < 1 || rawChanges.length > 2 || rawChanges.some(change => !isWorkspaceManualResolutionChange(change)))) ||
         !isWorkspaceManualValidationCommand(validationCommand)) {
       return Response.json({ error_code: "invalid_workspace_manual_resolution" }, { status: 400 });
     }
-    const resolutionBytes = content === null ? null : new TextEncoder().encode(content);
-    if (resolutionBytes && (resolutionBytes.byteLength > 256 * 1024 || resolutionBytes.includes(0))) {
-      return Response.json({ error_code: "workspace_manual_resolution_content_invalid" }, { status: 400 });
+    const submittedChanges = rawChanges === undefined
+      ? [{ path: path as string, expectedTargetHash: expectedTargetHash as string | null,
+          expectedSourceHash: expectedSourceHash as string | null, content: content as string | null }]
+      : rawChanges as WorkspaceManualResolutionChange[];
+    const changes = [...submittedChanges].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+    const primaryChange = changes.find(change => change.path === path);
+    if (new Set(changes.map(change => change.path)).size !== changes.length || !primaryChange ||
+        primaryChange.expectedTargetHash !== expectedTargetHash || primaryChange.expectedSourceHash !== expectedSourceHash || primaryChange.content !== content) {
+      return Response.json({ error_code: "invalid_workspace_manual_resolution" }, { status: 400 });
     }
-    const contentDigest = resolutionBytes === null ? "delete" : [...new Uint8Array(await crypto.subtle.digest("SHA-256", resolutionBytes))]
+    const pathList = changes.map(change => change.path);
+    const pathIdentity: string | string[] = pathList.length === 1 ? pathList[0]! : pathList;
+    const changeDigests = await Promise.all(changes.map(async change => [change.path, change.expectedTargetHash, change.expectedSourceHash,
+      change.content === null ? "delete" : [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(change.content)))].map(byte => byte.toString(16).padStart(2, "0")).join("")]));
+    const contentDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(changeDigests))))]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
     const validationCommandHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(validationCommand)))]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
-    const requestHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([path, expectedTargetHash, expectedSourceHash, contentDigest, validationCommandHash]))))]
+    const primaryContentDigest = content === null ? "delete" : [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content)))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    // Preserve the established single-path identity for retries and completion receipts.
+    const requestIdentity = changes.length === 1
+      ? [path, expectedTargetHash, expectedSourceHash, primaryContentDigest, validationCommandHash]
+      : [pathList, contentDigest, validationCommandHash];
+    const requestHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(requestIdentity))))]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
     const { spaceId, projectId } = scope;
     const agentsEnv = this.env as unknown as import("../index.js").AgentsEnv;
@@ -5127,7 +5146,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     const conflicts = merge.conflicts as Array<{ path?: unknown; otherPath?: unknown; targetHash?: unknown; sourceHash?: unknown }>;
     const conflict = conflicts.find(item => item.path === path);
-    if (!conflict || conflict.otherPath !== undefined || conflict.targetHash !== expectedTargetHash || conflict.sourceHash !== expectedSourceHash) {
+    const pairedPath = typeof conflict?.otherPath === "string" ? conflict.otherPath : undefined;
+    if (!conflict || conflict.targetHash !== expectedTargetHash || conflict.sourceHash !== expectedSourceHash ||
+        !isWorkspaceManualConflictChangeSet(path, pairedPath, changes)) {
       return Response.json({ error_code: "workspace_manual_resolution_conflict_mismatch" }, { status: 409 });
     }
     const manualResolutions = Array.isArray(merge.manualResolutions)
@@ -5140,7 +5161,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const targetBranch = await this.ctx.storage.get<string>(`worker-branch-parent:${workerId}`);
     if (!row.workspace_branch || !targetBranch || !validateWorkspacePath(path)) return Response.json({ error_code: "worker_branch_metadata_unavailable" }, { status: 409 });
     const operationId = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
-      scope, workerId, row.attempt, targetBranch, path, idempotencyKey,
+      scope, workerId, row.attempt, targetBranch, pathIdentity, idempotencyKey,
     ]))))].map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 48);
     const operationBindingKey = `workspace-manual-validation-operation:${workerId}:${row.attempt}:${operationId}`;
     const operationIndexKey = `workspace-manual-validation-operations:${workerId}:${row.attempt}`;
@@ -5151,7 +5172,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!Array.isArray(index) || index.some(item => typeof item !== "string") || index.length >= 50) return "limit" as const;
       index.push(operationId);
       await tx.put(operationIndexKey, index);
-      await tx.put(operationBindingKey, { requestHash, path, targetBranch, idempotencyKey, createdAt: Date.now() });
+      await tx.put(operationBindingKey, { requestHash, path, paths: pathList, targetBranch, idempotencyKey, createdAt: Date.now() });
       return "created" as const;
     });
     if (operationClaim === "conflict") return Response.json({ error_code: "workspace_manual_resolution_idempotency_conflict" }, { status: 409, headers: { "cache-control": "no-store" } });
@@ -5165,13 +5186,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       return workspaceCoordinatorRequest(coordinatorEnv, scope, route, { ...(payload ? { body: payload } : {}) });
     };
+    try {
+      const previews = await Promise.all(changes.map(change => readWorkspaceConflictPreview({ scope, targetBranch,
+        workerBranch: row.workspace_branch!, path: change.path, expectedTargetHash: change.expectedTargetHash,
+        expectedSourceHash: change.expectedSourceHash }, checkedCoordinator, this.env.SCRIPTS_R2!)));
+      if (previews.some(preview => preview.stale)) return Response.json({ error_code: "workspace_manual_resolution_stale_input" }, { status: 409, headers: { "cache-control": "no-store" } });
+      if (previews.some(preview => [preview.target, preview.worker].some(version => version.hash !== null && version.content === null))) {
+        return Response.json({ error_code: "workspace_manual_resolution_preview_unavailable" }, { status: 422, headers: { "cache-control": "no-store" } });
+      }
+    } catch {
+      return Response.json({ error_code: "workspace_preview_unavailable" }, { status: 503, headers: { "cache-control": "no-store" } });
+    }
     const validationJournalKey = (executionId: string) => `workspace-manual-validation:${workerId}:${row.attempt}:${executionId}`;
-    const pathDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path)))]
-      .map(byte => byte.toString(16).padStart(2, "0")).join("");
-    const uncertainPathKey = `workspace-manual-validation-uncertain:${workerId}:${row.attempt}:${pathDigest}`;
+    const uncertainPathKeys = await Promise.all(pathList.map(async item => {
+      const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(item)))]
+        .map(byte => byte.toString(16).padStart(2, "0")).join("");
+      return `workspace-manual-validation-uncertain:${workerId}:${row.attempt}:${digest}`;
+    }));
     const runManualValidation = async (validation: WorkspaceManualValidationRequest): Promise<WorkspaceManualValidationReceipt> => {
       const makeReceipt = (status: WorkspaceManualValidationReceipt["status"], extra: Partial<WorkspaceManualValidationReceipt> = {}): WorkspaceManualValidationReceipt => ({
-        path, status, branch: validation.validationBranch, revision: validation.revision, manifestHash: validation.manifestHash,
+        path, paths: validation.paths, status, branch: validation.validationBranch, revision: validation.revision, manifestHash: validation.manifestHash,
         targetRevision: validation.targetRevision, targetManifestHash: validation.targetManifestHash,
         commandHash: validation.commandHash, executionId: validation.executionId, runId: validation.runId,
         durationMs: Math.max(0, Date.now() - validationStartedAt), completedAt: new Date().toISOString(), ...extra,
@@ -5180,7 +5214,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const key = validationJournalKey(validation.executionId);
       const recordReceipt = async (receipt: WorkspaceManualValidationReceipt) => {
         await this.ctx.storage.put(key, receipt);
-        if (receipt.status === "uncertain") await this.ctx.storage.put(uncertainPathKey, { executionId: receipt.executionId, recordedAt: receipt.completedAt });
+        if (receipt.status === "uncertain") await Promise.all(uncertainPathKeys.map(uncertainKey =>
+          this.ctx.storage.put(uncertainKey, { executionId: receipt.executionId, recordedAt: receipt.completedAt })));
         return receipt;
       };
       const readBranch = async (branch: string) => {
@@ -5215,15 +5250,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       const saved = await this.ctx.storage.get<WorkspaceManualValidationReceipt | { status: "running"; startedAt: number }>(key);
       if (saved && saved.status !== "running") {
-        if (saved.path !== path || saved.branch !== validation.validationBranch || saved.revision !== validation.revision || saved.manifestHash !== validation.manifestHash ||
+        const savedPaths = saved.paths ?? (pathList.length === 1 && saved.path === path ? [path] : []);
+        if (saved.path !== path || JSON.stringify(savedPaths) !== JSON.stringify(pathList) || saved.branch !== validation.validationBranch || saved.revision !== validation.revision || saved.manifestHash !== validation.manifestHash ||
             saved.targetRevision !== validation.targetRevision || saved.targetManifestHash !== validation.targetManifestHash ||
             saved.commandHash !== validation.commandHash || saved.executionId !== validation.executionId || saved.runId !== validation.runId) {
           return recordReceipt(makeReceipt("blocked", { reason: "validation_receipt_scope_mismatch" }));
         }
-        return saved;
+        return { ...saved, paths: savedPaths };
       }
-      const uncertainPath = await this.ctx.storage.get<{ executionId: string }>(uncertainPathKey);
-      if (uncertainPath && uncertainPath.executionId !== validation.executionId) {
+      const uncertainPaths = await Promise.all(uncertainPathKeys.map(uncertainKey => this.ctx.storage.get<{ executionId: string }>(uncertainKey)));
+      if (uncertainPaths.some(uncertainPath => uncertainPath && uncertainPath.executionId !== validation.executionId)) {
         return recordReceipt(makeReceipt("blocked", { reason: "prior_validation_outcome_uncertain" }));
       }
       const claim = await this.ctx.storage.transaction(async tx => {
@@ -5308,13 +5344,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return true;
     };
     const validationExecutionId = `manual-validation-${[...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
-      scope, workerId, row.attempt, targetBranch, path, idempotencyKey, validationCommandHash,
+      scope, workerId, row.attempt, targetBranch, pathIdentity, idempotencyKey, validationCommandHash,
     ]))))].map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 40)}`;
     let published: Awaited<ReturnType<typeof publishWorkspaceManualResolution>>;
     try {
       published = await publishWorkspaceManualResolution({ scope, actorId, workerId, attempt: row.attempt, targetBranch,
         sourceBranch: row.workspace_branch, path, expectedTargetHash: expectedTargetHash as string | null,
         expectedSourceHash: expectedSourceHash as string | null, content, idempotencyKey,
+        changes,
         validationCommand, validate: runManualValidation },
       checkedCoordinator);
     } catch (error) {
@@ -5324,6 +5361,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const receipt = journal && typeof journal === "object" && "status" in journal &&
         ["passed", "failed", "uncertain", "blocked"].includes(String(journal.status)) &&
         "path" in journal && journal.path === path && "branch" in journal && journal.branch === expectedValidationBranch &&
+        (("paths" in journal && JSON.stringify(journal.paths) === JSON.stringify(pathList)) || (! ("paths" in journal) && pathList.length === 1)) &&
         "executionId" in journal && journal.executionId === validationExecutionId &&
         "commandHash" in journal && journal.commandHash === validationCommandHash
         ? journal as WorkspaceManualValidationReceipt : null;
@@ -5335,7 +5373,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return workspaceManualResolutionErrorResponse(error);
     }
     if (!published.validation) return Response.json({ error_code: "workspace_manual_validation_receipt_required" }, { status: 409 });
-    const resolution = { path, idempotencyKey, requestHash, reviewBranch: published.reviewBranch, targetBranch, deleted: content === null,
+    const deletedPaths = changes.filter(change => change.content === null).map(change => change.path);
+    const resolution = { path, paths: pathList, deletedPaths, idempotencyKey, requestHash, reviewBranch: published.reviewBranch, targetBranch, deleted: content === null,
       status: published.merge.status, revision: published.merge.revision, publicationId: published.merge.id, completedAt: new Date().toISOString(), validation: published.validation };
     const latestRows = this.ctx.storage.sql.exec(`SELECT result,status,workspace_branch,configuration_json FROM sub_agents WHERE id=?`, workerId)
       .toArray() as Array<{ result: string | null; status: string; workspace_branch: string | null; configuration_json: string | null }>;
@@ -5356,7 +5395,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     const latestConflicts = Array.isArray(latestMerge.conflicts) ? latestMerge.conflicts as Array<{ path?: unknown; otherPath?: unknown }> : [];
     const nextManualResolutions = [...latestResolutions, resolution].slice(-50);
-    const allResolved = latestConflicts.every(item => item.otherPath === undefined && nextManualResolutions.some(saved => saved.path === item.path)) && Number(latestMerge.omitted ?? 0) === 0;
+    const allResolved = latestConflicts.every(item => {
+      const saved = nextManualResolutions.find(candidate => candidate.path === item.path);
+      return Boolean(saved && (item.otherPath === undefined || Array.isArray(saved.paths) && saved.paths.includes(item.otherPath)));
+    }) && Number(latestMerge.omitted ?? 0) === 0;
     latestOutput.workspaceMerge = { ...latestMerge, status: allResolved ? "manually_resolved" : "partially_resolved", manualResolutions: nextManualResolutions };
     this.ctx.storage.sql.exec(`UPDATE sub_agents SET result=?,updated_at=? WHERE id=?`, JSON.stringify(latestOutput), Date.now(), workerId);
     return Response.json({ resolution }, { headers: { "cache-control": "no-store" } });
@@ -5401,13 +5443,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "worker_session_scope_mismatch" }, { status: 403 });
     }
     const merge = output?.workspaceMerge as { conflicts?: unknown } | undefined;
-    const conflicts = Array.isArray(merge?.conflicts) ? merge.conflicts as Array<{ path?: unknown; targetHash?: unknown; sourceHash?: unknown }> : [];
+    const conflicts = Array.isArray(merge?.conflicts) ? merge.conflicts as Array<{ path?: unknown; otherPath?: unknown; targetHash?: unknown; sourceHash?: unknown }> : [];
     const conflict = conflicts.find(item => item.path === path);
     const targetBranch = await this.ctx.storage.get<string>(`worker-branch-parent:${workerId}`);
     if (!conflict || !targetBranch || !row.workspace_branch?.startsWith("workers/")) return Response.json({ error_code: "worker_conflict_not_found" }, { status: 404 });
     const coordinatorEnv = agentsEnv as unknown as import("../workspace/workspace-client.js").WorkspaceCoordinatorBindings;
     try {
       const preview = await readWorkspaceConflictPreview({ scope, targetBranch, workerBranch: row.workspace_branch, path,
+        ...(typeof conflict.otherPath === "string" && validateWorkspacePath(conflict.otherPath) ? { pairedPath: conflict.otherPath } : {}),
         expectedTargetHash: typeof conflict.targetHash === "string" ? conflict.targetHash : null,
         expectedSourceHash: typeof conflict.sourceHash === "string" ? conflict.sourceHash : null },
       (route, payload) => workspaceCoordinatorRequest(coordinatorEnv, scope, route, { ...(payload ? { body: payload } : {}) }),

@@ -307,46 +307,76 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
   conflict: WorkerMergeConflictView;
   onResolved?: (() => void) | undefined;
 }) {
-  const [content, setContent] = React.useState("");
+  type ResolutionDraft = { content: string; deleted: boolean; initialized: boolean };
+  type SubmittedResolution = { changes: Array<{ path: string; expectedTargetHash: string | null; expectedSourceHash: string | null; content: string | null }>; validationCommand: string };
+  const [drafts, setDrafts] = React.useState<Record<string, ResolutionDraft>>({});
   const [validationCommand, setValidationCommand] = React.useState("");
-  const [deleteFile, setDeleteFile] = React.useState(false);
   const [requestKey, setRequestKey] = React.useState<string | null>(null);
-  const [submitted, setSubmitted] = React.useState<{ content: string | null; validationCommand: string } | null>(null);
+  const [submitted, setSubmitted] = React.useState<SubmittedResolution | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [done, setDone] = React.useState(false);
   const [message, setMessage] = React.useState("");
   const [preview, setPreview] = React.useState<Awaited<ReturnType<typeof readWorkerWorkspaceConflictPreview>>["preview"] | null>(null);
   const [previewError, setPreviewError] = React.useState("");
   const locked = submitted !== null;
-  const resolutionDraft = locked ? submitted.content : deleteFile ? null : content;
-  const previewReady = Boolean(preview && !preview.stale &&
-    [preview.target, preview.worker].every(version => version.hash === null || version.content !== null));
+  const previewVersions = preview ? [
+    { path: preview.path, target: preview.target, worker: preview.worker },
+    ...(preview.paired ? [preview.paired] : []),
+  ] : [];
+  const conflictPaths = conflict.otherPath ? [conflict.path, conflict.otherPath] : [conflict.path];
+  const previewReady = Boolean(preview && preview.path === conflict.path &&
+    (!conflict.otherPath || preview.paired?.path === conflict.otherPath) && !preview.stale &&
+    previewVersions.length === conflictPaths.length &&
+    previewVersions.every(item => [item.target, item.worker].every(version => version.hash === null || version.content !== null)));
+  const proposedChanges = previewReady ? previewVersions.map(item => {
+    const draft = drafts[item.path] ?? { content: "", deleted: false, initialized: false };
+    return { path: item.path, expectedTargetHash: item.target.hash, expectedSourceHash: item.worker.hash,
+      content: draft.deleted ? null : draft.content };
+  }) : [];
+  const readyToPublish = previewReady && proposedChanges.length === conflictPaths.length &&
+    previewVersions.every(item => drafts[item.path]?.initialized || drafts[item.path]?.deleted) &&
+    (!conflict.otherPath || proposedChanges.some(change => change.content === null));
   React.useEffect(() => {
     if (!sessionId || !projectId) return;
     let cancelled = false;
     setPreview(null);
     setPreviewError("");
+    setDrafts({});
+    setSubmitted(null);
+    setRequestKey(null);
+    setDone(false);
+    setMessage("");
+    setValidationCommand("");
     readWorkerWorkspaceConflictPreview(spaceId, workerId, session, { sessionId, ...(agentId ? { agentId } : {}), projectId, path: conflict.path })
-      .then(result => { if (!cancelled) { setPreview(result.preview); setPreviewError(""); } })
+      .then(result => { if (!cancelled) {
+        setPreview(result.preview);
+        setDrafts(Object.fromEntries([
+          { path: result.preview.path }, ...(result.preview.paired ? [{ path: result.preview.paired.path }] : []),
+        ].map(item => [item.path, { content: "", deleted: false, initialized: false }])));
+        setPreviewError("");
+      } })
       .catch(error => { if (!cancelled) setPreviewError(error instanceof Error ? error.message : "Could not load conflict versions."); });
     return () => { cancelled = true; };
-  }, [spaceId, workerId, session, sessionId, agentId, projectId, conflict.path]);
+  }, [spaceId, workerId, session, sessionId, agentId, projectId, conflict.path, conflict.otherPath]);
   async function publish() {
     const nextKey = requestKey ?? crypto.randomUUID();
-    const nextContent = submitted ? submitted.content : deleteFile ? null : content;
+    const nextChanges = submitted ? submitted.changes : proposedChanges;
     const nextValidationCommand = submitted?.validationCommand ?? validationCommand.trim();
     setRequestKey(nextKey);
-    setSubmitted({ content: nextContent, validationCommand: nextValidationCommand });
+    setSubmitted({ changes: nextChanges, validationCommand: nextValidationCommand });
     setBusy(true);
     setMessage("");
     try {
+      const primary = nextChanges.find(change => change.path === conflict.path);
+      if (!primary) throw new Error("The primary conflict path is missing from this resolution.");
       const result = await resolveWorkerWorkspaceConflict(spaceId, workerId, session, {
         sessionId, ...(agentId ? { agentId } : {}), projectId, path: conflict.path,
-        expectedTargetHash: conflict.targetHash, expectedSourceHash: conflict.sourceHash,
-        content: nextContent, idempotencyKey: nextKey, validationCommand: nextValidationCommand,
+        expectedTargetHash: primary.expectedTargetHash, expectedSourceHash: primary.expectedSourceHash,
+        content: primary.content, ...(nextChanges.length > 1 ? { changes: nextChanges } : {}),
+        idempotencyKey: nextKey, validationCommand: nextValidationCommand,
       });
       setDone(true);
-      setMessage(`${nextContent === null ? "File deletion" : "Resolution"} passed on review revision ${result.resolution.validation.revision} and was published through the checked workspace coordinator. The original worker branch is retained.`);
+      setMessage(`The ${nextChanges.length}-path resolution passed on review revision ${result.resolution.validation.revision} and was published atomically through the checked workspace coordinator. The original worker branch is retained.`);
       onResolved?.();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The resolution could not be published.");
@@ -356,48 +386,69 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
   return <div style={{ marginTop: 8, borderTop: "1px solid var(--border, #64748b44)", paddingTop: 7 }}>
     {!projectId ? <p style={{ margin: 0, fontSize: 11, color: "var(--text3)" }}>Open this worker in its project thread with project write access to resolve a file.</p> : <>
       <details style={{ marginBottom: 7 }}>
-        <summary style={{ cursor: "pointer", fontSize: 11 }}>Compare current target and worker text</summary>
+        <summary style={{ cursor: "pointer", fontSize: 11 }}>Compare current target and worker text{conflict.otherPath ? " for both paths" : ""}</summary>
         {previewError && <p role="status" style={{ fontSize: 11, color: "var(--text3)" }}>{previewError}</p>}
-        {preview?.stale && <p role="alert" style={{ fontSize: 11, color: "var(--danger, #dc2626)" }}>Current branch versions no longer match this conflict record. Publishing is disabled until a fresh conflict review is recorded.</p>}
+        {preview && !previewReady && <p role="alert" style={{ fontSize: 11, color: "var(--danger, #dc2626)" }}>The current path set or branch versions no longer match this conflict record. Publishing is disabled until a fresh conflict review is recorded.</p>}
         {!preview && !previewError && <p role="status" style={{ fontSize: 11, color: "var(--text3)" }}>Loading current branch versions before resolution is enabled.</p>}
         {preview && !preview.stale && !previewReady && <p role="status" style={{ fontSize: 11, color: "var(--text3)" }}>At least one existing version is binary, too large, or unavailable as valid text; this editor cannot safely resolve it.</p>}
-        {preview && <div style={{ display: "grid", gap: 6, marginTop: 5 }}>
-          {(["target", "worker"] as const).map(side => {
-            const version = preview[side];
-            return <div key={side} style={{ border: "1px solid var(--border, #64748b44)", borderRadius: 6, padding: 6 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: 10 }}><strong>{side === "target" ? "Current target" : "Retained worker"}</strong><code>{version.hash ?? "file absent"}</code></div>
-              {version.content !== null ? <>
-                <pre style={{ margin: "5px 0", maxHeight: 150, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", font: "10px/1.4 var(--font-mono, monospace)" }}>{version.content}</pre>
-                <button type="button" className="btn btn-ghost btn-sm" disabled={busy || locked || done} onClick={() => { setContent(version.content ?? ""); setDeleteFile(false); }}>Use {side} text as starting point</button>
-              </> : <p style={{ margin: "5px 0 0", fontSize: 10, color: "var(--text3)" }}>{version.unavailableReason ?? "No text content is available."}</p>}
-            </div>;
-          })}
+        {preview && <div style={{ display: "grid", gap: 8, marginTop: 5 }}>
+          {previewVersions.map(item => <section key={item.path} aria-label={`Conflict versions for ${item.path}`} style={{ border: "1px solid var(--border, #64748b44)", borderRadius: 6, padding: 6 }}>
+            <strong style={{ fontSize: 11 }}>{item.path}</strong>
+            <div style={{ display: "grid", gap: 6, marginTop: 5 }}>
+              {(["target", "worker"] as const).map(side => {
+                const version = item[side];
+                return <div key={side} style={{ border: "1px solid var(--border, #64748b44)", borderRadius: 6, padding: 6 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: 10 }}><strong>{side === "target" ? "Current target" : "Retained worker"}</strong><code>{version.hash ?? "file absent"}</code></div>
+                  {version.content !== null ? <>
+                    <pre style={{ margin: "5px 0", maxHeight: 150, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", font: "10px/1.4 var(--font-mono, monospace)" }}>{version.content}</pre>
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={busy || locked || done} onClick={() => setDrafts(current => ({ ...current, [item.path]: { content: version.content ?? "", deleted: false, initialized: true } }))}>Use {side} text as starting point for {item.path}</button>
+                  </> : <p style={{ margin: "5px 0 0", fontSize: 10, color: "var(--text3)" }}>{version.unavailableReason ?? "No text content is available."}</p>}
+                </div>;
+              })}
+            </div>
+          </section>)}
         </div>}
       </details>
-      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-        <input type="checkbox" checked={locked ? submitted.content === null : deleteFile} disabled={busy || locked || done} onChange={event => setDeleteFile(event.target.checked)} />
-        Delete this path in the target workspace
-      </label>
-      {!(locked ? submitted.content === null : deleteFile) && <>
-        <label style={{ display: "block", fontSize: 11, fontWeight: 600, marginTop: 5 }} htmlFor={`worker-resolution-${workerId}-${encodeURIComponent(conflict.path)}`}>Reviewer-authored file contents</label>
-        <textarea id={`worker-resolution-${workerId}-${encodeURIComponent(conflict.path)}`} value={locked ? submitted.content ?? "" : content}
-          onChange={event => setContent(event.target.value)} disabled={busy || locked || done} rows={6} maxLength={65_536}
-          aria-label={`Resolution content for ${conflict.path}`} style={{ width: "100%", marginTop: 4, resize: "vertical", font: "11px/1.45 var(--font-mono, monospace)" }} />
-      </>}
+      {previewVersions.map(item => {
+        const draft = drafts[item.path] ?? { content: "", deleted: false, initialized: false };
+        const saved = submitted?.changes.find(change => change.path === item.path);
+        const deleted = saved ? saved.content === null : draft.deleted;
+        const value = saved ? saved.content ?? "" : draft.content;
+        return <div key={item.path} style={{ marginTop: 6 }}>
+          <strong style={{ display: "block", fontSize: 11 }}>{item.path} resolution</strong>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, marginTop: 4 }}>
+            <input type="checkbox" checked={deleted} disabled={busy || locked || done} onChange={event => setDrafts(current => ({ ...current, [item.path]: { ...draft, deleted: event.target.checked, initialized: true } }))} />
+            Delete this path in the target workspace
+          </label>
+          {!deleted && <>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, marginTop: 5 }} htmlFor={`worker-resolution-${workerId}-${encodeURIComponent(item.path)}`}>Reviewer-authored file contents</label>
+            <textarea id={`worker-resolution-${workerId}-${encodeURIComponent(item.path)}`} value={value}
+              onChange={event => setDrafts(current => ({ ...current, [item.path]: { content: event.target.value, deleted: false, initialized: true } }))} disabled={busy || locked || done} rows={6} maxLength={65_536}
+              aria-label={`Resolution content for ${item.path}`} style={{ width: "100%", marginTop: 4, resize: "vertical", font: "11px/1.45 var(--font-mono, monospace)" }} />
+          </>}
+        </div>;
+      })}
       <label style={{ display: "block", fontSize: 11, fontWeight: 600, marginTop: 6 }} htmlFor={`worker-validation-${workerId}-${encodeURIComponent(conflict.path)}`}>Package test command</label>
       <input id={`worker-validation-${workerId}-${encodeURIComponent(conflict.path)}`} value={locked ? submitted.validationCommand : validationCommand}
         onChange={event => setValidationCommand(event.target.value)} disabled={busy || locked || done} maxLength={256} placeholder="pnpm test"
         aria-label={`Package test command for ${conflict.path}`} style={{ width: "100%", marginTop: 4 }} />
       <p style={{ margin: "3px 0", fontSize: 10, color: "var(--text3)" }}>The supported package test command runs against an isolated copy of this reviewed revision before publication. Current execution authorization and configured project and tenant quota gates apply; this receipt does not show per-run infrastructure cost.</p>
+      {conflict.otherPath && <p style={{ margin: "3px 0", fontSize: 10, color: "var(--text3)" }}>This pair has colliding path names. Delete one of the two paths in the reviewed change set to remove the collision before publication.</p>}
       {previewReady && <details style={{ marginTop: 6 }}>
         <summary style={{ cursor: "pointer", fontSize: 11 }}>Review target-to-resolution diff</summary>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 6, marginTop: 5 }}>
-          <div><strong style={{ fontSize: 10 }}>Current target</strong><pre aria-label="Current target before resolution" style={{ margin: "4px 0 0", padding: 6, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 5, background: "var(--surface2)", font: "10px/1.4 var(--font-mono, monospace)" }}>{preview?.target.content ?? "[file absent]"}</pre></div>
-          <div><strong style={{ fontSize: 10 }}>Proposed resolution</strong><pre aria-label="Proposed resolution after review" style={{ margin: "4px 0 0", padding: 6, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 5, background: "var(--surface2)", font: "10px/1.4 var(--font-mono, monospace)" }}>{resolutionDraft ?? "[file deleted]"}</pre></div>
-        </div>
+        {previewVersions.map(item => {
+          const change = submitted?.changes.find(candidate => candidate.path === item.path) ?? proposedChanges.find(candidate => candidate.path === item.path);
+          return <div key={item.path} style={{ marginTop: 7 }}>
+            <strong style={{ fontSize: 10 }}>{item.path}</strong>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 6, marginTop: 3 }}>
+              <div><strong style={{ fontSize: 10 }}>Current target</strong><pre aria-label={`Current target before resolution for ${item.path}`} style={{ margin: "4px 0 0", padding: 6, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 5, background: "var(--surface2)", font: "10px/1.4 var(--font-mono, monospace)" }}>{item.target.content ?? "[file absent]"}</pre></div>
+              <div><strong style={{ fontSize: 10 }}>Proposed resolution</strong><pre aria-label={`Proposed resolution after review for ${item.path}`} style={{ margin: "4px 0 0", padding: 6, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 5, background: "var(--surface2)", font: "10px/1.4 var(--font-mono, monospace)" }}>{change?.content ?? "[file deleted]"}</pre></div>
+            </div>
+          </div>;
+        })}
       </details>}
       {!done && <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
-        <button type="button" className="btn btn-primary btn-sm" disabled={busy || !sessionId || !previewReady || !locked && (!deleteFile && content.length === 0 || !validationCommand.trim())}
+        <button type="button" className="btn btn-primary btn-sm" disabled={busy || !sessionId || !previewReady || !locked && (!readyToPublish || !validationCommand.trim())}
           onClick={() => void publish()}>{busy ? "Running test and publishing…" : locked ? "Retry same test and resolution" : "Run test and publish"}</button>
         {locked && !busy && <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setRequestKey(null); setSubmitted(null); setMessage(""); }}>Edit resolution</button>}
       </div>}
@@ -445,12 +496,11 @@ function WorkerResultView({ result, maxOutput = 8_000, resolution }: { result: s
           </dl>
         </details>
         {resolved.has(conflict.path) ? <p role="status" style={{ margin: "5px 0 0", fontSize: 11, color: "var(--accent)" }}>
-          Reviewed resolution {resolved.get(conflict.path)!.deleted ? "deleted this path" : resolved.get(conflict.path)!.status} at revision {resolved.get(conflict.path)!.revision} on {resolved.get(conflict.path)!.reviewBranch}.
+          Reviewed resolution for {resolved.get(conflict.path)!.paths.join(", ")} at revision {resolved.get(conflict.path)!.revision} on {resolved.get(conflict.path)!.reviewBranch} ({resolved.get(conflict.path)!.status}); deleted {resolved.get(conflict.path)!.deletedPaths.length ? resolved.get(conflict.path)!.deletedPaths.join(", ") : "no paths"}.
           {resolved.get(conflict.path)!.validation && <> Tests passed on review revision {resolved.get(conflict.path)!.validation!.revision} ({resolved.get(conflict.path)!.validation!.manifestHash.slice(0, 12)}…) against target revision {resolved.get(conflict.path)!.validation!.targetRevision} ({resolved.get(conflict.path)!.validation!.targetManifestHash.slice(0, 12)}…).</>}
         </p> : validationByPath.has(conflict.path) ? <p role="status" style={{ margin: "5px 0 0", fontSize: 11, color: validationByPath.get(conflict.path)!.status === "passed" ? "var(--accent)" : "var(--danger, #dc2626)" }}>
           Validation {validationByPath.get(conflict.path)!.status} on review revision {validationByPath.get(conflict.path)!.revision} ({validationByPath.get(conflict.path)!.manifestHash.slice(0, 12)}…) against target revision {validationByPath.get(conflict.path)!.targetRevision} ({validationByPath.get(conflict.path)!.targetManifestHash.slice(0, 12)}…). {validationByPath.get(conflict.path)!.reason?.replaceAll("_", " ") ?? "The resolution was not published."}
-        </p> : conflict.otherPath ? <p style={{ margin: "5px 0 0", fontSize: 11, color: "var(--text3)" }}>This paired-path conflict needs a coordinated rename or delete review; single-file resolution is not offered here.</p>
-          : resolution?.sessionId && resolution.projectId ? <WorkerConflictResolutionEditor spaceId={resolution.spaceId} session={resolution.session}
+        </p> : resolution?.sessionId && resolution.projectId ? <WorkerConflictResolutionEditor spaceId={resolution.spaceId} session={resolution.session}
             sessionId={resolution.sessionId ?? ""} agentId={resolution.agentId} projectId={resolution.projectId ?? ""}
             workerId={resolution.workerId} conflict={conflict} onResolved={resolution.onResolved} /> : null}
       </li>)}
