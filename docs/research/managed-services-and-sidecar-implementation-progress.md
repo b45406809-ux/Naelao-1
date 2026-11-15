@@ -1,6 +1,14 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-15 (PW06 validation outcome telemetry; code 276aa6a9 pushed)
+## Latest cross-plan checkpoint — 2026-11-15 (Knowledge K01/K11; code 1041cd0 pushed; PW06 race next)
+
+Fetched `mature-knowledge-platform-plan.md` from `plan/microapps-ui-sdk-voice` at `9358830e`, copied it without branch switch/merge, and incorporated K01–K30 in platform §14 with a dedicated ledger. Local Knowledge work now aligns 1 MiB Space-wide and 5 MiB Project-private UTF-8 limits across API/UI, adds ACL-filtered independent D1 FTS5 lexical candidates to the Vectorize/RRF path, and gates full Agents response caching off because its tenant/Space key lacks caller and source/grant freshness. Cloudflare AI Search was evaluated from current docs; it remains unselected and disabled.
+
+Code `1041cd0ffe58b212d11329a9ea0f4d155c4d3780` is pushed and remote-verified on `origin/Mcbt5s-Backup-2`. Local evidence: Knowledge suite **95/95**, Knowledge/Agents/Shell typechecks, upload helper **3/3**, FTS5 syntax smoke check, Wrangler TOML config check with cache flags false in all environments, `git diff --check`. No deployed D1/Worker/runtime, provider, invoice or live acceptance; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: close PW06 late worker-cancellation race (durable terminal-state gate before merge/validation and guarded completion updates; tests for late success/failure and cancel during validation). Then continue K02/K03 and the open S2–S9/U01–U12/P/PW/K work. Keep rollouts disabled.
+
+## Previous cross-plan checkpoint — 2026-11-15 (PW06 validation outcome telemetry; code 276aa6a9 pushed)
 
 Automatic worker integration emits privacy-safe fixed outcome and validation-status categories plus bounded elapsed time/count. Analytics writes occur after durable receipt persistence and cannot change the checked integration result. Local worker integration validation **11/11**, Agents typecheck and `git diff --check`; tests verify exact dimensions, duration bounds and Analytics/callback failure isolation. Code `276aa6a908e7e6521b8adccde56e52736082ac8c` is pushed and remote-verified. Voice interruption changes are pushed at `8233788bc1656bac2ca9cf914e91da198d8f3780` and `75fc1b877fd99481e0bee67d22780201699e6d26`; deployed/provider acceptance remains untested.
 

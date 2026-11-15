@@ -1,6 +1,16 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (PW06 integrated-validation telemetry; code 276aa6a9 pushed)
+## Latest cross-plan checkpoint — 2026-11-15 (K01/K11 implementation and K20 cache containment; 1041cd0 pushed)
+
+The mature Knowledge plan from `plan/microapps-ui-sdk-voice` commit `9358830e` is copied into this branch, incorporated in platform plan §14 and tracked as K01–K30 in `mature-knowledge-platform-implementation-progress.md`. The current code aligns Space/Project UTF-8 upload ceilings with the backend, adds independent scope-filtered D1 FTS5 candidates to Vectorize/RRF search, and disables full assistant-response cache reads/writes until caller scope and source/grant freshness are safe. Cloudflare AI Search was evaluated from current official docs; no adapter/provider selection or rollout was made.
+
+Local evidence: Knowledge Worker full suite **95/95**, Knowledge/Agents/Shell typechecks, upload-limit helper **3/3**, Cloudflare filtering/hybrid/multitenancy/data-source/pricing documentation review, SQLite FTS5 syntax check, worker config parse (all new cache gates false in dev/staging/prod), and `git diff --check`. No deployed D1/Worker, browser, provider, carrier, invoice or live acceptance. All rollout flags remain off.
+
+Code `1041cd0ffe58b212d11329a9ea0f4d155c4d3780` is pushed and remote-verified on `origin/Mcbt5s-Backup-2`.
+
+Exact next action: close PW06 cancellation race in delegated workers (late completion must not merge or overwrite `terminated`), then implement reachable PDF preview/parser lineage under K02/K03 and continue the open P01–P24/S/U/PW/K requirements.
+
+## Previous checkpoint — 2026-11-15 (PW06 integrated-validation telemetry; code 276aa6a9 pushed)
 
 Automatic worker validation now records privacy-safe fixed outcome/status categories, bounded duration and count only. Analytics writes run after the durable receipt is saved and are best-effort; an exception cannot change publication. Local validation suite **11/11**, Agents typecheck and diff hygiene pass; the tests cover exact dimensions, bounds and failure isolation. Code `276aa6a908e7e6521b8adccde56e52736082ac8c` is pushed and remote-verified. Voice fixes remain pushed at `75fc1b877fd99481e0bee67d22780201699e6d26` and `8233788bc1656bac2ca9cf914e91da198d8f3780`; no deployed/provider/carrier acceptance ran.
 
