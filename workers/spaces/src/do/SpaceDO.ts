@@ -5819,12 +5819,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/extension-installations" && method === "GET") {
         const extensionId = url.searchParams.get("extension_id") ?? "";
         const includeManifest = url.searchParams.get("include_manifest") === "1";
-        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; instance_key: string; status: string; installed_at: string; manifest_json: string; release_version: string | null } & PublisherReleaseFields>(this.ctx.storage.sql as never,
-          extensionId === "__all__" ? `SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version,
+        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; user_id: string | null; scope: string; instance_key: string; status: string; installed_at: string; manifest_json: string; release_version: string | null; pinned_artifact_sha256: string | null } & PublisherReleaseFields>(this.ctx.storage.sql as never,
+          extensionId === "__all__" ? `SELECT i.instance_id,i.extension_id,i.project_id,i.user_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version,r.artifact_sha256 AS pinned_artifact_sha256,
               r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
             FROM extension_installation_manifests i LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
             WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at`
-            : `SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version,
+            : `SELECT i.instance_id,i.extension_id,i.project_id,i.user_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version,r.artifact_sha256 AS pinned_artifact_sha256,
                 r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
               FROM extension_installation_manifests i LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
               WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at`,
@@ -15124,7 +15124,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const matches = (candidate: ExtensionManifest, instanceKey: string | null) => {
       const prefix = instanceKey && instanceKey !== "default" ? `${instanceKey}_` : "";
       return [...(candidate.bundle?.primitives ?? []).filter(part => part.kind === "canvas" || part.kind === "gadget").map(part => `${prefix}${part.id}`),
-        ...(candidate.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3).map(gadget => `${prefix}${gadget.id}`)].includes(appId);
+        ...(candidate.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3
+          || (gadget.scope === "USER_PRIVATE" || gadget.scope === "SPACE_USER") && gadget.gadgetTier === 1)
+          .map(gadget => `${prefix}${gadget.id}`)].includes(appId);
     };
     for (const row of rows) {
       let manifest: ExtensionManifest;
@@ -17123,15 +17125,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
     if (manifest.dependencies?.length) {
-      if (!body.tenantId || !body.spaceId || !body.scope || !["SPACE_SHARED", "PROJECT_BOUND", "PROJECT_SHARED"].includes(body.scope)
-        || body.scope !== "SPACE_SHARED" && !body.projectId || body.scope === "SPACE_SHARED" && body.projectId)
+      if (!body.tenantId || !body.spaceId || !body.scope || !["SPACE_SHARED", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED"].includes(body.scope)
+        || ["PROJECT_BOUND", "PROJECT_SHARED"].includes(body.scope) && !body.projectId
+        || body.scope === "SPACE_SHARED" && (body.projectId || body.userId)
+        || body.scope === "SPACE_USER" && (!body.userId || body.projectId))
         return Response.json({ error_code: "extension_dependency_scope_unsupported" }, { status: 409 });
       const dependencies = await this.extensionDependencyClosureActive(body.tenantId, body.spaceId, manifest, body.scope, body.projectId);
       if (!dependencies) return Response.json({ error_code: "extension_dependency_unresolved" }, { status: 409 });
     }
       if (body.deferActivation && (!manifest.bundle || !body.scope || !body.tenantId || !body.spaceId
-        || body.scope !== "SPACE_SHARED" && !body.projectId
-        || body.scope === "SPACE_SHARED" && (body.projectId || body.userId)))
+        || body.scope === "SPACE_SHARED" && (body.projectId || body.userId)
+        || body.scope === "PROJECT_BOUND" && (!body.projectId || body.userId)
+        || body.scope === "SPACE_USER" && (!body.userId || body.projectId)
+        || !["SPACE_SHARED", "PROJECT_BOUND", "SPACE_USER"].includes(body.scope)))
       return Response.json({ error_code: "deferred_extension_activation_scope_invalid" }, { status: 400 });
     // Enforce subscription resources at the owning actor too: generic extension installs,
     // upgrades and template activation must not bypass the runtime route's plan checks.
@@ -17314,20 +17320,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   /** Activate a staged, signed bundle only after its host runtime primitives initialize. */
   private async activateExtensionInstallation(request: Request): Promise<Response> {
     const body = await request.json<{ installationId?: string; extensionId?: string; version?: string; artifactSha256?: string;
-      tenantId?: string; spaceId?: string; scope?: string; projectId?: string }>().catch(() => ({} as { installationId?: string; extensionId?: string; version?: string; artifactSha256?: string;
-        tenantId?: string; spaceId?: string; scope?: string; projectId?: string }));
+      tenantId?: string; spaceId?: string; scope?: string; projectId?: string; userId?: string }>().catch(() => ({} as { installationId?: string; extensionId?: string; version?: string; artifactSha256?: string;
+        tenantId?: string; spaceId?: string; scope?: string; projectId?: string; userId?: string }));
     if (!body.installationId || !body.extensionId || !body.version || !/^[a-f0-9]{64}$/.test(body.artifactSha256 ?? "")
-      || !body.tenantId || !body.spaceId || !["PROJECT_BOUND", "SPACE_SHARED"].includes(body.scope ?? "")
+      || !body.tenantId || !body.spaceId || !["PROJECT_BOUND", "SPACE_SHARED", "SPACE_USER"].includes(body.scope ?? "")
       || (body.scope === "PROJECT_BOUND" && !body.projectId) || (body.scope === "SPACE_SHARED" && body.projectId)
+      || (body.scope === "SPACE_USER" && (!body.userId || body.projectId))
       || request.headers.get("x-naelao-tenant-id") !== body.tenantId
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
-    const row = queryOne<{ status: string; extension_id: string; tenant_id: string; space_id: string; scope: string; project_id: string | null; manifest_json: string; artifact_sha256: string } & PublisherReleaseFields>(this.ctx.storage.sql as never,
-      `SELECT i.status,i.extension_id,i.tenant_id,i.space_id,i.scope,i.project_id,i.manifest_json,r.artifact_sha256,r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
+    const row = queryOne<{ status: string; extension_id: string; tenant_id: string; space_id: string; scope: string; project_id: string | null; user_id: string | null; manifest_json: string; artifact_sha256: string } & PublisherReleaseFields>(this.ctx.storage.sql as never,
+      `SELECT i.status,i.extension_id,i.tenant_id,i.space_id,i.scope,i.project_id,i.user_id,i.manifest_json,r.artifact_sha256,r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
        FROM extension_installation_manifests i JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
        WHERE i.instance_id=?`, body.installationId);
     if (!row || row.extension_id !== body.extensionId || row.tenant_id !== body.tenantId || row.space_id !== body.spaceId
-      || row.project_id !== (body.projectId ?? null) || row.scope !== body.scope
+      || row.project_id !== (body.projectId ?? null) || row.user_id !== (body.userId ?? null) || row.scope !== body.scope
       || row.artifact_sha256 !== body.artifactSha256 || !publisherReleaseFieldsValid(row))
       return Response.json({ error_code: "staged_extension_release_mismatch" }, { status: 409 });
     let manifest: ExtensionManifest;
@@ -17343,23 +17350,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (row.status !== "staging") return Response.json({ error_code: "staged_extension_not_activatable" }, { status: 409 });
     const changed = this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='active'
       WHERE instance_id=? AND extension_id=? AND tenant_id=? AND space_id=? AND scope=?
-        AND project_id IS ? AND status='staging'`,
-      body.installationId, body.extensionId, body.tenantId, body.spaceId, body.scope, body.projectId ?? null);
+        AND project_id IS ? AND user_id IS ? AND status='staging'`,
+      body.installationId, body.extensionId, body.tenantId, body.spaceId, body.scope, body.projectId ?? null, body.userId ?? null);
     if (changed.rowsWritten !== 1) return Response.json({ error_code: "staged_extension_activation_race" }, { status: 409 });
     return Response.json({ activated: true, installationId: body.installationId, status: "active" });
   }
 
   private async abortStagedExtensionInstallation(request: Request): Promise<Response> {
-    const body = await request.json<{ installationId?: string; tenantId?: string; spaceId?: string; scope?: string; projectId?: string }>()
-      .catch(() => ({} as { installationId?: string; tenantId?: string; spaceId?: string; scope?: string; projectId?: string }));
-    if (!body.installationId || !body.tenantId || !body.spaceId || !["PROJECT_BOUND", "SPACE_SHARED"].includes(body.scope ?? "")
+    const body = await request.json<{ installationId?: string; tenantId?: string; spaceId?: string; scope?: string; projectId?: string; userId?: string }>()
+      .catch(() => ({} as { installationId?: string; tenantId?: string; spaceId?: string; scope?: string; projectId?: string; userId?: string }));
+    if (!body.installationId || !body.tenantId || !body.spaceId || !["PROJECT_BOUND", "SPACE_SHARED", "SPACE_USER"].includes(body.scope ?? "")
       || (body.scope === "PROJECT_BOUND" && !body.projectId) || (body.scope === "SPACE_SHARED" && body.projectId)
+      || (body.scope === "SPACE_USER" && (!body.userId || body.projectId))
       || request.headers.get("x-naelao-tenant-id") !== body.tenantId
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const changed = this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now')
-      WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope=? AND project_id IS ? AND status='staging'`,
-      body.installationId, body.tenantId, body.spaceId, body.scope, body.projectId ?? null);
+      WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope=? AND project_id IS ? AND user_id IS ? AND status='staging'`,
+      body.installationId, body.tenantId, body.spaceId, body.scope, body.projectId ?? null, body.userId ?? null);
     return Response.json({ aborted: changed.rowsWritten === 1, installationId: body.installationId });
   }
 

@@ -654,6 +654,11 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // User MicroApp archive recovery accepts only these explicit preview/apply actions; the
   // Spaces Worker binds both to the exact product-user claim and active signed installation.
   /^\/spaces\/([^/]+)\/product-users\/me\/micro-app-archives\/(?:preview|restore)$/,
+  // Product users can discover, explicitly activate, and run only their own signed user-scoped
+  // MicroApps. The Spaces worker rechecks Space membership, the owner-approved Space install,
+  // exact user installation, current release, and publisher key on every operation.
+  /^\/spaces\/([^/]+)\/product-users\/me\/micro-apps$/,
+  /^\/spaces\/([^/]+)\/product-users\/me\/micro-apps\/(?:[A-Za-z0-9._:-]|%[0-9A-Fa-f]{2}){1,768}\/[a-z][a-z0-9_-]{1,63}\/(?:activate|app|api\/(?:data|storage)|mcp)$/,
   /^\/spaces\/([^/]+)\/me\/export$/,
   /^\/spaces\/([^/]+)\/me\/data$/,
   /^\/spaces\/([^/]+)\/projects(\/[^/]+)?$/,

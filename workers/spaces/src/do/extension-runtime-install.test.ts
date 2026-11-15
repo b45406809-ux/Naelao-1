@@ -711,6 +711,54 @@ describe("runtime extension installation", () => {
     expect(await (await abort()).json()).toMatchObject({ aborted: false });
   });
 
+  it("stages and activates an exact-user SPACE_USER package installation", async () => {
+    const storage = createDOStorage(), secret = "user-scoped-extension-activation-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    const manifest = validateExtensionManifest({ id: "ext_personal_notes", type: "extension", declaredPermissions: [],
+      capabilityRequirements: ["extension.project_canvas"], gadgets: [], daemons: [], commands: [], bundle: {
+        schemaVersion: "1.0", kind: "extension_bundle", id: "ext_personal_notes", version: "1.0.0", primitives: [
+          { schemaVersion: "1.0", kind: "canvas", id: "notes_canvas", version: "1.0.0", permissions: [], capabilityRequirements: [],
+            lifecycle: {}, component: "./notes.html", layout: "CanvasMount", dynamicPage: false },
+          { schemaVersion: "1.0", kind: "gadget", id: "personal_notes", version: "1.0.0", scope: "SPACE_USER", permissions: [],
+            capabilityRequirements: [], lifecycle: {}, schemaSql: "CREATE TABLE notes(id TEXT PRIMARY KEY)" },
+        ],
+      },
+    }, { gatekeeperCapabilities: ["extension.project_canvas"] });
+    const artifactSha256 = "c".repeat(64), publisher = { publisherId: "pub_notes", publisherKeyId: "a".repeat(64),
+      publisherSignature: "publisher-signature", publisherPayloadSha256: "b".repeat(64) };
+    const install = (scope: "SPACE_SHARED" | "SPACE_USER", userId?: string) => space.fetch(new Request("http://space/extensions", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ manifest, installedBy: userId ?? "owner",
+        tenantId: "tenant", spaceId: "space", scope, ...(userId ? { userId } : {}), gatekeeperCapabilities: ["extension.project_canvas"],
+        artifactSha256, ...publisher, deferActivation: scope === "SPACE_USER" }),
+    }));
+    expect((await install("SPACE_SHARED")).status).toBe(201);
+    const staged = await install("SPACE_USER", "user-a");
+    expect(staged.status, await staged.clone().text()).toBe(201);
+    const { installationId } = await staged.json() as { installationId: string };
+    const token = await mintInternalToken(secret, "tenant");
+    const activate = (userId: string) => space.fetch(new Request("http://space/extension-installation/activate", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+      body: JSON.stringify({ installationId, extensionId: manifest.id, version: "1.0.0", artifactSha256,
+        tenantId: "tenant", spaceId: "space", scope: "SPACE_USER", userId }),
+    }));
+    const abortWrongUser = await space.fetch(new Request("http://space/extension-installation/abort", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+      body: JSON.stringify({ installationId, tenantId: "tenant", spaceId: "space", scope: "SPACE_USER", userId: "user-b" }) }));
+    expect(await abortWrongUser.json()).toMatchObject({ aborted: false });
+    expect((await activate("user-b")).status).toBe(409);
+    expect(storage.sql.exec("SELECT status,user_id FROM extension_instances WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ status: "staging", user_id: "user-a" }]);
+    expect((await activate("user-a")).status).toBe(200);
+    expect((await activate("user-a")).status).toBe(200);
+    expect(storage.sql.exec("SELECT status,user_id,scope FROM extension_instances WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ status: "active", user_id: "user-a", scope: "SPACE_USER" }]);
+    const ownerRuntime = await space.fetch(new Request("http://space/space-shared-extension-runtime?" + new URLSearchParams({
+      tenant_id: "tenant", space_id: "space", app_id: "personal_notes",
+    })));
+    expect(await ownerRuntime.json()).toMatchObject({ managed: true, active: true, releaseValid: true,
+      installationId: "installation:tenant:ext_personal_notes:space:space", releaseVersion: "1.0.0" });
+  });
+
   it("stages and activates a signed Space-shared package without accepting a project scope", async () => {
     const storage = createDOStorage(), secret = "shared-package-activation-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);

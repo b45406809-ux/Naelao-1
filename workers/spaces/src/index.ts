@@ -30,6 +30,7 @@ import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel } from "@naelao/bill
 import { registerProjectMcpRoutes } from "./routes/mcp.js";
 import { extensionRuntimeWork, registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
 import { registerExtensionGadgetRoutes } from "./routes/extension-gadget.js";
+import { registerProductUserMicroAppRoutes } from "./routes/product-user-micro-app.js";
 import { gadgetActorId } from "./do/MicroAppDO.js";
 import { isMicroAppArchiveSnapshot, MAX_MICRO_APP_ARCHIVE_SNAPSHOTS,
   MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES, type MicroAppArchiveOmissions, type MicroAppArchiveSnapshot } from "./do/microapp-archive.js";
@@ -327,6 +328,7 @@ app.delete("/internal/tenant/:tenantId/spaces/:spaceId/data-erasure", async (c) 
 
 registerGadgetMcpRoutes(app);
 registerExtensionGadgetRoutes(app);
+registerProductUserMicroAppRoutes(app);
 registerDynamicPageRoutes(app);
 registerRecipeRoutes(app);
 registerMarketplaceRoutes(app);
@@ -2177,6 +2179,8 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
   const canvases = primitives.filter((part): part is Extract<typeof part, { kind: "canvas" }> => part.kind === "canvas");
   const gadgets = primitives.filter((part): part is Extract<typeof part, { kind: "gadget" }> => part.kind === "gadget");
   const legacyGadgets = (manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3);
+  const userLegacyGadgets = (manifest.gadgets ?? []).filter(gadget =>
+    (gadget.scope === "USER_PRIVATE" || gadget.scope === "SPACE_USER") && gadget.gadgetTier === 1);
   const channels = primitives.filter((part): part is Extract<typeof part, { kind: "channel" }> => part.kind === "channel");
   const connections = bundle?.connections ?? [];
   if (gadgets.some(gadget => (gadget.businessActions?.length ?? 0) > 0) && canvases.length === 0)
@@ -2185,15 +2189,23 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
     || primitives.length > 32 || primitives.some(part => !["canvas", "gadget", "channel"].includes(part.kind))
     || (manifest.containers?.length ?? 0) > 0 || (manifest.daemons?.length ?? 0) > 0 || (manifest.commands?.length ?? 0) > 0
     || (manifest.widgetSubscriptions?.length ?? 0) > 0 || (bundle.workerRoles?.length ?? 0) > 0
-    || (manifest.gadgets ?? []).some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.gadgetTier !== 3)
+    || (manifest.gadgets ?? []).some(gadget => !(
+      gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3
+      || (gadget.scope === "USER_PRIVATE" || gadget.scope === "SPACE_USER") && gadget.gadgetTier === 1
+        && (gadget.businessActions?.length ?? 0) === 0))
     || manifest.capabilityRequirements.some(capability => !SPACE_SHARED_PACKAGE_CAPABILITIES.has(capability))
     || manifest.declaredPermissions.some(permission => !isSpaceSharedPackagePermissionAllowed(permission, manifest))
+    || userLegacyGadgets.some(gadget => !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(gadget.viewportComponent))
     || canvases.some(canvas => !/^\.\/[A-Za-z0-9._-]{1,128}\.html$/.test(canvas.component) || canvas.layout !== "CanvasMount"
       || canvas.dynamicPage || canvas.permissions.length > 0 || canvas.capabilityRequirements.length > 0)
-    || gadgets.some(gadget => gadget.scope !== "SPACE_SHARED"
-      || ((gadget.businessActions?.length ?? 0) === 0 && (gadget.permissions.length > 0 || gadget.capabilityRequirements.length > 0))
-      || ((gadget.businessActions?.length ?? 0) > 0 && (gadget.capabilityRequirements.length !== 1
-        || gadget.capabilityRequirements[0] !== "extension.gadget.business_action" || gadget.permissions.length !== gadget.businessActions!.length)))
+    || gadgets.some(gadget => !(
+      gadget.scope === "SPACE_SHARED"
+        && ((gadget.businessActions?.length ?? 0) === 0 && (gadget.permissions.length > 0 || gadget.capabilityRequirements.length > 0)
+          || (gadget.businessActions?.length ?? 0) > 0 && (gadget.capabilityRequirements.length !== 1
+            || gadget.capabilityRequirements[0] !== "extension.gadget.business_action" || gadget.permissions.length !== gadget.businessActions!.length))
+      || (gadget.scope === "USER_PRIVATE" || gadget.scope === "SPACE_USER")
+        && (gadget.permissions.length === 0 && gadget.capabilityRequirements.length === 0 && (gadget.businessActions?.length ?? 0) === 0)
+    ))
     || channels.some(channel => channel.context !== "channel_only"
       || !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(channel.handlerScript)
       || channel.provider !== "phone" && (!channel.connectionId || !connections.some(connection => connection.id === channel.connectionId
@@ -2207,8 +2219,10 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
 
   const paths = [...new Set([
     ...canvases.map(canvas => canvas.component), ...channels.map(channel => channel.handlerScript),
+    ...userLegacyGadgets.map(gadget => gadget.viewportComponent),
   ])].sort();
-  if (paths.length !== canvases.length + channels.length) return { ok: false, error: "extension_package_artifact_path_conflict" };
+  if (paths.length !== canvases.length + channels.length + userLegacyGadgets.length)
+    return { ok: false, error: "extension_package_artifact_path_conflict" };
   const artifacts: Array<[string, string]> = [];
   let totalBytes = 0;
   for (const path of paths) {
@@ -2267,9 +2281,10 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
     if (row.instance_id === prior?.instance_id) continue;
     const prefix = row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_` : "";
     for (const primitive of row.manifest?.bundle?.primitives ?? []) if (primitive.kind === "canvas" || primitive.kind === "gadget") appIds.add(`${prefix}${primitive.id}`);
-    for (const gadget of row.manifest?.gadgets ?? []) if (gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3) appIds.add(`${prefix}${gadget.id}`);
+    for (const gadget of row.manifest?.gadgets ?? []) appIds.add(`${prefix}${gadget.id}`);
   }
-  const appIdsForPackage = [...canvases, ...gadgets, ...legacyGadgets].map(primitive => `${instanceKey === "default" ? "" : `${instanceKey}_`}${primitive.id}`);
+  const appIdsForPackage = [...canvases, ...gadgets, ...legacyGadgets, ...userLegacyGadgets]
+    .map(primitive => `${instanceKey === "default" ? "" : `${instanceKey}_`}${primitive.id}`);
   if (new Set(appIdsForPackage).size !== appIdsForPackage.length || appIdsForPackage.some(id => appIds.has(id)))
     return { ok: false, error: "extension_shared_canvas_id_conflict" };
 
@@ -2309,7 +2324,7 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
         extensionInstallationId: installedResult.installationId, html, releaseProof }) }));
     if (!initialized.ok) return fail("extension_package_canvas_initialization_failed");
   }
-  for (const gadget of gadgets) {
+  for (const gadget of gadgets.filter(gadget => gadget.scope === "SPACE_SHARED")) {
     const html = artifacts.find(([path]) => path === canvases[0]!.component)?.[1];
     if (typeof html !== "string") return fail("extension_package_canvas_artifact_missing");
     const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(html)))].map(byte => byte.toString(16).padStart(2, "0")).join("");

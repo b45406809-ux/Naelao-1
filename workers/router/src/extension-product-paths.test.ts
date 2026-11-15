@@ -65,6 +65,28 @@ describe("product session routes for self-service data rights", () => {
   });
 });
 
+describe("product user MicroApp routing", () => {
+  it.each([
+    "/spaces/s/product-users/me/micro-apps",
+    "/spaces/s/product-users/me/micro-apps/install%3Atenant%3Aext_notes%3Aowner/personal_notes/activate",
+    "/spaces/s/product-users/me/micro-apps/install-a/personal_notes/app",
+    "/spaces/s/product-users/me/micro-apps/install-a/personal_notes/api/data",
+    "/spaces/s/product-users/me/micro-apps/install-a/personal_notes/api/storage",
+    "/spaces/s/product-users/me/micro-apps/install-a/personal_notes/mcp",
+  ])("routes product identity for %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
+  });
+
+  it.each([
+    "/spaces/s/product-users/me/micro-apps/install-a/Other/app",
+    "/spaces/s/product-users/me/micro-apps/install-a/personal_notes/api/settings",
+    "/spaces/s/product-users/me/micro-apps/install-a/personal_notes/admin",
+    "/spaces/s/product-users/me/micro-apps/install-a/personal_notes/api/data/other",
+  ])("does not route unlisted MicroApp paths for %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
+  });
+});
+
 describe("Product-user billing status routing", () => {
   it("allows only the exact self-service status endpoint through product-session identity", () => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/customer-billing-status"))).toBe(true);

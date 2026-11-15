@@ -85,7 +85,7 @@ function harness(activePublisher = true, artifactSource = html, microAppStatus =
     SCRIPTS_R2: { get: async (key: string) => key.endsWith("/dashboard.html") ? {
       size: new TextEncoder().encode(artifactSource).byteLength,
       arrayBuffer: async () => new TextEncoder().encode(artifactSource).buffer,
-    } : key.endsWith("/handler.ts") ? {
+    } : key.endsWith("/handler.ts") || key.endsWith("/notes.ts") ? {
       size: new TextEncoder().encode(handler).byteLength,
       arrayBuffer: async () => new TextEncoder().encode(handler).buffer,
     } : null },
@@ -568,6 +568,50 @@ describe("signed Space-shared extension packages", () => {
     expect(repeated.status).toBe(201);
     expect(await repeated.json()).toMatchObject({ installation_id: "install-voice" });
     expect(h.microAppRequests).toHaveLength(1);
+  });
+
+  it("admits owner-approved personal gadgets but leaves their user actors for explicit lazy activation", async () => {
+    const h = harness();
+    const base = h.release.manifest;
+    h.release.manifest = validateExtensionManifest({ ...base,
+      gadgets: [{ id: "legacy_notes", name: "Legacy Notes", viewportComponent: "./notes.ts", scope: "USER_PRIVATE", gadgetTier: 1,
+        defaultSchemaSql: "CREATE TABLE legacy_notes(id TEXT PRIMARY KEY)" }],
+      bundle: { ...base.bundle!, primitives: [
+      ...base.bundle!.primitives,
+      { schemaVersion: "1.0", kind: "gadget", id: "personal_notes", version: "1.2.0", scope: "SPACE_USER",
+        permissions: [], capabilityRequirements: [], lifecycle: {}, schemaSql: "CREATE TABLE notes(id TEXT PRIMARY KEY,body TEXT NOT NULL)" },
+    ] } }, { gatekeeperCapabilities: base.capabilityRequirements });
+    h.release.manifest_json = JSON.stringify(h.release.manifest);
+    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html], ["./handler.ts", handler], ["./notes.ts", handler]]));
+
+    const installed = await spacesWorker.fetch(await signedRequest(
+      "/spaces/space-a/shared-extensions/ext_customer_voice/install", "POST", { version: "1.2.0" }), h.env);
+    expect(installed.status, JSON.stringify(await installed.clone().json())).toBe(201);
+    expect(await installed.json()).toMatchObject({ installation_id: "install-voice", scope: "SPACE_SHARED" });
+    expect(h.spaceRequests.find(request => new URL(request.url).pathname === "/extensions"))
+      .toBeDefined();
+    expect(h.microAppRequests).toHaveLength(1);
+    expect(await h.microAppRequests[0]!.clone().json()).toMatchObject({ appId: "voice_dashboard", scope: "SPACE_SHARED" });
+  });
+
+  it.each([
+    { scope: "PROJECT_USER", capabilityRequirements: [], permissions: [] },
+    { scope: "USER_PRIVATE", capabilityRequirements: ["assistant.phone.read"], permissions: [] },
+  ])("rejects personal gadget declarations outside the bounded owner-approved contract", async declaration => {
+    const h = harness();
+    const base = h.release.manifest;
+    h.release.manifest = validateExtensionManifest({ ...base, bundle: { ...base.bundle!, primitives: [
+      ...base.bundle!.primitives,
+      { schemaVersion: "1.0", kind: "gadget", id: "personal_notes", version: "1.2.0", scope: declaration.scope,
+        permissions: declaration.permissions, capabilityRequirements: declaration.capabilityRequirements, lifecycle: {}, schemaSql: "" },
+    ] } }, { gatekeeperCapabilities: [...new Set([...base.capabilityRequirements, ...declaration.capabilityRequirements])] });
+    h.release.manifest_json = JSON.stringify(h.release.manifest);
+    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html], ["./handler.ts", handler]]));
+    const response = await spacesWorker.fetch(await signedRequest(
+      "/spaces/space-a/shared-extensions/ext_customer_voice/install", "POST", { version: "1.2.0" }), h.env);
+    expect(response.status).toBe(422);
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extensions")).toBe(false);
+    expect(h.microAppRequests).toHaveLength(0);
   });
 
   it("returns only owner-authorized installed exact signed releases whose publisher key is active", async () => {
