@@ -1,6 +1,32 @@
 # Platform completion and guided templates progress
 
-## Continuation checkpoint — 2026-11-15 (U05 runtime-contract trace; P04 user-private MicroApp archive foundation; pushed verification checkpoint 6f6ec9020a8808141a1919f7ffb226ea60e78e71)
+## Continuation checkpoint — 2026-11-15 (P04 authenticated product-user MicroApp recovery; pushed d7e87e35db6301cd9957ea5c55bf35831089ab4a)
+
+Code `d7e87e35db6301cd9957ea5c55bf35831089ab4a` is pushed and remote-verified on
+`Mcbt5s-Backup-2`. `/product-users/me/export` now returns bounded exact-user MicroApp snapshots
+from current active SPACE_USER/PROJECT_USER installations after host-signature and publisher checks.
+Exact product-session preview/restore routes verify current Space membership; SpaceDO binds uploads to
+the current user, installation, gadget declaration, pinned release and active publisher. Migration 146
+persists a short-lived snapshot-set preview hash; additive restore uses durable per-actor receipts for
+replay and partial recovery. Space-owner archive export/restore continues to exclude personal state.
+
+Local evidence: Spaces tests **26/26**, Router exact product-session path tests **59/59**, Spaces and
+Router typechecks, `git diff --check`. The pnpm wrapper tried to purge shared modules and aborted
+without a TTY; existing workspace binaries were used. No browser, deployment, provider, or isolated
+recovery acceptance ran. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+P04 remains PARTIAL: the signed package installer currently permits only SPACE_SHARED gadgets, and no
+user-session caller initializes or executes user-scoped actors. This is uncoded implementation, not a
+provider credential gate. Other P04 stores, retention/key/jurisdiction policy, cross-service snapshot
+consistency and live RPO/RTO remain open. The fetched microapps/UI SDK/voice plan copy is unchanged:
+sections 9 and 11 already contain its requirements; no branch merge occurred.
+
+Exact next action: implement the owner-approved signed user-gadget install/lifecycle and product-user
+execution caller, initializing only the verified user's actor from the exact active release/artifact
+and signed canvas proof. Add cross-user, revoked-release, uninstall, archive-preview/apply and replay
+checks, then continue remaining P04 and P01–P24/S2–S9/U01–U12.
+
+## Previous checkpoint — 2026-11-15 (U05 runtime-contract trace; P04 user-private MicroApp archive foundation; pushed verification checkpoint 6f6ec9020a8808141a1919f7ffb226ea60e78e71)
 
 Implementation `4a8dd06d2f8407e1272ab0e5c0d71f7b4ba50826` and owner-archive rejection regression `6f6ec9020a8808141a1919f7ffb226ea60e78e71` are pushed to `origin/Mcbt5s-Backup-2`; fetch and remote verification confirmed the latter as tip. MicroApp snapshots now accept user scopes only when the exact user identity, actor metadata and signed gadget-scope declaration agree. Space-owner archive restore rejects user scopes. Router now exposes the existing exact product-user `/export` endpoint; it still does not contain MicroApp snapshots.
 

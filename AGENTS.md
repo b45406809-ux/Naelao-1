@@ -12,7 +12,37 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (U05 runtime-contract trace; P04 user-private MicroApp archive foundation; remote checkpoint 6f6ec9020a8808141a1919f7ffb226ea60e78e71)
+## Latest checkpoint — 2026-11-15 (P04 product-user MicroApp export and restore; pushed d7e87e35db6301cd9957ea5c55bf35831089ab4a)
+
+Code `d7e87e35db6301cd9957ea5c55bf35831089ab4a` is pushed to
+`origin/Mcbt5s-Backup-2`; fetch and `ls-remote` verified the tip. Product-user export now resolves
+the caller's own active SPACE_USER/PROJECT_USER installations, verifies the pinned host-signed
+release and active publisher key, and returns bounded per-user MicroApp snapshots with explicit
+omission counts. Exact product-session preview/restore routes require Space membership, bind the
+snapshot set to an exact user/Space/install and current signed release, persist a 15-minute hashed
+preview, merge additively, and use per-actor restore receipts for replay/partial-retry safety.
+Space-owner archives still exclude user data.
+
+Local verification: Spaces export/archive tests **26/26**, Router product-session route tests
+**59/59**, Spaces and Router `tsc --noEmit`, and `git diff --check`. These are local SQLite/Worker
+mocks; no browser, deployed Worker, provider, or isolated recovery acceptance ran. The normal pnpm
+wrapper tried to purge shared modules and aborted without a TTY; checks used existing workspace
+binaries. Preserve untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
+
+P04 remains PARTIAL: `installSignedSpaceExtension` currently admits only SPACE_SHARED gadgets and
+there is no product-user route to initialize or execute signed USER_PRIVATE/SPACE_USER/PROJECT_USER
+gadgets. Thus the newly reachable recovery path is correctly empty/uninitialized for installations
+the current system cannot create. Other service stores, legal/key/jurisdiction policy, cross-service
+point-in-time consistency and measured RPO/RTO remain incomplete. U05 remains an uncoded Container
+versus Computer identity/observation adapter gap, not a credential blocker.
+
+Exact next action: implement the supported signed user-scoped gadget lifecycle: owner-approved
+installation declarations, lazy per-user actor initialization from exact active release/artifact and
+canvas proof, and product-session execution/data callers bound to current membership and installation.
+Test unauthorized/cross-user access, release revocation, first initialization, removal, archive
+export, restore and replay. Then continue remaining P04 stores and S3–S9/U01–U12/P01–P24.
+
+## Previous checkpoint — 2026-11-15 (U05 runtime-contract trace; P04 user-private MicroApp archive foundation; remote checkpoint 6f6ec9020a8808141a1919f7ffb226ea60e78e71)
 
 Implementation `4a8dd06d2f8407e1272ab0e5c0d71f7b4ba50826` and its owner-archive rejection regression `6f6ec9020a8808141a1919f7ffb226ea60e78e71` are pushed to `origin/Mcbt5s-Backup-2`; the remote tip was fetched and verified at the latter SHA. User-scope MicroApp snapshots require a persisted exact `userId`, matching actor metadata, a signed release and a declared signed gadget scope. Space-owner archive restore rejects user scopes. Router now permits the exact product-user `/export` suffix and rejects neighboring paths. The source plan `origin/plan/microapps-ui-sdk-voice` (`df3386257262a88888d647daa4d10f3af2ff9596`) is already copied into sections 9 and 11 of the active platform plan; only stale provenance/P04 wording differs. No merge occurred.
 
