@@ -1,6 +1,6 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pending push)
+## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pushed)
 
 Implemented signed `inventory.listLowStock.v1` through the existing MicroApp runtime. Owner/admin,
 Space/Project, active installation, exact release pin, input/output schema, ordered 100-row maximum,
@@ -28,8 +28,9 @@ rollout flags disabled.
 Fetched `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596`. Both
 active plan files were compared with it: the active platform plan already has its microapp/UI SDK/voice
 requirements; the branch differs only in stale metadata and P04 wording. No requirements were missing
-and no branch merge occurred. The active P04 source reconciliation remains authoritative. Backup tip
-was `fb16c754` at pre-checkpoint fetch.
+and no branch merge occurred. The active P04 source reconciliation remains authoritative. Code
+`a50e1c6d14f41987ec310e0b8c1aea748c0e7bd6` is pushed to `origin/Mcbt5s-Backup-2` as a fast-forward;
+`ls-remote` confirmed the remote tip matches.
 
 Exact next action: implement owner-controlled, per-Project Knowledge selection for Space-shared channel
 extensions over existing owner-published collections. Persist selection by Space, Project, installation

@@ -12,7 +12,7 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pending push)
+## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pushed)
 
 Added the signed, bounded, read-only `inventory.listLowStock.v1` action to the MicroApp contract and
 host runtime. It reuses the same owner/admin actor, Space/Project scope, active installation and exact
@@ -41,7 +41,7 @@ Fetched `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3
 compared both active plan files. Its microapp, UI SDK and voice requirements are already present in
 the active platform plan; the only plan-file differences are stale metadata and an older P04 summary.
 No plan content needed copying and no branch merge occurred. The active plan's newer P04 evidence is
-retained. The backup branch was fetched at `fb16c754` before this checkpoint.
+retained. Code `a50e1c6d14f41987ec310e0b8c1aea748c0e7bd6` was pushed as a fast-forward to `origin/Mcbt5s-Backup-2`; `ls-remote` confirmed the branch tip is this SHA.
 
 Exact next action: implement owner-controlled, per-Project Knowledge selection for Space-shared channel
 extensions using the existing owner-published collections. Persist by Space, Project, installation and

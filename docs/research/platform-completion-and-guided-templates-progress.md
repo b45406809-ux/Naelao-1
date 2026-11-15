@@ -1,6 +1,6 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pending push)
+## Latest checkpoint — 2026-11-15 (§11.2 bounded read action and §11.5 host-connected UI SDK POC; pushed)
 
 Added the signed `inventory.listLowStock.v1` read-only action through MicroApp host execution. It shares
 owner/admin, tenant/Space/Project, installation and exact-release checks with the existing business
@@ -24,8 +24,8 @@ preserve `infra/scripts/__pycache__/`.
 Fetched and compared `origin/plan/microapps-ui-sdk-voice` (`df3386257262a88888d647daa4d10f3af2ff9596`).
 The microapp, UI SDK and voice requirements are already copied into the active platform plan. Its only
 remaining differences are stale metadata and older P04 wording; no content was missing and no merge
-was performed. The active P04 evidence is retained. Pre-checkpoint `origin/Mcbt5s-Backup-2` was
-`fb16c754`.
+was performed. The active P04 evidence is retained. Code `a50e1c6d14f41987ec310e0b8c1aea748c0e7bd6`
+is pushed to `origin/Mcbt5s-Backup-2` as a fast-forward; `ls-remote` confirmed the remote tip matches.
 
 Exact next action: implement owner-controlled, per-Project Knowledge selection for Space-shared channel
 extensions on existing owner-published collections. Persist the grant by Space, Project, installation
