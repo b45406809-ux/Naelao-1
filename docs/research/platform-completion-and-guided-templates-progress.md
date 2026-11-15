@@ -1,6 +1,36 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host; P06 durable consent ticket; pushed)
+## Latest checkpoint — 2026-11-15 (P06 consent caller and media boundary; P20 reconciled; pushed)
+
+Joint code `1f429ee9d970449e3e5d875e3adab0b811e1ac7e` is pushed to
+`origin/Mcbt5s-Backup-2`; fetch confirmed `fb145a18` as an ancestor. Telnyx extension lines now expose
+an owner-controlled, default-false voice preference. A separate default-off runtime gate preserves
+existing DTMF. When both settings are enabled, call admission creates the exact handler/settings-pinned
+consent session, asks the caller to press 1 or 2, records grant/deny, issues the one-use media ticket
+only after consent, and surfaces consent status to owners. Hangup and expiry revoke pending grants. A
+dedicated extension media boundary verifies the one-use ticket, provider `start.call_control_id`, media
+format and current pin, then refuses media with `voice_stream_runtime_unavailable`. It does not use
+OwnerVoice and no Telnyx `streaming_start` is called. Development/staging/production remain false.
+
+P20 source reconciliation: this refund receipt and authenticated buyer/creator status code were already
+pushed in `5a462626` with migration 0251; no duplicate code was added. The signed-body hash binds each
+review-only receipt to provider invoice/subscription evidence. Existing policy still does not change
+access, paid cycles, earnings or payouts. P20 remains PARTIAL for access/creator accounting/disputes and
+provider/deployed acceptance.
+
+Verification: Agents call/session/media/phone suites **52/52**; Agents/Shell typechecks; P20 receipt,
+normalization, buyer/creator and operator suites **25/25**; package-configured Router path **4/4**;
+`git diff --check`. An initial Router run without its package config failed module setup; the configured
+run passed. No browser, provider, deployment or live acceptance ran. Public STT/TTS, speech budget,
+interruption, deadline, media start and complete cleanup are uncoded runtime work, not credential
+blockers. Keep rollouts disabled and preserve all other S/U/P gates in their requirement ledgers.
+
+Exact next action: implement host-owned STT/TTS admission, bounded per-call speech budget, interruption,
+deadline and cleanup for the separate extension media path. Keep `streaming_start` and the global flag
+off until these controls have local verification and external acceptance; then continue the next
+independent requirement.
+
+## Previous checkpoint — 2026-11-15 (S5/MS08d Modal host; P06 durable consent ticket; pushed)
 
 Joint mission code `aa0f6b7b`, call cap `3b1059a4`, stream contract `ed426ee1`, Shell/SpaceDO
 transcript simulator `f2d1f28d` and migration-backed session/ticket primitive `e4ebd7bd` are pushed to
@@ -1671,7 +1701,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P03 | PARTIAL | Versioned platform/Product-user outboxes and deterministic Workflow dispatch remain. Migration 0252 scopes Product-user dunning provider outcomes to the exact product/end user/subscription; Notifications rechecks active tenancy, current `past_due` status, provider event version and verified recipient before sending. The authenticated Spaces/Router/Shell caller exposes only the current user’s subscription and recent non-PII provider outcomes; erasure deletes the scoped receipts. Current local verification: Billing **12/12**, Notifications **14/14**, Router **53/53**, Spaces **7/7**, plus affected typechecks. Grace/restriction/escalation and retry-cadence policy, inbox delivery and live acceptance remain. |
 | P04 | PARTIAL | Bounded encrypted Space archives capture supported SpaceDO/workspace state and versioned Agent-owned Project main-runtime settings/inert recipes. Migration 0255 adds a separate owner-selected, encrypted `.naelao/private/` fallback with bounded expiry and erasure cleanup; code `ef77e193` is pushed. | Other service/provider/inbound stores, configured key and regional R2 resources, approved retention/legal-hold policy, RPO/RTO and isolated/deployed recovery remain open. Provider snapshots stay excluded and physical purge is unsupported. |
 | P05 | PARTIAL | Signed SpaceBlueprint knowledge/action requirements, trusted candidate review, setup drafts, durable activation/recovery, and owner-selected Knowledge intent carried to each created Project are local. Migration 137 stores default-empty per-Project grants; activation never writes a grant, and the owner saves through the publication-checked grant API. `75feeabb` prevents grant resurrection during archive restore. The current owner/admin status handoff links validated generated Projects and Space extensions, and discloses that no template uninstall/resource/billing cleanup occurs there (`53ff1c61`). | Actual broader update/uninstall lifecycle, cleanup/retained license/provider-charge semantics, Space-wide provider authority/payer/revocation contract, complete verified rates and deployed/live acceptance remain. |
-| P06 | PARTIAL | Owner voice dashboards, bounded keypad handlers, signed handler discovery/readiness, per-installation history, synthetic call/DTMF and Twilio speech tests, draft/publish revisions and rollback drafts are local. Twilio and Telnyx calls pin admitted signed installation, handler digest and published settings revision (`7e9d3c2b`); Telnyx remains DTMF-only. | Naelao publisher/key custody, signed distribution/catalog policy, conversational streaming, managed provisioning, full cost/quality evidence and live carrier acceptance remain. Delayed Twilio connectivity prices are not invoices. |
+| P06 | PARTIAL | Owner voice dashboards, bounded keypad handlers, signed handler discovery/readiness, per-installation history, synthetic call/DTMF and Twilio speech tests, draft/publish revisions and rollback drafts are local. Twilio and Telnyx calls pin admitted signed installation, handler digest and published settings revision (`7e9d3c2b`). Code `1f429ee9` adds owner Telnyx voice preference, a default-off caller consent flow, durable grant/deny, one-use ticket and a separate WebSocket start-pin validator. DTMF remains the only active extension runtime; the new media boundary fails closed without processing audio. | Naelao publisher/key custody, signed distribution/catalog policy, host STT/TTS and speech budget/interruption/cleanup runtime, managed provisioning, full cost/quality evidence and live carrier acceptance remain. Delayed Twilio connectivity prices are not invoices. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |

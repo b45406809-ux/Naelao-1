@@ -16,7 +16,40 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal boundary; P06 durable consent ticket; pushed)
+## Latest checkpoint — 2026-11-15 (P06 consent caller; P20 source reconciliation; pushed)
+
+Code commit `1f429ee9d970449e3e5d875e3adab0b811e1ac7e` is pushed to
+`origin/Mcbt5s-Backup-2`. Immediately before push, fetch confirmed remote `fb145a18` was an ancestor;
+no remote history was overwritten. Existing owner/admin settings now include a default-false Telnyx
+extension voice preference and explicit UI confirmation. Only when that preference and
+`TELNYX_EXTENSION_STREAMING_ENABLED` are both true does an admitted, exactly pinned BYO call create a
+consent-pending session and ask the caller to press 1 or 2. Grant/deny, hangup and expiry are persisted;
+accepted calls continue through the existing keypad handler. Recent owner status shows consent state.
+The new extension-only WebSocket boundary claims a consent ticket, checks the exact Telnyx
+`start.call_control_id`, PCMU format and current installation/settings pin, then closes as runtime
+unavailable. No `streaming_start` is issued and no media/audio is processed. The streaming flag is
+false in development, staging and production; all rollouts remain disabled.
+
+P20 was already implemented in pushed code `5a462626` and migration `0251`; this checkpoint made no
+duplicate commercial changes. It records `subscription_payment_refunded` by signed-body hash, keeps
+exact invoice/subscription matching and review-only buyer/creator/operator status. Access, earning and
+payout policy remains unresolved, so P20 is still PARTIAL overall.
+
+Local evidence: Agents call/session/media/phone suites **52/52**; Agents and Shell typechecks;
+P20 normalization/receipt/status/operator suites **25/25**; Router refund-status route **4/4**;
+`git diff --check`. A direct Router Vitest invocation without its package config failed module setup;
+the correctly configured package run passed. No browser, provider, deployment or live acceptance ran.
+The extension media handler intentionally refuses processing while its runtime is unavailable. STT/TTS,
+host audio admission and speech budget, interruption, timeouts, stream startup and full cleanup remain
+uncoded. These are code gaps, not credential blockers. Preserve `infra/scripts/__pycache__/`, and retain
+all S2–S9/U01–U12/P01–P24 gates from both ledgers.
+
+Exact next action: implement and integrate host-owned STT/TTS admission, bounded speech budget and
+interruption/deadline/cleanup handling for the separate extension media route. Do not call Telnyx
+`streaming_start` or enable the flag until those controls have meaningful verification and acceptance.
+Then continue the next independent S/U/P code gap; do not stop after this slice's tests.
+
+## Previous checkpoint — 2026-11-15 (S5/MS08d Modal boundary; P06 durable consent ticket; pushed)
 
 Pushed code checkpoints: Modal request boundary `aa0f6b7b`, public-call cap `3b1059a4`, SDK stream
 contract `ed426ee1`, transcript simulator `f2d1f28d`, and durable session/ticket ledger `e4ebd7bd`.

@@ -1,6 +1,38 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host; P06 durable consent ticket; pushed)
+## Latest checkpoint — 2026-11-15 (P06 consent caller and extension media boundary; pushed)
+
+Code `1f429ee9d970449e3e5d875e3adab0b811e1ac7e` is pushed to `origin/Mcbt5s-Backup-2`; fetch before
+push found remote `fb145a18` as an ancestor. Existing extension-line policy now has a default-false
+owner-controlled Telnyx voice preference with explicit UI confirmation. Only when it and the separate
+`TELNYX_EXTENSION_STREAMING_ENABLED` gate are true does the admitted BYO call create a consent-pending
+session and ask the caller to press 1 or 2. Grant/deny and hangup/expiry transitions are durable; the
+owner sees consent state in recent call status. Consent grant issues a one-use, hashed ticket. The
+separate extension WebSocket validates that ticket, Telnyx `start.call_control_id`, PCMU mono/8 kHz and
+the current exact installation/handler/settings pin, then closes as runtime unavailable. The existing
+OwnerVoice bridge is not used. No `streaming_start` or audio processing is reachable; DTMF remains the
+fallback. The global flag is false in development, staging and production.
+
+Local evidence: Agents Telnyx call/session/media/phone suites **52/52**; Agents and Shell typechecks;
+`git diff --check`. P20 was reconciled against current source rather than reimplemented: pushed code
+`5a462626` and migration 0251 already provide signed-body-idempotent template-subscription refund
+evidence, buyer/creator status and audited operator listing. P20's access/creator-accounting/dispute
+policy remains unresolved, so it is not complete. Its normalization/receipt/status/operator suites pass
+**25/25** and the package-configured Router status route passes **4/4**. No browser, provider,
+deployment or live acceptance ran.
+
+P06 remains PARTIAL. The media boundary deliberately refuses runtime work because host STT/TTS,
+per-call budget admission, interruption, deadlines, stream startup and complete cleanup remain uncoded.
+These are implementation gaps, not credential blockers. Modal Beta/private-gRPC, supported usage
+receipts/pricing and Docker CI/build acceptance remain as recorded below. Preserve
+`infra/scripts/__pycache__/` and all U01–U12/S2–S9/P01–P24 evidence and gates.
+
+Exact next action: implement the host-owned STT/TTS adapter, bounded speech admission/budget, barge-in,
+deadline and cleanup contracts behind the separate extension media boundary, with failure/retry tests.
+Keep Telnyx `streaming_start` and the global flag off until those controls are verified and accepted;
+then continue the next independent S/U/P code gap.
+
+## Previous checkpoint — 2026-11-15 (S5/MS08d Modal host; P06 durable consent ticket; pushed)
 
 Pushed code: Modal boundary `aa0f6b7b`; public Telnyx call cap `3b1059a4`; stream SDK `ed426ee1`;
 Shell/SpaceDO synthetic transcript simulation `f2d1f28d`; durable extension session and one-time ticket
