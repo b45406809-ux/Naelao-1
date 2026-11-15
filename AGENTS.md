@@ -16,33 +16,33 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (§11.2 business actions and §11.4 storage status; pushed)
+## Latest checkpoint — 2026-11-15 (§11.2 actions and §11.4 storage status; pushed)
 
 Pushed 10a3c9a04b7ddb8398637085380b05058f41c6fc adds signed inventory.adjustStock.v1 beside receiveStock.
-Both use the same owner/admin host path for human HTTP and assistant/MCP, with schema validation, current
-release/install pin, CAS, idempotent receipts, audit, and generic-CRUD protection. Adjustment sets the exact
-nonnegative count and records the quantity delta. Existing event rows are migrated; archive restore converts
-rows only for the exact prior event-table schema. Pushed 49efa6db41265a700e48ddf335953ff827452795 adds
-measured SQLite usage, tier capacity, and non-billing disclosure to the active Space Extension view.
+Both share the owner/admin host path for human HTTP and assistant/MCP, with schema validation, current
+release/install pin, compare-and-set, idempotent receipts, audit and generic-CRUD protection. Adjustment
+sets the exact nonnegative count and emits quantity delta. Event migration backfills old receives; archive
+restore accepts only the exact prior event-table hash. Pushed 49efa6db41265a700e48ddf335953ff827452795 adds measured SQLite usage, cap and
+non-billing disclosure for Space-shared tier 3. Pushed eb53c39ca185413e67f220a2e257d2e003ad53b7 extends that view to project-bound Gadgets
+through an owner/admin-only read route that requires the exact active signed installation and Project.
 
-Local evidence: SDK 5/5, Spaces action/MCP 25/25, Shell action/storage 6/6; SDK/Spaces/Shell typechecks and
-diff check pass. These are local tests and DO/SQLite mocks; no browser, deployed Worker/D1/DO/R2, provider
-action, or live acceptance ran. Both commits are pushed to origin/Mcbt5s-Backup-2. Preserve
-infra/scripts/__pycache__/; rollouts stay disabled.
+Local evidence: SDK tests 5/5, Spaces action/MCP 25/25, Spaces route/runtime 50/50, Shell action/storage 6/6
+plus project-storage 4/4; SDK/Spaces/Shell typechecks and diff check pass. These are local mocks/SQLite, not
+browser, deployed Worker/D1/DO/R2 or provider/live acceptance. All three code commits are pushed to
+origin/Mcbt5s-Backup-2. Preserve infra/scripts/__pycache__/; rollouts stay disabled.
 
 Fetched origin/plan/microapps-ui-sdk-voice at df3386257262a88888d647daa4d10f3af2ff9596 is compared with the
 active platform plan. Fish Live 3 and sections 9–11 are already copied; no additional plan text exists and
-no merge occurred. Its P04 note is older than current Knowledge archive work. P05 Space-shared connections
-remain project-scoped (Space-level installation currently supports phone only); the signed contract lacks
-beneficiary, payer, shared authority, and revocation/drain rules. This is a product/runtime contract gap,
-not credentials. P04 exact-user MicroApp archive lacks a reachable authenticated user identity caller; keep
-private state out of Space-owner archives.
+no merge occurred. P05 Space-shared connections remain project-scoped (Space-level installation currently
+supports phone only); the signed contract lacks beneficiary, payer, shared authority and revocation/drain
+rules. P04 exact-user archive lacks a reachable authenticated user identity caller. Tier 1 Gadgets are
+restricted to private/user scopes and are not disclosed by a Space or Project owner route.
 
-Exact next action: extend §11.4 storage reporting from Space-shared tier 3 to project-bound Gadget actors.
-Add an authenticated read-only Project /api/storage Shell caller, derive Gadget actor IDs from the signed
-installed bundle, and show measured usage, tier cap, and Tier 1 idle-erasure disclosure in Project extension
-management. Verify cross-project and foreign-app rejection, then continue remaining S2–S9/U01–U12 and
-P01–P24 gaps.
+Exact next action: evaluate platform-plan §11.5's optional Vercel UI SDK against the current exact package,
+license, React peer dependencies and isolation/accessibility requirements. Shell uses React 18; do not
+upgrade it to satisfy a peer requirement. Build the plan's isolated synthetic-data POC only with a
+supported, pinned integration path; otherwise record the precise compatibility reason and continue the next
+independent S2–S9/U01–U12/P01–P24 code gap.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 

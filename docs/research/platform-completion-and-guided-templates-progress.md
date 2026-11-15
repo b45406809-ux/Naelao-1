@@ -1,30 +1,31 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (§11.2 business actions and §11.4 storage status; pushed)
+## Latest checkpoint — 2026-11-15 (§11.2 actions and §11.4 storage status; pushed)
 
-Pushed 10a3c9a04b7ddb8398637085380b05058f41c6fc adds signed inventory.adjustStock.v1 beside receiveStock;
-both use the same host-authorized human HTTP and assistant/MCP path. Roles, schemas, release/install pins,
-CAS, idempotency, audit and generic-CRUD protection remain server-side. Adjustment sets an exact nonnegative
-count. Event records include operation/delta, existing rows are migrated, and old archive rows convert only
-for the exact known schema hash. Pushed 49efa6db41265a700e48ddf335953ff827452795 adds a live SQLite
-usage/tier-cap panel to the active Space-shared Gadget view with an explicit non-billing boundary.
+Pushed 10a3c9a04b7ddb8398637085380b05058f41c6fc adds signed inventory.adjustStock.v1 beside receiveStock,
+both through the same owner/admin human HTTP and assistant/MCP path. Schemas, active release/install pin,
+CAS, idempotency, audit and generic-CRUD protection are host-enforced. Event records preserve operation and
+delta, and exact-old-hash archive compatibility maps legacy receive rows. Pushed 49efa6db41265a700e48ddf335953ff827452795 adds Space-shared
+tier-3 SQLite usage/cap reporting. Pushed eb53c39ca185413e67f220a2e257d2e003ad53b7 extends storage status to project-bound Gadgets by
+deriving exact IDs from the active signed bundle and calling the Project route. The route is owner/admin-
+only and rejects unmanaged, inactive, foreign-app and foreign-Project actors.
 
-Verification: SDK 5/5, Spaces action/MCP 25/25, Shell action/storage UI 6/6, SDK/Spaces/Shell typechecks and
-diff check. These are local mocks/SQLite checks; no browser, deployed Worker/D1/DO/R2, provider action, or
-live acceptance ran. Both code commits are pushed; no tracked uncommitted work. P05 Space-shared provider
-authority remains underspecified (beneficiary, payer, shared authority, revocation/drain), not credential-
-blocked.
+Verification: SDK 5/5; Spaces action/MCP 25/25 and route/runtime 50/50; Shell action/storage 6/6 and project
+storage 4/4; affected typechecks and diff check. These are local mocks/SQLite checks. No browser, deployed
+Worker/D1/DO/R2, provider action or live acceptance ran. All three code commits are pushed; no tracked
+uncommitted work. User-private tier-1 Gadgets remain excluded because no exact-user authenticated caller
+exists.
 
-Fetched origin/plan/microapps-ui-sdk-voice at df3386257262a88888d647daa4d10f3af2ff9596 has no additional
-plan text beyond Fish Live 3 and sections 9–11 already copied into the active platform plan. No merge
-occurred. Its P04 note is superseded by the pushed Knowledge archive. User-private app archive lacks a
-reachable exact-user authenticated caller and stays out of owner archives.
+The fetched origin/plan/microapps-ui-sdk-voice at df3386257262a88888d647daa4d10f3af2ff9596 has no additional
+plan text beyond Fish Live 3 and sections 9–11 already copied; no merge occurred. P05's Space-shared
+provider beneficiary, payer, shared authority and revocation/drain contract remains unresolved and is not
+credential-blocked. The active P04 Knowledge archive remains newer than that branch's note.
 
-All rollouts remain disabled; preserve infra/scripts/__pycache__/. Exact next action: extend §11.4
-disclosure to Project-bound Gadget actors through an authenticated read-only Project /api/storage Shell
-caller. Resolve Gadget IDs from signed installed manifests, then show usage, tier/cap, and Tier 1 idle
-erasure in Project extension management. Add cross-project/foreign-app rejection checks before resuming
-remaining P01–P24 and S2–S9/U01–U12 gaps.
+All rollouts remain disabled; preserve infra/scripts/__pycache__/. Exact next action: evaluate §11.5's
+optional Vercel UI SDK against the exact package/license, React peer dependency, security and accessibility
+requirements. Keep Shell on React 18; implement its isolated synthetic-data POC only through a supported
+pinned path. If none is compatible, record why and continue an independent uncoded P01–P24 or S2–S9/U01–U12
+item.
 
 ## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 
