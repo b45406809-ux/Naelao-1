@@ -128,6 +128,8 @@ function testEnv() {
   let productUserEraseResponse: Response | null = null;
   const spaceDoCalls: Array<{ path: string; userId: string | null }> = [];
   const microAppArchiveSpaceIds: string[] = [];
+  const chatHistoryRequests: Array<{ spaceId: string; userId: string | null; tenantId: string | null; internalToken: string | null }> = [];
+  const chatHistoryResponses = new Map<string, Response>();
   const spaceDataEraseUsers: string[] = [];
   const microAppErasureResponses: Response[] = [];
   const PRODUCT_USER_DO = {
@@ -150,6 +152,13 @@ function testEnv() {
       const query = new URL(request.url).searchParams;
       const body = await request.clone().json().catch(() => ({})) as { spaceId?: unknown };
       spaceDoCalls.push({ path, userId: request.headers.get("x-naelao-user-id"), ...(typeof body.spaceId === "string" ? { spaceId: body.spaceId } : {}) });
+      if (path === "/product-user-chat-history-export") {
+        const spaceId = query.get("space_id") ?? "";
+        chatHistoryRequests.push({ spaceId, userId: request.headers.get("x-naelao-user-id"), tenantId: request.headers.get("x-naelao-tenant-id"),
+          internalToken: request.headers.get("x-naelao-internal-token") });
+        const configured = chatHistoryResponses.get(spaceId);
+        return configured ? configured.clone() : Response.json({ space_id: spaceId, sessions: [], messages: [] });
+      }
       if (path === "/product-user-micro-app-archives") microAppArchiveSpaceIds.push(query.get("space_id") ?? "");
       if (path === "/product-user-micro-app-erasure" && request.method === "POST")
         return microAppErasureResponses.shift() ?? Response.json({ erased: true, status: "complete" });
@@ -165,7 +174,9 @@ function testEnv() {
   return { PLATFORM_DB, PRODUCT_USER_DO, SPACE_DO, BILLING_WORKER, productProfiles, productUserCalls, billingRequests, billingStatus,
     setBillingStatusResponse(response: Response) { billingStatusResponse = response; }, spaceDoCalls, microAppErasureResponses,
     setProductUserEraseResponse(response: Response) { productUserEraseResponse = response; },
-    microAppArchiveSpaceIds, spaceDataEraseUsers, clearedAuthData, PLATFORM_SECRET: "test-secret" };
+    microAppArchiveSpaceIds, chatHistoryRequests,
+    setChatHistoryResponse(spaceId: string, response: Response) { chatHistoryResponses.set(spaceId, response); },
+    spaceDataEraseUsers, clearedAuthData, PLATFORM_SECRET: "test-secret" };
 }
 
 const env = testEnv();
@@ -199,27 +210,39 @@ describe("language preference profile routes", () => {
   });
 
   it("exports the authenticated Space user's profile and active DO data from the Space root", async () => {
-    const child = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a");
+    const exportEnv = testEnv();
+    const transcript = { space_id: "business-a", sessions: ["session-user-a"], messages: [{ id: "message-user-a",
+      session_id: "session-user-a", role: "user", content: "my transcript", tool_call_id: null, tool_name: null,
+      token_count: 3, created_at: "2026-11-14T00:00:00.000Z", author_type: "user", author_id: "user-a", metadata: "{}" }] };
+    exportEnv.setChatHistoryResponse("business-a", Response.json(transcript));
+    const child = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined, "tenant-a", exportEnv);
     expect(child.status).toBe(200);
     const data = await child.json() as { export_version: string; profile: { end_user_id: string; email: string; phone_e164: string };
       product_user_data: { conversations: unknown[]; preferences: Record<string, unknown>; notifications: unknown[] };
       billing_status: typeof env.billingStatus;
+      chat_history: Array<typeof transcript>;
       micro_app_archives: unknown[]; micro_app_archive_omissions: { privateScopeInstallations: number; uninitializedActors: number; unsupportedInstallations: number } };
-    expect(data.export_version).toBe("2");
+    expect(data.export_version).toBe("3");
     expect(child.headers.get("cache-control")).toBe("private, no-store");
     expect(data.profile).toMatchObject({ end_user_id: "user-a", email: "a@example.invalid", phone_e164: "+14155550100" });
     expect(data.product_user_data).toEqual({ conversations: [], preferences: {}, notifications: [] });
     expect(data.billing_status).toEqual(env.billingStatus);
+    expect(data.chat_history).toEqual([transcript,
+      { space_id: "business-b", sessions: [], messages: [] },
+      { space_id: "department-a", sessions: [], messages: [] }]);
     expect(data.micro_app_archives).toEqual([]);
     expect(data.micro_app_archive_omissions).toEqual({ privateScopeInstallations: 0, uninitializedActors: 0, unsupportedInstallations: 0 });
-    expect(env.productUserCalls).toContain("/export");
-    expect(env.billingRequests).toHaveLength(1);
-    expect(new URL(env.billingRequests[0]!.url).pathname).toBe("/internal/product-user-billing-status");
-    expect(env.billingRequests[0]!.headers.get("x-naelao-tenant-id")).toBe("tenant-a");
-    expect(env.billingRequests[0]!.headers.get("x-naelao-internal-token")).toBeTruthy();
-    expect(await env.billingRequests[0]!.json()).toEqual({ product_id: "product-a", end_user_id: "user-a" });
-    expect(env.spaceDoCalls).toContainEqual({ path: "/product-user-micro-app-archives", userId: "user-a" });
-    expect(env.microAppArchiveSpaceIds.sort()).toEqual(["business-a", "business-b", "department-a"]);
+    expect(exportEnv.productUserCalls).toContain("/export");
+    expect(exportEnv.billingRequests).toHaveLength(1);
+    expect(new URL(exportEnv.billingRequests[0]!.url).pathname).toBe("/internal/product-user-billing-status");
+    expect(exportEnv.billingRequests[0]!.headers.get("x-naelao-tenant-id")).toBe("tenant-a");
+    expect(exportEnv.billingRequests[0]!.headers.get("x-naelao-internal-token")).toBeTruthy();
+    expect(await exportEnv.billingRequests[0]!.json()).toEqual({ product_id: "product-a", end_user_id: "user-a" });
+    expect(exportEnv.spaceDoCalls).toContainEqual({ path: "/product-user-micro-app-archives", userId: "user-a" });
+    expect(exportEnv.microAppArchiveSpaceIds.sort()).toEqual(["business-a", "business-b", "department-a"]);
+    expect(exportEnv.chatHistoryRequests).toEqual(["business-a", "business-b", "department-a"].map(spaceId => ({
+      spaceId, userId: "user-a", tenantId: "tenant-a", internalToken: expect.any(String),
+    })));
   });
 
   it("fails closed when Billing is missing, unavailable, or returns malformed or excessive status data", async () => {
@@ -252,6 +275,24 @@ describe("language preference profile routes", () => {
     expect(excessive.status).toBe(502);
     expect(await excessive.json()).toMatchObject({ error_code: "billing_status_export_invalid" });
     expect(excessiveEnv.productUserCalls).toHaveLength(0);
+  });
+
+  it("fails closed when a Space transcript export is malformed or exceeds the response ceiling", async () => {
+    const malformedEnv = testEnv();
+    malformedEnv.setChatHistoryResponse("business-a", Response.json({ space_id: "business-b", sessions: [], messages: [] }));
+    const malformed = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined,
+      "tenant-a", malformedEnv);
+    expect(malformed.status).toBe(502);
+    expect(await malformed.json()).toMatchObject({ error_code: "chat_history_export_response_invalid" });
+
+    const oversizedEnv = testEnv();
+    oversizedEnv.setChatHistoryResponse("business-a", new Response("{}", {
+      headers: { "content-length": String(4 * 1024 * 1024 + 1) },
+    }));
+    const oversized = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined,
+      "tenant-a", oversizedEnv);
+    expect(oversized.status).toBe(502);
+    expect(await oversized.json()).toMatchObject({ error_code: "chat_history_export_response_invalid" });
   });
 
   it("forwards only the verified product-user identity to archive preview and restore", async () => {

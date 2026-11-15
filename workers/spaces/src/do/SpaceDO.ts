@@ -53,6 +53,8 @@ import { isSpaceSharedDependencyPinList, isSpaceSharedGadgetMigrationRetentionPl
   spaceSharedGadgetMigrationRetentionPlan, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
   supportsOwnerApprovedSpaceSharedDependencyExpansion,
   supportsVersionOnlySpaceSharedPackageUpdate } from "../extension-update-contract.js";
+import { PRODUCT_USER_CHAT_EXPORT_MAX_BYTES, PRODUCT_USER_CHAT_EXPORT_MAX_MESSAGES,
+  PRODUCT_USER_CHAT_EXPORT_MAX_SESSIONS } from "../product-user-data-export.js";
 
 type BlueprintProjectKnowledgeSelections = Record<string, Record<string, string[]>>;
 type ExtensionRequirementsReviewReceipt = { reviewed_by: string; reviewed_at: string; requirements_sha256: string; project_knowledge_selections: BlueprintProjectKnowledgeSelections };
@@ -5854,6 +5856,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (url.pathname === "/product-user-micro-app-archives" && method === "GET")
         return await this.exportProductUserMicroAppArchives(request, url.searchParams);
+      if (url.pathname === "/product-user-chat-history-export" && method === "GET")
+        return this.exportProductUserChatHistory(request, url.searchParams);
       if (url.pathname === "/product-user-micro-app-erasure" && method === "GET")
         return await this.productUserMicroAppErasureStatus(request, url.searchParams);
       if (url.pathname === "/product-user-micro-app-erasure" && method === "POST")
@@ -15331,6 +15335,56 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     return Response.json({ snapshots: archives, omissions: { uninitializedActors, unsupportedInstallations } },
       { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async exportProductUserChatHistory(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const userId = request.headers.get("x-naelao-user-id") ?? "";
+    const spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !userId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
+      tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (params.get("tenant_id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId)
+      || [...params.keys()].some(key => !["tenant_id", "space_id"].includes(key)))
+      return Response.json({ error_code: "product_user_chat_export_scope_invalid" }, { status: 400 });
+
+    const sql = this.ctx.storage.sql as never;
+    const sessions = queryAll<{ id: string }>(sql,
+      `SELECT id FROM sessions WHERE tenant_id=? AND space_id=? AND end_user_id=? ORDER BY id LIMIT ?`,
+      tenantId, spaceId, userId, PRODUCT_USER_CHAT_EXPORT_MAX_SESSIONS + 1);
+    if (sessions.length > PRODUCT_USER_CHAT_EXPORT_MAX_SESSIONS)
+      return Response.json({ error_code: "product_user_chat_export_limit_exceeded" }, { status: 413 });
+
+    const messageStats = queryOne<{ message_count: number; payload_bytes: number }>(sql,
+      `SELECT COUNT(*) AS message_count, COALESCE(SUM(
+          length(CAST(m.id AS BLOB)) + length(CAST(m.session_id AS BLOB)) + length(CAST(m.role AS BLOB))
+          + length(CAST(m.content AS BLOB)) + length(CAST(COALESCE(m.tool_call_id,'') AS BLOB))
+          + length(CAST(COALESCE(m.tool_name,'') AS BLOB)) + length(CAST(COALESCE(m.token_count,0) AS BLOB))
+          + length(CAST(m.created_at AS BLOB)) + length(CAST(m.author_type AS BLOB))
+          + length(CAST(COALESCE(m.author_id,'') AS BLOB)) + length(CAST(m.metadata AS BLOB)) + 256
+        ),0) AS payload_bytes
+       FROM messages m JOIN sessions s ON s.id=m.session_id
+       WHERE s.tenant_id=? AND s.space_id=? AND s.end_user_id=?`, tenantId, spaceId, userId)
+      ?? { message_count: 0, payload_bytes: 0 };
+    if (messageStats.message_count > PRODUCT_USER_CHAT_EXPORT_MAX_MESSAGES
+      || messageStats.payload_bytes > PRODUCT_USER_CHAT_EXPORT_MAX_BYTES)
+      return Response.json({ error_code: "product_user_chat_export_limit_exceeded" }, { status: 413 });
+
+    const messages = queryAll<MessageRow>(sql,
+      `SELECT m.id,m.session_id,m.role,m.content,m.tool_call_id,m.tool_name,m.token_count,m.created_at,
+              m.author_type,m.author_id,m.metadata
+       FROM messages m JOIN sessions s ON s.id=m.session_id
+       WHERE s.tenant_id=? AND s.space_id=? AND s.end_user_id=?
+       ORDER BY m.created_at ASC,m.id ASC LIMIT ?`,
+      tenantId, spaceId, userId, PRODUCT_USER_CHAT_EXPORT_MAX_MESSAGES + 1);
+    if (messages.length > PRODUCT_USER_CHAT_EXPORT_MAX_MESSAGES)
+      return Response.json({ error_code: "product_user_chat_export_limit_exceeded" }, { status: 413 });
+
+    const payload = { space_id: spaceId, sessions: sessions.map(session => session.id), messages };
+    const serialized = JSON.stringify(payload);
+    if (new TextEncoder().encode(serialized).byteLength > PRODUCT_USER_CHAT_EXPORT_MAX_BYTES)
+      return Response.json({ error_code: "product_user_chat_export_limit_exceeded" }, { status: 413 });
+    return new Response(serialized, { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" } });
   }
 
   private async productUserMicroAppArchiveIdentity(request: Request, params: URLSearchParams): Promise<{

@@ -16,7 +16,9 @@ export async function readBoundedResponseText(
   ) {
     const reader = response.body?.getReader();
     try {
-      await reader?.cancel();
+      // A response source may never settle its cancellation promise. The size ceiling
+      // already requires failure, so start cancellation without making the caller wait.
+      void reader?.cancel().catch(() => undefined);
     } catch {
       // The body is already unusable; the size limit still fails closed.
     } finally {
@@ -34,7 +36,7 @@ export async function readBoundedResponseText(
       if (done) break;
       total += value.byteLength;
       if (total > maximumBytes) {
-        await reader.cancel().catch(() => undefined);
+        void reader.cancel().catch(() => undefined);
         throw new Error("response_too_large");
       }
       chunks.push(value);
@@ -86,7 +88,7 @@ export async function readResponsePrefixText(
         chunks.push(value.subarray(0, remaining));
         total += remaining;
         truncated = true;
-        await reader.cancel().catch(() => undefined);
+        void reader.cancel().catch(() => undefined);
         break;
       }
       chunks.push(value);
@@ -95,7 +97,7 @@ export async function readResponsePrefixText(
     if (!truncated && total === maximumBytes) {
       if (declaredLength !== null) truncated = declaredLength > total;
       else truncated = true;
-      if (truncated) await reader.cancel().catch(() => undefined);
+      if (truncated) void reader.cancel().catch(() => undefined);
     }
   } finally {
     reader.releaseLock();

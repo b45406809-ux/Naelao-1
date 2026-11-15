@@ -27,6 +27,21 @@ describe("bounded response readers", () => {
     ).rejects.toThrow("response_too_large");
   });
 
+  it("does not wait for an oversized response source to finish cancellation", async () => {
+    let cancellationStarted = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(5));
+      },
+      cancel() {
+        cancellationStarted = true;
+        return new Promise<void>(() => undefined);
+      },
+    }));
+    await expect(readBoundedResponseText(response, 4)).rejects.toThrow("response_too_large");
+    expect(cancellationStarted).toBe(true);
+  });
+
   it("rejects malformed UTF-8", async () => {
     await expect(
       readBoundedResponseText(new Response(new Uint8Array([0xff])), 4)

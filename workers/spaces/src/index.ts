@@ -34,6 +34,8 @@ import { registerProductUserMicroAppRoutes } from "./routes/product-user-micro-a
 import { gadgetActorId } from "./do/MicroAppDO.js";
 import { isMicroAppArchiveSnapshot, MAX_MICRO_APP_ARCHIVE_SNAPSHOTS,
   MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES, type MicroAppArchiveOmissions, type MicroAppArchiveSnapshot } from "./do/microapp-archive.js";
+import { isProductUserChatHistoryExport, PRODUCT_USER_CHAT_EXPORT_MAX_BYTES, PRODUCT_USER_CHAT_EXPORT_MAX_PRODUCT_BYTES,
+  PRODUCT_USER_EXPORT_MAX_SPACES, type ProductUserChatHistoryExport } from "./product-user-data-export.js";
 import { registerDynamicPageRoutes } from "./routes/dynamic-pages.js";
 import { registerAssistantChannelRoutes } from "./routes/assistant-channels.js";
 import { registerWebsiteConnectionRoutes } from "./routes/website-connections.js";
@@ -9118,12 +9120,36 @@ app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
   if (!response.ok) return c.json({ error_code: "data_export_unavailable" }, 502);
   const exportSpaces = await productUserMicroAppErasureSpaces(c.env, tenantId, root.id, spaceId);
   if (!exportSpaces) return c.json({ error_code: "micro_app_data_export_scope_unavailable" }, 502);
+  if (exportSpaces.length > PRODUCT_USER_EXPORT_MAX_SPACES)
+    return c.json({ error_code: "product_user_export_space_limit_exceeded" }, 413);
   const snapshots: MicroAppArchiveSnapshot[] = [];
+  const chatHistory: ProductUserChatHistoryExport[] = [];
   const seenApps = new Set<string>();
-  let snapshotBytes = 0;
+  let snapshotBytes = 0, chatHistoryBytes = 0;
   const omissions: MicroAppArchiveOmissions = { privateScopeInstallations: 0, uninitializedActors: 0, unsupportedInstallations: 0 };
   const internalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
   for (const exportSpaceId of exportSpaces) {
+    let chatResponse: Response;
+    try {
+      const chatStub = await spaceDoStub(c.env, exportSpaceId, tenantId);
+      chatResponse = await chatStub.fetch(new Request(`http://space-do/product-user-chat-history-export?${new URLSearchParams({
+        tenant_id: tenantId, space_id: exportSpaceId,
+      })}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
+        "x-naelao-internal-token": internalToken } }));
+    } catch { return c.json({ error_code: "chat_history_export_unavailable" }, 502); }
+    if (!chatResponse.ok) {
+      if (chatResponse.status === 413) return c.json({ error_code: "chat_history_export_limit_exceeded" }, 413);
+      return c.json({ error_code: "chat_history_export_unavailable" }, 502);
+    }
+    const chatData = await readBoundedResponseJson<unknown>(chatResponse, PRODUCT_USER_CHAT_EXPORT_MAX_BYTES).catch(() => null);
+    if (!chatData || !isProductUserChatHistoryExport(chatData, exportSpaceId))
+      return c.json({ error_code: "chat_history_export_response_invalid" }, 502);
+    const serializedChat = JSON.stringify(chatData);
+    chatHistoryBytes += new TextEncoder().encode(serializedChat).byteLength;
+    if (chatHistoryBytes > PRODUCT_USER_CHAT_EXPORT_MAX_PRODUCT_BYTES)
+      return c.json({ error_code: "chat_history_export_limit_exceeded" }, 413);
+    chatHistory.push(chatData);
+
     let microAppResponse: Response;
     try {
       const microAppStub = await spaceDoStub(c.env, exportSpaceId, tenantId);
@@ -9162,11 +9188,12 @@ app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
       return c.json({ error_code: "micro_app_data_export_omission_limit_exceeded" }, 502);
   }
   return c.json({
-    export_version: "2",
+    export_version: "3",
     exported_at: new Date().toISOString(),
     profile: { end_user_id: userId, ...profile },
     product_user_data: await response.json(),
     billing_status: billingStatus,
+    chat_history: chatHistory,
     micro_app_archives: snapshots,
     micro_app_archive_omissions: omissions,
   }, 200, { "cache-control": "private, no-store" });
