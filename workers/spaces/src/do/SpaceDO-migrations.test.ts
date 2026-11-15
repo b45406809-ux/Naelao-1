@@ -4,6 +4,20 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { SPACE_DO_MIGRATIONS } from "./SpaceDO";
 
 describe("SpaceDO migration replay", () => {
+  it("adds archive coverage metadata without changing existing verified archive rows", () => {
+    const storage = createDOStorage();
+    const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.filter(migration => migration.version < 144));
+    storage.sql.exec(`INSERT INTO space_archive_records(archive_id,tenant_id,space_id,request_id,kind,status,object_key,
+      schema_version,checksum,plaintext_bytes,row_counts_json,object_refs_json,selection_fingerprint,created_by,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "archive-before-coverage", "tenant", "space", "request", "full", "verified",
+      "space-archives/tenant/space/archive.enc", 1, "a".repeat(64), 12, "{}", "[]", null, "owner", "2026-01-01T00:00:00.000Z");
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS);
+    expect(storage.sql.exec<{ coverage_json: string; status: string }>(
+      "SELECT coverage_json,status FROM space_archive_records WHERE archive_id='archive-before-coverage'").toArray())
+      .toEqual([{ coverage_json: "{}", status: "verified" }]);
+  });
+
   it("backfills immutable releases onto existing extension installations and leaves legacy records readable", () => {
     const storage = createDOStorage();
     const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
@@ -187,7 +201,7 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(143);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(144);
     const storage = createDOStorage();
     applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, space.SPACE_DO_MIGRATIONS);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('event_triggers')").toArray().map(column => column.name)).toContain("updated_by");

@@ -120,7 +120,9 @@ describe("SpaceDO owner data operations", () => {
 
     const exported = await post({ action: "export", request_id: "micro-app-archive-export" });
     expect(exported.status, JSON.stringify(await exported.clone().json())).toBe(201);
-    const { archive_id: archiveId } = await exported.json() as { archive_id: string };
+    const { archive_id: archiveId, coverage } = await exported.json() as { archive_id: string; coverage: Record<string, unknown> };
+    expect(coverage).toMatchObject({ version: 1, kind: "full", signedMicroAppActors: 1,
+      microAppOmissions: { privateScopeInstallations: 1, unsupportedInstallations: 0, uninitializedActors: 0 } });
     const archive = await decodeSpaceArchive(r2.objects.get(`space-archives/tenant-a/space-a/${archiveId}.enc`)!.bytes,
       secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId });
     expect(archive.microAppSnapshotsVersion).toBe(1);
@@ -129,6 +131,10 @@ describe("SpaceDO owner data operations", () => {
       installationId: "install-a", extensionId, releaseVersion: version, artifactSha256, manifestSha256,
       appId: "archive_canvas", gadgetScope: "SPACE_SHARED" });
     expect(archive.microAppArchiveOmissions).toEqual({ privateScopeInstallations: 1, unsupportedInstallations: 0, uninitializedActors: 0 });
+    const listed = await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    const archiveRecord = ((await listed.json()) as { archives: Array<{ archive_id: string; coverage: Record<string, unknown> | null }> }).archives
+      .find(item => item.archive_id === archiveId);
+    expect(archiveRecord?.coverage).toEqual(coverage);
     expect(calls.map(call => call.path)).toEqual(["/internal/archive/export"]);
     expect(calls[0]?.actor).toContain("space:space-a");
 

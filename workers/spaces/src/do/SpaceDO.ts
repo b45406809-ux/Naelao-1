@@ -103,6 +103,52 @@ const SPACE_ARCHIVE_EXCLUDED_TABLES = [
 const SPACE_ARCHIVE_EXCLUDED_TABLE_SET: ReadonlySet<string> = new Set(SPACE_ARCHIVE_EXCLUDED_TABLES);
 const SPACE_ARCHIVE_EXCLUDED_TABLE_SQL = SPACE_ARCHIVE_EXCLUDED_TABLES.map(table => `'${table}'`).join(",");
 
+type SpaceArchiveCoverage = {
+  version: 1;
+  kind: "full" | "retention_messages";
+  spaceTables: number;
+  spaceRows: number;
+  capturedObjects: number;
+  projectWorkspaces: number;
+  projectRuntimeSettings: number;
+  signedMicroAppActors: number;
+  microAppOmissions: { privateScopeInstallations: number; unsupportedInstallations: number; uninitializedActors: number };
+};
+
+function summarizeSpaceArchiveCoverage(payload: SpaceArchivePayload, kind: SpaceArchiveCoverage["kind"]): SpaceArchiveCoverage {
+  const rowCounts = Object.values(payload.rowCounts);
+  const omissions = payload.microAppArchiveOmissions ?? { privateScopeInstallations: 0, unsupportedInstallations: 0, uninitializedActors: 0 };
+  return {
+    version: 1,
+    kind,
+    spaceTables: Object.keys(payload.tableRows).length,
+    spaceRows: rowCounts.reduce((sum, count) => sum + (Number.isSafeInteger(count) && count > 0 ? count : 0), 0),
+    capturedObjects: payload.objectSnapshots?.length ?? 0,
+    projectWorkspaces: payload.workspaceSnapshots?.length ?? 0,
+    projectRuntimeSettings: payload.projectRuntimeSettings?.length ?? 0,
+    signedMicroAppActors: payload.microAppSnapshots?.length ?? 0,
+    microAppOmissions: {
+      privateScopeInstallations: omissions.privateScopeInstallations,
+      unsupportedInstallations: omissions.unsupportedInstallations,
+      uninitializedActors: omissions.uninitializedActors,
+    },
+  };
+}
+
+function parseSpaceArchiveCoverage(value: string | null | undefined): SpaceArchiveCoverage | null {
+  if (!value || value === "{}") return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<SpaceArchiveCoverage>;
+    if (parsed.version !== 1 || !["full", "retention_messages"].includes(String(parsed.kind))
+      || ![parsed.spaceTables, parsed.spaceRows, parsed.capturedObjects, parsed.projectWorkspaces,
+        parsed.projectRuntimeSettings, parsed.signedMicroAppActors].every(item => Number.isSafeInteger(item) && Number(item) >= 0)
+      || !parsed.microAppOmissions || ![parsed.microAppOmissions.privateScopeInstallations,
+        parsed.microAppOmissions.unsupportedInstallations, parsed.microAppOmissions.uninitializedActors]
+        .every(item => Number.isSafeInteger(item) && Number(item) >= 0)) return null;
+    return parsed as SpaceArchiveCoverage;
+  } catch { return null; }
+}
+
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
 }
@@ -3060,6 +3106,11 @@ const MIGRATIONS: Migration[] = [
           FROM extension_installation_settings WHERE revision>=1;
     `,
   },
+  {
+    version: 144,
+    description: "persist exact coverage summary for each verified Space archive",
+    up: `ALTER TABLE space_archive_records ADD COLUMN coverage_json TEXT NOT NULL DEFAULT '{}';`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -4235,7 +4286,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       execute(sql, "DELETE FROM space_storage_measurements WHERE tenant_id=? AND space_id=? AND datetime(measured_at)<datetime('now','-365 days')", tenantId, spaceId);
       const measurements = queryAll<{ allocated_bytes: number; measured_at: string }>(sql, "SELECT allocated_bytes,measured_at FROM space_storage_measurements WHERE tenant_id=? AND space_id=? ORDER BY measured_at DESC LIMIT 30", tenantId, spaceId);
       const forecast = forecastSpaceStorage(measurements.map(row => ({ allocatedBytes: row.allocated_bytes, measuredAt: row.measured_at })), policy?.target_storage_bytes as number | null ?? null, Number(policy?.warning_threshold_pct ?? 80));
-      const archives = queryAll<Record<string, unknown>>(sql, "SELECT archive_id,kind,status,checksum,plaintext_bytes,row_counts_json,created_by,created_at,restored_at FROM space_archive_records WHERE tenant_id=? AND space_id=? ORDER BY created_at DESC LIMIT 50", tenantId, spaceId);
+      const archives = queryAll<Record<string, unknown> & { coverage_json?: string | null }>(sql, "SELECT archive_id,kind,status,checksum,plaintext_bytes,row_counts_json,coverage_json,created_by,created_at,restored_at FROM space_archive_records WHERE tenant_id=? AND space_id=? ORDER BY created_at DESC LIMIT 50", tenantId, spaceId)
+        .map(({ coverage_json, ...archive }) => ({ ...archive, coverage: parseSpaceArchiveCoverage(coverage_json) }));
       const restores = queryAll<{ id: string; archive_id: string; restored_by: string; restored_at: string; row_counts_json: string; skipped_counts_json: string; status: string; restored_object_count: number; last_error: string | null; safety_actions_json: string }>(sql,
         "SELECT id,archive_id,restored_by,restored_at,row_counts_json,skipped_counts_json,status,restored_object_count,last_error,safety_actions_json FROM space_archive_restores WHERE tenant_id=? AND space_id=? ORDER BY restored_at DESC LIMIT 20", tenantId, spaceId)
         .map(row => ({ id: row.id, archive_id: row.archive_id, restored_by: row.restored_by, restored_at: row.restored_at, row_counts: safeJsonParseObj(row.row_counts_json), skipped_counts: safeJsonParseObj(row.skipped_counts_json), status: row.status, restored_object_count: row.restored_object_count, last_error: row.last_error, safety_actions: safeJsonParseObj(row.safety_actions_json) }));
@@ -4305,7 +4357,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });
       const requestId = String(body.request_id ?? ""), kind = body.kind === "retention_messages" ? "retention_messages" : "full";
       if (!requestId || requestId.length > 128) return Response.json({ error_code: "request_id_required" }, { status: 400 });
-      const prior = queryOne<{ archive_id: string; checksum: string; object_key: string; status: string; kind: string }>(sql, "SELECT archive_id,checksum,object_key,status,kind FROM space_archive_records WHERE tenant_id=? AND space_id=? AND request_id=?", tenantId, spaceId, requestId);
+      const prior = queryOne<{ archive_id: string; checksum: string; object_key: string; status: string; kind: SpaceArchiveCoverage["kind"]; coverage_json: string }>(sql, "SELECT archive_id,checksum,object_key,status,kind,coverage_json FROM space_archive_records WHERE tenant_id=? AND space_id=? AND request_id=?", tenantId, spaceId, requestId);
       if (prior?.status === "verified") {
         const object = await this.env.SCRIPTS_R2.get(prior.object_key);
         if (!object) return Response.json({ error_code: "verified_archive_object_missing_use_new_request_id", archive_id: prior.archive_id }, { status: 409 });
@@ -4313,9 +4365,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           const priorPayload = await decodeSpaceArchive(await readSpaceArchiveObject(object), this.archiveKeys(), { tenantId, spaceId, archiveId: prior.archive_id });
           if (await spaceArchiveChecksum(priorPayload) !== prior.checksum) throw new Error("archive_checksum_mismatch");
           await verifySpaceArchiveObjectSnapshots(priorPayload, this.env.SCRIPTS_R2, this.archiveKeys());
+          const coverage = summarizeSpaceArchiveCoverage(priorPayload, prior.kind);
+          if (!parseSpaceArchiveCoverage(prior.coverage_json)) execute(sql,
+            "UPDATE space_archive_records SET coverage_json=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND coverage_json='{}'",
+            JSON.stringify(coverage), prior.archive_id, tenantId, spaceId);
+          execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", prior.archive_id);
+          return Response.json({ archive_id: prior.archive_id, checksum: prior.checksum, coverage, replayed: true });
         } catch { return Response.json({ error_code: "verified_archive_integrity_failed_use_new_request_id", archive_id: prior.archive_id }, { status: 409 }); }
-        execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", prior.archive_id);
-        return Response.json({ archive_id: prior.archive_id, checksum: prior.checksum, replayed: true });
       }
       if (prior && prior.kind !== kind) return Response.json({ error_code: "request_id_reused_for_different_archive" }, { status: 409 });
       const archiveId = prior?.archive_id ?? crypto.randomUUID();
@@ -4331,9 +4387,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             const recovered = await decodeSpaceArchive(await readSpaceArchiveObject(existingObject), this.archiveKeys(), { tenantId, spaceId, archiveId });
             if (await spaceArchiveChecksum(recovered) !== savedUpload.checksum) throw new Error("archive_checksum_mismatch");
             await verifySpaceArchiveObjectSnapshots(recovered, this.env.SCRIPTS_R2, this.archiveKeys());
-            execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=? WHERE archive_id=? AND tenant_id=? AND space_id=?", recovered.migrationVersion, savedUpload.checksum, savedUpload.plaintext_bytes, savedUpload.row_counts_json, savedUpload.object_refs_json, savedUpload.selection_fingerprint, archiveId, tenantId, spaceId);
+            const coverage = summarizeSpaceArchiveCoverage(recovered, kind);
+            execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=?,coverage_json=? WHERE archive_id=? AND tenant_id=? AND space_id=?", recovered.migrationVersion, savedUpload.checksum, savedUpload.plaintext_bytes, savedUpload.row_counts_json, savedUpload.object_refs_json, savedUpload.selection_fingerprint, JSON.stringify(coverage), archiveId, tenantId, spaceId);
             execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", archiveId);
-            return Response.json({ archive_id: archiveId, checksum: savedUpload.checksum, replayed: true, recovered_completed_upload: true });
+            return Response.json({ archive_id: archiveId, checksum: savedUpload.checksum, coverage, replayed: true, recovered_completed_upload: true });
           } catch {
             await this.env.SCRIPTS_R2.delete(objectKey);
             if (uploadState.uploadId) {
@@ -4344,6 +4401,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           }
         }
         const savedBytes = savedUpload.encrypted_bytes instanceof ArrayBuffer ? new Uint8Array(savedUpload.encrypted_bytes) : new Uint8Array(savedUpload.encrypted_bytes);
+        let recoveredCoverage: SpaceArchiveCoverage;
         try {
           await uploadArchiveResumable(this.env.SCRIPTS_R2, objectKey, savedBytes, uploadState, state => execute(sql,
             "UPDATE space_archive_uploads SET upload_id=?,completed_parts_json=?,updated_at=? WHERE archive_id=?", state.uploadId, JSON.stringify(state.completedParts), now, archiveId));
@@ -4352,14 +4410,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           const completedPayload = await decodeSpaceArchive(await readSpaceArchiveObject(completedObject), this.archiveKeys(), { tenantId, spaceId, archiveId });
           if (await spaceArchiveChecksum(completedPayload) !== savedUpload.checksum) throw new Error("archive_checksum_mismatch");
           await verifySpaceArchiveObjectSnapshots(completedPayload, this.env.SCRIPTS_R2, this.archiveKeys());
+          recoveredCoverage = summarizeSpaceArchiveCoverage(completedPayload, kind);
         } catch (error) {
           execute(sql, "UPDATE space_archive_records SET status='failed' WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
           return Response.json({ error_code: "archive_write_failed_retry_same_request_id", archive_id: archiveId, message: (error as Error).message.slice(0, 160) }, { status: 503 });
         }
-        execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status IN ('pending','failed')", 1, savedUpload.checksum, savedUpload.plaintext_bytes, savedUpload.row_counts_json, savedUpload.object_refs_json, savedUpload.selection_fingerprint, archiveId, tenantId, spaceId);
+        execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=?,coverage_json=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status IN ('pending','failed')", 1, savedUpload.checksum, savedUpload.plaintext_bytes, savedUpload.row_counts_json, savedUpload.object_refs_json, savedUpload.selection_fingerprint, JSON.stringify(recoveredCoverage), archiveId, tenantId, spaceId);
         execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", archiveId);
-        insertEvent("archive_created", { archive_id: archiveId, checksum: savedUpload.checksum, resumed: true });
-        return Response.json({ archive_id: archiveId, checksum: savedUpload.checksum, plaintext_bytes: savedUpload.plaintext_bytes, row_counts: JSON.parse(savedUpload.row_counts_json), object_reference_count: (JSON.parse(savedUpload.object_refs_json) as unknown[]).length, encrypted: true, replayed: true, resumed: true }, { status: 201 });
+        insertEvent("archive_created", { archive_id: archiveId, checksum: savedUpload.checksum, coverage: recoveredCoverage, resumed: true });
+        return Response.json({ archive_id: archiveId, checksum: savedUpload.checksum, plaintext_bytes: savedUpload.plaintext_bytes, row_counts: JSON.parse(savedUpload.row_counts_json), object_reference_count: (JSON.parse(savedUpload.object_refs_json) as unknown[]).length, coverage: recoveredCoverage, encrypted: true, replayed: true, resumed: true }, { status: 201 });
       }
       let selectionFingerprint: string | null = null;
       const tableRows: Record<string, Array<Record<string, unknown>>> = {}, rowCounts: Record<string, number> = {};
@@ -4610,6 +4669,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           ? { microAppSnapshotsVersion: 1 as const, ...(microAppSnapshots.length ? { microAppSnapshots } : {}),
             ...(Object.values(microAppArchiveOmissions).some(count => count > 0) ? { microAppArchiveOmissions } : {}) } : {}),
         ...(selectionFingerprint ? { selectionFingerprint } : {}) };
+      const coverage = summarizeSpaceArchiveCoverage(payload, kind);
       let encoded: Awaited<ReturnType<typeof encodeSpaceArchive>>;
       try { encoded = await encodeSpaceArchive(payload, this.archiveKeys()); }
       catch (error) {
@@ -4624,17 +4684,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           "UPDATE space_archive_uploads SET upload_id=?,completed_parts_json=?,updated_at=? WHERE archive_id=?", state.uploadId, JSON.stringify(state.completedParts), now, archiveId));
         const completedObject = await this.env.SCRIPTS_R2.get(objectKey);
         if (!completedObject) throw new Error("archive_object_missing_after_upload");
-          const completedPayload = await decodeSpaceArchive(await readSpaceArchiveObject(completedObject), this.archiveKeys(), { tenantId, spaceId, archiveId });
+        const completedPayload = await decodeSpaceArchive(await readSpaceArchiveObject(completedObject), this.archiveKeys(), { tenantId, spaceId, archiveId });
         if (await spaceArchiveChecksum(completedPayload) !== encoded.checksum) throw new Error("archive_checksum_mismatch");
         await verifySpaceArchiveObjectSnapshots(completedPayload, this.env.SCRIPTS_R2, this.archiveKeys());
       } catch (error) {
         execute(sql, "UPDATE space_archive_records SET status='failed' WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
         return Response.json({ error_code: "archive_write_failed_retry_same_request_id", archive_id: archiveId, message: (error as Error).message.slice(0, 160) }, { status: 503 });
       }
-      execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status IN ('pending','failed')", 1, encoded.checksum, encoded.plaintextBytes, JSON.stringify(rowCounts), JSON.stringify(objectReferences), selectionFingerprint, archiveId, tenantId, spaceId);
+      execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=?,coverage_json=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status IN ('pending','failed')", 1, encoded.checksum, encoded.plaintextBytes, JSON.stringify(rowCounts), JSON.stringify(objectReferences), selectionFingerprint, JSON.stringify(coverage), archiveId, tenantId, spaceId);
       execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", archiveId);
-      insertEvent("archive_created", { archive_id: archiveId, kind, checksum: encoded.checksum, plaintext_bytes: encoded.plaintextBytes, row_counts: rowCounts, object_reference_count: objectReferences.length });
-      return Response.json({ archive_id: archiveId, checksum: encoded.checksum, plaintext_bytes: encoded.plaintextBytes, row_counts: rowCounts, object_reference_count: objectReferences.length, encrypted: true, replayed: false }, { status: 201 });
+      insertEvent("archive_created", { archive_id: archiveId, kind, checksum: encoded.checksum, plaintext_bytes: encoded.plaintextBytes, row_counts: rowCounts, object_reference_count: objectReferences.length, coverage });
+      return Response.json({ archive_id: archiveId, checksum: encoded.checksum, plaintext_bytes: encoded.plaintextBytes, row_counts: rowCounts, object_reference_count: objectReferences.length, coverage, encrypted: true, replayed: false }, { status: 201 });
     }
     if (action === "start_rewrap_archives") {
       if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });
