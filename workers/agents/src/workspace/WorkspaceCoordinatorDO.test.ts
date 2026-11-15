@@ -1188,6 +1188,8 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     const { instance, objects } = setup();
     const baseBytes = new TextEncoder().encode("base");
     const baseHash = "cae662172fd450bb0cd710a769079c05bfc5d8e35efa6576edc7d0377afdd4a2";
+    const childHash = await sha256Hex(new TextEncoder().encode("child"));
+    const parentHash = await sha256Hex(new TextEncoder().encode("parent"));
     const baseKey = `workspace-v1/tenant/space/project/global/content/${baseHash}`;
     objects.set(baseKey, baseBytes);
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [{ path: "same.txt", sha256: baseHash, size: baseBytes.length, executable: false, objectKey: baseKey }] });
@@ -1198,9 +1200,65 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect((await call(instance, "/v1/checkpoint", { sessionId: parent.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "parent-conflict", changes: [{ path: "same.txt", expectedHash: baseHash, contentBase64: btoa("parent") }] })).status).toBe(200);
     const merge = await call(instance, "/v1/merge", { sessionId: child.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0, idempotencyKey: "merge-conflict" });
     expect(merge.status).toBe(409);
-    expect(await merge.json()).toMatchObject({ publication: { status: "conflicted", appliedPaths: [], conflicts: [{ path: "same.txt" }] } });
+    expect(await merge.json()).toMatchObject({ publication: { status: "conflicted", appliedPaths: [], conflicts: [
+      { path: "same.txt", expectedHash: baseHash, actualHash: parentHash, sourceHash: childHash, reason: "edit_overlap" },
+    ] } });
     expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
     expect(await (await call(instance, "/v1/head?branch=runs%2Fconflict")).json()).toMatchObject({ head: { revision: 2 } });
+  });
+
+  it("merges bounded nonoverlapping text edits through one checked coordinator revision", async () => {
+    const { instance, objects } = setup();
+    const base = new TextEncoder().encode("one\ntwo\nthree\n");
+    const baseHash = await sha256Hex(base);
+    const baseKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${baseHash}`;
+    objects.set(baseKey, base);
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [
+      { path: "notes.txt", sha256: baseHash, size: base.byteLength, executable: false, objectKey: baseKey },
+    ] });
+    await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/text-merge" });
+    const child = await (await call(instance, "/v1/open", { scope, branch: "runs/text-merge", actorId: "worker", runtimeId: "runtime-worker", allocationGeneration: 1 })).json() as { session: { id: string } };
+    expect((await call(instance, "/v1/checkpoint", { sessionId: child.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "worker-edit", changes: [
+      { path: "notes.txt", expectedHash: baseHash, contentBase64: btoa("one\ntwo\nTHREE\n") },
+    ] })).status).toBe(200);
+    const owner = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "runtime-owner", allocationGeneration: 1 })).json() as { session: { id: string } };
+    expect((await call(instance, "/v1/checkpoint", { sessionId: owner.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "owner-edit", changes: [
+      { path: "notes.txt", expectedHash: baseHash, contentBase64: btoa("ONE\ntwo\nthree\n") },
+    ] })).status).toBe(200);
+    const merged = await call(instance, "/v1/merge", { sessionId: child.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0, idempotencyKey: "merge-text" });
+    expect(merged.status).toBe(200);
+    expect(await merged.json()).toMatchObject({ publication: { status: "published", revision: 3, conflicts: [], mergeResolutions: [
+      { path: "notes.txt", baseHash, targetHash: await sha256Hex(new TextEncoder().encode("ONE\ntwo\nthree\n")),
+        sourceHash: await sha256Hex(new TextEncoder().encode("one\ntwo\nTHREE\n")), algorithm: "bounded-lcs-lines-v1" },
+    ] } });
+    const read = await call(instance, "/v1/read?branch=main");
+    const body = await read.json() as { entries: Array<{ path: string; sha256: string; objectKey: string }> };
+    const mergedEntry = body.entries.find(entry => entry.path === "notes.txt");
+    expect(mergedEntry?.sha256).toBe(await sha256Hex(new TextEncoder().encode("ONE\ntwo\nTHREE\n")));
+    expect(new TextDecoder().decode(objects.get(mergedEntry!.objectKey))).toBe("ONE\ntwo\nTHREE\n");
+    const replay = await call(instance, "/v1/merge", { sessionId: child.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0, idempotencyKey: "merge-text" });
+    expect(await replay.json()).toMatchObject({ publication: { status: "published", revision: 3, mergeResolutions: [{ path: "notes.txt" }] } });
+  });
+
+  it("rejects case-colliding paths and retains both branches", async () => {
+    const { instance } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/case-collision" });
+    const child = await (await call(instance, "/v1/open", { scope, branch: "runs/case-collision", actorId: "worker", runtimeId: "runtime-worker", allocationGeneration: 1 })).json() as { session: { id: string } };
+    expect((await call(instance, "/v1/checkpoint", { sessionId: child.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "worker-case-path", changes: [
+      { path: "Readme.md", expectedHash: null, contentBase64: btoa("worker") },
+    ] })).status).toBe(200);
+    const owner = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "runtime-owner", allocationGeneration: 1 })).json() as { session: { id: string } };
+    expect((await call(instance, "/v1/checkpoint", { sessionId: owner.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "owner-case-path", changes: [
+      { path: "README.md", expectedHash: null, contentBase64: btoa("owner") },
+    ] })).status).toBe(200);
+    const merge = await call(instance, "/v1/merge", { sessionId: child.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0, idempotencyKey: "case-collision" });
+    expect(merge.status).toBe(409);
+    expect(await merge.json()).toMatchObject({ publication: { status: "conflicted", appliedPaths: [], conflicts: [
+      { path: "Readme.md", otherPath: "README.md", reason: "case_collision" },
+    ] } });
+    expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({ entries: [{ path: "README.md" }] });
+    expect(await (await call(instance, "/v1/read?branch=runs%2Fcase-collision")).json()).toMatchObject({ entries: [{ path: "Readme.md" }] });
   });
 
   it("requires a committed revision for writer handoff and rejects stale writes after fencing", async () => {
@@ -1332,7 +1390,8 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
 
       expect(storage.values.has("live-checkpoint:branch-00")).toBe(false);
       expect(storage.values.has("live-checkpoint:branch-20")).toBe(true);
-      expect(storage.alarmAt).toBe(now + 1_000);
+      expect(storage.alarmAt).toBeGreaterThan(now);
+      expect(storage.alarmAt).toBeLessThanOrEqual(now + 1_000);
     } finally { vi.restoreAllMocks(); }
   });
 

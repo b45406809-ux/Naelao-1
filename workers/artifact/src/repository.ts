@@ -29,6 +29,24 @@ export interface TreeEntry {
   hash: string;
 }
 
+export interface MergeResolution {
+  path: string;
+  baseHash: string;
+  targetHash: string;
+  sourceHash: string;
+  resultHash: string;
+  algorithm: "bounded-lcs-lines-v1";
+}
+
+export interface MergeConflictDetail {
+  path: string;
+  otherPath?: string;
+  baseHash: string | null;
+  targetHash: string | null;
+  sourceHash: string | null;
+  reason: string;
+}
+
 export interface CommitRecord {
   oid: string;
   tree: string;
@@ -39,6 +57,8 @@ export interface CommitRecord {
   metadata: CommitMetadata;
   createdAt: string;
   entries: Record<string, TreeEntry>;
+  /** Content-free receipt for deterministic text resolutions in this merge commit. */
+  mergeResolutions?: MergeResolution[];
 }
 
 const encoder = new TextEncoder();

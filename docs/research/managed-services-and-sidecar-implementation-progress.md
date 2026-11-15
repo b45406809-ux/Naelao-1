@@ -1,10 +1,12 @@
 # Managed services and sidecar implementation progress
 
-## Cross-plan checkpoint — 2026-11-15 (planner/worker requirements reconciled)
+## Cross-plan checkpoint — 2026-11-15 (PW04 checked text merge; local verification complete, checkpoint push pending)
 
-Fetched and read `docs/research/planner-worker-isolation-and-conflict-resolution-plan.md` from `origin/plan/microapps-ui-sdk-voice` commit `45575a39`. Its full requirements are copied into platform plan §12 and the managed plan's runtime boundary is captured in §20. No branch merge occurred. Platform progress now tracks PW01–PW06: existing local worker branch/result persistence, task DAG and scoped blackboard, named locks, and checked path-level publication are partial foundations; bounded same-file text merge and fully integrated validation remain code gaps. Runtime/deployed acceptance and rollout remain separate gates.
+The planner/worker source plan from commit `45575a39` is incorporated in platform plan §12 and managed plan §20. The latest fetched source branch ref is `df338625`; commit `45575a39` is present locally as its child commit. No branch checkout or merge occurred. This checkpoint advances PW04 only and does not change S2–S9/U01–U12 status.
 
-Exact next action: implement a bounded deterministic UTF-8 three-way text merge candidate at checked worker integration, with conservative exclusions, path/hash receipts and atomic coordinator publication; preserve original branches on conflict. Then resume the remaining PW01–PW06 and S3–S9/U01–U12 exact tasks. This cross-plan record does not change managed-service implementation statuses. Preserve `infra/scripts/__pycache__/`; rollout remains disabled.
+Eligible text edits now use a bounded deterministic UTF-8 line merge in Artifact RepositoryDO and WorkspaceCoordinatorDO, with conservative file/config exclusions, expected source/target heads, path-collision rejection, hashes/algorithm receipts, idempotent replay, and one fenced canonical publication. Agent callers surface bounded conflict details and refuse direct prefix-copy integration without a checked Coordinator; both worker branches remain recoverable on failure. Local tests: helper **8/8**, Artifact **15/15**, Coordinator **62/62**; types build/check plus Agents/Artifact typechecks and `git diff --check` pass. Targeted Biome passes for new helper/test/config. Broad Biome over touched legacy files reports 132 diagnostics; no bulk fixes were applied. This is local mock evidence only. No runtime/deployed/live acceptance is claimed; no credential blocker applies to this code. Preserve untracked `infra/scripts/__pycache__/`; rollout remains disabled.
+
+Exact next action: add focused PW04 regression coverage for delete/edit, binary, size-limit and explicit-review conflicts, then connect structured receipts to the authorized planner/UI path. Continue integrated validation and remaining PW01–PW06 plus S3–S9/U01–U12 without repeating completed audits.
 
 ## Cross-plan checkpoint — 2026-11-15 (P03 exact Product-user inbox; code 9a46241f)
 

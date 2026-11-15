@@ -2,9 +2,18 @@ import { DurableObject } from "cloudflare:workers";
 import { mintInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import { applyDurableObjectJurisdiction } from "@naelao/security";
-import { inferWorkspaceContentType } from "@naelao/types";
+import {
+  inferWorkspaceContentType,
+  isInlineTextContentType,
+  isAutomaticTextMergePath,
+  findWorkspacePathCollisions,
+  mergeThreeWayText,
+  THREE_WAY_TEXT_MERGE_MAX_BYTES,
+} from "@naelao/types";
 import {
   type CommitRecord,
+  type MergeConflictDetail,
+  type MergeResolution,
   type RepositoryScope,
   type TreeEntry,
   commitBody,
@@ -1238,6 +1247,10 @@ export class RepositoryDO extends DurableObject<Env> {
           return jsonError("Reference not found", 404);
         if (body.expected_head !== undefined && body.expected_head !== target)
           return jsonError("Head changed", 409);
+        if (body.expected_source !== undefined && body.expected_source !== source)
+          return jsonError("Source head changed", 409);
+        if (target === source || this.ancestors(state, target).has(source))
+          return Response.json({ commit_id: target, fast_forward: false, merged: true, already_integrated: true, branch: targetName });
         if (!target || this.ancestors(state, source).has(target)) {
           const previousEntries = target ? state.commits[target]!.entries : {};
           const nextEntries = state.commits[source]!.entries;
@@ -1269,6 +1282,9 @@ export class RepositoryDO extends DurableObject<Env> {
         const theirs = state.commits[source]!.entries;
         const merged: Entries = structuredClone(ours);
         const conflicts: string[] = [];
+        const conflictDetails: MergeConflictDetail[] = [];
+        const sourceChangedPaths = new Set<string>();
+        const textCandidates = new Map<string, { content: Uint8Array; baseHash: string; targetHash: string; sourceHash: string; resultHash: string; algorithm: MergeResolution["algorithm"] }>();
         for (const path of new Set([
           ...Object.keys(baseEntries),
           ...Object.keys(ours),
@@ -1277,17 +1293,67 @@ export class RepositoryDO extends DurableObject<Env> {
           const baseOid = baseEntries[path]?.oid,
             ourOid = ours[path]?.oid,
             theirOid = theirs[path]?.oid;
+          if (theirOid !== baseOid) sourceChangedPaths.add(path);
           if (ourOid === theirOid) continue;
           if (ourOid === baseOid) {
             if (theirs[path]) merged[path] = theirs[path]!;
             else delete merged[path];
-          } else if (theirOid !== baseOid) conflicts.push(path);
+          } else if (theirOid !== baseOid) {
+            const baseEntry = baseEntries[path];
+            const targetEntry = ours[path];
+            const sourceEntry = theirs[path];
+            let reason = "overlapping_change";
+            if (!baseEntry || !targetEntry || !sourceEntry) reason = "delete_edit_or_path_collision";
+            else if (!isAutomaticTextMergePath(path) || !isInlineTextContentType(inferWorkspaceContentType(path))) reason = "review_required";
+            else if ([baseEntry, targetEntry, sourceEntry].some(entry => entry.size > THREE_WAY_TEXT_MERGE_MAX_BYTES)) reason = "size_limit";
+            else {
+              const readTextBlob = async (entry: TreeEntry): Promise<Uint8Array> => {
+                const object = await this.readVerifiedObject(scope, entry.oid);
+                if (object.type !== "blob" || object.body.byteLength !== entry.size || await sha256(object.body) !== entry.hash)
+                  throw new Error("Merge input blob integrity check failed");
+                return object.body;
+              };
+              const [baseBytes, targetBytes, sourceBytes] = await Promise.all([
+                readTextBlob(baseEntry), readTextBlob(targetEntry), readTextBlob(sourceEntry),
+              ]);
+              const candidate = mergeThreeWayText(baseBytes, targetBytes, sourceBytes);
+              if (candidate.status === "merged") {
+                const resultHash = await sha256(candidate.content);
+                textCandidates.set(path, { content: candidate.content, baseHash: baseEntry.hash, targetHash: targetEntry.hash,
+                  sourceHash: sourceEntry.hash, resultHash, algorithm: candidate.algorithm });
+                continue;
+              }
+              reason = candidate.reason;
+            }
+            conflicts.push(path);
+            conflictDetails.push({ path, baseHash: baseEntry?.hash ?? null, targetHash: targetEntry?.hash ?? null,
+              sourceHash: sourceEntry?.hash ?? null, reason });
+          }
+        }
+        const targetPaths = new Set(Object.keys(ours));
+        for (const collision of findWorkspacePathCollisions(Object.keys(merged))) {
+          if (targetPaths.has(collision.firstPath) && targetPaths.has(collision.secondPath)) continue;
+          const changedPath = sourceChangedPaths.has(collision.secondPath) ? collision.secondPath
+            : sourceChangedPaths.has(collision.firstPath) ? collision.firstPath : undefined;
+          if (!changedPath || conflicts.includes(changedPath)) continue;
+          const otherPath = changedPath === collision.firstPath ? collision.secondPath : collision.firstPath;
+          conflicts.push(changedPath);
+          conflictDetails.push({ path: changedPath, otherPath, baseHash: baseEntries[changedPath]?.hash ?? null,
+            targetHash: ours[changedPath]?.hash ?? null, sourceHash: theirs[changedPath]?.hash ?? null, reason: collision.reason });
         }
         if (conflicts.length)
           return Response.json(
-            { error: "Merge conflict", conflicts },
+            { error: "Merge conflict", conflicts, conflict_details: conflictDetails },
             { status: 409 }
           );
+        const mergeResolutions: MergeResolution[] = [];
+        for (const [path, candidate] of textCandidates) {
+          const blob = await encodeGitObject("blob", candidate.content);
+          await this.putObject(scope, blob.oid, blob.bytes);
+          merged[path] = { path, oid: blob.oid, size: candidate.content.byteLength, hash: candidate.resultHash };
+          mergeResolutions.push({ path, baseHash: candidate.baseHash, targetHash: candidate.targetHash,
+            sourceHash: candidate.sourceHash, resultHash: candidate.resultHash, algorithm: candidate.algorithm });
+        }
         state.worktrees[targetName] = merged;
         const metadata = validateMetadata(body.metadata ?? {
           agent_role: "reviewer", user_goal: `Merge ${sourceName} into ${targetName}`,
@@ -1324,6 +1390,7 @@ export class RepositoryDO extends DurableObject<Env> {
           metadata,
           createdAt,
           entries: structuredClone(merged),
+          ...(mergeResolutions.length ? { mergeResolutions } : {}),
         };
         let workspaceRevision: number | undefined;
         if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") {
@@ -1341,6 +1408,7 @@ export class RepositoryDO extends DurableObject<Env> {
             branch: targetName,
             ...(workspaceRevision === undefined ? {} : { workspace_revision: workspaceRevision }),
             parents: [target, source],
+            merge_resolutions: mergeResolutions,
             event: { type: "workspace.merged", branch: targetName, source: sourceName, reviewerId: body.reviewerId ?? null },
           },
           { status: 201 }

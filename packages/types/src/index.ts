@@ -1,5 +1,6 @@
 // ── Core identity types ──────────────────────────────────────────────────────
 export * from "./managed-billing-events.js";
+export * from "./three-way-text-merge.js";
 
 export type TenantId = string & { readonly _brand: "TenantId" };
 export type SpaceId = string & { readonly _brand: "SpaceId" };

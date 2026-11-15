@@ -567,38 +567,69 @@ describe("unified workspace transition guards", () => {
     } as never);
     const headers = { "content-type": "application/json", "x-repository-scope": JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project" }) };
     await repo.fetch(new Request("http://repo/init", { method: "POST", headers }));
+    const baseText = "hello\nmiddle\nend\n";
+    const ownerText = "OWNER\nmiddle\nend\n";
+    const workerText = "hello\nmiddle\nWORKER\n";
     const commit = await repo.fetch(new Request("http://repo/commit", { method: "POST", headers, body: JSON.stringify({
       branch: "main", expected_head: null, metadata, message: "checked Git publication",
-      changes: [{ path: "README.md", content_base64: btoa("hello"), expected_hash: null }],
+      changes: [{ path: "README.md", content_base64: btoa(baseText), expected_hash: null }],
     }) }));
     expect(commit.status).toBe(201);
     const canonicalCommit = await commit.json() as { commit_id: string; workspace_branch: string; workspace_revision: number };
     expect(canonicalCommit).toMatchObject({ workspace_branch: "main", workspace_revision: 2 });
     expect(published).toHaveLength(1);
-    expect(published[0]).toMatchObject({ changes: [{ path: "README.md", expectedHash: null, contentBase64: btoa("hello") }] });
+    expect(published[0]).toMatchObject({ changes: [{ path: "README.md", expectedHash: null, contentBase64: btoa(baseText) }] });
     const branch = await repo.fetch(new Request("http://repo/branch", { method: "POST", headers, body: JSON.stringify({ name: "workers/child", from: "main", temporary: true }) }));
     expect(branch.status).toBe(201);
     const seeded = await branch.json() as { branch: string; commit_id: string; workspace_revision: number };
     expect(seeded).toMatchObject({ branch: "workers/child", workspace_branch: "workers/child", workspace_revision: 1 });
+    const ownerCommit = await repo.fetch(new Request("http://repo/commit", { method: "POST", headers, body: JSON.stringify({
+      branch: "main", expected_head: canonicalCommit.commit_id, metadata, message: "owner change",
+      changes: [{ path: "README.md", content_base64: btoa(ownerText), expected_hash: await sha256Text(baseText) }],
+    }) }));
+    expect(ownerCommit.status).toBe(201);
+    const ownerHead = await ownerCommit.json() as { commit_id: string };
     const workerCommit = await repo.fetch(new Request("http://repo/commit", { method: "POST", headers, body: JSON.stringify({
       branch: "workers/child", expected_head: seeded.commit_id, metadata, message: "worker result",
-      changes: [{ path: "worker.txt", content_base64: btoa("subagent result"), expected_hash: null }],
+      changes: [
+        { path: "worker.txt", content_base64: btoa("subagent result"), expected_hash: null },
+        { path: "README.md", content_base64: btoa(workerText), expected_hash: await sha256Text(baseText) },
+      ],
     }) }));
     expect(workerCommit.status).toBe(201);
-    const merged = await repo.fetch(new Request("http://repo/merge", { method: "POST", headers, body: JSON.stringify({
-      target: "main", source: "workers/child", expected_head: canonicalCommit.commit_id, metadata,
+    const workerHead = await workerCommit.json() as { commit_id: string };
+    const staleSource = await repo.fetch(new Request("http://repo/merge", { method: "POST", headers, body: JSON.stringify({
+      target: "main", source: "workers/child", expected_head: ownerHead.commit_id, expected_source: seeded.commit_id, metadata,
     }) }));
-    expect(merged.status).toBe(200);
-    const mergeResult = await merged.json() as { commit_id: string };
-    expect(mergeResult).toMatchObject({ fast_forward: true, workspace_branch: "main", workspace_revision: 2 });
-    expect(published.at(-1)).toMatchObject({ changes: [{ path: "worker.txt", expectedHash: null }] });
+    expect(staleSource.status).toBe(409);
+    expect(await staleSource.json()).toMatchObject({ error: "Source head changed" });
+    const merged = await repo.fetch(new Request("http://repo/merge", { method: "POST", headers, body: JSON.stringify({
+      target: "main", source: "workers/child", expected_head: ownerHead.commit_id, expected_source: workerHead.commit_id, metadata,
+    }) }));
+    expect(merged.status).toBe(201);
+    const mergeResult = await merged.json() as { commit_id: string; merge_resolutions: Array<Record<string, unknown>> };
+    expect(mergeResult).toMatchObject({ merged: true, merge_resolutions: [{ path: "README.md", algorithm: "bounded-lcs-lines-v1" }] });
+    const mergedReadme = await repo.fetch(new Request("http://repo/file?branch=main&path=README.md", { headers }));
+    expect(await mergedReadme.text()).toBe("OWNER\nmiddle\nWORKER\n");
+    expect(published.at(-1)).toMatchObject({ changes: expect.arrayContaining([
+      { path: "worker.txt", expectedHash: null, contentBase64: btoa("subagent result") },
+      { path: "README.md", expectedHash: await sha256Text(ownerText), contentBase64: btoa("OWNER\nmiddle\nWORKER\n") },
+    ]) });
+
+    const replay = await repo.fetch(new Request("http://repo/merge", { method: "POST", headers, body: JSON.stringify({
+      target: "main", source: "workers/child", expected_head: mergeResult.commit_id, expected_source: workerHead.commit_id, metadata,
+    }) }));
+    expect(await replay.json()).toMatchObject({ already_integrated: true, commit_id: mergeResult.commit_id });
 
     const rollback = await repo.fetch(new Request("http://repo/rollback", { method: "POST", headers, body: JSON.stringify({
-      commit_id: canonicalCommit.commit_id, expected_head: mergeResult.commit_id, metadata,
+      commit_id: ownerHead.commit_id, expected_head: mergeResult.commit_id, metadata,
     }) }));
     expect(rollback.status).toBe(201);
-    expect(await rollback.json()).toMatchObject({ restored_from: canonicalCommit.commit_id, workspace_branch: "main", workspace_revision: 2 });
-    expect(published.at(-1)).toMatchObject({ changes: [{ path: "worker.txt", expectedHash: await sha256Text("subagent result"), contentBase64: null }] });
+    expect(await rollback.json()).toMatchObject({ restored_from: ownerHead.commit_id, workspace_branch: "main", workspace_revision: 2 });
+    expect(published.at(-1)).toMatchObject({ changes: expect.arrayContaining([
+      { path: "worker.txt", expectedHash: await sha256Text("subagent result"), contentBase64: null },
+      { path: "README.md", expectedHash: await sha256Text("OWNER\nmiddle\nWORKER\n"), contentBase64: btoa(ownerText) },
+    ]) });
   });
 
   it("reconciles Git from one verified coordinator snapshot without republishing canonical files", async () => {

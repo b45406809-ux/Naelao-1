@@ -41,8 +41,19 @@ export type WorkspaceArchiveSnapshot = {
 export type WorkspaceArchiveObjectReference = { key: string; etag: string; size: number };
 export type WorkspaceConflict = {
   path: string;
+  otherPath?: string;
   expectedHash: string | null;
   actualHash: string | null;
+  sourceHash?: string | null;
+  reason?: string;
+};
+export type WorkspaceMergeResolution = {
+  path: string;
+  baseHash: string;
+  targetHash: string;
+  sourceHash: string;
+  resultHash: string;
+  algorithm: "bounded-lcs-lines-v1";
 };
 export type WorkspacePublicationReceipt = {
   id: string;
@@ -53,6 +64,7 @@ export type WorkspacePublicationReceipt = {
   revision: number;
   appliedPaths: string[];
   conflicts: WorkspaceConflict[];
+  mergeResolutions?: WorkspaceMergeResolution[];
   changeSetHash: string;
   fence: number;
   allocationGeneration: number;

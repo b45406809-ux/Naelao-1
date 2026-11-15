@@ -1,6 +1,14 @@
 import { DurableObject } from "cloudflare:workers";
 import { mintInternalToken, readBoundedRequestText, readBoundedResponseJson, verifyInternalToken } from "@naelao/http";
-import { inferWorkspaceContentType } from "@naelao/types";
+import {
+  inferWorkspaceContentType,
+  isInlineTextContentType,
+  isAutomaticTextMergePath,
+  findWorkspacePathCollisions,
+  mergeThreeWayText,
+  THREE_WAY_TEXT_MERGE_ALGORITHM,
+  THREE_WAY_TEXT_MERGE_MAX_BYTES,
+} from "@naelao/types";
 import type { LiveRuntimeControlDO } from "./LiveRuntimeControlDO.js";
 import {
   canonicalManifest,
@@ -1706,7 +1714,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (session.fence !== body.fence) return fail("stale_fence", 409);
     const workingHead = await this.ctx.storage.get<WorkspaceHead>(headKey(session.branch));
     if (!workingHead) return fail("workspace_branch_not_found", 404);
-    const changeSetHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ sessionId, targetBranch, sourceManifestHash: workingHead.manifestHash, baseManifestHash: session.baseManifestHash, allocationGeneration: session.allocationGeneration, fence: session.fence })));
+    const changeSetHash = await sha256Hex(new TextEncoder().encode(JSON.stringify({ sessionId, targetBranch, sourceManifestHash: workingHead.manifestHash, baseManifestHash: session.baseManifestHash, allocationGeneration: session.allocationGeneration, fence: session.fence, mergeAlgorithm: THREE_WAY_TEXT_MERGE_ALGORITHM })));
     const prior = await this.ctx.storage.get<WorkspacePublicationReceipt>(mergeReceiptKey(targetBranch, idempotencyKey));
     if (prior) return prior.changeSetHash === changeSetHash ? json({ publication: prior }) : fail("idempotency_conflict", 409);
     if (session.status !== "active") return fail("stale_fence", 409);
@@ -1729,21 +1737,96 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const working = new Map(workingEntries.map((entry) => [entry.path, entry]));
     const paths = [...new Set([...base.keys(), ...working.keys()])].sort();
     const changedPaths = paths.filter((path) => entrySignature(base.get(path)) !== entrySignature(working.get(path)));
-    const conflicts = changedPaths.flatMap((path) => {
-      const baseHash = base.get(path)?.sha256 ?? null;
-      const parentEntry = parent.get(path);
-      const parentHash = parentEntry?.sha256 ?? null;
-      const workingHash = working.get(path)?.sha256 ?? null;
-      return entrySignature(parentEntry) !== entrySignature(base.get(path)) && entrySignature(parentEntry) !== entrySignature(working.get(path)) ? [{ path, expectedHash: baseHash, actualHash: parentHash }] : [];
-    });
+    const changedPathSet = new Set(changedPaths);
+    const conflicts: WorkspacePublicationReceipt["conflicts"] = [];
+    const textCandidates = new Map<string, { content: Uint8Array; baseHash: string; targetHash: string; sourceHash: string; resultHash: string; contentType: string; executable: boolean }>();
+    for (const path of changedPaths) {
+      const baseEntry = base.get(path);
+      const targetEntry = parent.get(path);
+      const sourceEntry = working.get(path);
+      if (entrySignature(targetEntry) === entrySignature(baseEntry) || entrySignature(targetEntry) === entrySignature(sourceEntry)) continue;
+      let reason = "overlapping_change";
+      if (!baseEntry || !targetEntry || !sourceEntry) reason = "delete_edit_or_path_collision";
+      else if (!isAutomaticTextMergePath(path)) reason = "review_required";
+      else if (baseEntry.executable !== targetEntry.executable || baseEntry.executable !== sourceEntry.executable ||
+          (baseEntry.contentType ?? inferWorkspaceContentType(path)) !== (targetEntry.contentType ?? inferWorkspaceContentType(path)) ||
+          (baseEntry.contentType ?? inferWorkspaceContentType(path)) !== (sourceEntry.contentType ?? inferWorkspaceContentType(path))) reason = "metadata_conflict";
+      else if (![baseEntry, targetEntry, sourceEntry].every(entry => entry.size <= THREE_WAY_TEXT_MERGE_MAX_BYTES) ||
+          !isInlineTextContentType(baseEntry.contentType ?? inferWorkspaceContentType(path))) reason = "review_required";
+      else {
+        const readTextEntry = async (entry: WorkspaceEntry): Promise<Uint8Array> => {
+          if (!entry.objectKey.startsWith(contentPrefix(targetHead.scope))) throw new Error("workspace_object_scope_mismatch");
+          const object = await this.env.SCRIPTS_R2!.get(entry.objectKey);
+          if (!object || object.size !== entry.size) throw new Error("workspace_content_unavailable");
+          const bytes = new Uint8Array(await object.arrayBuffer());
+          if (await sha256Hex(bytes) !== entry.sha256) throw new Error("workspace_content_corrupt");
+          return bytes;
+        };
+        const [baseBytes, targetBytes, sourceBytes] = await Promise.all([
+          readTextEntry(baseEntry), readTextEntry(targetEntry), readTextEntry(sourceEntry),
+        ]);
+        const candidate = mergeThreeWayText(baseBytes, targetBytes, sourceBytes);
+        if (candidate.status === "merged") {
+          const resultHash = await sha256Hex(candidate.content);
+          textCandidates.set(path, { content: candidate.content, baseHash: baseEntry.sha256, targetHash: targetEntry.sha256,
+            sourceHash: sourceEntry.sha256, resultHash, contentType: targetEntry.contentType ?? inferWorkspaceContentType(path),
+            executable: targetEntry.executable });
+          continue;
+        }
+        reason = candidate.reason;
+      }
+      conflicts.push({ path, expectedHash: baseEntry?.sha256 ?? null, actualHash: targetEntry?.sha256 ?? null,
+        sourceHash: sourceEntry?.sha256 ?? null, reason });
+    }
+    const proposedPaths = new Set(parent.keys());
+    for (const path of changedPaths) {
+      if (working.has(path)) proposedPaths.add(path);
+      else proposedPaths.delete(path);
+    }
+    const targetPaths = new Set(parent.keys());
+    for (const collision of findWorkspacePathCollisions([...proposedPaths])) {
+      if (targetPaths.has(collision.firstPath) && targetPaths.has(collision.secondPath)) continue;
+      const changedPath = changedPathSet.has(collision.secondPath) ? collision.secondPath
+        : changedPathSet.has(collision.firstPath) ? collision.firstPath : undefined;
+      if (!changedPath || conflicts.some(conflict => conflict.path === changedPath)) continue;
+      const otherPath = changedPath === collision.firstPath ? collision.secondPath : collision.firstPath;
+      const baseEntry = base.get(changedPath), targetEntry = parent.get(changedPath), sourceEntry = working.get(changedPath);
+      conflicts.push({ path: changedPath, otherPath, expectedHash: baseEntry?.sha256 ?? null,
+        actualHash: targetEntry?.sha256 ?? null, sourceHash: sourceEntry?.sha256 ?? null, reason: collision.reason });
+    }
     const id = `merge_${crypto.randomUUID()}`;
     const uploadIntentId = crypto.randomUUID();
     const uploadIntentKey = `upload-intent:${uploadIntentId}`;
     let status: WorkspacePublicationReceipt["status"] = conflicts.length ? "conflicted" : "published";
     let newlyStoredManifestKey: string | null = null;
     const nextEntries = new Map(parent);
+    const mergeResolutions: NonNullable<WorkspacePublicationReceipt["mergeResolutions"]> = [];
     if (!conflicts.length) {
       for (const path of changedPaths) {
+        const candidate = textCandidates.get(path);
+        if (candidate) {
+          const objectKey = `${contentPrefix(targetHead.scope)}${candidate.resultHash}`;
+          const protectedUpload = await this.protectUpload(targetHead.scope, uploadIntentId, objectKey);
+          if (protectedUpload !== "ready") {
+            await this.ctx.storage.delete(uploadIntentKey);
+            return protectedUpload === "erased" ? fail("workspace_erased", 410)
+              : protectedUpload === "gc_busy" ? fail("workspace_gc_in_progress", 423)
+                : protectedUpload === "intent_limit" ? fail("workspace_upload_intent_limit", 413) : fail("workspace_scope_mismatch", 403);
+          }
+          const stored = await this.env.SCRIPTS_R2!.put(objectKey, candidate.content, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: candidate.resultHash, size: String(candidate.content.byteLength) }, httpMetadata: { contentType: candidate.contentType } });
+          if (!stored) {
+            const existing = await this.env.SCRIPTS_R2!.get(objectKey);
+            if (!existing || existing.size !== candidate.content.byteLength || await sha256Hex(new Uint8Array(await existing.arrayBuffer())) !== candidate.resultHash) {
+              await this.ctx.storage.delete(uploadIntentKey);
+              return fail("workspace_content_persist_failed", 503);
+            }
+          }
+          nextEntries.set(path, { path, sha256: candidate.resultHash, size: candidate.content.byteLength,
+            executable: candidate.executable, objectKey, contentType: candidate.contentType });
+          mergeResolutions.push({ path, baseHash: candidate.baseHash, targetHash: candidate.targetHash,
+            sourceHash: candidate.sourceHash, resultHash: candidate.resultHash, algorithm: THREE_WAY_TEXT_MERGE_ALGORITHM });
+          continue;
+        }
         const entry = working.get(path);
         if (entry) nextEntries.set(path, entry);
         else nextEntries.delete(path);
@@ -1774,7 +1857,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     } else if (!conflicts.length) status = "noop";
     const revision = status === "published" ? targetHead.revision + 1 : targetHead.revision;
     const receipt: WorkspacePublicationReceipt = { id, idempotencyKey, status, branch: targetBranch, baseRevision: targetHead.revision, revision,
-      appliedPaths: conflicts.length ? [] : changedPaths, conflicts, changeSetHash, fence: session.fence, allocationGeneration: session.allocationGeneration };
+      appliedPaths: conflicts.length ? [] : changedPaths, conflicts, ...(mergeResolutions.length ? { mergeResolutions } : {}),
+      changeSetHash, fence: session.fence, allocationGeneration: session.allocationGeneration };
     const nextHead: WorkspaceHead = { ...targetHead, revision, manifestHash: nextHash, parentRevision: targetHead.revision, publicationId: id, updatedAt: new Date().toISOString() };
     const committed = await this.ctx.storage.transaction(async (tx) => {
       const replay = await tx.get<WorkspacePublicationReceipt>(mergeReceiptKey(targetBranch, idempotencyKey));

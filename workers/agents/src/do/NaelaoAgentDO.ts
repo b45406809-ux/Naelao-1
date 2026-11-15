@@ -27,6 +27,15 @@ type AssistantApprovalPolicySnapshot = {
   auto_approved_actions: string[];
   updated_at?: string;
 };
+
+type WorkerMergeConflictDetail = {
+  path: string;
+  otherPath?: string;
+  reason: string;
+  baseHash?: string | null;
+  targetHash?: string | null;
+  sourceHash?: string | null;
+};
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
 // timeout watchdog, and SQLite-persisted run state.
@@ -3852,7 +3861,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Three-way file merge. A worker may update the root task workspace only if the planner or
     // another worker has not changed that path since the worker's fork. Conflicts are returned to
     // the planner and the canonical workspace is never overwritten by a losing worker.
-    const mergeWorkerWorkspace = async (subId: string, workerBranch: string, baseBranch?: string): Promise<string[]> => {
+    const mergeWorkerWorkspace = async (subId: string, workerBranch: string, baseBranch?: string): Promise<WorkerMergeConflictDetail[]> => {
       if (!runtimeEnv) return [];
       if (unifiedProjectWorkspace) {
         if (!this.env.ARTIFACT_WORKER) throw new Error("worker_branch_repository_required");
@@ -3869,66 +3878,32 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const targetHeadResponse = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(targetBranch)}`, { headers }));
         if (!targetHeadResponse.ok) throw new Error(`worker_branch_target_head_unavailable:${targetHeadResponse.status}`);
         const targetHead = await readBoundedResponseJson<{ commit_id?: string | null }>(targetHeadResponse, 64 * 1024);
+        const sourceHeadResponse = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(workerBranch)}`, { headers }));
+        if (!sourceHeadResponse.ok) throw new Error(`worker_branch_source_head_unavailable:${sourceHeadResponse.status}`);
+        const sourceHead = await readBoundedResponseJson<{ commit_id?: string | null }>(sourceHeadResponse, 64 * 1024);
         const merged = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/merge`, {
           method: "POST", headers, body: JSON.stringify({ target: targetBranch, source: workerBranch,
-            expected_head: targetHead.commit_id ?? null, metadata }),
+            expected_head: targetHead.commit_id ?? null, expected_source: sourceHead.commit_id ?? null, metadata }),
         }));
         if (merged.status === 409) {
-          const conflict = await readBoundedResponseJson<{ conflicts?: string[] }>(merged, 64 * 1024).catch((): { conflicts?: string[] } => ({}));
-          return conflict.conflicts?.length ? conflict.conflicts : ["<branch-head-changed>"];
+          const conflict = await readBoundedResponseJson<{
+            error?: string;
+            conflicts?: string[];
+            conflict_details?: WorkerMergeConflictDetail[];
+          }>(merged, 256 * 1024).catch((): { error?: string; conflicts?: string[]; conflict_details?: WorkerMergeConflictDetail[] } => ({}));
+          if (conflict.conflict_details?.length) return conflict.conflict_details.slice(0, 100);
+          if (conflict.conflicts?.length) return conflict.conflicts.slice(0, 100).map(path => ({ path, reason: "overlapping_change" }));
+          const reason = conflict.error === "Source head changed" ? "stale_source_head"
+            : conflict.error === "Head changed" ? "stale_target_head" : "branch_head_changed";
+          return [{ path: "<branch-head-changed>", reason }];
         }
         if (!merged.ok) throw new Error(`worker_branch_checked_merge_failed:${merged.status}`);
         return [];
       }
-      const legacyMerge = async (): Promise<string[]> => {
-        const baseline = await this.ctx.storage.get<Record<string, string>>(`worker-branch-base:${subId}`) ?? {};
-        const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
-        const workerPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: workerBranch });
-        const basePrefix = workspacePrefix({ ...runtimeEnv, ...(baseBranch ? { workspaceBranch: baseBranch } : {}) });
-        const changed = new Map<string, R2Object>();
-        let cursor: string | undefined;
-        do {
-          const page = await bucket.list({ prefix: workerPrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
-          for (const object of page.objects) changed.set(object.key.slice(workerPrefix.length), object);
-          cursor = page.truncated ? page.cursor : undefined;
-        } while (cursor);
-        const conflicts: string[] = [];
-        for (const [path, workerObject] of changed) {
-          if (!path || path.includes("../")) continue;
-          const workerFile = await bucket.get(workerObject.key);
-          if (!workerFile) continue;
-          const workerBytes = await workerFile.arrayBuffer();
-          const workerHash = workerFile.customMetadata?.sha256 ?? [...new Uint8Array(await crypto.subtle.digest("SHA-256", workerBytes))].map(b => b.toString(16).padStart(2, "0")).join("");
-          const baseObject = await bucket.get(`${basePrefix}${path}`);
-          const baseBytes = baseObject && baseObject.customMetadata?.deleted !== "true" ? await baseObject.arrayBuffer() : null;
-          const baseHash = baseObject ? (baseObject.customMetadata?.sha256 ?? (baseObject.customMetadata?.deleted === "true" ? "deleted" : baseBytes
-            ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", baseBytes))].map(b => b.toString(16).padStart(2, "0")).join("") : undefined)) : undefined;
-          const originalHash = baseline[path];
-          if (workerHash === originalHash) continue;
-          if (baseHash !== originalHash && baseHash !== workerHash) { conflicts.push(path); continue; }
-          const merged = await bucket.put(`${basePrefix}${path}`, workerBytes, {
-            onlyIf: baseObject ? { etagMatches: baseObject.etag } : { etagDoesNotMatch: "*" },
-            ...(workerFile.httpMetadata ? { httpMetadata: workerFile.httpMetadata } : {}),
-            ...(workerFile.customMetadata ? { customMetadata: workerFile.customMetadata } : {}),
-          });
-          if (!merged) conflicts.push(path);
-        }
-        for (const path of Object.keys(baseline)) {
-          if (changed.has(path)) continue;
-          const baseObject = await bucket.get(`${basePrefix}${path}`);
-          const baseBytes = baseObject && baseObject.customMetadata?.deleted !== "true" ? await baseObject.arrayBuffer() : null;
-          const baseHash = baseObject ? (baseObject.customMetadata?.sha256 ?? (baseObject.customMetadata?.deleted === "true" ? "deleted" : baseBytes
-            ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", baseBytes))].map(b => b.toString(16).padStart(2, "0")).join("") : undefined)) : undefined;
-          if (baseHash !== baseline[path]) { conflicts.push(path); continue; }
-          const deleted = await bucket.put(`${basePrefix}${path}`, "", {
-            onlyIf: baseObject ? { etagMatches: baseObject.etag } : { etagDoesNotMatch: "*" },
-            customMetadata: { deleted: "true", sha256: "deleted" },
-          });
-          if (!deleted) conflicts.push(path);
-        }
-        return conflicts;
-      };
-      return runtimeEnv.withProjectWorkspaceMutation ? runtimeEnv.withProjectWorkspaceMutation(legacyMerge) : legacyMerge();
+      // A legacy branch prefix has no transaction capable of publishing a complete worker
+      // changeset against a checked head. Keep the worker branch intact and require the canonical
+      // Coordinator path instead of partially copying files into the target prefix.
+      return [{ path: "<checked-workspace-coordinator>", reason: "checked_coordinator_required" }];
     };
 
     hooks.finalizeWorkspace = async () => {
@@ -4025,12 +4000,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             async (id, workerBranch) => {
               const rootBranch = await this.ctx.storage.get<string>(`worker-branch-root:${id}`);
               const parentBranch = await this.ctx.storage.get<string>(`worker-branch-parent:${id}`);
-              const conflicts: string[] = [];
+              const conflicts: WorkerMergeConflictDetail[] = [];
               if (rootBranch !== undefined && rootBranch !== workerBranch) conflicts.push(...await mergeWorkerWorkspace(id, workerBranch, rootBranch || undefined));
               if (parentBranch !== undefined && parentBranch !== workerBranch && parentBranch !== rootBranch) {
                 conflicts.push(...await mergeWorkerWorkspace(id, workerBranch, parentBranch || undefined));
               }
-              return [...new Set(conflicts)];
+              return [...new Map(conflicts.map(conflict => [`${conflict.path}\0${conflict.reason}\0${conflict.baseHash ?? ""}\0${conflict.targetHash ?? ""}\0${conflict.sourceHash ?? ""}`, conflict])).values()];
             });
         } finally {
           await this.releaseConcurrencySlot(concurrencyKey, parentRunId);
@@ -4765,7 +4740,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     effort?: string,
     abortSignal?: AbortSignal,
     runtimeEnv?: ScriptEngineEnv,
-    mergeWorkerWorkspace?: (subId: string, branch: string) => Promise<string[]>
+    mergeWorkerWorkspace?: (subId: string, branch: string) => Promise<WorkerMergeConflictDetail[]>
   ): Promise<{ id: string }> {
     const fanout = childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true);
     if (!tasks.length || tasks.length > fanout) throw new Error(`sub-agent fan-out must be within 1..${fanout}`);
@@ -5015,7 +4990,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           if (ok && workspaceBranch) {
             if (mergeWorkerWorkspace && workspaceBranch.startsWith("workers/")) {
               const conflicts = await mergeWorkerWorkspace(subId, workspaceBranch);
-              if (conflicts.length) output = `${output ?? ""}\n\nWORKSPACE MERGE CONFLICTS (unapplied): ${conflicts.join(", ")}\nAsk the planner to reconcile these paths; no conflicting worker changes were applied.`;
+              if (conflicts.length) {
+                const visible = conflicts.slice(0, 50).map(conflict => ({
+                  path: conflict.path.slice(0, 512), reason: conflict.reason.slice(0, 64),
+                  ...(conflict.otherPath ? { otherPath: conflict.otherPath.slice(0, 512) } : {}),
+                  baseHash: conflict.baseHash ?? null, targetHash: conflict.targetHash ?? null, sourceHash: conflict.sourceHash ?? null,
+                }));
+                const remaining = Math.max(0, conflicts.length - visible.length);
+                output = `${output ?? ""}\n\nWORKSPACE MERGE CONFLICTS (unapplied): ${JSON.stringify({ conflicts: visible, ...(remaining ? { omitted: remaining } : {}) })}\nAsk the planner to reconcile these paths; original worker and target branches are retained.`;
+              }
             }
           }
           const modifiedFiles = output && typeof output === "object" && Array.isArray((output as Record<string, unknown>)["modifiedFiles"])
