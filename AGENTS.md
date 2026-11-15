@@ -16,7 +16,35 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
+## Latest checkpoint — 2026-11-15 (§11.2 business actions and §11.4 storage status; pushed)
+
+Pushed 10a3c9a04b7ddb8398637085380b05058f41c6fc adds signed inventory.adjustStock.v1 beside receiveStock.
+Both use the same owner/admin host path for human HTTP and assistant/MCP, with schema validation, current
+release/install pin, CAS, idempotent receipts, audit, and generic-CRUD protection. Adjustment sets the exact
+nonnegative count and records the quantity delta. Existing event rows are migrated; archive restore converts
+rows only for the exact prior event-table schema. Pushed 49efa6db41265a700e48ddf335953ff827452795 adds
+measured SQLite usage, tier capacity, and non-billing disclosure to the active Space Extension view.
+
+Local evidence: SDK 5/5, Spaces action/MCP 25/25, Shell action/storage 6/6; SDK/Spaces/Shell typechecks and
+diff check pass. These are local tests and DO/SQLite mocks; no browser, deployed Worker/D1/DO/R2, provider
+action, or live acceptance ran. Both commits are pushed to origin/Mcbt5s-Backup-2. Preserve
+infra/scripts/__pycache__/; rollouts stay disabled.
+
+Fetched origin/plan/microapps-ui-sdk-voice at df3386257262a88888d647daa4d10f3af2ff9596 is compared with the
+active platform plan. Fish Live 3 and sections 9–11 are already copied; no additional plan text exists and
+no merge occurred. Its P04 note is older than current Knowledge archive work. P05 Space-shared connections
+remain project-scoped (Space-level installation currently supports phone only); the signed contract lacks
+beneficiary, payer, shared authority, and revocation/drain rules. This is a product/runtime contract gap,
+not credentials. P04 exact-user MicroApp archive lacks a reachable authenticated user identity caller; keep
+private state out of Space-owner archives.
+
+Exact next action: extend §11.4 storage reporting from Space-shared tier 3 to project-bound Gadget actors.
+Add an authenticated read-only Project /api/storage Shell caller, derive Gadget actor IDs from the signed
+installed bundle, and show measured usage, tier cap, and Tier 1 idle-erasure disclosure in Project extension
+management. Verify cross-project and foreign-app rejection, then continue remaining S2–S9/U01–U12 and
+P01–P24 gaps.
+
+## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 
 Code `e475eb6b45e9ef6b219385c4ee2a55ef39f6b895` is pushed to `origin/Mcbt5s-Backup-2`. The bounded,
 tenant/Space/Project-scoped Knowledge archive bridge includes canonical document/chunk rows, ACL and

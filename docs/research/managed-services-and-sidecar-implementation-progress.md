@@ -1,6 +1,35 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
+## Latest checkpoint — 2026-11-15 (§11.2 business actions and §11.4 storage status; pushed)
+
+Pushed 10a3c9a04b7ddb8398637085380b05058f41c6fc adds signed inventory.adjustStock.v1 beside receiveStock.
+Both share the host-authorized human HTTP and assistant/MCP path, enforce owner/admin roles, schemas,
+release/install pins, CAS and idempotent receipts, audit results, and block generic CRUD from changing
+protected stock fields. Adjustment sets the exact nonnegative count. Durable events record operation and
+quantity delta; existing receive events are backfilled, and archive restore accepts the exact previous
+event-table schema with a safe conversion. Pushed 49efa6db41265a700e48ddf335953ff827452795 adds owner-
+visible Space-shared Gadget SQLite usage, tier cap, and non-billing disclosure.
+
+Local evidence: SDK business-action 5/5, Spaces action/MCP 25/25, Shell action/storage UI 6/6,
+SDK/Spaces/Shell typechecks and diff check. These are local mocks/SQLite checks; no browser, deployed
+DO/D1/Worker, provider effect, or live acceptance ran. Both code commits are pushed. Section 11.2 has two
+local transactional examples; general approval, paid/external effects, other domains, and deployed
+acceptance remain open.
+
+Plan branch comparison: origin/plan/microapps-ui-sdk-voice at df3386257262a88888d647daa4d10f3af2ff9596 has
+no requirements beyond sections 9–11 already copied into the active platform plan. No merge occurred. P05
+Space-shared provider routes remain project-scoped; Space-level installation currently supports phone only.
+Beneficiary, payer, shared authority, and revocation/drain semantics are absent, so this is a contract gap
+rather than credentials. P04 exact-user archive similarly lacks a reachable authenticated user identity
+caller.
+
+Rollouts remain disabled; preserve infra/scripts/__pycache__/. Exact next action: extend §11.4 storage
+reporting to project-bound Gadget actors with an authenticated read-only Project /api/storage caller; derive
+exact Gadget IDs from signed installed manifests; display usage, tier limits, and Tier 1 idle erasure in
+Project extension management. Verify cross-project and foreign-app rejection, then continue independent
+S/P/U code gaps.
+
+## Earlier checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 
 Code `e475eb6b45e9ef6b219385c4ee2a55ef39f6b895` is pushed to `origin/Mcbt5s-Backup-2`. The P04
 Knowledge bridge snapshots bounded canonical `kb_documents`/`kb_chunks`, ACL and required KB_BUCKET
