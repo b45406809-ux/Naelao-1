@@ -1,6 +1,16 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-15 (PW04 bounded large exact-copy review; code 89cb0a8f pushed)
+## Latest cross-plan checkpoint — 2026-11-15 (P06 voice interruption and PW06 telemetry; code 8233788b pushed)
+
+PW06's Coordinator merge telemetry now records only fixed event/outcome/conflict categories and bounded counts; Analytics failures do not affect checked publication. P06 owner-call TTS forwards cancellation to the provider and cancels in-flight reads. The BYO Telnyx extension voice runtime now discards buffered PCM after caller barge-in and treats the resulting stream abort as intentional, keeping the call alive.
+
+Local evidence: telemetry suite **82/82** and Agents typecheck at `448196a36e985e05e919d62df43c3ac00c013b06`; Telnyx extension voice runtime **6/6**, Telnyx call routing **8/8**, TTS **4/4**, Agents typecheck and `git diff --check` at `8233788bc1656bac2ca9cf914e91da198d8f3780`. These are local Worker/SQLite and mocked-provider checks, not deployed or carrier acceptance. A concurrent test invocation timed out one 3-second wait; the isolated full suite passed. Both commits are pushed and remote-verified. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
+
+PW06 still lacks outcome telemetry for integrated worker validation, broader cancellation/revocation and cost settlement; actual runtime isolation and deployed concurrency/recovery acceptance remain separate gates. P06 still awaits signed distribution policy, managed provisioning and provider/carrier evidence. U05/U06 remain unsupported runtime-contract gates. Continue both plans; do not treat external acceptance as code completion.
+
+Exact next action: add privacy-safe, fixed-label telemetry for `runCheckedWorkerIntegration` outcomes and elapsed validation duration, then add failure-isolation coverage. Continue uncoded S3–S9/U01–U12/P01–P24 afterward.
+
+## Previous cross-plan checkpoint — 2026-11-15 (PW04 bounded large exact-copy review; code 89cb0a8f pushed)
 
 Manual conflict review now supports exact backend-only copies up to 2 MiB per file and per review set while text rendering and reviewer-authored input remain capped at 256 KiB. Shell receives only hashes/status; Agents re-reads the selected scoped R2 object, verifies its size and SHA-256, and stages only through the checked Coordinator. The 2 MiB encoded payload remains below the Coordinator's 30 MiB request bound. The worker branch is retained and failed or stale copies do not publish.
 
