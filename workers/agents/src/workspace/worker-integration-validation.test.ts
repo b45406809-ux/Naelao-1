@@ -11,7 +11,7 @@ import {
 const hash = (character: string) => character.repeat(64);
 const commit = (character: string) => character.repeat(40);
 
-function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-advanced" | "validator-changed" | "validation-mutated" = "pass", config: string | null = '{"schema_version":1,"command":"pnpm test"}') {
+function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-advanced" | "validator-changed" | "validation-mutated" | "cancel-during-validation" = "pass", config: string | null = '{"schema_version":1,"command":"pnpm test"}') {
   const target: WorkerIntegrationHead = run === "target-advanced"
     ? { branch: "main", commitId: commit("c"), revision: 3, manifestHash: hash("c") }
     : { branch: "main", commitId: commit("a"), revision: 2, manifestHash: hash("a") };
@@ -32,11 +32,13 @@ function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-adva
     heads.set(target.branch, { ...candidate, branch: target.branch, revision: target.revision + 1 });
   });
   const saveReceipt = vi.fn(async () => {});
+  let active = true;
   const mergeCandidate = vi.fn(async () => {
     heads.set(candidate.branch, candidate);
     return {};
   });
   const host: WorkerIntegrationHost = {
+    isActive: async () => active,
     readHead: async branch => heads.get(branch) ?? null,
     readProjectValidationConfig: async branch => run === "validator-changed" && branch === candidate.branch
       ? '{"schema_version":1,"command":"pnpm run test:alternate"}' : config,
@@ -47,6 +49,7 @@ function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-adva
     },
     mergeCandidate,
     runValidation: async () => {
+      if (run === "cancel-during-validation") active = false;
       if (run === "stale-target") heads.set(target.branch, { ...target, revision: 3, manifestHash: hash("c") });
       if (run === "validation-mutated") heads.set(validation.branch, { ...validation, commitId: commit("e"), manifestHash: hash("e"), revision: validation.revision + 1 });
       return run === "pass" || run === "stale-target" || run === "target-advanced"
@@ -56,7 +59,7 @@ function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-adva
     publishCandidate,
     saveReceipt,
   };
-  return { host, publishCandidate, saveReceipt, mergeCandidate, target, source, sourceBase };
+  return { host, publishCandidate, saveReceipt, mergeCandidate, target, source, sourceBase, cancel: () => { active = false; } };
 }
 
 const input = {
@@ -101,6 +104,13 @@ describe("checked worker integration", () => {
       expectedTarget: expect.objectContaining({ commitId: commit("a"), revision: 2, manifestHash: hash("a") }),
       expectedSourceCommitId: commit("b"),
     }));
+  });
+
+  it("does not publish or save a success receipt when cancellation lands during validation", async () => {
+    const f = fixture("cancel-during-validation");
+    await expect(runCheckedWorkerIntegration(pinnedInput(f), f.host)).rejects.toThrow("worker_cancelled");
+    expect(f.publishCandidate).not.toHaveBeenCalled();
+    expect(f.saveReceipt).not.toHaveBeenCalled();
   });
 
   it("emits bounded validation metrics with only fixed categories and duration", () => {

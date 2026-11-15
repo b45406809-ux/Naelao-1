@@ -81,6 +81,8 @@ export type WorkerIntegrationValidationRun = {
 };
 
 export type WorkerIntegrationHost = {
+  /** Recheck the durable worker attempt before each validation/publication phase. */
+  isActive?(): Promise<boolean>;
   readHead(branch: string): Promise<WorkerIntegrationHead | null>;
   readProjectValidationConfig(targetBranch: string, targetCommitId: string): Promise<string | null>;
   createBranch(branch: string, sourceBranch: string, sourceCommitId: string): Promise<void>;
@@ -125,6 +127,10 @@ export async function runCheckedWorkerIntegration(input: {
   expectedSourceBase: WorkerIntegrationBranchBase;
 }, host: WorkerIntegrationHost): Promise<WorkerIntegrationResult> {
   const started = Date.now();
+  const ensureActive = async () => {
+    if (host.isActive && !await host.isActive()) throw new Error("worker_cancelled");
+  };
+  await ensureActive();
   const target = await host.readHead(input.targetBranch);
   const source = await host.readHead(input.sourceBranch);
   if (!validHead(target, input.targetBranch) || !validHead(source, input.sourceBranch) ||
@@ -170,6 +176,7 @@ export async function runCheckedWorkerIntegration(input: {
   });
   const finish = async (resultStatus: WorkerIntegrationResult["status"], conflicts: WorkerIntegrationConflict[] = []): Promise<WorkerIntegrationResult> => {
     const value = receipt();
+    await ensureActive();
     await host.saveReceipt(value);
     try {
       host.recordMetric?.({ outcome: resultStatus, validationStatus: value.status, durationMs: value.durationMs });
@@ -184,6 +191,7 @@ export async function runCheckedWorkerIntegration(input: {
     return finish("blocked", [{ path: "<worker-branch-base>", reason }]);
   }
 
+  await ensureActive();
   const rawConfig = await host.readProjectValidationConfig(input.targetBranch, target.commitId);
   const contract = parseWorkerValidationConfig(rawConfig);
   if (!contract) {
@@ -193,6 +201,7 @@ export async function runCheckedWorkerIntegration(input: {
   command = contract.command;
   commandHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(command)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
 
+  await ensureActive();
   await host.createBranch(input.candidateBranch, input.targetBranch, target.commitId);
   const candidateBase = await host.readHead(input.candidateBranch);
   if (!validHead(candidateBase, input.candidateBranch) || candidateBase.commitId !== target.commitId ||
@@ -201,6 +210,7 @@ export async function runCheckedWorkerIntegration(input: {
     reason = "candidate_base_mismatch";
     return finish("blocked");
   }
+  await ensureActive();
   const merge = await host.mergeCandidate({ targetBranch: input.candidateBranch, sourceBranch: input.sourceBranch,
     expectedTargetCommitId: candidateBase.commitId!, expectedSourceCommitId: source.commitId });
   if (merge.conflicts?.length) {
@@ -214,12 +224,14 @@ export async function runCheckedWorkerIntegration(input: {
     reason = "candidate_merge_result_mismatch";
     return finish("blocked");
   }
+  await ensureActive();
   const candidateConfig = parseWorkerValidationConfig(await host.readProjectValidationConfig(candidate.branch, candidate.commitId));
   if (!candidateConfig || candidateConfig.command !== command) {
     reason = "validation_contract_changed_requires_review";
     return finish("blocked", [{ path: WORKER_VALIDATION_CONFIG_PATH, reason }]);
   }
 
+  await ensureActive();
   await host.createBranch(input.validationBranch, input.candidateBranch, candidate.commitId!);
   validation = await host.readHead(input.validationBranch);
   if (!validHead(validation, input.validationBranch) || validation.commitId !== candidate.commitId || validation.manifestHash !== candidate.manifestHash ||
@@ -229,8 +241,10 @@ export async function runCheckedWorkerIntegration(input: {
     return finish("blocked");
   }
 
+  await ensureActive();
   const validationRun = await host.runValidation({ command, commandHash, branch: validation.branch,
     revision: validation.revision, manifestHash: validation.manifestHash });
+  await ensureActive();
   status = validationRun.status;
   exitCode = validationRun.exitCode;
   reason = validationRun.reason;
@@ -252,8 +266,10 @@ export async function runCheckedWorkerIntegration(input: {
 
   status = "passed";
   // Persist the exact successful candidate receipt before the checked target publication.
+  await ensureActive();
   await host.saveReceipt(receipt());
   try {
+    await ensureActive();
     await host.publishCandidate({ targetBranch: input.targetBranch, candidateBranch: input.candidateBranch,
       expectedTarget: target, expectedSourceCommitId: candidate.commitId! });
     publicationStatus = "published";

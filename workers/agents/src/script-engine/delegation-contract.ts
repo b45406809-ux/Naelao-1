@@ -6,6 +6,8 @@ import { normalizeWorkspacePath } from "./workspace-paths.js";
 export interface DelegationContract {
   tenantId: string; spaceId: string; projectId?: string; actorId: string; agentId: string;
   rootRunId: string; parentRunId: string; parentDoId: string; workerId: string;
+  /** Monotonic attempt fence for durable worker-session callbacks. */
+  workerAttempt?: number;
   depth: 2 | 3; planner: boolean; maxTokens: number; maxSteps: number;
   /** Host-classified managed runtime capability; advisory until the execution tool resolves it. */
   runtimeCapability?: string;
@@ -24,6 +26,7 @@ function resource(contract: DelegationContract): string {
     if (typeof value !== "string" || !value || value.length > 192) throw new Error("delegation_identity_invalid");
   }
   if (contract.callerRole !== undefined && (typeof contract.callerRole !== "string" || !contract.callerRole || contract.callerRole.length > 192)) throw new Error("delegation_identity_invalid");
+  if (contract.workerAttempt !== undefined && (!Number.isSafeInteger(contract.workerAttempt) || contract.workerAttempt < 1)) throw new Error("delegation_worker_attempt_invalid");
   if (!Number.isInteger(contract.maxTier) || contract.maxTier < 1 || contract.maxTier > 6 || typeof contract.localOnly !== "boolean" || (contract.localModelMachine !== undefined && (typeof contract.localModelMachine !== "string" || !contract.localModelMachine))
     || (contract.runtimeCapability !== undefined && (typeof contract.runtimeCapability !== "string" || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(contract.runtimeCapability)))
     || ![2, 3].includes(contract.depth) || typeof contract.planner !== "boolean" || (contract.depth === 3 && contract.planner)
@@ -53,6 +56,7 @@ function resource(contract: DelegationContract): string {
   const requirements=validateWorkerModelRequirements(contract.modelRequirements);
   // Fixed order includes every field used to grant child execution permissions.
   return JSON.stringify([contract.agentId, contract.rootRunId, contract.parentRunId, contract.parentDoId, contract.workerId,
+    ...(contract.workerAttempt === undefined ? [] : [contract.workerAttempt]),
     contract.depth, contract.planner, contract.maxTokens, contract.maxSteps, contract.model, contract.role, contract.callerRole ?? null, contract.workspaceBranch ?? null, contract.maxTier, contract.localOnly, contract.localModelMachine ?? null, contract.runtimeCapability ?? null, contract.filePaths === undefined ? null : [...contract.filePaths].sort(), contract.knowledgeScopes === undefined ? null : [...contract.knowledgeScopes].sort(),
     contract.workerCapabilities === undefined ? null : [ [...contract.workerCapabilities.enabledPrebuilts].sort(), [...contract.workerCapabilities.selectedSkills].sort() ],
     ...(requirements ? [[...requirements.inputModalities].sort(), requirements.minContextTokens] : [])]);
