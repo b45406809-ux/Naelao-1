@@ -16,35 +16,35 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P06 Telnyx published settings pin; U05 runtime contract gate; pushed)
+## Latest checkpoint — 2026-11-15 (U09 encrypted private-state recovery and cleanup; pushed)
 
-Code `61384f4dfbabe4704cd1df3bc7b5b55840601075` is pushed to `origin/Mcbt5s-Backup-2`; fetch
-confirmed the remote stayed at `c0daaf86` before push. Telnyx DTMF call admission now resolves and
-persists the exact extension installation, handler digest and published settings revision. Call-start
-and later DTMF turns pass those pins to the Agents host, which resolves only the matching published
-settings version; unavailable or changed versions fail closed and end the call. SpaceDO migration 143
-backfills the current active settings revision, and ordinary active settings writes now retain bounded
-version receipts. Owner phone history shows the pinned revision. Rollout remains disabled.
+Code `ef77e19375b134c724be5fec95ba771573e1ba10` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch
+confirmed the remote at `7e9d3c2b` with no advance. Migration 0255 adds a default-empty owner-selected
+private-path manifest, metadata-only revision audit and encrypted backup ledger. Owner/admin APIs and
+Project Settings manage bounded UTF-8 paths below `.naelao/private/`, outside canonical workspace sync.
+Capture filters secret-named/shared/browser/cache paths and common credential material. AES-GCM/HKDF
+binds tenant/Space/Project/jurisdiction, request, generation, configured image/toolchain fingerprints,
+key version and expiry. Restore checks tombstone, generation, jurisdiction, expiry, selection and
+provenance, then writes only missing files. Retention runs every five minutes in bounded batches;
+expired and project-erased records stay `delete_pending` until R2 acknowledges deletion, and erasure
+waits for pending private-state objects. All flags remain false.
 
-Local evidence: Spaces settings/migration/route suites **19/19**; Agents Telnyx/call-scope/phone suites
-**53/53**; Spaces, Agents and Shell typechecks; release manifest and release-runner tests **20/20**;
-`git diff --check`. No browser, carrier/provider call, deployment or live acceptance ran. P06 remains
-PARTIAL for first-party publisher identity/signing/catalog distribution, conversational voice, managed
-provisioning, complete cost/quality evidence and live acceptance.
+Evidence: five focused Agents suites **66/66**, Agents and Shell typechecks, release migration tests
+**20/20**, release/deployment validators confirm **255** migrations and required schema 0255, and
+`git diff --check`. These are local SQLite/fake-R2/fake-Container checks. Dedicated global/EU R2
+bindings and the encryption key are absent, so the feature is unavailable in every environment. No
+deployed D1/R2/Container, browser, provider, deployment or live acceptance ran. U09 remains PARTIAL for
+provider snapshot deletion, restart execution, old-process reconnect fencing, trusted immutable image/
+toolchain evidence and deployed recovery acceptance. U10's runtime/browser notification ledgers and
+retry path exist; dormant unregistered objects and provider physical purge remain unproven. U05 image
+selection and trusted mount/sync/flush/region producers remain unsupported platform contracts, not
+credential blockers. Preserve untracked `infra/scripts/__pycache__/` and keep rollouts disabled.
 
-U05 source reconciliation: no project-main candidate allocator was added because the current
-`project_main_runtime_registry` has no selectable immutable image digest and the main Container has no
-trusted mount/sync/flush/region observation producer. The verifier's live-mount candidates use the
-separate `sandbox_computers`/provider-allocation model. This is an unsupported platform contract and
-producer gap, not unavailable credentials. Do not fabricate an attestation or enable live workspace
-mode. Preserve untracked `infra/scripts/__pycache__/`.
-
-Exact next action: continue S3/U09 by replacing the branch-addressed DynamicSandbox main-computer
-identity with a project-wide registry/claim that serializes active ownership across branches and fences
-stale branch/container reconnects. Reuse existing allocation generations and budget holds; preserve
-branch-specific workspace revisions and snapshot receipts. Add cross-branch concurrent admission,
-stale-generation, lost-ack retry and owner authorization tests. Keep live mode disabled; then continue
-independent S3–S9/U01–U12 and P01–P24 gaps.
+Exact next action: continue S5/MS08d by adding the missing reachable Modal provider caller and durable
+operation journal on a separately hosted Node 22+ boundary, using the existing provider-neutral
+lifecycle contract. Keep credentials in the host and the rollout disabled; do not claim Modal support
+until the product accepts the Beta/private gRPC SDK dependency and deploys the host. Then continue the
+remaining S3–S9/U01–U12/P01–P24 uncoded work.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided setup lifecycle; U05 runtime contract gate; pushed)
 
