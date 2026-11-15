@@ -16,6 +16,7 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import {
   listKbDocuments,
   createKbDocument,
+  previewKbPdf,
   getRestoredKbDocumentContent,
   reindexRestoredKbDocument,
   deleteKbDocument,
@@ -24,6 +25,7 @@ import {
   type KbSearchResult,
 } from "@/lib/api";
 import { knowledgeContentByteLength, SPACE_KNOWLEDGE_MAX_CONTENT_BYTES } from "@/lib/knowledge-upload-limits";
+import { readKnowledgePdfFile } from "@/lib/knowledge-pdf-preview";
 
 const STATUS_COLOR: Record<KbDocument["status"], "green" | "amber" | "red"> = {
   indexed: "green",
@@ -51,6 +53,8 @@ export default function KnowledgePage() {
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [fileError, setFileError] = React.useState<string | null>(null);
+  const [pdfPreview, setPdfPreview] = React.useState<{ base64: string; receipt: Awaited<ReturnType<typeof previewKbPdf>> } | null>(null);
+  const [previewingPdf, setPreviewingPdf] = React.useState(false);
 
   const [query, setQuery] = React.useState("");
   const [searching, setSearching] = React.useState(false);
@@ -89,9 +93,16 @@ export default function KnowledgePage() {
     }
     setSaving(true);
     try {
-      await createKbDocument(activeSpaceId, creds, { title: title.trim(), content: submittedContent, content_type: "text" });
+      await createKbDocument(activeSpaceId, creds, pdfPreview ? {
+        title: title.trim(), content: pdfPreview.base64, content_type: "pdf",
+        ...(pdfPreview.receipt.source_file_name ? { source_file_name: pdfPreview.receipt.source_file_name } : {}),
+        preview_content: submittedContent, preview_token: pdfPreview.receipt.preview_token,
+        preview_extraction_sha256: pdfPreview.receipt.extraction_sha256,
+      } : { title: title.trim(), content: submittedContent, content_type: "text" });
       setTitle("");
       setContent("");
+      setPdfPreview(null);
+      setFileError(null);
       setShowAdd(false);
       show("Added — it'll show as \"indexed\" once embedding finishes.");
       await refresh();
@@ -102,20 +113,37 @@ export default function KnowledgePage() {
     }
   }
 
-  // Real file-browse, alongside the manual paste — reads a selected file's TEXT client-side and
-  // pre-fills title (from the filename) + content, rather than making a person retype/copy-paste
-  // a document they already have as a file. Space-wide documents are limited to 1 MiB by the API;
-  // real binary/PDF parsing stays a separate, larger KB-pipeline feature.
-  function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
+  // Text stays a direct bounded upload. PDF uses the scoped parser preview and the original file
+  // bytes remain bound to the later approval request.
+  async function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = ""; // allow re-selecting the same file next time
     if (!file) return;
+    setPdfPreview(null);
+    if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
+      if (!creds) return;
+      setFileError(null);
+      setPreviewingPdf(true);
+      try {
+        const base64 = await readKnowledgePdfFile(file);
+        const receipt = await previewKbPdf(activeSpaceId, creds, { content: base64, source_file_name: file.name });
+        setTitle((current) => current || file.name.replace(/\.pdf$/i, ""));
+        setContent(receipt.content);
+        setPdfPreview({ base64, receipt });
+      } catch (err) {
+        setFileError(err instanceof Error ? err.message : "Could not preview that PDF.");
+      } finally {
+        setPreviewingPdf(false);
+      }
+      return;
+    }
     const looksText = /^text\//.test(file.type) || file.type === "" || /\.(md|txt|csv|json|ts|tsx|js|jsx|py|yaml|yml|log)$/i.test(file.name);
     if (!looksText || file.size > SPACE_KNOWLEDGE_MAX_CONTENT_BYTES) {
       setFileError(`Can't read "${file.name}" — Space-wide Knowledge accepts text files up to 1 MiB.`);
       return;
     }
     setFileError(null);
+    setPdfPreview(null);
     file.text().then((text) => {
       setTitle((t) => t || file.name);
       setContent(text);
@@ -225,12 +253,19 @@ export default function KnowledgePage() {
             <div style={{ fontSize: 12, color: "var(--text3)" }}>
               Space-wide text limit: 1 MiB ({knowledgeContentByteLength(content.trim()).toLocaleString()} bytes entered). Project Knowledge supports up to 5 MiB.
             </div>
+            {pdfPreview && <div role="status" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, fontSize: 12 }}>
+              <strong>PDF extraction preview · {pdfPreview.receipt.parser_version}</strong>
+              <div>Source SHA-256: <code>{pdfPreview.receipt.source_sha256}</code></div>
+              <div>{pdfPreview.receipt.source_bytes.toLocaleString()} source bytes · {pdfPreview.receipt.extracted_bytes.toLocaleString()} extracted bytes (1 MiB Space-wide limit)</div>
+              <p>Review and edit the extracted text below before saving. This selected PDF is bound to the preview for 15 minutes.</p>
+              <ul>{pdfPreview.receipt.extraction_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+            </div>}
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <Button onClick={() => void handleAdd()} disabled={saving || !title.trim() || !content.trim() || knowledgeContentByteLength(content.trim()) > SPACE_KNOWLEDGE_MAX_CONTENT_BYTES}>
+              <Button onClick={() => void handleAdd()} disabled={saving || previewingPdf || !title.trim() || !content.trim() || knowledgeContentByteLength(content.trim()) > SPACE_KNOWLEDGE_MAX_CONTENT_BYTES}>
                 {saving ? "Adding…" : "Add"}
               </Button>
-              <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFilePick} />
-              <Button variant="ghost" onClick={() => fileInputRef.current?.click()}>Upload a file instead</Button>
+              <input ref={fileInputRef} type="file" accept=".pdf,.txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.yaml,.yml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handleFilePick(event)} />
+              <Button variant="ghost" onClick={() => fileInputRef.current?.click()} disabled={previewingPdf}>{previewingPdf ? "Preparing PDF preview…" : "Upload text or PDF"}</Button>
               {fileError && <span style={{ fontSize: 12, color: "var(--danger)" }}>{fileError}</span>}
             </div>
           </div>

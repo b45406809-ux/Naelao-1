@@ -11,6 +11,8 @@ export interface KnowledgeArchiveDocument {
   id: string; tenant_id: string; space_id: string; project_id: string | null; title: string; source_url: string | null;
   content_type: string; status: "indexed"; chunk_count: number; required_role_rank: number;
   allowed_user_ids_json: string; created_at: string; updated_at: string;
+  source_sha256?: string | null; source_file_name?: string | null; parser_version?: string | null;
+  parser_output_sha256?: string | null; approved_content_sha256?: string | null;
   chunks: KnowledgeArchiveChunk[]; objectReferences: KnowledgeArchiveObjectReference[];
 }
 export interface KnowledgeArchiveSnapshot {
@@ -32,6 +34,11 @@ const CHUNK_COLUMNS = `id,tenant_id,space_id,project_id,document_id,chunk_index,
 
 async function contentHash(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function sourceHash(value: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
@@ -67,7 +74,8 @@ export async function exportKnowledgeArchive(
   scope: { tenantId: string; spaceId: string },
 ): Promise<{ snapshot: KnowledgeArchiveSnapshot; objectReferences: KnowledgeArchiveObjectReference[] }> {
   const { results: rows } = await env.PLATFORM_DB.prepare(`SELECT d.id,d.tenant_id,d.space_id,d.project_id,d.title,d.source_url,
-    d.content_type,d.status,d.chunk_count,d.required_role_rank,d.allowed_user_ids_json,d.created_at,d.updated_at
+    d.content_type,d.status,d.chunk_count,d.required_role_rank,d.allowed_user_ids_json,d.source_sha256,d.source_file_name,
+    d.parser_version,d.parser_output_sha256,d.approved_content_sha256,d.created_at,d.updated_at
     FROM kb_documents d WHERE d.tenant_id=? AND d.space_id=? AND NOT EXISTS
       (SELECT 1 FROM kb_document_deletion_operations x WHERE x.document_id=d.id)
     ORDER BY d.id LIMIT ?`).bind(scope.tenantId, scope.spaceId, MAX_DOCUMENTS + 1)
@@ -135,6 +143,13 @@ export async function exportKnowledgeArchive(
       if (requiredChunkObjects.some((key) => !references.some((reference) => reference.key === key))) {
         throw new Error("knowledge_archive_chunk_objects_incomplete");
       }
+      if (typeof row.source_sha256 === "string") {
+        const source = await env.KB_BUCKET.get(`${prefix}original`);
+        if (!/^[a-f0-9]{64}$/.test(row.source_sha256) || !source
+          || await sourceHash(await source.arrayBuffer()) !== row.source_sha256) {
+          throw new Error("knowledge_archive_pdf_source_hash_mismatch");
+        }
+      }
       for (const chunk of chunks) {
         const citationKey = `${prefix}chunk_${chunk.chunk_index}.txt`;
         const citation = await env.KB_BUCKET.get(citationKey);
@@ -154,6 +169,11 @@ export async function exportKnowledgeArchive(
         project_id: row.project_id as string | null, title: String(row.title), source_url: row.source_url as string | null,
         content_type: String(row.content_type), status: "indexed", chunk_count: chunks.length, required_role_rank: roleRank,
         allowed_user_ids_json: JSON.stringify(acl), created_at: String(row.created_at), updated_at: String(row.updated_at),
+        source_sha256: typeof row.source_sha256 === "string" ? row.source_sha256 : null,
+        source_file_name: typeof row.source_file_name === "string" ? row.source_file_name : null,
+        parser_version: typeof row.parser_version === "string" ? row.parser_version : null,
+        parser_output_sha256: typeof row.parser_output_sha256 === "string" ? row.parser_output_sha256 : null,
+        approved_content_sha256: typeof row.approved_content_sha256 === "string" ? row.approved_content_sha256 : null,
         chunks, objectReferences: references,
       };
       totalChunks += chunks.length;
@@ -190,6 +210,16 @@ export async function validateKnowledgeArchiveSnapshot(
       || typeof document.title !== "string" || document.title.length > 500
       || !["text", "url", "code", "pdf"].includes(document.content_type)
       || document.source_url !== null && typeof document.source_url !== "string"
+      || document.source_sha256 !== undefined && document.source_sha256 !== null && !/^[a-f0-9]{64}$/.test(document.source_sha256)
+      || document.source_file_name !== undefined && document.source_file_name !== null &&
+        (typeof document.source_file_name !== "string" || document.source_file_name.length > 255)
+      || document.parser_version !== undefined && document.parser_version !== null &&
+        (typeof document.parser_version !== "string" || document.parser_version.length > 128)
+      || document.parser_output_sha256 !== undefined && document.parser_output_sha256 !== null && !/^[a-f0-9]{64}$/.test(document.parser_output_sha256)
+      || document.approved_content_sha256 !== undefined && document.approved_content_sha256 !== null && !/^[a-f0-9]{64}$/.test(document.approved_content_sha256)
+      || typeof document.source_sha256 === "string" && (document.content_type !== "pdf"
+        || typeof document.parser_version !== "string" || !document.parser_version
+        || typeof document.parser_output_sha256 !== "string" || typeof document.approved_content_sha256 !== "string")
       || typeof document.created_at !== "string" || typeof document.updated_at !== "string"
       || document.status !== "indexed" || !Number.isSafeInteger(document.chunk_count) || document.chunk_count < 0
       || !Number.isSafeInteger(document.required_role_rank) || document.required_role_rank < 0 || document.required_role_rank > 50
@@ -219,6 +249,10 @@ export async function validateKnowledgeArchiveSnapshot(
         || typeof reference.etag !== "string" || !reference.etag || !Number.isSafeInteger(reference.size) || reference.size < 0 || reference.size > MAX_OBJECT_BYTES
         || keys.has(reference.key)) throw new Error("knowledge_archive_object_reference_invalid");
       keys.add(reference.key); totalObjects++; totalObjectBytes += reference.size;
+    }
+    if (document.source_sha256 && !document.objectReferences.some((reference) =>
+      reference.key === `kb/${expected.spaceId}/${expectedProject}/${document.id}/original`)) {
+      throw new Error("knowledge_archive_pdf_source_missing");
     }
     if (document.chunks.some((chunk, index) => !document.objectReferences.some((ref) => ref.key ===
       `kb/${expected.spaceId}/${expectedProject}/${document.id}/chunk_${index}.txt`)
@@ -313,11 +347,14 @@ export async function restoreKnowledgeArchive(
     if (disposition === "insert") {
       const result = await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO kb_documents
         (id,space_id,tenant_id,project_id,title,source_url,content_type,status,chunk_count,required_role_rank,
-         allowed_user_ids_json,created_at,updated_at,archive_restore_id)
-        SELECT ?,?,?,?,?,?,?,'processing',?,?,?,?,?,? WHERE NOT EXISTS (
+         allowed_user_ids_json,source_sha256,source_file_name,parser_version,parser_output_sha256,approved_content_sha256,
+         created_at,updated_at,archive_restore_id)
+        SELECT ?,?,?,?,?,?,?,'processing',?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (
           SELECT 1 FROM kb_document_deletion_operations WHERE document_id=? AND tenant_id=? AND space_id=?)`)
         .bind(document.id, document.space_id, document.tenant_id, document.project_id, document.title, document.source_url,
           document.content_type, document.chunk_count, document.required_role_rank, document.allowed_user_ids_json,
+          document.source_sha256 ?? null, document.source_file_name ?? null, document.parser_version ?? null,
+          document.parser_output_sha256 ?? null, document.approved_content_sha256 ?? null,
           document.created_at, document.updated_at, restoreId, document.id, document.tenant_id, document.space_id).run();
       if (!result.meta.changes) {
         const refreshed = await documentDisposition(env, document, restoreId);
@@ -344,6 +381,13 @@ export async function restoreKnowledgeArchive(
       for (const reference of document.objectReferences) {
         const object = await env.KB_BUCKET.head(reference.key);
         if (!object || object.size !== reference.size) throw new Error("knowledge_archive_object_missing_after_restore");
+      }
+      if (document.source_sha256) {
+        const sourceKey = `kb/${document.space_id}/${document.project_id ?? "_space"}/${document.id}/original`;
+        const source = await env.KB_BUCKET.get(sourceKey);
+        if (!source || await sourceHash(await source.arrayBuffer()) !== document.source_sha256) {
+          throw new Error("knowledge_archive_pdf_source_hash_mismatch");
+        }
       }
     for (let start = 0; start < document.chunks.length; start += 100) {
       if (!await renewKnowledgeDocumentMutationLease(env.PLATFORM_DB, document.id, restoreId)) {

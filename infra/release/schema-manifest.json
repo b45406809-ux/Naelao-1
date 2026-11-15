@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0262_userport_connector_expired_operation_index",
+  "requiredSchemaVersion": "0263_knowledge_pdf_preview_lineage",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1051,6 +1051,10 @@
     {
       "filename": "0262_userport_connector_expired_operation_index.sql",
       "sha256": "e1b7a4f596863c29186797ac045ce045c4e90a19e91d3fdec65c8a2c4950989b"
+    },
+    {
+      "filename": "0263_knowledge_pdf_preview_lineage.sql",
+      "sha256": "8a07745a8e4ddaa38bb936b2dcac3da988634b5ce8c618ebe29ce56cb55b246f"
     }
   ]
 }

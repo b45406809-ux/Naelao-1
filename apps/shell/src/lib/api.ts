@@ -3566,12 +3566,42 @@ export async function listKbDocuments(spaceId: string, session: SessionCredentia
   return res.data;
 }
 
+export interface KnowledgePdfPreview {
+  content: string;
+  source_sha256: string;
+  extraction_sha256: string;
+  parser_version: string;
+  preview_token: string;
+  source_file_name: string | null;
+  source_bytes: number;
+  extracted_bytes: number;
+  extraction_warnings: string[];
+}
+
+export async function previewKbPdf(
+  spaceId: string,
+  session: SessionCredentials,
+  input: { content: string; source_file_name: string; project_id?: string }
+): Promise<KnowledgePdfPreview> {
+  const response = await apiFetch<{ preview: KnowledgePdfPreview }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/documents/preview`,
+    { method: "POST", body: JSON.stringify(input), session, cache: "no-store" },
+  );
+  return response.preview;
+}
+
 export async function createKbDocument(
   spaceId: string,
   session: SessionCredentials,
-  input: { title: string; content: string; content_type?: string; source_url?: string; project_id?: string }
+  input: { title: string; content: string; content_type?: string; source_url?: string; project_id?: string;
+    preview_content?: string; preview_token?: string; preview_extraction_sha256?: string; source_file_name?: string }
 ): Promise<KbDocument> {
-  assertKnowledgeContentWithinScope(input.content, input.project_id);
+  if (input.content_type === "pdf") {
+    if (!input.preview_content) throw new Error("Preview and approve the PDF extraction before saving.");
+    assertKnowledgeContentWithinScope(input.preview_content, input.project_id);
+  } else {
+    assertKnowledgeContentWithinScope(input.content, input.project_id);
+  }
   return apiFetch(`/v1/spaces/${spaceId}/kb/documents`, { method: "POST", body: JSON.stringify(input), session });
 }
 

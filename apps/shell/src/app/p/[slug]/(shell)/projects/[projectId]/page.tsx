@@ -26,6 +26,7 @@ import {
   associateProjectDepartment,
   createDepartment,
   createKbDocument,
+  previewKbPdf,
   createThread,
   deleteKbDocument,
   getProject,
@@ -54,6 +55,7 @@ import {
   type ThreadSummary,
 } from "@/lib/api";
 import { knowledgeContentByteLength, PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES } from "@/lib/knowledge-upload-limits";
+import { readKnowledgePdfFile } from "@/lib/knowledge-pdf-preview";
 import { Button, Card, CardDesc, CardLabel, CardTitle, CardValue, FormInput, FormSelect, FormTextarea, Modal, Toast, useToast } from "@naelao/ui";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
@@ -106,6 +108,8 @@ export default function ProjectDetailPage() {
   const [newDocTitle, setNewDocTitle] = React.useState("");
   const [newDocContent, setNewDocContent] = React.useState("");
   const [addingDoc, setAddingDoc] = React.useState(false);
+  const [pdfPreview, setPdfPreview] = React.useState<{ base64: string; receipt: Awaited<ReturnType<typeof previewKbPdf>> } | null>(null);
+  const [previewingPdf, setPreviewingPdf] = React.useState(false);
   const [externalPublications, setExternalPublications] = React.useState<ExternalKnowledgePublication[]>([]);
   const [publicationId, setPublicationId] = React.useState("course_material");
   const [publicationName, setPublicationName] = React.useState("Course material");
@@ -345,13 +349,32 @@ export default function ProjectDetailPage() {
     }
   }
 
-  // Upload a text-readable file into this project's private KB. This scope supports the worker's
-  // 5 MiB asynchronous ingestion limit; PDF/office parsing remains a separate capability.
+  // Upload bounded text directly; PDFs are parsed in this project scope and require review.
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   async function handlePickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = ""; // allow re-picking the same file
     if (!file) return;
+    if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
+      if (!creds) return;
+      setPdfPreview(null);
+      setPreviewingPdf(true);
+      try {
+        const base64 = await readKnowledgePdfFile(file, params.projectId);
+        const receipt = await previewKbPdf(activeSpaceId, creds, {
+          content: base64, source_file_name: file.name, project_id: params.projectId,
+        });
+        if (!newDocTitle.trim()) setNewDocTitle(file.name.replace(/\.pdf$/i, ""));
+        setNewDocContent(receipt.content);
+        setPdfPreview({ base64, receipt });
+      } catch (err) {
+        show(err instanceof Error ? err.message : "Couldn't preview that PDF.");
+      } finally {
+        setPreviewingPdf(false);
+      }
+      return;
+    }
+    setPdfPreview(null);
     const looksText = /^text\//.test(file.type) || file.type === "" || /\.(md|txt|csv|json|html|xml|log|ya?ml)$/i.test(file.name);
     if (!looksText) {
       show("Only readable text files are supported by this upload form.");
@@ -384,13 +407,23 @@ export default function ProjectDetailPage() {
     }
     setAddingDoc(true);
     try {
-      await createKbDocument(activeSpaceId, creds, {
+      await createKbDocument(activeSpaceId, creds, pdfPreview ? {
+        title: newDocTitle.trim(),
+        content: pdfPreview.base64,
+        content_type: "pdf",
+        ...(pdfPreview.receipt.source_file_name ? { source_file_name: pdfPreview.receipt.source_file_name } : {}),
+        preview_content: submittedContent,
+        preview_token: pdfPreview.receipt.preview_token,
+        preview_extraction_sha256: pdfPreview.receipt.extraction_sha256,
+        project_id: params.projectId,
+      } : {
         title: newDocTitle.trim(),
         content: submittedContent,
         project_id: params.projectId,
       });
       setNewDocTitle("");
       setNewDocContent("");
+      setPdfPreview(null);
       await refreshDocs();
       await refreshExternalKnowledge();
     } catch (err) {
@@ -876,18 +909,25 @@ export default function ProjectDetailPage() {
         <div style={{ fontSize: 12, color: "var(--text3)" }}>
           Project-private text limit: 5 MiB ({knowledgeContentByteLength(newDocContent.trim()).toLocaleString()} bytes entered).
         </div>
+        {pdfPreview && <div role="status" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, fontSize: 12 }}>
+          <strong>PDF extraction preview · {pdfPreview.receipt.parser_version}</strong>
+          <div>Source SHA-256: <code>{pdfPreview.receipt.source_sha256}</code></div>
+          <div>{pdfPreview.receipt.source_bytes.toLocaleString()} source bytes · {pdfPreview.receipt.extracted_bytes.toLocaleString()} extracted bytes (5 MiB project limit)</div>
+          <p>Review and edit the extracted text before adding it to this project. Preview expires after 15 minutes.</p>
+          <ul>{pdfPreview.receipt.extraction_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+        </div>}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Button size="sm" disabled={addingDoc || knowledgeContentByteLength(newDocContent.trim()) > PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES}>
+          <Button size="sm" disabled={addingDoc || previewingPdf || knowledgeContentByteLength(newDocContent.trim()) > PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES}>
             {addingDoc ? "Adding…" : "Add document"}
           </Button>
-          <input ref={fileInputRef} type="file" accept=".txt,.md,.csv,.json,.html,.xml,.log,text/*" style={{ display: "none" }} onChange={handlePickFile} />
+          <input ref={fileInputRef} type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handlePickFile(event)} />
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => fileInputRef.current?.click()}
             style={{ fontSize: 12.5 }}
           >
-            Upload a file instead
+            {previewingPdf ? "Preparing PDF preview…" : "Upload text or PDF"}
           </button>
         </div>
       </form>

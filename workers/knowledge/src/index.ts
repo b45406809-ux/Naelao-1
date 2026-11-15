@@ -18,6 +18,7 @@ import { acquireKnowledgeDocumentMutationLease, hasKnowledgeDocumentDeletionSinc
   reconcileKnowledgeDocumentDeletions, releaseKnowledgeDocumentMutationLease, renewKnowledgeDocumentMutationLease, type KnowledgeDeletionBindings,
   type KnowledgeDocumentDeletion } from "./document-deletion.js";
 import { exportKnowledgeArchive, previewKnowledgeArchiveRestore, restoreKnowledgeArchive, validateKnowledgeArchiveSnapshot } from "./knowledge-archive.js";
+import { createKnowledgePdfPreviewToken, KNOWLEDGE_PDF_PARSER_VERSION, sha256BytesHex, verifyKnowledgePdfPreviewToken } from "./pdf-preview.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -403,6 +404,14 @@ function decodePdfContent(value: string): Uint8Array {
   } catch {
     throw badRequest("PDF content must be valid Base64 bytes");
   }
+}
+
+function safeKnowledgeSourceFileName(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || value.length > 512) throw badRequest("source_file_name must be at most 512 characters");
+  const name = value.replace(/\\/g, "/").split("/").pop()!.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  if (!name || name.length > 255 || !/\.pdf$/i.test(name)) throw badRequest("source_file_name must be a PDF filename");
+  return name;
 }
 
 // ── Helper: sha256 hex digest (Web Crypto, available in Workers) ──────────────
@@ -792,6 +801,55 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
 
 // ── POST /spaces/:spaceId/kb/documents ────────────────────────────────────────
 
+app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  const body = await readBoundedJson<{ content?: string; project_id?: string; source_file_name?: string }>(c.req.raw, 8_000_000);
+  if (body.project_id !== undefined && (typeof body.project_id !== "string" || !body.project_id || body.project_id.length > 256)) {
+    throw badRequest("project_id must be a nonempty string of at most 256 characters");
+  }
+  const projectId = body.project_id ?? null;
+  if (projectId) {
+    const userId = c.req.header("x-naelao-user-id") ?? "";
+    if (!await authorizeProject(c.env.PLATFORM_DB, { tenantId, spaceId, projectId, roleRank: effectiveRoleRank(c) }, userId)) {
+      throw notFound("Project not found");
+    }
+  }
+  if (typeof body.content !== "string" || !body.content) throw badRequest("PDF content is required");
+  const sourceFileName = safeKnowledgeSourceFileName(body.source_file_name);
+  const sourceBytes = decodePdfContent(body.content);
+  const contentLimit = projectId ? 5 * 1024 * 1024 : 1_048_576;
+  if (sourceBytes.byteLength > contentLimit) {
+    throw new HttpError(413, "knowledge_pdf_scope_limit_exceeded",
+      projectId ? "Project Knowledge PDF files are limited to 5 MiB" : "Space-wide Knowledge PDF files are limited to 1 MiB");
+  }
+  if (new TextDecoder().decode(sourceBytes.subarray(0, 5)) !== "%PDF-") throw badRequest("The selected file is not a valid PDF document");
+
+  let parsed: string;
+  try {
+    parsed = await createParseV5Request(sourceBytes, "application/pdf", c.env);
+  } catch (error) {
+    preserveHttpStatus(error);
+  }
+  const { sanitized: previewContent, injectionDetected } = sanitizeKbContent(parsed);
+  if (!previewContent) throw badRequest("The PDF parser did not produce readable text");
+  const previewBytes = new TextEncoder().encode(previewContent);
+  if (previewBytes.byteLength > contentLimit) {
+    throw new HttpError(413, "knowledge_pdf_extraction_limit_exceeded",
+      projectId ? "Extracted text exceeds the 5 MiB Project Knowledge limit" : "Extracted text exceeds the 1 MiB Space-wide Knowledge limit; use a Project Knowledge Base");
+  }
+  const sourceSha256 = await sha256BytesHex(sourceBytes);
+  const extractionSha256 = await sha256BytesHex(previewBytes);
+  const previewToken = await createKnowledgePdfPreviewToken({ secret: c.env.PLATFORM_SECRET,
+    scope: { tenantId, spaceId, projectId }, sourceSha256, extractionSha256 });
+  const extractionWarnings = ["Review reading order, tables, and scanned pages before saving; automated PDF extraction can omit or misread them."];
+  if (injectionDetected) extractionWarnings.push("Potential prompt-injection text was detected. The document will remain subject to Knowledge safety filtering.");
+  return c.json({ preview: { content: previewContent, source_sha256: sourceSha256, extraction_sha256: extractionSha256,
+    parser_version: KNOWLEDGE_PDF_PARSER_VERSION, preview_token: previewToken, source_file_name: sourceFileName,
+    source_bytes: sourceBytes.byteLength, extracted_bytes: previewBytes.byteLength, extraction_warnings: extractionWarnings } });
+});
+
 app.post("/spaces/:spaceId/kb/documents", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
@@ -802,13 +860,17 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     content?: string;
     content_type?: string;
     source_url?: string;
+    preview_content?: string;
+    preview_token?: string;
+    preview_extraction_sha256?: string;
+    source_file_name?: string;
     /** WS-4: optional — isolates this document to a single project's own KB, distinct from the
      *  space-wide default (omitted/null). */
     project_id?: string;
     required_role_rank?: number;
     /** Explicit sovereign-user allowlist. IDs are indexed, never evaluated after ranking. */
     allowed_user_ids?: string[];
-  }>(c.req.raw, 6_500_000);
+  }>(c.req.raw, 14_000_000);
   if (body.project_id !== undefined && (typeof body.project_id !== "string" || !body.project_id || body.project_id.length > 256)) {
     throw badRequest("project_id must be a nonempty string of at most 256 characters");
   }
@@ -857,6 +919,33 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   }
   const originalBytes = contentType === "pdf" ? decodePdfContent(body.content) : new TextEncoder().encode(body.content);
   if (originalBytes.byteLength > MAX_WORKFLOW_CONTENT_BYTES) throw badRequest("content exceeds the 5 MiB ingestion limit");
+  const sourceFileName = contentType === "pdf" ? safeKnowledgeSourceFileName(body.source_file_name) : null;
+  const contentLimit = projectId ? MAX_WORKFLOW_CONTENT_BYTES : MAX_SYNC_CONTENT_BYTES;
+  let indexContent = body.content;
+  let pdfLineage: { sourceSha256: string; extractionSha256: string; approvedContentSha256: string } | undefined;
+  if (contentType === "pdf") {
+    if (new TextDecoder().decode(originalBytes.subarray(0, 5)) !== "%PDF-") throw badRequest("The selected file is not a valid PDF document");
+    if (typeof body.preview_content !== "string" || !body.preview_content.trim() || typeof body.preview_extraction_sha256 !== "string") {
+      throw new HttpError(409, "knowledge_pdf_preview_required", "Preview and approve the extracted PDF text before saving");
+    }
+    const sourceSha256 = await sha256BytesHex(originalBytes);
+    const extractionSha256 = body.preview_extraction_sha256;
+    if (!/^[a-f0-9]{64}$/.test(extractionSha256) || !await verifyKnowledgePdfPreviewToken({
+      token: body.preview_token ?? "", secret: c.env.PLATFORM_SECRET,
+      scope: { tenantId, spaceId, projectId }, sourceSha256, extractionSha256,
+    })) {
+      throw new HttpError(409, "knowledge_pdf_preview_expired_or_source_changed",
+        "This PDF preview expired or belongs to a different file or scope. Preview it again.");
+    }
+    const previewApproval = sanitizeKbContent(body.preview_content.trim());
+    indexContent = previewApproval.sanitized;
+    const approvedBytes = new TextEncoder().encode(indexContent);
+    if (approvedBytes.byteLength > contentLimit) throw badRequest("Approved extracted text exceeds this Knowledge scope's content limit");
+    pdfLineage = { sourceSha256, extractionSha256, approvedContentSha256: await sha256BytesHex(approvedBytes) };
+  }
+  if (contentType !== "pdf" && originalBytes.byteLength > contentLimit) {
+    throw badRequest(projectId ? "Project Knowledge content exceeds the 5 MiB limit" : "Space-wide Knowledge content exceeds the 1 MiB limit");
+  }
 
   // G-AA26: Scan document content for prompt injection before indexing
   const titleMod = moderateInput(body.title.trim());
@@ -865,8 +954,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   }
   // Sample the content in 2000-char windows to catch injections in long docs
   const SAMPLE_WINDOW = 2000;
-  for (let pos = 0; pos < body.content.length; pos += SAMPLE_WINDOW) {
-    const window = body.content.slice(pos, pos + SAMPLE_WINDOW);
+  for (let pos = 0; pos < indexContent.length; pos += SAMPLE_WINDOW) {
+    const window = indexContent.slice(pos, pos + SAMPLE_WINDOW);
     const mod = moderateInput(window);
     if (mod.blocked) {
       throw badRequest(`Document content contains disallowed content: ${mod.reason}`);
@@ -892,19 +981,21 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     if (!projectId) throw badRequest("Documents over 1 MiB currently require a project scope");
     const docId = crypto.randomUUID();
     const now = new Date().toISOString();
-    const stagedText = contentType === "pdf"
-      ? await createParseV5Request(originalBytes, "application/pdf", c.env)
-      : body.content;
+    const stagedText = indexContent;
     const stagedBytes = new TextEncoder().encode(stagedText);
     if (stagedBytes.byteLength > MAX_WORKFLOW_CONTENT_BYTES) throw badRequest("Parsed document exceeds the 5 MiB ingestion limit");
     const r2Key = `staging/${tenantId}/${spaceId}/${projectId}/${docId}/original`;
+    const sourceKey = `kb/${spaceId}/${projectId}/${docId}/original`;
     await c.env.PLATFORM_DB.prepare(
       `INSERT INTO kb_documents
        (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count,
-        required_role_rank, allowed_user_ids_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, ?, ?)`
+        required_role_rank, allowed_user_ids_json, source_sha256, source_file_name, parser_version,
+        parser_output_sha256, approved_content_sha256, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
-      requiredRoleRank, JSON.stringify(allowedUserIds), now, now).run();
+      requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
+      pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
+      pdfLineage?.approvedContentSha256 ?? null, now, now).run();
     const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
     if (!mutationLease) {
       await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?
@@ -916,16 +1007,21 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
         throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
       }
+      if (contentType === "pdf") {
+        await c.env.KB_BUCKET.put(sourceKey, originalBytes, { httpMetadata: { contentType: "application/pdf" } });
+      }
       await c.env.KB_BUCKET.put(r2Key, stagedBytes, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
       await c.env.EVENTS_QUEUE.send({
         type: "kb.ingest", docId, spaceId, tenantId, projectId, r2Key,
         title: body.title.trim(), contentType, requiredRoleRank, allowedUserIds,
       });
       await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, stagedBytes.byteLength, true, `workflow-stage:${docId}`);
+      if (contentType === "pdf") await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, originalBytes.byteLength, true, `workflow-pdf-source:${docId}`);
       return c.json({ id: docId, space_id: spaceId, project_id: projectId, status: "processing", ingestion: "queued" }, 202);
     } catch (error) {
       await Promise.allSettled([
         c.env.KB_BUCKET.delete(r2Key),
+        ...(contentType === "pdf" ? [c.env.KB_BUCKET.delete(sourceKey)] : []),
         c.env.PLATFORM_DB.prepare(`DELETE FROM kb_documents WHERE id = ? AND tenant_id = ? AND space_id = ?
           AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`)
           .bind(docId, tenantId, spaceId, docId).run(),
@@ -942,12 +1038,15 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   // Insert doc record with status=processing
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO kb_documents
-       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count,
-        required_role_rank, allowed_user_ids_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, ?, ?)`
+     (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count,
+        required_role_rank, allowed_user_ids_json, source_sha256, source_file_name, parser_version,
+        parser_output_sha256, approved_content_sha256, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
-      requiredRoleRank, JSON.stringify(allowedUserIds), now, now)
+      requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
+      pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
+      pdfLineage?.approvedContentSha256 ?? null, now, now)
     .run();
   const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
   if (!mutationLease) {
@@ -963,7 +1062,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     const originalKey = `kb/${spaceId}/${projectId ?? "_space"}/${docId}/original`;
     await c.env.KB_BUCKET.put(originalKey, originalBytes, { httpMetadata: { contentType: contentType === "pdf" ? "application/pdf" : "text/plain; charset=utf-8" } });
     storageBytesWritten += originalBytes.byteLength;
-    const parsedContent = contentType === "pdf" ? await createParseV5Request(originalBytes, "application/pdf", c.env) : body.content;
+    const parsedContent = indexContent;
     const { sanitized: sanitizedContent, injectionDetected } = sanitizeKbContent(parsedContent);
     if (injectionDetected) {
       // Flag in DB but do NOT reject — builders may legitimately document attacks

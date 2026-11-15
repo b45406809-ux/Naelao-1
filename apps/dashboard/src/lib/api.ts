@@ -298,12 +298,36 @@ export async function listKbDocs(spaceId: string): Promise<KbDocument[]> {
 
 export async function uploadKbDoc(
   spaceId: string,
-  data: { title: string; content: string; content_type: string }
+  data: { title: string; content: string; content_type: string; source_file_name?: string;
+    preview_content?: string; preview_token?: string; preview_extraction_sha256?: string }
 ): Promise<KbDocument> {
   return apiFetch<KbDocument>(`/spaces/${pathSegment(spaceId)}/kb/documents`, {
     method: "POST",
     body: JSON.stringify(data),
   });
+}
+
+export interface KbPdfPreview {
+  content: string;
+  source_sha256: string;
+  extraction_sha256: string;
+  parser_version: string;
+  preview_token: string;
+  source_file_name: string | null;
+  source_bytes: number;
+  extracted_bytes: number;
+  extraction_warnings: string[];
+}
+
+export async function previewKbDocPdf(
+  spaceId: string,
+  data: { content: string; source_file_name: string },
+): Promise<KbPdfPreview> {
+  const result = await apiFetch<{ preview: KbPdfPreview }>(`/spaces/${pathSegment(spaceId)}/kb/documents/preview`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+  return result.preview;
 }
 
 export async function deleteKbDoc(

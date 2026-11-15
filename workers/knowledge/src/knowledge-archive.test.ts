@@ -32,6 +32,25 @@ async function archiveDocument(): Promise<KnowledgeArchiveDocument> {
   };
 }
 
+async function archivePdfDocument(): Promise<{ document: KnowledgeArchiveDocument; source: string }> {
+  const document = await archiveDocument();
+  const source = "%PDF-1.4\noriginal source\n";
+  return {
+    source,
+    document: {
+      ...document,
+      content_type: "pdf",
+      source_sha256: await sha256(source),
+      source_file_name: "guide.pdf",
+      parser_version: "cohere:parse-v5.0",
+      parser_output_sha256: await sha256("parser output"),
+      approved_content_sha256: await sha256("approved text"),
+      objectReferences: [...document.objectReferences,
+        { key: "kb/space-1/_space/doc-1/original", etag: "pdf-etag", size: new TextEncoder().encode(source).byteLength }],
+    },
+  };
+}
+
 function fixture(options: { documents?: unknown[]; chunks?: KnowledgeArchiveChunk[]; tombstones?: string[]; deniedLeases?: string[]; current?: Record<string, { tenant_id: string; space_id: string; archive_restore_id: string | null }> } = {}) {
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const batchCalls: Array<Array<{ sql: string; args: unknown[] }>> = [];
@@ -76,7 +95,7 @@ function fixture(options: { documents?: unknown[]; chunks?: KnowledgeArchiveChun
               if (sql.includes("INSERT OR IGNORE INTO kb_documents")) {
                 const id = String(args[0]);
                 if (tombstones.has(id) || docs[id]) return { meta: { changes: 0 } };
-                docs[id] = { tenant_id: args[2] as string, space_id: args[1] as string, archive_restore_id: args[12] as string };
+                docs[id] = { tenant_id: args[2] as string, space_id: args[1] as string, archive_restore_id: args[17] as string };
                 return { meta: { changes: 1 } };
               }
               if (sql.includes("UPDATE kb_documents SET status='reindex_required'")) {
@@ -112,6 +131,47 @@ function fixture(options: { documents?: unknown[]; chunks?: KnowledgeArchiveChun
 }
 
 describe("Knowledge archive scope and deletion fences", () => {
+  it("exports and restores a PDF's source hash and reviewed parser lineage", async () => {
+    const { document, source } = await archivePdfDocument();
+    const exportedFixture = fixture({ documents: [document], chunks: document.chunks });
+    for (const reference of document.objectReferences) {
+      const text = reference.key.endsWith("original") ? source
+        : reference.key.endsWith(".txt") ? document.chunks[0]!.content : "{}";
+      exportedFixture.objects.set(reference.key, { text, etag: reference.etag });
+    }
+    const exported = await exportKnowledgeArchive(exportedFixture.env, scope);
+    const archived = exported.snapshot.documents[0]!;
+    expect(archived).toMatchObject({ source_sha256: document.source_sha256,
+      source_file_name: "guide.pdf", parser_version: "cohere:parse-v5.0",
+      parser_output_sha256: document.parser_output_sha256,
+      approved_content_sha256: document.approved_content_sha256 });
+    expect(archived.objectReferences.some((reference) => reference.key.endsWith("/original"))).toBe(true);
+
+    const restored = fixture();
+    for (const reference of archived.objectReferences) {
+      const text = reference.key.endsWith("original") ? source
+        : reference.key.endsWith(".txt") ? archived.chunks[0]!.content : "{}";
+      restored.objects.set(reference.key, { text, etag: "restored-etag" });
+    }
+    await restoreKnowledgeArchive(restored.env, exported.snapshot, restoreId);
+    const insert = restored.dbCalls.find(({ sql }) => sql.includes("INSERT OR IGNORE INTO kb_documents"));
+    expect(insert?.args).toEqual(expect.arrayContaining([
+      document.source_sha256, "guide.pdf", "cohere:parse-v5.0",
+      document.parser_output_sha256, document.approved_content_sha256,
+    ]));
+  });
+
+  it("fails archive export when stored PDF bytes no longer match the lineage hash", async () => {
+    const { document } = await archivePdfDocument();
+    const f = fixture({ documents: [document], chunks: document.chunks });
+    for (const reference of document.objectReferences) {
+      const text = reference.key.endsWith("original") ? "tampered PDF source"
+        : reference.key.endsWith(".txt") ? document.chunks[0]!.content : "{}";
+      f.objects.set(reference.key, { text, etag: reference.etag });
+    }
+    await expect(exportKnowledgeArchive(f.env, scope)).rejects.toThrow("knowledge_archive_pdf_source_hash_mismatch");
+  });
+
   it("exports only indexed documents under a mutation lease and carries canonical ACLs", async () => {
     const document = await archiveDocument();
     const docs = [document, { ...document, id: "pending-1", status: "processing", chunk_count: 0, chunks: [], objectReferences: [] }];

@@ -5,8 +5,8 @@ export const runtime = "edge";
 import { useEffect, useState, FormEvent, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { listKbDocs, uploadKbDoc, deleteKbDoc, getSpace } from "@/lib/api";
-import type { KbDocument, Space } from "@/lib/api";
+import { listKbDocs, uploadKbDoc, previewKbDocPdf, deleteKbDoc, getSpace } from "@/lib/api";
+import type { KbDocument, KbPdfPreview, Space } from "@/lib/api";
 
 // G-BE30: KB management — upload, list, delete, status polling
 
@@ -39,7 +39,20 @@ const CONTENT_TYPE_OPTIONS = [
   { value: "text", label: "Plain Text" },
   { value: "url", label: "URL" },
   { value: "code", label: "Code" },
+  { value: "pdf", label: "PDF (preview first)" },
 ];
+
+async function encodePdfFile(file: File): Promise<string> {
+  if (!/\.pdf$/i.test(file.name) || (file.type && file.type !== "application/pdf")) throw new TypeError("Choose a PDF file.");
+  if (file.size < 5 || file.size > 1_048_576) throw new RangeError("Space-wide Knowledge PDF files are limited to 1 MiB.");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (new TextDecoder().decode(bytes.subarray(0, 5)) !== "%PDF-") throw new TypeError("The selected file is not a valid PDF document.");
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+  }
+  return btoa(binary);
+}
 
 export default function KbPage() {
   const params = useParams();
@@ -57,6 +70,9 @@ export default function KbPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [pdfPreview, setPdfPreview] = useState<{ base64: string; receipt: KbPdfPreview } | null>(null);
+  const [previewingPdf, setPreviewingPdf] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Delete confirmation
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -132,22 +148,36 @@ export default function KbPage() {
       setUploadError("Content is required");
       return;
     }
-    if (content.length > 1_000_000) {
+    if (contentType === "pdf" && !pdfPreview) {
+      setUploadError("Choose and preview a PDF before uploading it.");
+      return;
+    }
+    const approvedContent = content.trim();
+    if (new TextEncoder().encode(approvedContent).byteLength > 1_000_000) {
       setUploadError("Content exceeds 1MB limit");
       return;
     }
 
     setUploading(true);
     try {
-      const doc = await uploadKbDoc(spaceId, {
+      const doc = await uploadKbDoc(spaceId, pdfPreview ? {
         title: title.trim(),
-        content: content.trim(),
+        content: pdfPreview.base64,
+        content_type: "pdf",
+        ...(pdfPreview.receipt.source_file_name ? { source_file_name: pdfPreview.receipt.source_file_name } : {}),
+        preview_content: approvedContent,
+        preview_token: pdfPreview.receipt.preview_token,
+        preview_extraction_sha256: pdfPreview.receipt.extraction_sha256,
+      } : {
+        title: title.trim(),
+        content: approvedContent,
         content_type: contentType,
       });
       setDocs((prev) => [doc, ...prev]);
       setTitle("");
       setContent("");
       setContentType("text");
+      setPdfPreview(null);
       setUploadSuccess(true);
       setTimeout(() => setUploadSuccess(false), 3000);
     } catch (err) {
@@ -156,6 +186,27 @@ export default function KbPage() {
       );
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handlePdfPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setPdfPreview(null);
+    setUploadError(null);
+    setPreviewingPdf(true);
+    try {
+      const base64 = await encodePdfFile(file);
+      const receipt = await previewKbDocPdf(spaceId, { content: base64, source_file_name: file.name });
+      setContentType("pdf");
+      setTitle((current) => current || file.name.replace(/\.pdf$/i, ""));
+      setContent(receipt.content);
+      setPdfPreview({ base64, receipt });
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Could not preview that PDF.");
+    } finally {
+      setPreviewingPdf(false);
     }
   }
 
@@ -299,7 +350,7 @@ export default function KbPage() {
                   </label>
                   <select
                     value={contentType}
-                    onChange={(e) => setContentType(e.target.value)}
+                    onChange={(e) => { setPdfPreview(null); setContentType(e.target.value); }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition text-sm bg-white"
                   >
                     {CONTENT_TYPE_OPTIONS.map((opt) => (
@@ -339,9 +390,26 @@ export default function KbPage() {
                     />
                   )}
                   <p className="text-xs text-gray-400 mt-1">
-                    {content.length.toLocaleString()} / 1,000,000 chars
+                    {new TextEncoder().encode(content).byteLength.toLocaleString()} / 1,000,000 bytes
                   </p>
                 </div>
+
+                {contentType !== "url" && <div className="flex items-center gap-3">
+                  <input ref={fileInputRef} type="file" accept=".pdf,application/pdf" onChange={(event) => void handlePdfPick(event)} className="hidden" />
+                  <button type="button" onClick={() => fileInputRef.current?.click()} disabled={previewingPdf || uploading}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:opacity-50">
+                    {previewingPdf ? "Preparing PDF preview…" : "Choose PDF to preview"}
+                  </button>
+                  <span className="text-xs text-gray-400">PDFs are limited to 1 MiB.</span>
+                </div>}
+
+                {pdfPreview && <div role="status" className="border border-gray-200 rounded-lg p-3 text-xs text-gray-600">
+                  <strong className="text-gray-900">PDF extraction preview · {pdfPreview.receipt.parser_version}</strong>
+                  <div>Source SHA-256: <code>{pdfPreview.receipt.source_sha256}</code></div>
+                  <div>{pdfPreview.receipt.source_bytes.toLocaleString()} source bytes · {pdfPreview.receipt.extracted_bytes.toLocaleString()} extracted bytes (1 MiB Space-wide limit)</div>
+                  <p className="my-2">Review and edit extracted text above before upload. Preview expires after 15 minutes.</p>
+                  <ul className="list-disc pl-5">{pdfPreview.receipt.extraction_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+                </div>}
 
                 {uploadError && (
                   <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
@@ -357,7 +425,7 @@ export default function KbPage() {
 
                 <button
                   type="submit"
-                  disabled={uploading}
+                  disabled={uploading || previewingPdf || new TextEncoder().encode(content.trim()).byteLength > 1_000_000}
                   className="w-full py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-300 text-white text-sm font-semibold rounded-lg transition-colors"
                 >
                   {uploading ? "Uploading..." : "Upload Document"}

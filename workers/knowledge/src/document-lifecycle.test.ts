@@ -376,7 +376,7 @@ describe("Knowledge document lifecycle boundaries", () => {
     const token = await mintInternalToken("secret", "tenant-1");
     const response = await worker.fetch(new Request("https://knowledge/spaces/space-1/kb/documents", {
       method: "POST",
-      headers: { "content-type": "application/json", "content-length": "6500001", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      headers: { "content-type": "application/json", "content-length": "14000001", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
       body: JSON.stringify({ title: "valid", content: "x" }),
     }), f.env, {} as ExecutionContext);
     expect(response.status).toBe(413);
