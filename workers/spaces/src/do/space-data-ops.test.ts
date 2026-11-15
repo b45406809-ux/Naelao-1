@@ -241,6 +241,18 @@ describe("SpaceDO owner data operations", () => {
     expect(unavailable.status).toBe(409);
     expect(await unavailable.json()).toMatchObject({ error_code: "archive_micro_app_installation_unavailable" });
     expect(calls.map(call => call.path)).toEqual(["/internal/archive/export", "/internal/archive/preview", "/internal/archive/preview", "/internal/archive/restore"]);
+
+    const ownerArchiveKey = `space-archives/tenant-a/space-a/${archiveId}.enc`;
+    const ownerArchiveObject = r2.objects.get(ownerArchiveKey)!;
+    const privateScopeArchive = structuredClone(archive);
+    privateScopeArchive.microAppSnapshots = [structuredClone(archive.microAppSnapshots![0]!)];
+    privateScopeArchive.microAppSnapshots[0]!.scope = { ...privateScopeArchive.microAppSnapshots[0]!.scope,
+      projectId: null, gadgetScope: "USER_PRIVATE", userId: "user-a" };
+    ownerArchiveObject.bytes = (await encodeSpaceArchive(privateScopeArchive, secret)).bytes;
+    storage.sql.exec("UPDATE space_archive_records SET checksum=? WHERE archive_id=?", await spaceArchiveChecksum(privateScopeArchive), archiveId);
+    const rejectsPrivateUserData = await post({ action: "preview_restore", archive_id: archiveId });
+    expect(rejectsPrivateUserData.status).toBe(422);
+    expect(await rejectsPrivateUserData.json()).toMatchObject({ error_code: "archive_micro_app_snapshot_invalid" });
   });
 
   it("purges local Space data, keeps a durable erasure tombstone, and rejects later writes and restores", async () => {
