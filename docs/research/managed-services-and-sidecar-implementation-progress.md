@@ -1,6 +1,38 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (P16 contract/source-to-caller audit; no code change)
+## Latest checkpoint — 2026-11-15 (joint-plan §10.1 settings delegation; pushed)
+
+Code `26ceb675176e37d7ace7c10013c65be44f50fb5c` is pushed to
+`origin/Mcbt5s-Backup-2`; remote verification matched. This closes a bounded platform §10.1 slice
+across reachable Spaces, Agent workflow, Router and Shell paths. SpaceDO migration 145 persists
+exact-install `settings.propose` grants and grant/proposal audit metadata. Space admins/owners and
+the exact Project owner can grant an enabled eligible agent; Agents recheck caller membership and
+installation identity; SpaceDO rechecks current Project/agent scope, grant, signed owner-publish
+manifest, settings schema and active/draft revisions. Agents can write drafts only. Uninstall revokes
+the grant. The Shell now provides grant/revoke, delegated audit attribution, draft review and
+separately confirmed owner publication; project editors cannot read or publish owner drafts.
+
+Local checks passed: Spaces **18/18**, Agents **28/28**, Router **52/52**, Shell **1/1** focused
+tests; direct TypeScript checks for all four workspaces and `git diff --check`. The standard
+`pnpm typecheck` command attempted to purge/reinstall the shared modules and aborted without a TTY;
+the direct local compilers passed. No deploy, live provider acceptance or rollout change occurred.
+Pushed SHA: `26ceb675176e37d7ace7c10013c65be44f50fb5c`. Preserve untracked
+`infra/scripts/__pycache__/`.
+
+S2 remains IMPLEMENTED_LOCAL for its currently supported provider lanes. This change does not close
+remaining S3–S9/U01–U12 gates or claim deployment/live acceptance. The microapp/UI SDK/voice plan
+branch `origin/plan/microapps-ui-sdk-voice` was fetched at `df3386257262a88888d647daa4d10f3af2ff9596`;
+all requirement text is already in the active platform plan, with only stale provenance/P04 wording
+differences. No merge occurred. P17 remains partial because Marketplace builder JWT identity and Shell
+ProductUserDO `nps_` sessions have no verified identity-link/single-use handoff contract.
+
+Exact next task: trace the signed Project extension version-update review/apply caller from Shell to
+Spaces/SpaceDO, including pause/drain, exact release and publisher checks, and actor approval rights.
+Add a proposal-only agent update path only if the existing contract supports owner approval and
+exact-install scope; otherwise document the specific missing contract and continue another
+independent P01–P24/S2–S9/U01–U12 code gap. Keep all rollouts disabled.
+
+## Previous checkpoint — 2026-11-15 (P16 contract/source-to-caller audit; no code change)
 
 Traced Discord attachments from the authenticated and paired provider event through bounded download
 and task-scoped R2 storage to the internal attachment index and isolated handler. Ingress accepts only

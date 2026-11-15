@@ -12,7 +12,43 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (P16 Discord attachment contract reconciled; pushed)
+## Latest checkpoint — 2026-11-15 (§10.1 delegated extension settings; code pushed)
+
+Code checkpoint `26ceb675176e37d7ace7c10013c65be44f50fb5c` is pushed to
+`origin/Mcbt5s-Backup-2`; remote verification returned the same SHA. Migration 145 now persists
+per-installation `settings.propose` grants and audit events. A Space owner/admin or exact Project
+owner can grant one enabled, project-eligible agent access to one active signed project installation.
+Agents recheck workflow membership and installation scope; SpaceDO rechecks the current agent,
+project allowlist, grant, signed manifest, owner-publish policy, field schema and revision fences.
+They can write only a validated review draft; they cannot publish settings or update packages.
+Uninstall revokes maintenance grants. The Shell shows eligible agents, grant/revoke status,
+delegated audit identity, draft values and changes. Project owners and Space admins must save/review
+then separately confirm publication; project editors cannot read owner drafts or publish them.
+
+Verification passed locally: Spaces suites **18/18**, Agents workflow/prebuilt suites **28/28**,
+Router product-session paths **52/52**, Shell API caller **1/1**; direct TypeScript checks passed for
+Spaces, Agents, Router and Shell; `git diff --check` passed. The standard `pnpm typecheck` wrapper
+attempted a workspace module purge/reinstall and aborted without a TTY; direct workspace `tsc`
+checks are the recorded type evidence. No deployment, live provider test or rollout change occurred.
+The worktree is on `autonomous-managed-services-20261111`; preserve untracked
+`infra/scripts/__pycache__/`.
+
+Fetched `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596` and
+compared its active plan file. Microapp/UI SDK/voice requirements are already present in the active
+platform plan; only stale metadata and older P04 wording differ. No missing plan content was found,
+and no branch merge occurred. P17 remains PARTIAL: Marketplace requests use builder JWT identity,
+while Shell product journeys use ProductUserDO `nps_` sessions; no persisted identity-link or
+single-use cross-origin handoff contract exists. Do not transfer bearer credentials or infer identity
+from email/library state.
+
+Exact next action: trace the current signed Project extension version-update review and apply flow
+from Shell through Spaces/SpaceDO, including pause/drain, exact release/publisher checks, and who may
+submit versus approve. Add only a proposal-only agent caller if the existing update contract supports
+owner approval and exact-install scope; otherwise record the precise contract gap and advance to the
+next independent S2–S9/U01–U12/P01–P24 item. Keep rollout disabled; fetch before each push and never
+force-push.
+
+## Previous checkpoint — 2026-11-15 (P16 Discord attachment contract reconciled; pushed)
 
 P16 source tracing confirms the active path checks the authenticated event, pairing, active Space and
 egress policy before downloading; it accepts only ephemeral CDN references and validates exact CDN

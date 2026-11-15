@@ -1,6 +1,45 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (P16 Discord contract/source-to-caller audit; no code change)
+## Latest checkpoint — 2026-11-15 (§10.1 delegated settings drafts and owner publication; pushed)
+
+Code `26ceb675176e37d7ace7c10013c65be44f50fb5c` is pushed to
+`origin/Mcbt5s-Backup-2`; `ls-remote` confirmed the same SHA. Migration 145 adds revisioned,
+per-Project/per-installation `settings.propose` grants and an audit ledger. Space owners/admins and
+the exact Project owner may grant one active project-eligible agent access to one active signed
+installation. The proposal route rechecks the caller's workflow membership, exact installation,
+agent identity, current Project agent allowlist, current grant, owner-publish policy and signed field
+schema. Durable writes create only a validated draft and audit changed field IDs; active settings
+stay untouched. Revision fences protect both active and draft state, and uninstall revokes grants.
+
+The Shell now lists eligible agents and grant revisions, supports grant/revoke and shows delegated
+audit attribution. The settings form loads agent drafts for owners, shows active-to-draft field
+changes, saves edits as drafts, and requires a separate browser confirmation to publish. Space
+owners/admins and exact Project owners can review/publish; project editors cannot read the draft or
+publish it. Package updates, publisher controls and provider connections remain outside this grant.
+
+Local verification passed: Spaces suites **18/18**, Agents workflow/prebuilt suites **28/28**,
+Router product-session path tests **52/52**, Shell grant API test **1/1**; direct `tsc --noEmit`
+passed in all four workspaces, as did `git diff --check`. The ordinary `pnpm typecheck` wrapper
+aborted while trying to purge/reinstall the shared modules without a TTY; direct workspace compilers
+were run. These are local tests, not deployment, live provider or production acceptance. Rollouts
+remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+Fetched `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596` and
+compared its plan file with the active platform plan. Microapp, UI SDK and voice requirements are
+already copied; only stale provenance and older P04 wording differ. No requirement was missing and
+no branch merge occurred. P17's direct catalog, listing and license work remains partial at the
+cross-origin identity bridge: Marketplace uses builder JWT identity; Shell uses ProductUserDO-backed
+`nps_` product sessions. No persisted identity-link or safe single-use cross-origin handoff exists.
+Email equality and browser/library state do not establish the link. P20 refund/access/creator
+accounting decisions remain separately unresolved.
+
+Exact next action: trace the signed Project extension version-update review/apply path from Shell
+through Spaces and SpaceDO. Verify exact installation/release/publisher checks, pause/drain fences,
+and which actor may submit versus approve. Add an agent proposal caller only if the existing signed
+update contract can preserve exact-install scope and owner approval; otherwise record the precise
+gap and continue the next independent P01–P24/S2–S9/U01–U12 item.
+
+## Previous checkpoint — 2026-11-15 (P16 Discord contract/source-to-caller audit; no code change)
 
 The P16 path is locally bounded end to end: authenticated/paired event and active-Space checks,
 ephemeral-only exact Discord CDN host/path, signed-query shape and expiry, no redirects, timeout,
