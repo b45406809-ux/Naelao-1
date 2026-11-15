@@ -50,6 +50,29 @@ export type WorkerIntegrationResult = {
   receipt: WorkerIntegrationValidationReceipt;
 };
 
+export type WorkerIntegrationMetric = {
+  outcome: WorkerIntegrationResult["status"];
+  validationStatus: WorkerIntegrationValidationReceipt["status"];
+  durationMs: number;
+};
+
+/** Emit only finite, fixed-category validation telemetry. Identifiers and reason text are excluded. */
+export function writeWorkerIntegrationMetric(
+  analytics: Pick<AnalyticsEngineDataset, "writeDataPoint"> | undefined,
+  metric: WorkerIntegrationMetric,
+): void {
+  const durationMs = Number.isFinite(metric.durationMs)
+    ? Math.max(0, Math.min(600_000, Math.floor(metric.durationMs)))
+    : 0;
+  try {
+    analytics?.writeDataPoint({
+      blobs: ["workspace.ops.worker_validation", "automated", "phase12", metric.outcome,
+        metric.validationStatus, "", "", "", "worker-ops-v1"],
+      doubles: [durationMs, 1],
+    });
+  } catch { /* telemetry must not change validation, receipt, or publication behavior */ }
+}
+
 export type WorkerIntegrationValidationRun = {
   status: WorkerIntegrationValidationReceipt["status"];
   exitCode?: number;
@@ -65,6 +88,7 @@ export type WorkerIntegrationHost = {
   runValidation(input: { command: string; commandHash: string; branch: string; revision: number; manifestHash: string }): Promise<WorkerIntegrationValidationRun>;
   publishCandidate(input: { targetBranch: string; candidateBranch: string; expectedTarget: WorkerIntegrationHead; expectedSourceCommitId: string }): Promise<void>;
   saveReceipt(receipt: WorkerIntegrationValidationReceipt): Promise<void>;
+  recordMetric?(metric: WorkerIntegrationMetric): void;
 };
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -147,6 +171,9 @@ export async function runCheckedWorkerIntegration(input: {
   const finish = async (resultStatus: WorkerIntegrationResult["status"], conflicts: WorkerIntegrationConflict[] = []): Promise<WorkerIntegrationResult> => {
     const value = receipt();
     await host.saveReceipt(value);
+    try {
+      host.recordMetric?.({ outcome: resultStatus, validationStatus: value.status, durationMs: value.durationMs });
+    } catch { /* optional host telemetry must not affect the durable result */ }
     return { status: resultStatus, conflicts: conflicts.slice(0, 50), receipt: value };
   };
 

@@ -126,7 +126,8 @@ import { isWorkspaceManualValidationCommand, publishWorkspaceManualResolution, r
   type WorkspaceManualValidationReceipt, type WorkspaceManualValidationRequest } from "../workspace/workspace-manual-resolution.js";
 import { withWorkerMergeConflicts } from "../workspace/worker-merge-report.js";
 import { runCheckedWorkerIntegration, WORKER_VALIDATION_CONFIG_PATH,
-  type WorkerIntegrationHead, type WorkerIntegrationConflict, type WorkerIntegrationValidationReceipt } from "../workspace/worker-integration-validation.js";
+  writeWorkerIntegrationMetric, type WorkerIntegrationHead, type WorkerIntegrationConflict,
+  type WorkerIntegrationValidationReceipt } from "../workspace/worker-integration-validation.js";
 import { withWorkspaceManifestRead } from "../script-engine/workspace-r2-compat.js";
 import {
   buildConversationContext,
@@ -4127,6 +4128,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           saveReceipt: async receipt => {
             await saveIntegrationReceipt(receipt);
           },
+          recordMetric: metric => writeWorkerIntegrationMetric(this.env.ANALYTICS, metric),
         });
         const conflicts: WorkerMergeConflictDetail[] = result.conflicts.map((conflict: WorkerIntegrationConflict) => ({ path: conflict.path, reason: conflict.reason }));
         if (result.status !== "published" && !conflicts.length) conflicts.push({ path: WORKER_VALIDATION_CONFIG_PATH, reason: result.receipt.reason ?? result.status });

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   parseWorkerValidationConfig,
   runCheckedWorkerIntegration,
+  writeWorkerIntegrationMetric,
   WORKER_VALIDATION_CONFIG_PATH,
   type WorkerIntegrationHead,
   type WorkerIntegrationHost,
@@ -89,14 +90,35 @@ describe("checked worker integration", () => {
 
   it("publishes only after the exact validation branch passes", async () => {
     const f = fixture();
+    const recordMetric = vi.fn();
+    f.host.recordMetric = recordMetric;
     const result = await runCheckedWorkerIntegration(pinnedInput(f), f.host);
     expect(result.status).toBe("published");
     expect(result.receipt).toMatchObject({ status: "passed", publicationStatus: "published", branch: input.validationBranch });
+    expect(recordMetric).toHaveBeenCalledWith({ outcome: "published", validationStatus: "passed", durationMs: 12 });
     expect(f.publishCandidate).toHaveBeenCalledWith(expect.objectContaining({
       targetBranch: "main", candidateBranch: input.candidateBranch,
       expectedTarget: expect.objectContaining({ commitId: commit("a"), revision: 2, manifestHash: hash("a") }),
       expectedSourceCommitId: commit("b"),
     }));
+  });
+
+  it("emits bounded validation metrics with only fixed categories and duration", () => {
+    const points: Array<{ blobs: string[]; doubles: number[] }> = [];
+    writeWorkerIntegrationMetric({ writeDataPoint: point => points.push(point) } as unknown as Pick<AnalyticsEngineDataset, "writeDataPoint">,
+      { outcome: "uncertain", validationStatus: "failed", durationMs: 900_000_001 });
+    expect(points).toEqual([{ blobs: ["workspace.ops.worker_validation", "automated", "phase12", "uncertain", "failed", "", "", "", "worker-ops-v1"], doubles: [600_000, 1] }]);
+    expect(() => writeWorkerIntegrationMetric({ writeDataPoint: () => { throw new Error("analytics unavailable"); } } as unknown as Pick<AnalyticsEngineDataset, "writeDataPoint">,
+      { outcome: "published", validationStatus: "passed", durationMs: Number.NaN })).not.toThrow();
+  });
+
+  it("keeps durable success and publication intact when host telemetry throws", async () => {
+    const f = fixture();
+    f.host.recordMetric = () => { throw new Error("analytics unavailable"); };
+    const result = await runCheckedWorkerIntegration(pinnedInput(f), f.host);
+    expect(result.status).toBe("published");
+    expect(f.saveReceipt).toHaveBeenCalledWith(expect.objectContaining({ status: "passed", publicationStatus: "published" }));
+    expect(f.publishCandidate).toHaveBeenCalledOnce();
   });
 
   it("integrates a worker from its recorded older base with independently advanced target content", async () => {
