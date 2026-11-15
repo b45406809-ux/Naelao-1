@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import { digestExtensionManifest, exportExtensionPublisherPublicKey, extensionPublisherSigningPayload, generateExtensionPublisherKeyPair,
-  signExtensionPublisherRelease, validateExtensionManifest } from "@naelao/agent-sdk";
+  RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, signExtensionPublisherRelease, validateExtensionManifest } from "@naelao/agent-sdk";
 import spacesWorker from "./index.js";
 
 const secret = "shared-extension-package-route-secret";
@@ -283,11 +283,26 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
     revokePublisher: () => { options.activePublisher = false; } };
 }
 
-async function installReviewHarness(options: { failNextRootInitialization?: boolean } = {}) {
+async function installReviewHarness(options: { failNextRootInitialization?: boolean; includeBusinessAction?: boolean } = {}) {
   const dependencyManifest = validateExtensionManifest({ ...manifest, id: "ext_calendar", channels: undefined, bundle: { ...manifest.bundle!, id: "ext_calendar", version: "1.0.0",
     primitives: manifest.bundle!.primitives.map((primitive, index) => ({ ...primitive, id: index === 0 ? "calendar_dashboard" : "calendar_handler", version: "1.0.0" })) } });
   const dependencyDigest = await digestExtensionManifest(dependencyManifest);
-  const rootManifest = validateExtensionManifest({ ...manifest, dependencies: [{ extensionId: "ext_calendar", version: "1.0.0", manifestSha256: dependencyDigest }] });
+  const businessAction = { schemaVersion: 1, id: "receiveStock", name: "Receive stock", description: "Record a stock delivery.",
+    operation: "inventory.receiveStock.v1", installationScope: "SPACE_SHARED", dataScope: "SPACE_SHARED", table: "inventory", idColumn: "id",
+    quantityColumn: "quantity", versionColumn: "version", permission: "inventory.stock.receive", roles: ["owner", "admin"],
+    effects: "transactional_write", idempotency: "required", approval: "none",
+    inputSchema: RECEIVE_STOCK_INPUT_SCHEMA, outputSchema: RECEIVE_STOCK_OUTPUT_SCHEMA };
+  const actionGadget = { schemaVersion: "1.0", kind: "gadget", id: "inventory", version: "1.2.0", scope: "SPACE_SHARED",
+    permissions: [{ scope: "SPACE_SHARED", actions: ["write"], resource: businessAction.permission }],
+    capabilityRequirements: ["extension.gadget.business_action"], lifecycle: {}, schemaSql: "CREATE TABLE inventory(id TEXT PRIMARY KEY, quantity INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1)",
+    businessActions: [businessAction] };
+  const rootBase = options.includeBusinessAction ? validateExtensionManifest({ ...manifest,
+    capabilityRequirements: [...manifest.capabilityRequirements, "extension.gadget.business_action"],
+    bundle: { ...manifest.bundle!, primitives: [...manifest.bundle!.primitives, actionGadget] },
+  }, { gatekeeperCapabilities: [...manifest.capabilityRequirements, "extension.gadget.business_action"] }) : manifest;
+  const rootManifest = validateExtensionManifest({ ...rootBase,
+    dependencies: [{ extensionId: "ext_calendar", version: "1.0.0", manifestSha256: dependencyDigest }],
+  });
   const keyPair = await generateExtensionPublisherKeyPair();
   const publicKey = await exportExtensionPublisherPublicKey(keyPair.publicKey);
   const artifacts = { "./dashboard.html": html, "./handler.ts": handler };
@@ -439,6 +454,23 @@ async function crossSpaceImportHarness(options: { destinationTrust?: boolean; so
 }
 
 describe("signed Space-shared extension packages", () => {
+  it("surfaces host business-action permissions and schemas in the signed install review", async () => {
+    const h = await installReviewHarness({ includeBusinessAction: true });
+    const response = await spacesWorker.fetch(await signedRequest(
+      "/spaces/space-a/shared-extensions/ext_customer_voice/install-review", "POST", { version: "1.2.0", approved_shared_filesystem: [] }), h.env);
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(200);
+    expect(await response.json()).toMatchObject({ ready_to_install: true, mutates_installation: false,
+      requested_package: { business_actions: [{ gadget_id: "inventory", action: {
+        id: "receiveStock", permission: "inventory.stock.receive", roles: ["owner", "admin"],
+        effects: "transactional_write", idempotency: "required", approval: "none",
+        inputSchema: { required: ["productId", "quantity", "expectedVersion", "reason", "idempotencyKey"] },
+        outputSchema: { required: ["productId", "quantity", "version", "replayed"] },
+      } }] },
+      dependency_packages: [{ business_actions: [] }],
+    });
+    expect(h.microAppRequests).toHaveLength(0);
+  });
+
   it("reviews every exact dependency and requires a fresh owner receipt before installation", async () => {
     const h = await installReviewHarness({ failNextRootInitialization: true });
     const reviewPath = "/spaces/space-a/shared-extensions/ext_customer_voice/install-review";

@@ -5231,7 +5231,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           `SELECT i.instance_id,i.instance_key,i.status,i.extension_id,i.scope,i.manifest_json FROM extension_installation_manifests i
            WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')`,
           tenantId, spaceId, projectId);
-        let managed = false, active = false, releaseValid = false, dependenciesResolved = false, publisherKeyId: string | undefined, installationId: string | undefined;
+        let managed = false, active = false, releaseValid = false, dependenciesResolved = false, publisherKeyId: string | undefined,
+          installationId: string | undefined, releaseVersion: string | undefined;
         for (const row of rows) {
           let manifest: ExtensionManifest;
           try { manifest = JSON.parse(row.manifest_json) as ExtensionManifest; } catch { continue; }
@@ -5255,12 +5256,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             releaseValid = true;
             dependenciesResolved = await this.extensionDependencyClosureActive(tenantId, spaceId, manifest, row.scope, projectId);
             active = dependenciesResolved;
-            if (active) installationId = row.instance_id;
+            if (active) { installationId = row.instance_id; releaseVersion = manifest.bundle.version; }
             if (release.publisher_key_id) publisherKeyId = release.publisher_key_id;
           }
         }
         return Response.json({ managed, active, releaseValid, dependenciesResolved,
-          ...(installationId ? { installationId } : {}), ...(publisherKeyId ? { publisherKeyId } : {}) });
+          ...(installationId ? { installationId } : {}), ...(releaseVersion ? { releaseVersion } : {}), ...(publisherKeyId ? { publisherKeyId } : {}) });
       }
       if (url.pathname === "/workflow-installation" && method === "GET") {
         const statusFilter = url.searchParams.get("include_removed") === "1"
@@ -14064,10 +14065,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       } catch { /* Legacy installations stay visible, but invalid package details are not asserted. */ }
       const gadgets = (manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3);
       const canvases = (manifest.bundle?.primitives ?? []).filter((part): part is Extract<typeof part, { kind: "canvas" }> => part.kind === "canvas");
+      const prefix = row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_` : "";
+      const businessActionApps = [
+        ...(manifest.bundle?.primitives ?? []).filter((part): part is Extract<typeof part, { kind: "gadget" }> => part.kind === "gadget")
+          .filter(gadget => (gadget.businessActions?.length ?? 0) > 0).map(gadget => `${prefix}${gadget.id}`),
+        ...gadgets.filter(gadget => (gadget.businessActions?.length ?? 0) > 0).map(gadget => `${prefix}${gadget.id}`),
+      ];
       const candidates = [...gadgets.map(gadget => ({ id: gadget.id, name: gadget.name, runtime_primitive: "gadget" as const })),
         ...canvases.map(canvas => ({ id: canvas.id, name: canvas.id, runtime_primitive: "canvas" as const }))];
       return candidates.map(item => ({ extension_id: row.extension_id, installation_id: row.instance_id, instance_key: row.instance_key ?? "default",
-        app_id: row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_${item.id}` : item.id,
+        app_id: `${prefix}${item.id}`, business_action_apps: businessActionApps,
         name: item.name, runtime_primitive: item.runtime_primitive, installed_at: row.installed_at, scope: "SPACE_SHARED" as const, status: row.status, release_version: row.release_version,
         ...(row.publisher_key_id ? { publisher_key_id: row.publisher_key_id } : {}),
         ...(row.publisher_revoked_at ? { publisher_revoked_at: row.publisher_revoked_at } : {}),

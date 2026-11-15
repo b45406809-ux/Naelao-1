@@ -1,5 +1,5 @@
 import type { ExtensionManifest } from "@naelao/agent-sdk";
-import { SPACE_SHARED_PACKAGE_CAPABILITIES, SPACE_SHARED_PACKAGE_PERMISSIONS } from "./shared-extension-package-policy.js";
+import { SPACE_SHARED_PACKAGE_CAPABILITIES, isSpaceSharedPackagePermissionAllowed } from "./shared-extension-package-policy.js";
 
 function isVersionOnlyManifestChange(current: ExtensionManifest, candidate: ExtensionManifest): boolean {
   if (current.id !== candidate.id || !current.bundle || !candidate.bundle
@@ -227,7 +227,7 @@ export function spaceSharedDependencyExpansion(current: ExtensionManifest, candi
 function isCodeOnlySpaceSharedPackage(manifest: ExtensionManifest): boolean {
   const bundle = manifest.bundle;
   if (!bundle || !bundle.primitives.length
-    || manifest.declaredPermissions.some(permission => !SPACE_SHARED_PACKAGE_PERMISSIONS.has(permission))
+    || manifest.declaredPermissions.some(permission => !isSpaceSharedPackagePermissionAllowed(permission, manifest))
     || manifest.capabilityRequirements.some(capability => !SPACE_SHARED_PACKAGE_CAPABILITIES.has(capability))
     || (manifest.gadgets?.length ?? 0) > 0 || (manifest.daemons?.length ?? 0) > 0
     || (manifest.commands?.length ?? 0) > 0 || (manifest.containers?.length ?? 0) > 0
@@ -332,7 +332,7 @@ export function supportsOwnerApprovedSpaceSharedDependencyExpansion(
 function isSpaceSharedPackageShape(manifest: ExtensionManifest, allowDependencies = false): boolean {
   const bundle = manifest.bundle;
   if (!bundle || !bundle.primitives.some(part => part.kind === "canvas")
-    || manifest.declaredPermissions.some(permission => !SPACE_SHARED_PACKAGE_PERMISSIONS.has(permission))
+    || manifest.declaredPermissions.some(permission => !isSpaceSharedPackagePermissionAllowed(permission, manifest))
     || manifest.capabilityRequirements.some(capability => !SPACE_SHARED_PACKAGE_CAPABILITIES.has(capability))
     || (manifest.daemons?.length ?? 0) > 0 || (manifest.commands?.length ?? 0) > 0
     || (manifest.containers?.length ?? 0) > 0 || (manifest.widgetSubscriptions?.length ?? 0) > 0
@@ -346,7 +346,12 @@ function isSpaceSharedPackageShape(manifest: ExtensionManifest, allowDependencie
       && part.permissions.length === 0 && part.capabilityRequirements.length === 0;
     if (part.kind === "channel") return part.context === "channel_only"
       && /^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(part.handlerScript);
-    return part.kind === "gadget" && part.scope === "SPACE_SHARED"
-      && part.permissions.length === 0 && part.capabilityRequirements.length === 0;
+    if (part.kind !== "gadget" || part.scope !== "SPACE_SHARED") return false;
+    const actions = part.businessActions ?? [];
+    return actions.length === 0
+      ? part.permissions.length === 0 && part.capabilityRequirements.length === 0
+      : part.capabilityRequirements.length === 1 && part.capabilityRequirements[0] === "extension.gadget.business_action"
+        && part.permissions.length === actions.length && actions.every(action => part.permissions.some(permission =>
+          permission.scope === part.scope && permission.actions.includes("write") && permission.resource === action.permission));
   }) && (manifest.gadgets ?? []).every(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3);
 }

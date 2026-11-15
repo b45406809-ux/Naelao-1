@@ -251,7 +251,8 @@ export default function ExtensionsPage() {
       </div>
       {active.settings_schema && active.capabilities.includes("extension.settings.read") && <ExtensionSettingsForm spaceId={activeSpaceId} appId={active.app_id} schema={active.settings_schema} session={credentials} canConfigure={active.capabilities.includes("extension.settings.configure")}
         loadAudit={() => callSpaceExtensionSettingsAudit(activeSpaceId, active.installation_id, credentials)} />}
-      <MicroAppCanvas spaceId={activeSpaceId} appId={active.app_id} projectId={active.app_id} projectScoped={false} session={credentials} capabilities={active.capabilities} onAction={() => {}} />
+      <MicroAppCanvas spaceId={activeSpaceId} appId={active.app_id} projectId={active.app_id} projectScoped={false} session={credentials}
+        capabilities={active.capabilities} {...(active.business_action_apps ? { businessActionApps: active.business_action_apps } : {})} onAction={() => {}} />
     </> : loading ? <p role="status">Loading installed extensions…</p> : error ? <div role="alert">{error} <Button variant="secondary" onClick={() => void refresh()}>Retry</Button></div> : apps.length ? <>
       {lifecycleNotice && <p role="status" style={{ color: "var(--text3)", fontSize: 13 }}>{lifecycleNotice}</p>}
       <div className="grid-3">{apps.map(app => <Card key={`${app.installation_id}:${app.app_id}`}>
@@ -372,6 +373,14 @@ export default function ExtensionsPage() {
               <strong>{pkg.is_requested ? "Requested package" : "Dependency"}: {pkg.extension_id}@{pkg.version}</strong>
               <p>Publisher: {pkg.publisher_id} · signing key: {pkg.publisher_key_id} · manifest SHA-256: {pkg.manifest_sha256} · signature and artifact digest verified · {installStateLabel(pkg.installed_state)}</p>
               <p>Permissions: {pkg.permissions.join(", ") || "none"}. Capabilities: {pkg.capabilities.join(", ") || "none"}.</p>
+              {(pkg.business_actions ?? []).length > 0 && <section aria-label="Business action review">
+                <strong>Host-executed business actions</strong>
+                <ul>{pkg.business_actions!.map(({ gadget_id, action }) => <li key={`${gadget_id}:${action.id}`}>
+                  <span><code>{gadget_id}.{action.id}</code> — {action.name}. Permission: <code>{action.permission}</code>; roles: {action.roles.join(", ")};
+                    data/install scope: {action.dataScope}/{action.installationScope}; effect: {action.effects}; idempotency: {action.idempotency}; approval: {action.approval}.</span>
+                  <details><summary>Input and output schemas</summary><pre>{JSON.stringify({ input: action.inputSchema, output: action.outputSchema }, null, 2)}</pre></details>
+                </li>)}</ul>
+              </section>}
               <p>Shared folders: {pkg.shared_filesystem.map(grant => `${grant.path} (${grant.access})`).join(", ") || "none"}.</p>
               <p>Provider connections: {pkg.connections.map(connection => `${connection.id} (${connection.provider}${connection.required ? ", required" : ""})`).join(", ") || "none"}.</p>
               {!pkg.is_requested && pkg.installed_state === "install_required" && (dependencyEntry

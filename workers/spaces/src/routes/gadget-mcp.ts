@@ -113,6 +113,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       ).bind(spaceId, tenantId, userId).first();
       if (!member) return c.json({ error_code: "forbidden", message: "Space membership required" }, 403);
     }
+    if (method === "POST" && path.startsWith("/business-actions/") && !["owner", "admin"].includes(role))
+      return c.json({ error_code: "business_action_forbidden" }, 403);
     const runtime = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
     if (runtime.error) return c.json({ error_code: runtime.error }, 503);
     const id = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_WIDE", spaceId, appId });
@@ -122,7 +124,28 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       catch { return c.json({ error_code: "payload_too_large" }, 413); }
       if (requestBody.byteLength > MAX_GADGET_REQUEST_BYTES) return c.json({ error_code: "payload_too_large" }, 413);
     }
-    const request = new Request(`http://micro-app${path}`, { method, headers: c.req.raw.headers, ...(requestBody ? { body: requestBody } : {}) });
+    if (method === "POST" && path === "/mcp" && !["owner", "admin"].includes(role) && requestBody?.byteLength) {
+      let rpc: { method?: unknown; params?: { name?: unknown } };
+      try { rpc = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(requestBody)) as typeof rpc; }
+      catch { return c.json({ error_code: "invalid_mcp_request" }, 400); }
+      const methodName = typeof rpc.method === "string" ? rpc.method : "";
+      if (methodName === "tools/call") {
+        const toolName = typeof rpc.params?.name === "string" ? rpc.params.name : "";
+        const readOnlyTool = toolName.endsWith("_list") || toolName.endsWith("_get");
+        if (!readOnlyTool) return c.json({ error_code: "gadget_write_forbidden" }, 403);
+      } else if (!new Set(["initialize", "tools/list", "ping"]).has(methodName)) {
+        return c.json({ error_code: "gadget_write_forbidden" }, 403);
+      }
+    }
+    const forwardedHeaders = new Headers(c.req.raw.headers);
+    forwardedHeaders.delete("x-naelao-active-installation-id");
+    forwardedHeaders.delete("x-naelao-active-release-version");
+    if (runtime.managed) {
+      if (!runtime.installationId || !runtime.releaseVersion) return c.json({ error_code: "space_extension_runtime_unavailable" }, 503);
+      forwardedHeaders.set("x-naelao-active-installation-id", runtime.installationId);
+      forwardedHeaders.set("x-naelao-active-release-version", runtime.releaseVersion);
+    }
+    const request = new Request(`http://micro-app${path}`, { method, headers: forwardedHeaders, ...(requestBody ? { body: requestBody } : {}) });
     let workId: string | undefined;
     if (runtime.managed) {
       if (!runtime.installationId) return c.json({ error_code: "space_extension_runtime_unavailable" }, 503);
@@ -426,6 +449,12 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     }));
   };
   app.post("/spaces/:spaceId/apps/:appId/mcp", c => forward(c, "/mcp"));
+  app.get("/spaces/:spaceId/apps/:appId/business-actions", c => forward(c, "/business-actions", "GET"));
+  app.post("/spaces/:spaceId/apps/:appId/business-actions/:actionId", c => forward(c, `/business-actions/${encodeURIComponent(c.req.param("actionId") ?? "")}`, "POST"));
+  app.get("/spaces/:spaceId/apps/:appId/action-audit", c => {
+    if (!["owner", "admin"].includes(c.req.header("x-naelao-role") ?? "")) return c.json({ error_code: "forbidden" }, 403);
+    return forward(c, `/api/actions/audit${new URL(c.req.url).search}`, "GET");
+  });
   app.get("/spaces/:spaceId/apps/:appId/app", c => forward(c, "/app", "GET"));
   app.get("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, `/api/data${new URL(c.req.url).search}`, "GET"));
   app.get("/spaces/:spaceId/apps/:appId/api/storage", c => forward(c, "/api/storage", "GET"));
@@ -483,8 +512,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     const spaceDoId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
     const runtime = await c.env.SPACE_DO.get(spaceDoId).fetch(new Request(`http://space-do/project-extension-runtime?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, project_id: projectId, app_id: appId })}`));
     if (!runtime.ok) return c.json({ error_code: "extension_runtime_status_unavailable" }, 503);
-    const runtimeState = await runtime.json<{ managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string; installationId?: string }>()
-      .catch((): { managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string; installationId?: string } => ({}));
+    const runtimeState = await runtime.json<{ managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string; installationId?: string; releaseVersion?: string }>()
+      .catch((): { managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string; installationId?: string; releaseVersion?: string } => ({}));
     if (runtimeState.managed && !runtimeState.active) return c.json({ error_code: "project_extension_inactive" }, 404);
     if (runtimeState.managed && !runtimeState.releaseValid) return c.json({ error_code: "project_extension_release_invalid" }, 503);
     if (runtimeState.managed && runtimeState.publisherKeyId) {
@@ -501,7 +530,15 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       catch { return c.json({ error_code: "payload_too_large" }, 413); }
       if (requestBody.byteLength > MAX_GADGET_REQUEST_BYTES) return c.json({ error_code: "payload_too_large" }, 413);
     }
-    const request = new Request(`http://micro-app${path}`, { method, headers: c.req.raw.headers, ...(requestBody ? { body: requestBody } : {}) });
+    const forwardedHeaders = new Headers(c.req.raw.headers);
+    forwardedHeaders.delete("x-naelao-active-installation-id");
+    forwardedHeaders.delete("x-naelao-active-release-version");
+    if (runtimeState.managed) {
+      if (!runtimeState.installationId || !runtimeState.releaseVersion) return c.json({ error_code: "extension_runtime_status_unavailable" }, 503);
+      forwardedHeaders.set("x-naelao-active-installation-id", runtimeState.installationId);
+      forwardedHeaders.set("x-naelao-active-release-version", runtimeState.releaseVersion);
+    }
+    const request = new Request(`http://micro-app${path}`, { method, headers: forwardedHeaders, ...(requestBody ? { body: requestBody } : {}) });
     let workId: string | undefined;
     if (runtimeState.managed) {
       workId = crypto.randomUUID();
@@ -532,6 +569,9 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, "/api/data"));
   app.delete("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, `/api/data${new URL(c.req.url).search}`, "DELETE"));
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/mcp", c => forwardProject(c, "/mcp"));
+  app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/business-actions", c => forwardProject(c, "/business-actions", "GET"));
+  app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/business-actions/:actionId", c => forwardProject(c,
+    `/business-actions/${encodeURIComponent(c.req.param("actionId") ?? "")}`, "POST"));
   app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/collaboration", c => forwardProject(c, `/api/collaboration${new URL(c.req.url).search}`, "GET"));
   app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/action-audit", c => {
     if (!["owner", "admin"].includes(c.req.header("x-naelao-role") ?? "")) return c.json({ error_code: "forbidden", message: "Gadget action audit requires project administration" }, 403);

@@ -3,7 +3,7 @@ import { SpaceDO } from "./SpaceDO.js";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { mintInternalToken } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
-import { digestExtensionManifest, PERSONAL_ASSISTANT_SPACE_TEMPLATE, validateExtensionManifest } from "@naelao/agent-sdk";
+import { digestExtensionManifest, PERSONAL_ASSISTANT_SPACE_TEMPLATE, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, validateExtensionManifest } from "@naelao/agent-sdk";
 import { spaceSharedDependencyExpansion } from "../extension-update-contract.js";
 
 const planDb = { prepare: () => ({ bind: () => ({ first: async () => ({ plan_tier: "free" }) }) }) };
@@ -659,6 +659,7 @@ describe("runtime extension installation", () => {
     expect(upgrade.status).toBe(201);
     expect(await (await check("mentor_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false, dependenciesResolved: false });
     expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: true, releaseValid: true, dependenciesResolved: true,
+      releaseVersion: "2.0.0",
       installationId: "installation:tenant:ext_canvas_runtime:space:space:project:project-a:bound" });
     const removed = await space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({ instance_id: installed.installationId, tenant_id: "tenant", space_id: "space", project_id: "project-a" }), { method: "DELETE" }));
     expect(removed.status).toBe(200);
@@ -704,6 +705,7 @@ describe("runtime extension installation", () => {
     expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("staging");
     expect((await activate()).status).toBe(200);
     expect(await (await appRoute()).json()).toEqual({ managed: true, active: true, releaseValid: true, dependenciesResolved: true,
+      releaseVersion: "1.0.0",
       installationId: "installation:tenant:ext_staged_canvas:space:space:project:project-a:bound" });
     expect((await activate()).status).toBe(200); // idempotent host retry
     expect(await (await abort()).json()).toMatchObject({ aborted: false });
@@ -713,24 +715,32 @@ describe("runtime extension installation", () => {
     const storage = createDOStorage(), secret = "shared-package-activation-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
     const artifactSha256 = "e".repeat(64);
-    const manifest = { id: "ext_shared_package", type: "extension", declaredPermissions: ["assistant.phone.read", "assistant.phone.simulate"], capabilityRequirements: ["extension.project_canvas", "assistant.phone.read", "assistant.phone.simulate"],
+    const businessAction = { schemaVersion: 1, id: "receiveStock", name: "Receive stock", description: "Record a stock delivery.",
+      operation: "inventory.receiveStock.v1", installationScope: "SPACE_SHARED", dataScope: "SPACE_SHARED", table: "inventory", idColumn: "id",
+      quantityColumn: "quantity", versionColumn: "version", permission: "inventory.stock.receive", roles: ["owner", "admin"],
+      effects: "transactional_write", idempotency: "required", approval: "none",
+      inputSchema: RECEIVE_STOCK_INPUT_SCHEMA, outputSchema: RECEIVE_STOCK_OUTPUT_SCHEMA };
+    const manifest = { id: "ext_shared_package", type: "extension", declaredPermissions: ["assistant.phone.read", "assistant.phone.simulate"], capabilityRequirements: ["extension.project_canvas", "assistant.phone.read", "assistant.phone.simulate", "extension.gadget.business_action"],
       gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_shared_package", version: "1.0.0",
         primitives: [{ schemaVersion: "1.0", kind: "canvas", id: "dashboard", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
           component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false },
+          { schemaVersion: "1.0", kind: "gadget", id: "inventory", version: "1.0.0", scope: "SPACE_SHARED", permissions: [
+            { scope: "SPACE_SHARED", actions: ["write"], resource: "inventory.stock.receive" }], capabilityRequirements: ["extension.gadget.business_action"], lifecycle: {},
+            schemaSql: "CREATE TABLE inventory(id TEXT PRIMARY KEY, quantity INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1)", businessActions: [businessAction] },
           { schemaVersion: "1.0", kind: "channel", id: "phone", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
             provider: "phone", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received", "call.received", "call.digits"],
             outboundEvents: ["message.reply", "voice.reply"] }] } };
     const install = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED",
-        gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.read", "assistant.phone.simulate"], artifactSha256, publisherId: "pub_example", publisherKeyId: "a".repeat(64),
+        gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.read", "assistant.phone.simulate", "extension.gadget.business_action"], artifactSha256, publisherId: "pub_example", publisherKeyId: "a".repeat(64),
         publisherSignature: "publisher-signature", publisherPayloadSha256: "b".repeat(64), deferActivation: true }) }));
     expect(install.status, JSON.stringify(await install.clone().json())).toBe(201);
     const { installationId, release } = await install.json() as { installationId: string; release: { hostSignature: string } };
     const catalog = await space.fetch(new Request("http://space/extension-package-catalog"));
     expect(await catalog.json()).toMatchObject({ releases: [{ extension_id: "ext_shared_package", version: "1.0.0",
       manifest_sha256: await digestExtensionManifest(validateExtensionManifest(manifest)), has_canvas: true,
-      permissions: ["assistant.phone.read", "assistant.phone.simulate"], capabilities: ["assistant.phone.read", "assistant.phone.simulate", "extension.project_canvas"],
-      features: [{ kind: "canvas", id: "dashboard" }, { kind: "channel", id: "phone" }],
+      permissions: ["assistant.phone.read", "assistant.phone.simulate"], capabilities: ["assistant.phone.read", "assistant.phone.simulate", "extension.gadget.business_action", "extension.project_canvas"],
+      features: [{ kind: "canvas", id: "dashboard" }, { kind: "gadget", id: "inventory" }, { kind: "channel", id: "phone" }],
       name: "dashboard", publisher: { id: "pub_example", key_id: "a".repeat(64) } }] });
     const packageRelease = await space.fetch(new Request("http://space/extension-package-release?extension_id=ext_shared_package&version=1.0.0"));
     expect(await packageRelease.json()).toMatchObject({ release: { extension_id: "ext_shared_package", version: "1.0.0",
@@ -750,7 +760,8 @@ describe("runtime extension installation", () => {
     expect((await activate({})).status).toBe(200);
     expect((await activate({})).status).toBe(200);
     expect(await space.fetch(new Request("http://space/space-shared-extensions?tenant_id=tenant&space_id=space"))
-      .then(response => response.json())).toMatchObject({ apps: [{ app_id: "dashboard", extension_id: "ext_shared_package", status: "active", release_version: "1.0.0" }] });
+      .then(response => response.json())).toMatchObject({ apps: [{ app_id: "dashboard", extension_id: "ext_shared_package", status: "active", release_version: "1.0.0",
+        business_action_apps: ["inventory"] }] });
     const runtime = () => space.fetch(new Request("http://space/space-shared-extension-runtime?tenant_id=tenant&space_id=space&app_id=dashboard"));
     expect(await runtime().then(response => response.json())).toMatchObject({ managed: true, active: true, releaseValid: true,
       publisherKeyId: "a".repeat(64), publisherId: "pub_example", releaseVersion: "1.0.0",

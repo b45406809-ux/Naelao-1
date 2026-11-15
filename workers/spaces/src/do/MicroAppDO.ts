@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import type { GadgetActorScope, GadgetScope, GadgetTier } from "@naelao/agent-sdk";
 import { signHmac, verifyHmac } from "@naelao/crypto";
 import { parseBoundedInteger, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
+import { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, validateExtensionBusinessAction, validateReceiveStockInput,
+  validateReceiveStockOutput, type ExtensionBusinessAction } from "@naelao/agent-sdk";
 
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
 
@@ -46,10 +48,14 @@ export const GADGET_STORAGE_LIMIT_BYTES: Record<GadgetTier, number> = {
 };
 export const TIER_ONE_IDLE_TTL_MS = 14 * 86_400 * 1000;
 const PUBLIC_ACTION_TTL_MS = 15 * 60 * 1000;
+const MAX_BUSINESS_ACTION_RECEIPTS = 10_000;
 const GADGET_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const PLATFORM_TABLES = new Set([
   "gadget_metadata",
   "gadget_schema_migrations",
+  "gadget_extension_schema_update_receipts",
+  "gadget_business_action_receipts",
+  "gadget_business_action_events",
   "gadget_public_pages",
   "consumed_public_action_nonces",
   "canvas_collaboration_events",
@@ -123,6 +129,18 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gadget_action_audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL, operation TEXT NOT NULL, table_name TEXT NOT NULL, target_hash TEXT, created_at INTEGER NOT NULL
     );`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gadget_business_action_receipts (
+      action_id TEXT NOT NULL, actor_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+      request_sha256 TEXT NOT NULL CHECK(length(request_sha256)=64), response_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+      PRIMARY KEY(action_id,idempotency_key)
+    );`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gadget_business_action_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, action_id TEXT NOT NULL, actor_id TEXT NOT NULL, product_id TEXT NOT NULL,
+      quantity_received INTEGER NOT NULL, quantity_before INTEGER NOT NULL, quantity_after INTEGER NOT NULL,
+      version_before INTEGER NOT NULL, version_after INTEGER NOT NULL, reason TEXT NOT NULL,
+      idempotency_key_sha256 TEXT NOT NULL CHECK(length(idempotency_key_sha256)=64), created_at INTEGER NOT NULL,
+      UNIQUE(action_id,idempotency_key_sha256)
+    );`);
     const migrationColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(gadget_schema_migrations)").toArray();
     if (!migrationColumns.some(column => column.name === "migration_sha256"))
       this.ctx.storage.sql.exec("ALTER TABLE gadget_schema_migrations ADD COLUMN migration_sha256 TEXT NOT NULL DEFAULT ''");
@@ -159,6 +177,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "GET" && url.pathname === "/api/data") return this.readData(url);
       if (request.method === "POST" && url.pathname === "/api/data") return await this.writeData(request);
       if (request.method === "DELETE" && url.pathname === "/api/data") return this.deleteData(url);
+      if (request.method === "GET" && url.pathname === "/business-actions") return this.readBusinessActions(request);
+      if (request.method === "POST" && url.pathname.startsWith("/business-actions/")) return await this.invokeBusinessAction(request, decodeURIComponent(url.pathname.slice("/business-actions/".length)));
       if (request.method === "GET" && url.pathname === "/api/collaboration") return this.readCollaboration(url);
       if (request.method === "POST" && url.pathname === "/api/collaboration") return await this.writeCollaboration(request);
       if (request.method === "GET" && url.pathname === "/api/actions/audit") return this.readActionAudit(url);
@@ -261,17 +281,35 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (rpc.method === "initialize") return result({ protocolVersion: "2025-03-26", serverInfo: { name: `naelao-app-${appId}`, version: "2.0" }, capabilities: { tools: { listChanged: false } } });
     const tables = this.userTables();
     const schemas = tables.map(table => ({ table, columns: this.columns(table) }));
-    const tools = [
+    const role = request.headers.get("x-naelao-role") ?? "";
+    const actions = this.businessActions().filter(action => action.roles.includes(role as "owner" | "admin"));
+    const pinError = this.businessActionPinError(request);
+    if (actions.length && pinError) return Response.json({ jsonrpc: "2.0", id, error: { code: -32009, message: pinError } }, { status: 409 });
+    const tools: Array<{ name: string; description: string; inputSchema: unknown; outputSchema?: unknown }> = [
       { name: `app_${appId}_list`, description: "List gadget records", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, filter: { type: "object" }, limit: { type: "integer", minimum: 1, maximum: 500 } }, required: ["table"] } },
       { name: `app_${appId}_insert`, description: "Insert a schema-validated gadget record", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, record: { type: "object" } }, required: ["table", "record"] } },
       { name: `app_${appId}_get`, description: "Get one gadget record by primary key", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, id: {} }, required: ["table", "id"] } },
       { name: `app_${appId}_update`, description: "Update schema-validated fields on one Gadget record", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, id: {}, record: { type: "object" } }, required: ["table", "id", "record"] } },
       { name: `app_${appId}_delete`, description: "Delete one Gadget record by primary key", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, id: {} }, required: ["table", "id"] } },
     ];
+    if (role !== "owner" && role !== "admin") {
+      for (let index = tools.length - 1; index >= 0; index--) if (["insert", "update", "delete"].some(operation => tools[index]!.name === `app_${appId}_${operation}`)) tools.splice(index, 1);
+    }
+    tools.push(...actions.map(action => ({ name: `app_${appId}_action_${action.id}`, description: action.description,
+      inputSchema: action.inputSchema, outputSchema: action.outputSchema })));
     if (rpc.method === "tools/list") return result({ tools, schema: schemas });
     if (rpc.method !== "tools/call") return Response.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } }, { status: 404 });
     const name = String(rpc.params?.name ?? ""), args = (rpc.params?.arguments ?? {}) as Record<string, unknown>, table = String(args.table ?? "");
+    const actionPrefix = `app_${appId}_action_`;
+    if (name.startsWith(actionPrefix)) {
+      const outcome = await this.runBusinessAction(request, name.slice(actionPrefix.length), args);
+      return outcome.status >= 400
+        ? Response.json({ jsonrpc: "2.0", id, error: { code: -32000 - outcome.status, message: outcome.errorCode } })
+        : result({ content: [{ type: "text", text: JSON.stringify(outcome.data) }], structuredContent: outcome.data });
+    }
     const columns = this.columns(table), quoted = `"${table.replaceAll('"', '""')}"`;
+    const protectedColumns = new Set(actions.filter(action => action.table === table)
+      .flatMap(action => [action.quantityColumn, action.versionColumn]));
     let data: unknown, auditTarget: unknown = args.id;
     if (name === `app_${appId}_list`) {
       const filter = args.filter && typeof args.filter === "object" && !Array.isArray(args.filter) ? args.filter as Record<string, unknown> : {};
@@ -283,6 +321,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (!args.record || typeof args.record !== "object" || Array.isArray(args.record)) throw new Error("record_required");
       const record = args.record as Record<string, unknown>, allowed = new Set(columns.map(c => c.name)); const entries = Object.entries(record).filter(([key]) => allowed.has(key));
       if (!entries.length || entries.length !== Object.keys(record).length) throw new Error("record_does_not_match_schema");
+      if (entries.some(([key]) => protectedColumns.has(key))) throw new Error("business_action_required");
       const storageError = this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(record)).byteLength + 512);
       if (storageError) return Response.json({ jsonrpc: "2.0", id, error: { code: -32013, message: "storage_limit_exceeded", data: storageError } }, { status: 413 });
       this.ctx.storage.sql.exec(`INSERT INTO ${quoted} (${entries.map(([key]) => `"${key.replaceAll('"','""')}"`).join(",")}) VALUES (${entries.map(() => "?").join(",")})`, ...entries.map(([,v]) => v as SqlStorageValue));
@@ -299,11 +338,13 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       const record = args.record as Record<string, unknown>, allowed = new Set(columns.map(c => c.name));
       const entries = Object.entries(record).filter(([key]) => allowed.has(key) && key !== pk);
       if (!entries.length || entries.length !== Object.keys(record).length) throw new Error("record_does_not_match_schema");
+      if (entries.some(([key]) => protectedColumns.has(key))) throw new Error("business_action_required");
       const storageError = this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(record)).byteLength);
       if (storageError) return Response.json({ jsonrpc: "2.0", id, error: { code: -32013, message: "storage_limit_exceeded", data: storageError } }, { status: 413 });
       this.ctx.storage.sql.exec(`UPDATE ${quoted} SET ${entries.map(([key]) => `"${key.replaceAll('"','""')}" = ?`).join(",")} WHERE "${pk.replaceAll('"','""')}" = ?`, ...entries.map(([,value]) => value as SqlStorageValue), args.id as SqlStorageValue);
       data = { updated: true };
     } else if (name === `app_${appId}_delete`) {
+      if (actions.some(action => action.table === table)) throw new Error("business_action_required");
       const pk = columns.find(c => c.pk)?.name ?? columns[0]?.name; if (!pk) throw new Error("table_has_no_columns");
       if (args.id === undefined || args.id === null) throw new Error("record_id_required");
       this.ctx.storage.sql.exec(`DELETE FROM ${quoted} WHERE "${pk.replaceAll('"','""')}" = ?`, args.id as SqlStorageValue);
@@ -315,6 +356,130 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     this.ctx.storage.sql.exec("INSERT INTO gadget_action_audit(actor_id,operation,table_name,target_hash,created_at) VALUES(?,?,?,?,?)", actorId, operation, table, targetHash, Date.now());
     this.ctx.storage.sql.exec("DELETE FROM gadget_action_audit WHERE id <= (SELECT COALESCE(MAX(id),0)-1000 FROM gadget_action_audit)");
     return result({ content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data });
+  }
+
+  private businessActions(): ExtensionBusinessAction[] {
+    const encoded = this.metadata("business_actions_json");
+    if (!encoded) return [];
+    const value: unknown = JSON.parse(encoded);
+    if (!Array.isArray(value) || value.length > 32) throw new Error("business_action_contract_unavailable");
+    return value.map(validateExtensionBusinessAction);
+  }
+
+  private readBusinessActions(request: Request): Response {
+    const role = request.headers.get("x-naelao-role") ?? "";
+    const available = this.businessActions().filter(action => action.roles.includes(role as "owner" | "admin"));
+    const pinError = this.businessActionPinError(request);
+    if (available.length && pinError) return Response.json({ error_code: pinError }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    return Response.json({ version: 1, actions: available.map(action => ({ id: action.id, name: action.name,
+      description: action.description, permission: action.permission, roles: action.roles, effects: action.effects,
+      idempotency: action.idempotency, approval: action.approval, inputSchema: action.inputSchema, outputSchema: action.outputSchema })) },
+    { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async invokeBusinessAction(request: Request, actionId: string): Promise<Response> {
+    let input: unknown;
+    try { input = await request.json(); } catch { return Response.json({ error_code: "business_action_input_invalid" }, { status: 400 }); }
+    const outcome = await this.runBusinessAction(request, actionId, input);
+    return Response.json(outcome.status >= 400 ? { error_code: outcome.errorCode } : outcome.data, { status: outcome.status,
+      headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async runBusinessAction(request: Request, actionId: string, rawInput: unknown): Promise<{ status: number; data?: unknown; errorCode?: string }> {
+    const action = this.businessActions().find(candidate => candidate.id === actionId);
+    if (!action) return { status: 404, errorCode: "business_action_not_found" };
+    const pinError = this.businessActionPinError(request);
+    if (pinError) return { status: 409, errorCode: pinError };
+    const actorId = request.headers.get("x-naelao-user-id") ?? "";
+    const role = request.headers.get("x-naelao-role") ?? "";
+    if (!actorId || actorId.length > 256 || !action.roles.includes(role as "owner" | "admin"))
+      return { status: 403, errorCode: "business_action_forbidden" };
+    let input: ReturnType<typeof validateReceiveStockInput>;
+    try { input = validateReceiveStockInput(rawInput); }
+    catch { return { status: 400, errorCode: "business_action_input_invalid" }; }
+    let columns: ReturnType<MicroAppDO["columns"]>;
+    try { columns = this.columns(action.table); }
+    catch { return { status: 503, errorCode: "business_action_schema_unavailable" }; }
+    const idColumn = columns.find(column => column.name === action.idColumn);
+    const quantityColumn = columns.find(column => column.name === action.quantityColumn);
+    const versionColumn = columns.find(column => column.name === action.versionColumn);
+    if (!idColumn || !idColumn.pk || !/^TEXT$/i.test(idColumn.type.trim()) || !quantityColumn || !/INT/i.test(quantityColumn.type)
+      || !versionColumn || !/INT/i.test(versionColumn.type)) return { status: 503, errorCode: "business_action_schema_unavailable" };
+    if (typeof this.ctx.storage.transactionSync !== "function") return { status: 503, errorCode: "business_action_atomicity_unavailable" };
+    const requestSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(input))))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const targetHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input.productId)))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const idempotencyKeySha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input.idempotencyKey)))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const auditOutcome = (state: string, at = Date.now()) => {
+      this.ctx.storage.sql.exec("INSERT INTO gadget_action_audit(actor_id,operation,table_name,target_hash,created_at) VALUES(?,?,?,?,?)",
+        actorId, `business:${action.id}:${state}`, action.table, targetHash, at);
+      this.ctx.storage.sql.exec("DELETE FROM gadget_action_audit WHERE id <= (SELECT COALESCE(MAX(id),0)-1000 FROM gadget_action_audit)");
+    };
+    const table = `"${action.table.replaceAll('"', '""')}"`;
+    const key = `"${action.idColumn.replaceAll('"', '""')}"`;
+    const quantity = `"${action.quantityColumn.replaceAll('"', '""')}"`;
+    const version = `"${action.versionColumn.replaceAll('"', '""')}"`;
+    let outcome: { status: number; data?: unknown; errorCode?: string } = { status: 500, errorCode: "business_action_failed" };
+    try {
+      this.ctx.storage.transactionSync(() => {
+        const receipt = [...this.ctx.storage.sql.exec<{ actor_id: string; request_sha256: string; response_json: string }>(
+          "SELECT actor_id,request_sha256,response_json FROM gadget_business_action_receipts WHERE action_id=? AND idempotency_key=?",
+          action.id, input.idempotencyKey)][0];
+        if (receipt) {
+          if (receipt.actor_id !== actorId || receipt.request_sha256 !== requestSha256) {
+            auditOutcome("idempotency_conflict"); outcome = { status: 409, errorCode: "business_action_idempotency_conflict" }; return;
+          }
+          const replay = validateReceiveStockOutput({ ...JSON.parse(receipt.response_json), replayed: true });
+          auditOutcome("replayed");
+          outcome = { status: 200, data: replay };
+          return;
+        }
+        const count = [...this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM gadget_business_action_receipts")][0]?.count ?? 0;
+        if (count >= MAX_BUSINESS_ACTION_RECEIPTS) { outcome = { status: 429, errorCode: "business_action_receipt_limit_reached" }; return; }
+        const row = [...this.ctx.storage.sql.exec<{ quantity: number; version: number }>(
+          `SELECT ${quantity} AS quantity,${version} AS version FROM ${table} WHERE ${key}=? LIMIT 1`, input.productId)][0];
+        if (!row) { auditOutcome("record_not_found"); outcome = { status: 404, errorCode: "business_action_record_not_found" }; return; }
+        if (!Number.isSafeInteger(row.quantity) || row.quantity < 0 || row.quantity > 2_147_483_647
+          || !Number.isSafeInteger(row.version) || row.version < 1 || row.version > 2_147_483_646) {
+          auditOutcome("record_invalid"); outcome = { status: 409, errorCode: "business_action_record_invalid" }; return;
+        }
+        if (row.version !== input.expectedVersion) { auditOutcome("version_conflict"); outcome = { status: 409, errorCode: "business_action_version_conflict" }; return; }
+        const nextQuantity = row.quantity + input.quantity, nextVersion = row.version + 1;
+        if (nextQuantity > 2_147_483_647) { auditOutcome("quantity_overflow"); outcome = { status: 409, errorCode: "business_action_quantity_overflow" }; return; }
+        if (this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(input)).byteLength
+          + new TextEncoder().encode(JSON.stringify({ productId: input.productId, quantity: nextQuantity, version: nextVersion, replayed: false })).byteLength + 2048)) {
+          outcome = { status: 413, errorCode: "storage_limit_exceeded" }; return;
+        }
+        const updated = this.ctx.storage.sql.exec(`UPDATE ${table} SET ${quantity}=?,${version}=? WHERE ${key}=? AND ${version}=?`,
+          nextQuantity, nextVersion, input.productId, input.expectedVersion);
+        if (updated.rowsWritten !== 1) { auditOutcome("version_conflict"); outcome = { status: 409, errorCode: "business_action_version_conflict" }; return; }
+        const data = validateReceiveStockOutput({ productId: input.productId, quantity: nextQuantity, version: nextVersion, replayed: false });
+        const createdAt = Date.now();
+        this.ctx.storage.sql.exec(`INSERT INTO gadget_business_action_receipts(action_id,actor_id,idempotency_key,request_sha256,response_json,created_at) VALUES(?,?,?,?,?,?)`,
+          action.id, actorId, input.idempotencyKey, requestSha256, JSON.stringify(data), createdAt);
+        this.ctx.storage.sql.exec(`INSERT INTO gadget_business_action_events(action_id,actor_id,product_id,quantity_received,quantity_before,
+          quantity_after,version_before,version_after,reason,idempotency_key_sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+          action.id, actorId, input.productId, input.quantity, row.quantity, nextQuantity, row.version, nextVersion,
+          input.reason, idempotencyKeySha256, createdAt);
+        auditOutcome("completed", createdAt);
+        outcome = { status: 200, data };
+      });
+    } catch { return { status: 503, errorCode: "business_action_storage_unavailable" }; }
+    return outcome;
+  }
+
+  private businessActionPinError(request: Request): string | null {
+    if (!this.businessActions().length) return null;
+    if (!this.metadata("release_proof")) return "business_action_release_proof_required";
+    const installationId = this.metadata("extension_installation_id");
+    const activeInstallationId = request.headers.get("x-naelao-active-installation-id");
+    const activeVersion = request.headers.get("x-naelao-active-release-version");
+    let pinnedVersion: string | undefined;
+    try { pinnedVersion = JSON.parse(this.metadata("release_proof")!)?.version; } catch { return "business_action_release_pin_invalid"; }
+    return installationId && activeInstallationId === installationId && typeof pinnedVersion === "string" && activeVersion === pinnedVersion
+      ? null : "business_action_installation_pin_mismatch";
   }
 
   private readCollaboration(url: URL): Response {
@@ -333,10 +498,17 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
 
   private readActionAudit(url: URL): Response {
     const after = Number(url.searchParams.get("after") ?? 0);
-    if (!Number.isSafeInteger(after) || after < 0) return Response.json({ error: "invalid_audit_cursor" }, { status: 400 });
+    const businessAfter = Number(url.searchParams.get("business_after") ?? 0);
+    if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(businessAfter) || businessAfter < 0)
+      return Response.json({ error: "invalid_audit_cursor" }, { status: 400 });
     const items = this.ctx.storage.sql.exec<{ id: number; actor_id: string; operation: string; table_name: string; target_hash: string | null; created_at: number }>(
       "SELECT id,actor_id,operation,table_name,target_hash,created_at FROM gadget_action_audit WHERE id>? ORDER BY id LIMIT 100", after).toArray();
-    return Response.json({ items, next_after: items[items.length - 1]?.id ?? after });
+    const businessEvents = this.ctx.storage.sql.exec<{ id: number; action_id: string; actor_id: string; product_id: string;
+      quantity_received: number; quantity_before: number; quantity_after: number; version_before: number; version_after: number;
+      reason: string; created_at: number }>(`SELECT id,action_id,actor_id,product_id,quantity_received,quantity_before,quantity_after,
+        version_before,version_after,reason,created_at FROM gadget_business_action_events WHERE id>? ORDER BY id LIMIT 100`, businessAfter).toArray();
+    return Response.json({ items, next_after: items[items.length - 1]?.id ?? after,
+      business_events: businessEvents, business_events_next_after: businessEvents[businessEvents.length - 1]?.id ?? businessAfter });
   }
 
   private async writeCollaboration(request: Request): Promise<Response> {
@@ -366,7 +538,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   private async initialize(request: Request): Promise<Response> {
     const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string;
       migrations?: Array<{ version: number; description: string; up: string }>; html?: string; releaseProof?: CanvasReleaseProof;
-      extensionInstallationId?: string }>();
+      extensionInstallationId?: string; sourceGadgetId?: string; businessActions?: unknown }>();
     if (!body.appId || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.appId) || !body.scope || !body.gadgetTier) return Response.json({ error: "valid appId, scope and gadgetTier are required" }, { status: 400 });
     if ((body.gadgetTier === 1 && !["USER_PRIVATE", "PROJECT_USER", "SPACE_USER"].includes(body.scope)) ||
       (body.gadgetTier === 2 && !["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope)) ||
@@ -397,6 +569,42 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const existingReleaseProof = this.metadata("release_proof");
     if (existingReleaseProof && !body.releaseProof) return Response.json({ error: "extension_canvas_install_route_required" }, { status: 409 });
     if (body.releaseProof && !await this.verifyCanvasReleaseProof(body.releaseProof, html)) return Response.json({ error: "extension_canvas_release_proof_invalid" }, { status: 403 });
+    let businessActions: ExtensionBusinessAction[];
+    try {
+      if (body.businessActions !== undefined && (!Array.isArray(body.businessActions) || body.businessActions.length > 32)) throw new Error("invalid_business_actions");
+      businessActions = (body.businessActions ?? []).map(validateExtensionBusinessAction);
+      if (new Set(businessActions.map(action => action.id)).size !== businessActions.length
+        || businessActions.some(action => action.installationScope !== body.scope || action.dataScope !== body.scope)) throw new Error("duplicate_or_mismatched_business_action");
+    } catch { return Response.json({ error: "gadget_business_action_contract_invalid" }, { status: 400 }); }
+    if (businessActions.length > 0 && (!body.releaseProof || !body.extensionInstallationId || typeof body.sourceGadgetId !== "string"))
+      return Response.json({ error: "gadget_business_action_signed_release_required" }, { status: 403 });
+    if (body.releaseProof && (businessActions.length > 0 || body.sourceGadgetId !== undefined)) {
+      let source: { id?: unknown; businessActions?: unknown; scope?: unknown;
+        permissions?: Array<{ scope?: unknown; actions?: unknown[]; resource?: unknown }> } | undefined;
+      try {
+        const manifest = JSON.parse(body.releaseProof.manifestJson) as {
+          capabilityRequirements?: unknown[]; declaredPermissions?: unknown[];
+          bundle?: { primitives?: Array<{ kind?: unknown; id?: unknown; businessActions?: unknown; scope?: unknown;
+            permissions?: Array<{ scope?: unknown; actions?: unknown[]; resource?: unknown }> }> };
+          gadgets?: Array<{ id?: unknown; scope?: unknown; businessActions?: unknown }>;
+        };
+        source = manifest.bundle?.primitives?.find(item => item.kind === "gadget" && item.id === body.sourceGadgetId)
+          ?? manifest.gadgets?.find(item => item.id === body.sourceGadgetId);
+        if (businessActions.length > 0) {
+          const permissions = source && Array.isArray(source.permissions) ? source.permissions : [];
+          const scopedPermission = businessActions.every(action => permissions.some(permission => permission.scope === body.scope
+            && Array.isArray(permission.actions) && permission.actions.includes("write") && permission.resource === action.permission));
+          const legacyPermission = businessActions.every(action => manifest.declaredPermissions?.includes(action.permission));
+          if (!manifest.capabilityRequirements?.includes("extension.gadget.business_action")
+            || !(scopedPermission || legacyPermission)) return Response.json({ error: "gadget_business_action_permission_missing" }, { status: 403 });
+        }
+      } catch { return Response.json({ error: "gadget_business_action_release_invalid" }, { status: 403 }); }
+      if (typeof body.sourceGadgetId !== "string" || !source || businessActions.length > 0 && source.scope !== body.scope
+        || JSON.stringify(source.businessActions ?? []) !== JSON.stringify(businessActions))
+        return Response.json({ error: "gadget_business_action_release_mismatch" }, { status: 403 });
+    } else if (body.sourceGadgetId !== undefined) {
+      return Response.json({ error: "gadget_business_action_release_required" }, { status: 403 });
+    }
     if (existingReleaseProof && body.releaseProof && JSON.parse(existingReleaseProof).extensionId !== body.releaseProof.extensionId) {
       return Response.json({ error: "extension_canvas_identity_immutable" }, { status: 409 });
     }
@@ -409,6 +617,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         this.ctx.storage.sql.exec("INSERT INTO gadget_schema_migrations(version,description) VALUES(?,?)", migration.version, migration.description);
       }
     this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?),('html_sha256',?)", body.appId, body.scope, String(body.gadgetTier), html, htmlSha256);
+      this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('business_actions_json',?)", JSON.stringify(businessActions));
       if (body.extensionInstallationId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('extension_installation_id',?)", body.extensionInstallationId);
     };
     if ((body.defaultSchemaSql || migrations.length) && typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(apply);

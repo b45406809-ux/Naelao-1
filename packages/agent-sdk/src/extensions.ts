@@ -4,6 +4,12 @@ import { WIDGET_EVENT_TYPES, type WidgetEventType } from "./widget-events.js";
 import { validateSetupFieldDefinitions, validateSetupFieldValues } from "./blueprint-setup-fields.js";
 import type { BlueprintSetupValue } from "./blueprint-setup-fields.js";
 import type { BlueprintSetupField } from "./types.js";
+import { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, createBusinessActionClient, validateExtensionBusinessAction, validateReceiveStockInput,
+  validateReceiveStockOutput, type BusinessActionClient, type BusinessActionObjectSchema, type BusinessActionRole, type ExtensionBusinessAction,
+  type ReceiveStockInput, type ReceiveStockOutput } from "./business-actions.js";
+export { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, createBusinessActionClient, validateExtensionBusinessAction,
+  validateReceiveStockInput, validateReceiveStockOutput };
+export type { BusinessActionClient, BusinessActionObjectSchema, BusinessActionRole, ExtensionBusinessAction, ReceiveStockInput, ReceiveStockOutput };
 
 export interface ExtensionSettingsSchema { schemaVersion: 1 | 2; fields: BlueprintSetupField[] }
 /** Packages can require owners to publish a validated settings draft before it affects runtime. */
@@ -31,6 +37,7 @@ export interface ExtensionGadgetManifest {
   gadgetTier: GadgetTier;
   defaultSchemaSql: string;
   migrations?: readonly ExtensionSqlMigration[];
+  businessActions?: readonly ExtensionBusinessAction[];
 }
 
 export interface ExtensionDaemonManifest {
@@ -241,6 +248,9 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
   if (raw.bundle !== undefined) {
     canonicalBundle = parseExtensionBundle(raw.bundle);
     assert(canonicalBundle.id === raw.id, "bundle_extension_id_mismatch");
+    const businessActionsRequired = canonicalBundle.primitives.some((primitive): primitive is GadgetContract =>
+      primitive.kind === "gadget" && (primitive.businessActions?.length ?? 0) > 0);
+    assert(!businessActionsRequired || (raw.capabilityRequirements as unknown[]).includes("extension.gadget.business_action"), "business_action_package_capability_required");
     const channels = canonicalBundle.primitives.filter((primitive): primitive is ChannelContract => primitive.kind === "channel");
     if (raw.channels !== undefined) {
       assert(Array.isArray(raw.channels), "invalid_channels");
@@ -264,6 +274,18 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     assert(typeof item.defaultSchemaSql === "string" && item.defaultSchemaSql.length <= 64_000, "invalid_schema");
     assert(!FORBIDDEN_SCRIPT.test(item.defaultSchemaSql), "unsafe_schema");
     if (item.migrations !== undefined) validateExtensionMigrations(item.migrations);
+    if (item.businessActions !== undefined) {
+      assert(Array.isArray(item.businessActions) && item.businessActions.length <= 32, "invalid_business_actions");
+      const actionIds = new Set<string>();
+      for (const value of item.businessActions as unknown[]) {
+        let action: ExtensionBusinessAction;
+        try { action = validateExtensionBusinessAction(value); } catch { throw new Error("invalid_extension_manifest:invalid_business_action"); }
+        assert(!actionIds.has(action.id), "duplicate_business_action_id"); actionIds.add(action.id);
+        assert(action.installationScope === item.scope && action.dataScope === item.scope, "business_action_scope_mismatch");
+        assert((raw.capabilityRequirements as unknown[]).includes("extension.gadget.business_action"), "business_action_package_capability_required");
+        assert((raw.declaredPermissions as string[]).includes(action.permission), "business_action_permission_required");
+      }
+    }
   }
   for (const item of raw.daemons as Record<string, unknown>[]) {
     assert(item && typeof item === "object", "invalid_daemon");
@@ -401,7 +423,11 @@ export interface ExtensionContractBase {
   cancellation?: CancellationContract;
 }
 export interface ExtensionSqlMigration { version: number; description: string; up: string; }
-export interface GadgetContract extends ExtensionContractBase { kind: "gadget"; scope: GadgetScope; schemaSql?: string; migrations?: readonly ExtensionSqlMigration[]; }
+export interface GadgetContract extends ExtensionContractBase {
+  kind: "gadget"; scope: GadgetScope; schemaSql?: string; migrations?: readonly ExtensionSqlMigration[];
+  /** Named host-executed operations. They are separate from generic CRUD permissions. */
+  businessActions?: readonly ExtensionBusinessAction[];
+}
 export interface CanvasContract extends ExtensionContractBase {
   kind: "canvas";
   layout: CanvasLayout | "CanvasMount";
@@ -534,7 +560,7 @@ const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "p
 function contractAssert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(`invalid_extension_contract:${message}`); }
 function rejectUnknownContractKeys(raw: Record<string, unknown>, allowed: Set<string>): void { for (const key of Object.keys(raw)) contractAssert(allowed.has(key), `unknown_field:${key}`); }
 function validateContractBase(raw: Record<string, unknown>, kind: ExtensionPrimitiveKind): void {
-  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage", "gadgetReads"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "attachmentAccess", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "parallelExecution", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "entry", "steps", "toolNames"];
+  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations", "businessActions"] : kind === "canvas" ? ["layout", "component", "dynamicPage", "gadgetReads"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "attachmentAccess", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "parallelExecution", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "entry", "steps", "toolNames"];
   rejectUnknownContractKeys(raw, new Set([...CONTRACT_BASE_KEYS, ...specific]));
   contractAssert(raw.schemaVersion === "1.0", `unsupported_schema_version:${String(raw.schemaVersion)}`);
   contractAssert(raw.kind === kind, `kind_mismatch:${kind}`);
@@ -578,6 +604,20 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
     if (raw.schemaSql !== undefined) contractAssert(typeof raw.schemaSql === "string" && raw.schemaSql.length <= 64000, "invalid_schema_sql");
     if (raw.migrations !== undefined) {
       try { validateExtensionMigrations(raw.migrations); } catch (error) { throw new Error(`invalid_extension_contract:${error instanceof Error ? error.message.replace("invalid_extension_manifest:", "") : "invalid_migrations"}`); }
+    }
+    if (raw.businessActions !== undefined) {
+      contractAssert(Array.isArray(raw.businessActions) && raw.businessActions.length <= 32, "invalid_business_actions");
+      const actionIds = new Set<string>();
+      for (const value of raw.businessActions as unknown[]) {
+        let action: ExtensionBusinessAction;
+        try { action = validateExtensionBusinessAction(value); }
+        catch { throw new Error("invalid_extension_contract:invalid_business_action"); }
+        contractAssert(!actionIds.has(action.id), "duplicate_business_action_id"); actionIds.add(action.id);
+        contractAssert(action.installationScope === raw.scope && action.dataScope === raw.scope, "business_action_scope_mismatch");
+        contractAssert((raw.capabilityRequirements as unknown[]).includes("extension.gadget.business_action"), "business_action_capability_required");
+        contractAssert((raw.permissions as Array<{ scope: string; actions: string[]; resource: string }>).some(permission =>
+          permission.scope === raw.scope && permission.actions.includes("write") && permission.resource === action.permission), "business_action_permission_required");
+      }
     }
   }
   if (kind === "canvas") {

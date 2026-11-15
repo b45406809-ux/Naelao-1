@@ -1,5 +1,5 @@
 import { ApiError, requestJson } from "./request";
-import type { ProjectKind } from "@naelao/agent-sdk";
+import type { ExtensionBusinessAction, ProjectKind } from "@naelao/agent-sdk";
 import type { SpaceCoordinationAuditHistoryPageV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPageV2, SpaceCoordinationPolicyHistoryPageV2, SpaceCoordinationPolicyV2, SpaceCoordinationPublicationProposal, SpaceCoordinationPublicationProposalPage, SpaceCoordinationProposalAction, SpaceCoordinationSingletonPolicy, SpaceCoordinationSingletonPolicyHistory, SpaceCoordinationUseRequestPage, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
 // Product Shell API client — a signed-in product end user talks to the platform via a
 // product-scoped nps_... session token (ProductUserDO-backed), never the builder's platform JWT.
@@ -1581,7 +1581,7 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
 export interface ContainerInstallation {
   instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string; release_version?: string | null;
     publisher_key_id?: string | null; publisher_trusted?: boolean; publisher_revoked_at?: string | null };
-  manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; settingsSchema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; containers?: Array<{ id?: string }>; bundle?: { version?: string; primitives?: Array<{ kind?: string; id?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }> }> } };
+  manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; settingsSchema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; containers?: Array<{ id?: string }>; bundle?: { version?: string; primitives?: Array<{ kind?: string; id?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }>; businessActions?: Array<{ id: string }> }> } };
 }
 export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string, includeDisabled = false) {
   const params = new URLSearchParams();
@@ -1812,7 +1812,10 @@ export async function revokeCrossSpaceGrant(spaceId: string, grantId: string, se
 }
 
 export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
-export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; runtime_primitive?: "gadget" | "canvas"; dependency_pins?: Array<{ extensionId: string; version: string; manifestSha256: string }>; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; release_version?: string | null; publisher_trusted?: boolean; publisher_revoked_at?: string | null; capabilities: string[]; settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
+export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; runtime_primitive?: "gadget" | "canvas";
+  business_action_apps?: string[]; dependency_pins?: Array<{ extensionId: string; version: string; manifestSha256: string }>; installed_at: string; scope: "SPACE_SHARED";
+  status: "active" | "disabled"; release_version?: string | null; publisher_trusted?: boolean; publisher_revoked_at?: string | null; capabilities: string[];
+  settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
 export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; version?: string; publisher_id?: string; requested_shared_filesystem: SharedFilesystemGrant[];
   dependencies?: Array<{ extensionId: string; version: string; manifestSha256: string }> }
 export interface SpaceSharedExtensionUpdateReview {
@@ -1853,6 +1856,7 @@ export interface SpaceSharedExtensionUpdateReceipt {
 export interface SpaceSharedExtensionInstallReviewPackage {
   extension_id: string; version: string; manifest_sha256: string; publisher_id: string; publisher_key_id: string;
   permissions: string[]; capabilities: string[]; shared_filesystem: SharedFilesystemGrant[];
+  business_actions?: Array<{ gadget_id: string; action: ExtensionBusinessAction }>;
   connections: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
   dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }>;
   is_requested: boolean; installed_state: "installed_exact" | "installed_disabled" | "install_required" | "pin_conflict";
@@ -1975,6 +1979,22 @@ export function callSpaceSharedExtensionApi(spaceId: string, appId: string, sess
   const query = new URLSearchParams(request.query ?? {});
   return apiFetch<unknown>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}${request.path}${query.size ? `?${query}` : ""}`, {
     method: request.method, session, ...(request.body !== undefined ? { body: JSON.stringify(request.body) } : {}), cache: "no-store",
+  });
+}
+export function callSpaceSharedExtensionBusinessAction(spaceId: string, appId: string, session: SessionCredentials,
+  request: { actionId?: string; input?: unknown }) {
+  const actionPath = request.actionId ? `/${encodeURIComponent(request.actionId)}` : "";
+  return apiFetch<unknown>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}/business-actions${actionPath}`, {
+    method: request.actionId ? "POST" : "GET", session, cache: "no-store",
+    ...(request.actionId && request.input !== undefined ? { body: JSON.stringify(request.input) } : {}),
+  });
+}
+export function callProjectExtensionBusinessAction(spaceId: string, projectId: string, appId: string, session: SessionCredentials,
+  request: { actionId?: string; input?: unknown }) {
+  const actionPath = request.actionId ? `/${encodeURIComponent(request.actionId)}` : "";
+  return apiFetch<unknown>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/apps/${encodeURIComponent(appId)}/business-actions${actionPath}`, {
+    method: request.actionId ? "POST" : "GET", session, cache: "no-store",
+    ...(request.actionId && request.input !== undefined ? { body: JSON.stringify(request.input) } : {}),
   });
 }
 export function callProjectExtensionSettings(spaceId: string, projectId: string, installationId: string, session: SessionCredentials,

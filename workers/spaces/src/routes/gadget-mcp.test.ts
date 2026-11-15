@@ -101,6 +101,38 @@ describe("gadget MCP host adapter", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
+  it("routes UI business actions through the host and hides their execution from ordinary members", async () => {
+    const forwarded: Request[] = [];
+    const fetch = vi.fn(async (request: Request) => { forwarded.push(request); return Response.json({ path: new URL(request.url).pathname, method: request.method }); });
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...args: unknown[]) => ({ first: async () => query.includes("space_members") ? (args[2] === "active-member" ? { 1: 1 } : null) : { 1: 1 } }) }) },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async (request: Request) => new URL(request.url).pathname === "/extension-runtime-work"
+        ? Response.json({ acquired: true, released: true }) : Response.json({ managed: true, active: true, releaseValid: true, dependenciesResolved: true,
+          installationId: "install-inventory", releaseVersion: "1.0.0" }) }) },
+      MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch }) } } as never;
+    const member = await auth("t", { "x-naelao-user-id": "active-member", "x-naelao-role": "member", "content-type": "application/json" });
+    const catalogue = await app.request("/spaces/s/apps/inventory/business-actions", { headers: member }, env);
+    expect(await catalogue.json()).toEqual({ path: "/business-actions", method: "GET" });
+    const denied = await app.request("/spaces/s/apps/inventory/business-actions/receiveStock", { method: "POST", headers: member,
+      body: JSON.stringify({ productId: "sku-1", quantity: 1, expectedVersion: 1, reason: "PO-1", idempotencyKey: "receipt-2026-0001" }) }, env);
+    expect(denied.status).toBe(403);
+    const deniedAssistant = await app.request("/spaces/s/apps/inventory/mcp", { method: "POST", headers: member,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "app_inventory_action_receiveStock", arguments: {} } }) }, env);
+    expect(deniedAssistant.status).toBe(403);
+    const allowed = await app.request("/spaces/s/apps/inventory/business-actions/receiveStock", { method: "POST",
+      headers: await auth("t", { "x-naelao-user-id": "owner-1", "x-naelao-role": "admin", "content-type": "application/json" }),
+      body: JSON.stringify({ productId: "sku-1", quantity: 1, expectedVersion: 1, reason: "PO-1", idempotencyKey: "receipt-2026-0001" }) }, env);
+    expect(await allowed.json()).toEqual({ path: "/business-actions/receiveStock", method: "POST" });
+    const auditDenied = await app.request("/spaces/s/apps/inventory/action-audit", { headers: member }, env);
+    expect(auditDenied.status).toBe(403);
+    const audit = await app.request("/spaces/s/apps/inventory/action-audit", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
+    expect(await audit.json()).toEqual({ path: "/api/actions/audit", method: "GET" });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(forwarded[1]?.headers.get("x-naelao-active-installation-id")).toBe("install-inventory");
+    expect(forwarded[1]?.headers.get("x-naelao-active-release-version")).toBe("1.0.0");
+  });
+
   it("routes Space-shared extension MCP through the Space actor after membership checks", async () => {
     const idFromName = vi.fn((name: string) => name as never);
     const actorFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname }));

@@ -11,7 +11,7 @@ import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import { normalizePreferredLanguage, resolveFileContentType, validateScheduledQuietHours } from "@naelao/types";
 import { encodeWorkspaceFileContent } from "./workspace-file-response.js";
 import { compileWorkflowPlan } from "@naelao/sdk/workflow";
-import type { SpaceModelPolicy } from "@naelao/agent-sdk";
+import type { ExtensionBusinessAction, SpaceModelPolicy } from "@naelao/agent-sdk";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST } from "./workspace-manifest.js";
@@ -62,7 +62,7 @@ import { assertExecutionPlanResources, EntitlementsChecker, getExecutionLimits, 
 import { findUnsafeProjectExtensionUpgrade } from "./extension-upgrade-guard.js";
 import { summarizeExtensionForActivation, type ExtensionActivationSummary } from "./extension-activation-summary.js";
 import { applyPublisherKeyRegistry, extensionReleaseAccessExpansion, isTrustedPublisherRelease, retainActivePublisherInstallations, type PublisherTaggedRelease } from "./extension-release-trust.js";
-import { SPACE_SHARED_PACKAGE_CAPABILITIES, SPACE_SHARED_PACKAGE_PERMISSIONS } from "./shared-extension-package-policy.js";
+import { SPACE_SHARED_PACKAGE_CAPABILITIES, isSpaceSharedPackagePermissionAllowed } from "./shared-extension-package-policy.js";
 import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, spaceSharedGadgetMigrationRetentionPlan,
   isSpaceSharedDependencyPinList, isSpaceSharedGadgetMigrationRetentionPlan, spaceSharedDependencyExpansion,
   supportsOwnerApprovedSpaceSharedAuthorityExpansion, supportsOwnerApprovedSpaceSharedDependencyExpansion,
@@ -1844,6 +1844,8 @@ async function installFirstPartySpaceExtension(env: Env, tenantId: string, space
   let manifest: ReturnType<typeof validateExtensionManifest>;
   try { manifest = validateExtensionManifest(source, { gatekeeperCapabilities: source.capabilityRequirements }); }
   catch { return { ok: false, error: "first_party_manifest_invalid" }; }
+  if (manifest.gadgets.some(gadget => (gadget.businessActions?.length ?? 0) > 0))
+    return { ok: false, error: "first_party_business_action_signed_release_required" };
   if (!manifest.gadgets.some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3)) return { ok: false, error: "space_shared_gadget_required" };
   const spaceStub = await spaceDoStub(env, spaceId, tenantId);
   const existingResponse = await spaceStub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({
@@ -1877,7 +1879,8 @@ async function installFirstPartySpaceExtension(env: Env, tenantId: string, space
       for (const gadget of manifest.gadgets.filter(item => item.scope === "SPACE_SHARED" && item.gadgetTier === 3)) {
         const actor = gadgetActorId(env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId: gadget.id });
         const response = await env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ appId: gadget.id, scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: gadget.defaultSchemaSql, migrations: gadget.migrations ?? [], html }) }));
+          body: JSON.stringify({ appId: gadget.id, scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: gadget.defaultSchemaSql,
+            migrations: gadget.migrations ?? [], html }) }));
         if (!response.ok) { initialized = false; break; }
       }
     } catch { initialized = false; }
@@ -1926,6 +1929,7 @@ async function resolveSpaceExtensionDependencies(env: Env, tenantId: string, spa
 type SpacePackageInstallReviewNode = {
   extension_id: string; version: string; manifest_sha256: string; publisher_id: string; publisher_key_id: string;
   permissions: string[]; capabilities: string[]; shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
+  business_actions: Array<{ gadget_id: string; action: ExtensionBusinessAction }>;
   connections: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
   dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }>;
   is_requested: boolean; installed_state: "installed_exact" | "installed_disabled" | "install_required" | "pin_conflict";
@@ -1935,6 +1939,7 @@ type VerifiedSpacePackageRelease = {
   manifest: ReturnType<typeof validateExtensionManifest>; manifestJson: string; manifestSha256: string; artifactSha256: string;
   publisherId: string; publisherKeyId: string; publisherSignature: string; publisherPayloadSha256: string; artifactPaths: string[];
   permissions: string[]; capabilities: string[]; sharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
+  businessActions: Array<{ gadgetId: string; action: ExtensionBusinessAction }>;
   connections: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
   dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }>;
   installable: boolean;
@@ -2041,20 +2046,28 @@ async function inspectSignedSpacePackageRelease(env: Env, tenantId: string, spac
     && !(manifest.bundle?.workerRoles?.length)
     && !(manifest.gadgets ?? []).some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.gadgetTier !== 3)
     && !manifest.capabilityRequirements.some(capability => !SPACE_SHARED_PACKAGE_CAPABILITIES.has(capability))
-    && !manifest.declaredPermissions.some(permission => !SPACE_SHARED_PACKAGE_PERMISSIONS.has(permission))
+    && !manifest.declaredPermissions.some(permission => !isSpaceSharedPackagePermissionAllowed(permission, manifest))
     && canvases.every(part => part.layout === "CanvasMount" && !part.dynamicPage && part.permissions.length === 0 && part.capabilityRequirements.length === 0)
-    && gadgets.every(part => part.scope === "SPACE_SHARED" && part.permissions.length === 0 && part.capabilityRequirements.length === 0)
+    && gadgets.every(part => part.scope === "SPACE_SHARED"
+      && ((part.businessActions?.length ?? 0) === 0 && part.permissions.length === 0 && part.capabilityRequirements.length === 0
+        || (part.businessActions?.length ?? 0) > 0 && part.capabilityRequirements.length === 1
+          && part.capabilityRequirements[0] === "extension.gadget.business_action"
+          && part.permissions.length === part.businessActions!.length))
     && channels.every(part => part.context === "channel_only"
       && (part.provider === "phone" || Boolean(part.connectionId && connections.some(connection => connection.id === part.connectionId
         && connection.provider === part.provider && connection.required))))
     && channels.every(part => providerAllowlist.has(part.provider))
     && connections.every(connection => providerAllowlist.has(connection.provider)
       && channels.some(part => part.connectionId === connection.id && part.provider === connection.provider));
+  const businessActions = [
+    ...gadgets.flatMap(gadget => (gadget.businessActions ?? []).map(action => ({ gadgetId: gadget.id, action }))),
+    ...(manifest.gadgets ?? []).flatMap(gadget => (gadget.businessActions ?? []).map(action => ({ gadgetId: gadget.id, action }))),
+  ];
   return { ok: true, package: { manifest, manifestJson: release.manifest_json, manifestSha256: await digestExtensionManifest(manifest),
     artifactSha256: release.artifact_sha256, publisherId: release.publisher.id, publisherKeyId: release.publisher.key_id,
     publisherSignature: release.publisher.signature, publisherPayloadSha256: release.publisher.payload_sha256, artifactPaths: paths,
     permissions: [...new Set(manifest.declaredPermissions)].sort(),
-    capabilities: [...new Set(manifest.capabilityRequirements)].sort(), sharedFilesystem: [...(manifest.shared_filesystem ?? [])],
+    capabilities: [...new Set(manifest.capabilityRequirements)].sort(), sharedFilesystem: [...(manifest.shared_filesystem ?? [])], businessActions,
     connections: (manifest.bundle?.connections ?? []).map(connection => ({ id: connection.id ?? "", provider: connection.provider ?? "",
       purpose: connection.purpose ?? "", required: connection.required === true })), dependencies: manifest.dependencies ?? [], installable } };
 }
@@ -2135,16 +2148,21 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
   const legacyGadgets = (manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3);
   const channels = primitives.filter((part): part is Extract<typeof part, { kind: "channel" }> => part.kind === "channel");
   const connections = bundle?.connections ?? [];
+  if (gadgets.some(gadget => (gadget.businessActions?.length ?? 0) > 0) && canvases.length === 0)
+    return { ok: false, error: "extension_business_action_canvas_required" };
   if (!bundle || bundle.id !== extensionId || bundle.version !== version || canvases.length === 0
     || primitives.length > 32 || primitives.some(part => !["canvas", "gadget", "channel"].includes(part.kind))
     || (manifest.containers?.length ?? 0) > 0 || (manifest.daemons?.length ?? 0) > 0 || (manifest.commands?.length ?? 0) > 0
     || (manifest.widgetSubscriptions?.length ?? 0) > 0 || (bundle.workerRoles?.length ?? 0) > 0
     || (manifest.gadgets ?? []).some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.gadgetTier !== 3)
     || manifest.capabilityRequirements.some(capability => !SPACE_SHARED_PACKAGE_CAPABILITIES.has(capability))
-    || manifest.declaredPermissions.some(permission => !SPACE_SHARED_PACKAGE_PERMISSIONS.has(permission))
+    || manifest.declaredPermissions.some(permission => !isSpaceSharedPackagePermissionAllowed(permission, manifest))
     || canvases.some(canvas => !/^\.\/[A-Za-z0-9._-]{1,128}\.html$/.test(canvas.component) || canvas.layout !== "CanvasMount"
       || canvas.dynamicPage || canvas.permissions.length > 0 || canvas.capabilityRequirements.length > 0)
-    || gadgets.some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.permissions.length > 0 || gadget.capabilityRequirements.length > 0)
+    || gadgets.some(gadget => gadget.scope !== "SPACE_SHARED"
+      || ((gadget.businessActions?.length ?? 0) === 0 && (gadget.permissions.length > 0 || gadget.capabilityRequirements.length > 0))
+      || ((gadget.businessActions?.length ?? 0) > 0 && (gadget.capabilityRequirements.length !== 1
+        || gadget.capabilityRequirements[0] !== "extension.gadget.business_action" || gadget.permissions.length !== gadget.businessActions!.length)))
     || channels.some(channel => channel.context !== "channel_only"
       || !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(channel.handlerScript)
       || channel.provider !== "phone" && (!channel.connectionId || !connections.some(connection => connection.id === channel.connectionId
@@ -2273,7 +2291,7 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
     const initialized = await env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST",
       headers: { "content-type": "application/json" }, body: JSON.stringify({ appId: appId(gadget.id), scope: "SPACE_SHARED", gadgetTier: 3,
         defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [], extensionInstallationId: installedResult.installationId,
-        html, releaseProof }) }));
+        sourceGadgetId: gadget.id, businessActions: gadget.businessActions ?? [], html, releaseProof }) }));
     if (!initialized.ok) return fail("extension_package_gadget_initialization_failed");
   }
   for (const gadget of legacyGadgets) {
@@ -2289,7 +2307,7 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
     const initialized = await env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST",
       headers: { "content-type": "application/json" }, body: JSON.stringify({ appId: appId(gadget.id), scope: "SPACE_SHARED", gadgetTier: 3,
         defaultSchemaSql: gadget.defaultSchemaSql ?? "", migrations: gadget.migrations ?? [], extensionInstallationId: installedResult.installationId,
-        html, releaseProof }) }));
+        sourceGadgetId: gadget.id, businessActions: gadget.businessActions ?? [], html, releaseProof }) }));
     if (!initialized.ok) return fail("extension_package_gadget_initialization_failed");
   }
   const activePublisher = await env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
@@ -2740,6 +2758,7 @@ app.post(sharedExtensionInstallReviewPath, async c => {
   const toNode = (pkg: VerifiedSpacePackageRelease, isRoot: boolean): SpacePackageInstallReviewNode => ({
     extension_id: pkg.manifest.id, version: pkg.manifest.bundle?.version ?? "", manifest_sha256: pkg.manifestSha256,
     publisher_id: pkg.publisherId, publisher_key_id: pkg.publisherKeyId, permissions: pkg.permissions, capabilities: pkg.capabilities,
+    business_actions: pkg.businessActions.map(item => ({ gadget_id: item.gadgetId, action: item.action })),
     shared_filesystem: pkg.sharedFilesystem, connections: pkg.connections, dependencies: pkg.dependencies, is_requested: isRoot,
     installed_state: installedState(pkg, isRoot), installable: pkg.installable, publisher_signature_verified: true,
   });
@@ -2927,10 +2946,10 @@ async function spacePackageReviewDigest(value: string): Promise<string> {
 function spacePackageReviewSchemaRows(manifest: SpacePackageReviewManifest) {
   const rows: Array<{ id: string; kind: string; digest: string }> = [];
   for (const primitive of manifest.bundle?.primitives ?? []) {
-    if (primitive.kind === "gadget") rows.push({ id: primitive.id, kind: "gadget", digest: JSON.stringify([primitive.schemaSql, primitive.migrations ?? []]) });
+    if (primitive.kind === "gadget") rows.push({ id: primitive.id, kind: "gadget", digest: JSON.stringify([primitive.schemaSql, primitive.migrations ?? [], primitive.businessActions ?? []]) });
   }
   for (const gadget of manifest.gadgets ?? []) if (gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3)
-    rows.push({ id: gadget.id, kind: "gadget", digest: JSON.stringify([gadget.defaultSchemaSql, gadget.migrations ?? []]) });
+    rows.push({ id: gadget.id, kind: "gadget", digest: JSON.stringify([gadget.defaultSchemaSql, gadget.migrations ?? [], gadget.businessActions ?? []]) });
   for (const field of manifest.settingsSchema?.fields ?? [])
     rows.push({ id: field.id, kind: "setting", digest: JSON.stringify(field) });
   return rows;
@@ -3059,9 +3078,12 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
       || (candidateManifest.widgetSubscriptions?.length ?? 0) > 0 || (bundle.workerRoles?.length ?? 0) > 0
       || (candidateManifest.gadgets ?? []).some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.gadgetTier !== 3)
       || candidateManifest.capabilityRequirements.some(capability => !SPACE_SHARED_PACKAGE_CAPABILITIES.has(capability))
-      || candidateManifest.declaredPermissions.some(permission => !SPACE_SHARED_PACKAGE_PERMISSIONS.has(permission))
+      || candidateManifest.declaredPermissions.some(permission => !isSpaceSharedPackagePermissionAllowed(permission, candidateManifest))
       || canvases.some(canvas => canvas.layout !== "CanvasMount" || canvas.dynamicPage || canvas.permissions.length > 0 || canvas.capabilityRequirements.length > 0)
-      || gadgets.some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.permissions.length > 0 || gadget.capabilityRequirements.length > 0)
+      || gadgets.some(gadget => gadget.scope !== "SPACE_SHARED"
+        || ((gadget.businessActions?.length ?? 0) === 0 && (gadget.permissions.length > 0 || gadget.capabilityRequirements.length > 0))
+        || ((gadget.businessActions?.length ?? 0) > 0 && (gadget.capabilityRequirements.length !== 1
+          || gadget.capabilityRequirements[0] !== "extension.gadget.business_action" || gadget.permissions.length !== gadget.businessActions!.length)))
       || channels.some(channel => channel.context !== "channel_only" || !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(channel.handlerScript)
         || channel.provider !== "phone" && (!channel.connectionId || !connections.some(connection => connection.id === channel.connectionId
           && connection.provider === channel.provider && connection.required)))) throw new Error("space_shared_contract_unsupported");
@@ -5250,7 +5272,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const requiredCapabilities = new Set<string>();
   let manifest: ReturnType<typeof validateExtensionManifest>;
   try {
-    manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["extension.project_canvas", "extension.gadget.read", "extension.workflow", "channel.invoke", "events.subscribe"] });
+    manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["extension.project_canvas", "extension.gadget.read", "extension.gadget.business_action", "extension.workflow", "channel.invoke", "events.subscribe"] });
     const bundle = manifest.bundle;
     const primitives = bundle?.primitives ?? [];
     if (!bundle || !primitives.length || primitives.some(item => !["canvas", "gadget", "channel", "workflow"].includes(item.kind))
@@ -5259,6 +5281,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       throw new Error("project_bundle_primitive_not_supported");
     if (bundle.primitives.some(item => item.kind === "canvas" || item.kind === "gadget")) requiredCapabilities.add("extension.project_canvas");
     if (bundle.primitives.some(item => item.kind === "canvas" && (item.gadgetReads?.length ?? 0) > 0)) requiredCapabilities.add("extension.gadget.read");
+    if (bundle.primitives.some(item => item.kind === "gadget" && (item.businessActions?.length ?? 0) > 0)) requiredCapabilities.add("extension.gadget.business_action");
     if (bundle.primitives.some(item => item.kind === "workflow")) requiredCapabilities.add("extension.workflow");
     if (bundle.primitives.some(item => item.kind === "channel")) requiredCapabilities.add("channel.invoke");
     if (manifest.widgetSubscriptions?.length) requiredCapabilities.add("events.subscribe");
@@ -5281,8 +5304,13 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     for (const primitive of primitives) {
       if (primitive.kind === "canvas" && (primitive.layout !== "CanvasMount" || primitive.dynamicPage || primitive.permissions.length || primitive.capabilityRequirements.length))
         throw new Error("canvas_requires_project_mount_and_no_unreviewed_capabilities");
-      if (primitive.kind === "gadget" && (primitive.scope !== "PROJECT_BOUND" || primitive.permissions.length || primitive.capabilityRequirements.length))
-        throw new Error("gadget_requires_project_bound_scope_and_no_unreviewed_capabilities");
+      if (primitive.kind === "gadget") {
+        const hasBusinessActions = (primitive.businessActions?.length ?? 0) > 0;
+        if (primitive.scope !== "PROJECT_BOUND" || (!hasBusinessActions && (primitive.permissions.length || primitive.capabilityRequirements.length))
+          || (hasBusinessActions && (primitive.capabilityRequirements.length !== 1 || primitive.capabilityRequirements[0] !== "extension.gadget.business_action"
+            || primitive.permissions.length !== primitive.businessActions!.length)))
+          throw new Error("gadget_requires_project_bound_scope_and_reviewed_business_action_capability");
+      }
       if (primitive.kind === "workflow") {
         if (primitive.steps.length) throw new Error("workflow_multi_entry_steps_not_supported_use_execute_entry");
         if (primitive.permissions.length || primitive.capabilityRequirements.length
@@ -5309,6 +5337,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const workflowPaths = new Set(workflows.map(item => item.entry));
   if (canvases.some(item => !/^\.\/[A-Za-z0-9._-]{1,128}\.html$/.test(item.component)) || (!canvases.length && !gadgets.length && !channels.length && !workflows.length))
     return c.json({ error_code: "extension_artifact_declaration_invalid" }, 400);
+  if (gadgets.some(gadget => (gadget.businessActions?.length ?? 0) > 0) && canvases.length === 0)
+    return c.json({ error_code: "extension_business_action_canvas_required" }, 400);
   if (!body.artifacts || typeof body.artifacts !== "object" || Array.isArray(body.artifacts)) return c.json({ error_code: "extension_artifacts_required" }, 400);
   const artifacts = body.artifacts as Record<string, unknown>, required = new Set([
     ...canvases.map(item => item.component), ...channels.map(item => item.handlerScript), ...workflowPaths, ...widgetPaths,
@@ -5448,9 +5478,17 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   }
   for (const gadget of gadgets) {
     const appId = runtimeAppId(gadget.id);
+    const html = artifacts[canvases[0]!.component] as string;
+    const canvasPath = canvases[0]!.component;
+    const canvasSha256 = await spacePackageReviewDigest(html);
+    const hostSignature = installedResult.release!.hostSignature!;
+    const bindingPayload = JSON.stringify([bundle.id, bundle.version, manifestJson, digest, hostSignature, canvasPath, canvasSha256]);
+    const releaseProof = { extensionId: bundle.id, version: bundle.version, manifestJson, artifactSha256: digest, hostSignature,
+      canvasPath, canvasSha256, bindingSignature: await signHmac(bindingPayload, c.env.PLATFORM_SECRET) };
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [] }) }));
+      body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [],
+        extensionInstallationId: installedResult.installationId, sourceGadgetId: gadget.id, businessActions: gadget.businessActions ?? [], html, releaseProof }) }));
     if (!init.ok) return stagedFailure("extension_gadget_initialize_failed", 500, await readBoundedResponseText(init, 8 * 1024).catch(() => ""));
   }
   if (requiresRuntimeActivation) {

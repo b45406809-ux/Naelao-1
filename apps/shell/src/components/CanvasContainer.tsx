@@ -13,6 +13,7 @@ import { VirtualDesktopGuiCanvas } from "./viewports/VirtualDesktopGuiCanvas";
 type Creds = { sessionToken: string; endUserId: string };
 type HeaderTab = "canvases" | "files" | "details";
 type ExtensionCanvasChoice = { resourceId: string; canvasId: string; installationId: string; gadgetReads: Array<{ gadgetId: string; tables: string[] }>;
+  businessActionApps: string[];
   settingsSchema?: NonNullable<import("@naelao/agent-sdk").ExtensionSettingsSchema>; capabilities: string[]; permissions: string[]; label: string };
 export type CanvasView = "deliverable" | "code" | "micro-app" | "terminal" | "gui";
 type HydrationAction = { id: string; label: string; kind: "open_file" | "review_file"; path: string } | { id: string; label: string; kind: "open_channel_settings"; channel: "whatsapp" };
@@ -66,9 +67,12 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
         if (instance.status !== "active" || instance.project_id !== project.id || !instance.instance_id || !manifest.bundle?.primitives) return [];
         return manifest.bundle.primitives.filter(primitive => primitive.kind === "canvas" && typeof primitive.id === "string")
           .map(primitive => {
-            const resourceId = instance.instance_key && instance.instance_key !== "default" ? `${instance.instance_key}_${primitive.id}` : primitive.id!;
+            const prefix = instance.instance_key && instance.instance_key !== "default" ? `${instance.instance_key}_` : "";
+            const resourceId = `${prefix}${primitive.id!}`;
+            const businessActionApps = manifest.bundle!.primitives!.flatMap(candidate =>
+              candidate.kind === "gadget" && (candidate.businessActions?.length ?? 0) > 0 && candidate.id ? [`${prefix}${candidate.id}`] : []);
             return /^[a-z][a-z0-9_-]{1,63}$/.test(resourceId) ? { resourceId, canvasId: primitive.id!, installationId: instance.instance_id!,
-              gadgetReads: primitive.gadgetReads ?? [], ...(manifest.settingsSchema ? { settingsSchema: manifest.settingsSchema } : {}),
+              gadgetReads: primitive.gadgetReads ?? [], businessActionApps, ...(manifest.settingsSchema ? { settingsSchema: manifest.settingsSchema } : {}),
               capabilities: manifest.capabilityRequirements ?? [], permissions: manifest.declaredPermissions ?? [],
               label: `${manifest.id ?? instance.extension_id} · ${primitive.id}` } : null;
           }).filter((item): item is ExtensionCanvasChoice => item !== null);
