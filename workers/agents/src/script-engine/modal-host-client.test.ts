@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { verifyHmac } from "@naelao/crypto";
 import { verifyInternalToken } from "@naelao/http";
 import { createModalHostClient } from "./modal-host-client.js";
@@ -22,11 +23,14 @@ describe("Modal host client", () => {
     expect(await verifyInternalToken(requests[0]!.headers.get("x-naelao-internal-token") ?? undefined, scope.tenantId, secret)).toBe(true);
     expect(requests[0]!.headers.get("x-naelao-space-id")).toBe(scope.spaceId);
     expect(requests[0]!.headers.get("x-naelao-project-id")).toBe(scope.projectId);
-    const scopeToken = requests[0]!.headers.get("x-naelao-modal-scope-token") ?? "";
-    const timestamp = scopeToken.match(/(?:^|,)t=(\d+)(?:,|$)/)?.[1];
-    const scopeSignature = scopeToken.match(/(?:^|,)v1=([a-f0-9]{64})(?:,|$)/)?.[1];
-    expect(timestamp && scopeSignature && await verifyHmac(
-      JSON.stringify(["modal-scope-v1", scope.tenantId, scope.spaceId, scope.projectId, timestamp]), scopeSignature, secret,
+    const requestSignature = requests[0]!.headers.get("x-naelao-modal-request-signature") ?? "";
+    const timestamp = requestSignature.match(/(?:^|,)t=(\d+)(?:,|$)/)?.[1];
+    const signature = requestSignature.match(/(?:^|,)v1=([a-f0-9]{64})(?:,|$)/)?.[1];
+    const bodyText = await requests[0]!.clone().text();
+    const bodyHash = createHash("sha256").update(bodyText).digest("hex");
+    expect(timestamp && signature && await verifyHmac(
+      JSON.stringify(["modal-request-v1", timestamp, "POST", "/v1/sandboxes", scope.tenantId, scope.spaceId,
+        scope.projectId, "modal:operation-1", "owner-request-1", bodyHash]), signature, secret,
     )).toBe(true);
     expect(requests[0]!.headers.get("x-naelao-operation-id")).toBe("modal:operation-1");
     expect(requests[0]!.headers.get("idempotency-key")).toBe("owner-request-1");

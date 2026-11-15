@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.0.0" },
+  "files": ["dist", "README.md"],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
-    "test": "vitest run",
+    "test": "vitest run src",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

@@ -1,0 +1,42 @@
+name: Modal host build check
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/modal-host-check.yml"
+      - "workers/modal-host/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+  push:
+    branches:
+      - "**"
+    paths:
+      - ".github/workflows/modal-host-check.yml"
+      - "workers/modal-host/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: modal-host-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter @naelao/modal-host...
+      - run: pnpm --filter @naelao/modal-host test
+      - run: pnpm --filter @naelao/modal-host typecheck
+      - run: pnpm --filter @naelao/modal-host build
+      - run: docker build --file workers/modal-host/Dockerfile --tag naelao-modal-host:ci .

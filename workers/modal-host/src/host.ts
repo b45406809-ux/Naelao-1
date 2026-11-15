@@ -48,7 +48,12 @@ function verifyInternalToken(header: string | null, tenantId: string, secret: st
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
-function verifyScopeToken(header: string | null, scope: ModalHostScope, secret: string, now: number): boolean {
+function verifyRequestSignature(
+  header: string | null,
+  input: { method: string; path: string; scope: ModalHostScope; operationId: string; idempotencyKey: string; body: Uint8Array },
+  secret: string,
+  now: number,
+): boolean {
   if (!header || header.length > 128 || !secret) return false;
   const parts = header.split(",");
   if (parts.length !== 2) return false;
@@ -57,15 +62,19 @@ function verifyScopeToken(header: string | null, scope: ModalHostScope, secret: 
   if (!/^\d{1,16}$/.test(timestamp) || !/^[0-9a-f]{64}$/i.test(signature)) return false;
   const sentAt = Number(timestamp);
   if (!Number.isSafeInteger(sentAt) || Math.abs(now - sentAt) > 60_000) return false;
-  const payload = JSON.stringify(["modal-scope-v1", scope.tenantId, scope.spaceId, scope.projectId, timestamp]);
+  const bodySha256 = createHash("sha256").update(input.body).digest("hex");
+  const payload = JSON.stringify([
+    "modal-request-v1", timestamp, input.method, input.path, input.scope.tenantId, input.scope.spaceId,
+    input.scope.projectId, input.operationId, input.idempotencyKey, bodySha256,
+  ]);
   const expected = createHmac("sha256", secret).update(payload).digest();
   const supplied = Buffer.from(signature, "hex");
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
-async function boundedJson(request: Request): Promise<Record<string, unknown> | null> {
+async function boundedBody(request: Request): Promise<Uint8Array | null> {
   const reader = request.body?.getReader();
-  if (!reader) return null;
+  if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
@@ -83,6 +92,10 @@ async function boundedJson(request: Request): Promise<Record<string, unknown> | 
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
+}
+
+function parseJsonObject(bytes: Uint8Array): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
@@ -138,15 +151,20 @@ export function createModalHostHandler(config: ModalHostConfig, provider: ModalH
       spaceId: request.headers.get("x-naelao-space-id") ?? "",
       projectId: request.headers.get("x-naelao-project-id") ?? "",
     };
-    if (!validScope(scope) || !verifyScopeToken(request.headers.get("x-naelao-modal-scope-token"), scope, config.platformSecret, now()))
-      return json(403, { error_code: "forbidden" });
+    if (!validScope(scope)) return json(403, { error_code: "forbidden" });
     const operationId = request.headers.get("x-naelao-operation-id") ?? "";
     const idempotencyKey = request.headers.get("idempotency-key") ?? "";
     if (!IDEMPOTENCY.test(operationId) || !IDEMPOTENCY.test(idempotencyKey)) return json(400, { error_code: "modal_operation_identity_invalid" });
 
+    const bodyBytes = await boundedBody(request);
+    if (!bodyBytes) return json(413, { error_code: "request_too_large" });
+    if (!verifyRequestSignature(request.headers.get("x-naelao-modal-request-signature"), {
+      method: request.method, path: url.pathname + url.search, scope, operationId, idempotencyKey, body: bodyBytes,
+    }, config.platformSecret, now())) return json(403, { error_code: "forbidden" });
+
     if (request.method === "POST" && url.pathname === "/v1/sandboxes") {
       if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) return json(415, { error_code: "content_type_invalid" });
-      const body = await boundedJson(request);
+      const body = parseJsonObject(bodyBytes);
       if (!body || !validScope(body.scope) || body.scope.tenantId !== tenantId
         || body.scope.spaceId !== scope.spaceId || body.scope.projectId !== scope.projectId || !validSpec(body.spec, config))
         return json(400, { error_code: "modal_sandbox_request_invalid" });
@@ -169,6 +187,7 @@ export function createModalHostHandler(config: ModalHostConfig, provider: ModalH
 
     const match = /^\/v1\/sandboxes\/([^/]{1,768})$/.exec(url.pathname);
     if (!match) return json(404, { error_code: "not_found" });
+    if (bodyBytes.byteLength !== 0) return json(400, { error_code: "request_body_not_supported" });
     let providerId: string;
     try { providerId = decodeURIComponent(match[1]!); }
     catch { return json(400, { error_code: "modal_provider_id_invalid" }); }

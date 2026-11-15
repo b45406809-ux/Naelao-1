@@ -1,0 +1,12 @@
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!workers/
+!workers/modal-host/
+!workers/modal-host/package.json
+!workers/modal-host/README.md
+!workers/modal-host/tsconfig.json
+!workers/modal-host/tsconfig.build.json
+!workers/modal-host/src/
+!workers/modal-host/src/**

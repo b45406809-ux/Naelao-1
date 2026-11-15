@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createModalHostHandler, type ModalHostConfig, type ModalHostProvider, type ModalHostScope, type ModalHostSpec } from "./host.js";
 
@@ -13,17 +13,25 @@ const config: ModalHostConfig = { enabled: true, betaAccepted: true, privateGrpc
 function headers(overrides: Record<string, string> = {}): Headers {
   const timestamp = String(now);
   const signature = createHmac("sha256", secret).update(`internal:${scope.tenantId}:${timestamp}`).digest("hex");
-  const scopeSignature = createHmac("sha256", secret)
-    .update(JSON.stringify(["modal-scope-v1", scope.tenantId, scope.spaceId, scope.projectId, timestamp])).digest("hex");
   return new Headers({ "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId,
     "x-naelao-internal-token": `t=${timestamp},v1=${signature}`, "x-naelao-operation-id": "modal:operation-1",
     "x-naelao-space-id": scope.spaceId, "x-naelao-project-id": scope.projectId,
-    "x-naelao-modal-scope-token": `t=${timestamp},v1=${scopeSignature}`,
     "idempotency-key": "create-1", ...overrides });
 }
 function request(method: string, path: string, body?: unknown, requestHeaders = headers()): Request {
-  return new Request(`http://modal-host${path}`, { method, headers: requestHeaders,
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const bodyText = body === undefined ? "" : JSON.stringify(body);
+  const timestamp = String(now);
+  const requestUrl = new URL(`http://modal-host${path}`);
+  const bodyHash = createHash("sha256").update(bodyText).digest("hex");
+  const payload = JSON.stringify(["modal-request-v1", timestamp, method, requestUrl.pathname + requestUrl.search,
+    requestHeaders.get("x-naelao-tenant-id"), requestHeaders.get("x-naelao-space-id"), requestHeaders.get("x-naelao-project-id"),
+    requestHeaders.get("x-naelao-operation-id"), requestHeaders.get("idempotency-key"), bodyHash]);
+  const requestSignature = createHmac("sha256", secret).update(payload).digest("hex");
+  const signedHeaders = new Headers(requestHeaders);
+  if (!signedHeaders.has("x-naelao-modal-request-signature"))
+    signedHeaders.set("x-naelao-modal-request-signature", `t=${timestamp},v1=${requestSignature}`);
+  return new Request(`http://modal-host${path}`, { method, headers: signedHeaders,
+    ...(body === undefined ? {} : { body: bodyText }) });
 }
 function provider(): ModalHostProvider {
   return {
@@ -35,6 +43,29 @@ function provider(): ModalHostProvider {
 }
 
 describe("Modal Node host boundary", () => {
+  it("rejects altered signed operation identity, method, path, and body before provider effects", async () => {
+    const modal = provider();
+    const handler = createModalHostHandler(config, modal, () => now);
+    const payload = { scope, spec };
+    const signed = request("POST", "/v1/sandboxes", payload);
+
+    const changedBody = new Request(signed.url, { method: signed.method, headers: signed.headers,
+      body: JSON.stringify({ scope, spec: { ...spec, cpu: 4 } }) });
+    expect((await handler(changedBody)).status).toBe(403);
+
+    const changedOperationHeaders = new Headers(signed.headers);
+    changedOperationHeaders.set("x-naelao-operation-id", "modal:operation-2");
+    expect((await handler(new Request(signed.url, { method: signed.method, headers: changedOperationHeaders,
+      body: JSON.stringify(payload) }))).status).toBe(403);
+
+    expect((await handler(new Request(signed.url, { method: "GET", headers: signed.headers }))).status).toBe(403);
+    expect((await handler(new Request("http://modal-host/v1/sandboxes/sbx_provider_1", {
+      method: "GET", headers: signed.headers,
+    }))).status).toBe(403);
+    expect(modal.create).not.toHaveBeenCalled();
+    expect(modal.inspect).not.toHaveBeenCalled();
+  });
+
   it("uses a deterministic provider name so retried create requests do not create duplicates", async () => {
     const modal = provider();
     const handler = createModalHostHandler(config, modal, () => now);
@@ -104,8 +135,10 @@ describe("Modal Node host boundary", () => {
   it("requires a signed exact tenant/Space/Project scope and proves provider-ID ownership before read or terminate", async () => {
     const modal = provider();
     const handler = createModalHostHandler(config, modal, () => now);
-    const forgedSpace = headers({ "x-naelao-space-id": "space-b" });
-    expect((await handler(request("GET", "/v1/sandboxes/sbx_provider_1", undefined, forgedSpace))).status).toBe(403);
+    const signedRead = request("GET", "/v1/sandboxes/sbx_provider_1");
+    const forgedSpace = new Headers(signedRead.headers);
+    forgedSpace.set("x-naelao-space-id", "space-b");
+    expect((await handler(new Request(signedRead.url, { method: signedRead.method, headers: forgedSpace }))).status).toBe(403);
 
     expect((await handler(request("GET", "/v1/sandboxes/sbx_provider_1"))).status).toBe(404);
     expect((await handler(request("DELETE", "/v1/sandboxes/sbx_provider_1"))).status).toBe(404);

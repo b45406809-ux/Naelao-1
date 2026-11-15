@@ -18,8 +18,12 @@ cannot supply commands, environment variables, secrets, arbitrary images or volu
 
 Required secrets are `PLATFORM_SECRET`, `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. They belong only
 in the isolated host environment. The Agents Worker sends no Modal credentials. Run the local
-mock-backed suite with `corepack pnpm --filter @naelao/modal-host test`; build with
-`corepack pnpm --filter @naelao/modal-host build`.
+mock-backed suite with `corepack pnpm --filter @naelao/modal-host test`; typecheck with
+`corepack pnpm --filter @naelao/modal-host typecheck`; build with
+`corepack pnpm --filter @naelao/modal-host build`. Build the non-publishing container from the
+repository root with `docker build --file workers/modal-host/Dockerfile --tag naelao-modal-host:local .`.
+The container uses a pinned Node 22 base, runs as the unprivileged `node` user, and carries only the
+host's compiled runtime and production dependencies. CI builds it but never publishes or deploys it.
 
 This boundary does not claim managed Modal availability. The current public SDK exposes sandbox
 create, lookup, poll and terminate, but no per-sandbox settled-cost receipt. The provider adapter
