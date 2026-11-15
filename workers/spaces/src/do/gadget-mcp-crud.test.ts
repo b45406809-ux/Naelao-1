@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { MicroAppDO } from "./MicroAppDO.js";
-import { digestExtensionManifest, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, validateExtensionManifest } from "@naelao/agent-sdk";
+import { digestExtensionManifest, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, ADJUST_STOCK_INPUT_SCHEMA,
+  ADJUST_STOCK_OUTPUT_SCHEMA, validateExtensionManifest } from "@naelao/agent-sdk";
 import { signHmac } from "@naelao/crypto";
 import { mintInternalToken } from "@naelao/http";
 
-async function signedBusinessActionFixture(action: Record<string, unknown>, secret: string) {
+async function signedBusinessActionFixture(actionInput: Record<string, unknown> | Record<string, unknown>[], secret: string) {
+  const actions = Array.isArray(actionInput) ? actionInput : [actionInput];
   const extensionId = "ext_inventory_shop", version = "1.0.0", html = "<main>Inventory receiving</main>";
   const manifestJson = JSON.stringify({ id: extensionId, bundle: { id: extensionId, version, primitives: [
     { kind: "canvas", component: "./inventory.html" },
-    { kind: "gadget", id: "inventory", scope: "PROJECT_BOUND", permissions: [
-      { scope: "PROJECT_BOUND", actions: ["write"], resource: action.permission },
-    ], businessActions: [action] },
+    { kind: "gadget", id: "inventory", scope: "PROJECT_BOUND", permissions: actions.map(action =>
+      ({ scope: "PROJECT_BOUND", actions: ["write"], resource: action.permission })), businessActions: actions },
   ] }, capabilityRequirements: ["extension.gadget.business_action"] });
   const hash = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))]
     .map(byte => byte.toString(16).padStart(2, "0")).join("");
@@ -52,6 +53,24 @@ function microAppWithStorage(storage: ReturnType<typeof createDOStorage>, secret
 }
 
 describe("Gadget MCP record operations", () => {
+  it("backfills legacy inventory event rows when adding the versioned operation and quantity delta fields", async () => {
+    const storage = createDOStorage();
+    storage.sql.exec(`CREATE TABLE gadget_business_action_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, action_id TEXT NOT NULL, actor_id TEXT NOT NULL, product_id TEXT NOT NULL,
+      quantity_received INTEGER NOT NULL, quantity_before INTEGER NOT NULL, quantity_after INTEGER NOT NULL,
+      version_before INTEGER NOT NULL, version_after INTEGER NOT NULL, reason TEXT NOT NULL,
+      idempotency_key_sha256 TEXT NOT NULL CHECK(length(idempotency_key_sha256)=64), created_at INTEGER NOT NULL,
+      UNIQUE(action_id,idempotency_key_sha256)
+    )`);
+    storage.sql.exec(`INSERT INTO gadget_business_action_events(action_id,actor_id,product_id,quantity_received,quantity_before,
+      quantity_after,version_before,version_after,reason,idempotency_key_sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+    "receiveStock", "owner-a", "sku-1", 3, 4, 7, 1, 2, "PO-2041", "c".repeat(64), 101);
+    const gadget = microAppWithStorage(storage, "gadget-test-secret");
+    const response = await gadget.fetch(new Request("http://gadget/api/actions/audit?after=0"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ business_events: [{ action_id: "receiveStock", action_operation: "inventory.receiveStock.v1", quantity_delta: 3 }] });
+  });
+
   it("runs the same authorized inventory business action through UI HTTP and assistant MCP with CAS, receipts, and audit", async () => {
     const storage = createDOStorage();
     const sql = { exec<T = unknown>(query: string, ...args: unknown[]) {
@@ -64,15 +83,21 @@ describe("Gadget MCP record operations", () => {
       table: "inventory", idColumn: "id", quantityColumn: "quantity", versionColumn: "version",
       permission: "inventory.stock.receive", roles: ["owner", "admin"], effects: "transactional_write", idempotency: "required", approval: "none",
       inputSchema: RECEIVE_STOCK_INPUT_SCHEMA, outputSchema: RECEIVE_STOCK_OUTPUT_SCHEMA };
-    const signed = await signedBusinessActionFixture(action, "gadget-test-secret");
+    const adjustAction = { schemaVersion: 1, id: "adjustStock", name: "Adjust stock", description: "Set the counted on-hand quantity against the current stock version.",
+      operation: "inventory.adjustStock.v1", installationScope: "PROJECT_BOUND", dataScope: "PROJECT_BOUND",
+      table: "inventory", idColumn: "id", quantityColumn: "quantity", versionColumn: "version",
+      permission: "inventory.stock.adjust", roles: ["owner", "admin"], effects: "transactional_write", idempotency: "required", approval: "none",
+      inputSchema: ADJUST_STOCK_INPUT_SCHEMA, outputSchema: ADJUST_STOCK_OUTPUT_SCHEMA };
+    const actions = [action, adjustAction];
+    const signed = await signedBusinessActionFixture(actions, "gadget-test-secret");
     const unsigned = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId: "inventory_shop", scope: "PROJECT_BOUND", gadgetTier: 2,
-        defaultSchemaSql: "CREATE TABLE inventory(id TEXT PRIMARY KEY, quantity INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1)", businessActions: [action] }) }));
+        defaultSchemaSql: "CREATE TABLE inventory(id TEXT PRIMARY KEY, quantity INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1)", businessActions: actions }) }));
     expect(unsigned.status).toBe(403);
     const initialized = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId: "inventory_shop", scope: "PROJECT_BOUND", gadgetTier: 2,
         defaultSchemaSql: "CREATE TABLE inventory(id TEXT PRIMARY KEY, quantity INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1)",
-        extensionInstallationId: "install-inventory-1", sourceGadgetId: "inventory", businessActions: [action], html: signed.html, releaseProof: signed.releaseProof }) }));
+        extensionInstallationId: "install-inventory-1", sourceGadgetId: "inventory", businessActions: actions, html: signed.html, releaseProof: signed.releaseProof }) }));
     expect(initialized.status).toBe(201);
     storage.sql.exec("INSERT INTO inventory(id,quantity,version) VALUES(?,?,?)", "sku-1", 4, 1);
 
@@ -90,12 +115,19 @@ describe("Gadget MCP record operations", () => {
 
     const call = async (name: string, args: Record<string, unknown>, actor = "owner-a", role = "admin", target = gadget) => target.fetch(new Request("http://gadget/mcp", {
       method: "POST", headers: headers(actor, role), body: JSON.stringify({ jsonrpc: "2.0", id: "action", method: "tools/call",
-        params: { name: name === "receiveStock" ? "app_inventory_shop_action_receiveStock" : `app_inventory_shop_${name}`, arguments: args } }),
+        params: { name: ["receiveStock", "adjustStock"].includes(name) ? `app_inventory_shop_action_${name}` : `app_inventory_shop_${name}`, arguments: args } }),
     }));
     const restarted = new MicroAppDO({ storage: { ...storage, sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never, { PLATFORM_SECRET: "gadget-test-secret" } as never);
     const replay = await call("receiveStock", input, "owner-a", "admin", restarted);
     expect((await replay.json() as { result: { structuredContent: unknown } }).result.structuredContent)
       .toEqual({ productId: "sku-1", quantity: 7, version: 2, replayed: true });
+    const adjustInput = { productId: "sku-1", newQuantity: 5, expectedVersion: 2, reason: "cycle count correction", idempotencyKey: "adjust-2026-0001" };
+    const adjusted = await gadget.fetch(new Request("http://gadget/business-actions/adjustStock", { method: "POST", headers: headers("owner-a", "admin"), body: JSON.stringify(adjustInput) }));
+    expect(adjusted.status).toBe(200);
+    expect(await adjusted.json()).toEqual({ productId: "sku-1", previousQuantity: 7, quantity: 5, version: 3, replayed: false });
+    const adjustmentReplay = await call("adjustStock", adjustInput, "owner-a", "admin", restarted);
+    expect((await adjustmentReplay.json() as { result: { structuredContent: unknown } }).result.structuredContent)
+      .toEqual({ productId: "sku-1", previousQuantity: 7, quantity: 5, version: 3, replayed: true });
     const conflict = await call("receiveStock", { ...input, quantity: 4 });
     expect((await conflict.json() as { error: { message: string } }).error.message).toBe("business_action_idempotency_conflict");
     const stale = await call("receiveStock", { ...input, idempotencyKey: "receipt-2026-0002" });
@@ -105,6 +137,8 @@ describe("Gadget MCP record operations", () => {
     const listed = await listing.json() as { result: { tools: Array<{ name: string; outputSchema?: unknown }> } };
     expect(listed.result.tools.find(tool => tool.name === "app_inventory_shop_action_receiveStock")?.outputSchema)
       .toEqual(RECEIVE_STOCK_OUTPUT_SCHEMA);
+    expect(listed.result.tools.find(tool => tool.name === "app_inventory_shop_action_adjustStock")?.outputSchema)
+      .toEqual(ADJUST_STOCK_OUTPUT_SCHEMA);
 
     const genericWrite = await call("update", { table: "inventory", id: "sku-1", record: { quantity: 99 } });
     expect(genericWrite.status).toBe(400);
@@ -113,19 +147,27 @@ describe("Gadget MCP record operations", () => {
     const deleted = await call("delete", { table: "inventory", id: "sku-1" });
     expect(deleted.status).toBe(400);
     const current = [...sql.exec<{ quantity: number; version: number }>("SELECT quantity,version FROM inventory WHERE id=?", "sku-1")][0];
-    expect(current).toEqual({ quantity: 7, version: 2 });
+    expect(current).toEqual({ quantity: 5, version: 3 });
     const audit = await gadget.fetch(new Request("http://gadget/api/actions/audit?after=0"));
     const auditBody = await audit.json() as {
       items: Array<{ actor_id: string; operation: string; target_hash: string | null }>;
       business_events: Array<{ action_id: string; actor_id: string; product_id: string; quantity_received: number;
-        quantity_before: number; quantity_after: number; version_before: number; version_after: number; reason: string }>;
+        quantity_before: number; quantity_after: number; version_before: number; version_after: number; reason: string;
+        action_operation: string; quantity_delta: number }>;
     };
     const auditItems = auditBody.items;
     expect(auditItems.map(item => item.operation)).toEqual(["business:receiveStock:completed", "business:receiveStock:replayed",
-      "business:receiveStock:idempotency_conflict", "business:receiveStock:version_conflict"]);
+      "business:adjustStock:completed", "business:adjustStock:replayed", "business:receiveStock:idempotency_conflict",
+      "business:receiveStock:version_conflict"]);
     expect(auditItems.every(item => item.actor_id === "owner-a" && item.target_hash !== "sku-1")).toBe(true);
-    expect(auditBody.business_events).toEqual([{ id: 1, action_id: "receiveStock", actor_id: "owner-a", product_id: "sku-1",
-      quantity_received: 3, quantity_before: 4, quantity_after: 7, version_before: 1, version_after: 2, reason: "PO-2041", created_at: expect.any(Number) }]);
+    expect(auditBody.business_events).toEqual([
+      { id: 1, action_id: "receiveStock", actor_id: "owner-a", product_id: "sku-1", quantity_received: 3, quantity_before: 4,
+        quantity_after: 7, version_before: 1, version_after: 2, reason: "PO-2041", created_at: expect.any(Number),
+        action_operation: "inventory.receiveStock.v1", quantity_delta: 3 },
+      { id: 2, action_id: "adjustStock", actor_id: "owner-a", product_id: "sku-1", quantity_received: 0, quantity_before: 7,
+        quantity_after: 5, version_before: 2, version_after: 3, reason: "cycle count correction", created_at: expect.any(Number),
+        action_operation: "inventory.adjustStock.v1", quantity_delta: -2 },
+    ]);
   });
 
   it("binds signed business actions to their installed manifest and current release pin", async () => {
@@ -179,7 +221,7 @@ describe("Gadget MCP record operations", () => {
     const exported = await source.fetch(new Request("http://gadget/internal/archive/export", { method: "POST", headers: await internalHeaders(),
       body: JSON.stringify({ scope: signed.scope }) }));
     expect(exported.status).toBe(200);
-    const archive = await exported.json() as { present: boolean; snapshot: { scope: unknown; tables: Array<{ name: string; rows: Array<Record<string, unknown>> }> } };
+    const archive = await exported.json() as { present: boolean; snapshot: { scope: unknown; tables: Array<{ name: string; schemaSha256: string; rows: Array<Record<string, unknown>> }> } };
     expect(archive.present).toBe(true);
     expect(archive.snapshot.scope).toEqual(signed.scope);
     expect(archive.snapshot.tables.map(table => table.name)).toContain("todos");
@@ -244,6 +286,34 @@ describe("Gadget MCP record operations", () => {
     const replay = await restore();
     expect(replay.status).toBe(200);
     expect(await replay.json()).toMatchObject({ replayed: true });
+
+    targetStorage.sql.exec("DELETE FROM gadget_business_action_events");
+    const legacySnapshot = structuredClone(restoreSnapshot);
+    const legacyEventSchema = `CREATE TABLE gadget_business_action_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, action_id TEXT NOT NULL, actor_id TEXT NOT NULL, product_id TEXT NOT NULL,
+      quantity_received INTEGER NOT NULL, quantity_before INTEGER NOT NULL, quantity_after INTEGER NOT NULL,
+      version_before INTEGER NOT NULL, version_after INTEGER NOT NULL, reason TEXT NOT NULL,
+      idempotency_key_sha256 TEXT NOT NULL CHECK(length(idempotency_key_sha256)=64), created_at INTEGER NOT NULL,
+      UNIQUE(action_id,idempotency_key_sha256)
+    )`;
+    const legacyHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(legacyEventSchema)))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const legacyEvents = legacySnapshot.tables.find(table => table.name === "gadget_business_action_events")!;
+    legacyEvents.schemaSha256 = legacyHash;
+    legacyEvents.rows = legacyEvents.rows.map(row => {
+      const legacy = { ...row };
+      delete legacy.action_operation; delete legacy.quantity_delta;
+      return legacy;
+    });
+    const legacyPreview = await target.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: legacySnapshot }) }));
+    expect(legacyPreview.status).toBe(200);
+    const legacyRestore = await target.fetch(new Request("http://gadget/internal/archive/restore", { method: "POST", headers: await internalHeaders(),
+      body: JSON.stringify({ snapshot: legacySnapshot, restoreId: "b".repeat(64), restoredBy: "owner-a" }) }));
+    expect(legacyRestore.status).toBe(200);
+    expect(targetStorage.sql.exec<{ action_operation: string; quantity_delta: number }>(
+      "SELECT action_operation,quantity_delta FROM gadget_business_action_events").toArray())
+      .toEqual([{ action_operation: "inventory.receiveStock.v1", quantity_delta: 3 }]);
 
     const wrongTenant = await target.fetch(new Request("http://gadget/internal/archive/preview", { method: "POST", headers: await internalHeaders(),
       body: JSON.stringify({ snapshot: { ...restoreSnapshot, scope: { ...signed.scope, tenantId: "tenant-other" } } }) }));

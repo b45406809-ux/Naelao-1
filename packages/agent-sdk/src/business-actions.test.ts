@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBusinessActionClient, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, validateExtensionBusinessAction,
-  validateReceiveStockInput, validateReceiveStockOutput, parseExtensionPrimitive, validateExtensionManifest } from "./extensions.js";
+import { createBusinessActionClient, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, ADJUST_STOCK_INPUT_SCHEMA, ADJUST_STOCK_OUTPUT_SCHEMA,
+  validateExtensionBusinessAction, validateReceiveStockInput, validateReceiveStockOutput, validateAdjustStockInput, validateAdjustStockOutput,
+  parseExtensionPrimitive, validateExtensionManifest } from "./extensions.js";
 
 const receiveStock = {
   schemaVersion: 1, id: "receiveStock", name: "Receive stock", description: "Record a stock delivery against the current inventory version.",
@@ -8,6 +9,13 @@ const receiveStock = {
   table: "inventory", idColumn: "id", quantityColumn: "quantity", versionColumn: "version",
   permission: "inventory.stock.receive", roles: ["owner", "admin"], effects: "transactional_write", idempotency: "required", approval: "none",
   inputSchema: RECEIVE_STOCK_INPUT_SCHEMA, outputSchema: RECEIVE_STOCK_OUTPUT_SCHEMA,
+} as const;
+const adjustStock = {
+  schemaVersion: 1, id: "adjustStock", name: "Adjust stock", description: "Set the counted on-hand quantity against the current inventory version.",
+  operation: "inventory.adjustStock.v1", installationScope: "PROJECT_BOUND", dataScope: "PROJECT_BOUND",
+  table: "inventory", idColumn: "id", quantityColumn: "quantity", versionColumn: "version",
+  permission: "inventory.stock.adjust", roles: ["owner", "admin"], effects: "transactional_write", idempotency: "required", approval: "none",
+  inputSchema: ADJUST_STOCK_INPUT_SCHEMA, outputSchema: ADJUST_STOCK_OUTPUT_SCHEMA,
 } as const;
 
 describe("typed microapp business actions", () => {
@@ -19,6 +27,13 @@ describe("typed microapp business actions", () => {
     expect(() => validateReceiveStockInput({ productId: "sku-1", quantity: -3, expectedVersion: 1, reason: "PO", idempotencyKey: "receipt-2026-0001" }))
       .toThrow("business_action_input_invalid");
     expect(() => validateExtensionBusinessAction({ ...receiveStock, operation: "inventory.rawSql.v1" })).toThrow("invalid_business_action");
+    expect(validateExtensionBusinessAction(adjustStock)).toMatchObject({ id: "adjustStock", operation: "inventory.adjustStock.v1" });
+    expect(validateAdjustStockInput({ productId: "sku-1", newQuantity: 5, expectedVersion: 2, reason: "cycle count", idempotencyKey: "adjust-2026-0001" }))
+      .toMatchObject({ productId: "sku-1", newQuantity: 5, expectedVersion: 2 });
+    expect(validateAdjustStockOutput({ productId: "sku-1", previousQuantity: 7, quantity: 5, version: 3, replayed: false }))
+      .toEqual({ productId: "sku-1", previousQuantity: 7, quantity: 5, version: 3, replayed: false });
+    expect(() => validateAdjustStockInput({ productId: "sku-1", newQuantity: -1, expectedVersion: 2, reason: "count", idempotencyKey: "adjust-2026-0001" }))
+      .toThrow("business_action_input_invalid");
   });
 
   it("requires a capability and scoped write permission in the signed gadget primitive", () => {

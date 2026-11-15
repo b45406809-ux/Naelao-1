@@ -4,12 +4,16 @@ import { WIDGET_EVENT_TYPES, type WidgetEventType } from "./widget-events.js";
 import { validateSetupFieldDefinitions, validateSetupFieldValues } from "./blueprint-setup-fields.js";
 import type { BlueprintSetupValue } from "./blueprint-setup-fields.js";
 import type { BlueprintSetupField } from "./types.js";
-import { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, createBusinessActionClient, validateExtensionBusinessAction, validateReceiveStockInput,
-  validateReceiveStockOutput, type BusinessActionClient, type BusinessActionObjectSchema, type BusinessActionRole, type ExtensionBusinessAction,
+import { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, ADJUST_STOCK_INPUT_SCHEMA, ADJUST_STOCK_OUTPUT_SCHEMA,
+  createBusinessActionClient, validateBusinessActionInput, validateBusinessActionOutput, validateExtensionBusinessAction, validateReceiveStockInput,
+  validateReceiveStockOutput, validateAdjustStockInput, validateAdjustStockOutput, type AdjustStockInput, type AdjustStockOutput,
+  type BusinessActionClient, type BusinessActionObjectSchema, type BusinessActionRole, type ExtensionBusinessAction,
   type ReceiveStockInput, type ReceiveStockOutput } from "./business-actions.js";
-export { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, createBusinessActionClient, validateExtensionBusinessAction,
-  validateReceiveStockInput, validateReceiveStockOutput };
-export type { BusinessActionClient, BusinessActionObjectSchema, BusinessActionRole, ExtensionBusinessAction, ReceiveStockInput, ReceiveStockOutput };
+export { RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, ADJUST_STOCK_INPUT_SCHEMA, ADJUST_STOCK_OUTPUT_SCHEMA,
+  createBusinessActionClient, validateBusinessActionInput, validateBusinessActionOutput, validateExtensionBusinessAction,
+  validateReceiveStockInput, validateReceiveStockOutput, validateAdjustStockInput, validateAdjustStockOutput };
+export type { AdjustStockInput, AdjustStockOutput, BusinessActionClient, BusinessActionObjectSchema, BusinessActionRole,
+  ExtensionBusinessAction, ReceiveStockInput, ReceiveStockOutput };
 
 export interface ExtensionSettingsSchema { schemaVersion: 1 | 2; fields: BlueprintSetupField[] }
 /** Packages can require owners to publish a validated settings draft before it affects runtime. */

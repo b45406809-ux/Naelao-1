@@ -3,7 +3,7 @@ import type { GadgetActorScope, GadgetScope, GadgetTier } from "@naelao/agent-sd
 import { signHmac, verifyHmac } from "@naelao/crypto";
 import { parseBoundedInteger, readBoundedRequestBytes, RequestBodyTooLargeError, verifyInternalToken } from "@naelao/http";
 import { digestExtensionManifest, validateExtensionManifest, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA,
-  validateExtensionBusinessAction, validateReceiveStockInput, validateReceiveStockOutput, type ExtensionBusinessAction } from "@naelao/agent-sdk";
+  validateBusinessActionInput, validateBusinessActionOutput, validateExtensionBusinessAction, type ExtensionBusinessAction } from "@naelao/agent-sdk";
 import { decodeMicroAppArchiveValue, encodeMicroAppArchiveValue, isMicroAppArchiveSnapshot,
   MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES, MAX_MICRO_APP_ARCHIVE_TABLE_ROWS, type MicroAppArchiveSnapshot } from "./microapp-archive.js";
 
@@ -53,6 +53,15 @@ const PUBLIC_ACTION_TTL_MS = 15 * 60 * 1000;
 const MAX_BUSINESS_ACTION_RECEIPTS = 10_000;
 const MAX_ARCHIVE_RESTORE_RECEIPTS = 10_000;
 const GADGET_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const LEGACY_BUSINESS_ACTION_EVENTS_SCHEMA = `CREATE TABLE gadget_business_action_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, action_id TEXT NOT NULL, actor_id TEXT NOT NULL, product_id TEXT NOT NULL,
+      quantity_received INTEGER NOT NULL, quantity_before INTEGER NOT NULL, quantity_after INTEGER NOT NULL,
+      version_before INTEGER NOT NULL, version_after INTEGER NOT NULL, reason TEXT NOT NULL,
+      idempotency_key_sha256 TEXT NOT NULL CHECK(length(idempotency_key_sha256)=64), created_at INTEGER NOT NULL,
+      UNIQUE(action_id,idempotency_key_sha256)
+    )`;
+const LEGACY_BUSINESS_ACTION_EVENT_COLUMNS = ["action_id", "actor_id", "created_at", "id", "idempotency_key_sha256", "product_id",
+  "quantity_after", "quantity_before", "quantity_received", "reason", "version_after", "version_before"] as const;
 const PLATFORM_TABLES = new Set([
   "gadget_metadata",
   "gadget_schema_migrations",
@@ -149,6 +158,15 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       idempotency_key_sha256 TEXT NOT NULL CHECK(length(idempotency_key_sha256)=64), created_at INTEGER NOT NULL,
       UNIQUE(action_id,idempotency_key_sha256)
     );`);
+    const actionEventColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(gadget_business_action_events)").toArray();
+    const hasActionOperation = actionEventColumns.some(column => column.name === "action_operation");
+    const hasQuantityDelta = actionEventColumns.some(column => column.name === "quantity_delta");
+    if (!hasActionOperation)
+      this.ctx.storage.sql.exec("ALTER TABLE gadget_business_action_events ADD COLUMN action_operation TEXT NOT NULL DEFAULT 'inventory.receiveStock.v1'");
+    if (!hasQuantityDelta)
+      this.ctx.storage.sql.exec("ALTER TABLE gadget_business_action_events ADD COLUMN quantity_delta INTEGER NOT NULL DEFAULT 0");
+    if (!hasActionOperation || !hasQuantityDelta) this.ctx.storage.sql.exec(`UPDATE gadget_business_action_events SET quantity_delta=quantity_received
+      WHERE action_operation='inventory.receiveStock.v1' AND quantity_delta=0 AND quantity_received<>0`);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gadget_archive_restore_receipts (
       restore_id TEXT PRIMARY KEY, snapshot_sha256 TEXT NOT NULL CHECK(length(snapshot_sha256)=64),
       result_json TEXT NOT NULL, created_at INTEGER NOT NULL
@@ -409,8 +427,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const role = request.headers.get("x-naelao-role") ?? "";
     if (!actorId || actorId.length > 256 || !action.roles.includes(role as "owner" | "admin"))
       return { status: 403, errorCode: "business_action_forbidden" };
-    let input: ReturnType<typeof validateReceiveStockInput>;
-    try { input = validateReceiveStockInput(rawInput); }
+    let input: ReturnType<typeof validateBusinessActionInput>;
+    try { input = validateBusinessActionInput(action, rawInput); }
     catch { return { status: 400, errorCode: "business_action_input_invalid" }; }
     let columns: ReturnType<MicroAppDO["columns"]>;
     try { columns = this.columns(action.table); }
@@ -446,7 +464,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
           if (receipt.actor_id !== actorId || receipt.request_sha256 !== requestSha256) {
             auditOutcome("idempotency_conflict"); outcome = { status: 409, errorCode: "business_action_idempotency_conflict" }; return;
           }
-          const replay = validateReceiveStockOutput({ ...JSON.parse(receipt.response_json), replayed: true });
+          const replay = validateBusinessActionOutput(action, { ...JSON.parse(receipt.response_json), replayed: true });
           auditOutcome("replayed");
           outcome = { status: 200, data: replay };
           return;
@@ -461,7 +479,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
           auditOutcome("record_invalid"); outcome = { status: 409, errorCode: "business_action_record_invalid" }; return;
         }
         if (row.version !== input.expectedVersion) { auditOutcome("version_conflict"); outcome = { status: 409, errorCode: "business_action_version_conflict" }; return; }
-        const nextQuantity = row.quantity + input.quantity, nextVersion = row.version + 1;
+        const nextQuantity = "quantity" in input ? row.quantity + input.quantity : input.newQuantity, nextVersion = row.version + 1;
         if (nextQuantity > 2_147_483_647) { auditOutcome("quantity_overflow"); outcome = { status: 409, errorCode: "business_action_quantity_overflow" }; return; }
         if (this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(input)).byteLength
           + new TextEncoder().encode(JSON.stringify({ productId: input.productId, quantity: nextQuantity, version: nextVersion, replayed: false })).byteLength + 2048)) {
@@ -470,14 +488,17 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         const updated = this.ctx.storage.sql.exec(`UPDATE ${table} SET ${quantity}=?,${version}=? WHERE ${key}=? AND ${version}=?`,
           nextQuantity, nextVersion, input.productId, input.expectedVersion);
         if (updated.rowsWritten !== 1) { auditOutcome("version_conflict"); outcome = { status: 409, errorCode: "business_action_version_conflict" }; return; }
-        const data = validateReceiveStockOutput({ productId: input.productId, quantity: nextQuantity, version: nextVersion, replayed: false });
+        const data = action.operation === "inventory.receiveStock.v1"
+          ? validateBusinessActionOutput(action, { productId: input.productId, quantity: nextQuantity, version: nextVersion, replayed: false })
+          : validateBusinessActionOutput(action, { productId: input.productId, previousQuantity: row.quantity, quantity: nextQuantity, version: nextVersion, replayed: false });
         const createdAt = Date.now();
         this.ctx.storage.sql.exec(`INSERT INTO gadget_business_action_receipts(action_id,actor_id,idempotency_key,request_sha256,response_json,created_at) VALUES(?,?,?,?,?,?)`,
           action.id, actorId, input.idempotencyKey, requestSha256, JSON.stringify(data), createdAt);
         this.ctx.storage.sql.exec(`INSERT INTO gadget_business_action_events(action_id,actor_id,product_id,quantity_received,quantity_before,
-          quantity_after,version_before,version_after,reason,idempotency_key_sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-          action.id, actorId, input.productId, input.quantity, row.quantity, nextQuantity, row.version, nextVersion,
-          input.reason, idempotencyKeySha256, createdAt);
+          quantity_after,version_before,version_after,reason,idempotency_key_sha256,created_at,action_operation,quantity_delta)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          action.id, actorId, input.productId, "quantity" in input ? input.quantity : 0, row.quantity, nextQuantity, row.version, nextVersion,
+          input.reason, idempotencyKeySha256, createdAt, action.operation, nextQuantity - row.quantity);
         auditOutcome("completed", createdAt);
         outcome = { status: 200, data };
       });
@@ -520,8 +541,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       "SELECT id,actor_id,operation,table_name,target_hash,created_at FROM gadget_action_audit WHERE id>? ORDER BY id LIMIT 100", after).toArray();
     const businessEvents = this.ctx.storage.sql.exec<{ id: number; action_id: string; actor_id: string; product_id: string;
       quantity_received: number; quantity_before: number; quantity_after: number; version_before: number; version_after: number;
-      reason: string; created_at: number }>(`SELECT id,action_id,actor_id,product_id,quantity_received,quantity_before,quantity_after,
-        version_before,version_after,reason,created_at FROM gadget_business_action_events WHERE id>? ORDER BY id LIMIT 100`, businessAfter).toArray();
+      reason: string; created_at: number; action_operation: string; quantity_delta: number }>(`SELECT id,action_id,actor_id,product_id,quantity_received,quantity_before,quantity_after,
+        version_before,version_after,reason,created_at,action_operation,quantity_delta FROM gadget_business_action_events WHERE id>? ORDER BY id LIMIT 100`, businessAfter).toArray();
     return Response.json({ items, next_after: items[items.length - 1]?.id ?? after,
       business_events: businessEvents, business_events_next_after: businessEvents[businessEvents.length - 1]?.id ?? businessAfter });
   }
@@ -694,14 +715,27 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (!allowed.has(archived.name) || archived.name === "canvas_presence" || archived.name === "gadget_archive_restore_receipts")
         return Response.json({ error_code: "micro_app_archive_table_forbidden" }, { status: 422 });
       const schema = [...this.ctx.storage.sql.exec<{ sql: string | null }>("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", archived.name)][0]?.sql;
-      if (typeof schema !== "string" || schema.startsWith("CREATE VIRTUAL TABLE") || await this.archiveSha256(schema) !== archived.schemaSha256)
+      const isLegacyBusinessEvents = archived.name === "gadget_business_action_events"
+        && archived.schemaSha256 === await this.archiveSha256(LEGACY_BUSINESS_ACTION_EVENTS_SCHEMA);
+      if (typeof schema !== "string" || schema.startsWith("CREATE VIRTUAL TABLE")
+        || await this.archiveSha256(schema) !== archived.schemaSha256 && !isLegacyBusinessEvents)
         return Response.json({ error_code: "micro_app_archive_schema_incompatible", table: archived.name }, { status: 409 });
       const columns = [...this.ctx.storage.sql.exec<{ name: string }>(`PRAGMA table_info("${archived.name.replaceAll('"', '""')}")`)].map(column => column.name).sort();
       const rows: Array<Record<string, unknown>> = [];
       for (const row of archived.rows) {
-        if (Object.keys(row).sort().join("\u0000") !== columns.join("\u0000"))
+        const archivedColumns = Object.keys(row).sort();
+        if (isLegacyBusinessEvents ? archivedColumns.join("\u0000") !== [...LEGACY_BUSINESS_ACTION_EVENT_COLUMNS].sort().join("\u0000")
+          : archivedColumns.join("\u0000") !== columns.join("\u0000"))
           return Response.json({ error_code: "micro_app_archive_columns_incompatible", table: archived.name }, { status: 409 });
-        try { rows.push(Object.fromEntries(Object.entries(row).map(([column, value]) => [column, decodeMicroAppArchiveValue(value)]))); }
+        try {
+          const decoded = Object.fromEntries(Object.entries(row).map(([column, value]) => [column, decodeMicroAppArchiveValue(value)]));
+          if (isLegacyBusinessEvents) {
+            if (!Number.isSafeInteger(decoded.quantity_received)) return Response.json({ error_code: "micro_app_archive_columns_incompatible", table: archived.name }, { status: 409 });
+            decoded.action_operation = "inventory.receiveStock.v1";
+            decoded.quantity_delta = decoded.quantity_received;
+          }
+          rows.push(decoded);
+        }
         catch { return Response.json({ error_code: "micro_app_archive_value_invalid", table: archived.name }, { status: 422 }); }
       }
       tables.push({ name: archived.name, rows });

@@ -15,7 +15,7 @@ export interface ExtensionBusinessAction {
   id: string;
   name: string;
   description: string;
-  operation: "inventory.receiveStock.v1";
+  operation: "inventory.receiveStock.v1" | "inventory.adjustStock.v1";
   installationScope: GadgetScope;
   dataScope: GadgetScope;
   table: string;
@@ -40,6 +40,15 @@ export interface ReceiveStockInput {
 }
 
 export interface ReceiveStockOutput { productId: string; quantity: number; version: number; replayed: boolean }
+/** Set the counted on-hand quantity to an exact value; this never allows negative stock. */
+export interface AdjustStockInput {
+  productId: string;
+  newQuantity: number;
+  expectedVersion: number;
+  reason: string;
+  idempotencyKey: string;
+}
+export interface AdjustStockOutput { productId: string; previousQuantity: number; quantity: number; version: number; replayed: boolean }
 export interface BusinessActionClient {
   list(): Promise<{ version: 1; actions: Array<{ id: string; name: string; description: string; permission: string; roles: BusinessActionRole[];
     effects: "transactional_write"; idempotency: "required"; approval: "none"; inputSchema: BusinessActionObjectSchema; outputSchema: BusinessActionObjectSchema }> }>;
@@ -142,6 +151,32 @@ export const RECEIVE_STOCK_OUTPUT_SCHEMA = Object.freeze({
   additionalProperties: false,
 } as BusinessActionObjectSchema);
 
+export const ADJUST_STOCK_INPUT_SCHEMA = Object.freeze({
+  type: "object",
+  properties: {
+    productId: { type: "string", description: "Inventory row identifier", minLength: 1, maxLength: 128 },
+    newQuantity: { type: "integer", description: "Exact nonnegative on-hand quantity from the count", minimum: 0, maximum: 2_147_483_647 },
+    expectedVersion: { type: "integer", description: "Current inventory row version", minimum: 1, maximum: 2_147_483_646 },
+    reason: { type: "string", description: "Short count or correction reference", minLength: 3, maxLength: 256 },
+    idempotencyKey: { type: "string", description: "Stable key reused for retries of this exact action", minLength: 16, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" },
+  },
+  required: ["productId", "newQuantity", "expectedVersion", "reason", "idempotencyKey"],
+  additionalProperties: false,
+} as BusinessActionObjectSchema);
+
+export const ADJUST_STOCK_OUTPUT_SCHEMA = Object.freeze({
+  type: "object",
+  properties: {
+    productId: { type: "string", description: "Inventory row identifier", minLength: 1, maxLength: 128 },
+    previousQuantity: { type: "integer", description: "On-hand quantity before the count adjustment", minimum: 0, maximum: 2_147_483_647 },
+    quantity: { type: "integer", description: "New on-hand quantity", minimum: 0, maximum: 2_147_483_647 },
+    version: { type: "integer", description: "New inventory row version", minimum: 2, maximum: 2_147_483_647 },
+    replayed: { type: "boolean", description: "Whether this result was returned from an idempotency receipt" },
+  },
+  required: ["productId", "previousQuantity", "quantity", "version", "replayed"],
+  additionalProperties: false,
+} as BusinessActionObjectSchema);
+
 const ACTION_ID = /^[a-z][a-zA-Z0-9]{0,63}$/;
 const PERMISSION = /^[a-z][a-z0-9_.:-]{1,127}$/;
 function canonicalJson(value: unknown): string {
@@ -151,16 +186,18 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** Strict SDK parser. The host intentionally implements only the named v1 operation above. */
+/** Strict SDK parser. The host implements only the explicitly named inventory v1 operations above. */
 export function validateExtensionBusinessAction(value: unknown): ExtensionBusinessAction {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid_business_action");
   const raw = value as Record<string, unknown>;
+  const schemas = raw.operation === "inventory.receiveStock.v1" ? [RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA]
+    : raw.operation === "inventory.adjustStock.v1" ? [ADJUST_STOCK_INPUT_SCHEMA, ADJUST_STOCK_OUTPUT_SCHEMA] : null;
   const allowed = new Set(["schemaVersion", "id", "name", "description", "operation", "installationScope", "dataScope", "table", "idColumn", "quantityColumn", "versionColumn", "permission", "roles", "effects", "idempotency", "approval", "inputSchema", "outputSchema"]);
   const scopes = new Set<GadgetScope>(["USER_PRIVATE", "SPACE_WIDE", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
   if (Object.keys(raw).some(key => !allowed.has(key)) || raw.schemaVersion !== 1 || typeof raw.id !== "string" || !ACTION_ID.test(raw.id)
     || typeof raw.name !== "string" || !raw.name.trim() || raw.name.length > 128
     || typeof raw.description !== "string" || !raw.description.trim() || raw.description.length > 512
-    || raw.operation !== "inventory.receiveStock.v1"
+    || !schemas
     || !scopes.has(raw.installationScope as GadgetScope) || !scopes.has(raw.dataScope as GadgetScope) || raw.installationScope !== raw.dataScope
     || raw.table !== "inventory" || raw.idColumn !== "id" || raw.quantityColumn !== "quantity" || raw.versionColumn !== "version"
     || new Set([raw.idColumn, raw.quantityColumn, raw.versionColumn]).size !== 3
@@ -168,12 +205,12 @@ export function validateExtensionBusinessAction(value: unknown): ExtensionBusine
     || !Array.isArray(raw.roles) || !raw.roles.length || raw.roles.length > 2 || new Set(raw.roles).size !== raw.roles.length
     || raw.roles.some(role => role !== "owner" && role !== "admin")
     || raw.effects !== "transactional_write" || raw.idempotency !== "required" || raw.approval !== "none"
-    || canonicalJson(raw.inputSchema) !== canonicalJson(RECEIVE_STOCK_INPUT_SCHEMA)
-    || canonicalJson(raw.outputSchema) !== canonicalJson(RECEIVE_STOCK_OUTPUT_SCHEMA)) {
+    || canonicalJson(raw.inputSchema) !== canonicalJson(schemas[0])
+    || canonicalJson(raw.outputSchema) !== canonicalJson(schemas[1])) {
     throw new Error("invalid_business_action");
   }
-  return Object.freeze({ ...raw, roles: Object.freeze([...(raw.roles as BusinessActionRole[])]), inputSchema: RECEIVE_STOCK_INPUT_SCHEMA,
-    outputSchema: RECEIVE_STOCK_OUTPUT_SCHEMA }) as unknown as ExtensionBusinessAction;
+  return Object.freeze({ ...raw, roles: Object.freeze([...(raw.roles as BusinessActionRole[])]), inputSchema: schemas[0],
+    outputSchema: schemas[1] }) as unknown as ExtensionBusinessAction;
 }
 
 export function validateReceiveStockInput(value: unknown): ReceiveStockInput {
@@ -200,4 +237,39 @@ export function validateReceiveStockOutput(value: unknown): ReceiveStockOutput {
     || !Number.isSafeInteger(output.version) || Number(output.version) < 2 || Number(output.version) > 2_147_483_647
     || typeof output.replayed !== "boolean") throw new Error("business_action_output_invalid");
   return output as unknown as ReceiveStockOutput;
+}
+
+export function validateAdjustStockInput(value: unknown): AdjustStockInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("business_action_input_invalid");
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).sort().join(",") !== "expectedVersion,idempotencyKey,newQuantity,productId,reason"
+    || typeof input.productId !== "string" || input.productId.length < 1 || input.productId.length > 128
+    || !Number.isSafeInteger(input.newQuantity) || Number(input.newQuantity) < 0 || Number(input.newQuantity) > 2_147_483_647
+    || !Number.isSafeInteger(input.expectedVersion) || Number(input.expectedVersion) < 1 || Number(input.expectedVersion) > 2_147_483_646
+    || typeof input.reason !== "string" || input.reason.trim().length < 3 || input.reason.length > 256
+    || typeof input.idempotencyKey !== "string" || !/^[A-Za-z0-9._:-]{16,128}$/.test(input.idempotencyKey)) {
+    throw new Error("business_action_input_invalid");
+  }
+  return { productId: input.productId, newQuantity: Number(input.newQuantity), expectedVersion: Number(input.expectedVersion),
+    reason: input.reason.trim(), idempotencyKey: input.idempotencyKey };
+}
+
+export function validateAdjustStockOutput(value: unknown): AdjustStockOutput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("business_action_output_invalid");
+  const output = value as Record<string, unknown>;
+  if (Object.keys(output).sort().join(",") !== "previousQuantity,productId,quantity,replayed,version"
+    || typeof output.productId !== "string" || output.productId.length < 1 || output.productId.length > 128
+    || !Number.isSafeInteger(output.previousQuantity) || Number(output.previousQuantity) < 0 || Number(output.previousQuantity) > 2_147_483_647
+    || !Number.isSafeInteger(output.quantity) || Number(output.quantity) < 0 || Number(output.quantity) > 2_147_483_647
+    || !Number.isSafeInteger(output.version) || Number(output.version) < 2 || Number(output.version) > 2_147_483_647
+    || typeof output.replayed !== "boolean") throw new Error("business_action_output_invalid");
+  return output as unknown as AdjustStockOutput;
+}
+
+export function validateBusinessActionInput(action: ExtensionBusinessAction, value: unknown): ReceiveStockInput | AdjustStockInput {
+  return action.operation === "inventory.receiveStock.v1" ? validateReceiveStockInput(value) : validateAdjustStockInput(value);
+}
+
+export function validateBusinessActionOutput(action: ExtensionBusinessAction, value: unknown): ReceiveStockOutput | AdjustStockOutput {
+  return action.operation === "inventory.receiveStock.v1" ? validateReceiveStockOutput(value) : validateAdjustStockOutput(value);
 }
