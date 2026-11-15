@@ -1,30 +1,33 @@
 # Managed services and sidecar implementation progress
 
-## Latest checkpoint — 2026-11-15 (P04 archive coverage and identity boundary; pushed)
+## Latest checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 
-Code `a47fbedb4bda8eb7f954bb440214d79c5bff29e2` is pushed to `origin/Mcbt5s-Backup-2`. SpaceDO
-migration 144 records a versioned per-archive coverage summary; export/retry and owner/admin data-ops
-status return its counts for Space rows, captured objects, Project workspace/runtime snapshots, signed
-MicroApp actors and private/unsupported/uninitialized MicroApp omissions. The Shell displays the
-summary after reload and identifies older archives that lack it. Archive bytes and restore authority
-are unchanged.
+Code `e475eb6b45e9ef6b219385c4ee2a55ef39f6b895` is pushed to `origin/Mcbt5s-Backup-2`. The P04
+Knowledge bridge snapshots bounded canonical `kb_documents`/`kb_chunks`, ACL and required KB_BUCKET
+source bytes through tenant-HMAC authenticated Agents/Spaces service calls. Export and additive restore
+use deletion leases/tombstones; restored documents require explicit hash-checked reindex. Vectorize,
+AutoRAG and external effects are not restored. The obsolete SpaceDO Knowledge mirror is excluded.
 
-The P04 user-private trace found `USER_PRIVATE`/`SPACE_USER`/`PROJECT_USER` scope declarations and
-user-keyed storage helpers, but no reachable exact-user MicroApp execution/archive caller. Current
-gadget routes use Space-wide or project-bound actors; Space archive skips user-scoped installations.
-Do not export personal state into an owner archive. This is an identity/runtime contract gap, not a
+Local evidence: Knowledge archive/document lifecycle **36/36**, Spaces archive/data-ops **19/19**,
+Shell archive panel **2/2**, Knowledge/Spaces/Shell typechecks, release manifest tests **5/5**, manifest
+validators, SQLite migration constraints and `git diff --check`. These are local Worker mocks/SQLite;
+no browser, deployed D1/DO/R2, isolated restore drill or provider acceptance ran. P04 remains PARTIAL
+for other service/inbound stores, user-private MicroApp state, legal-hold/retention and key/jurisdiction
+policy, cross-DO consistency, RPO/RTO and deployed recovery.
+
+The fetched plan branch `origin/plan/microapps-ui-sdk-voice` is
+`df3386257262a88888d647daa4d10f3af2ff9596`; its Fish Live 3 and business microapp/UI SDK material is
+already copied into the active platform plan. Reinspection found no further plan file/text to copy;
+the branch's plan file predates the current P04 Knowledge reconciliation. No merge occurred. User-private
+scope helpers exist, but no reachable exact-user authenticated actor/archive path does. Keep that
+personal state out of Space-owner archives until the identity/runtime contract exists; this is not a
 credential blocker.
 
-Local evidence: Space archive/migration suites **27/27**, Spaces/Shell typechecks, `git diff --check`.
-No browser, deployed D1/DO/R2 or recovery drill. P04 remains PARTIAL for other service/inbound stores,
-user-private state, policy/key/jurisdiction, cross-DO point-in-time consistency, RPO/RTO and deployed
-acceptance. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
-
-Exact next action: add a bounded authenticated archive bridge for the separate Knowledge Worker store
-(`kb_documents`, `kb_chunks` and required KB_BUCKET source objects), scoped to tenant/Space/Project.
-Fence export and additive restore against current deletion tombstones; do not restore Vectorize or
-AutoRAG state or replay provider effects. Connect it to owner archive preview/status/restore and add
-authorization, retry and tombstone-race coverage.
+Rollouts stay disabled; preserve untracked `infra/scripts/__pycache__/`. Exact next action: add a
+host-rendered owner/admin business-action panel to the active Extension view. Reuse the scoped Shell
+routes and current signed schema/assistant/MCP contract; show a reviewed payload and explicit confirm,
+and retain the same idempotency key when reconciling an uncertain response. Add focused caller checks,
+then continue the remaining S2–S9/U01–U12 and P01–P24 gaps.
 
 ## Previous checkpoint — 2026-11-15 (cross-plan P05 cleanup resumes after reload; §11.2 reconciled)
 

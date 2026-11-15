@@ -16,33 +16,36 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-15 (P04 archive coverage and identity boundary; pushed)
+## Latest checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 
-Code `a47fbedb4bda8eb7f954bb440214d79c5bff29e2` is pushed to `origin/Mcbt5s-Backup-2`. Migration
-144 persists a versioned coverage summary for each verified Space archive; export/retry and data-ops
-status expose captured Space rows, objects, workspace/runtime snapshots, signed MicroApp actors and
-per-user/unsupported/uninitialized MicroApp omissions. The Shell displays the summary after reload and
-labels older records whose coverage was not stored. No archive bytes or restore authority changed.
+Code `e475eb6b45e9ef6b219385c4ee2a55ef39f6b895` is pushed to `origin/Mcbt5s-Backup-2`. The bounded,
+tenant/Space/Project-scoped Knowledge archive bridge includes canonical document/chunk rows, ACL and
+required KB_BUCKET source bytes; deletion leases/tombstones fence export and additive restore. Restored
+documents require explicit hash-checked reindexing. Restore does not recreate Vectorize/AutoRAG state or
+replay provider effects. The archive excludes the obsolete SpaceDO Knowledge mirror. Knowledge and
+Spaces wire the preview/status/apply path; the Shell reports reindex work. P04 remains PARTIAL for other
+service/inbound stores, exact-user MicroApp state, retention/legal hold, key/jurisdiction, cross-DO
+point-in-time consistency, RPO/RTO and deployed recovery.
 
-Trace result: `USER_PRIVATE`, `SPACE_USER` and `PROJECT_USER` appear in scope validators/storage keys,
-but reachable gadget execution routes construct only Space-wide or project-bound actors. Space archive
-deliberately excludes user-scoped extension installations. There is no exact-user authenticated
-MicroApp archive/export caller or complete user-private runtime path, so personal data remains outside
-the Space-owner archive pending that identity/runtime contract; this is not a provider credential gate.
+Local evidence: Knowledge archive/document lifecycle **36/36**, Spaces archive/data-ops **19/19**,
+Shell archive panel **2/2**, Knowledge/Spaces/Shell typechecks, release manifest tests **5/5**,
+manifest validators, SQLite migration constraints, and `git diff --check`. These are local mocks and
+SQLite checks; no browser, deployed D1/DO/R2, isolated restore drill or provider acceptance ran.
 
-Local evidence: Space archive and migration suites **27/27**, Spaces and Shell typechecks, and
-`git diff --check`. Direct local binaries were used because pnpm refused its auto-install cleanup in
-the non-interactive environment. No browser, deployed D1/DO/R2 or recovery drill ran. P04 remains
-PARTIAL for other service/inbound stores, user-private state, policy/key/jurisdiction decisions,
-cross-DO point-in-time consistency, RPO/RTO and deployed acceptance. Preserve untracked
-`infra/scripts/__pycache__/`; keep rollout disabled.
+The fetched `origin/plan/microapps-ui-sdk-voice` remains at
+`df3386257262a88888d647daa4d10f3af2ff9596`. Its Fish Live 3 and business microapp/UI SDK sections
+9–11 are already copied into the active platform plan. Reinspection found no additional plan document
+or requirement text on that branch; its plan file carries an older P04/source note. Only the plan
+material is used here; no branch merge occurred. The user-private trace confirms that user-keyed scopes
+exist but reachable gadget routes construct Space-wide or project-bound actors; no authenticated
+exact-user archive caller exists. Keep personal data out of Space-owner archives until that identity
+contract exists; this is not a credential gate.
 
-Exact next action: extend P04 to the separate Knowledge Worker store. Build a bounded, tenant/Space/
-Project-bound snapshot for canonical `kb_documents`, `kb_chunks` and required KB_BUCKET source objects;
-fence export and restore against current deletion tombstones, and restore additively without restoring
-Vectorize/AutoRAG state or replaying provider effects. Wire it through the existing owner archive
-preview/status/restore path, with authorization, retry and tombstone-race tests. Reassess scope before
-including any user-owned or provider data.
+Preserve untracked `infra/scripts/__pycache__/`; all rollout gates stay disabled. Exact next action:
+implement a host-rendered owner/admin UI for signed MicroApp business actions in the active Extension
+view, using the existing scoped Shell API, Canvas and assistant/MCP host contract. Render validated
+schemas, preview the exact payload, require an explicit confirmation, reuse an idempotency key for
+uncertain outcomes, and add focused UI/API caller checks. Then continue S2–S9/U01–U12 and P01–P24.
 
 ## Previous checkpoint — 2026-11-15 (P05 cleanup resumes after reload; §11.2 reconciled; pushed)
 

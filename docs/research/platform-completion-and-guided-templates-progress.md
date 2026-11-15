@@ -1,29 +1,34 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (P04 archive coverage and identity boundary; pushed)
+## Latest checkpoint — 2026-11-15 (P04 Knowledge archive and §11 plan reconciliation; pushed)
 
-Code `a47fbedb4bda8eb7f954bb440214d79c5bff29e2` is pushed to `origin/Mcbt5s-Backup-2`. Migration
-144 persists a versioned coverage summary per verified Space archive. Export/retry and owner/admin
-status expose Space row/table totals, captured objects, Project workspace/runtime-setting snapshots,
-signed MicroApp actors and private/unsupported/uninitialized MicroApp omissions. Shell displays these
-counts after reload and identifies older archives without recorded coverage. Archive bytes and restore
-authority are unchanged.
+Code `e475eb6b45e9ef6b219385c4ee2a55ef39f6b895` is pushed to `origin/Mcbt5s-Backup-2`. Space archives
+now include a bounded tenant/Space/Project snapshot of canonical Knowledge documents/chunks, ACL
+metadata and required KB_BUCKET bytes through the authenticated Knowledge Worker bridge. Deletion
+leases/tombstones fence export and additive restore; restored docs require explicit hash-checked
+reindexing. Vectorize, AutoRAG and provider effects are not restored. Old SpaceDO mirror rows are
+excluded. The owner preview/status/apply path and Shell reindex caller are wired.
 
-P04 user-private trace: validators and storage keys support user scopes, but reachable gadget routes
-construct only Space-wide/project-bound actors, and Space archive skips user-scoped installations.
-There is no authenticated exact-user MicroApp archive/runtime path. Personal state stays outside a
-Space-owner archive pending that identity contract; this is not a credential blocker.
+Verification: Knowledge archive/document lifecycle **36/36**, Spaces archive/data-ops **19/19**, Shell
+archive panel **2/2**, Knowledge/Spaces/Shell typechecks, release manifest tests **5/5**, manifest
+validators, SQLite migration constraints and `git diff --check`. These are local mocks/SQLite checks;
+no browser, deployed D1/DO/R2, isolated recovery drill or provider acceptance ran. P04 remains PARTIAL
+for other service/inbound stores, user-private MicroApp state, legal-hold/retention and key/jurisdiction
+policy, cross-DO consistency, RPO/RTO and deployed recovery.
 
-Verification: Space archive/migration suites **27/27**, Spaces/Shell typechecks, `git diff --check`.
-These are local SQLite/Worker mocks. No browser, deployed D1/DO/R2 or recovery drill ran. P04 remains
-PARTIAL for other service/inbound stores, personal state, approved retention/key/jurisdiction policy,
-cross-DO point-in-time consistency, RPO/RTO and deployed acceptance. All rollouts remain disabled.
+The fetched branch `origin/plan/microapps-ui-sdk-voice` at
+`df3386257262a88888d647daa4d10f3af2ff9596` adds no further plan material beyond the Fish Live 3 and
+business microapp/UI SDK sections 9–11 already copied into this active plan. Its plan file contains an
+older P04 row; current Knowledge reconciliation is retained. No branch merge occurred. User-keyed
+MicroApp scopes exist, but reachable routes have no exact-user authenticated archive caller. Keep
+personal app data outside Space-owner archives until that identity/runtime contract exists; it is not a
+provider credential blocker.
 
-Exact next action: extend the Space archive into the separate Knowledge Worker store with bounded
-tenant/Space/Project snapshots of canonical `kb_documents`, `kb_chunks` and required KB_BUCKET source
-objects. Fence export/restore against deletion tombstones, restore additively, and leave Vectorize and
-AutoRAG state for the existing indexing/reconciliation paths. Wire preview/status/restore with
-authorization, retry and tombstone-race tests.
+All rollout gates remain false. Preserve untracked `infra/scripts/__pycache__/`. Exact next action: add a
+host-rendered owner/admin business-action UI to the active Extension view, using the existing scoped
+Shell API and signed action schema. Preview and explicitly confirm the input; reuse the same
+idempotency key after an uncertain response. Test the real UI/API caller path and then continue the
+remaining P01–P24 and S2–S9/U01–U12 work.
 
 ## Previous checkpoint — 2026-11-15 (P05 cleanup resumes after reload; §11.2 reconciled)
 
