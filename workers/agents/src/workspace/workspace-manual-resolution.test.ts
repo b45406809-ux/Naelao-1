@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   isWorkspaceManualConflictChangeSet,
+  isWorkspaceManualCopySetWithinLimits,
   isWorkspaceManualResolutionChange,
   isWorkspaceManualValidationCommand,
+  publishWorkspaceManualResolution,
   readWorkspaceConflictPreview,
 } from "./workspace-manual-resolution.js";
 import { sha256Hex } from "./workspace-contract.js";
@@ -31,6 +33,58 @@ describe("workspace manual conflict change sets", () => {
     expect(isWorkspaceManualResolutionChange({ ...binaryCopy, expectedTargetHash: null })).toBe(false);
     expect(isWorkspaceManualResolutionChange({ ...binaryCopy, content: "replacement" })).toBe(false);
   });
+
+  it("bounds exact-copy bytes by both file and review-set totals", () => {
+    const mib = 1024 * 1024;
+    expect(isWorkspaceManualCopySetWithinLimits([2 * mib])).toBe(true);
+    expect(isWorkspaceManualCopySetWithinLimits([mib, mib])).toBe(true);
+    expect(isWorkspaceManualCopySetWithinLimits([mib, mib + 1])).toBe(false);
+    expect(isWorkspaceManualCopySetWithinLimits([2 * mib + 1])).toBe(false);
+    expect(isWorkspaceManualCopySetWithinLimits([mib, mib, 1])).toBe(false);
+    expect(isWorkspaceManualCopySetWithinLimits([-1])).toBe(false);
+    expect(isWorkspaceManualCopySetWithinLimits([Number.MAX_SAFE_INTEGER, 1])).toBe(false);
+  });
+});
+
+describe("workspace manual large exact-copy resolution", () => {
+  it("copies exactly the per-file and review-set ceiling through the checked Coordinator", async () => {
+    const bytes = new Uint8Array(2 * 1024 * 1024);
+    for (let index = 0; index < bytes.length; index++) bytes[index] = index % 251;
+    const hash = await sha256Hex(bytes);
+    const objectKey = `workspace-v1/tenant/space/project/global/content/${hash}`;
+    let checkpointChanges: Array<{ path: string; contentBase64: string | null }> | undefined;
+    const coordinator = async (path: string, body?: Record<string, unknown>) => {
+      if (path.startsWith("/v1/read?")) {
+        const url = new URL(`https://workspace${path}`);
+        const entry = url.searchParams.get("branch") === "main" && url.searchParams.get("path") === "assets/large.bin"
+          ? [{ path: "assets/large.bin", sha256: hash, size: bytes.byteLength, objectKey, contentType: "application/octet-stream", executable: false }]
+          : [];
+        return Response.json({ entries: entry });
+      }
+      if (path === "/v1/branch") return Response.json({ branch: "manual/checked-copy" });
+      if (path === "/v1/open") return Response.json({ session: { id: "ws_00000000-0000-4000-8000-000000000001", fence: 0 }, head: { revision: 0 } });
+      if (path === "/v1/checkpoint") {
+        checkpointChanges = body?.changes as typeof checkpointChanges;
+        return Response.json({ publication: { status: "published", revision: 1 } });
+      }
+      if (path === "/v1/merge") return Response.json({ publication: { status: "published", revision: 2 } });
+      if (path === "/v1/close") return Response.json({ closed: true });
+      throw new Error(`unexpected coordinator route ${path}`);
+    };
+    const result = await publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker", attempt: 1,
+      targetBranch: "main", sourceBranch: "workers/one", path: "assets/large.bin", expectedTargetHash: hash,
+      expectedSourceHash: null, content: null, copyFrom: "target", idempotencyKey: "large-copy-at-limit",
+      copyBucket: { async get(key) { return key === objectKey ? { size: bytes.byteLength, async arrayBuffer() { return bytes.slice().buffer; } } : null; } },
+    }, coordinator);
+    expect(result.merge.status).toBe("published");
+    expect(checkpointChanges).toHaveLength(1);
+    const encoded = checkpointChanges?.[0]?.contentBase64;
+    expect(typeof encoded).toBe("string");
+    const decoded = atob(encoded!);
+    const copied = Uint8Array.from(decoded, value => value.charCodeAt(0));
+    expect(copied.byteLength).toBe(bytes.byteLength);
+    expect(await sha256Hex(copied)).toBe(hash);
+  }, 15_000);
 });
 
 describe("workspace manual validation command", () => {
@@ -172,17 +226,27 @@ describe("workspace manual conflict previews", () => {
     expect(preview.worker).toMatchObject({ hash: null, content: null, unavailableReason: "missing" });
   });
 
-  it("keeps oversized and corrupted binary objects unavailable for copying", async () => {
+  it("allows bounded large exact copies without rendering bytes and rejects over-limit or corrupt objects", async () => {
     const expectedHash = "a".repeat(64);
     let bucketReads = 0;
     const oversized = await readWorkspaceConflictPreview({ scope, targetBranch: "main", workerBranch: "workers/one", path: "assets/large.bin" },
       async route => Response.json({ entries: new URL(`https://workspace${route}`).searchParams.get("branch") === "main"
-        ? [{ path: "assets/large.bin", sha256: expectedHash, size: 256 * 1024 + 1,
+        ? [{ path: "assets/large.bin", sha256: expectedHash, size: 1024 * 1024,
             objectKey: `workspace-v1/tenant/space/project/global/content/${expectedHash}`, contentType: "application/octet-stream" }]
         : [] }),
       { async get() { bucketReads++; return null; } });
     expect(oversized.target).toMatchObject({ hash: expectedHash, content: null, unavailableReason: "size_limit" });
-    expect(oversized.target.copyAllowed).not.toBe(true);
+    expect(oversized.target.copyAllowed).toBe(true);
+    expect(bucketReads).toBe(0);
+
+    const tooLarge = await readWorkspaceConflictPreview({ scope, targetBranch: "main", workerBranch: "workers/one", path: "assets/too-large.bin" },
+      async route => Response.json({ entries: new URL(`https://workspace${route}`).searchParams.get("branch") === "main"
+        ? [{ path: "assets/too-large.bin", sha256: expectedHash, size: 2 * 1024 * 1024 + 1,
+            objectKey: `workspace-v1/tenant/space/project/global/content/${expectedHash}`, contentType: "application/octet-stream" }]
+        : [] }),
+      { async get() { bucketReads++; return null; } });
+    expect(tooLarge.target).toMatchObject({ hash: expectedHash, content: null, unavailableReason: "size_limit" });
+    expect(tooLarge.target.copyAllowed).not.toBe(true);
     expect(bucketReads).toBe(0);
 
     const corruptBytes = new Uint8Array([1, 2, 3, 4]);

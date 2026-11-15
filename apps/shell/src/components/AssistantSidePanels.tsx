@@ -416,7 +416,7 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
                     <pre style={{ margin: "5px 0", maxHeight: 150, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", font: "10px/1.4 var(--font-mono, monospace)" }}>{version.content}</pre>
                     <button type="button" className="btn btn-ghost btn-sm" disabled={busy || locked || done} onClick={() => setDrafts(current => ({ ...current, [item.path]: { content: version.content ?? "", deleted: false, initialized: true } }))}>Use {side} text as starting point for {item.path}</button>
                   </> : <>
-                    <p style={{ margin: "5px 0 0", fontSize: 10, color: "var(--text3)" }}>{version.unavailableReason ?? "No text content is available."}{version.copyAllowed ? " Verified bytes are kept server-side and are never sent to this editor." : ""}</p>
+                    <p style={{ margin: "5px 0 0", fontSize: 10, color: "var(--text3)" }}>{version.unavailableReason ?? "No text content is available."}{version.copyAllowed ? " A bounded exact copy can be verified server-side; bytes are never sent to this editor." : ""}</p>
                     {version.copyAllowed && <button type="button" className="btn btn-ghost btn-sm" disabled={busy || locked || done || version.hash === null} onClick={() => setDrafts(current => ({ ...current, [item.path]: { content: "", deleted: false, initialized: true, copyFrom: side } }))}>Keep exact {side} bytes for {item.path}</button>}
                   </>}
                 </div>;
@@ -436,7 +436,7 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
             <input type="checkbox" checked={deleted} disabled={busy || locked || done} onChange={event => setDrafts(current => ({ ...current, [item.path]: { content: draft.content, deleted: event.target.checked, initialized: true } }))} />
             Delete this path in the target workspace
           </label>
-          {!deleted && draft.copyFrom && <p role="status" style={{ margin: "5px 0 0", fontSize: 10, color: "var(--text3)" }}>Keeping the exact {draft.copyFrom} bytes by SHA-256; binary content remains server-side.</p>}
+          {!deleted && draft.copyFrom && <p role="status" style={{ margin: "5px 0 0", fontSize: 10, color: "var(--text3)" }}>The server verifies the selected {draft.copyFrom} bytes by SHA-256 before keeping them; file contents remain server-side.</p>}
           {!deleted && !draft.copyFrom && <>
             <label style={{ display: "block", fontSize: 11, fontWeight: 600, marginTop: 5 }} htmlFor={`worker-resolution-${workerId}-${encodeURIComponent(item.path)}`}>Reviewer-authored file contents</label>
             <textarea id={`worker-resolution-${workerId}-${encodeURIComponent(item.path)}`} value={value}

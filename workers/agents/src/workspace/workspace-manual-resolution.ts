@@ -51,7 +51,13 @@ export function isWorkspaceManualResolutionChange(value: unknown): value is Work
   }
   if (change.content === null) return true;
   const bytes = new TextEncoder().encode(change.content);
-  return bytes.byteLength <= MAX_RESOLUTION_BYTES && !bytes.includes(0);
+  return bytes.byteLength <= MAX_REVIEWER_TEXT_BYTES && !bytes.includes(0);
+}
+
+/** Exact side-copy remains backend-only and bounded at both the file and review-set levels. */
+export function isWorkspaceManualCopySetWithinLimits(sizes: number[]): boolean {
+  return Array.isArray(sizes) && sizes.length <= 2 && sizes.every(size => Number.isSafeInteger(size) && size >= 0 && size <= MAX_EXACT_COPY_FILE_BYTES) &&
+    sizes.reduce((total, size) => total + size, 0) <= MAX_EXACT_COPY_SET_BYTES;
 }
 
 export function isWorkspaceManualConflictChangeSet(
@@ -76,7 +82,7 @@ export type WorkspaceCoordinatorCall = (
 export type WorkspaceConflictPreviewVersion = {
   hash: string | null;
   content: string | null;
-  /** Exact bytes are verified and within the manual-resolution bound, but are not rendered as text. */
+  /** Bounded backend-side copy can be attempted; the selected bytes are verified before publication. */
   copyAllowed?: boolean;
   unavailableReason?:
     | "missing"
@@ -95,7 +101,9 @@ export type WorkspaceConflictPreview = {
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
 const HASH = /^[a-f0-9]{64}$/;
-const MAX_RESOLUTION_BYTES = 256 * 1024;
+const MAX_REVIEWER_TEXT_BYTES = 256 * 1024;
+const MAX_EXACT_COPY_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_EXACT_COPY_SET_BYTES = 2 * 1024 * 1024;
 const MAX_VALIDATION_COMMAND_BYTES = 256;
 const VALIDATION_COMMAND = /^(?:npm|pnpm|yarn|bun) (?:run )?test(?::[A-Za-z0-9][A-Za-z0-9:._-]{0,63})?(?: -- [A-Za-z0-9@/_.:= -]{1,160})?$/;
 
@@ -154,7 +162,7 @@ function normalizeResolutionChanges(input: WorkspaceManualResolutionInput): Work
     if (change.content === null) continue;
     const bytes = new TextEncoder().encode(change.content);
     totalBytes += bytes.byteLength;
-    if (totalBytes > MAX_RESOLUTION_BYTES * 2) return null;
+    if (totalBytes > MAX_REVIEWER_TEXT_BYTES * 2) return null;
   }
   return normalized;
 }
@@ -198,11 +206,12 @@ async function readBranchText(
   ) {
     throw new Error("workspace_manual_preview_entry_invalid");
   }
-  if (entry.size > MAX_RESOLUTION_BYTES)
+  if (entry.size > MAX_REVIEWER_TEXT_BYTES)
     return {
       hash: entry.sha256,
       content: null,
       unavailableReason: "size_limit",
+      copyAllowed: entry.size <= MAX_EXACT_COPY_FILE_BYTES,
     };
   const contentType =
     typeof entry.contentType === "string"
@@ -261,7 +270,7 @@ async function readBoundedBranchBytes(
     objectKey?: unknown; contentType?: unknown; executable?: unknown }> };
   const entry = payload.entries?.find(candidate => candidate.path === path);
   if (!entry || entry.sha256 !== expectedHash || typeof entry.sha256 !== "string" || !HASH.test(entry.sha256) ||
-      typeof entry.size !== "number" || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > MAX_RESOLUTION_BYTES ||
+      typeof entry.size !== "number" || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > MAX_EXACT_COPY_FILE_BYTES ||
       entry.objectKey !== `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${entry.sha256}`) {
     throw new Error("workspace_manual_resolution_copy_stale_or_invalid");
   }
@@ -499,20 +508,27 @@ export async function publishWorkspaceManualResolution(
   // that durable state instead of applying the original expected hash a second time.
   const appliedState = await Promise.all(resolvedHashes.map(change => branchHasResolution(reviewBranch, change.path, change.hash, coordinator)));
   const alreadyApplied = appliedState.every(Boolean);
-  const resolvedChanges: Array<{ path: string; contentBase64: string | null; contentType?: string; executable?: boolean }> = alreadyApplied ? [] : await Promise.all(changes.map(async change => {
+  const copiedPayloads = alreadyApplied ? [] : await Promise.all(changes.filter(change => change.copyFrom).map(async change => {
+    const expectedHash = change.copyFrom === "target" ? change.expectedTargetHash : change.expectedSourceHash;
+    if (!expectedHash || !input.copyBucket) throw new Error("workspace_manual_resolution_copy_unavailable");
+    return { path: change.path, copied: await readBoundedBranchBytes(input.scope,
+      change.copyFrom === "target" ? input.targetBranch : input.sourceBranch, change.path, expectedHash, coordinator, input.copyBucket) };
+  }));
+  if (!isWorkspaceManualCopySetWithinLimits(copiedPayloads.map(item => item.copied.bytes.byteLength)))
+    throw new Error("workspace_manual_resolution_copy_limit_exceeded");
+  const copiedByPath = new Map(copiedPayloads.map(item => [item.path, item.copied]));
+  const resolvedChanges: Array<{ path: string; contentBase64: string | null; contentType?: string; executable?: boolean }> = alreadyApplied ? [] : changes.map(change => {
     if (change.content === null && change.copyFrom === undefined) return { path: change.path, contentBase64: null };
     if (change.copyFrom) {
-      const expectedHash = change.copyFrom === "target" ? change.expectedTargetHash : change.expectedSourceHash;
-      if (!expectedHash || !input.copyBucket) throw new Error("workspace_manual_resolution_copy_unavailable");
-      const copied = await readBoundedBranchBytes(input.scope, change.copyFrom === "target" ? input.targetBranch : input.sourceBranch,
-        change.path, expectedHash, coordinator, input.copyBucket);
+      const copied = copiedByPath.get(change.path);
+      if (!copied) throw new Error("workspace_manual_resolution_copy_unavailable");
       return { path: change.path, contentBase64: encodeBase64(copied.bytes),
         ...(copied.contentType ? { contentType: copied.contentType } : {}),
         ...(copied.executable === undefined ? {} : { executable: copied.executable }) };
     }
     const bytes = new TextEncoder().encode(change.content!);
     return { path: change.path, contentBase64: encodeBase64(bytes) };
-  }));
+  });
 
   const runtimeId = "workspace-manual-review";
   const opened = await coordinator("/v1/open", {
