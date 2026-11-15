@@ -9048,6 +9048,7 @@ type ProductUserBillingStatusExport = {
   subscription: null | { plan_tier: "free" | "growth" | "business"; status: "active" | "past_due" | "cancelled" | "paused" | "expired"; current_period_end: string | null };
   notifications: Array<{ provider_outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous"; attempt_count: number; last_attempt_at: string; accepted_at: string | null }>;
   dispatches: Array<{ status: "pending" | "leased" | "sent"; attempt_count: number; updated_at: string; sent_at: string | null }>;
+  purchase_history: { purchases: Array<{ provider: "lemon_squeezy" | "whop"; plan_tier: "growth" | "business"; amount_cents: number; currency: string; purchased_at: string }>; has_more: boolean };
 };
 
 function isBillingExportTimestamp(value: unknown): value is string {
@@ -9057,7 +9058,7 @@ function isBillingExportTimestamp(value: unknown): value is string {
 function isProductUserBillingStatusExport(value: unknown): value is ProductUserBillingStatusExport {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const root = value as Record<string, unknown>;
-  if (Object.keys(root).length !== 3 || !["subscription", "notifications", "dispatches"].every(key => key in root)) return false;
+  if (Object.keys(root).length !== 4 || !["subscription", "notifications", "dispatches", "purchase_history"].every(key => key in root)) return false;
   if (root.subscription !== null) {
     if (!root.subscription || typeof root.subscription !== "object" || Array.isArray(root.subscription)) return false;
     const subscription = root.subscription as Record<string, unknown>;
@@ -9083,6 +9084,20 @@ function isProductUserBillingStatusExport(value: unknown): value is ProductUserB
     if (Object.keys(row).length !== 4 || !["status", "attempt_count", "updated_at", "sent_at"].every(key => key in row)
       || !["pending", "leased", "sent"].includes(String(row.status)) || !boundedCount(row.attempt_count)
       || !isBillingExportTimestamp(row.updated_at) || (row.sent_at !== null && !isBillingExportTimestamp(row.sent_at))) return false;
+  }
+  if (!root.purchase_history || typeof root.purchase_history !== "object" || Array.isArray(root.purchase_history)) return false;
+  const history = root.purchase_history as Record<string, unknown>;
+  if (Object.keys(history).length !== 2 || !["purchases", "has_more"].every(key => key in history)
+    || typeof history.has_more !== "boolean" || !Array.isArray(history.purchases) || history.purchases.length > 10) return false;
+  for (const raw of history.purchases) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const purchase = raw as Record<string, unknown>;
+    if (Object.keys(purchase).length !== 5 || !["provider", "plan_tier", "amount_cents", "currency", "purchased_at"].every(key => key in purchase)
+      || !["lemon_squeezy", "whop"].includes(String(purchase.provider))
+      || !["growth", "business"].includes(String(purchase.plan_tier))
+      || !Number.isSafeInteger(purchase.amount_cents) || Number(purchase.amount_cents) < 0
+      || typeof purchase.currency !== "string" || !/^[A-Z]{3}$/.test(purchase.currency)
+      || !isBillingExportTimestamp(purchase.purchased_at)) return false;
   }
   return true;
 }
@@ -9115,6 +9130,7 @@ app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
   if (!billingResponse.ok) return c.json({ error_code: "billing_status_export_unavailable" }, 502);
   const billingStatus = await readBoundedResponseJson<unknown>(billingResponse, 16 * 1024).catch(() => null);
   if (!isProductUserBillingStatusExport(billingStatus)) return c.json({ error_code: "billing_status_export_invalid" }, 502);
+  if (billingStatus.purchase_history.has_more) return c.json({ error_code: "billing_purchase_history_limit_exceeded" }, 413);
   const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
   const response = await stub.fetch(new Request("http://do/export"));
   if (!response.ok) return c.json({ error_code: "data_export_unavailable" }, 502);

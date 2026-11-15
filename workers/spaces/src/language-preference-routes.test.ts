@@ -119,6 +119,7 @@ function testEnv() {
     subscription: { plan_tier: "growth", status: "past_due", current_period_end: "2026-12-01T00:00:00.000Z" },
     notifications: [{ provider_outcome: "provider_accepted", attempt_count: 2, last_attempt_at: "2026-11-14T00:00:00.000Z", accepted_at: "2026-11-14T00:00:00.000Z" }],
     dispatches: [{ status: "pending", attempt_count: 2, updated_at: "2026-11-14T00:00:00.000Z", sent_at: null }],
+    purchase_history: { purchases: [{ provider: "lemon_squeezy", plan_tier: "growth", amount_cents: 2900, currency: "USD", purchased_at: "2026-11-13T00:00:00.000Z" }], has_more: false },
   };
   let billingStatusResponse = Response.json(billingStatus);
   const BILLING_WORKER = { fetch: async (request: Request) => {
@@ -275,6 +276,26 @@ describe("language preference profile routes", () => {
     expect(excessive.status).toBe(502);
     expect(await excessive.json()).toMatchObject({ error_code: "billing_status_export_invalid" });
     expect(excessiveEnv.productUserCalls).toHaveLength(0);
+  });
+
+  it("does not export a silently truncated purchase history", async () => {
+    const truncatedEnv = testEnv();
+    truncatedEnv.setBillingStatusResponse(Response.json({ ...truncatedEnv.billingStatus,
+      purchase_history: { ...truncatedEnv.billingStatus.purchase_history, has_more: true } }));
+    const response = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined,
+      "tenant-a", truncatedEnv);
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error_code: "billing_purchase_history_limit_exceeded" });
+    expect(truncatedEnv.productUserCalls).toHaveLength(0);
+
+    const malformedEnv = testEnv();
+    malformedEnv.setBillingStatusResponse(Response.json({ ...malformedEnv.billingStatus,
+      purchase_history: { purchases: [{ provider_event_id: "must-not-leak" }], has_more: false } }));
+    const malformed = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined,
+      "tenant-a", malformedEnv);
+    expect(malformed.status).toBe(502);
+    expect(await malformed.json()).toMatchObject({ error_code: "billing_status_export_invalid" });
+    expect(malformedEnv.productUserCalls).toHaveLength(0);
   });
 
   it("fails closed when a Space transcript export is malformed or exceeds the response ceiling", async () => {

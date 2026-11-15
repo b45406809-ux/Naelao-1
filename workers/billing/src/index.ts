@@ -381,7 +381,7 @@ app.post("/internal/product-user-checkout", async (c) => {
 
 // Product-account subscription state, dunning queue handoff, and recent provider outcomes. Spaces
 // derives the product/end-user pair from verified session claims and calls this route with tenant
-// HMAC; this route never accepts browser credentials or returns provider IDs, recipients, or receipts.
+// HMAC; this route never accepts browser credentials or returns provider IDs, recipients, or raw receipts.
 app.use("/internal/product-user-billing-status", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
 app.post("/internal/product-user-billing-status", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
@@ -402,6 +402,18 @@ app.post("/internal/product-user-billing-status", async (c) => {
 
   let notifications: Array<{ provider_outcome: string; attempt_count: number; last_attempt_at: string; accepted_at: string | null }> = [];
   let dispatches: Array<{ status: "pending" | "leased" | "sent"; attempt_count: number; updated_at: string; sent_at: string | null }> = [];
+  const purchaseResult = await c.env.PLATFORM_DB.prepare(`
+    SELECT r.provider,r.plan_tier,r.amount_cents,r.currency,COALESCE(r.provider_event_at,r.recorded_at) AS purchased_at
+    FROM billing_plan_purchase_receipts r JOIN products p ON p.id=r.product_id AND p.tenant_id=? AND p.status='active'
+    WHERE r.purchase_scope='product_user_plan' AND r.product_id=? AND r.end_user_id=?
+    ORDER BY COALESCE(r.provider_event_at,r.recorded_at) DESC,r.recorded_at DESC,r.provider_event_id DESC
+    LIMIT 11
+  `).bind(tenantId, body.product_id, body.end_user_id)
+    .all<{ provider: "lemon_squeezy" | "whop"; plan_tier: "growth" | "business"; amount_cents: number; currency: string; purchased_at: string }>();
+  const purchaseRows = purchaseResult.results ?? [];
+  const purchasesHaveMore = purchaseRows.length > 10;
+  const purchases = purchaseRows.slice(0, 10).map(row => ({ provider: row.provider, plan_tier: row.plan_tier,
+    amount_cents: row.amount_cents, currency: row.currency, purchased_at: row.purchased_at }));
   if (account.provider && account.provider_subscription_id) {
     const result = await c.env.PLATFORM_DB.prepare(`
       SELECT d.provider_outcome,d.attempt_count,d.last_attempt_at,d.accepted_at
@@ -430,6 +442,7 @@ app.post("/internal/product-user-billing-status", async (c) => {
     subscription: account.status ? { plan_tier: account.plan_tier, status: account.status, current_period_end: account.current_period_end } : null,
     notifications,
     dispatches,
+    purchase_history: { purchases, has_more: purchasesHaveMore },
   }, 200, { "cache-control": "private, no-store" });
 });
 

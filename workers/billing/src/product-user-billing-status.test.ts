@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function database(accountFound = true) {
+const purchase = {
+  provider: "lemon_squeezy",
+  plan_tier: "growth",
+  amount_cents: 2900,
+  currency: "USD",
+  purchased_at: "2026-11-13T00:00:00.000Z",
+};
+
+function database(accountFound = true, purchaseRows = [purchase]) {
   const queries: Array<{ sql: string; args: unknown[] }> = [];
   const db = {
     prepare(sql: string) {
@@ -15,6 +23,7 @@ function database(accountFound = true) {
               : null;
           },
           async all() {
+            if (sql.includes("FROM billing_plan_purchase_receipts")) return { results: purchaseRows };
             return sql.includes("FROM billing_dunning_outbox")
               ? { results: [{ status: "pending", attempt_count: 2, updated_at: "2026-11-14T00:00:00.000Z", sent_at: null }] }
               : { results: [{ provider_outcome: "provider_accepted", attempt_count: 2, last_attempt_at: "2026-11-14T00:00:00.000Z", accepted_at: "2026-11-14T00:00:00.000Z" }] };
@@ -53,15 +62,32 @@ describe("Product-user billing status scope", () => {
       subscription: { plan_tier: "growth", status: "past_due", current_period_end: "2026-12-01T00:00:00.000Z" },
       notifications: [{ provider_outcome: "provider_accepted", attempt_count: 2, last_attempt_at: "2026-11-14T00:00:00.000Z", accepted_at: "2026-11-14T00:00:00.000Z" }],
       dispatches: [{ status: "pending", attempt_count: 2, updated_at: "2026-11-14T00:00:00.000Z", sent_at: null }],
+      purchase_history: { purchases: [purchase], has_more: false },
     });
     expect(JSON.stringify(payload)).not.toContain("private-subscription-id");
     expect(JSON.stringify(payload)).not.toContain("provider_receipt_id");
+    expect(JSON.stringify(payload)).not.toContain("provider_event_id");
+    expect(JSON.stringify(payload)).not.toContain("variant");
     expect(context.queries[0]?.args).toEqual(["product-1", "org-1", "user-1"]);
-    expect(context.queries[1]?.args).toEqual(["org-1", "product-1", "user-1", "lemon_squeezy", "private-subscription-id"]);
-    expect(context.queries[1]?.sql).toContain("d.subscription_scope='product_user_subscription'");
-    expect(context.queries[2]?.args).toEqual(["org-1", "lemon_squeezy", "private-subscription-id", "product-1", "user-1"]);
-    expect(context.queries[2]?.sql).toContain("json_valid(o.payload_json)");
-    expect(context.queries[2]?.sql).toContain("o.tenant_id=? AND o.provider=? AND o.subscription_id=?");
+    expect(context.queries[1]?.args).toEqual(["org-1", "product-1", "user-1"]);
+    expect(context.queries[1]?.sql).toContain("r.purchase_scope='product_user_plan'");
+    expect(context.queries[1]?.sql).toContain("r.product_id=? AND r.end_user_id=?");
+    expect(context.queries[1]?.sql).toContain("p.tenant_id=? AND p.status='active'");
+    expect(context.queries[2]?.args).toEqual(["org-1", "product-1", "user-1", "lemon_squeezy", "private-subscription-id"]);
+    expect(context.queries[2]?.sql).toContain("d.subscription_scope='product_user_subscription'");
+    expect(context.queries[3]?.args).toEqual(["org-1", "lemon_squeezy", "private-subscription-id", "product-1", "user-1"]);
+    expect(context.queries[3]?.sql).toContain("json_valid(o.payload_json)");
+    expect(context.queries[3]?.sql).toContain("o.tenant_id=? AND o.provider=? AND o.subscription_id=?");
+  });
+
+  it("bounds purchase history and reports when older provider snapshots remain", async () => {
+    const context = database(true, Array.from({ length: 11 }, (_, index) => ({ ...purchase, amount_cents: index })));
+    const response = await request(context.db, true);
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { purchase_history: { purchases: unknown[]; has_more: boolean } };
+    expect(payload.purchase_history.purchases).toHaveLength(10);
+    expect(payload.purchase_history.has_more).toBe(true);
+    expect(context.queries[1]?.sql).toContain("LIMIT 11");
   });
 
   it("rejects malformed identity before querying", async () => {
