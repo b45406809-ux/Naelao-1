@@ -12,7 +12,38 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (P04 product-user actor and chat erasure; pushed c20d13003be80befa7bb7cd45c18f2f5ee424cc2)
+## Latest checkpoint — 2026-11-15 (P04 product-user per-app uninstall; pushed a4958c701f4da4cbc5bad8196b84fd88e6ac69b7)
+
+Code `a4958c701f4da4cbc5bad8196b84fd88e6ac69b7` is pushed and `ls-remote` verified on
+`origin/Mcbt5s-Backup-2`. Migration 148 persists an exact-user uninstall tombstone. The authenticated
+product-user DELETE waits for extension runtime work to drain, erases the user's MicroApp actor before
+removing/anonymizing that user's install row, and retains a retryable receipt after partial failure.
+It preserves the owner-shared package install, blocks later activation/calls and actor re-registration,
+and fences export/preview/restore while pending or after completion. The app listing reports
+uninstalling/uninstalled. Reinstallation under the same actor identity is currently unsupported because
+the durable actor key has no install generation; do not imply otherwise.
+
+Local evidence: focused Spaces migration/erasure/archive/route suites **37/37**, Router product-user
+routing suite **6/6**, Spaces and Router `tsc --noEmit`, and `git diff --check`. Local SQLite/Worker
+mocks only; no deployment, browser or live acceptance. Rollouts remain disabled. Preserve untracked
+`infra/scripts/__pycache__/`.
+
+Fetched `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596`; its
+Fish Live 3 and business MicroApp/UI SDK/voice requirements are already copied into active platform
+plan sections 9 and 11. No substantive plan text was missing; only stale metadata/P04 source wording
+differs, so no branch merge or duplicate appendix was added.
+
+P04 remains PARTIAL for other service stores, retention/key/jurisdiction choices, cross-service
+consistency, isolated recovery and measured/deployed RPO/RTO. `PROJECT_USER` remains unsupported.
+The actor-generation/reinstall behavior is a real product contract decision; U05's
+Container-to-Computer trusted-observation bridge remains uncoded, not a credential blocker.
+
+Exact next action: inspect the current production migration workflow for P01's fail-closed completion
+contract. Trace every migration invocation and resulting status/receipt, implement any reachable code
+gap, and add a failure-path check. Then continue P02 and the remaining P04/S2–S9/U01–U12/P03–P24
+requirements in dependency order.
+
+## Previous checkpoint — 2026-11-15 (P04 product-user actor and chat erasure; pushed c20d13003be80befa7bb7cd45c18f2f5ee424cc2)
 
 Code `c20d13003be80befa7bb7cd45c18f2f5ee424cc2` is pushed and `ls-remote` verified on
 `origin/Mcbt5s-Backup-2`. Self-service account deletion now fans out exact-user MicroApp actor cleanup

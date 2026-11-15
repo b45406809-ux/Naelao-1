@@ -1,6 +1,36 @@
 # Managed services and sidecar implementation progress
 
-## Continuation checkpoint — 2026-11-15 (P04 account erasure fence; pushed c20d13003be80befa7bb7cd45c18f2f5ee424cc2)
+## Continuation checkpoint — 2026-11-15 (P04 per-app product-user uninstall; pushed a4958c701f4da4cbc5bad8196b84fd88e6ac69b7)
+
+Code `a4958c701f4da4cbc5bad8196b84fd88e6ac69b7` is pushed and remote-verified on
+`origin/Mcbt5s-Backup-2`. SpaceDO migration 148 persists exact-user per-app uninstall receipts. The
+authenticated route fences the app, waits for extension work to drain, erases the USER_PRIVATE or
+SPACE_USER actor, and only then removes/anonymizes that user's install row. Partial failures remain
+retryable; completed requests replay from the receipt. Owner-shared installation stays active.
+Activation, later actor calls/re-registration and archive preview/restore are rejected after the
+tombstone; export waits while a removal is pending.
+
+Local verification: Spaces migration/erasure/archive/route suites **37/37**, Router exact-route suite
+**6/6**, Spaces and Router `tsc --noEmit`, `git diff --check`. These are local Worker/SQLite mocks;
+no deployed or live acceptance ran. Rollouts remain disabled; preserve untracked
+`infra/scripts/__pycache__/`.
+
+Plan-source check: fetched `origin/plan/microapps-ui-sdk-voice` at
+`df3386257262a88888d647daa4d10f3af2ff9596`. Its Fish Live 3 and business MicroApp/UI SDK/voice text
+is already in active platform-plan sections 9 and 11. No substantive plan content needed copying and
+no merge occurred. The source branch differs only in stale status/P04 wording.
+
+P04 remains PARTIAL for other stores, retention/key/jurisdiction policy, cross-service consistency,
+isolated recovery and measured/deployed RPO/RTO. `PROJECT_USER` is unsupported. Same-identity app
+reinstallation is not supported because the erased actor key has no install generation; this needs an
+explicit product/identity contract before it can be claimed. U05's trusted-observation adapter remains
+uncoded, not credential-blocked.
+
+Exact next action: inspect P01's current production migration workflow from invocation through failure
+status, implement the remaining reachable fail-closed code contract, and verify its failure path. Then
+continue P02 and the other P04/S2–S9/U01–U12/P03–P24 gaps in dependency order.
+
+## Previous checkpoint — 2026-11-15 (P04 account erasure fence; pushed c20d13003be80befa7bb7cd45c18f2f5ee424cc2)
 
 Code `c20d13003be80befa7bb7cd45c18f2f5ee424cc2` is pushed and remote-verified on
 `origin/Mcbt5s-Backup-2`. Product account deletion now cleans exact-user MicroApp actor state and

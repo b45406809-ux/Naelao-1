@@ -1,6 +1,29 @@
 # Platform completion and guided templates progress
 
-## Continuation checkpoint — 2026-11-15 (P04 account erasure fence; pushed c20d13003be80befa7bb7cd45c18f2f5ee424cc2)
+## Continuation checkpoint — 2026-11-15 (P04 per-app product-user uninstall; pushed a4958c701f4da4cbc5bad8196b84fd88e6ac69b7)
+
+Code `a4958c701f4da4cbc5bad8196b84fd88e6ac69b7` is pushed and remote-verified on
+`origin/Mcbt5s-Backup-2`. Migration 148 persists retryable exact-user uninstall state. Product-user
+DELETE drains extension work, erases only the user's actor, then removes/anonymizes their install row;
+owner-shared install remains active. Replays use the receipt. Activation, app calls, actor
+re-registration and archive preview/restore fail closed after tombstoning; export returns 409 while
+uninstall is pending.
+
+Local verification: Spaces migration/erasure/archive/route suites **37/37**, Router routing suite
+**6/6**, Spaces/Router TypeScript checks and `git diff --check`. Local mocks/SQLite only; no deployed,
+browser or live acceptance. Rollouts remain disabled. Preserve untracked
+`infra/scripts/__pycache__/`.
+
+The fetched source branch `origin/plan/microapps-ui-sdk-voice` (`df3386257262a88888d647daa4d10f3af2ff9596`)
+has no uncopied Fish Live 3 or business MicroApp/UI SDK/voice requirements: those sections are already
+in this active plan. No merge or duplicated appendix was needed. Only stale metadata/P04 wording differs.
+
+P04 remains partial for other service stores, policy, cross-service consistency, isolated recovery
+and deployed RPO/RTO. Same-identity reinstallation remains unsupported under the current actor key
+contract; `PROJECT_USER` remains unsupported. Exact next action: trace and close P01's production
+migration failure-handling gap, then continue P02 and remaining P04/S2–S9/U01–U12/P03–P24 gaps.
+
+## Previous checkpoint — 2026-11-15 (P04 account erasure fence; pushed c20d13003be80befa7bb7cd45c18f2f5ee424cc2)
 
 Code `c20d13003be80befa7bb7cd45c18f2f5ee424cc2` is pushed and remote-verified on
 `origin/Mcbt5s-Backup-2`. The self-service product account DELETE now deletes exact-user MicroApp
