@@ -195,6 +195,9 @@ export function createTelnyxExtensionMediaRuntime(options: TelnyxExtensionMediaR
         if (ended || playback.cancelled) return;
         if (!await options.stillAllowed()) throw new Error("telnyx_extension_voice_authority_revoked");
         const { done, value } = await reader.read();
+        // Interruption cancels an in-flight read, which resolves as `done`. Do not drain the
+        // buffered PCM tail after the carrier has already received the clear command.
+        if (ended || playback.cancelled) return;
         if (done) break;
         total += value.byteLength;
         if (total > MAX_TTS_PCM_BYTES) throw new Error("telnyx_extension_tts_size_limit");
@@ -228,10 +231,15 @@ export function createTelnyxExtensionMediaRuntime(options: TelnyxExtensionMediaR
         packet.set(outputPcmu.subarray(0, TELNYX_PCMU_PACKET_BYTES));
         send({ event: "media", stream_id: options.streamId, media: { payload: encodeTelnyxPcmuBase64(packet) } });
       }
+    } catch (error) {
+      // Barge-in aborts the provider request and stream on purpose. Treat only that cancellation
+      // as a completed turn; timeouts and real provider/runtime failures still end the call.
+      if (ended || playback.cancelled) return;
+      throw error;
     } finally {
       clearTimeout(deadline);
       if (activePlayback === playback) activePlayback = null;
-      if (reader && !playback.cancelled) reader.releaseLock();
+      if (reader) reader.releaseLock();
     }
   };
 

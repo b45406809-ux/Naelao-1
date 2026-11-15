@@ -120,6 +120,53 @@ describe("Telnyx extension voice runtime", () => {
     expect(initialNow).toBeLessThan(session.expiresAt);
   });
 
+  it("does not emit a buffered speech tail after barge-in and keeps the call alive", async () => {
+    const { f, session } = await activeSession();
+    f.env.TELNYX_EXTENSION_STREAMING_ENABLED = "true";
+    f.env.TELNYX_EXTENSION_STREAMING_ACCEPTED = "true";
+    f.env.TELNYX_EXTENSION_AUDIO_MAX_COST_USD = "0.25";
+    const events: string[] = [];
+    f.env.AGENTS_WORKER = { fetch: vi.fn(async request => {
+      const body = await request.json() as { event: { type: string } };
+      events.push(body.event.type);
+      const actions = body.event.type === "call.started"
+        ? [{ type: "speak", text: "Welcome." }]
+        : [{ type: "listen", input: "speech" }];
+      return Response.json({ response: { schema_version: 1, actions } });
+    }) } as unknown as Fetcher;
+    f.env.BILLING_WORKER = { fetch: vi.fn(async request => new URL(request.url).pathname.endsWith("/reserve")
+      ? Response.json({ reserved: true }) : Response.json({ settled: true })) } as unknown as Fetcher;
+    const cancelled = vi.fn();
+    const speechRequested = vi.fn();
+    f.env.CREDENTIALS_WORKER = { fetch: vi.fn(async request => {
+      const body = await request.clone().json() as { url?: string };
+      if (body.url?.includes("/audio/speech")) {
+        speechRequested();
+        const pcm = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array(320)); }, cancel: cancelled });
+        return new Response(pcm, { headers: { "x-generation-id": "generation-interrupted", "content-type": "audio/pcm" } });
+      }
+      if (body.url?.includes("/generation?id=")) return Response.json({ data: { total_cost: 0.0001, total_tokens: 20 } });
+      return Response.json({ error: "unexpected_test_request" }, { status: 400 });
+    }) } as unknown as Fetcher;
+
+    const sent: Record<string, unknown>[] = [];
+    const endCall = vi.fn(async () => {});
+    const runtime = createTelnyxExtensionMediaRuntime({ env: f.env as unknown as AgentsEnv, session, streamId: "stream-voice",
+      bufferedAmount: () => 0, send: value => sent.push(value), endCall,
+      stillAllowed: () => isCurrent(f, session) });
+    await runtime.start();
+    await vi.waitFor(() => expect(speechRequested).toHaveBeenCalledOnce());
+    await new Promise(resolve => setTimeout(resolve, 25));
+    runtime.feedPcm16k(pcmFrame(4_000));
+    await vi.waitFor(() => expect(events).toContain("call.interrupted"));
+    await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
+    const clearIndex = sent.findIndex(frame => frame.event === "clear");
+    expect(clearIndex).toBeGreaterThanOrEqual(0);
+    expect(sent.slice(clearIndex + 1).some(frame => frame.event === "media")).toBe(false);
+    expect(endCall).not.toHaveBeenCalled();
+    await runtime.close();
+  });
+
   it("rejects unsupported cost configuration instead of allowing an unbounded stream", () => {
     expect(extensionAudioMaxCost({ TELNYX_EXTENSION_AUDIO_MAX_COST_USD: "0.25" })).toBe(0.25);
     expect(extensionAudioMaxCost({ TELNYX_EXTENSION_AUDIO_MAX_COST_USD: "0" })).toBeNull();
