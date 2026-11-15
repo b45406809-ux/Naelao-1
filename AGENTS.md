@@ -12,7 +12,17 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (P04 exact-user purchase history; pushed 1bbe8ab66479c2f2960cfbbd854f89eaa1a57e0d)
+## Latest checkpoint — 2026-11-15 (P04 authenticated data download; pushed c1eb6c4e)
+
+The Product-user Personal settings now call the authenticated, `no-store` portability endpoint and download the complete bounded JSON response locally. A 413 explicitly reports that no partial export was returned; authorization failures ask the user to sign in again. This closes the reachable Shell caller gap for the existing Product-user export. The user-private export remains partial for unsupported stores/contracts and recovery acceptance.
+
+Local verification: focused Shell client tests **2/2**, Shell TypeScript check, and `git diff --check` pass. The direct installed binaries were used because pnpm 11.25.0 (repository pins 9.12.0) tried to replace `node_modules` before executing; no dependency tree was removed or changed. This is local evidence, not deployment/browser acceptance. Code SHA `c1eb6c4e` is committed locally; refresh and push together with this record. Preserve untracked `infra/scripts/__pycache__/`; rollout remains disabled.
+
+The fetched plan branch is `origin/plan/microapps-ui-sdk-voice` at `df3386257262a88888d647daa4d10f3af2ff9596`; its Fish Live 3, business MicroApp, UI SDK and voice additions are already copied into active plan sections 9 and 11. No plan branch was merged.
+
+Exact next action: trace P03 dunning delivery from Billing's durable dispatch and Notifications provider outcomes into the Product-user inbox, distinguishing the existing Space notification inbox from email-queue state. Implement the missing authenticated, exact-user inbox path only through supported notification contracts, with persistence, erasure/export handling, and caller tests; keep grace/restriction/escalation decisions explicit. Then continue remaining P05–P24 and S3–S9/U01–U12 requirements.
+
+## Previous checkpoint — 2026-11-15 (P04 exact-user purchase history; pushed 1bbe8ab66479c2f2960cfbbd854f89eaa1a57e0d)
 
 The authenticated Product-user export now includes a bounded purchase-history summary from Billing's immutable `product_user_plan` receipts. Billing returns only provider, plan tier, amount/currency and purchase timestamp, scopes rows to the exact active tenant/product/user, and returns at most ten with an explicit `has_more`. Spaces validates the strict shape and returns 413 rather than silently exporting a truncated history. Provider event, subscription and variant IDs, customer IDs and raw receipts stay private.
 

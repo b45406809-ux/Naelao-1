@@ -1,5 +1,13 @@
 # Managed services and sidecar implementation progress
 
+## Cross-plan checkpoint — 2026-11-15 (P04 authenticated export caller; code c1eb6c4e)
+
+Shell Product-user Personal settings now download the bounded authenticated portability export as a local JSON file. The exact product scope is session-authorized, responses bypass browser cache, and oversized exports are rejected without partial download. Focused Shell client tests **2/2**, Shell TypeScript check, and `git diff --check` pass. Direct installed binaries were used because pnpm 11.25.0 attempted to replace the workspace dependency tree while the repository pins 9.12.0; no dependencies were changed. This platform P04 caller does not change S2–S9/U01–U12 runtime statuses or imply live acceptance.
+
+The Fish Live 3, business MicroApp, UI SDK and voice plan additions from `origin/plan/microapps-ui-sdk-voice` (`df3386257262a88888d647daa4d10f3af2ff9596`) are already copied into the active platform plan sections 9 and 11; no merge occurred. Code `c1eb6c4e` and this checkpoint remain local until the next safe push. Preserve untracked `infra/scripts/__pycache__/`; all rollouts remain disabled.
+
+Exact next action: trace P03 dunning delivery from Billing dispatch/Notifications outcomes through the existing Product-user inbox and implement any missing exact-user persisted delivery path, with export/erasure, retry and caller coverage. Then continue the existing S3–S9/U01–U12 queue without repeating completed audits.
+
 ## Continuation checkpoint — 2026-11-15 (P04 exact-user purchase history; pushed 1bbe8ab66479c2f2960cfbbd854f89eaa1a57e0d)
 
 The authenticated Product-user export now includes a bounded purchase-history summary from Billing's immutable `product_user_plan` receipts. Billing scopes the query to the active tenant/product and exact end user, minimizes rows to provider, plan tier, amount/currency and timestamp, and reports whether more than ten exist. Spaces validates the strict response and rejects truncated history rather than returning a partial export. Internal provider event, subscription and variant IDs, customer IDs and raw receipts remain private.
