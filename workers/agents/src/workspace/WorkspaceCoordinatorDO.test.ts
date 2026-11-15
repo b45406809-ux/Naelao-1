@@ -1337,6 +1337,118 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(new TextDecoder().decode(objects.get(workerEntry.objectKey))).toBe(workerContent);
   });
 
+  it("reports an exact-content rename/edit candidate and publishes the reviewed two-path resolution atomically", async () => {
+    const { instance, objects } = setup();
+    const oldPath = "src/original.ts", renamedPath = "src/moved.ts";
+    const baseContent = "export const quantity = 1;\n";
+    const editedContent = "export const quantity = 2;\n";
+    const baseBytes = new TextEncoder().encode(baseContent), editedBytes = new TextEncoder().encode(editedContent);
+    const baseHash = await sha256Hex(baseBytes), editedHash = await sha256Hex(editedBytes);
+    const baseKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${baseHash}`;
+    objects.set(baseKey, baseBytes);
+    expect((await call(instance, "/v1/initialize", { scope, branch: "main", entries: [
+      { path: oldPath, sha256: baseHash, size: baseBytes.byteLength, executable: false, objectKey: baseKey },
+    ] })).status).toBe(200);
+    expect((await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/rename-edit" })).status).toBe(200);
+    const worker = await (await call(instance, "/v1/open", { scope, branch: "runs/rename-edit", actorId: "worker", runtimeId: "runtime-worker", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const owner = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "runtime-owner", allocationGeneration: 1 })).json() as { session: { id: string } };
+    expect((await call(instance, "/v1/checkpoint", { sessionId: owner.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "owner-rename-file", changes: [
+        { path: oldPath, expectedHash: baseHash, contentBase64: null },
+        { path: renamedPath, expectedHash: null, contentBase64: btoa(baseContent) },
+      ] })).status).toBe(200);
+    expect((await call(instance, "/v1/checkpoint", { sessionId: worker.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "worker-edit-original", changes: [{ path: oldPath, expectedHash: baseHash, contentBase64: btoa(editedContent) }] })).status).toBe(200);
+
+    const conflictResponse = await call(instance, "/v1/merge", { sessionId: worker.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0,
+      idempotencyKey: "rename-edit-conflict" });
+    expect(conflictResponse.status).toBe(409);
+    expect(await conflictResponse.json()).toMatchObject({ publication: { status: "conflicted", appliedPaths: [], conflicts: [
+      { path: oldPath, otherPath: renamedPath, reason: "rename_edit_candidate", actualHash: null, sourceHash: editedHash },
+    ] } });
+
+    const resolution = await publishWorkspaceManualResolution({ scope, actorId: "reviewer", workerId: "worker-rename-edit", attempt: 1,
+      targetBranch: "main", sourceBranch: "runs/rename-edit", path: oldPath, expectedTargetHash: null, expectedSourceHash: editedHash,
+      content: null, idempotencyKey: "resolve-rename-edit-1", validationCommand: "pnpm test", changes: [
+        { path: oldPath, expectedTargetHash: null, expectedSourceHash: editedHash, content: null },
+        { path: renamedPath, expectedTargetHash: baseHash, expectedSourceHash: null, content: editedContent },
+      ], validate: async request => {
+        expect(request.paths).toEqual([renamedPath, oldPath]);
+        const validationBranch = await call(instance, "/v1/branch", { scope, sourceBranch: request.reviewBranch, branch: request.validationBranch });
+        expect(validationBranch.status).toBe(200);
+        return { path: request.path, paths: request.paths, status: "passed", branch: request.validationBranch,
+          revision: request.revision, manifestHash: request.manifestHash, targetRevision: request.targetRevision,
+          targetManifestHash: request.targetManifestHash, commandHash: request.commandHash, executionId: request.executionId,
+          runId: request.runId, durationMs: 10, completedAt: new Date().toISOString(), exitCode: 0 };
+      } }, (path, body) => call(instance, path, body));
+    expect(resolution.validation?.status).toBe("passed");
+    expect(resolution.merge.status).toBe("published");
+    expect(await (await call(instance, `/v1/read?branch=main&path=${encodeURIComponent(oldPath)}`)).json()).toMatchObject({ entries: [] });
+    const finalEntry = (await (await call(instance, `/v1/read?branch=main&path=${encodeURIComponent(renamedPath)}`)).json() as { entries: Array<{ objectKey: string; sha256: string }> }).entries[0]!;
+    expect(finalEntry.sha256).toBe(editedHash);
+    expect(new TextDecoder().decode(objects.get(finalEntry.objectKey))).toBe(editedContent);
+    const retainedWorker = (await (await call(instance, `/v1/read?branch=runs%2Frename-edit&path=${encodeURIComponent(oldPath)}`)).json() as { entries: Array<{ sha256: string }> }).entries[0]!;
+    expect(retainedWorker.sha256).toBe(editedHash);
+  });
+
+  it("recognizes the rename/edit candidate when the worker branch contains the rename", async () => {
+    const { instance, objects } = setup();
+    const oldPath = "src/original.ts", renamedPath = "src/moved.ts";
+    const baseContent = "export const quantity = 1;\n", editedContent = "export const quantity = 3;\n";
+    const baseBytes = new TextEncoder().encode(baseContent), editedBytes = new TextEncoder().encode(editedContent);
+    const baseHash = await sha256Hex(baseBytes), editedHash = await sha256Hex(editedBytes);
+    const baseKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${baseHash}`;
+    objects.set(baseKey, baseBytes);
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [
+      { path: oldPath, sha256: baseHash, size: baseBytes.byteLength, executable: false, objectKey: baseKey },
+    ] });
+    await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/worker-rename-edit" });
+    const worker = await (await call(instance, "/v1/open", { scope, branch: "runs/worker-rename-edit", actorId: "worker", runtimeId: "runtime-worker", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const owner = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "runtime-owner", allocationGeneration: 1 })).json() as { session: { id: string } };
+    await call(instance, "/v1/checkpoint", { sessionId: worker.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "worker-rename-file", changes: [
+        { path: oldPath, expectedHash: baseHash, contentBase64: null },
+        { path: renamedPath, expectedHash: null, contentBase64: btoa(baseContent) },
+      ] });
+    await call(instance, "/v1/checkpoint", { sessionId: owner.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "owner-edit-original", changes: [{ path: oldPath, expectedHash: baseHash, contentBase64: btoa(editedContent) }] });
+    const merge = await call(instance, "/v1/merge", { sessionId: worker.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0,
+      idempotencyKey: "worker-rename-edit-conflict" });
+    expect(await merge.json()).toMatchObject({ publication: { status: "conflicted", appliedPaths: [], conflicts: [
+      { path: oldPath, otherPath: renamedPath, reason: "rename_edit_candidate", actualHash: editedHash, sourceHash: null },
+    ] } });
+  });
+
+  it("does not guess a rename pair when multiple exact-content added paths are ambiguous", async () => {
+    const { instance, objects } = setup();
+    const oldPath = "src/original.ts", content = "export const quantity = 1;\n", edited = "export const quantity = 4;\n";
+    const bytes = new TextEncoder().encode(content), editedBytes = new TextEncoder().encode(edited);
+    const hash = await sha256Hex(bytes), editedHash = await sha256Hex(editedBytes);
+    const key = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${hash}`;
+    objects.set(key, bytes);
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [
+      { path: oldPath, sha256: hash, size: bytes.byteLength, executable: false, objectKey: key },
+    ] });
+    await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/ambiguous-rename" });
+    const worker = await (await call(instance, "/v1/open", { scope, branch: "runs/ambiguous-rename", actorId: "worker", runtimeId: "runtime-worker", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const owner = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "runtime-owner", allocationGeneration: 1 })).json() as { session: { id: string } };
+    await call(instance, "/v1/checkpoint", { sessionId: owner.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "owner-ambiguous-copy", changes: [
+        { path: oldPath, expectedHash: hash, contentBase64: null },
+        { path: "src/first-copy.ts", expectedHash: null, contentBase64: btoa(content) },
+        { path: "src/second-copy.ts", expectedHash: null, contentBase64: btoa(content) },
+      ] });
+    await call(instance, "/v1/checkpoint", { sessionId: worker.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "worker-ambiguous-edit", changes: [{ path: oldPath, expectedHash: hash, contentBase64: btoa(edited) }] });
+    const merge = await call(instance, "/v1/merge", { sessionId: worker.session.id, targetBranch: "main", allocationGeneration: 1, fence: 0,
+      idempotencyKey: "ambiguous-rename-edit-conflict" });
+    const body = await merge.json() as { publication: { status: string; appliedPaths: string[]; conflicts: Array<Record<string, unknown>> } };
+    expect(body).toMatchObject({ publication: { status: "conflicted", appliedPaths: [], conflicts: [
+      { path: oldPath, reason: "delete_edit_or_path_collision", actualHash: null, sourceHash: editedHash },
+    ] } });
+    expect(body.publication.conflicts[0]).not.toHaveProperty("otherPath");
+  });
+
   it("does not stage any paired-path resolution when one expected target hash is stale", async () => {
     const { instance, objects } = setup();
     expect((await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] })).status).toBe(200);

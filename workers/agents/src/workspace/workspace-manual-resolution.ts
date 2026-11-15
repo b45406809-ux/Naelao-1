@@ -64,7 +64,8 @@ export function isWorkspaceManualConflictChangeSet(
       new Set(changes.map(change => change.path)).size !== changes.length || !changes.some(change => change.path === path)) return false;
   if (otherPath === undefined) return changes.length === 1;
   return validateWorkspacePath(otherPath) && otherPath !== path && changes.length === 2 &&
-    changes.some(change => change.path === otherPath) && changes.some(change => change.content === null && change.copyFrom === undefined);
+    changes.some(change => change.path === otherPath) &&
+    changes.filter(change => change.content === null && change.copyFrom === undefined).length === 1;
 }
 
 export type WorkspaceCoordinatorCall = (

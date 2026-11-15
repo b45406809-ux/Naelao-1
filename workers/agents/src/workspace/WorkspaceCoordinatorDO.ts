@@ -278,6 +278,14 @@ function gcMarksPrefix(scope: WorkspaceScope, epoch: string): string { return `$
 function entrySignature(entry: WorkspaceEntry | undefined): string | null {
   return entry ? JSON.stringify([entry.sha256, entry.size, entry.executable, entry.contentType ?? inferWorkspaceContentType(entry.path)]) : null;
 }
+/** A manifest has no Git rename record. Only expose an exact-content added-path candidate for
+ * human review; ambiguous copies and edited renames remain ordinary delete/edit conflicts. */
+function findExactRenameEditCandidate(baseEntry: WorkspaceEntry, base: Map<string, WorkspaceEntry>,
+  renamedSide: Map<string, WorkspaceEntry>, otherSide: Map<string, WorkspaceEntry>): string | undefined {
+  const candidates = [...renamedSide.values()].filter(entry => !base.has(entry.path) && !otherSide.has(entry.path)
+    && entry.sha256 === baseEntry.sha256 && entry.size === baseEntry.size);
+  return candidates.length === 1 ? candidates[0]!.path : undefined;
+}
 
 /**
  * Project-scoped metadata coordinator. File bytes and immutable manifests live in R2;
@@ -1785,8 +1793,17 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         }
         reason = candidate.reason;
       }
-      conflicts.push({ path, expectedHash: baseEntry?.sha256 ?? null, actualHash: targetEntry?.sha256 ?? null,
-        sourceHash: sourceEntry?.sha256 ?? null, reason });
+      let otherPath: string | undefined;
+      if (reason === "delete_edit_or_path_collision" && baseEntry) {
+        const modifiedEntry = targetEntry ?? sourceEntry;
+        if (modifiedEntry && entrySignature(modifiedEntry) !== entrySignature(baseEntry)) {
+          if (!targetEntry && sourceEntry) otherPath = findExactRenameEditCandidate(baseEntry, base, parent, working);
+          else if (!sourceEntry && targetEntry) otherPath = findExactRenameEditCandidate(baseEntry, base, working, parent);
+          if (otherPath) reason = "rename_edit_candidate";
+        }
+      }
+      conflicts.push({ path, ...(otherPath ? { otherPath } : {}), expectedHash: baseEntry?.sha256 ?? null,
+        actualHash: targetEntry?.sha256 ?? null, sourceHash: sourceEntry?.sha256 ?? null, reason });
     }
     const proposedPaths = new Set(parent.keys());
     for (const path of changedPaths) {

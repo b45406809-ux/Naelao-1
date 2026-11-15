@@ -5385,13 +5385,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     if (row.status !== "done" || !row.workspace_branch?.startsWith("workers/")) return Response.json({ error_code: "worker_result_not_resolvable" }, { status: 409 });
     const merge = output.workspaceMerge as { status?: unknown; conflicts?: unknown; manualResolutions?: unknown; omitted?: unknown } | undefined;
-    if (!merge || !["unapplied", "partially_resolved"].includes(String(merge.status)) || !Array.isArray(merge.conflicts)) {
+    // Keep completed reports addressable so an identical paired/single-path request can return
+    // its saved receipt after a lost response. A new non-replay still has to pass current-head
+    // hashes and the exact conflict change-set checks below.
+    if (!merge || !["unapplied", "partially_resolved", "manually_resolved"].includes(String(merge.status)) || !Array.isArray(merge.conflicts)) {
       return Response.json({ error_code: "worker_conflict_report_unavailable" }, { status: 409 });
     }
-    const conflicts = merge.conflicts as Array<{ path?: unknown; otherPath?: unknown; targetHash?: unknown; sourceHash?: unknown }>;
+    const conflicts = merge.conflicts as Array<{ path?: unknown; otherPath?: unknown; reason?: unknown; targetHash?: unknown; sourceHash?: unknown }>;
     const conflict = conflicts.find(item => item.path === path);
-    const pairedPath = typeof conflict?.otherPath === "string" ? conflict.otherPath : undefined;
-    if (!conflict || conflict.targetHash !== expectedTargetHash || conflict.sourceHash !== expectedSourceHash ||
+    const hasReportedPair = conflict?.otherPath !== undefined;
+    const reportedPairedPath = typeof conflict?.otherPath === "string" && validateWorkspacePath(conflict.otherPath) ? conflict.otherPath : undefined;
+    const requestedPairedPath = changes.length === 2 ? changes.find(change => change.path !== path)?.path : undefined;
+    const pairedPath = reportedPairedPath ?? requestedPairedPath;
+    if (!conflict || hasReportedPair && reportedPairedPath === undefined || conflict.targetHash !== expectedTargetHash || conflict.sourceHash !== expectedSourceHash ||
+        reportedPairedPath !== undefined && requestedPairedPath !== reportedPairedPath ||
+        reportedPairedPath === undefined && requestedPairedPath !== undefined && conflict.reason !== "delete_edit_or_path_collision" ||
         !isWorkspaceManualConflictChangeSet(path, pairedPath, changes)) {
       return Response.json({ error_code: "workspace_manual_resolution_conflict_mismatch" }, { status: 409 });
     }
@@ -5436,6 +5444,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         expectedSourceHash: change.expectedSourceHash }, checkedCoordinator, this.env.SCRIPTS_R2!)));
       if (previews.some(preview => preview.stale)) return Response.json({ error_code: "workspace_manual_resolution_stale_input" }, { status: 409, headers: { "cache-control": "no-store" } });
       const previewByPath = new Map(previews.map(preview => [preview.path, preview]));
+      if (pairedPath) {
+        const paired = previewByPath.get(pairedPath);
+        if (!paired || paired.target.hash === null && paired.worker.hash === null)
+          return Response.json({ error_code: "workspace_manual_resolution_pair_unavailable" }, { status: 422, headers: { "cache-control": "no-store" } });
+      }
       for (const change of changes) {
         const preview = previewByPath.get(change.path);
         if (!preview) return Response.json({ error_code: "workspace_manual_resolution_preview_unavailable" }, { status: 422, headers: { "cache-control": "no-store" } });
@@ -5703,14 +5716,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "worker_session_scope_mismatch" }, { status: 403 });
     }
     const merge = output?.workspaceMerge as { conflicts?: unknown } | undefined;
-    const conflicts = Array.isArray(merge?.conflicts) ? merge.conflicts as Array<{ path?: unknown; otherPath?: unknown; targetHash?: unknown; sourceHash?: unknown }> : [];
+    const conflicts = Array.isArray(merge?.conflicts) ? merge.conflicts as Array<{ path?: unknown; otherPath?: unknown; reason?: unknown; targetHash?: unknown; sourceHash?: unknown }> : [];
     const conflict = conflicts.find(item => item.path === path);
     const targetBranch = await this.ctx.storage.get<string>(`worker-branch-parent:${workerId}`);
     if (!conflict || !targetBranch || !row.workspace_branch?.startsWith("workers/")) return Response.json({ error_code: "worker_conflict_not_found" }, { status: 404 });
+    const hasReportedPair = conflict.otherPath !== undefined;
+    const reportedPairedPath = typeof conflict.otherPath === "string" && validateWorkspacePath(conflict.otherPath) ? conflict.otherPath : undefined;
+    const requestedPairedPath = body.pairedPath;
+    if (hasReportedPair && reportedPairedPath === undefined || requestedPairedPath !== undefined && (typeof requestedPairedPath !== "string" || !validateWorkspacePath(requestedPairedPath) || requestedPairedPath === path ||
+        reportedPairedPath !== undefined && requestedPairedPath !== reportedPairedPath ||
+        reportedPairedPath === undefined && conflict.reason !== "delete_edit_or_path_collision")) {
+      return Response.json({ error_code: "workspace_manual_preview_pair_not_allowed" }, { status: 409, headers: { "cache-control": "no-store" } });
+    }
+    const pairedPath = reportedPairedPath ?? (typeof requestedPairedPath === "string" ? requestedPairedPath : undefined);
     const coordinatorEnv = agentsEnv as unknown as import("../workspace/workspace-client.js").WorkspaceCoordinatorBindings;
     try {
       const preview = await readWorkspaceConflictPreview({ scope, targetBranch, workerBranch: row.workspace_branch, path,
-        ...(typeof conflict.otherPath === "string" && validateWorkspacePath(conflict.otherPath) ? { pairedPath: conflict.otherPath } : {}),
+        ...(pairedPath ? { pairedPath } : {}),
         expectedTargetHash: typeof conflict.targetHash === "string" ? conflict.targetHash : null,
         expectedSourceHash: typeof conflict.sourceHash === "string" ? conflict.sourceHash : null },
       (route, payload) => workspaceCoordinatorRequest(coordinatorEnv, scope, route, { ...(payload ? { body: payload } : {}) }),

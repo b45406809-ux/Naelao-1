@@ -72,6 +72,7 @@ describe("worker conflict resolution caller", () => {
           agentId: "planner",
           projectId: "project-1",
           path: "src/app.ts",
+          pairedPath: "src/renamed.ts",
         }
       )
     ).resolves.toEqual({ preview });
@@ -79,6 +80,7 @@ describe("worker conflict resolution caller", () => {
     expect(url).toContain("/workspace-conflicts/preview?");
     expect(url).toContain("session_id=conversation-1");
     expect(url).toContain("project_id=project-1");
+    expect(url).toContain("paired_path=src%2Frenamed.ts");
     expect(new Headers(init.headers).get("authorization")).toBe(
       "Bearer session-token"
     );

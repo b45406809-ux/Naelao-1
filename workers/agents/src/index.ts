@@ -9447,10 +9447,11 @@ app.get("/spaces/:spaceId/assistant/sub-agents/:workerId/workspace-conflicts/pre
   const spaceId = c.req.param("spaceId"), workerId = c.req.param("workerId");
   const tenantId = await requireVerifiedTenant(c), identity = getCallerIdentity(c);
   const sessionId = c.req.query("session_id") ?? "", agentId = c.req.query("agent_id") ?? "";
-  const projectId = c.req.query("project_id") ?? "", path = c.req.query("path") ?? "";
+  const projectId = c.req.query("project_id") ?? "", path = c.req.query("path") ?? "", pairedPath = c.req.query("paired_path");
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(sessionId) ||
       (agentId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(agentId)) ||
-      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(projectId) || !validateWorkspacePath(path)) {
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(projectId) || !validateWorkspacePath(path) ||
+      pairedPath !== null && (!validateWorkspacePath(pairedPath) || pairedPath === path)) {
     return c.json({ error_code: "invalid_workspace_manual_preview" }, 400);
   }
   if (!identity.userId || !(await requireSpaceMembershipOrSessionAccess(c, spaceId, sessionId))) return c.json({ error_code: "forbidden" }, 403);
@@ -9463,7 +9464,7 @@ app.get("/spaces/:spaceId/assistant/sub-agents/:workerId/workspace-conflicts/pre
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
     body: JSON.stringify({ scope: { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" },
-      actorId: actor.userId, callerRole: identity.role, workerId, path }),
+      actorId: actor.userId, callerRole: identity.role, workerId, path, ...(pairedPath ? { pairedPath } : {}) }),
   }));
 });
 

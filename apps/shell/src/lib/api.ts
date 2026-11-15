@@ -2882,10 +2882,11 @@ export async function readWorkerWorkspaceConflictPreview(
   spaceId: string,
   workerId: string,
   session: SessionCredentials,
-  input: { sessionId: string; agentId?: string | null; projectId: string; path: string }
+  input: { sessionId: string; agentId?: string | null; projectId: string; path: string; pairedPath?: string }
 ): Promise<{ preview: WorkerWorkspaceConflictPreview }> {
   const query = new URLSearchParams({ session_id: input.sessionId, project_id: input.projectId, path: input.path });
   if (input.agentId) query.set("agent_id", input.agentId);
+  if (input.pairedPath) query.set("paired_path", input.pairedPath);
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/sub-agents/${encodeURIComponent(workerId)}/workspace-conflicts/preview?${query}`, { session });
 }
 

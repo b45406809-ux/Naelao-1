@@ -318,14 +318,17 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
   const [message, setMessage] = React.useState("");
   const [preview, setPreview] = React.useState<Awaited<ReturnType<typeof readWorkerWorkspaceConflictPreview>>["preview"] | null>(null);
   const [previewError, setPreviewError] = React.useState("");
+  const [pairPathInput, setPairPathInput] = React.useState("");
+  const [manualPairedPath, setManualPairedPath] = React.useState("");
   const locked = submitted !== null;
+  const pairedPath = conflict.otherPath ?? (manualPairedPath.trim() || undefined);
   const previewVersions = preview ? [
     { path: preview.path, target: preview.target, worker: preview.worker },
     ...(preview.paired ? [preview.paired] : []),
   ] : [];
-  const conflictPaths = conflict.otherPath ? [conflict.path, conflict.otherPath] : [conflict.path];
+  const conflictPaths = pairedPath ? [conflict.path, pairedPath] : [conflict.path];
   const previewReady = Boolean(preview && preview.path === conflict.path &&
-    (!conflict.otherPath || preview.paired?.path === conflict.otherPath) && !preview.stale &&
+    (!pairedPath || preview.paired?.path === pairedPath && Boolean(preview.paired.target.hash || preview.paired.worker.hash)) && !preview.stale &&
     previewVersions.length === conflictPaths.length &&
     previewVersions.every(item => [item.target, item.worker].every(version => version.hash === null || version.content !== null || version.copyAllowed === true)));
   const proposedChanges = previewReady ? previewVersions.map(item => {
@@ -340,7 +343,11 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
   const readyToPublish = previewReady && proposedChanges.length === conflictPaths.length &&
     previewVersions.every(item => drafts[item.path]?.initialized || drafts[item.path]?.deleted) &&
     proposedChanges.every(change => !change.copyFrom || selectedVersionCanCopy(change.path, change.copyFrom)) &&
-    (!conflict.otherPath || proposedChanges.some(change => change.content === null && change.copyFrom === undefined));
+    (!pairedPath || proposedChanges.filter(change => change.content === null && change.copyFrom === undefined).length === 1);
+  React.useEffect(() => {
+    setPairPathInput(conflict.otherPath ?? "");
+    setManualPairedPath("");
+  }, [conflict.path, conflict.otherPath]);
   React.useEffect(() => {
     if (!sessionId || !projectId) return;
     let cancelled = false;
@@ -352,7 +359,8 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
     setDone(false);
     setMessage("");
     setValidationCommand("");
-    readWorkerWorkspaceConflictPreview(spaceId, workerId, session, { sessionId, ...(agentId ? { agentId } : {}), projectId, path: conflict.path })
+    readWorkerWorkspaceConflictPreview(spaceId, workerId, session, { sessionId, ...(agentId ? { agentId } : {}), projectId, path: conflict.path,
+      ...(pairedPath ? { pairedPath } : {}) })
       .then(result => { if (!cancelled) {
         setPreview(result.preview);
         setDrafts(Object.fromEntries([
@@ -362,7 +370,7 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
       } })
       .catch(error => { if (!cancelled) setPreviewError(error instanceof Error ? error.message : "Could not load conflict versions."); });
     return () => { cancelled = true; };
-  }, [spaceId, workerId, session, sessionId, agentId, projectId, conflict.path, conflict.otherPath]);
+  }, [spaceId, workerId, session, sessionId, agentId, projectId, conflict.path, pairedPath]);
   async function publish() {
     const nextKey = requestKey ?? crypto.randomUUID();
     const nextChanges = submitted ? submitted.changes : proposedChanges;
@@ -442,7 +450,22 @@ function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, 
         onChange={event => setValidationCommand(event.target.value)} disabled={busy || locked || done} maxLength={256} placeholder="pnpm test"
         aria-label={`Package test command for ${conflict.path}`} style={{ width: "100%", marginTop: 4 }} />
       <p style={{ margin: "3px 0", fontSize: 10, color: "var(--text3)" }}>The supported package test command runs against an isolated copy of this reviewed revision before publication. Current execution authorization and configured project and tenant quota gates apply; this receipt does not show per-run infrastructure cost.</p>
-      {conflict.otherPath && <p style={{ margin: "3px 0", fontSize: 10, color: "var(--text3)" }}>This pair has colliding path names. Delete one of the two paths in the reviewed change set to remove the collision before publication.</p>}
+      {!conflict.otherPath && conflict.reason === "delete_edit_or_path_collision" && <div style={{ margin: "6px 0", fontSize: 11 }}>
+        <label htmlFor={`worker-related-path-${workerId}-${encodeURIComponent(conflict.path)}`}>Possible related path (optional, for a rename/edit review)</label>
+        <div style={{ display: "flex", gap: 6, marginTop: 3 }}>
+          <input id={`worker-related-path-${workerId}-${encodeURIComponent(conflict.path)}`} value={pairPathInput} maxLength={512}
+            disabled={busy || locked || done} onChange={event => setPairPathInput(event.target.value)} placeholder="src/new-name.ts" style={{ flex: 1 }} />
+          <button type="button" className="btn btn-secondary btn-sm" disabled={busy || locked || done || !pairPathInput.trim() || pairPathInput.trim() === conflict.path}
+            onClick={() => setManualPairedPath(pairPathInput.trim())}>Review both paths</button>
+          {manualPairedPath && <button type="button" className="btn btn-ghost btn-sm" disabled={busy || locked || done}
+            onClick={() => { setManualPairedPath(""); setPairPathInput(""); }}>Clear pair</button>}
+        </div>
+        {manualPairedPath && <p role="status" style={{ margin: "3px 0", color: "var(--text3)" }}>This second path was selected by you; the report does not prove a rename. Inspect both current branch versions before publishing the checked change set.</p>}
+      </div>}
+      {pairedPath && <p style={{ margin: "3px 0", fontSize: 10, color: "var(--text3)" }}>{conflict.reason === "rename_edit_candidate"
+        ? <>The other path is a possible rename target, matched by exact base-file bytes. Review both paths; to keep the rename, carry the desired edit into the new path and delete the obsolete path in this same checked change set. The retained worker branch is unchanged.</>
+        : conflict.otherPath ? <>This pair has colliding path names. Delete one of the two paths in the reviewed change set to remove the collision before publication.</>
+          : <>Review both selected branch paths. Publishing requires deleting one path in the same checked change set. The retained worker branch is unchanged.</>}</p>}
       {previewReady && <details style={{ marginTop: 6 }}>
         <summary style={{ cursor: "pointer", fontSize: 11 }}>Review target-to-resolution diff</summary>
         {previewVersions.map(item => {

@@ -21,6 +21,7 @@ describe("workspace manual conflict change sets", () => {
     const pairedDelete = { path: "README.md", expectedTargetHash: hash, expectedSourceHash: null, content: null };
     expect(isWorkspaceManualConflictChangeSet("Readme.md", "README.md", [primary, pairedDelete])).toBe(true);
     expect(isWorkspaceManualConflictChangeSet("Readme.md", "README.md", [primary, { ...pairedDelete, content: "still collides\n" }])).toBe(false);
+    expect(isWorkspaceManualConflictChangeSet("Readme.md", "README.md", [{ ...primary, content: null }, pairedDelete])).toBe(false);
     expect(isWorkspaceManualConflictChangeSet("Readme.md", "README.md", [primary])).toBe(false);
     expect(isWorkspaceManualConflictChangeSet("Readme.md", undefined, [primary, pairedDelete])).toBe(false);
     expect(isWorkspaceManualConflictChangeSet("Readme.md", "../unsafe", [primary, pairedDelete])).toBe(false);

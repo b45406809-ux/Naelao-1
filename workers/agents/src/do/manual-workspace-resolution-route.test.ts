@@ -87,11 +87,12 @@ function workspaceBinding() {
   };
 }
 
-function createAgent(options: { execution: "uncertain" | "passed"; loseFirstResultWrite?: boolean } = { execution: "uncertain" }) {
+function createAgent(options: { execution: "uncertain" | "passed"; loseFirstResultWrite?: boolean; pairedRename?: boolean; unpairedDeleteEdit?: boolean; invalidReportedPair?: boolean } = { execution: "uncertain" }) {
   const result = {
     workspaceMerge: {
       status: "unapplied",
-      conflicts: [{ path, reason: "overlapping_change", targetHash, sourceHash }],
+      conflicts: [{ path, ...(options.invalidReportedPair ? { otherPath: "../src/moved.ts" } : {}), ...(options.pairedRename ? { otherPath: "src/moved.ts", reason: "rename_edit_candidate", targetHash: null }
+        : options.unpairedDeleteEdit ? { reason: "delete_edit_or_path_collision", targetHash: null } : { reason: "overlapping_change", targetHash }), sourceHash }],
       manualResolutions: [],
       validationReceipts: [],
       omitted: 0,
@@ -123,6 +124,10 @@ function createAgent(options: { execution: "uncertain" | "passed"; loseFirstResu
         return {
           toArray() {
             if (query.includes("SELECT status,result,workspace_branch,attempt,configuration_json,parent_run_id FROM sub_agents")) return [workerRow()];
+            if (query.includes("SELECT status,result,workspace_branch,configuration_json FROM sub_agents")) {
+              const row = workerRow();
+              return [{ status: row.status, result: row.result, workspace_branch: row.workspace_branch, configuration_json: row.configuration_json }];
+            }
             if (query.includes("SELECT result,status,workspace_branch,configuration_json FROM sub_agents")) {
               const row = workerRow();
               return [{ result: row.result, status: row.status, workspace_branch: row.workspace_branch, configuration_json: row.configuration_json }];
@@ -189,6 +194,14 @@ describe("manual workspace conflict route", () => {
     return instance.fetch(input);
   }
 
+  async function invokePreview(instance: NaelaoAgentDO, overrides: Record<string, unknown> = {}) {
+    return instance.fetch(new Request("http://agent/internal/sub-agents/conflict-preview", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(secret, tenantId) },
+      body: JSON.stringify({ scope, actorId, callerRole: "owner", workerId, path, ...overrides }),
+    }));
+  }
+
   it("records access revocation during validation and does not run or publish", async () => {
     setupMocks(vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false));
     const agent = createAgent({ execution: "passed" });
@@ -242,6 +255,107 @@ describe("manual workspace conflict route", () => {
     expect(body).toMatchObject({ resolution: { path, status: "published", copiedVersions: [{ path, from: "worker", hash: sourceHash }] } });
     expect(routeMocks.publish).toHaveBeenCalledWith(expect.objectContaining({ content: null, copyFrom: "worker", copyBucket: expect.any(Object) }), expect.any(Function));
     expect(JSON.stringify(body)).not.toContain("base64");
+  });
+
+  it("accepts the exact two-path change set for a rename/edit candidate and records both paths", async () => {
+    setupMocks(async () => true);
+    routeMocks.preview.mockImplementation(async (input: { path: string }) => input.path === path
+      ? { path, stale: false, target: { hash: null, content: null }, worker: { hash: sourceHash, content: "edited old path\n" } }
+      : { path: "src/moved.ts", stale: false, target: { hash: targetHash, content: "base bytes\n" }, worker: { hash: null, content: null } });
+    const agent = createAgent({ execution: "passed", pairedRename: true });
+    configurePublish(agent);
+    const changes = [
+      { path, expectedTargetHash: null, expectedSourceHash: sourceHash, content: null },
+      { path: "src/moved.ts", expectedTargetHash: targetHash, expectedSourceHash: null, content: "reviewed edit on renamed path\n" },
+    ];
+    const response = await invoke(agent.instance, { expectedTargetHash: null, expectedSourceHash: sourceHash, content: null, changes });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ resolution: { path, paths: [path, "src/moved.ts"], status: "published", validation: { status: "passed" } } });
+    expect(routeMocks.publish).toHaveBeenCalledWith(expect.objectContaining({ path, content: null, changes }), expect.any(Function));
+    expect(agent.getResult().workspaceMerge.status).toBe("manually_resolved");
+    const replay = await invoke(agent.instance, { expectedTargetHash: null, expectedSourceHash: sourceHash, content: null,
+      idempotencyKey: "manual-route-1", changes });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ replay: true, resolution: { path, paths: [path, "src/moved.ts"] } });
+    expect(routeMocks.publish).toHaveBeenCalledTimes(1);
+    expect(agent.execution).toHaveBeenCalledTimes(1);
+    expect(agent.getCanonicalPublicationCount()).toBe(1);
+  });
+
+  it("blocks a stale paired rename path before validation or publication", async () => {
+    setupMocks(async () => true);
+    routeMocks.preview.mockImplementation(async (input: { path: string }) => input.path === path
+      ? { path, stale: false, target: { hash: null, content: null }, worker: { hash: sourceHash, content: "edited old path\n" } }
+      : { path: "src/moved.ts", stale: true, target: { hash: "e".repeat(64), content: "changed concurrently\n" }, worker: { hash: null, content: null } });
+    const agent = createAgent({ execution: "passed", pairedRename: true });
+    configurePublish(agent);
+    const response = await invoke(agent.instance, { expectedTargetHash: null, expectedSourceHash: sourceHash, content: null, changes: [
+      { path, expectedTargetHash: null, expectedSourceHash: sourceHash, content: null },
+      { path: "src/moved.ts", expectedTargetHash: targetHash, expectedSourceHash: null, content: "reviewed edit on renamed path\n" },
+    ] });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "workspace_manual_resolution_stale_input" });
+    expect(routeMocks.publish).not.toHaveBeenCalled();
+    expect(agent.execution).not.toHaveBeenCalled();
+  });
+
+  it("previews a reviewer-selected related path only for a delete/edit conflict", async () => {
+    setupMocks(async () => true);
+    routeMocks.preview.mockResolvedValue({ path, stale: false, target: { hash: null, content: null },
+      worker: { hash: sourceHash, content: "edited old path\n" },
+      paired: { path: "src/moved.ts", target: { hash: targetHash, content: "base\n" }, worker: { hash: null, content: null } } });
+    const agent = createAgent({ execution: "passed", unpairedDeleteEdit: true });
+    const response = await invokePreview(agent.instance, { pairedPath: "src/moved.ts" });
+    expect(response.status).toBe(200);
+    expect(routeMocks.preview).toHaveBeenCalledWith(expect.objectContaining({ path, pairedPath: "src/moved.ts" }), expect.any(Function), expect.any(Object));
+  });
+
+  it("publishes a reviewer-selected rename/edit pair only as one checked resolution", async () => {
+    setupMocks(async () => true);
+    routeMocks.preview.mockImplementation(async (input: { path: string }) => input.path === path
+      ? { path, stale: false, target: { hash: null, content: null }, worker: { hash: sourceHash, content: "edited old path\n" } }
+      : { path: "src/moved.ts", stale: false, target: { hash: targetHash, content: "base\n" }, worker: { hash: null, content: null } });
+    const agent = createAgent({ execution: "passed", unpairedDeleteEdit: true });
+    configurePublish(agent);
+    const changes = [
+      { path, expectedTargetHash: null, expectedSourceHash: sourceHash, content: null },
+      { path: "src/moved.ts", expectedTargetHash: targetHash, expectedSourceHash: null, content: "reviewed edit at the selected path\n" },
+    ];
+    const response = await invoke(agent.instance, { expectedTargetHash: null, expectedSourceHash: sourceHash, content: null,
+      idempotencyKey: "manual-selected-rename-1", changes });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ resolution: { path, paths: [path, "src/moved.ts"], status: "published" } });
+    expect(routeMocks.publish).toHaveBeenCalledWith(expect.objectContaining({ path, content: null, changes }), expect.any(Function));
+    expect(agent.getCanonicalPublicationCount()).toBe(1);
+  });
+
+  it("rejects reviewer-selected path pairing for a conflict without delete/edit semantics", async () => {
+    setupMocks(async () => true);
+    const agent = createAgent({ execution: "passed" });
+    const response = await invokePreview(agent.instance, { pairedPath: "src/moved.ts" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "workspace_manual_preview_pair_not_allowed" });
+    expect(routeMocks.preview).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a conflict report contains a malformed paired path", async () => {
+    setupMocks(async () => true);
+    const previewAgent = createAgent({ execution: "passed", unpairedDeleteEdit: true, invalidReportedPair: true });
+    const preview = await invokePreview(previewAgent.instance, { pairedPath: "src/moved.ts" });
+    expect(preview.status).toBe(409);
+    expect(await preview.json()).toMatchObject({ error_code: "workspace_manual_preview_pair_not_allowed" });
+    expect(routeMocks.preview).not.toHaveBeenCalled();
+
+    const publishAgent = createAgent({ execution: "passed", unpairedDeleteEdit: true, invalidReportedPair: true });
+    configurePublish(publishAgent);
+    const response = await invoke(publishAgent.instance, { expectedTargetHash: null, expectedSourceHash: sourceHash, content: null,
+      changes: [
+        { path, expectedTargetHash: null, expectedSourceHash: sourceHash, content: null },
+        { path: "src/moved.ts", expectedTargetHash: targetHash, expectedSourceHash: null, content: "reviewed edit\n" },
+      ] });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "workspace_manual_resolution_conflict_mismatch" });
+    expect(routeMocks.publish).not.toHaveBeenCalled();
   });
 
 });
