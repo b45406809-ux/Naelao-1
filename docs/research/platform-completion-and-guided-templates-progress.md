@@ -1,36 +1,37 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host; P06 transcript simulation; pushed)
+## Latest checkpoint — 2026-11-15 (S5/MS08d Modal host; P06 durable consent ticket; pushed)
 
-Joint mission code `aa0f6b7b` (Modal host), `3b1059a4` (BYO Telnyx concurrency cap), `ed426ee1` (V1
-extension stream SDK contract) and `f2d1f28d` (transcript simulator) plus record commits `20171141`,
-`2f365d13`, `9c4e8851` are pushed to `origin/Mcbt5s-Backup-2`. Fetch-before-push preserved each remote
-ancestor. The owner-confirmed Shell phone panel can send a clearly synthetic final transcript to the
-pinned extension in the SpaceDO simulator. The simulator validates the provider-neutral speak/listen/
-configured-handoff/end response and creates no carrier activity or call/session record. The public
-Telnyx extension admission path rejects calls beyond five per binding, atomically, and retains capacity
-for indeterminate calls.
+Joint mission code `aa0f6b7b`, call cap `3b1059a4`, stream contract `ed426ee1`, Shell/SpaceDO
+transcript simulator `f2d1f28d` and migration-backed session/ticket primitive `e4ebd7bd` are pushed to
+`origin/Mcbt5s-Backup-2`; records `20171141`, `2f365d13`, `9c4e8851`, `e3b9072f` are pushed too.
+Fetch-before-push preserved the remote ancestor. Migration `0257` stores exact tenant/Space/Project,
+Telnyx BYO binding/call, extension installation, handler digest, published settings revision, consent
+state and expiry. Grant issues a random 60-second one-time media ticket stored only by hash. Claim
+atomically verifies the active line/call/handler and immutable pin; replay, stale handler, expiry,
+wrong scope and unconsented session fail. No live caller uses these functions yet.
 
-Local evidence: phone route/DO/Shell tests **52/52**, SDK stream tests **6/6**, Agents and Shell
-typechecks, Telnyx call suite **6/6**, Modal host **8/8**, Agents host client **3/3**, Modal/Agents
-builds, `git diff --check`. Docker build was blocked at Corepack by `SELF_SIGNED_CERT_IN_CHAIN`; no
-image or CI container result. No browser, provider, deployment or live acceptance. Modal remains disabled
-pending Beta/private-gRPC acceptance, supported usage receipt and approved pricing. Preserve
-`infra/scripts/__pycache__/`.
+Local evidence: ticket/session migration tests **3/3**; phone route/SpaceDO/Shell tests **52/52**; SDK
+stream tests **6/6**; Telnyx call tests **6/6**; Agents and Shell typechecks; release/deployment
+manifest validation; Modal host **8/8**, Agents client **3/3**, build/typechecks and `git diff --check`.
+Docker build stopped on Corepack TLS (`SELF_SIGNED_CERT_IN_CHAIN`); no image/CI container result. No
+browser, provider, deployment or live acceptance. Modal remains disabled pending Beta/private-gRPC,
+usage receipts and approved pricing. Preserve `infra/scripts/__pycache__/`.
 
-P06 remains incomplete: no public Telnyx media caller/session, caller consent, STT/TTS, speech budget,
-interruption or customer live operations. SDK simulation is not live streaming. Existing PCMU bridge is
-bound to owner sessions; do not reuse it. The signed bounded-phone-menu dashboard/settings and owner
-operations view are already implemented. First-party package signing/catalog/provisioning, complete
-cost/quality evidence and carrier acceptance remain partial. These implementation gaps are not blocked
-on ordinary provider credentials.
+P06 remains partial. The Shell phone panel supports explicitly synthetic final-transcript testing and
+the extension voice-stream contract is SDK-only; migration-backed consent/ticket storage exists but is
+not wired to webhooks or media. No STT/TTS audio adapter, speech budget, interruption, public stream or
+complete operations. Existing media bridge is exclusively OwnerVoice. These are code/runtime tasks,
+not credential blockers. Signed keypad microapp/dashboard, settings pinning, call status and call cap
+are already implemented. Publisher identity/signing/catalog/provisioning and live cost/quality/carrier
+evidence remain open.
 
-Exact next action: add migration-backed durable extension stream sessions and a one-time media ticket
-bound to tenant/Space/Project, binding/call ID, pinned installation/digest/settings revision, caller
-consent and deadline. Add a separate media route that verifies and consumes the ticket once, with
-stale-pin, duplicate, expiry and cross-tenant checks. Keep it disconnected from OwnerVoice and do not
-start Telnyx media until host-owned STT/TTS budget, interruption, timeout and cleanup are implemented.
-Keep streaming disabled and proceed to other uncoded S2–S9/U01–U12/P01–P24 gaps.
+Exact next action: build a default-off public Telnyx extension consent caller around migration `0257`.
+Preserve DTMF when disabled. When the global gate and owner speech policy allow it, create the exact
+pinned pending session, ask caller consent by keypad, persist deny/grant, and issue/claim a one-use ticket
+only for consented calls. Add an extension-only WebSocket route that validates the Telnyx call identity
+and exact pinned handler/settings without using OwnerVoice. Keep streaming_start disabled until host
+speech budgets, STT/TTS, interruption, timeout and cleanup exist; continue other uncoded requirements.
 ## Previous checkpoint — 2026-11-14 (P05 guided setup lifecycle; pushed)
 
 Code `c0daaf86a2c8c05b2e211eccc360367c3c9adf44` is pushed to `origin/Mcbt5s-Backup-2`. Space Template
