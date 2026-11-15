@@ -379,9 +379,9 @@ app.post("/internal/product-user-checkout", async (c) => {
   return c.json({ checkout_url: result.url, plan, provider: "lemon_squeezy" });
 });
 
-// Product-account subscription state and recent dunning provider outcomes. Spaces derives the
-// product/end-user pair from verified session claims and calls this route with tenant HMAC;
-// this route never accepts browser credentials or returns provider IDs, recipients, or receipts.
+// Product-account subscription state, dunning queue handoff, and recent provider outcomes. Spaces
+// derives the product/end-user pair from verified session claims and calls this route with tenant
+// HMAC; this route never accepts browser credentials or returns provider IDs, recipients, or receipts.
 app.use("/internal/product-user-billing-status", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
 app.post("/internal/product-user-billing-status", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
@@ -401,6 +401,7 @@ app.post("/internal/product-user-billing-status", async (c) => {
   if (!account) return c.json({ error_code: "product_account_not_found" }, 404);
 
   let notifications: Array<{ provider_outcome: string; attempt_count: number; last_attempt_at: string; accepted_at: string | null }> = [];
+  let dispatches: Array<{ status: "pending" | "leased" | "sent"; attempt_count: number; updated_at: string; sent_at: string | null }> = [];
   if (account.provider && account.provider_subscription_id) {
     const result = await c.env.PLATFORM_DB.prepare(`
       SELECT d.provider_outcome,d.attempt_count,d.last_attempt_at,d.accepted_at
@@ -412,10 +413,23 @@ app.post("/internal/product-user-billing-status", async (c) => {
     `).bind(tenantId, body.product_id, body.end_user_id, account.provider, account.provider_subscription_id)
       .all<{ provider_outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous"; attempt_count: number; last_attempt_at: string; accepted_at: string | null }>();
     notifications = result.results ?? [];
+
+    const dispatchResult = await c.env.PLATFORM_DB.prepare(`
+      SELECT o.status,o.attempt_count,o.updated_at,o.sent_at
+      FROM billing_dunning_outbox o
+      WHERE o.tenant_id=? AND o.provider=? AND o.subscription_id=?
+        AND CASE WHEN json_valid(o.payload_json) THEN json_extract(o.payload_json,'$.scope') ELSE '' END='product_user_subscription'
+        AND CASE WHEN json_valid(o.payload_json) THEN json_extract(o.payload_json,'$.productId') ELSE '' END=?
+        AND CASE WHEN json_valid(o.payload_json) THEN json_extract(o.payload_json,'$.endUserId') ELSE '' END=?
+      ORDER BY o.created_at DESC,o.workflow_id DESC LIMIT 10
+    `).bind(tenantId, account.provider, account.provider_subscription_id, body.product_id, body.end_user_id)
+      .all<{ status: "pending" | "leased" | "sent"; attempt_count: number; updated_at: string; sent_at: string | null }>();
+    dispatches = dispatchResult.results ?? [];
   }
   return c.json({
     subscription: account.status ? { plan_tier: account.plan_tier, status: account.status, current_period_end: account.current_period_end } : null,
     notifications,
+    dispatches,
   }, 200, { "cache-control": "private, no-store" });
 });
 

@@ -357,6 +357,12 @@ export async function getMe(spaceId: string, session: SessionCredentials): Promi
 
 export interface ProductUserBillingStatus {
   subscription: { plan_tier: string | null; status: string; current_period_end: string | null } | null;
+  dispatches: Array<{
+    status: "pending" | "leased" | "sent";
+    attempt_count: number;
+    updated_at: string;
+    sent_at: string | null;
+  }>;
   notifications: Array<{
     provider_outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous";
     attempt_count: number;

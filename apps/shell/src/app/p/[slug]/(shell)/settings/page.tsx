@@ -898,9 +898,16 @@ function PersonalTab({
               <>
                 <div className="settings-row-sub">Plan: {customerBilling.subscription.plan_tier ?? "unknown"} · Status: {customerBilling.subscription.status}</div>
                 {customerBilling.subscription.current_period_end && <div className="settings-row-sub">Current period ends {new Date(customerBilling.subscription.current_period_end).toLocaleDateString()}</div>}
-                {customerBilling.notifications.length > 0 && (
+                {(customerBilling.dispatches.length > 0 || customerBilling.notifications.length > 0) && (
                   <div style={{ display: "grid", gap: 5, marginTop: 8 }}>
-                    <div className="settings-row-sub">Recent payment email requests (provider acceptance does not confirm inbox delivery):</div>
+                    <div className="settings-row-sub">Payment notice progress. Queue handoff, provider acceptance, and inbox delivery are separate steps:</div>
+                    {customerBilling.dispatches.map((item, index) => (
+                      <div className="settings-row-sub" key={`dispatch:${item.updated_at}:${index}`}>
+                        {item.status === "pending" ? "Payment notice is waiting in the dispatch queue" : item.status === "leased" ? "Payment notice dispatch is in progress" : "Payment notice was handed to the delivery queue"}
+                        {item.attempt_count > 1 ? ` · ${item.attempt_count} dispatch attempts` : ""}
+                        {` · ${new Date(item.updated_at).toLocaleString()}`}
+                      </div>
+                    ))}
                     {customerBilling.notifications.map((item, index) => (
                       <div className="settings-row-sub" key={`${item.last_attempt_at}:${index}`}>
                         {item.provider_outcome === "provider_accepted" ? "Email provider accepted" : item.provider_outcome === "provider_rejected" ? "Email provider rejected" : "Email request outcome is unclear"}

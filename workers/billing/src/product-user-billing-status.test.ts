@@ -15,7 +15,9 @@ function database(accountFound = true) {
               : null;
           },
           async all() {
-            return { results: [{ provider_outcome: "provider_accepted", attempt_count: 2, last_attempt_at: "2026-11-14T00:00:00.000Z", accepted_at: "2026-11-14T00:00:00.000Z" }] };
+            return sql.includes("FROM billing_dunning_outbox")
+              ? { results: [{ status: "pending", attempt_count: 2, updated_at: "2026-11-14T00:00:00.000Z", sent_at: null }] }
+              : { results: [{ provider_outcome: "provider_accepted", attempt_count: 2, last_attempt_at: "2026-11-14T00:00:00.000Z", accepted_at: "2026-11-14T00:00:00.000Z" }] };
           },
         };
       } };
@@ -41,7 +43,7 @@ describe("Product-user billing status scope", () => {
     expect(context.queries).toHaveLength(0);
   });
 
-  it("returns only the requested Product user's subscription and provider outcome, without identifiers or receipts", async () => {
+  it("returns only the requested Product user's subscription, queue handoff, and provider outcome", async () => {
     const context = database();
     const response = await request(context.db, true);
     expect(response.status).toBe(200);
@@ -50,12 +52,16 @@ describe("Product-user billing status scope", () => {
     expect(payload).toEqual({
       subscription: { plan_tier: "growth", status: "past_due", current_period_end: "2026-12-01T00:00:00.000Z" },
       notifications: [{ provider_outcome: "provider_accepted", attempt_count: 2, last_attempt_at: "2026-11-14T00:00:00.000Z", accepted_at: "2026-11-14T00:00:00.000Z" }],
+      dispatches: [{ status: "pending", attempt_count: 2, updated_at: "2026-11-14T00:00:00.000Z", sent_at: null }],
     });
     expect(JSON.stringify(payload)).not.toContain("private-subscription-id");
     expect(JSON.stringify(payload)).not.toContain("provider_receipt_id");
     expect(context.queries[0]?.args).toEqual(["product-1", "org-1", "user-1"]);
     expect(context.queries[1]?.args).toEqual(["org-1", "product-1", "user-1", "lemon_squeezy", "private-subscription-id"]);
     expect(context.queries[1]?.sql).toContain("d.subscription_scope='product_user_subscription'");
+    expect(context.queries[2]?.args).toEqual(["org-1", "lemon_squeezy", "private-subscription-id", "product-1", "user-1"]);
+    expect(context.queries[2]?.sql).toContain("json_valid(o.payload_json)");
+    expect(context.queries[2]?.sql).toContain("o.tenant_id=? AND o.provider=? AND o.subscription_id=?");
   });
 
   it("rejects malformed identity before querying", async () => {

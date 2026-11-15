@@ -21,7 +21,7 @@ function harness() {
   const calls: Request[] = [];
   const billing = { fetch: vi.fn(async (request: Request) => {
     calls.push(request);
-    return Response.json({ subscription: { plan_tier: "growth", status: "past_due", current_period_end: null }, notifications: [] });
+    return Response.json({ subscription: { plan_tier: "growth", status: "past_due", current_period_end: null }, notifications: [], dispatches: [] });
   }) };
   return { sql, calls, billing, PLATFORM_DB: db, PLATFORM_SECRET: secret, BILLING_WORKER: billing };
 }
@@ -49,7 +49,7 @@ describe("Product-user billing status handoff", () => {
     const env = harness();
     const response = await get(env, "product_end_user", "verified-user");
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ subscription: { status: "past_due" } });
+    expect(await response.json()).toMatchObject({ subscription: { status: "past_due" }, dispatches: [] });
     expect(env.sql.map(item => item.args)).toEqual([["product-1", "tenant-1"], ["product-1", "verified-user"]]);
     expect(env.calls).toHaveLength(1);
     const billingRequest = env.calls[0]!;
