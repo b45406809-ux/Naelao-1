@@ -1,6 +1,12 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-15 (P06 voice interruption and PW06 telemetry; code 8233788b pushed)
+## Latest cross-plan checkpoint — 2026-11-15 (PW06 validation outcome telemetry; code 276aa6a9 pushed)
+
+Automatic worker integration emits privacy-safe fixed outcome and validation-status categories plus bounded elapsed time/count. Analytics writes occur after durable receipt persistence and cannot change the checked integration result. Local worker integration validation **11/11**, Agents typecheck and `git diff --check`; tests verify exact dimensions, duration bounds and Analytics/callback failure isolation. Code `276aa6a908e7e6521b8adccde56e52736082ac8c` is pushed and remote-verified. Voice interruption changes are pushed at `8233788bc1656bac2ca9cf914e91da198d8f3780` and `75fc1b877fd99481e0bee67d22780201699e6d26`; deployed/provider acceptance remains untested.
+
+Caller trace found a concrete next PW06 gap: `hooks.terminateSubAgent` records parent state `terminated`, but an in-flight `spawnSubAgentBatch` can later merge the worker branch and overwrite that state with `done`. Exact next action: gate worker validation/publication on the durable worker state, preserve terminal cancellation when the child response arrives, and test late success/failure and cancel-during-validation. Also continue remaining S3–S9/U01–U12 and P01–P24 gaps. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-15 (P06 voice interruption and PW06 telemetry; code 8233788b pushed)
 
 PW06's Coordinator merge telemetry now records only fixed event/outcome/conflict categories and bounded counts; Analytics failures do not affect checked publication. P06 owner-call TTS forwards cancellation to the provider and cancels in-flight reads. The BYO Telnyx extension voice runtime now discards buffered PCM after caller barge-in and treats the resulting stream abort as intentional, keeping the call alive.
 

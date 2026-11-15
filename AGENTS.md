@@ -9,7 +9,17 @@ Both plans are active and jointly govern this mission:
 
 The requirements from `docs/research/planner-worker-isolation-and-conflict-resolution-plan.md` at commit `45575a395df9571eb075f0a479c65144e767be7c` are incorporated into platform plan section 12 and managed plan section 20; PW01–PW06 track the reconciled requirements. The latest fetched source branch ref is `45575a395df9571eb075f0a479c65144e767be7c`; no planning branch was checked out or merged. Reuse the existing requirement IDs and progress ledgers when plans overlap. Do not restart completed work or claim completion from historical notes alone. After compaction, interruption, or a new session, read both active plans, both progress records, and this runbook; inspect the actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-15 (P06 voice interruption and PW06 bounded merge telemetry; code 8233788b pushed)
+## Latest checkpoint — 2026-11-15 (PW06 worker validation telemetry; code 276aa6a9 pushed)
+
+Automatic integrated worker validation now emits only the fixed outcome/status categories `published|blocked|conflicted|uncertain` and `passed|failed|uncertain|blocked`, a bounded duration and a count. No task, tenant, Space, Project, actor, branch, path, content or error string enters these Analytics dimensions. Metrics run after durable receipt save; both the writer and host callback swallow telemetry failures.
+
+Local evidence: worker integration validation **11/11**, Agents typecheck and `git diff --check`; the test verifies exact dimensions, bounded duration, best-effort Analytics behavior and that a throwing metric callback does not prevent the durable successful receipt or checked publication. Code `276aa6a908e7e6521b8adccde56e52736082ac8c` is pushed and remote-verified on `origin/Mcbt5s-Backup-2`. Prior pushed voice fixes remain at `8233788bc1656bac2ca9cf914e91da198d8f3780` and `75fc1b877fd99481e0bee67d22780201699e6d26`. All checks are local; no deployed workspace/runtime, carrier, provider or billing acceptance. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+PW06 remains PARTIAL for cancellation/revocation lifecycle, currency/compute reservation and settlement, real runtime isolation and deployed concurrency/recovery acceptance. P06 remains PARTIAL for signed distribution, managed provisioning and live provider/carrier evidence. U05/U06 are unsupported runtime-contract gates, not credentials-only blockers.
+
+Exact next action: close the observed PW06 cancellation race in delegated workers: after the parent records termination, a late child response can still enter `mergeWorkerWorkspace()` and the completion UPDATE can overwrite `terminated` with `done`. Gate automatic validation/publication on the durable non-terminated worker state, preserve terminal cancellation in completion handling, and add regression coverage for late success/failure plus cancellation during validation. Continue other independent plan gaps afterward; fetch before every push and never enable rollouts.
+
+## Previous checkpoint — 2026-11-15 (P06 voice interruption and PW06 bounded merge telemetry; code 8233788b pushed)
 
 PW06 Coordinator merge telemetry uses fixed event/outcome/conflict categories, bounded counts and best-effort Analytics writes; tests verify dimensions and that Analytics failure cannot change merge results. P06 owner-call TTS forwards abort through provider startup and cancels an in-flight audio read. The Telnyx extension stream treats barge-in as an intentional cancellation and discards buffered PCM after `clear`, without ending the call.
 
