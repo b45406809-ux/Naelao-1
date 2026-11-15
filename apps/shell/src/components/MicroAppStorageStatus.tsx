@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { callSpaceSharedExtensionApi, type SessionCredentials } from "@/lib/api";
+import { callProjectExtensionStorageUsage, callSpaceSharedExtensionApi, type ContainerInstallation, type SessionCredentials } from "@/lib/api";
 
 export interface MicroAppStorageUsage {
   appId: string;
@@ -10,6 +10,24 @@ export interface MicroAppStorageUsage {
   limitBytes: number;
   utilizationPercent: number;
   measuredAt: string;
+}
+
+export function projectGadgetStorageApps(installation: ContainerInstallation, projectId: string): Array<{ appId: string; name: string }> {
+  const { instance, manifest } = installation;
+  const bundle = manifest.bundle;
+  if (instance.project_id !== projectId || instance.status !== "active" || !instance.instance_id
+    || manifest.id !== instance.extension_id || bundle?.id !== instance.extension_id
+    || !instance.release_version || bundle.version !== instance.release_version) return [];
+  const instanceKey = instance.instance_key ?? "default";
+  if (instanceKey !== "default" && !/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return [];
+  const prefix = instanceKey === "default" ? "" : instanceKey + "_";
+  return (bundle.primitives ?? []).flatMap(primitive => {
+    if (primitive.kind !== "gadget" || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(primitive.scope ?? "")
+      || typeof primitive.id !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(primitive.id)) return [];
+    const appId = prefix + primitive.id;
+    if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return [];
+    return [{ appId, name: typeof primitive.name === "string" && primitive.name.trim() ? primitive.name.slice(0, 100) : primitive.id }];
+  });
 }
 
 const EXPECTED_LIMITS: Record<1 | 2 | 3, number> = {
@@ -39,21 +57,26 @@ function formatMiB(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
 }
 
-export function MicroAppStorageStatus({ spaceId, appId, session }: { spaceId: string; appId: string; session: SessionCredentials }) {
+export function MicroAppStorageStatus({ spaceId, appId, session, projectId, name }: {
+  spaceId: string; appId: string; session: SessionCredentials; projectId?: string; name?: string;
+}) {
   const [usage, setUsage] = React.useState<MicroAppStorageUsage | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     let current = true;
     setUsage(null); setError(null);
-    void callSpaceSharedExtensionApi(spaceId, appId, session, { method: "GET", path: "/api/storage" })
+    const request = projectId
+      ? callProjectExtensionStorageUsage(spaceId, projectId, appId, session)
+      : callSpaceSharedExtensionApi(spaceId, appId, session, { method: "GET", path: "/api/storage" });
+    void request
       .then(result => { if (current) setUsage(parseMicroAppStorageUsage(result, appId)); })
       .catch(() => { if (current) setError("Storage usage is unavailable. Retry by reopening this extension."); });
     return () => { current = false; };
-  }, [appId, session, spaceId]);
+  }, [appId, projectId, session, spaceId]);
 
   return <section aria-label="MicroApp storage" style={{ border: "1px solid var(--border, #ddd)", borderRadius: 8, padding: 12, marginBottom: 16 }}>
-    <h2 style={{ margin: "0 0 6px", fontSize: 16 }}>App storage</h2>
+    <h2 style={{ margin: "0 0 6px", fontSize: 16 }}>App storage{name ? " · " + name : ""}</h2>
     {error ? <p role="alert">{error}</p> : usage === null ? <p role="status">Loading storage usage…</p> : <>
       <p role="status">Tier {usage.tier} · {formatMiB(usage.allocatedBytes)} of {formatMiB(usage.limitBytes)} logical storage used</p>
       <progress aria-label="App storage capacity" max={100} value={Math.min(100, usage.utilizationPercent)} />

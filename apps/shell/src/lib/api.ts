@@ -1668,7 +1668,7 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
 export interface ContainerInstallation {
   instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string; release_version?: string | null;
     publisher_key_id?: string | null; publisher_trusted?: boolean; publisher_revoked_at?: string | null };
-  manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; settingsSchema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; containers?: Array<{ id?: string }>; bundle?: { version?: string; primitives?: Array<{ kind?: string; id?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }>; businessActions?: Array<{ id: string }> }> } };
+  manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; settingsSchema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; containers?: Array<{ id?: string }>; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; name?: string; scope?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }>; businessActions?: Array<{ id: string }> }> } };
 }
 export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string, includeDisabled = false) {
   const params = new URLSearchParams();
@@ -2067,6 +2067,11 @@ export function callSpaceSharedExtensionApi(spaceId: string, appId: string, sess
   return apiFetch<unknown>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}${request.path}${query.size ? `?${query}` : ""}`, {
     method: request.method, session, ...(request.body !== undefined ? { body: JSON.stringify(request.body) } : {}), cache: "no-store",
   });
+}
+export function callProjectExtensionStorageUsage(spaceId: string, projectId: string, appId: string, session: SessionCredentials) {
+  const path = "/v1/spaces/" + encodeURIComponent(spaceId) + "/projects/" + encodeURIComponent(projectId)
+    + "/apps/" + encodeURIComponent(appId) + "/api/storage";
+  return apiFetch<unknown>(path, { session, cache: "no-store" });
 }
 export function callSpaceSharedExtensionBusinessAction(spaceId: string, appId: string, session: SessionCredentials,
   request: { actionId?: string; input?: unknown }) {

@@ -480,6 +480,50 @@ describe("gadget MCP host adapter", () => {
     expect(await appPage.json()).toEqual({ path: "/app" });
   });
 
+  it("limits Project Gadget storage status to admins and the exact active installed app", async () => {
+    const idFromName = vi.fn((name: string) => name as never);
+    const actorFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname }));
+    const spaceFetch = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/projects/p") return Response.json({ id: "p" });
+      if (url.pathname === "/projects/foreign") return new Response(null, { status: 404 });
+      if (url.pathname === "/project-extension-runtime") {
+        if (url.searchParams.get("app_id") === "inventory") return Response.json({ managed: true, active: true,
+          releaseValid: true, installationId: "install-inventory", releaseVersion: "1.0.0" });
+        return Response.json({ managed: false, active: false, releaseValid: false });
+      }
+      if (url.pathname === "/extension-runtime-work") return Response.json({ acquired: true });
+      return new Response(null, { status: 404 });
+    });
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...args: unknown[]) => ({ first: async () =>
+        query.includes("space_members") ? { 1: 1 } : args[0] === "s" && args[1] === "t" ? { 1: 1 } : null }) }) },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: spaceFetch }) },
+      MICRO_APP_DO: { idFromName, get: () => ({ fetch: actorFetch }) } } as never;
+
+    const member = await app.request("/spaces/s/projects/p/apps/inventory/api/storage", {
+      headers: await auth("t", { "x-naelao-user-id": "member-a", "x-naelao-role": "member" }),
+    }, env);
+    expect(member.status).toBe(403);
+    const allowed = await app.request("/spaces/s/projects/p/apps/inventory/api/storage", {
+      headers: await auth("t", { "x-naelao-role": "admin" }),
+    }, env);
+    expect(await allowed.json()).toEqual({ path: "/api/storage" });
+    expect(idFromName).toHaveBeenCalledWith("gadget:inventory:project:p");
+    expect(actorFetch).toHaveBeenCalledOnce();
+
+    const foreignApp = await app.request("/spaces/s/projects/p/apps/not_installed/api/storage", {
+      headers: await auth("t", { "x-naelao-role": "admin" }),
+    }, env);
+    expect(foreignApp.status).toBe(404);
+    const foreignProject = await app.request("/spaces/s/projects/foreign/apps/inventory/api/storage", {
+      headers: await auth("t", { "x-naelao-role": "admin" }),
+    }, env);
+    expect(foreignProject.status).toBe(404);
+    expect(actorFetch).toHaveBeenCalledOnce();
+  });
+
   it("allows a project member to publish bounded collaboration events but never grants Gadget writes", async () => {
     const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname, body: await request.json() }));
     const app = testApp(); registerGadgetMcpRoutes(app as never);

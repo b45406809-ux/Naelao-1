@@ -503,7 +503,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!project.ok) return c.json({ error_code: project.status === 404 ? "not_found" : "forbidden" }, project.status === 404 ? 404 : 403);
     return null;
   };
-  const forwardProject = async (c: Context<{ Bindings: Env }>, path: string, method = c.req.method, override?: ArrayBuffer, memberWrite = false) => {
+  const forwardProject = async (c: Context<{ Bindings: Env }>, path: string, method = c.req.method, override?: ArrayBuffer, memberWrite = false, requireManaged = false) => {
     const blocked = await projectAccess(c, method !== "GET" && !memberWrite);
     if (blocked) return blocked;
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
@@ -514,6 +514,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!runtime.ok) return c.json({ error_code: "extension_runtime_status_unavailable" }, 503);
     const runtimeState = await runtime.json<{ managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string; installationId?: string; releaseVersion?: string }>()
       .catch((): { managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string; installationId?: string; releaseVersion?: string } => ({}));
+    if (requireManaged && runtimeState.managed !== true) return c.json({ error_code: "project_extension_unmanaged" }, 404);
     if (runtimeState.managed && !runtimeState.active) return c.json({ error_code: "project_extension_inactive" }, 404);
     if (runtimeState.managed && !runtimeState.releaseValid) return c.json({ error_code: "project_extension_release_invalid" }, 503);
     if (runtimeState.managed && runtimeState.publisherKeyId) {
@@ -565,7 +566,10 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   });
   app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/app", c => forwardProject(c, "/app"));
   app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, `/api/data${new URL(c.req.url).search}`));
-  app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/api/storage", c => forwardProject(c, "/api/storage"));
+  app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/api/storage", c => {
+    if (!["owner", "admin"].includes(c.req.header("x-naelao-role") ?? "")) return c.json({ error_code: "forbidden" }, 403);
+    return forwardProject(c, "/api/storage", "GET", undefined, false, true);
+  });
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, "/api/data"));
   app.delete("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, `/api/data${new URL(c.req.url).search}`, "DELETE"));
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/mcp", c => forwardProject(c, "/mcp"));
