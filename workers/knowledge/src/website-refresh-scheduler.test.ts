@@ -19,20 +19,26 @@ function fixture(options: { claimChanges?: number; failureChanges?: number; conn
   const sqlCalls: Array<{ sql: string; args: unknown[] }> = [];
   const db = {
     prepare: vi.fn((sql: string) => ({
-      bind: (...args: unknown[]) => ({
-        all: async () => {
-          sqlCalls.push({ sql, args });
-          return { results: [{ ...candidate, connection_status: options.connectionStatus ?? candidate.connection_status }] };
-        },
-        run: async () => {
-          sqlCalls.push({ sql, args });
-          if (sql.includes("SET lease_token=?")) return { meta: { changes: options.claimChanges ?? 1 } };
-          if (sql.includes("SET enabled=0,generation=generation+1")) return { meta: { changes: 1 } };
-          return { meta: { changes: options.failureChanges ?? 1 } };
-        },
-      }),
+      bind: (...args: unknown[]) => {
+        sqlCalls.push({ sql, args });
+        return {
+          sql,
+          all: async () => {
+            if (sql.includes("kb_website_refresh_usage_outbox")) return { results: [] };
+            return { results: [{ ...candidate, connection_status: options.connectionStatus ?? candidate.connection_status }] };
+          },
+          run: async () => {
+            if (sql.includes("SET lease_token=?")) return { meta: { changes: options.claimChanges ?? 1 } };
+            if (sql.includes("SET enabled=0,generation=generation+1")) return { meta: { changes: 1 } };
+            return { meta: { changes: options.failureChanges ?? 1 } };
+          },
+        };
+      },
     })),
-    batch: vi.fn(async () => [{ meta: { changes: 1 } }, { meta: { changes: 1 } }, { meta: { changes: 1 } }]),
+    batch: vi.fn(async (statements: Array<{ sql: string }>) => statements.map((statement) => ({
+      meta: { changes: statement.sql.includes("UPDATE kb_source_refresh_schedules SET lease_token=?")
+        ? options.claimChanges ?? 1 : 1 },
+    }))),
   };
   return { env: { PLATFORM_DB: db, PLATFORM_SECRET: "secret", KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED: "true" } as never, db, sqlCalls };
 }
@@ -45,7 +51,7 @@ describe("scheduled website refresh", () => {
     const result = await runScheduledWebsiteRefreshes(f.env, fetchInternal as never, {} as ExecutionContext, now);
     expect(result.selected).toBe(0);
     expect(fetchInternal).not.toHaveBeenCalled();
-    expect(f.sqlCalls[0]?.sql).toContain("last_error_code='schedule_rollout_disabled'");
+    expect(f.sqlCalls.some((call) => call.sql.includes("last_error_code='schedule_rollout_disabled'"))).toBe(true);
   });
 
   it("catches up a missed daily tick once and binds publication to its lease", async () => {
@@ -59,9 +65,10 @@ describe("scheduled website refresh", () => {
     });
     const result = await runScheduledWebsiteRefreshes(f.env, fetchInternal as never, {} as ExecutionContext, now);
     expect(result).toMatchObject({ selected: 1, claimed: 1, completed: 1, failed: 0 });
-    expect(f.sqlCalls[0]?.sql).toContain("rs.next_run_at<=?");
-    expect(f.sqlCalls[0]?.args).toEqual([now.toISOString(), now.toISOString()]);
+    const dueQuery = f.sqlCalls.find((call) => call.sql.includes("rs.next_run_at<=?"));
+    expect(dueQuery?.args).toEqual([now.toISOString(), now.toISOString()]);
     expect(requests).toHaveLength(2);
+    expect(f.sqlCalls.some((call) => call.sql.includes("kb_website_refresh_usage_outbox"))).toBe(true);
     const payload = await requests[1]!.clone().json() as { scheduled_refresh: { schedule_id: string; generation: number; lease_token: string } };
     expect(payload.scheduled_refresh).toMatchObject({ schedule_id: "schedule-1", generation: 3, lease_token: expect.any(String) });
     expect(payload.scheduled_refresh.lease_token.length).toBeGreaterThan(20);

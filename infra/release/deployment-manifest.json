@@ -7,7 +7,7 @@
   },
   "schema": {
     "manifest": "infra/release/schema-manifest.json",
-    "requiredSchemaVersion": "0275_website_refresh_schedule_opt_in",
+    "requiredSchemaVersion": "0276_knowledge_website_refresh_usage_outbox",
     "migrationExecution": "infra/scripts/release_migrations.py",
     "compatibilityPolicy": "expand_contract_required",
     "rollbackPolicy": "never reverse an applied schema migration; deploy compatible code or use a reviewed forward repair"

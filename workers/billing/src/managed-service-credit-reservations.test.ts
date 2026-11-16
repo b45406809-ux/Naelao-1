@@ -90,6 +90,37 @@ function allowAgentMailPayer(db: ReturnType<typeof createFakeD1>["db"], maxCredi
   addAgentMailMandate(db,maxCredits,autoRenew);
 }
 
+describe("unpriced scheduled Knowledge refresh usage receipts", () => {
+  it("records one idempotent invocation without enqueueing subscription metering", async () => {
+    const h = harness();
+    const body = { schema_version: 2, event_type: "knowledge_website_refresh_invocation", quantity: 1,
+      unit: "invocations", space_id: "space-a", project_id: "project-a", run_id: "scheduled_" + "a".repeat(48),
+      idempotency_key: "knowledge-website-refresh:scheduled_" + "a".repeat(48) };
+    const first = await h.post("/billing/usage", body);
+    const retry = await h.post("/billing/usage", body);
+    expect(first.status).toBe(201);
+    expect(retry.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({ recorded: true });
+    await expect(retry.json()).resolves.toMatchObject({ recorded: false, deduplicated: true });
+    expect(h.db.db.prepare(`SELECT COUNT(*) AS count FROM usage_events WHERE event_type='knowledge_website_refresh_invocation'`).get())
+      .toEqual({ count: 1 });
+    expect(h.db.db.prepare(`SELECT payer_kind,cost_credits,rate_card_version,decision FROM usage_events
+      WHERE event_type='knowledge_website_refresh_invocation'`).get())
+      .toEqual({ payer_kind: null, cost_credits: null, rate_card_version: null, decision: null });
+    expect(h.queueState.messages).toEqual([]);
+
+    const token = await mintInternalToken(secret, "org-a");
+    const summaryResponse = await worker.fetch(new Request("https://billing.test/internal/usage/project-summary?space_id=space-a&project_id=project-a&days=30", {
+      headers: { "x-naelao-tenant-id": "org-a", "x-naelao-internal-token": token },
+    }), h.env as never, {} as never);
+    const summary = await summaryResponse.json() as { event_count: number; unpriced_event_count: number;
+      breakdown: Array<{ event_type: string; payer_kind: string; cost_credits: number | null; unpriced_event_count: number }> };
+    expect(summary).toMatchObject({ event_count: 1, unpriced_event_count: 1,
+      breakdown: [{ event_type: "knowledge_website_refresh_invocation", payer_kind: "unassigned",
+        cost_credits: null, unpriced_event_count: 1 }] });
+  });
+});
+
 function createOperation(db: ReturnType<typeof createFakeD1>["db"], input: typeof reservation, region = "us") {
   const quoteId=`msq_${createHash("sha256").update(input.operation_id).digest("hex").slice(0,32)}`;
   (input as typeof reservation & {quote_id?:string;requester_user_id?:string}).quote_id=quoteId;

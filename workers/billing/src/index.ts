@@ -1619,11 +1619,14 @@ app.get("/internal/usage/project-summary", async (c) => {
       event_count: number; cost_credits: number; unpriced_event_count: number;
     }>();
   const rows = await c.env.PLATFORM_DB.prepare(`SELECT event_type,COALESCE(unit,'units') AS unit,
-      COALESCE(payer_kind,'legacy') AS payer_kind,installation_id,provider,connector_provider,
+      CASE WHEN payer_kind IS NULL AND schema_version>=2 THEN 'unassigned'
+        WHEN payer_kind IS NULL THEN 'legacy' ELSE payer_kind END AS payer_kind,
+      installation_id,provider,connector_provider,
       COUNT(*) AS event_count,COALESCE(SUM(quantity),0) AS quantity,
       SUM(cost_credits) AS cost_credits,SUM(CASE WHEN cost_credits IS NULL THEN 1 ELSE 0 END) AS unpriced_event_count
     FROM usage_events WHERE org_id=? AND space_id=? AND project_id=? AND recorded_at>=datetime('now',?)
-    GROUP BY event_type,unit,payer_kind,installation_id,provider,connector_provider
+    GROUP BY event_type,unit,CASE WHEN payer_kind IS NULL AND schema_version>=2 THEN 'unassigned'
+      WHEN payer_kind IS NULL THEN 'legacy' ELSE payer_kind END,installation_id,provider,connector_provider
     ORDER BY COALESCE(SUM(cost_credits),-1) DESC,event_type LIMIT 200`)
     .bind(orgId, spaceId, projectId, `-${days} days`).all<{
       event_type: string; unit: string; payer_kind: string; installation_id: string | null;

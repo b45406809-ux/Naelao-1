@@ -1,10 +1,11 @@
 import { mintInternalToken } from "@naelao/http";
+import { flushWebsiteRefreshUsageOutbox } from "./website-refresh-usage.js";
 
 const SCHEDULE_BATCH_LIMIT = 4;
 const SCHEDULE_LEASE_MS = 3 * 60_000;
 const SCHEDULE_FAILURE_BACKOFF_CAP_MINUTES = 360;
 
-interface ScheduleEnvironment { PLATFORM_DB: D1Database; PLATFORM_SECRET: string; KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED?: string }
+interface ScheduleEnvironment { PLATFORM_DB: D1Database; PLATFORM_SECRET: string; BILLING_WORKER?: Fetcher; KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED?: string }
 interface DueWebsiteRefresh {
   schedule_id: string; tenant_id: string; space_id: string; project_id: string; document_id: string;
   connection_ref: string; owner_user_id: string; enabled: number; interval_hours: 24 | 168; generation: number;
@@ -98,6 +99,8 @@ async function finishUnchanged(env: ScheduleEnvironment, schedule: DueWebsiteRef
 export async function runScheduledWebsiteRefreshes(env: ScheduleEnvironment, fetchInternal: InternalFetcher,
   ctx: ExecutionContext, now = new Date()): Promise<ScheduledRefreshRunResult> {
   if (env.KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED !== "true") {
+    // Continue delivering prior receipts while refresh activation remains disabled.
+    await flushWebsiteRefreshUsageOutbox(env, now);
     await env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_schedules SET enabled=0,generation=generation+1,next_run_at=NULL,
       last_result='paused',last_error_code='schedule_rollout_disabled',lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE enabled=1`)
       .bind(now.toISOString()).run();
@@ -134,11 +137,21 @@ export async function runScheduledWebsiteRefreshes(env: ScheduleEnvironment, fet
     }
     if (!sourceIsCurrent) continue;
     const leaseToken = crypto.randomUUID();
-    const claimed = await env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_schedules SET lease_token=?,lease_expires_at=?,updated_at=?
-      WHERE id=? AND enabled=1 AND generation=? AND next_run_at=? AND (lease_token IS NULL OR lease_expires_at<=?)`)
-      .bind(leaseToken, new Date(now.getTime() + SCHEDULE_LEASE_MS).toISOString(), nowIso,
-        schedule.schedule_id, schedule.generation, schedule.due_at, nowIso).run();
-    if (!Number(claimed.meta.changes ?? 0)) continue;
+    const runId = await refreshKey(schedule);
+    const receiptKey = `knowledge-website-refresh:${runId}`;
+    const claimed = await env.PLATFORM_DB.batch([
+      env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_schedules SET lease_token=?,lease_expires_at=?,updated_at=?
+        WHERE id=? AND enabled=1 AND generation=? AND next_run_at=? AND (lease_token IS NULL OR lease_expires_at<=?)`)
+        .bind(leaseToken, new Date(now.getTime() + SCHEDULE_LEASE_MS).toISOString(), nowIso,
+          schedule.schedule_id, schedule.generation, schedule.due_at, nowIso),
+      env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO kb_website_refresh_usage_outbox
+        (run_id,tenant_id,space_id,project_id,idempotency_key,created_at,updated_at)
+        SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM kb_source_refresh_schedules
+          WHERE id=? AND enabled=1 AND generation=? AND lease_token=?)`)
+        .bind(runId, schedule.tenant_id, schedule.space_id, schedule.project_id, receiptKey, nowIso, nowIso,
+          schedule.schedule_id, schedule.generation, leaseToken),
+    ]);
+    if (!Number(claimed[0]?.meta.changes ?? 0)) continue;
     result.claimed++;
     try {
       const token = await mintInternalToken(env.PLATFORM_SECRET, schedule.tenant_id);
@@ -148,7 +161,7 @@ export async function runScheduledWebsiteRefreshes(env: ScheduleEnvironment, fet
       const previewResponse = await fetchInternal(new Request("https://knowledge.internal" + commonPath
         + "/projects/" + encodeURIComponent(schedule.project_id) + "/sources/website/preview", {
           method: "POST", headers, body: JSON.stringify({ document_id: schedule.document_id,
-            idempotency_key: await refreshKey(schedule), url: schedule.source_requested_url }),
+            idempotency_key: runId, url: schedule.source_requested_url }),
         }), env, ctx);
       const previewBody = await safeJson(previewResponse);
       if (!previewResponse.ok || !previewBody.preview || typeof previewBody.preview !== "object") {
@@ -187,5 +200,6 @@ export async function runScheduledWebsiteRefreshes(env: ScheduleEnvironment, fet
       if (await recordFailure(env, schedule, leaseToken, now, "website_refresh_unavailable")) result.failed++;
     }
   }
+  await flushWebsiteRefreshUsageOutbox(env, now);
   return result;
 }

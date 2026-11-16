@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0275_website_refresh_schedule_opt_in",
+  "requiredSchemaVersion": "0276_knowledge_website_refresh_usage_outbox",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1103,6 +1103,10 @@
     {
       "filename": "0275_website_refresh_schedule_opt_in.sql",
       "sha256": "c9c4619fc24936e070529d3988bf9618d58c538fa6d38f092dff40ff7c35f7d4"
+    },
+    {
+      "filename": "0276_knowledge_website_refresh_usage_outbox.sql",
+      "sha256": "41474e3f619412d6f1acf02c58abb7f261852ce1081ada47c517af509498f61b"
     }
   ]
 }

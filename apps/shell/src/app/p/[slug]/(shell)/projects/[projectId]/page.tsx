@@ -1221,8 +1221,11 @@ export default function ProjectDetailPage() {
                     {d.source_refresh_schedule_enabled === 1
                       ? d.source_refresh_schedule_available === false
                         ? "Automatic refresh is paused while this capability is unavailable"
-                        : `Automatic refresh ${d.source_refresh_interval_hours === 168 ? "weekly" : "daily"}${d.source_refresh_next_run_at ? ` · next ${new Date(d.source_refresh_next_run_at).toLocaleString()}` : ""}${d.source_refresh_last_result ? ` · last result ${d.source_refresh_last_result}` : ""}`
-                      : d.source_refresh_schedule_available === true ? "Automatic refresh is off" : ""}
+                        : `Automatic refresh ${d.source_refresh_interval_hours === 168 ? "weekly" : "daily"}${d.source_refresh_next_run_at ? ` · next ${new Date(d.source_refresh_next_run_at).toLocaleString()}` : ""}`
+                      : d.source_refresh_schedule_available === true ? "Automatic refresh is off"
+                        : d.source_refresh_last_result ? "Automatic refresh is paused" : ""}
+                    {d.source_refresh_last_result && ` · last result ${d.source_refresh_last_result}`}
+                    {d.source_refresh_last_error_code && ` (${d.source_refresh_last_error_code})`}
                   </div>}
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
