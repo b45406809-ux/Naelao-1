@@ -1045,7 +1045,7 @@ export default function SpacesPage() {
                 <strong>{role.name.en ?? role.id}</strong>{role.recommended_space_role && <span> · recommends Space {role.recommended_space_role}</span>}
                 {role.description?.en && <p>{role.description.en}</p>}
                 {role.resource_reviews.length ? <ul>{role.resource_reviews.map((review, index) => <li key={`${role.id}:${index}`}>
-                  <code>{JSON.stringify(review.resource)}</code> · {review.availability} · requested: {review.requested_actions.join(", ")} · package-declared match: {review.declared_actions.join(", ") || "none"} · effective role actions: none · cost: unavailable ({review.cost_reason})
+                  <code>{JSON.stringify(review.resource)}</code> · {review.availability === "declared_only" ? "package declares this Knowledge symbol; published target data was not checked" : review.availability} · requested: {review.requested_actions.join(", ")} · package-declared match: {review.declared_actions.join(", ") || "none"} · effective role actions: none · cost: unavailable ({review.cost_reason})
                 </li>)}</ul> : <p>No resource permissions requested.</p>}
                 <p role="status">Proposal only. No membership, invitation, permission, assistant access, or spending mandate was created.</p>
               </div>)}

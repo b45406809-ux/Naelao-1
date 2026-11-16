@@ -25,7 +25,7 @@ export interface BlueprintActivationPreview {
   business_roles: Array<{ id: string; name: Record<string, string>; description: Record<string, string> | null;
     recommended_space_role: "member" | "admin" | null; resource_requests: NonNullable<SpaceBlueprint["businessRoles"]>[number]["resourceRequests"];
     resource_reviews: Array<{ resource: BlueprintBusinessRoleResourceRefV1;
-      availability: "planned_project" | "installed" | "available_in_catalog" | "unavailable" | "resource_not_declared" | "unsupported";
+      availability: "planned_project" | "installed" | "available_in_catalog" | "declared_only" | "unavailable" | "resource_not_declared" | "unsupported";
       requested_actions: string[]; declared_actions: string[]; effective_role_actions: string[];
       access_state: "not_granted_by_proposal"; grants_applied: false; cost_estimate: null; cost_reason: "no_role_budget_rate_contract" }>;
     assistant: NonNullable<SpaceBlueprint["businessRoles"]>[number]["assistant"] | null;
@@ -137,9 +137,9 @@ export function previewBlueprintActivation(
         targetPrimitives = targetPrimitives.filter(item => item.id === resource.microappId && item.kind === "canvas");
         availability = targetPrimitives.length ? "installed" : "resource_not_declared";
       } else if (resource.kind === "knowledge") {
-        availability = summary?.knowledge.some(item => item.id === resource.knowledgeId) ? "installed" : "resource_not_declared";
+        availability = summary?.knowledge.some(item => item.id === resource.knowledgeId) ? "declared_only" : "resource_not_declared";
       } else if (resource.kind === "collection") {
-        availability = summary?.knowledge.some(item => item.id === resource.collectionId) ? "installed" : "resource_not_declared";
+        availability = summary?.knowledge.some(item => item.id === resource.collectionId) ? "declared_only" : "resource_not_declared";
       } else availability = "unsupported"; // No shared-record ACL contract exists yet.
     }
     const declaredActions = [...new Set(targetPrimitives.flatMap(item => item.permission_grants.map(grant => grant.action))
