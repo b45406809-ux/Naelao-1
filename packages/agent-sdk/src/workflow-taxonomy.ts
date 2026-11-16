@@ -83,9 +83,18 @@ export interface DurableStructuredDataOperationReceipt {
   responseSha256?: string; responseBytes?: number; meteredCredits?: number;
   preparedAt: number; completedAt?: number; uncertainAt?: number;
 }
+/** Object receipts keep the logical key hash and payload accounting; object names and bytes stay out of the journal. */
+export interface DurableObjectOperationReceipt {
+  kind: "objects"; installationId: string; projectId: string; principalId: string; requirementId: string; objectKeySha256: string;
+  operation: "get" | "put" | "delete"; requestSha256: string; requestBytes: number;
+  status: "prepared" | "completed" | "unknown"; manifestSha256?: string; resourceSha256?: string;
+  installationGeneration?: number; grantRevision?: number; meteringUnit?: "request" | "byte" | "job"; meteredUnits?: number;
+  responseSha256?: string; responseBytes?: number; meteredCredits?: number; preparedAt: number; completedAt?: number; uncertainAt?: number;
+}
+export type DurableResourceOperationReceipt = DurableStructuredDataOperationReceipt | DurableObjectOperationReceipt;
 export interface DurableEffectRecord {
   key: string; operation: string; inputDigest: string; status: "prepared" | "committed" | "indeterminate";
-  result?: WorkflowCheckpointPointer; providerReceipt?: string; resourceReceipt?: DurableStructuredDataOperationReceipt;
+  result?: WorkflowCheckpointPointer; providerReceipt?: string; resourceReceipt?: DurableResourceOperationReceipt;
 }
 export interface DurableWorkflowRecord {
   identity: DurableWorkflowIdentity; status: DurableWorkflowStatus;

@@ -54,6 +54,19 @@ export async function resolveApprovedStructuredDataGrant(installation: WorkflowI
     && item.installation_generation === installation.instance.generation && item.operations.includes(operationId) && item.tables.includes(table));
   return grant ?? null;
 }
+export async function resolveApprovedObjectGrant(installation: WorkflowInstallationGrant | undefined,
+  requirementId: string, operationId: string): Promise<NonNullable<WorkflowInstallationGrant["resource_grants"]>[number] | null> {
+  if (!installation || installation.instance.status !== "active" || installation.instance.scope !== "PROJECT_BOUND"
+    || !installation.instance.project_id || !installation.instance.instance_id || !Number.isSafeInteger(installation.instance.generation)) return null;
+  const requirement = installation.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "objects" && item.scope === "project");
+  if (!requirement || !["get", "put", "delete"].includes(operationId) || !requirement.operations.some(item => item.id === operationId)) return null;
+  const manifestSha256 = await workflowHash(JSON.stringify(installation.manifest));
+  const resourceSha256 = await workflowHash(JSON.stringify(requirement));
+  const grant = installation.resource_grants?.find(item => item.requirement_id === requirementId && item.status === "approved"
+    && item.manifest_sha256 === manifestSha256 && item.resource_sha256 === resourceSha256
+    && item.installation_generation === installation.instance.generation && item.operations.includes(operationId) && item.tables.length === 0);
+  return grant ?? null;
+}
 export function resolveExtensionGadgetAppId(input: { installation?: WorkflowInstallationGrant; workflowId: string; operation: string; gadgetId: string; table?: string }): string | null {
   const { installation, workflowId, operation, gadgetId, table } = input;
   if (!installation || !["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(operation)

@@ -31,6 +31,7 @@ import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel } from "@naelao/bill
 import { registerProjectMcpRoutes } from "./routes/mcp.js";
 import { extensionRuntimeWork, registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
 import { registerExtensionGadgetRoutes } from "./routes/extension-gadget.js";
+import { registerExtensionObjectResourceRoutes } from "./routes/extension-object-resource.js";
 import { registerProductUserMicroAppRoutes } from "./routes/product-user-micro-app.js";
 import { gadgetActorId } from "./do/MicroAppDO.js";
 import { isMicroAppArchiveSnapshot, MAX_MICRO_APP_ARCHIVE_SNAPSHOTS,
@@ -331,6 +332,7 @@ app.delete("/internal/tenant/:tenantId/spaces/:spaceId/data-erasure", async (c) 
 
 registerGadgetMcpRoutes(app);
 registerExtensionGadgetRoutes(app);
+registerExtensionObjectResourceRoutes(app);
 registerProductUserMicroAppRoutes(app);
 registerDynamicPageRoutes(app);
 registerRecipeRoutes(app);

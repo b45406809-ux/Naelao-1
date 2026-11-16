@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertDeclaredExtensionWorkflow, extensionWorkflowName, readWorkflowGrant, resolveApprovedStructuredDataGrant, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv, type WorkflowInstallationGrant } from "./workflow-host.js";
+import { assertDeclaredExtensionWorkflow, extensionWorkflowName, readWorkflowGrant, resolveApprovedObjectGrant, resolveApprovedStructuredDataGrant,
+  resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv, type WorkflowInstallationGrant } from "./workflow-host.js";
 
 const installation: WorkflowInstallationGrant = {
   instance: { tenant_id: "tenant", space_id: "space", status: "active", scope: "SPACE_SHARED" },
@@ -102,6 +103,21 @@ describe("verified extension workflow identity", () => {
     await expect(resolveApprovedStructuredDataGrant({ ...current, resource_grants: [{ ...current.resource_grants![0]!, status: "revoked" }] }, "records", "get", "records")).resolves.toBeNull();
     await expect(resolveApprovedStructuredDataGrant({ ...current, resource_grants: [{ ...current.resource_grants![0]!, tables: ["private"] }] }, "records", "get", "records")).resolves.toBeNull();
     await expect(resolveApprovedStructuredDataGrant({ ...current, resource_grants: [{ ...current.resource_grants![0]!, manifest_sha256: "0".repeat(64) }] }, "records", "get", "records")).resolves.toBeNull();
+  });
+
+  it("requires exact generation and an operation-only grant for object resources", async () => {
+    const requirement = { id: "attachments", kind: "objects", apiVersion: "1.0", scope: "project", operations: [
+      { id: "get", input: { schemaVersion: "1.0", fields: {} }, output: { schemaVersion: "1.0", fields: {} }, idempotency: "none", meteringUnit: "byte" },
+    ], limits: { requestsPerMinute: 10, maxConcurrent: 1, maxBytesPerOperation: 1024 } };
+    const manifest = { id: "ext_objects", resourceRequirements: [requirement] } as unknown as WorkflowInstallationGrant["manifest"];
+    const manifestSha256 = await workflowHash(JSON.stringify(manifest)), resourceSha256 = await workflowHash(JSON.stringify(requirement));
+    const current: WorkflowInstallationGrant = { instance: { instance_id: "install-a", tenant_id: "tenant", space_id: "space", project_id: "project-a",
+      generation: 4, status: "active", scope: "PROJECT_BOUND" }, manifest, resource_grants: [{ requirement_id: "attachments", manifest_sha256: manifestSha256,
+        resource_sha256: resourceSha256, installation_generation: 4, operations: ["get"], tables: [], status: "approved", revision: 2 }] };
+    await expect(resolveApprovedObjectGrant(current, "attachments", "get")).resolves.toMatchObject({ revision: 2 });
+    await expect(resolveApprovedObjectGrant({ ...current, instance: { ...current.instance, generation: 5 } }, "attachments", "get")).resolves.toBeNull();
+    await expect(resolveApprovedObjectGrant({ ...current, resource_grants: [{ ...current.resource_grants![0]!, tables: ["bucket"] }] }, "attachments", "get")).resolves.toBeNull();
+    await expect(resolveApprovedObjectGrant(current, "attachments", "put")).resolves.toBeNull();
   });
 
   it("isolates space-wide durable extension workflows by the verified installation", () => {

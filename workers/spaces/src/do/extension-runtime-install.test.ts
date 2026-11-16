@@ -56,15 +56,27 @@ describe("runtime extension installation", () => {
             output: { schemaVersion: "1.0", fields: { resultJson: { type: "string", required: true, maxLength: 32768 } } }, idempotency: "required", meteringUnit: "request" },
         ], limits: { requestsPerMinute: 2, maxConcurrent: 1, maxBytesPerOperation: 32768 } }, {
         id: "attachments", kind: "objects", apiVersion: "1.0", scope: "project",
-        operations: [{ id: "get", input: { schemaVersion: "1.0", fields: { key: { type: "string", required: true, maxLength: 128 } } },
-          output: { schemaVersion: "1.0", fields: { dataBase64: { type: "string", required: true, maxLength: 512 } } }, idempotency: "none", meteringUnit: "byte" }],
-        limits: { requestsPerMinute: 2, maxConcurrent: 1, maxBytesPerOperation: 1024 },
+        operations: [
+          { id: "get", input: { schemaVersion: "1.0", fields: { key: { type: "string", required: true, maxLength: 128 } } },
+            output: { schemaVersion: "1.0", fields: { found: { type: "boolean", required: true }, dataBase64: { type: "string", maxLength: 87384 },
+              contentType: { type: "string", maxLength: 128 }, size: { type: "number", required: true, minimum: 0, maximum: 65536 },
+              sha256: { type: "string", maxLength: 64 } } }, idempotency: "none", meteringUnit: "byte" },
+          { id: "put", input: { schemaVersion: "1.0", fields: { key: { type: "string", required: true, maxLength: 128 },
+            dataBase64: { type: "string", required: true, maxLength: 87384 }, contentType: { type: "string", required: true, maxLength: 128 } } },
+            output: { schemaVersion: "1.0", fields: { stored: { type: "boolean", required: true },
+              size: { type: "number", required: true, minimum: 0, maximum: 65536 }, sha256: { type: "string", required: true, maxLength: 64 } } },
+            idempotency: "required", meteringUnit: "byte" },
+          { id: "delete", input: { schemaVersion: "1.0", fields: { key: { type: "string", required: true, maxLength: 128 } } },
+            output: { schemaVersion: "1.0", fields: { deleted: { type: "boolean", required: true } } }, idempotency: "required", meteringUnit: "request" },
+        ],
+        limits: { requestsPerMinute: 40, maxConcurrent: 1, maxBytesPerOperation: 128 * 1024 },
       }],
       bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_granted_catalog", version: "1.0.0", primitives: [
         { schemaVersion: "1.0", kind: "gadget", id: "catalog", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
           scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE records(id TEXT PRIMARY KEY, name TEXT NOT NULL)" },
         { schemaVersion: "1.0", kind: "workflow", id: "lookup", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
-          executionMode: "headless", entry: "./lookup.ts", steps: ["lookup"], toolNames: ["extension.gadget.get", "extension.gadget.insert", "extension.resource.structured_data"] },
+          executionMode: "headless", entry: "./lookup.ts", steps: ["lookup"], toolNames: ["extension.gadget.get", "extension.gadget.insert",
+            "extension.resource.structured_data", "extension.resource.objects"] },
       ], workerRoles: [{ id: "lookup_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./lookup.ts",
         primitiveIds: ["lookup"], gadgetActions: [{ gadgetId: "catalog", operations: ["extension.gadget.get", "extension.gadget.insert"], tables: ["records"] }] }] },
     }, { gatekeeperCapabilities: ["extension.workflow"] });
@@ -94,9 +106,11 @@ describe("runtime extension installation", () => {
     expect((await approve(0, ["get", "insert"])).status).toBe(409);
     const approveObjects = (expectedRevision: number, tables: string[] = []) => space.fetch(new Request("http://space/extension-resource-grants", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
-        requirementId: "attachments", actorId: "owner", expectedRevision, operations: ["get"], tables }) }));
+        requirementId: "attachments", actorId: "owner", expectedRevision, operations: ["get", "put", "delete"], tables }) }));
     expect((await approveObjects(0, ["records"])).status).toBe(400);
-    expect(await (await approveObjects(0)).json()).toMatchObject({ status: "approved", revision: 1, tables: [] });
+    const approvedObjectBody = await (await approveObjects(0)).json() as { status: string; revision: number; manifest_sha256: string;
+      resource_sha256: string; installation_generation: number };
+    expect(approvedObjectBody).toMatchObject({ status: "approved", revision: 1, tables: [] });
     const wrongProject = await space.fetch(new Request("http://space/extension-resource-grants?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-b", instance_id: installationId }), { headers }));
     expect(wrongProject.status).toBe(404);
     storage.sql.exec("UPDATE extension_resource_grants SET operations_json='[\"delete\"]' WHERE instance_id=? AND requirement_id='records'", installationId);
@@ -118,11 +132,66 @@ describe("runtime extension installation", () => {
     expect(activationBody).toMatchObject({ error_code: "extension_resource_capability_unavailable" });
     expect(activationBody).toMatchObject({ unsupported: expect.arrayContaining([
       expect.objectContaining({ requirementId: "records", kind: "structured_data", operations: ["get", "insert"] }),
-      expect.objectContaining({ requirementId: "attachments", kind: "objects", operations: ["get"] }),
+      expect.objectContaining({ requirementId: "attachments", kind: "objects", operations: ["get", "put", "delete"] }),
     ]) });
 
     // Exercise the operation fence independently of the unavailable runtime activation gate.
     storage.sql.exec("UPDATE extension_instances SET status='active' WHERE instance_id=?", installationId);
+    const claimObject = (operationId: string) => space.fetch(new Request("http://space/extension-resource-operation", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, requirementId: "attachments",
+        operationId, resourceKind: "objects", gadgetId: "objects", table: "objects", manifestSha256: approvedObjectBody.manifest_sha256,
+        resourceSha256: approvedObjectBody.resource_sha256, installationGeneration: 1, grantRevision: 1 }) }));
+    const putClaim = await claimObject("put");
+    expect(putClaim.status, await putClaim.clone().text()).toBe(200);
+    const { lease_id: putLeaseId } = await putClaim.json() as { lease_id: string };
+    const revokeObject = (expectedRevision: number) => space.fetch(new Request("http://space/extension-resource-grants/revoke", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
+        requirementId: "attachments", actorId: "owner", expectedRevision }) }));
+    expect((await revokeObject(1)).status).toBe(409);
+    const objectInput = { key: "notes/readme.txt", dataBase64: "aGVsbG8=", contentType: "text/plain" };
+    const objectOperation = (operationId: string, leaseId: string, input: unknown) => space.fetch(new Request("http://space/extension-object-operation", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
+        requirementId: "attachments", operationId, leaseId, manifestSha256: approvedObjectBody.manifest_sha256,
+        resourceSha256: approvedObjectBody.resource_sha256, installationGeneration: 1, grantRevision: 1, input }) }));
+    expect(await (await objectOperation("put", putLeaseId, objectInput)).json()).toMatchObject({ stored: true, size: 5, sha256: expect.any(String) });
+    expect((await objectOperation("put", putLeaseId, objectInput)).status).toBe(403);
+    const releaseLease = (lease: string) => space.fetch(new Request("http://space/extension-resource-operation/release", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, leaseId: lease }) }));
+    expect(await (await releaseLease(putLeaseId)).json()).toMatchObject({ released: true });
+    const getClaim = await claimObject("get");
+    const { lease_id: getLeaseId } = await getClaim.json() as { lease_id: string };
+    expect(await (await objectOperation("get", getLeaseId, { key: objectInput.key })).json()).toMatchObject({ found: true,
+      dataBase64: objectInput.dataBase64, contentType: objectInput.contentType, size: 5 });
+    expect(await (await releaseLease(getLeaseId)).json()).toMatchObject({ released: true });
+    const invalidKeyClaim = await claimObject("get");
+    const { lease_id: invalidKeyLeaseId } = await invalidKeyClaim.json() as { lease_id: string };
+    expect((await objectOperation("get", invalidKeyLeaseId, { key: "../other-tenant" })).status).toBe(400);
+    await releaseLease(invalidKeyLeaseId);
+    const deleteClaim = await claimObject("delete");
+    const { lease_id: deleteLeaseId } = await deleteClaim.json() as { lease_id: string };
+    expect(await (await objectOperation("delete", deleteLeaseId, { key: objectInput.key })).json()).toEqual({ deleted: true });
+    await releaseLease(deleteLeaseId);
+    const cleanupClaim = await claimObject("put");
+    const { lease_id: cleanupLeaseId } = await cleanupClaim.json() as { lease_id: string };
+    await objectOperation("put", cleanupLeaseId, objectInput);
+    await releaseLease(cleanupLeaseId);
+    expect(storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM extension_resource_objects WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ count: 1 }]);
+    const maximumObjectInput = { key: "quota/item.bin", dataBase64: btoa("x".repeat(64 * 1024)), contentType: "application/octet-stream" };
+    for (let index = 0; index < 7; index++) {
+      const quotaClaim = await claimObject("put");
+      const { lease_id: quotaLeaseId } = await quotaClaim.json() as { lease_id: string };
+      expect(await (await objectOperation("put", quotaLeaseId, { ...maximumObjectInput, key: `quota/item-${index}.bin` })).json())
+        .toMatchObject({ stored: true, size: 64 * 1024 });
+      await releaseLease(quotaLeaseId);
+    }
+    const overQuotaClaim = await claimObject("put");
+    const { lease_id: overQuotaLeaseId } = await overQuotaClaim.json() as { lease_id: string };
+    const overQuota = await objectOperation("put", overQuotaLeaseId, { ...maximumObjectInput, key: "quota/item-over.bin" });
+    expect(overQuota.status).toBe(413);
+    expect(await overQuota.json()).toMatchObject({ error_code: "extension_object_quota_exceeded" });
+    await releaseLease(overQuotaLeaseId);
+
     const claim = () => space.fetch(new Request("http://space/extension-resource-operation", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, requirementId: "records",
         operationId: "get", gadgetId: "catalog", table: "records", manifestSha256: approvedBody.manifest_sha256,
@@ -131,8 +200,6 @@ describe("runtime extension installation", () => {
     expect(claimed.status, await claimed.clone().text()).toBe(200);
     const { lease_id: leaseId } = await claimed.json() as { lease_id: string };
     expect((await claim()).status).toBe(429);
-    const releaseLease = (lease: string) => space.fetch(new Request("http://space/extension-resource-operation/release", { method: "POST", headers,
-      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, leaseId: lease }) }));
     const revoke = (expectedRevision: number) => space.fetch(new Request("http://space/extension-resource-grants/revoke", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
         requirementId: "records", actorId: "owner", expectedRevision }) }));
@@ -156,6 +223,11 @@ describe("runtime extension installation", () => {
       expect.objectContaining({ requirement_id: "records", status: "revoked", revision: 2, installation_generation: 1 }),
       expect.objectContaining({ requirement_id: "attachments", status: "approved", revision: 1, tables: [] }),
     ]) });
+    const removed = await space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space",
+      project_id: "project-a", instance_id: installationId }), { method: "DELETE" }));
+    expect(removed.status, await removed.clone().text()).toBe(200);
+    expect(storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM extension_resource_objects WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ count: 0 }]);
   });
   it("rechecks exact dependency closure at runtime and blocks removing an active dependency", async () => {
     const storage = createDOStorage(), secret = "extension-dependency-runtime-secret";

@@ -1,5 +1,5 @@
 import { isTerminalWorkflow, transitionWorkflow, type DurableWorkflowIdentity, type DurableWorkflowRecord, type DurableEffectRecord,
-  type DurableStructuredDataOperationReceipt, type WorkflowCheckpointPointer } from "@naelao/agent-sdk";
+  type DurableResourceOperationReceipt, type WorkflowCheckpointPointer } from "@naelao/agent-sdk";
 
 export interface WorkflowJournalStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -101,7 +101,7 @@ export class WorkflowJournal {
       return { effect: record, created: true };
     });
   }
-  async prepareExternalEffect(key: string, operation: string, inputDigest: string, resourceReceipt?: DurableStructuredDataOperationReceipt): Promise<{ effect: DurableEffectRecord; created: boolean }> {
+  async prepareExternalEffect(key: string, operation: string, inputDigest: string, resourceReceipt?: DurableResourceOperationReceipt): Promise<{ effect: DurableEffectRecord; created: boolean }> {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(key)) throw new Error("workflow_effect_key_invalid");
     return this.storage.transaction(async (storage) => {
       const run = await storage.get<WorkflowJournalRecord>("run");

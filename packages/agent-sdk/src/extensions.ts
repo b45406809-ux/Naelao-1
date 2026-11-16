@@ -31,6 +31,32 @@ export interface ExtensionResourceOperation {
   id: string; input: ExtensionResourceObjectSchema; output: ExtensionResourceObjectSchema;
   idempotency: "required" | "none"; meteringUnit: "request" | "byte" | "job";
 }
+export const EXTENSION_OBJECT_MAX_BYTES = 64 * 1024;
+export const EXTENSION_OBJECT_MAX_TOTAL_BYTES = 512 * 1024;
+export const EXTENSION_OBJECT_MAX_COUNT = 64;
+export const EXTENSION_OBJECT_MAX_KEY_LENGTH = 128;
+export const EXTENSION_OBJECT_MAX_BASE64_LENGTH = Math.ceil(EXTENSION_OBJECT_MAX_BYTES / 3) * 4;
+export function isExtensionObjectKey(value: unknown): value is string {
+  if (typeof value !== "string" || new TextEncoder().encode(value).byteLength > EXTENSION_OBJECT_MAX_KEY_LENGTH
+    || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(value)) return false;
+  return value.split("/").every(part => part.length > 0 && part !== "." && part !== ".." && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(part));
+}
+export function decodeExtensionObjectBase64(value: unknown): Uint8Array | null {
+  if (typeof value !== "string" || value.length > EXTENSION_OBJECT_MAX_BASE64_LENGTH || value.length % 4 !== 0
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return null;
+  try {
+    const decoded = atob(value), bytes = Uint8Array.from(decoded, character => character.charCodeAt(0));
+    if (bytes.byteLength > EXTENSION_OBJECT_MAX_BYTES) return null;
+    let canonical = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000)
+      canonical += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+    return btoa(canonical) === value ? bytes : null;
+  } catch { return null; }
+}
+export function isExtensionObjectContentType(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 128
+    && /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(value);
+}
 /** Structured data may bind only to an existing project Gadget. This is a requested backing
  * resource, not a grant; the effective operations still come from the installed workflow role. */
 export interface ExtensionStructuredDataBinding { gadgetId: string; tables: readonly string[] }
@@ -77,6 +103,7 @@ export interface ExtensionResourceClient {
 /** `stepKey` is the durable workflow idempotency key for this resource effect. */
 export interface ExtensionWorkflowResources {
   execute<T = unknown>(stepKey: string, requirementId: string, operation: string, input: unknown): Promise<T>;
+  objects: { execute<T = unknown>(stepKey: string, requirementId: string, operation: "get" | "put" | "delete", input: unknown): Promise<T> };
 }
 /** Packages can require owners to publish a validated settings draft before it affects runtime. */
 export type ExtensionSettingsActivation = "owner_publish";
@@ -265,6 +292,42 @@ function parseResourceRequirements(value: unknown): ExtensionResourceRequirement
         assert(Object.keys(outputFields).length === 1 && outputFields.resultJson?.type === "string" && outputFields.resultJson.required === true
           && (outputFields.resultJson.maxLength ?? 0) > 0 && outputFields.resultJson.maxLength! <= Number(limits.maxBytesPerOperation), "structured_data_operation_schema_invalid");
       }
+    } else if (raw.kind === "objects") {
+      assert(raw.scope === "project" && Number(limits.maxBytesPerOperation) <= 256 * 1024, "object_resource_scope_or_limit_unsupported");
+      assert(operations.every(operation => ["get", "put", "delete"].includes(operation.id)), "object_resource_operation_unsupported");
+      assert(operations.filter(operation => ["put", "delete"].includes(operation.id)).every(operation => operation.idempotency === "required"),
+        "object_resource_mutation_idempotency_required");
+      for (const operation of operations) {
+        const inputFields = operation.input.fields, outputFields = operation.output.fields;
+        const expectedInput = operation.id === "put" ? ["key", "dataBase64", "contentType"] : ["key"];
+        const expectedOutput = operation.id === "get" ? ["found", "dataBase64", "contentType", "size", "sha256"]
+          : operation.id === "put" ? ["stored", "size", "sha256"] : ["deleted"];
+        assert(Object.keys(inputFields).every(key => expectedInput.includes(key)) && Object.keys(inputFields).length === expectedInput.length
+          && inputFields.key?.type === "string" && inputFields.key.required === true
+          && (inputFields.key.maxLength ?? 0) > 0 && inputFields.key.maxLength! <= 128, "object_resource_operation_schema_invalid");
+        if (operation.id === "put") assert(inputFields.dataBase64?.type === "string" && inputFields.dataBase64.required === true
+          && (inputFields.dataBase64.maxLength ?? 0) > 0 && inputFields.dataBase64.maxLength! <= 87_384
+          && inputFields.contentType?.type === "string" && inputFields.contentType.required === true
+          && (inputFields.contentType.maxLength ?? 0) > 0 && inputFields.contentType.maxLength! <= 128, "object_resource_operation_schema_invalid");
+        assert(Object.keys(outputFields).every(key => expectedOutput.includes(key)) && Object.keys(outputFields).length === expectedOutput.length,
+          "object_resource_operation_schema_invalid");
+        if (operation.id === "get") assert(outputFields.found?.type === "boolean" && outputFields.found.required === true
+          && outputFields.size?.type === "number" && outputFields.size.required === true && outputFields.size.minimum === 0
+          && outputFields.size.maximum !== undefined && outputFields.size.maximum <= 65_536
+          && outputFields.dataBase64?.type === "string" && outputFields.dataBase64.required !== true
+          && (outputFields.dataBase64.maxLength ?? 0) > 0 && outputFields.dataBase64.maxLength! <= 87_384
+          && outputFields.contentType?.type === "string" && outputFields.contentType.required !== true
+          && (outputFields.contentType.maxLength ?? 0) > 0 && outputFields.contentType.maxLength! <= 128
+          && outputFields.sha256?.type === "string" && outputFields.sha256.required !== true && outputFields.sha256.maxLength === 64,
+        "object_resource_operation_schema_invalid");
+        if (operation.id === "put") assert(outputFields.stored?.type === "boolean" && outputFields.stored.required === true
+          && outputFields.size?.type === "number" && outputFields.size.required === true && outputFields.size.minimum === 0
+          && outputFields.size.maximum !== undefined && outputFields.size.maximum <= 65_536
+          && outputFields.sha256?.type === "string" && outputFields.sha256.required === true && outputFields.sha256.maxLength === 64,
+        "object_resource_operation_schema_invalid");
+        if (operation.id === "delete") assert(outputFields.deleted?.type === "boolean" && outputFields.deleted.required === true,
+          "object_resource_operation_schema_invalid");
+      }
     }
     return Object.freeze({ id: raw.id, kind: raw.kind, apiVersion: "1.0", scope: raw.scope,
       operations: Object.freeze(operations), limits: Object.freeze({ ...limits }), ...(binding ? { binding } : {}) }) as ExtensionResourceRequirement;
@@ -328,6 +391,27 @@ export function resolveExtensionStructuredDataRequest(input: {
     }
   } catch { return null; }
   return { gadgetId: binding.gadgetId, gadgetOperation, table, arguments: args, outputSchema: operation.output };
+}
+
+/** Resolves a declared object operation through one signed Project workflow role. The object
+ * key remains a logical name; the host maps it inside the exact installation namespace. */
+export function resolveExtensionObjectResourceRequest(input: {
+  manifest: Pick<ExtensionManifest, "bundle" | "resourceRequirements">;
+  workflowId: string; requirementId: string; operationId: string; input: unknown;
+}): { key: string; value: Record<string, unknown>; operation: ExtensionResourceOperation; outputSchema: ExtensionResourceObjectSchema } | null {
+  const requirement = input.manifest.resourceRequirements?.find(item => item.id === input.requirementId && item.kind === "objects");
+  const operation = requirement?.operations.find(item => item.id === input.operationId);
+  if (!requirement || requirement.scope !== "project" || !operation) return null;
+  let value: Record<string, unknown>;
+  try { value = validateExtensionResourceValue(operation.input, input.input, "input"); } catch { return null; }
+  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > requirement.limits.maxBytesPerOperation || !isExtensionObjectKey(value.key)) return null;
+  if (operation.id === "put" && (!decodeExtensionObjectBase64(value.dataBase64) || !isExtensionObjectContentType(value.contentType))) return null;
+  const bundle = input.manifest.bundle;
+  const workflow = bundle?.primitives.find((part): part is WorkflowContract => part.kind === "workflow" && part.id === input.workflowId);
+  const roles = bundle?.workerRoles?.filter(role => role.principal === "project_member" && role.execution === "worker"
+    && ["workflow_step", "tool"].includes(role.invocation) && role.entry === workflow?.entry && role.primitiveIds.includes(input.workflowId)) ?? [];
+  if (!workflow?.toolNames.includes("extension.resource.objects") || roles.length !== 1) return null;
+  return { key: value.key, value, operation, outputSchema: operation.output };
 }
 
 function sameResourceScope(a: ExtensionResourceExecutionScope, b: ExtensionResourceExecutionScope): boolean {
@@ -552,6 +636,16 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
             && grant.operations.includes(toolName) && binding.tables.every(table => grant.tables.includes(table)))));
       assert(authorized, "structured_data_binding_exceeds_installed_workflow_grant");
     }
+  }
+  for (const requirement of resourceRequirements ?? []) {
+    if (requirement.kind !== "objects") continue;
+    assert(requirement.scope === "project" && canonicalBundle !== undefined, "object_resource_project_bundle_required");
+    const workflows = canonicalBundle.primitives.filter((item): item is WorkflowContract => item.kind === "workflow");
+    const roles = canonicalBundle.workerRoles ?? [];
+    const authorized = workflows.some(workflow => workflow.toolNames.includes("extension.resource.objects")
+      && roles.filter(role => role.principal === "project_member" && role.execution === "worker"
+        && ["workflow_step", "tool"].includes(role.invocation) && role.entry === workflow.entry && role.primitiveIds.includes(workflow.id)).length === 1);
+    assert(authorized, "object_resource_workflow_role_required");
   }
   const scopes = new Set<GadgetScope>(["SPACE_WIDE", "PROJECT_BOUND", "USER_PRIVATE", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
   const ids = new Set<string>();

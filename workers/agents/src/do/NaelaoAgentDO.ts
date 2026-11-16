@@ -20,7 +20,7 @@ import { resolveExtensionProjectKnowledge, resolveCurrentExtensionKnowledgeRevis
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { createScaleDownProcessor } from "../shared/scaledown.js";
 import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, validateVoiceExtensionStreamEvent, validateVoiceExtensionStreamResponse,
-  resolveExtensionStructuredDataRequest, validateExtensionResourceValue, type DocumentProcessingGateway } from "@naelao/agent-sdk";
+  resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, validateExtensionResourceValue, type DocumentProcessingGateway } from "@naelao/agent-sdk";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
 
 type AssistantApprovalPolicySnapshot = {
@@ -53,7 +53,8 @@ type WorkerMergeOutcome = {
 
 import { DurableObject } from "cloudflare:workers";
 import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
-import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, resolveExtensionGadgetAppId, resolveApprovedStructuredDataGrant, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, resolveExtensionGadgetAppId, resolveApprovedObjectGrant,
+  resolveApprovedStructuredDataGrant, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { normalizePreferredLanguage } from "@naelao/types";
 import { mintInternalToken, verifyInternalToken, broadcastSpaceEvent, readBoundedRequestText, readBoundedRequestBytes, readBoundedResponseJson, readBoundedResponseText, readResponsePrefixText, RequestBodyTooLargeError } from "@naelao/http";
@@ -1246,6 +1247,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       try { validateExtensionResourceValue(resolved.outputSchema, output, "output"); }
       catch { return Response.json({ error_code: "workflow_structured_data_result_exceeded_schema" }, { status: 502 }); }
       return Response.json(output);
+    }
+    if (body.operation === "extension.resource.objects") {
+      if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId
+        || !grant.installation || grant.installation.instance.status !== "active" || grant.installation.instance.scope !== "PROJECT_BOUND")
+        return Response.json({ error_code: "workflow_object_resource_grant_invalid" }, { status: 403 });
+      const requirementId = typeof body.params?.requirement_id === "string" ? body.params.requirement_id : "";
+      const operationId = typeof body.params?.operation === "string" ? body.params.operation : "";
+      const resolved = resolveExtensionObjectResourceRequest({ manifest: grant.installation.manifest, workflowId: identity.definitionId,
+        requirementId, operationId, input: body.params?.input });
+      if (!resolved) return Response.json({ error_code: "workflow_object_resource_operation_not_granted" }, { status: 403 });
+      const approvedGrant = await resolveApprovedObjectGrant(grant.installation, requirementId, operationId);
+      if (!approvedGrant) return Response.json({ error_code: "workflow_object_resource_owner_grant_required" }, { status: 403 });
+      if (!this.env.SPACES_WORKER) return Response.json({ error_code: "workflow_object_resource_host_unavailable" }, { status: 503 });
+      const response = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(identity.spaceId)}/internal/extensions/${encodeURIComponent(identity.installationId)}/objects`,
+        { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, identity.tenantId) },
+          body: JSON.stringify({ project_id: identity.projectId, workflow_id: identity.definitionId, requirement_id: requirementId,
+            operation_id: operationId, input: resolved.value, grant: { manifest_sha256: approvedGrant.manifest_sha256,
+              resource_sha256: approvedGrant.resource_sha256, installation_generation: approvedGrant.installation_generation,
+              grant_revision: approvedGrant.revision } }) },
+      ));
+      if (!response.ok) return new Response(response.body, { status: response.status,
+        headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+      const output = await readBoundedResponseJson<Record<string, unknown>>(response, 128 * 1024).catch(() => null);
+      if (!output) return Response.json({ error_code: "workflow_object_resource_result_invalid" }, { status: 502 });
+      try { validateExtensionResourceValue(resolved.outputSchema, output, "output"); }
+      catch { return Response.json({ error_code: "workflow_object_resource_result_exceeded_schema" }, { status: 502 }); }
+      return Response.json(output, { headers: { "cache-control": "private, no-store" } });
     }
     if (["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(body.operation)) {
       if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId || !identity.capabilities.includes(body.operation))

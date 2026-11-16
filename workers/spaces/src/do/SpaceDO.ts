@@ -28,7 +28,13 @@ import type {
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, readBoundedResponseJson, RequestBodyTooLargeError } from "@naelao/http";
 import { verifyHmac } from "@naelao/crypto";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, findUnsupportedExtensionResources, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, validateSpaceCoordinationSingletonKeys, scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope, type SpaceCoordinationDraftV2 } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, decodeExtensionObjectBase64, digestExtensionManifest, EXTENSION_OBJECT_MAX_BYTES,
+  EXTENSION_OBJECT_MAX_COUNT, EXTENSION_OBJECT_MAX_TOTAL_BYTES, findUnsupportedExtensionResources, getProjectTemplate, isExtensionObjectContentType,
+  isExtensionObjectKey, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows,
+  validateExtensionManifest, validateExtensionResourceValue, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues,
+  validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues,
+  validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, validateSpaceCoordinationSingletonKeys,
+  scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope, type SpaceCoordinationDraftV2 } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, GadgetScope, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -100,7 +106,7 @@ const SPACE_ARCHIVE_PERMISSION_TABLES = [
 const SPACE_ARCHIVE_EXCLUDED_TABLES = [
   "space_retention_policies", "space_storage_measurements", "space_archive_records", "space_archive_uploads",
   "space_retention_previews", "space_archive_restore_previews", "space_archive_restores", "space_retention_events",
-  "space_erasure_tombstones", "kb_documents", ...SPACE_ARCHIVE_PERMISSION_TABLES,
+  "space_erasure_tombstones", "kb_documents", "extension_resource_objects", ...SPACE_ARCHIVE_PERMISSION_TABLES,
 ] as const;
 const SPACE_ARCHIVE_EXCLUDED_TABLE_SET: ReadonlySet<string> = new Set(SPACE_ARCHIVE_EXCLUDED_TABLES);
 const SPACE_ARCHIVE_EXCLUDED_TABLE_SQL = SPACE_ARCHIVE_EXCLUDED_TABLES.map(table => `'${table}'`).join(",");
@@ -3365,6 +3371,24 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_extension_resource_operation_leases_active
         ON extension_resource_operation_leases(instance_id,requirement_id,status,expires_at);`,
   },
+  {
+    version: 152,
+    description: "bounded Project installation object resources",
+    up: `CREATE TABLE extension_resource_objects (
+        tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+        requirement_id TEXT NOT NULL, object_key TEXT NOT NULL, content_base64 TEXT NOT NULL, content_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0 AND size_bytes <= 65536),
+        sha256 TEXT NOT NULL CHECK(length(sha256)=64), created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY(instance_id,requirement_id,object_key)
+      );
+      CREATE INDEX idx_extension_resource_objects_scope
+        ON extension_resource_objects(tenant_id,space_id,project_id,instance_id,requirement_id);`,
+  },
+  {
+    version: 153,
+    description: "single-use fencing for extension resource operation leases",
+    up: `ALTER TABLE extension_resource_operation_leases ADD COLUMN consumed_at TEXT;`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -5878,6 +5902,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/extension-resource-grants/revoke" && method === "POST") return this.revokeExtensionResourceGrant(request);
       if (url.pathname === "/extension-resource-operation" && method === "POST") return this.claimExtensionResourceOperation(request);
       if (url.pathname === "/extension-resource-operation/release" && method === "POST") return this.releaseExtensionResourceOperation(request);
+      if (url.pathname === "/extension-object-operation" && method === "POST") return this.executeExtensionObjectOperation(request);
       if (url.pathname === "/extension-project-knowledge-grants" && method === "GET") return this.listExtensionProjectKnowledgeGrants(request, url.searchParams);
       if (url.pathname === "/extension-project-knowledge-grants" && method === "POST") return this.updateExtensionProjectKnowledgeGrants(request);
       if (url.pathname === "/space-shared-extension-lifecycle" && method === "PATCH") return this.updateSpaceSharedExtensionLifecycle(request);
@@ -6095,6 +6120,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             : this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status IN ('active','disabled','staging')`, instanceId, tenantId, spaceId);
           if (result.rowsWritten !== 1) return false;
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
+          execute(this.ctx.storage.sql as never,
+            "DELETE FROM extension_resource_objects WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?",
+            tenantId, spaceId, projectId || "", instanceId);
+          execute(this.ctx.storage.sql as never, "DELETE FROM extension_resource_grants WHERE tenant_id=? AND space_id=? AND instance_id=?",
+            tenantId, spaceId, instanceId);
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_settings WHERE instance_id=?", instanceId);
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_settings_drafts WHERE instance_id=?", instanceId);
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_settings_versions WHERE instance_id=?", instanceId);
@@ -17688,10 +17718,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const manifestSha256 = typeof body.manifestSha256 === "string" ? body.manifestSha256 : "";
     const resourceSha256 = typeof body.resourceSha256 === "string" ? body.resourceSha256 : "";
     const generation = body.installationGeneration, revision = body.grantRevision;
+    const objectResource = body.resourceKind === "objects";
+    const invalidResourceTarget = objectResource
+      ? !["get", "put", "delete"].includes(operationId) || gadgetId !== "objects" || table !== "objects"
+      : !["list", "get", "insert", "update", "delete"].includes(operationId)
+        || !/^[a-z][a-z0-9_-]{0,62}$/.test(table) || !/^[a-z][a-z0-9_-]{1,63}$/.test(gadgetId);
     if (!tenantId || request.headers.get("x-naelao-tenant-id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
       || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
-      || !/^[a-z][a-z0-9._-]{1,63}$/.test(requirementId) || !["list", "get", "insert", "update", "delete"].includes(operationId)
-      || !/^[a-z][a-z0-9_-]{0,62}$/.test(table) || !/^[a-z][a-z0-9_-]{1,63}$/.test(gadgetId)
+      || body.resourceKind !== undefined && body.resourceKind !== "objects" && body.resourceKind !== "structured_data"
+      || !/^[a-z][a-z0-9._-]{1,63}$/.test(requirementId) || invalidResourceTarget
       || !/^[a-f0-9]{64}$/.test(manifestSha256) || !/^[a-f0-9]{64}$/.test(resourceSha256)
       || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1
       || typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1
@@ -17700,9 +17735,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
     if (!target || target.row.status !== "active" || target.row.generation !== generation || target.manifestSha256 !== manifestSha256)
       return Response.json({ error_code: "extension_resource_installation_changed" }, { status: 409 });
-    const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "structured_data");
-    if (!requirement || requirement.scope !== "project" || requirement.binding?.gadgetId !== gadgetId
-      || !requirement.binding.tables.includes(table) || !requirement.operations.some(item => item.id === operationId))
+    const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId
+      && item.kind === (objectResource ? "objects" : "structured_data"));
+    if (!requirement || requirement.scope !== "project" || objectResource && requirement.binding !== undefined
+      || !objectResource && (requirement.binding?.gadgetId !== gadgetId || !requirement.binding.tables.includes(table))
+      || !requirement.operations.some(item => item.id === operationId))
       return Response.json({ error_code: "extension_resource_operation_not_declared" }, { status: 403 });
     const currentGrant = queryOne<{ manifest_sha256: string; resource_sha256: string; installation_generation: number;
       operations_json: string; tables_json: string; status: string; revision: number }>(this.ctx.storage.sql as never,
@@ -17717,7 +17754,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!currentGrant || currentGrant.status !== "approved" || currentGrant.revision !== revision
       || currentGrant.manifest_sha256 !== manifestSha256 || currentGrant.resource_sha256 !== resourceSha256 || resourceDigest !== resourceSha256
       || currentGrant.installation_generation !== generation || !Array.isArray(approvedOperations) || !approvedOperations.includes(operationId)
-      || !Array.isArray(approvedTables) || !approvedTables.includes(table))
+      || !Array.isArray(approvedTables) || (objectResource ? approvedTables.length !== 0 : !approvedTables.includes(table)))
       return Response.json({ error_code: "extension_resource_grant_revoked_or_stale" }, { status: 403 });
     const leaseId = crypto.randomUUID(), now = new Date().toISOString(), expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     const outcome: { value: "claimed" | "rate_limit" | "concurrency_limit" | "stale" } = { value: "stale" };
@@ -17751,6 +17788,174 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (outcome.value === "concurrency_limit") return Response.json({ error_code: "extension_resource_concurrency_limit" }, { status: 429, headers: { "retry-after": "2" } });
     if (outcome.value !== "claimed") return Response.json({ error_code: "extension_resource_grant_revoked_or_stale" }, { status: 403 });
     return Response.json({ lease_id: leaseId, expires_at: expiresAt }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async executeExtensionObjectOperation(request: Request): Promise<Response> {
+    let body: Record<string, unknown>;
+    try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(await readBoundedRequestBytes(request, 256 * 1024))) as Record<string, unknown>; }
+    catch (error) { return Response.json({ error_code: error instanceof RequestBodyTooLargeError ? "extension_object_request_too_large" : "extension_object_request_invalid" },
+      { status: error instanceof RequestBodyTooLargeError ? 413 : 400 }); }
+    const tenantId = typeof body.tenantId === "string" ? body.tenantId : "", spaceId = typeof body.spaceId === "string" ? body.spaceId : "";
+    const projectId = typeof body.projectId === "string" ? body.projectId : "", instanceId = typeof body.instanceId === "string" ? body.instanceId : "";
+    const requirementId = typeof body.requirementId === "string" ? body.requirementId : "", operationId = typeof body.operationId === "string" ? body.operationId : "";
+    const leaseId = typeof body.leaseId === "string" ? body.leaseId : "", manifestSha256 = typeof body.manifestSha256 === "string" ? body.manifestSha256 : "";
+    const resourceSha256 = typeof body.resourceSha256 === "string" ? body.resourceSha256 : "";
+    const generation = body.installationGeneration, revision = body.grantRevision;
+    if (!tenantId || request.headers.get("x-naelao-tenant-id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || !/^[a-z][a-z0-9._-]{1,63}$/.test(requirementId) || !["get", "put", "delete"].includes(operationId)
+      || !/^[a-f0-9-]{36}$/.test(leaseId) || !/^[a-f0-9]{64}$/.test(manifestSha256) || !/^[a-f0-9]{64}$/.test(resourceSha256)
+      || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1
+      || typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+
+    const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
+    if (!queryOne(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", projectId, spaceId))
+      return Response.json({ error_code: "extension_resource_project_inactive" }, { status: 404 });
+    if (!target || target.row.status !== "active" || target.row.generation !== generation || target.manifestSha256 !== manifestSha256
+      || target.row.publisher_revoked_at || !await this.extensionDependencyClosureActive(tenantId, spaceId, target.manifest, "PROJECT_BOUND", projectId))
+      return Response.json({ error_code: "extension_resource_installation_changed" }, { status: 409 });
+    const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "objects" && item.scope === "project");
+    const operation = requirement?.operations.find(item => item.id === operationId);
+    if (!requirement || !operation || requirement.binding !== undefined)
+      return Response.json({ error_code: "extension_object_operation_not_declared" }, { status: 403 });
+    const resourceDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(requirement))))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    if (resourceDigest !== resourceSha256) return Response.json({ error_code: "extension_resource_grant_revoked_or_stale" }, { status: 403 });
+    const grant = queryOne<{ manifest_sha256: string; resource_sha256: string; installation_generation: number;
+      operations_json: string; tables_json: string; status: string; revision: number }>(this.ctx.storage.sql as never,
+      `SELECT manifest_sha256,resource_sha256,installation_generation,operations_json,tables_json,status,revision
+       FROM extension_resource_grants WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND requirement_id=?`,
+      tenantId, spaceId, projectId, instanceId, requirementId);
+    const lease = queryOne<{ operation_id: string; table_name: string; manifest_sha256: string; resource_sha256: string;
+      installation_generation: number; grant_revision: number; status: string; expires_at: string; consumed_at: string | null }>(this.ctx.storage.sql as never,
+      `SELECT operation_id,table_name,manifest_sha256,resource_sha256,installation_generation,grant_revision,status,expires_at,consumed_at
+       FROM extension_resource_operation_leases WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND requirement_id=?`,
+      leaseId, tenantId, spaceId, projectId, instanceId, requirementId);
+    let operations: unknown, tables: unknown;
+    try { operations = grant ? JSON.parse(grant.operations_json) : null; tables = grant ? JSON.parse(grant.tables_json) : null; } catch { /* deny malformed durable grants */ }
+    if (!grant || grant.status !== "approved" || grant.revision !== revision || grant.manifest_sha256 !== manifestSha256
+      || grant.resource_sha256 !== resourceSha256 || grant.installation_generation !== generation || !Array.isArray(operations)
+      || !operations.includes(operationId) || !Array.isArray(tables) || tables.length !== 0
+      || !lease || lease.status !== "active" || lease.expires_at <= new Date().toISOString() || lease.operation_id !== operationId
+      || lease.table_name !== "objects" || lease.manifest_sha256 !== manifestSha256 || lease.resource_sha256 !== resourceSha256
+      || lease.installation_generation !== generation || lease.grant_revision !== revision || lease.consumed_at !== null)
+      return Response.json({ error_code: "extension_resource_grant_revoked_or_stale" }, { status: 403 });
+
+    let input: Record<string, unknown>;
+    try { input = validateExtensionResourceValue(operation.input, body.input, "input"); }
+    catch { return Response.json({ error_code: "extension_object_input_invalid" }, { status: 400 }); }
+    if (new TextEncoder().encode(JSON.stringify(input)).byteLength > requirement.limits.maxBytesPerOperation || !isExtensionObjectKey(input.key))
+      return Response.json({ error_code: "extension_object_input_invalid" }, { status: 400 });
+    const key = input.key as string;
+    let result: Record<string, unknown>;
+    if (operationId === "get") {
+      const now = new Date().toISOString();
+      const read = this.ctx.storage.transactionSync(() => {
+        const currentGrant = queryOne<{ status: string; revision: number }>(this.ctx.storage.sql as never,
+          `SELECT status,revision FROM extension_resource_grants WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND requirement_id=?`,
+          tenantId, spaceId, projectId, instanceId, requirementId);
+        const currentLease = queryOne<{ status: string; expires_at: string; consumed_at: string | null }>(this.ctx.storage.sql as never,
+          `SELECT status,expires_at,consumed_at FROM extension_resource_operation_leases WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+          leaseId, tenantId, spaceId, projectId, instanceId);
+        const currentInstall = queryOne<{ status: string; generation: number }>(this.ctx.storage.sql as never,
+          `SELECT status,generation FROM extension_instances WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=?`,
+          instanceId, tenantId, spaceId, projectId);
+        if (currentGrant?.status !== "approved" || currentGrant.revision !== revision || currentLease?.status !== "active"
+          || currentLease.expires_at <= now || currentLease.consumed_at !== null || currentInstall?.status !== "active"
+          || currentInstall.generation !== generation
+          || !queryOne(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", projectId, spaceId))
+          return { status: "stale" as const };
+        const consumed = this.ctx.storage.sql.exec(`UPDATE extension_resource_operation_leases SET consumed_at=?
+          WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND status='active' AND consumed_at IS NULL`,
+        now, leaseId, tenantId, spaceId, projectId, instanceId);
+        if (consumed.rowsWritten !== 1) return { status: "stale" as const };
+        const row = queryOne<{ content_base64: string; content_type: string; size_bytes: number; sha256: string }>(this.ctx.storage.sql as never,
+          `SELECT content_base64,content_type,size_bytes,sha256 FROM extension_resource_objects
+           WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND requirement_id=? AND object_key=?`,
+          tenantId, spaceId, projectId, instanceId, requirementId, key);
+        return { status: "ok" as const, row };
+      });
+      if (read.status !== "ok") return Response.json({ error_code: "extension_resource_installation_changed" }, { status: 409 });
+      const row = read.row;
+      result = row ? { found: true, dataBase64: row.content_base64, contentType: row.content_type, size: row.size_bytes, sha256: row.sha256 }
+        : { found: false, size: 0 };
+    } else if (operationId === "delete") {
+      let deleted = false;
+      const outcome = this.ctx.storage.transactionSync(() => {
+        const currentGrant = queryOne<{ status: string; revision: number }>(this.ctx.storage.sql as never,
+          `SELECT status,revision FROM extension_resource_grants WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND requirement_id=?`,
+          tenantId, spaceId, projectId, instanceId, requirementId);
+        const currentLease = queryOne<{ status: string; expires_at: string; consumed_at: string | null }>(this.ctx.storage.sql as never,
+          `SELECT status,expires_at,consumed_at FROM extension_resource_operation_leases WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+          leaseId, tenantId, spaceId, projectId, instanceId);
+        const currentInstall = queryOne<{ status: string; generation: number }>(this.ctx.storage.sql as never,
+          `SELECT status,generation FROM extension_instances WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=?`,
+          instanceId, tenantId, spaceId, projectId);
+        if (currentGrant?.status !== "approved" || currentGrant.revision !== revision || currentLease?.status !== "active"
+          || currentLease.expires_at <= new Date().toISOString() || currentLease.consumed_at !== null
+          || currentInstall?.status !== "active" || currentInstall.generation !== generation
+          || !queryOne(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", projectId, spaceId)) return false;
+        const consumed = this.ctx.storage.sql.exec(`UPDATE extension_resource_operation_leases SET consumed_at=?
+          WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND status='active' AND consumed_at IS NULL`,
+        new Date().toISOString(), leaseId, tenantId, spaceId, projectId, instanceId);
+        if (consumed.rowsWritten !== 1) return false;
+        deleted = this.ctx.storage.sql.exec(`DELETE FROM extension_resource_objects WHERE tenant_id=? AND space_id=? AND project_id=?
+          AND instance_id=? AND requirement_id=? AND object_key=?`, tenantId, spaceId, projectId, instanceId, requirementId, key).rowsWritten > 0;
+        return true;
+      });
+      if (!outcome) return Response.json({ error_code: "extension_resource_installation_changed" }, { status: 409 });
+      result = { deleted };
+    } else {
+      const bytes = decodeExtensionObjectBase64(input.dataBase64);
+      if (!bytes || !isExtensionObjectContentType(input.contentType) || bytes.byteLength > EXTENSION_OBJECT_MAX_BYTES)
+        return Response.json({ error_code: "extension_object_content_invalid" }, { status: 400 });
+      const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+      const now = new Date().toISOString();
+      const outcome = this.ctx.storage.transactionSync(() => {
+        const currentGrant = queryOne<{ status: string; revision: number }>(this.ctx.storage.sql as never,
+          `SELECT status,revision FROM extension_resource_grants WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND requirement_id=?`,
+          tenantId, spaceId, projectId, instanceId, requirementId);
+        const currentLease = queryOne<{ status: string; expires_at: string; consumed_at: string | null }>(this.ctx.storage.sql as never,
+          `SELECT status,expires_at,consumed_at FROM extension_resource_operation_leases WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+          leaseId, tenantId, spaceId, projectId, instanceId);
+        const currentInstall = queryOne<{ status: string; generation: number }>(this.ctx.storage.sql as never,
+          `SELECT status,generation FROM extension_instances WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=?`,
+          instanceId, tenantId, spaceId, projectId);
+        if (currentGrant?.status !== "approved" || currentGrant.revision !== revision || currentLease?.status !== "active"
+          || currentLease.expires_at <= now || currentLease.consumed_at !== null
+          || currentInstall?.status !== "active" || currentInstall.generation !== generation
+          || !queryOne(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", projectId, spaceId)) return "stale";
+        const consumed = this.ctx.storage.sql.exec(`UPDATE extension_resource_operation_leases SET consumed_at=?
+          WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND status='active' AND consumed_at IS NULL`,
+        now, leaseId, tenantId, spaceId, projectId, instanceId);
+        if (consumed.rowsWritten !== 1) return "stale";
+        const existing = queryOne<{ size_bytes: number }>(this.ctx.storage.sql as never,
+          `SELECT size_bytes FROM extension_resource_objects WHERE tenant_id=? AND space_id=? AND project_id=?
+           AND instance_id=? AND requirement_id=? AND object_key=?`, tenantId, spaceId, projectId, instanceId, requirementId, key);
+        const usage = queryOne<{ bytes: number; count: number }>(this.ctx.storage.sql as never,
+          `SELECT COALESCE(SUM(size_bytes),0) AS bytes,COUNT(*) AS count FROM extension_resource_objects
+           WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`, tenantId, spaceId, projectId, instanceId) ?? { bytes: 0, count: 0 };
+        const totalAfter = usage.bytes - (existing?.size_bytes ?? 0) + bytes.byteLength;
+        if (!existing && usage.count >= EXTENSION_OBJECT_MAX_COUNT || totalAfter > EXTENSION_OBJECT_MAX_TOTAL_BYTES) return "quota";
+        this.ctx.storage.sql.exec(`INSERT INTO extension_resource_objects
+          (tenant_id,space_id,project_id,instance_id,requirement_id,object_key,content_base64,content_type,size_bytes,sha256,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,requirement_id,object_key) DO UPDATE SET
+          content_base64=excluded.content_base64,content_type=excluded.content_type,size_bytes=excluded.size_bytes,sha256=excluded.sha256,updated_at=excluded.updated_at`,
+        tenantId, spaceId, projectId, instanceId, requirementId, key, input.dataBase64 as string, input.contentType as string, bytes.byteLength, sha256, now, now);
+        return "stored";
+      });
+      if (outcome === "stale") return Response.json({ error_code: "extension_resource_installation_changed" }, { status: 409 });
+      if (outcome === "quota") return Response.json({ error_code: "extension_object_quota_exceeded" }, { status: 413 });
+      result = { stored: true, size: bytes.byteLength, sha256 };
+    }
+    try {
+      validateExtensionResourceValue(operation.output, result, "output");
+      if (new TextEncoder().encode(JSON.stringify(result)).byteLength > requirement.limits.maxBytesPerOperation)
+        throw new Error("extension_object_result_too_large");
+    } catch { return Response.json({ error_code: "extension_object_result_exceeded_schema" }, { status: 502 }); }
+    return Response.json(result, { headers: { "cache-control": "private, no-store" } });
   }
 
   private async releaseExtensionResourceOperation(request: Request): Promise<Response> {
@@ -18112,8 +18317,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             body.publisherId ?? null, body.publisherKeyId ?? null, body.publisherSignature ?? null, body.publisherPayloadSha256 ?? null);
         }
         if (body.scope && body.tenantId && body.spaceId && ownerKey && instanceId) {
-          const existingInstance = queryOne<{ extension_id: string; tenant_id: string; space_id: string; project_id: string | null; user_id: string | null; scope: string; instance_key: string; status: string }>(
-            this.ctx.storage.sql as never, "SELECT extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,status FROM extension_instances WHERE instance_id=?", instanceId);
+          const existingInstance = queryOne<{ extension_id: string; tenant_id: string; space_id: string; project_id: string | null; user_id: string | null;
+            scope: string; instance_key: string; status: string; release_version: string | null }>(
+            this.ctx.storage.sql as never, "SELECT extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,status,release_version FROM extension_instances WHERE instance_id=?", instanceId);
           if (existingInstance && (existingInstance.extension_id !== manifest.id || existingInstance.tenant_id !== body.tenantId
             || existingInstance.space_id !== body.spaceId || existingInstance.project_id !== (body.projectId ?? null)
             || existingInstance.user_id !== (body.userId ?? null) || existingInstance.scope !== body.scope || existingInstance.instance_key !== instanceKey))
@@ -18123,6 +18329,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
               throw new Error("extension_runtime_update_requires_pause");
             if (this.activeExtensionRuntimeWorkCount(instanceId) > 0)
               throw new Error("extension_runtime_work_not_drained");
+          }
+          if (existingInstance && (existingInstance.status === "removed" || existingInstance.status === "expired"
+            || existingInstance.release_version !== (manifest.bundle?.version ?? null))) {
+            execute(this.ctx.storage.sql as never, "DELETE FROM extension_resource_objects WHERE instance_id=?", instanceId);
+            execute(this.ctx.storage.sql as never, "DELETE FROM extension_resource_grants WHERE instance_id=?", instanceId);
           }
           execute(this.ctx.storage.sql as never,
           `INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at,release_version)

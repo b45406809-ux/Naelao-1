@@ -1,10 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import { wrapWorkflowBinding } from "@cloudflare/dynamic-workflows";
 import { WORKFLOW_CLASS_POLICIES, isTerminalWorkflow, validateDurableWorkflowIdentity, validateWorkflowPointer,
-  resolveExtensionStructuredDataRequest, type DurableStructuredDataOperationReceipt, type DurableWorkflowIdentity,
+  resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, type DurableObjectOperationReceipt,
+  type DurableResourceOperationReceipt, type DurableStructuredDataOperationReceipt, type DurableWorkflowIdentity,
   type WorkflowCheckpointPointer, type DurableWorkflowStatus } from "@naelao/agent-sdk";
 import { WorkflowJournal, type WorkflowJournalStorage, type WorkflowJournalRecord } from "../workflows/workflow-state.js";
-import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, resolveApprovedStructuredDataGrant, workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, resolveApprovedObjectGrant, resolveApprovedStructuredDataGrant,
+  workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowStepInfraUsage } from "../workflows/report-infra-usage.js";
 import type { Env } from "../env.js";
 import { readBoundedResponseText } from "../shared/bounded-response-text.js";
@@ -101,6 +103,8 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     let gadgetId = typeof params.gadget_id === "string" ? params.gadget_id : "";
     let table = typeof params.table === "string" ? params.table : "";
     let approvedResourceGrant: Awaited<ReturnType<typeof resolveApprovedStructuredDataGrant>> = null;
+    let approvedObjectGrant: Awaited<ReturnType<typeof resolveApprovedObjectGrant>> = null;
+    let resolvedObject: ReturnType<typeof resolveExtensionObjectResourceRequest> = null;
     let resourceMetering: { unit: "request" | "byte" | "job"; units: number } | null = null;
     if (operation === "extension.resource.structured_data" && identity.workflowClass === "vertical_extension" && identity.definitionId) {
       const grant = await readWorkflowGrant(this.env, identity);
@@ -120,17 +124,37 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       gadgetId = resolved.gadgetId;
       table = resolved.table;
     }
-    const resourceReceipt: DurableStructuredDataOperationReceipt | undefined = gadgetOperation
+    if (operation === "extension.resource.objects" && identity.workflowClass === "vertical_extension" && identity.definitionId) {
+      const grant = await readWorkflowGrant(this.env, identity);
+      const requirementId = typeof params.requirement_id === "string" ? params.requirement_id : "";
+      const operationId = typeof params.operation === "string" ? params.operation : "";
+      resolvedObject = resolveExtensionObjectResourceRequest({ manifest: grant.installation?.manifest ?? {}, workflowId: identity.definitionId,
+        requirementId, operationId, input: params.input });
+      if (!resolvedObject) throw new Error("workflow_object_resource_request_invalid");
+      approvedObjectGrant = await resolveApprovedObjectGrant(grant.installation, requirementId, operationId);
+      if (!approvedObjectGrant) throw new Error("workflow_object_resource_owner_grant_required");
+      resourceMetering = { unit: resolvedObject.operation.meteringUnit,
+        units: new TextEncoder().encode(JSON.stringify(params.input)).byteLength };
+    }
+    let resourceReceipt: DurableResourceOperationReceipt | undefined;
+    if (gadgetOperation
       && identity.workflowClass === "vertical_extension" && identity.projectId && identity.installationId
-      && /^[a-z][a-z0-9_-]{1,63}$/.test(gadgetId) && /^[a-z][a-z0-9_-]{0,62}$/.test(table)
-      ? { kind: "structured_data", installationId: identity.installationId, projectId: identity.projectId, principalId: identity.actorId,
+      && /^[a-z][a-z0-9_-]{1,63}$/.test(gadgetId) && /^[a-z][a-z0-9_-]{0,62}$/.test(table)) {
+      resourceReceipt = { kind: "structured_data", installationId: identity.installationId, projectId: identity.projectId, principalId: identity.actorId,
         gadgetId, table, operation: gadgetOperation as DurableStructuredDataOperationReceipt["operation"], requestSha256: inputDigest,
         requestBytes: new TextEncoder().encode(json).byteLength, status: "prepared", preparedAt: Date.now(),
         ...(approvedResourceGrant ? { manifestSha256: approvedResourceGrant.manifest_sha256,
           resourceSha256: approvedResourceGrant.resource_sha256, installationGeneration: approvedResourceGrant.installation_generation,
           grantRevision: approvedResourceGrant.revision } : {}),
-        ...(resourceMetering ? { meteringUnit: resourceMetering.unit, meteredUnits: resourceMetering.units } : {}) }
-      : undefined;
+        ...(resourceMetering ? { meteringUnit: resourceMetering.unit, meteredUnits: resourceMetering.units } : {}) };
+    } else if (resolvedObject && approvedObjectGrant && identity.workflowClass === "vertical_extension" && identity.projectId && identity.installationId) {
+      resourceReceipt = { kind: "objects", installationId: identity.installationId, projectId: identity.projectId, principalId: identity.actorId,
+        requirementId: String(params.requirement_id), objectKeySha256: await workflowHash(resolvedObject.key), operation: resolvedObject.operation.id as DurableObjectOperationReceipt["operation"],
+        requestSha256: inputDigest, requestBytes: new TextEncoder().encode(json).byteLength, status: "prepared", preparedAt: Date.now(),
+        manifestSha256: approvedObjectGrant.manifest_sha256, resourceSha256: approvedObjectGrant.resource_sha256,
+        installationGeneration: approvedObjectGrant.installation_generation, grantRevision: approvedObjectGrant.revision,
+        ...(resourceMetering ? { meteringUnit: resourceMetering.unit, meteredUnits: resourceMetering.units } : {}) };
+    }
     const { effect, created } = await this.journal.prepareExternalEffect(key, operation, inputDigest, resourceReceipt);
     if (effect.status === "committed" && effect.result) return readWorkflowArtifact(this.env, identity, effect.result);
     if (!created) {

@@ -5,6 +5,13 @@ import { createExtensionResourceClient, createLocalExtensionResourceHarness, dig
   validateExtensionManifest, validateExtensionSettingsValues } from "./extensions.js";
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
+function objectWorkflowBundle(id = valid.id) {
+  return { schemaVersion: "1.0", kind: "extension_bundle", id, version: "1.0.0", primitives: [
+    { schemaVersion: "1.0", kind: "workflow", id: "resource_workflow", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+      executionMode: "headless", entry: "./resource.ts", steps: ["resource"], toolNames: ["extension.resource.objects"] },
+  ], workerRoles: [{ id: "resource_role", principal: "project_member", invocation: "workflow_step", execution: "worker",
+    entry: "./resource.ts", primitiveIds: ["resource_workflow"] }] };
+}
 describe("immutable extension kernel", () => {
   it("binds structured data requests to existing project workflow Gadget grants", () => {
     const structured = {
@@ -43,39 +50,47 @@ describe("immutable extension kernel", () => {
   });
   it("parses versioned resource requirements without treating them as grants", async () => {
     const requirement = { id: "catalog", kind: "objects", apiVersion: "1.0", scope: "project", operations: [
-      { id: "put", input: { schemaVersion: "1.0", fields: { name: { type: "string", required: true, maxLength: 40 } } },
-        output: { schemaVersion: "1.0", fields: { saved: { type: "boolean", required: true } } }, idempotency: "required", meteringUnit: "byte" },
+      { id: "put", input: { schemaVersion: "1.0", fields: { key: { type: "string", required: true, maxLength: 128 },
+        dataBase64: { type: "string", required: true, maxLength: 1024 }, contentType: { type: "string", required: true, maxLength: 128 } } },
+        output: { schemaVersion: "1.0", fields: { stored: { type: "boolean", required: true }, size: { type: "number", required: true, minimum: 0, maximum: 65536 },
+          sha256: { type: "string", required: true, maxLength: 64 } } }, idempotency: "required", meteringUnit: "byte" },
     ], limits: { requestsPerMinute: 40, maxConcurrent: 3, maxBytesPerOperation: 1024 } };
-    const parsed = validateExtensionManifest({ ...valid, resourceRequirements: [requirement] });
+    const parsed = validateExtensionManifest({ ...valid, capabilityRequirements: ["extension.workflow"], resourceRequirements: [requirement], bundle: objectWorkflowBundle() });
     expect(parsed.resourceRequirements?.[0]).toMatchObject({ id: "catalog", apiVersion: "1.0", kind: "objects", scope: "project" });
     expect(findUnsupportedExtensionResources(parsed.resourceRequirements!)).toEqual([{ requirementId: "catalog", kind: "objects", operations: ["put"] }]);
     const scope = { tenantId: "tenant_a", spaceId: "space_a", projectId: "project_a", installationId: "install_a", principalId: "user_a" };
-    const harness = createLocalExtensionResourceHarness(parsed.resourceRequirements!, scope, async () => ({ saved: true }), () => Date.parse("2029-01-01T00:00:00.000Z"));
+    const harness = createLocalExtensionResourceHarness(parsed.resourceRequirements!, scope,
+      async () => ({ stored: true, size: 1, sha256: "a".repeat(64) }), () => Date.parse("2029-01-01T00:00:00.000Z"));
     expect(harness.mode).toBe("simulated");
-    await expect(harness.client.execute("catalog", "put", { name: "sample" }, "request-0001")).resolves.toEqual({ saved: true });
+    await expect(harness.client.execute("catalog", "put", { key: "sample", dataBase64: "eA==", contentType: "text/plain" }, "request-0001"))
+      .resolves.toEqual({ stored: true, size: 1, sha256: "a".repeat(64) });
     expect(() => validateExtensionManifest({ ...valid, resourceRequirements: [{ ...requirement, version: "latest" }] })).toThrow("invalid_resource_requirement_field");
     expect(() => validateExtensionManifest({ ...valid, resourceRequirements: [{ ...requirement, operations: [{ ...requirement.operations[0], idempotency: "optional" }] }] }))
       .toThrow("invalid_resource_idempotency");
   });
   it("scopes resource calls to an active host grant, validates input and requires idempotency", async () => {
-    const requirement = validateExtensionManifest({ ...valid, resourceRequirements: [{ id: "catalog", kind: "objects", apiVersion: "1.0", scope: "project",
-      operations: [{ id: "put", input: { schemaVersion: "1.0", fields: { name: { type: "string", required: true, maxLength: 40 } } },
-        output: { schemaVersion: "1.0", fields: { saved: { type: "boolean", required: true } } }, idempotency: "required", meteringUnit: "byte" }],
+    const requirement = validateExtensionManifest({ ...valid, capabilityRequirements: ["extension.workflow"], bundle: objectWorkflowBundle(), resourceRequirements: [{ id: "catalog", kind: "objects", apiVersion: "1.0", scope: "project",
+      operations: [{ id: "put", input: { schemaVersion: "1.0", fields: { key: { type: "string", required: true, maxLength: 128 },
+        dataBase64: { type: "string", required: true, maxLength: 1024 }, contentType: { type: "string", required: true, maxLength: 128 } } },
+        output: { schemaVersion: "1.0", fields: { stored: { type: "boolean", required: true }, size: { type: "number", required: true, minimum: 0, maximum: 65536 },
+          sha256: { type: "string", required: true, maxLength: 64 } } }, idempotency: "required", meteringUnit: "byte" }],
       limits: { requestsPerMinute: 40, maxConcurrent: 3, maxBytesPerOperation: 1024 } }] }).resourceRequirements!;
     const scope = { tenantId: "tenant_a", spaceId: "space_a", projectId: "project_a", installationId: "install_a", principalId: "user_a" };
     const grant = { handle: "host:opaque", requirementId: "catalog", kind: "objects" as const, apiVersion: "1.0" as const, scope,
       operations: ["put"], status: "active" as const, expiresAt: "2030-01-01T00:00:00.000Z" };
     const calls: unknown[] = [];
-    const client = createExtensionResourceClient(requirement, [grant], scope, { async execute(request) { calls.push(request); return { saved: true }; } }, () => Date.parse("2029-01-01T00:00:00.000Z"));
-    await expect(client.execute("catalog", "put", { name: "sample" })).rejects.toThrow("resource_idempotency_key_required");
-    await expect(client.execute("catalog", "put", { name: "sample", providerBucket: "other-tenant" }, "request-0001"))
+    const value = { key: "sample", dataBase64: "eA==", contentType: "text/plain" };
+    const output = { stored: true, size: 1, sha256: "a".repeat(64) };
+    const client = createExtensionResourceClient(requirement, [grant], scope, { async execute(request) { calls.push(request); return output; } }, () => Date.parse("2029-01-01T00:00:00.000Z"));
+    await expect(client.execute("catalog", "put", value)).rejects.toThrow("resource_idempotency_key_required");
+    await expect(client.execute("catalog", "put", { ...value, providerBucket: "other-tenant" }, "request-0001"))
       .rejects.toThrow("resource_input_unknown_field:providerBucket");
-    await expect(client.execute("catalog", "put", { name: "sample" }, "request-0001")).resolves.toEqual({ saved: true });
+    await expect(client.execute("catalog", "put", value, "request-0001")).resolves.toEqual(output);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ handle: "host:opaque", scope, idempotencyKey: "request-0001" });
     const mismatched = createExtensionResourceClient(requirement, [{ ...grant, scope: { ...scope, installationId: "install_b" } }], scope,
-      { async execute(request) { calls.push(request); return { saved: true }; } }, () => Date.parse("2029-01-01T00:00:00.000Z"));
-    await expect(mismatched.execute("catalog", "put", { name: "sample" }, "request-0002")).rejects.toThrow("resource_grant_scope_mismatch");
+      { async execute(request) { calls.push(request); return output; } }, () => Date.parse("2029-01-01T00:00:00.000Z"));
+    await expect(mismatched.execute("catalog", "put", value, "request-0002")).rejects.toThrow("resource_grant_scope_mismatch");
     expect(calls).toHaveLength(1);
   });
   it("applies declared byte and request quotas in the SDK adapter contract", async () => {
