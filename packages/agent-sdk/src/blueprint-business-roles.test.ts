@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { instantiateBlueprint } from "./blueprint.js";
-import { validateBlueprintBusinessRoles } from "./blueprint-business-roles.js";
+import { authorBlueprintBusinessRoles, validateBlueprintBusinessRoles } from "./blueprint-business-roles.js";
 import type { SpaceBlueprint } from "./types.js";
 
 const legacy: SpaceBlueprint = { id: "bp_legacy", schemaVersion: "2.0", metadata: {}, templateCategory: "general",
@@ -26,6 +26,15 @@ const roles = [
 ];
 
 describe("template-defined business role proposals", () => {
+  it("provides a builder round-trip helper that canonicalizes proposals without adding authority", () => {
+    const authored = authorBlueprintBusinessRoles(legacy, roles);
+    expect(authored.businessRolesSchemaVersion).toBe(1);
+    expect(authored.businessRoles?.map(role => role.id)).toEqual(["accountant", "stock_lead"]);
+    expect(authored).not.toHaveProperty("grants");
+    expect(instantiateBlueprint(authored, "space-target").businessRoles).toEqual(authored.businessRoles);
+    expect(legacy).not.toHaveProperty("businessRoles");
+  });
+
   it("preserves legacy templates and canonicalizes arbitrary signed role proposals without creating grants", () => {
     const old = instantiateBlueprint(legacy, "space-target");
     expect(old).not.toHaveProperty("businessRoles");

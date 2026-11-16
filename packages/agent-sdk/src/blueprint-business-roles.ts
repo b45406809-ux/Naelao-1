@@ -1,5 +1,5 @@
 import type { BlueprintBusinessRoleResourceRefV1, BlueprintBusinessRoleV1, BlueprintProject,
-  BlueprintExtensionRequirements } from "./types.js";
+  BlueprintExtensionRequirements, SpaceBlueprint } from "./types.js";
 
 const ROLE_ID = /^[a-z][a-z0-9_-]{0,63}$/;
 const SYMBOL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -197,4 +197,15 @@ export function validateBlueprintBusinessRoles(value: unknown, context: {
   }).sort((a, b) => a.id.localeCompare(b.id));
   if (new TextEncoder().encode(JSON.stringify(roles)).byteLength > MAX_ROLE_BYTES) throw new Error("Business role proposals exceed the size limit");
   return roles;
+}
+
+/** Builder authoring helper that round-trips only canonical, signed proposal data. It never
+ * creates grants, resolves customer identities or activates a role. */
+export function authorBlueprintBusinessRoles(source: SpaceBlueprint, value: unknown): SpaceBlueprint {
+  const businessRoles = validateBlueprintBusinessRoles(value, {
+    projects: source.projects,
+    requiredExtensions: source.requiredExtensions,
+    ...(source.extensionRequirements ? { extensionRequirements: source.extensionRequirements } : {}),
+  });
+  return { ...structuredClone(source), businessRolesSchemaVersion: 1, businessRoles };
 }

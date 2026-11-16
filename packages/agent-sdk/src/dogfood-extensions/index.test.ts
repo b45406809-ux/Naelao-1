@@ -20,6 +20,10 @@ describe("dogfooded enterprise extensions", () => {
     expect(() => new Function(script!)).not.toThrow();
     const foundry = DOGFOOD_EXTENSION_CANVASES.ext_foundry_catalog ?? "";
     expect(foundry).toContain("Customer setup form");
+    expect(foundry).toContain("Builder-defined business roles");
+    expect(foundry).toContain("business_roles_text");
+    expect(foundry).toContain("businessRolesSchemaVersion:1");
+    expect(foundry).toContain("ownerReviewRequired:true");
     expect(foundry).toContain("Add setup field");
     expect(foundry).toContain("Setup contract preview");
     expect(foundry).toContain("Customer form preview");
@@ -70,7 +74,7 @@ describe("dogfooded enterprise extensions", () => {
     expect(foundryScript).toBeTruthy();
     expect(() => new Function(foundryScript!)).not.toThrow();
     const foundryManifest = DOGFOOD_EXTENSIONS.find(manifest => manifest.id === "ext_foundry_catalog");
-    expect(foundryManifest?.releaseVersion).toBe("1.3.0");
+    expect(foundryManifest?.releaseVersion).toBe("1.4.0");
     expect(foundryManifest?.gadgets[0]?.migrations).toEqual(expect.arrayContaining([
       expect.objectContaining({ version: 2, up: expect.stringContaining("ADD COLUMN draft_json TEXT NOT NULL DEFAULT '{}'" ) }),
     ]));

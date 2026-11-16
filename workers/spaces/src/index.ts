@@ -74,7 +74,7 @@ import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, spaceSha
   isSpaceSharedDependencyPinList, isSpaceSharedGadgetMigrationRetentionPlan, spaceSharedDependencyExpansion,
   supportsOwnerApprovedSpaceSharedAuthorityExpansion, supportsOwnerApprovedSpaceSharedDependencyExpansion,
   supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
-import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintExpectedUsage, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
+import { attachBlueprintAssistantChannelDefaults, attachBlueprintBusinessRoles, attachBlueprintCoordinationDefaults, attachBlueprintExpectedUsage, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -799,7 +799,7 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Blueprint storage not configured" }, 503);
-  const exportOptions = await c.req.json<{ requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; expectedUsage?: unknown; extensionRequirements?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; expectedUsage?: unknown; extensionRequirements?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
+  const exportOptions = await c.req.json<{ requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; expectedUsage?: unknown; extensionRequirements?: unknown; businessRolesSchemaVersion?: unknown; businessRoles?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; expectedUsage?: unknown; extensionRequirements?: unknown; businessRolesSchemaVersion?: unknown; businessRoles?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
   if (exportOptions.requestId !== undefined && (typeof exportOptions.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(exportOptions.requestId))) return c.json({ error_code: "invalid_export_request_id" }, 400);
   const requestId = exportOptions.requestId;
   const requestPayload = { ...exportOptions };
@@ -822,6 +822,8 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   if (exportOptions.projectIds !== undefined && (exportOptions.projectId !== undefined || !Array.isArray(exportOptions.projectIds) || exportOptions.projectIds.length < 1 || exportOptions.projectIds.length > 64
     || exportOptions.projectIds.some(id => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) || new Set(exportOptions.projectIds).size !== exportOptions.projectIds.length)) return c.json({ error_code: "invalid_project_ids" }, 400);
   if (exportOptions.setupFields !== undefined && exportOptions.setupFieldsByProject !== undefined) return c.json({ error_code: "blueprint_setup_schema_invalid" }, 422);
+  if (exportOptions.businessRolesSchemaVersion !== undefined && exportOptions.businessRolesSchemaVersion !== 1
+    || (exportOptions.businessRolesSchemaVersion !== undefined) !== (exportOptions.businessRoles !== undefined)) return c.json({ error_code: "blueprint_business_roles_invalid" }, 422);
   if (exportOptions.requiredExtensions !== undefined && (!Array.isArray(exportOptions.requiredExtensions) || exportOptions.requiredExtensions.length > 128 || exportOptions.requiredExtensions.some(id => typeof id !== "string" || !/^ext_[a-z0-9_-]{2,62}$/.test(id)))) return c.json({ error_code: "invalid_required_extensions" }, 400);
   if (exportOptions.requiredExtensionVersions !== undefined && (!exportOptions.requiredExtensionVersions || typeof exportOptions.requiredExtensionVersions !== "object" || Array.isArray(exportOptions.requiredExtensionVersions) || Object.keys(exportOptions.requiredExtensionVersions).length > 128 || Object.entries(exportOptions.requiredExtensionVersions).some(([id, version]) => !/^ext_[a-z0-9_-]{2,62}$/.test(id) || typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)))) return c.json({ error_code: "invalid_required_extension_versions" }, 400);
   const sourceId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
@@ -876,6 +878,10 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   if (exportOptions.extensionRequirements !== undefined) {
     try { rawBlueprint = attachBlueprintExtensionRequirements(rawBlueprint, exportOptions.extensionRequirements); }
     catch { return c.json({ error_code: "blueprint_extension_requirements_invalid" }, 422); }
+  }
+  if (exportOptions.businessRoles !== undefined) {
+    try { rawBlueprint = attachBlueprintBusinessRoles(rawBlueprint, exportOptions.businessRoles); }
+    catch { return c.json({ error_code: "blueprint_business_roles_invalid" }, 422); }
   }
   if (rawBlueprint.extensionRequirements) {
     const requirementValidation = await validateBlueprintExtensionRequirementPins(c.env.SPACE_DO.get(sourceId), rawBlueprint);

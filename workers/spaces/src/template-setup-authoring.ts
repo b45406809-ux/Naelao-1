@@ -1,4 +1,10 @@
-import { validateAssistantChannelDefaults, validateBlueprintExpectedUsage, validateBlueprintExtensionRequirements, validateBlueprintSetupSchema, validateSpaceCoordinationSingletonKeys, type AssistantChannelTemplateDefaults, type BlueprintSetupField, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { authorBlueprintBusinessRoles, validateAssistantChannelDefaults, validateBlueprintExpectedUsage, validateBlueprintExtensionRequirements, validateBlueprintSetupSchema, validateSpaceCoordinationSingletonKeys, type AssistantChannelTemplateDefaults, type BlueprintSetupField, type SpaceBlueprint } from "@naelao/agent-sdk";
+
+/** Attach builder-authored role proposals to the exported signed blueprint. These remain
+ * non-granting data and are resolved against the target Space only during owner review. */
+export function attachBlueprintBusinessRoles(source: SpaceBlueprint, input: unknown): SpaceBlueprint {
+  return authorBlueprintBusinessRoles(source, input);
+}
 
 /** Attach one author's visual setup form to the exact exported project and validate it with the same
  * SDK contract used by activation. Caller-provided schemas remain data; no executable form logic is accepted. */

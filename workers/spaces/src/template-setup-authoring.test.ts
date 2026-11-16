@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { digestExtensionManifest, type SpaceBlueprint, validateBlueprintSetupSchema, validateExtensionManifest } from "@naelao/agent-sdk";
-import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintExpectedUsage, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
+import { attachBlueprintAssistantChannelDefaults, attachBlueprintBusinessRoles, attachBlueprintCoordinationDefaults, attachBlueprintExpectedUsage, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 import spacesWorker from "./index.js";
 
 const sourceBlueprint = (): SpaceBlueprint => ({
@@ -85,6 +85,19 @@ function conformanceSuite(projectCount = 1) {
 }
 
 describe("visual Template setup authoring export", () => {
+  it("round-trips canonical builder-defined roles as non-granting blueprint proposals", () => {
+    const source = sourceBlueprint();
+    const authored = attachBlueprintBusinessRoles(source, [{ id: "support_lead", name: { en: "Support lead" },
+      recommendedSpaceRole: "member", onboardingSteps: [{ id: "review_policy", title: { en: "Review policy" },
+        instructions: { en: "Read the support policy." }, required: true }] }]);
+    expect(authored.businessRolesSchemaVersion).toBe(1);
+    expect(authored.businessRoles).toMatchObject([{ id: "support_lead", recommendedSpaceRole: "member" }]);
+    expect(authored).not.toHaveProperty("grants");
+    expect(source).not.toHaveProperty("businessRoles");
+    expect(() => attachBlueprintBusinessRoles(source, [{ id: "owner", name: { en: "Owner" }, recommendedSpaceRole: "owner" }]))
+      .toThrow("Invalid business role Space role suggestion");
+  });
+
   it("attaches localized and conditional declarations only to the selected project using SDK validation", () => {
     const source = sourceBlueprint();
     const authored = attachBlueprintSetupFields(source, { projectId: "support", schemaVersion: 2, fields: setupFields });
@@ -204,6 +217,9 @@ describe("visual Template setup authoring export", () => {
         coordinationDefaults: { memberFactsEnabled: true, singletonCapabilityKeys: ["service.phone", "official.website"] },
         expectedUsage: { conversations_per_month: 200, interactions_per_conversation: 8,
           managed_model_id: "@cf/example-model", model_calls_per_interaction: 2 },
+        businessRolesSchemaVersion: 1,
+        businessRoles: [{ id: "support_lead", name: { en: "Support lead" }, recommendedSpaceRole: "member",
+          onboardingSteps: [{ id: "review_policy", title: { en: "Review policy" }, instructions: { en: "Read the support policy." }, required: true }] }],
         extensionRequirements,
         stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
     }), h.env);
@@ -218,8 +234,26 @@ describe("visual Template setup authoring export", () => {
       coordinationDefaults: { memberFactsEnabled: true, singletonCapabilityKeys: ["official.website", "service.phone"] },
       expectedUsage: { conversations_per_month: 200, interactions_per_conversation: 8,
         managed_model_id: "@cf/example-model", model_calls_per_interaction: 2 },
+      businessRolesSchemaVersion: 1,
+      businessRoles: [{ id: "support_lead", name: { en: "Support lead" }, recommendedSpaceRole: "member",
+        onboardingSteps: [{ id: "review_policy", title: { en: "Review policy" }, instructions: { en: "Read the support policy." }, required: true }] }],
       extensionRequirements,
       metadata: { stateDeltaSuite: { fixtures: expect.arrayContaining([expect.objectContaining({ id: "fixture-0" })]) } } });
+  });
+
+  it("rejects a role schema version mismatch and never stores a malformed proposal", async () => {
+    const h = exportHarness();
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-studio/export-template", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-studio",
+        "x-naelao-user-id": "owner-studio", "x-naelao-role": "owner" },
+      body: JSON.stringify({ projectId: "support", name: "Support", description: "Support template",
+        businessRolesSchemaVersion: 2, businessRoles: [{ id: "lead", name: { en: "Lead" } }],
+        stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
+    }), h.env);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error_code: "blueprint_business_roles_invalid" });
+    expect(h.writes).toHaveLength(0);
+    expect(h.jobs).toHaveLength(0);
   });
 
   it("rejects requirement references absent from the exact pinned package manifest", async () => {
