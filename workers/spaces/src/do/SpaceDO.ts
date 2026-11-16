@@ -3398,6 +3398,28 @@ const MIGRATIONS: Migration[] = [
     description: "single-use fencing for extension resource operation leases",
     up: `ALTER TABLE extension_resource_operation_leases ADD COLUMN consumed_at TEXT;`,
   },
+  {
+    version: 154,
+    description: "owner-authorized monthly and per-run extension resource budgets",
+    up: `CREATE TABLE extension_installation_budgets (
+        tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+        installation_generation INTEGER NOT NULL CHECK(installation_generation >= 1),
+        max_run_credits INTEGER NOT NULL CHECK(max_run_credits > 0),
+        monthly_credits INTEGER NOT NULL CHECK(monthly_credits > 0),
+        revision INTEGER NOT NULL CHECK(revision >= 1), approved_by TEXT NOT NULL, approved_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY(instance_id)
+      );
+      CREATE INDEX idx_extension_installation_budgets_scope
+        ON extension_installation_budgets(tenant_id,space_id,project_id,instance_id,installation_generation);
+      CREATE TABLE extension_installation_budget_events (
+        event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+        installation_generation INTEGER NOT NULL, revision INTEGER NOT NULL, max_run_credits INTEGER NOT NULL,
+        monthly_credits INTEGER NOT NULL, actor_id TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_extension_installation_budget_events_instance
+        ON extension_installation_budget_events(tenant_id,space_id,instance_id,revision);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -6114,6 +6136,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/extension-resource-grants" && method === "GET") return this.getExtensionResourceGrants(request, url.searchParams);
       if (url.pathname === "/extension-resource-grants" && method === "POST") return this.approveExtensionResourceGrant(request);
       if (url.pathname === "/extension-resource-grants/revoke" && method === "POST") return this.revokeExtensionResourceGrant(request);
+      if (url.pathname === "/extension-resource-budget" && method === "POST") return this.setExtensionInstallationBudget(request);
       if (url.pathname === "/extension-resource-operation" && method === "POST") return this.claimExtensionResourceOperation(request);
       if (url.pathname === "/extension-resource-operation/release" && method === "POST") return this.releaseExtensionResourceOperation(request);
       if (url.pathname === "/extension-object-operation" && method === "POST") return this.executeExtensionObjectOperation(request);
@@ -6263,7 +6286,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           : url.searchParams.get("include_disabled") === "1"
             ? "i.status IN ('active','disabled')"
             : "i.status='active'";
-        const rows = queryAll<{ instance_id: string; tenant_id: string; space_id: string; scope: string; project_id: string | null; manifest_json: string; extension_updated_at: string }>(this.ctx.storage.sql as never,
+        const rows = queryAll<{ instance_id: string; tenant_id: string; space_id: string; scope: string; project_id: string | null;
+          generation: number; manifest_json: string; extension_updated_at: string }>(this.ctx.storage.sql as never,
           `SELECT i.* FROM extension_installation_manifests i WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND ${statusFilter}`,
           url.searchParams.get("instance_id"), url.searchParams.get("tenant_id"), url.searchParams.get("space_id"));
         const row = rows[0];
@@ -6273,14 +6297,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const bundle = manifest.bundle;
         const approved_shared_filesystem = this.listApprovedSharedFilesystemGrants(instance.instance_id);
         const resource_grants = this.listExtensionResourceGrantRows(instance.instance_id);
+        const budget = this.getCurrentExtensionInstallationBudget(instance.tenant_id, instance.space_id, instance.project_id ?? "",
+          instance.instance_id, instance.generation);
         const dependenciesResolved = await this.extensionDependencyClosureActive(instance.tenant_id, instance.space_id, manifest,
           instance.scope, instance.project_id ?? undefined);
-        if (!bundle) return Response.json({ instance, manifest, approved_shared_filesystem, resource_grants, dependenciesResolved });
+        if (!bundle) return Response.json({ instance, manifest, approved_shared_filesystem, resource_grants, budget, dependenciesResolved });
         const release = queryOne<PublisherReleaseFields & { manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
           "SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, bundle.version);
         const expected = release ? await this.signExtensionRelease(manifest.id, bundle.version, manifest_json, release.artifact_sha256) : "";
         const releaseValid = Boolean(release && release.manifest_json === manifest_json && expected === release.host_signature && publisherReleaseFieldsValid(release));
-        return Response.json({ instance, manifest, approved_shared_filesystem, resource_grants, release: release ? { version: bundle.version, artifactSha256: release.artifact_sha256,
+        return Response.json({ instance, manifest, approved_shared_filesystem, resource_grants, budget, release: release ? { version: bundle.version, artifactSha256: release.artifact_sha256,
           signatureValid: releaseValid, dependenciesResolved: releaseValid && dependenciesResolved, signer: "naelao-host",
           ...(hasPublisherReleaseFields(release) ? { publisher: { id: release.publisher_id, keyId: release.publisher_key_id, signature: release.publisher_signature,
             payloadSha256: release.publisher_payload_sha256, revoked: Boolean(release.publisher_revoked_at) } } : {}) } : null, dependenciesResolved });
@@ -6338,6 +6364,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             "DELETE FROM extension_resource_objects WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?",
             tenantId, spaceId, projectId || "", instanceId);
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_resource_grants WHERE tenant_id=? AND space_id=? AND instance_id=?",
+            tenantId, spaceId, instanceId);
+          execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_budgets WHERE tenant_id=? AND space_id=? AND instance_id=?",
             tenantId, spaceId, instanceId);
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_settings WHERE instance_id=?", instanceId);
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_settings_drafts WHERE instance_id=?", instanceId);
@@ -17765,6 +17793,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
   }
 
+  private getCurrentExtensionInstallationBudget(tenantId: string, spaceId: string, projectId: string, instanceId: string, generation: number) {
+    return queryOne<{ max_run_credits: number; monthly_credits: number; revision: number; installation_generation: number;
+      approved_by: string; approved_at: string; updated_by: string; updated_at: string }>(this.ctx.storage.sql as never,
+      `SELECT max_run_credits,monthly_credits,revision,installation_generation,approved_by,approved_at,updated_by,updated_at
+       FROM extension_installation_budgets WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND installation_generation=?`,
+      tenantId, spaceId, projectId, instanceId, generation);
+  }
+
   private async extensionResourceGrantTarget(tenantId: string, spaceId: string, projectId: string, instanceId: string) {
     const row = queryOne<{ instance_id: string; extension_id: string; tenant_id: string; space_id: string; project_id: string | null;
       scope: string; status: string; generation: number; installed_by: string; release_version: string | null; manifest_json: string;
@@ -17805,7 +17841,71 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       tenant_id: target.row.tenant_id, space_id: target.row.space_id, project_id: target.row.project_id, scope: target.row.scope,
       status: target.row.status, generation: target.row.generation, installed_by: target.row.installed_by,
       manifest_sha256: target.manifestSha256, release_version: target.row.release_version }, requirements,
+      budget: this.getCurrentExtensionInstallationBudget(tenantId, spaceId, projectId, instanceId, target.row.generation),
       grants: this.listExtensionResourceGrantRows(instanceId) }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async setExtensionInstallationBudget(request: Request): Promise<Response> {
+    let body: Record<string, unknown>;
+    try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(await readBoundedRequestBytes(request, 16 * 1024))) as Record<string, unknown>; }
+    catch { return Response.json({ error_code: "extension_resource_budget_request_invalid" }, { status: 400 }); }
+    const tenantId = typeof body.tenantId === "string" ? body.tenantId : "", spaceId = typeof body.spaceId === "string" ? body.spaceId : "";
+    const projectId = typeof body.projectId === "string" ? body.projectId : "", instanceId = typeof body.instanceId === "string" ? body.instanceId : "";
+    const actorId = typeof body.actorId === "string" ? body.actorId : "";
+    const expectedRevision = body.expectedRevision, maxRunCredits = body.maxRunCredits, monthlyCredits = body.monthlyCredits;
+    if (!tenantId || request.headers.get("x-naelao-tenant-id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || !/^[A-Za-z0-9._:-]{1,192}$/.test(actorId)
+      || typeof expectedRevision !== "number" || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || expectedRevision >= Number.MAX_SAFE_INTEGER
+      || typeof maxRunCredits !== "number" || !Number.isSafeInteger(maxRunCredits) || maxRunCredits < 1 || maxRunCredits > 10_000_000
+      || typeof monthlyCredits !== "number" || !Number.isSafeInteger(monthlyCredits) || monthlyCredits < 1 || monthlyCredits > 10_000_000
+      || maxRunCredits > monthlyCredits
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
+    if (!target || target.row.scope !== "PROJECT_BOUND") return Response.json({ error_code: "extension_resource_installation_untrusted" }, { status: 404 });
+    const now = new Date().toISOString();
+    const outcome: { value: "updated" | "replayed" | "revision_conflict" } = { value: "revision_conflict" };
+    let revision = 1;
+    this.ctx.storage.transactionSync(() => {
+      const current = queryOne<{ installation_generation: number; max_run_credits: number; monthly_credits: number;
+        revision: number; updated_by: string }>(this.ctx.storage.sql as never,
+        `SELECT installation_generation,max_run_credits,monthly_credits,revision,updated_by
+         FROM extension_installation_budgets WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+        tenantId, spaceId, projectId, instanceId);
+      const currentGeneration = current?.installation_generation === target.row.generation ? current : null;
+      if (currentGeneration && currentGeneration.revision !== expectedRevision) {
+        if (currentGeneration.revision === expectedRevision + 1 && currentGeneration.updated_by === actorId
+          && currentGeneration.max_run_credits === maxRunCredits && currentGeneration.monthly_credits === monthlyCredits) {
+          outcome.value = "replayed";
+          revision = currentGeneration.revision;
+        }
+        return;
+      }
+      if (!currentGeneration && expectedRevision !== 0) return;
+      revision = Math.max(currentGeneration?.revision ?? 0, current?.revision ?? 0) + 1;
+      execute(this.ctx.storage.sql as never, `INSERT INTO extension_installation_budgets
+        (tenant_id,space_id,project_id,instance_id,installation_generation,max_run_credits,monthly_credits,revision,
+         approved_by,approved_at,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(instance_id) DO UPDATE SET tenant_id=excluded.tenant_id,space_id=excluded.space_id,project_id=excluded.project_id,
+          installation_generation=excluded.installation_generation,max_run_credits=excluded.max_run_credits,monthly_credits=excluded.monthly_credits,
+          revision=excluded.revision,approved_by=excluded.approved_by,approved_at=excluded.approved_at,updated_by=excluded.updated_by,updated_at=excluded.updated_at`,
+        tenantId, spaceId, projectId, instanceId, target.row.generation, maxRunCredits, monthlyCredits, revision,
+        actorId, now, actorId, now);
+      execute(this.ctx.storage.sql as never, `INSERT INTO extension_installation_budget_events
+        (event_id,tenant_id,space_id,project_id,instance_id,installation_generation,revision,max_run_credits,monthly_credits,actor_id,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`, crypto.randomUUID(), tenantId, spaceId, projectId, instanceId, target.row.generation,
+        revision, maxRunCredits, monthlyCredits, actorId, now);
+      execute(this.ctx.storage.sql as never, `DELETE FROM extension_installation_budget_events WHERE rowid IN (
+        SELECT rowid FROM extension_installation_budget_events WHERE tenant_id=? AND space_id=? AND instance_id=?
+        ORDER BY revision DESC LIMIT -1 OFFSET 100)`, tenantId, spaceId, instanceId);
+      outcome.value = "updated";
+    });
+    if (outcome.value === "revision_conflict") return Response.json({ error_code: "extension_resource_budget_revision_conflict" }, { status: 409 });
+    return Response.json({ instance_id: instanceId, installation_generation: target.row.generation,
+      max_run_credits: maxRunCredits, monthly_credits: monthlyCredits, revision, approved_by: actorId,
+      approved_at: now, updated_by: actorId, updated_at: now, replayed: outcome.value === "replayed" },
+    { headers: { "cache-control": "private, no-store" } });
   }
 
   private async mutateExtensionResourceGrant(request: Request, action: "approved" | "revoked"): Promise<Response> {

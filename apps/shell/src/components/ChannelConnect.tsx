@@ -20,7 +20,7 @@ import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { ExtensionAgentMaintenanceDelegation } from "@/components/ExtensionAgentMaintenanceDelegation";
 import { MicroAppStorageStatus, projectGadgetStorageApps } from "@/components/MicroAppStorageStatus";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionProviderRevocationOutcome, ExtensionPublisherKey, ExtensionPublisherRevocationReceipt, ExtensionRelease, ProjectExtensionResourceGrantSnapshot, ProjectExtensionResourceRequirement, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
-import { approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, revokeProjectExtensionResourceGrant, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import { approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -31,8 +31,11 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
   const [snapshot, setSnapshot] = React.useState<ProjectExtensionResourceGrantSnapshot | null>(null);
   const [operations, setOperations] = React.useState<Record<string, string[]>>({});
   const [tables, setTables] = React.useState<Record<string, string[]>>({});
+  const [maxRunCredits, setMaxRunCredits] = React.useState("");
+  const [monthlyCredits, setMonthlyCredits] = React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [busyRequirement, setBusyRequirement] = React.useState<string | null>(null);
+  const [budgetBusy, setBudgetBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const refresh = React.useCallback(async () => {
     const current = await getProjectExtensionResourceGrants(spaceId, projectId, instanceId, session);
@@ -41,6 +44,13 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
       previous[requirement.requirement_id] ?? current.grants.find(grant => grant.requirement_id === requirement.requirement_id && grant.status === "approved")?.operations ?? []])));
     setTables(previous => Object.fromEntries(current.requirements.map(requirement => [requirement.requirement_id,
       previous[requirement.requirement_id] ?? current.grants.find(grant => grant.requirement_id === requirement.requirement_id && grant.status === "approved")?.tables ?? []])));
+    if (current.budget) {
+      setMaxRunCredits(String(current.budget.max_run_credits));
+      setMonthlyCredits(String(current.budget.monthly_credits));
+    } else {
+      setMaxRunCredits("");
+      setMonthlyCredits("");
+    }
   }, [spaceId, projectId, instanceId, session]);
   React.useEffect(() => {
     let live = true;
@@ -49,6 +59,22 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
     return () => { live = false; };
   }, [refresh]);
   const toggle = (current: string[], value: string, checked: boolean) => checked ? [...current, value] : current.filter(item => item !== value);
+  async function saveBudget() {
+    if (!snapshot) return;
+    const maxRun = Number(maxRunCredits), monthly = Number(monthlyCredits);
+    if (!Number.isSafeInteger(maxRun) || maxRun < 1 || !Number.isSafeInteger(monthly) || monthly < maxRun) {
+      setError("Set a positive per-run credit cap and a monthly cap at least as large.");
+      return;
+    }
+    setBudgetBusy(true); setError(null);
+    try {
+      await setProjectExtensionResourceBudget(spaceId, projectId, instanceId, session, {
+        expected_revision: snapshot.budget?.revision ?? 0, max_run_credits: maxRun, monthly_credits: monthly,
+      });
+      await refresh();
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not save the installation budget."); }
+    finally { setBudgetBusy(false); }
+  }
   async function approve(requirementId: string) {
     if (!snapshot) return;
     const current = snapshot.grants.find(grant => grant.requirement_id === requirementId);
@@ -78,6 +104,26 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
     <p style={{ margin: "4px 0 8px", color: "var(--text3)", fontSize: 10.5 }}>
       Approval records selected operations for this signed release and install generation. Structured-data approvals also name exact tables. It does not activate this staged extension; resource capabilities remain unavailable until their host adapters pass acceptance.
     </p>
+    <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
+      <strong>Installation spend budget</strong>
+      <p style={{ margin: "4px 0 8px", color: "var(--text3)", fontSize: 10.5 }}>
+        One credit equals one US cent. Billing enforces both caps across this installation. Byte/storage usage is measured but has no approved price yet.
+      </p>
+      {snapshot.budget && <div style={{ color: "var(--text3)", fontSize: 10.5, marginBottom: 6 }}>
+        Current approval · {snapshot.budget.max_run_credits} credits per run · {snapshot.budget.monthly_credits} credits per month · revision {snapshot.budget.revision}
+      </div>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
+        <label>Maximum credits per workflow run<input aria-label="Maximum credits per workflow run" type="number" min="1" max="10000000" step="1"
+          value={maxRunCredits} onChange={event => setMaxRunCredits(event.target.value)} disabled={budgetBusy}
+          style={{ display: "block", width: "100%" }} /></label>
+        <label>Maximum credits per month<input aria-label="Maximum credits per month" type="number" min="1" max="10000000" step="1"
+          value={monthlyCredits} onChange={event => setMonthlyCredits(event.target.value)} disabled={budgetBusy}
+          style={{ display: "block", width: "100%" }} /></label>
+      </div>
+      <button type="button" className="btn-ghost" disabled={budgetBusy || !maxRunCredits || !monthlyCredits} onClick={() => void saveBudget()} style={{ marginTop: 7 }}>
+        {budgetBusy ? "Saving budget…" : snapshot.budget ? "Update installation budget" : "Approve installation budget"}
+      </button>
+    </div>
     {requirements.filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects").map(requirement => {
       const grant = snapshot.grants.find(item => item.requirement_id === requirement.id);
       const blocked = snapshot.installation.status === "active";
@@ -1154,7 +1200,7 @@ export function ChannelConnect({
             {storageApps.map(app => <MicroAppStorageStatus key={app.appId} spaceId={spaceId} projectId={projectId} appId={app.appId} name={app.name} session={session} />)}
             {projectId && item.manifest.resourceRequirements?.some(requirement => requirement.kind === "structured_data" || requirement.kind === "objects") && <ExtensionResourceGrantReview
               spaceId={spaceId} projectId={projectId} instanceId={instanceId}
-              requirements={item.manifest.resourceRequirements.filter(requirement => requirement.kind === "structured_data")} session={session} />}
+              requirements={item.manifest.resourceRequirements.filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects")} session={session} />}
             {item.instance.status === "staging" && <div style={{ color: "var(--text3)", fontSize: 11 }}>Setup did not finish. This extension is not available to workers or channels; uninstall it or retry installation.</div>}
             {item.instance.publisher_trusted === false && <div role="alert" style={{ color: "var(--text2)", fontSize: 11 }}>The publisher key for this installed release is no longer trusted{item.instance.publisher_revoked_at ? ` (revoked ${new Date(item.instance.publisher_revoked_at).toLocaleString()})` : "."} The host blocks new work and resume attempts. Review a release signed by a currently trusted key before reinstalling.</div>}
             {item.instance.status !== "staging" && item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ instance_id: instanceId, extension_id: extensionId,

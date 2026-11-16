@@ -6,6 +6,7 @@ const secret = "project-extension-agent-maintenance-secret";
 const grantPath = "/spaces/space-a/projects/project-a/extension-installations/instance-a/agent-maintenance-grants";
 const proposalPath = "/spaces/space-a/projects/project-a/extension-installations/instance-a/settings-proposals";
 const resourceGrantPath = "/spaces/space-a/projects/project-a/extension-installations/instance-a/resource-grants";
+const resourceBudgetPath = `${resourceGrantPath}/budget`;
 
 function setup(options: { projectOwner?: string; readable?: boolean; publisherActive?: boolean; trusted?: boolean } = {}) {
   const forwarded: Request[] = [];
@@ -118,6 +119,22 @@ describe("Project extension agent maintenance routes", () => {
     expect((await call(denied.env, resourceGrantPath, { userId: "editor-a", role: "editor", method: "PUT",
       body: { requirement_id: "records", expected_revision: 0, operations: ["get"], tables: ["records"] } })).status).toBe(403);
     expect(denied.forwarded.some(request => new URL(request.url).pathname === "/extension-resource-grants")).toBe(false);
+  });
+
+  it("allows only the exact Project owner to set an installation resource budget", async () => {
+    const owner = setup({ projectOwner: "project-owner" });
+    const response = await call(owner.env, resourceBudgetPath, { userId: "project-owner", role: "editor", method: "PUT",
+      body: { expected_revision: 0, max_run_credits: 25, monthly_credits: 250 } });
+    expect(response.status).toBe(200);
+    const forwarded = owner.forwarded.at(-1);
+    expect(forwarded && new URL(forwarded.url).pathname).toBe("/extension-resource-budget");
+    await expect(forwarded?.json()).resolves.toMatchObject({ actorId: "project-owner", expectedRevision: 0,
+      maxRunCredits: 25, monthlyCredits: 250, instanceId: "instance-a" });
+
+    const denied = setup({ projectOwner: "different-owner" });
+    expect((await call(denied.env, resourceBudgetPath, { userId: "editor-a", role: "editor", method: "PUT",
+      body: { expected_revision: 0, max_run_credits: 25, monthly_credits: 250 } })).status).toBe(403);
+    expect(denied.forwarded.some(request => new URL(request.url).pathname === "/extension-resource-budget")).toBe(false);
   });
 
   it("forwards only a readable project's exact agent proposal with current installation checks", async () => {

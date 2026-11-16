@@ -94,7 +94,17 @@ describe("runtime extension installation", () => {
     const snapshot = await space.fetch(new Request(grantsUrl, { headers }));
     expect(await snapshot.json()).toMatchObject({ installation: { instance_id: installationId, status: "staging", generation: 1 },
       requirements: expect.arrayContaining([expect.objectContaining({ requirement_id: "records", kind: "structured_data", requested_tables: ["records"] }),
-        expect.objectContaining({ requirement_id: "attachments", kind: "objects", requested_tables: [] })]), grants: [] });
+        expect.objectContaining({ requirement_id: "attachments", kind: "objects", requested_tables: [] })]), budget: null, grants: [] });
+    const setBudget = (expectedRevision: number, maxRunCredits = 25, monthlyCredits = 250) => space.fetch(new Request("http://space/extension-resource-budget", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
+        actorId: "owner", expectedRevision, maxRunCredits, monthlyCredits }) }));
+    const budget = await setBudget(0);
+    expect(budget.status, await budget.clone().text()).toBe(200);
+    expect(await budget.json()).toMatchObject({ instance_id: installationId, installation_generation: 1, max_run_credits: 25, monthly_credits: 250, revision: 1, approved_by: "owner" });
+    expect(await (await setBudget(0)).json()).toMatchObject({ replayed: true, revision: 1 });
+    expect((await setBudget(0, 26, 250)).status).toBe(409);
+    expect((await setBudget(0, 251, 250)).status).toBe(403);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_installation_budget_events WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(1);
     const approve = (expectedRevision: number, operations = ["get"]) => space.fetch(new Request("http://space/extension-resource-grants", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
         requirementId: "records", actorId: "owner", expectedRevision, operations, tables: ["records"] }) }));
@@ -137,6 +147,14 @@ describe("runtime extension installation", () => {
 
     // Exercise the operation fence independently of the unavailable runtime activation gate.
     storage.sql.exec("UPDATE extension_instances SET status='active' WHERE instance_id=?", installationId);
+    const workflowInstallationUrl = "http://space/workflow-installation?" + new URLSearchParams({
+      tenant_id: "tenant", space_id: "space", instance_id: installationId,
+    });
+    const workflowSnapshot = await space.fetch(new Request(workflowInstallationUrl, { headers }));
+    expect(await workflowSnapshot.json()).toMatchObject({ budget: { max_run_credits: 25, monthly_credits: 250, revision: 1, installation_generation: 1 } });
+    expect((await setBudget(1, 20, 200)).status).toBe(200);
+    const updatedWorkflowSnapshot = await space.fetch(new Request(workflowInstallationUrl, { headers }));
+    expect(await updatedWorkflowSnapshot.json()).toMatchObject({ budget: { max_run_credits: 20, monthly_credits: 200, revision: 2, installation_generation: 1 } });
     const claimObject = (operationId: string) => space.fetch(new Request("http://space/extension-resource-operation", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, requirementId: "attachments",
         operationId, resourceKind: "objects", gadgetId: "objects", table: "objects", manifestSha256: approvedObjectBody.manifest_sha256,
@@ -214,6 +232,7 @@ describe("runtime extension installation", () => {
     expect(await rateLimited.json()).toMatchObject({ error_code: "extension_resource_rate_limit" });
     storage.sql.exec("UPDATE extension_instances SET generation=2 WHERE instance_id=?", installationId);
     expect((await claim()).status).toBe(409);
+    expect(await (await space.fetch(new Request(grantsUrl, { headers })).then(response => response.json())).budget).toBeNull();
     const revoked = await revoke(1);
     expect(revoked.status, await revoked.clone().text()).toBe(200);
     expect(await revoked.json()).toMatchObject({ status: "revoked", revision: 2 });

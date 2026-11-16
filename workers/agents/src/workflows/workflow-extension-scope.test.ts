@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { assertDeclaredExtensionWorkflow, extensionWorkflowName, readWorkflowGrant, resolveApprovedObjectGrant, resolveApprovedStructuredDataGrant,
-  resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv, type WorkflowInstallationGrant } from "./workflow-host.js";
+  resolveExtensionGadgetAppId, resolveExtensionResourceBudget, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId,
+  type DurableWorkflowHostEnv, type WorkflowInstallationGrant } from "./workflow-host.js";
 
 const installation: WorkflowInstallationGrant = {
   instance: { tenant_id: "tenant", space_id: "space", status: "active", scope: "SPACE_SHARED" },
@@ -72,6 +73,38 @@ describe("verified extension workflow identity", () => {
     ] } } };
     expect(assertDeclaredExtensionWorkflow(composed, "place_order", "ext_customs")).toEqual({ id: "place_order", entry: "./place-order.ts", toolNames: ["orders.place"] });
     expect(assertDeclaredExtensionWorkflow(composed, "place-order", "ext_customs")).toMatchObject({ entry: "./place-order.ts" });
+  });
+
+  it("uses only a current owner-approved per-install resource budget and rejects caller widening", () => {
+    const resourceInstall: WorkflowInstallationGrant = { instance: { instance_id: "install-a", tenant_id: "tenant", space_id: "space",
+      project_id: "project-a", generation: 4, status: "active", scope: "PROJECT_BOUND" },
+      manifest: { id: "ext_catalog", resourceRequirements: [{ id: "records", kind: "structured_data" }] } as unknown as WorkflowInstallationGrant["manifest"],
+      budget: { max_run_credits: 25, monthly_credits: 250, revision: 3, installation_generation: 4 } };
+    expect(resolveExtensionResourceBudget(resourceInstall, undefined)).toEqual({ runCredits: 25, monthlyCredits: 250, revision: 3 });
+    expect(resolveExtensionResourceBudget(resourceInstall, 10)).toEqual({ runCredits: 10, monthlyCredits: 250, revision: 3 });
+    expect(() => resolveExtensionResourceBudget(resourceInstall, 26)).toThrow("workflow_extension_budget_exceeds_approval");
+    expect(() => resolveExtensionResourceBudget({ ...resourceInstall, budget: null }, undefined)).toThrow("workflow_extension_budget_not_approved");
+    expect(() => resolveExtensionResourceBudget({ ...resourceInstall, budget: { ...resourceInstall.budget!, installation_generation: 3 } }, undefined))
+      .toThrow("workflow_extension_budget_not_approved");
+    expect(resolveExtensionResourceBudget({ ...resourceInstall, manifest: { id: "ext_catalog" } as WorkflowInstallationGrant["manifest"], budget: null }, undefined)).toBeNull();
+  });
+
+  it("pins the authorized installation budget into the workflow grant revision", async () => {
+    let budget = { max_run_credits: 25, monthly_credits: 250, revision: 1, installation_generation: 4 };
+    const snapshot = () => ({ instance: { instance_id: "install-a", tenant_id: "tenant", space_id: "space", project_id: "project-a",
+      generation: 4, status: "active", scope: "PROJECT_BOUND" }, manifest: { id: "ext_catalog", resourceRequirements: [] }, budget });
+    const env = {
+      PLATFORM_SECRET: "test-secret",
+      SPACES_WORKER: { fetch: async (request: Request) => new URL(request.url).pathname.endsWith("/members")
+        ? Response.json({ data: [{ user_id: "user", role: "owner" }] }) : Response.json(snapshot()) },
+      SCRIPTS_R2: { get: async () => ({ size: 0, text: async () => "" }) },
+    } as unknown as DurableWorkflowHostEnv;
+    const scope = { tenantId: "tenant", spaceId: "space", actorId: "user", agentId: "agent", installationId: "install-a", projectId: "project-a" };
+    const before = await readWorkflowGrant(env, scope);
+    budget = { ...budget, monthly_credits: 200, revision: 2 };
+    const after = await readWorkflowGrant(env, scope);
+    expect(before.version).not.toBe(after.version);
+    expect(after.installation?.budget).toMatchObject({ monthly_credits: 200, revision: 2 });
   });
 
   it("authorizes a Gadget only for a project-member workflow bound inside its exact active install", () => {

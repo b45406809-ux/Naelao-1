@@ -814,7 +814,7 @@ app.post("/internal/workflows/budget/reserve", async (c) => {
   if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const body = await c.req.json<{
     reservation_id?: string; workflow_id?: string; space_id?: string; budget_key?: string; credits?: number; expires_at?: string;
-    project_id?: string; installation_id?: string; runtime_tier?: number;
+    project_id?: string; installation_id?: string; installation_budget_credits?: number; installation_budget_revision?: number; runtime_tier?: number;
   }>().catch(() => null);
   if (!body || typeof body !== "object") return c.json({ error_code: "bad_request" }, 400);
   const id = body.reservation_id ?? body.workflow_id ?? "";
@@ -830,18 +830,35 @@ app.post("/internal/workflows/budget/reserve", async (c) => {
   const expiry = new Date(expiryMs).toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
   if ((body.project_id !== undefined && (typeof body.project_id !== "string" || body.project_id.length > 128))
     || (body.installation_id !== undefined && (typeof body.installation_id !== "string" || body.installation_id.length > 128))
+    || ((body.installation_budget_credits === undefined) !== (body.installation_budget_revision === undefined))
+    || (body.installation_budget_credits !== undefined && (!body.installation_id || !Number.isSafeInteger(body.installation_budget_credits)
+      || body.installation_budget_credits < 1 || body.installation_budget_credits > 10_000_000 || credits! > body.installation_budget_credits))
+    || (body.installation_budget_revision !== undefined && (!Number.isSafeInteger(body.installation_budget_revision) || body.installation_budget_revision < 1))
     || (body.runtime_tier !== undefined && (!Number.isInteger(body.runtime_tier) || body.runtime_tier < 1 || body.runtime_tier > 6))) return c.json({ error_code: "bad_request" }, 400);
-  const existing = await c.env.PLATFORM_DB.prepare("SELECT id,status,credits,space_id,budget_key,project_id,installation_id,runtime_tier FROM workflow_budget_reservations WHERE org_id = ? AND workflow_id = ?")
-    .bind(orgId, workflowId).first<{ id: string; status: string; credits: number; space_id: string; budget_key: string; project_id: string | null; installation_id: string | null; runtime_tier: number | null }>();
+  const existing = await c.env.PLATFORM_DB.prepare("SELECT id,status,credits,space_id,budget_key,project_id,installation_id,installation_budget_credits,installation_budget_revision,runtime_tier FROM workflow_budget_reservations WHERE org_id = ? AND workflow_id = ?")
+    .bind(orgId, workflowId).first<{ id: string; status: string; credits: number; space_id: string; budget_key: string; project_id: string | null;
+      installation_id: string | null; installation_budget_credits: number | null; installation_budget_revision: number | null; runtime_tier: number | null }>();
   const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
   const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "infra_credits", planTier);
   if (existing) {
     if (existing.id !== id || existing.space_id !== body.space_id || existing.budget_key !== body.budget_key || existing.credits !== credits
       || existing.project_id !== (body.project_id ?? null) || existing.installation_id !== (body.installation_id ?? null)
+      || existing.installation_budget_credits !== (body.installation_budget_credits ?? null)
+      || existing.installation_budget_revision !== (body.installation_budget_revision ?? null)
       || existing.runtime_tier !== (body.runtime_tier ?? null)) return c.json({ error_code: "reservation_scope_conflict" }, 409);
     if (existing.status === "released") {
-      const renewed = await c.env.PLATFORM_DB.prepare("UPDATE workflow_budget_reservations SET status='held', credits=?, expires_at=?, updated_at=datetime('now') WHERE id=? AND org_id=? AND status='released' AND ? + (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) + (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now')) + (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id=? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?")
-        .bind(credits, expiry, existing.id, orgId, credits, orgId, orgId, orgId, quota.limit).run();
+      const renewed = await c.env.PLATFORM_DB.prepare(`UPDATE workflow_budget_reservations SET status='held', credits=?, expires_at=?, updated_at=datetime('now')
+        WHERE id=? AND org_id=? AND status='released'
+        AND ? + (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown')))
+        + (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now'))
+        + (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id=? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?
+        AND (? IS NULL OR ? + (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND installation_id=? AND event_type='infra_credits'
+          AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown')))
+          + (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND installation_id=? AND status='held'
+            AND julianday(expires_at)>julianday('now') AND id<>?) <= ?)`)
+        .bind(credits, expiry, existing.id, orgId, credits, orgId, orgId, orgId, quota.limit,
+          body.installation_budget_credits ?? null, credits, orgId, body.installation_id ?? "", orgId, body.installation_id ?? "", existing.id,
+          body.installation_budget_credits ?? 0).run();
       if (!renewed.meta.changes) return c.json({ error_code: "infra_quota_exceeded", message: "Workflow retry budget is unavailable" }, 402);
     }
     if (existing.status === "settled") return c.json({ error_code: "reservation_already_settled" }, 409);
@@ -849,22 +866,33 @@ app.post("/internal/workflows/budget/reserve", async (c) => {
   }
   const inserted = await c.env.PLATFORM_DB.prepare(`
     INSERT OR IGNORE INTO workflow_budget_reservations
-      (id,org_id,space_id,workflow_id,budget_key,project_id,installation_id,runtime_tier,credits,status,expires_at,created_at,updated_at)
-    SELECT ?,?,?,?,?,?,?,?,?,'held',?,datetime('now'),datetime('now')
+      (id,org_id,space_id,workflow_id,budget_key,project_id,installation_id,installation_budget_credits,installation_budget_revision,runtime_tier,credits,status,expires_at,created_at,updated_at)
+    SELECT ?,?,?,?,?,?,?,?,?,?,?,'held',?,datetime('now'),datetime('now')
     WHERE ? +
       (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id = ? AND event_type = 'infra_credits' AND recorded_at >= datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) +
       (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id = ? AND status = 'held' AND julianday(expires_at) > julianday('now')) +
       (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id = ? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?
+      AND (? IS NULL OR ? +
+        (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND installation_id=? AND event_type='infra_credits'
+          AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) +
+        (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND installation_id=? AND status='held'
+          AND julianday(expires_at)>julianday('now')) <= ?)
   `).bind(id, orgId, body.space_id, workflowId, body.budget_key, body.project_id ?? null, body.installation_id ?? null,
-    body.runtime_tier ?? null, credits, expiry, credits, orgId, orgId, orgId, quota.limit).run();
+    body.installation_budget_credits ?? null, body.installation_budget_revision ?? null, body.runtime_tier ?? null, credits, expiry,
+    credits, orgId, orgId, orgId, quota.limit,
+    body.installation_budget_credits ?? null, credits, orgId, body.installation_id ?? "", orgId, body.installation_id ?? "",
+    body.installation_budget_credits ?? 0).run();
   if (inserted.meta.changes === 0) {
     // Concurrent idempotent launches can both pass the initial read. If the other request
     // won the unique workflow insert, return its reservation instead of a false quota error.
-    const raced = await c.env.PLATFORM_DB.prepare("SELECT id,status,credits,space_id,budget_key,project_id,installation_id,runtime_tier FROM workflow_budget_reservations WHERE org_id = ? AND workflow_id = ?")
-      .bind(orgId, workflowId).first<{ id: string; status: string; credits: number; space_id: string; budget_key: string; project_id: string | null; installation_id: string | null; runtime_tier: number | null }>();
+    const raced = await c.env.PLATFORM_DB.prepare("SELECT id,status,credits,space_id,budget_key,project_id,installation_id,installation_budget_credits,installation_budget_revision,runtime_tier FROM workflow_budget_reservations WHERE org_id = ? AND workflow_id = ?")
+      .bind(orgId, workflowId).first<{ id: string; status: string; credits: number; space_id: string; budget_key: string; project_id: string | null;
+        installation_id: string | null; installation_budget_credits: number | null; installation_budget_revision: number | null; runtime_tier: number | null }>();
     if (raced) {
       if (raced.id !== id || raced.status !== "held" || raced.credits !== credits || raced.space_id !== body.space_id || raced.budget_key !== body.budget_key
-        || raced.project_id !== (body.project_id ?? null) || raced.installation_id !== (body.installation_id ?? null) || raced.runtime_tier !== (body.runtime_tier ?? null))
+        || raced.project_id !== (body.project_id ?? null) || raced.installation_id !== (body.installation_id ?? null)
+        || raced.installation_budget_credits !== (body.installation_budget_credits ?? null)
+        || raced.installation_budget_revision !== (body.installation_budget_revision ?? null) || raced.runtime_tier !== (body.runtime_tier ?? null))
         return c.json({ error_code: "reservation_scope_conflict" }, 409);
       return c.json({ reserved: true, reservation_id: raced.id, status: "held", credits }, 200);
     }
@@ -872,7 +900,9 @@ app.post("/internal/workflows/budget/reserve", async (c) => {
     if (idCollision) return c.json({ error_code: "reservation_scope_conflict" }, 409);
     return c.json({ error_code: "infra_quota_exceeded", message: "Workflow budget is unavailable for this billing period", limit: quota.limit }, 402);
   }
-  return c.json({ reserved: true, reservation_id: id, status: "held", credits }, 201);
+  return c.json({ reserved: true, reservation_id: id, status: "held", credits,
+    ...(body.installation_budget_credits !== undefined ? { installation_budget_credits: body.installation_budget_credits,
+      installation_budget_revision: body.installation_budget_revision } : {}) }, 201);
 });
 
 app.post("/internal/workflows/budget/release", async (c) => {

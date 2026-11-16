@@ -5764,6 +5764,29 @@ app.get(projectExtensionResourceGrantsPath, forwardProjectExtensionResourceGrant
 app.put(projectExtensionResourceGrantsPath, forwardProjectExtensionResourceGrants);
 app.delete(projectExtensionResourceGrantsPath, forwardProjectExtensionResourceGrants);
 
+const projectExtensionResourceBudgetPath = `${projectExtensionResourceGrantsPath}/budget`;
+app.use(projectExtensionResourceBudgetPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.put(projectExtensionResourceBudgetPath, async c => {
+  const identity = getCallerIdentity(c), { spaceId, projectId, instanceId } = c.req.param();
+  if (!identity.tenantId || !identity.userId || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
+    || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_resource_budget_scope_required" }, 400);
+  const denied = await requireProjectOwnerForExtensionDelegation(c, spaceId, projectId);
+  if (denied) return denied;
+  const body = await c.req.json<{ expected_revision?: number; max_run_credits?: number; monthly_credits?: number }>()
+    .catch((): { expected_revision?: number; max_run_credits?: number; monthly_credits?: number } => ({}));
+  if (!Number.isSafeInteger(body.expected_revision) || (body.expected_revision ?? -1) < 0
+    || !Number.isSafeInteger(body.max_run_credits) || (body.max_run_credits ?? 0) < 1 || (body.max_run_credits ?? 0) > 10_000_000
+    || !Number.isSafeInteger(body.monthly_credits) || (body.monthly_credits ?? 0) < 1 || (body.monthly_credits ?? 0) > 10_000_000
+    || (body.max_run_credits ?? 0) > (body.monthly_credits ?? 0)) return c.json({ error_code: "extension_resource_budget_invalid" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  return stub.fetch(new Request("http://space-do/extension-resource-budget", { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+    body: JSON.stringify({ tenantId: identity.tenantId, spaceId, projectId, instanceId, actorId: identity.userId,
+      expectedRevision: body.expected_revision, maxRunCredits: body.max_run_credits, monthlyCredits: body.monthly_credits }),
+  }));
+});
+
 const projectExtensionSettingsPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/settings";
 app.use(projectExtensionSettingsPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 async function forwardProjectExtensionSettings(c: any) {

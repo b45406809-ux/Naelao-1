@@ -13,6 +13,8 @@ import type { Env } from "../env.js";
 export interface WorkflowUsageDimensions {
   projectId?: string;
   installationId?: string;
+  installationBudgetCredits?: number;
+  installationBudgetRevision?: number;
   runtimeTier?: number;
   runId?: string;
 }
@@ -97,6 +99,8 @@ export async function reserveWorkflowBudget(
     body: JSON.stringify({ reservation_id: workflowId, workflow_id: workflowId, space_id: spaceId, budget_key: budgetKey ?? `workflow:${workflowId}`, credits: Math.ceil(credits),
       ...(dimensions.projectId ? { project_id: dimensions.projectId } : {}),
       ...(dimensions.installationId ? { installation_id: dimensions.installationId } : {}),
+      ...(dimensions.installationBudgetCredits !== undefined ? { installation_budget_credits: dimensions.installationBudgetCredits } : {}),
+      ...(dimensions.installationBudgetRevision !== undefined ? { installation_budget_revision: dimensions.installationBudgetRevision } : {}),
       ...(dimensions.runtimeTier ? { runtime_tier: dimensions.runtimeTier } : {}),
       ...(expiresAt ? { expires_at: new Date(expiresAt).toISOString() } : {}) }),
   }));

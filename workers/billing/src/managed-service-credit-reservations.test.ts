@@ -18,6 +18,8 @@ function harness(planTier = "free") {
     readFileSync(join(__dirname, "../../../infra/migrations/0032_usage_events_idempotency.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0081_workflow_budget_reservations.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0109_usage_events_v2.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../../infra/migrations/0110_workflow_usage_dimensions.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../../infra/migrations/0266_extension_installation_workflow_budgets.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0180_managed_service_credit_reservations.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0181_managed_service_ownership_and_audit.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0182_managed_service_plan_entitlements.sql"), "utf8"),
@@ -203,6 +205,49 @@ describe("managed service credit reservations", () => {
     const next={...reservation,reservation_id:"agentmail-rent-op-b",operation_id:"agentmail-op-b",credits:4801};createOperation(h.db.db,next);
     const stillOverQuota = await h.post("/internal/managed-services/credits/reserve", next);
     expect(stillOverQuota.status).toBe(402);
+  });
+
+  it("enforces owner-pinned installation monthly ceilings across holds, settlement, replay, and uncertainty", async () => {
+    const h = harness();
+    const base = { reservation_id: "extension-run-a", workflow_id: "extension-run-a", space_id: "space-a", budget_key: "extension:install-a",
+      project_id: "project-a", installation_id: "install-a", installation_budget_credits: 10, installation_budget_revision: 3, credits: 6 };
+    const held = await h.post("/internal/workflows/budget/reserve", base);
+    expect(held.status).toBe(201);
+    expect(await held.json()).toMatchObject({ reserved: true, status: "held", credits: 6,
+      installation_budget_credits: 10, installation_budget_revision: 3 });
+    expect((await h.post("/internal/workflows/budget/reserve", base)).status).toBe(200);
+    expect((await h.post("/internal/workflows/budget/reserve", { ...base, installation_budget_revision: 4 })).status).toBe(409);
+
+    const blockedByHold = await h.post("/internal/workflows/budget/reserve", { ...base,
+      reservation_id: "extension-run-b", workflow_id: "extension-run-b", credits: 5 });
+    expect(blockedByHold.status).toBe(402);
+
+    // A lost resource result settles the conservative reserved ceiling; later runs see it
+    // as settled installation usage, rather than reusing the same capacity.
+    const settled = await h.post("/internal/workflows/budget/settle", { reservation_id: base.reservation_id, quantity: 6 });
+    expect(settled.status).toBe(200);
+    expect((await h.db.prepare("SELECT installation_id,quantity,cost_credits FROM usage_events WHERE run_id=? AND event_type='infra_credits'")
+      .bind(base.workflow_id).first()).installation_id).toBe("install-a");
+    const blockedBySettled = await h.post("/internal/workflows/budget/reserve", { ...base,
+      reservation_id: "extension-run-c", workflow_id: "extension-run-c", credits: 5 });
+    expect(blockedBySettled.status).toBe(402);
+
+    const otherInstall = await h.post("/internal/workflows/budget/reserve", { ...base,
+      reservation_id: "extension-run-other", workflow_id: "extension-run-other", installation_id: "install-b", credits: 10 });
+    expect(otherInstall.status).toBe(201);
+  });
+
+  it("serializes simultaneous installation budget reservations at the D1 admission boundary", async () => {
+    const h = harness();
+    const base = { space_id: "space-a", budget_key: "extension:install-race", project_id: "project-a", installation_id: "install-race",
+      installation_budget_credits: 10, installation_budget_revision: 1, credits: 6 };
+    const results = await Promise.all([
+      h.post("/internal/workflows/budget/reserve", { ...base, reservation_id: "extension-race-a", workflow_id: "extension-race-a" }),
+      h.post("/internal/workflows/budget/reserve", { ...base, reservation_id: "extension-race-b", workflow_id: "extension-race-b" }),
+    ]);
+    expect(results.map(response => response.status).sort()).toEqual([201, 402]);
+    expect(h.db.db.prepare("SELECT COUNT(*) AS count FROM workflow_budget_reservations WHERE installation_id='install-race' AND status='held'").get())
+      .toEqual({ count: 1 });
   });
 
   it("uses the D1 conditional insert as the concurrency boundary for simultaneous reservations", async () => {

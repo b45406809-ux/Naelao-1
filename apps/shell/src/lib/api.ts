@@ -1937,6 +1937,8 @@ export interface ProjectExtensionResourceGrantSnapshot {
     scope: "PROJECT_BOUND"; status: string; generation: number; installed_by: string; manifest_sha256: string; release_version: string };
   requirements: Array<{ requirement_id: string; kind: "structured_data" | "objects"; scope: string; gadget_id: string | null;
     requested_tables: string[]; requested_operations: Array<{ id: string; input: unknown; output: unknown; idempotency: string; metering_unit: string }> }>;
+  budget: { max_run_credits: number; monthly_credits: number; revision: number; installation_generation: number;
+    approved_by: string; approved_at: string; updated_by: string; updated_at: string } | null;
   grants: ProjectExtensionResourceGrant[];
 }
 function projectExtensionResourceGrantsPath(spaceId: string, projectId: string, instanceId: string) {
@@ -1954,6 +1956,12 @@ export function revokeProjectExtensionResourceGrant(spaceId: string, projectId: 
   input: { requirement_id: string; expected_revision: number }) {
   return apiFetch<ProjectExtensionResourceGrant>(projectExtensionResourceGrantsPath(spaceId, projectId, instanceId),
     { method: "DELETE", session, body: JSON.stringify(input) });
+}
+export function setProjectExtensionResourceBudget(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials,
+  input: { expected_revision: number; max_run_credits: number; monthly_credits: number }) {
+  return apiFetch<{ instance_id: string; installation_generation: number; max_run_credits: number; monthly_credits: number;
+    revision: number; approved_by: string; replayed: boolean }>(`${projectExtensionResourceGrantsPath(spaceId, projectId, instanceId)}/budget`,
+    { method: "PUT", session, body: JSON.stringify(input) });
 }
 export async function installRuntime(spaceId: string, session: SessionCredentials, imageId: string, options: {
   scope?: "SPACE_SHARED" | "SPACE_ASSISTANT" | "PROJECT_SHARED"; projectId?: string; promoteExisting?: boolean; acknowledgePromotion?: boolean; acknowledgeIsolation?: boolean;

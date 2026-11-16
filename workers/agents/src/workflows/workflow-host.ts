@@ -39,6 +39,7 @@ export interface WorkflowInstallationGrant {
   manifest: Pick<ExtensionManifest, "id" | "daemons" | "resourceRequirements" | "shared_filesystem" | "capabilityRequirements" | "bundle">;
   resource_grants?: Array<{ requirement_id: string; manifest_sha256: string; resource_sha256: string; installation_generation: number;
     operations: string[]; tables: string[]; status: "approved" | "revoked"; revision: number }>;
+  budget?: { max_run_credits: number; monthly_credits: number; revision: number; installation_generation: number } | null;
   release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
 }
 export async function resolveApprovedStructuredDataGrant(installation: WorkflowInstallationGrant | undefined,
@@ -209,6 +210,23 @@ export interface StartDurableWorkflowOptions {
   workflowClass?: WorkflowClass | undefined; budgetKey?: string | undefined; budgetCredits?: number | undefined;
   installationId?: string | undefined; extensionId?: string | undefined; expiresAt?: number;
 }
+
+export function resolveExtensionResourceBudget(installation: WorkflowInstallationGrant | undefined, requestedCredits: number | undefined) {
+  const resourceBearing = (installation?.manifest.resourceRequirements ?? []).some(item =>
+    item.kind === "structured_data" || item.kind === "objects" || item.kind === "jobs");
+  if (!resourceBearing) return null;
+  const instance = installation?.instance, budget = installation?.budget;
+  if (!instance || instance.scope !== "PROJECT_BOUND" || !instance.project_id || !instance.instance_id || !Number.isSafeInteger(instance.generation)
+    || !budget || budget.installation_generation !== instance.generation || !Number.isSafeInteger(budget.revision) || budget.revision < 1
+    || !Number.isSafeInteger(budget.max_run_credits) || budget.max_run_credits < 1
+    || !Number.isSafeInteger(budget.monthly_credits) || budget.monthly_credits < budget.max_run_credits)
+    throw new Error("workflow_extension_budget_not_approved");
+  const runCredits = requestedCredits ?? budget.max_run_credits;
+  if (!Number.isSafeInteger(runCredits) || runCredits < 1 || runCredits > budget.max_run_credits)
+    throw new Error("workflow_extension_budget_exceeds_approval");
+  return { runCredits, monthlyCredits: budget.monthly_credits, revision: budget.revision };
+}
+
 export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options: StartDurableWorkflowOptions): Promise<{ id: string; queued: boolean; durable: true }> {
   if (!env.SCRIPTS_R2 || !env.AGENT_SCRIPT_WORKFLOW || !env.LOADER) throw new Error("dynamic_workflow_runtime_unavailable");
   const workflowClass = options.workflowClass ?? "ephemeral_task";
@@ -227,6 +245,10 @@ export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options:
     if (prior.identity.workflowClass === "vertical_extension") {
       const replayGrant = await readWorkflowGrant(env, { tenantId: options.tenantId, spaceId: options.spaceId, agentId: options.agentId, actorId: options.actorId, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.installationId ? { installationId: options.installationId } : {}) });
       assertDeclaredExtensionWorkflow(replayGrant.installation, options.name, options.extensionId);
+      const extensionBudget = resolveExtensionResourceBudget(replayGrant.installation, options.budgetCredits);
+      const runCredits = extensionBudget?.runCredits ?? options.budgetCredits;
+      if (prior.budgetCredits !== runCredits || prior.installationBudgetCredits !== extensionBudget?.monthlyCredits
+        || prior.installationBudgetRevision !== extensionBudget?.revision) throw new Error("workflow_start_key_conflict");
     }
     await stub.authorize(runId);
     await stub.launch();
@@ -234,6 +256,8 @@ export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options:
   }
   const grant = await readWorkflowGrant(env, { tenantId: options.tenantId, spaceId: options.spaceId, agentId: options.agentId, actorId: options.actorId, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.installationId ? { installationId: options.installationId } : {}) });
   if (workflowClass === "company_automation" && (options.projectId || !["owner", "admin"].includes(grant.role))) throw new Error("workflow_owner_required");
+  const extensionBudget = workflowClass === "vertical_extension" ? resolveExtensionResourceBudget(grant.installation, options.budgetCredits) : null;
+  const runBudgetCredits = extensionBudget?.runCredits ?? options.budgetCredits;
   let script: StoredScript | { code: string; metadata: { runtime?: string; code_capabilities?: string[] } } | null;
   if (workflowClass === "vertical_extension") {
     if (!options.installationId) throw new Error("workflow_installation_required");
@@ -265,7 +289,8 @@ export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options:
   validateDurableWorkflowIdentity(identity);
   await env.SCRIPTS_R2.put(identity.codeKey, script.code, { httpMetadata: { contentType: "application/javascript" } });
   const input = await putWorkflowArtifact(env, identity, options.params);
-  await stub.initialize(identity, input, { ...(options.budgetKey ? { budgetKey: options.budgetKey } : {}), ...(options.budgetCredits !== undefined ? { budgetCredits: options.budgetCredits } : {}) });
+  await stub.initialize(identity, input, { ...(options.budgetKey ? { budgetKey: options.budgetKey } : {}), ...(runBudgetCredits !== undefined ? { budgetCredits: runBudgetCredits } : {}),
+    ...(extensionBudget ? { installationBudgetCredits: extensionBudget.monthlyCredits, installationBudgetRevision: extensionBudget.revision } : {}) });
   await stub.launch();
   return { id: runId, queued: true, durable: true };
 }

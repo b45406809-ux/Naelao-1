@@ -12,6 +12,8 @@ export interface WorkflowJournalRecord extends DurableWorkflowRecord {
   inputDigest: string;
   budgetKey?: string;
   budgetCredits?: number;
+  installationBudgetCredits?: number;
+  installationBudgetRevision?: number;
   usedCredits: number;
   artifactKeys: string[];
   artifactBytes: number;
@@ -35,7 +37,8 @@ export class WorkflowJournal {
     if (!record) throw new Error("workflow_not_found");
     return record;
   }
-  async initialize(identity: DurableWorkflowIdentity, input: WorkflowCheckpointPointer, budget: { budgetKey?: string; budgetCredits?: number }): Promise<WorkflowJournalRecord> {
+  async initialize(identity: DurableWorkflowIdentity, input: WorkflowCheckpointPointer, budget: { budgetKey?: string; budgetCredits?: number;
+    installationBudgetCredits?: number; installationBudgetRevision?: number }): Promise<WorkflowJournalRecord> {
     return this.storage.transaction(async (storage) => {
       const existing = await storage.get<WorkflowJournalRecord>("run");
       if (existing) {
@@ -117,7 +120,7 @@ export class WorkflowJournal {
       if ((run.effectCount ?? 0) >= MAX_WORKFLOW_EFFECTS) throw new Error("workflow_effect_budget_exceeded");
       const activeEffects = run.activeEffects ?? [];
       if (activeEffects.length >= 128) throw new Error("workflow_effect_concurrency_limit");
-      const extensionEffect = run.identity?.workflowClass === "vertical_extension";
+      const extensionEffect = run.identity?.workflowClass === "vertical_extension" && resourceReceipt !== undefined;
       let reservedCredits: number | undefined;
       if (extensionEffect) {
         if (!Number.isSafeInteger(run.budgetCredits) || (run.budgetCredits ?? 0) <= 0)

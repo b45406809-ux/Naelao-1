@@ -9,9 +9,10 @@ describe("workflow budget contract", () => {
   it("uses the durable workflow instance as an idempotent reservation", async () => {
     const requests: Request[] = [];
     const reservation = await reserveWorkflowBudget(env(async request => { requests.push(request); return Response.json({ reservation_id: "wf-1" }, { status: 201 }); }), "tenant", "space", "wf-1", "workflow:ephemeral_task:user", 7, undefined,
-      { projectId: "project-1", installationId: "install-1" });
+      { projectId: "project-1", installationId: "install-1", installationBudgetCredits: 250, installationBudgetRevision: 3 });
     expect(reservation).toBe("wf-1");
-    expect(await requests[0]!.json()).toMatchObject({ reservation_id: "wf-1", workflow_id: "wf-1", credits: 7, project_id: "project-1", installation_id: "install-1" });
+    expect(await requests[0]!.json()).toMatchObject({ reservation_id: "wf-1", workflow_id: "wf-1", credits: 7, project_id: "project-1", installation_id: "install-1",
+      installation_budget_credits: 250, installation_budget_revision: 3 });
   });
 
   it("settles measured credits and reports the same amount once", async () => {

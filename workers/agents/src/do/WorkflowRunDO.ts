@@ -21,7 +21,8 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
   async existing(): Promise<WorkflowJournalRecord | null> {
     try { return await this.journal.read(); } catch (error) { if (error instanceof Error && error.message === "workflow_not_found") return null; throw error; }
   }
-  async initialize(identity: DurableWorkflowIdentity, input: WorkflowCheckpointPointer, budget: { budgetKey?: string; budgetCredits?: number }): Promise<void> {
+  async initialize(identity: DurableWorkflowIdentity, input: WorkflowCheckpointPointer, budget: { budgetKey?: string; budgetCredits?: number;
+    installationBudgetCredits?: number; installationBudgetRevision?: number }): Promise<void> {
     validateDurableWorkflowIdentity(identity);
     validateWorkflowPointer(identity, input);
     const grant = await readWorkflowGrant(this.env, identity);
@@ -50,7 +51,9 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     await this.authorize(record.identity.runId);
     if (!this.env.AGENT_SCRIPT_WORKFLOW) throw new Error("workflow_provider_unavailable");
     await reserveWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.spaceId, record.identity.runId, record.budgetKey, record.budgetCredits, record.identity.expiresAt,
-      { ...(record.identity.projectId ? { projectId: record.identity.projectId } : {}), ...(record.identity.installationId ? { installationId: record.identity.installationId } : {}) });
+      { ...(record.identity.projectId ? { projectId: record.identity.projectId } : {}), ...(record.identity.installationId ? { installationId: record.identity.installationId } : {}),
+        ...(record.installationBudgetCredits !== undefined ? { installationBudgetCredits: record.installationBudgetCredits } : {}),
+        ...(record.installationBudgetRevision !== undefined ? { installationBudgetRevision: record.installationBudgetRevision } : {}) });
     try { await this.authorize(record.identity.runId); }
     catch (error) {
       await finalizeWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.runId, "release");
@@ -235,7 +238,9 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     // Reserve before changing failed -> queued. A billing outage must leave the run
     // retryable instead of stranding it in a queued state with no provider restart.
     await reserveWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.spaceId, record.identity.runId, record.budgetKey, record.budgetCredits, record.identity.expiresAt,
-      { ...(record.identity.projectId ? { projectId: record.identity.projectId } : {}), ...(record.identity.installationId ? { installationId: record.identity.installationId } : {}) });
+      { ...(record.identity.projectId ? { projectId: record.identity.projectId } : {}), ...(record.identity.installationId ? { installationId: record.identity.installationId } : {}),
+        ...(record.installationBudgetCredits !== undefined ? { installationBudgetCredits: record.installationBudgetCredits } : {}),
+        ...(record.installationBudgetRevision !== undefined ? { installationBudgetRevision: record.installationBudgetRevision } : {}) });
     try { await this.authorize(record.identity.runId); }
     catch (error) {
       await finalizeWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.runId, "release");
