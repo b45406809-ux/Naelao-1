@@ -13,6 +13,9 @@ export interface KnowledgeArchiveDocument {
   allowed_user_ids_json: string; created_at: string; updated_at: string;
   source_sha256?: string | null; source_file_name?: string | null; parser_version?: string | null;
   parser_output_sha256?: string | null; approved_content_sha256?: string | null;
+  source_adapter?: "manual" | "website" | "connector"; source_revision?: number;
+  source_content_sha256?: string | null; source_connection_ref?: string | null; source_grant_revision?: number | null;
+  source_state?: "current" | "stale" | "revoked" | "unsupported";
   chunks: KnowledgeArchiveChunk[]; objectReferences: KnowledgeArchiveObjectReference[];
 }
 export interface KnowledgeArchiveSnapshot {
@@ -75,7 +78,8 @@ export async function exportKnowledgeArchive(
 ): Promise<{ snapshot: KnowledgeArchiveSnapshot; objectReferences: KnowledgeArchiveObjectReference[] }> {
   const { results: rows } = await env.PLATFORM_DB.prepare(`SELECT d.id,d.tenant_id,d.space_id,d.project_id,d.title,d.source_url,
     d.content_type,d.status,d.chunk_count,d.required_role_rank,d.allowed_user_ids_json,d.source_sha256,d.source_file_name,
-    d.parser_version,d.parser_output_sha256,d.approved_content_sha256,d.created_at,d.updated_at
+    d.parser_version,d.parser_output_sha256,d.approved_content_sha256,d.source_adapter,d.source_revision,
+    d.source_content_sha256,d.source_connection_ref,d.source_grant_revision,d.source_state,d.created_at,d.updated_at
     FROM kb_documents d WHERE d.tenant_id=? AND d.space_id=? AND NOT EXISTS
       (SELECT 1 FROM kb_document_deletion_operations x WHERE x.document_id=d.id)
     ORDER BY d.id LIMIT ?`).bind(scope.tenantId, scope.spaceId, MAX_DOCUMENTS + 1)
@@ -174,6 +178,14 @@ export async function exportKnowledgeArchive(
         parser_version: typeof row.parser_version === "string" ? row.parser_version : null,
         parser_output_sha256: typeof row.parser_output_sha256 === "string" ? row.parser_output_sha256 : null,
         approved_content_sha256: typeof row.approved_content_sha256 === "string" ? row.approved_content_sha256 : null,
+        source_adapter: row.source_adapter === "website" || row.source_adapter === "connector" ? row.source_adapter : "manual",
+        source_revision: Number.isSafeInteger(row.source_revision) && Number(row.source_revision) >= 1 ? Number(row.source_revision) : 1,
+        source_content_sha256: typeof row.source_content_sha256 === "string" ? row.source_content_sha256 : null,
+        source_connection_ref: typeof row.source_connection_ref === "string" ? row.source_connection_ref : null,
+        source_grant_revision: Number.isSafeInteger(row.source_grant_revision) && Number(row.source_grant_revision) >= 1
+          ? Number(row.source_grant_revision) : null,
+        source_state: row.source_state === "stale" || row.source_state === "revoked" || row.source_state === "unsupported"
+          ? row.source_state : "current",
         chunks, objectReferences: references,
       };
       totalChunks += chunks.length;
@@ -217,6 +229,15 @@ export async function validateKnowledgeArchiveSnapshot(
         (typeof document.parser_version !== "string" || document.parser_version.length > 128)
       || document.parser_output_sha256 !== undefined && document.parser_output_sha256 !== null && !/^[a-f0-9]{64}$/.test(document.parser_output_sha256)
       || document.approved_content_sha256 !== undefined && document.approved_content_sha256 !== null && !/^[a-f0-9]{64}$/.test(document.approved_content_sha256)
+      || document.source_adapter !== undefined && !["manual", "website", "connector"].includes(document.source_adapter)
+      || document.source_revision !== undefined && (!Number.isSafeInteger(document.source_revision) || document.source_revision < 1)
+      || document.source_content_sha256 !== undefined && document.source_content_sha256 !== null && !/^[a-f0-9]{64}$/.test(document.source_content_sha256)
+      || document.source_connection_ref !== undefined && document.source_connection_ref !== null
+        && (typeof document.source_connection_ref !== "string" || !document.source_connection_ref || document.source_connection_ref.length > 256)
+      || document.source_grant_revision !== undefined && document.source_grant_revision !== null
+        && (!Number.isSafeInteger(document.source_grant_revision) || document.source_grant_revision < 1)
+      || document.source_state !== undefined && !["current", "stale", "revoked", "unsupported"].includes(document.source_state)
+      || document.source_adapter === "connector" && (!document.source_connection_ref || !document.source_grant_revision)
       || typeof document.source_sha256 === "string" && (document.content_type !== "pdf"
         || typeof document.parser_version !== "string" || !document.parser_version
         || typeof document.parser_output_sha256 !== "string" || typeof document.approved_content_sha256 !== "string")
@@ -348,14 +369,17 @@ export async function restoreKnowledgeArchive(
       const result = await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO kb_documents
         (id,space_id,tenant_id,project_id,title,source_url,content_type,status,chunk_count,required_role_rank,
          allowed_user_ids_json,source_sha256,source_file_name,parser_version,parser_output_sha256,approved_content_sha256,
-         created_at,updated_at,archive_restore_id)
-        SELECT ?,?,?,?,?,?,?,'processing',?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (
+         created_at,updated_at,source_adapter,source_revision,source_content_sha256,source_connection_ref,
+         source_grant_revision,source_state,archive_restore_id)
+        SELECT ?,?,?,?,?,?,?,'processing',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (
           SELECT 1 FROM kb_document_deletion_operations WHERE document_id=? AND tenant_id=? AND space_id=?)`)
         .bind(document.id, document.space_id, document.tenant_id, document.project_id, document.title, document.source_url,
           document.content_type, document.chunk_count, document.required_role_rank, document.allowed_user_ids_json,
           document.source_sha256 ?? null, document.source_file_name ?? null, document.parser_version ?? null,
           document.parser_output_sha256 ?? null, document.approved_content_sha256 ?? null,
-          document.created_at, document.updated_at, restoreId, document.id, document.tenant_id, document.space_id).run();
+          document.created_at, document.updated_at, document.source_adapter ?? "manual", document.source_revision ?? 1,
+          document.source_content_sha256 ?? null, document.source_connection_ref ?? null, document.source_grant_revision ?? null,
+          document.source_state ?? "current", restoreId, document.id, document.tenant_id, document.space_id).run();
       if (!result.meta.changes) {
         const refreshed = await documentDisposition(env, document, restoreId);
         if (refreshed === "tombstoned") {

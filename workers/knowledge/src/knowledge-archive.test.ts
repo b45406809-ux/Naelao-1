@@ -25,6 +25,7 @@ async function archiveDocument(): Promise<KnowledgeArchiveDocument> {
     id: "doc-1", tenant_id: scope.tenantId, space_id: scope.spaceId, project_id: null, title: "Private guide",
     source_url: null, content_type: "text", status: "indexed", chunk_count: 1, required_role_rank: 30,
     allowed_user_ids_json: JSON.stringify(["user-allowed"]), created_at: now, updated_at: now,
+    source_adapter: "manual", source_revision: 3, source_content_sha256: await sha256(content), source_state: "current",
     chunks: [chunk], objectReferences: [
       { key: "kb/space-1/_space/doc-1/chunk_0.json", etag: "json-etag", size: 2 },
       { key: "kb/space-1/_space/doc-1/chunk_0.txt", etag: "text-etag", size: new TextEncoder().encode(content).byteLength },
@@ -51,7 +52,8 @@ async function archivePdfDocument(): Promise<{ document: KnowledgeArchiveDocumen
   };
 }
 
-function fixture(options: { documents?: unknown[]; chunks?: KnowledgeArchiveChunk[]; tombstones?: string[]; deniedLeases?: string[]; current?: Record<string, { tenant_id: string; space_id: string; archive_restore_id: string | null }> } = {}) {
+function fixture(options: { documents?: unknown[]; chunks?: KnowledgeArchiveChunk[]; tombstones?: string[]; deniedLeases?: string[];
+  current?: Record<string, { tenant_id: string; space_id: string; archive_restore_id: string | null; [key: string]: unknown }> } = {}) {
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const batchCalls: Array<Array<{ sql: string; args: unknown[] }>> = [];
   const docs = options.current ?? {};
@@ -95,7 +97,9 @@ function fixture(options: { documents?: unknown[]; chunks?: KnowledgeArchiveChun
               if (sql.includes("INSERT OR IGNORE INTO kb_documents")) {
                 const id = String(args[0]);
                 if (tombstones.has(id) || docs[id]) return { meta: { changes: 0 } };
-                docs[id] = { tenant_id: args[2] as string, space_id: args[1] as string, archive_restore_id: args[17] as string };
+                docs[id] = { tenant_id: args[2] as string, space_id: args[1] as string, archive_restore_id: args[23] as string,
+                  source_adapter: args[17], source_revision: args[18], source_content_sha256: args[19],
+                  source_connection_ref: args[20], source_grant_revision: args[21], source_state: args[22] };
                 return { meta: { changes: 1 } };
               }
               if (sql.includes("UPDATE kb_documents SET status='reindex_required'")) {
@@ -183,6 +187,8 @@ describe("Knowledge archive scope and deletion fences", () => {
     expect(exported.snapshot.documents).toHaveLength(1);
     expect(exported.snapshot.documents[0]?.allowed_user_ids_json).toBe(JSON.stringify(["user-allowed"]));
     expect(exported.snapshot.documents[0]?.required_role_rank).toBe(30);
+    expect(exported.snapshot.documents[0]).toMatchObject({ source_adapter: "manual", source_revision: 3,
+      source_content_sha256: await sha256("recoverable knowledge"), source_state: "current" });
     expect(exported.snapshot.omissions.nonIndexedDocuments).toBe(1);
     expect(exported.objectReferences.map(({ key }) => key)).toEqual(document.objectReferences.map(({ key }) => key));
     expect(f.vectorize.getByIds).not.toHaveBeenCalled();

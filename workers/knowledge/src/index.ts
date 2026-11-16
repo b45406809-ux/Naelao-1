@@ -195,7 +195,9 @@ async function verifySpaceOwnership(db: D1Database, spaceId: string, tenantId: s
 
 function publicKnowledgeDocument<T extends Record<string, unknown> | null>(row: T): T {
   if (!row) return row;
-  const { allowed_user_ids_json: _allowedUserIds, archive_restore_id: _archiveRestoreId, ...publicRow } = row;
+  const { allowed_user_ids_json: _allowedUserIds, archive_restore_id: _archiveRestoreId,
+    source_content_sha256: _sourceContentHash, source_connection_ref: _sourceConnectionRef,
+    source_grant_revision: _sourceGrantRevision, ...publicRow } = row;
   return publicRow as T;
 }
 
@@ -648,6 +650,10 @@ interface IdempotentKnowledgeDocument {
   content_type: string;
   status: string;
   chunk_count: number;
+  source_adapter: "manual" | "website" | "connector";
+  source_revision: number;
+  source_content_sha256: string | null;
+  source_state: "current" | "stale" | "revoked" | "unsupported";
   created_at: string;
   updated_at: string;
 }
@@ -668,7 +674,8 @@ async function findKnowledgeCreateByIdempotency(
     throw new HttpError(409, "knowledge_idempotency_key_reused", "This upload request key was already used with different content or access settings");
   }
   const document = await db.prepare(`SELECT id,tenant_id,space_id,project_id,title,source_url,content_type,status,
-    chunk_count,created_at,updated_at FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=? AND project_id IS ?`)
+    chunk_count,source_adapter,source_revision,source_content_sha256,source_state,created_at,updated_at
+    FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=? AND project_id IS ?`)
     .bind(claim.document_id, scope.tenantId, scope.spaceId, scope.projectId)
     .first<IdempotentKnowledgeDocument>();
   if (!document) throw new HttpError(503, "knowledge_idempotency_document_unavailable", "The saved upload request is being reconciled; retry shortly");
@@ -680,8 +687,9 @@ async function insertKnowledgeDocumentOnce(
   input: { values: unknown[]; idempotency: KnowledgeCreateIdempotencyScope },
 ): Promise<{ created: boolean; existing: IdempotentKnowledgeCreate | null }> {
   const columns = `(id,space_id,tenant_id,project_id,title,source_url,content_type,status,chunk_count,required_role_rank,
-    allowed_user_ids_json,source_sha256,source_file_name,parser_version,parser_output_sha256,approved_content_sha256,created_at,updated_at)`;
-  const projection = `SELECT ?,?,?,?,?,?,?,'processing',0,?,?,?,?,?,?,?,?,?`;
+    allowed_user_ids_json,source_sha256,source_file_name,parser_version,parser_output_sha256,approved_content_sha256,
+    created_at,updated_at,source_adapter,source_content_sha256,source_state)`;
+  const projection = `SELECT ?,?,?,?,?,?,?,'processing',0,?,?,?,?,?,?,?,?,?,?,?,?`;
   const idem = input.idempotency;
   const projectScope = idem.projectId ?? "";
   const results = await db.batch([
@@ -860,13 +868,13 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
   const { results } = await c.env.PLATFORM_DB.prepare(
     projectId
       ? `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
-                chunk_count, created_at, updated_at
+                chunk_count, source_adapter, source_revision, source_state, created_at, updated_at
          FROM kb_documents
          WHERE space_id = ? AND tenant_id = ? AND project_id = ?
          ORDER BY created_at DESC
          LIMIT ? OFFSET ?`
       : `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
-                chunk_count, created_at, updated_at
+                chunk_count, source_adapter, source_revision, source_state, created_at, updated_at
          FROM kb_documents
          WHERE space_id = ? AND tenant_id = ? AND project_id IS NULL
          ORDER BY created_at DESC
@@ -1231,9 +1239,14 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   if (contentType !== "pdf" && originalBytes.byteLength > contentLimit) {
     throw badRequest(projectId ? "Project Knowledge content exceeds the 5 MiB limit" : "Space-wide Knowledge content exceeds the 1 MiB limit");
   }
+  // URL content is currently only an explicit URL reference plus owner-supplied extracted text.
+  // It is persisted as unsupported until a scoped, approved website refresh adapter is wired.
+  const sourceAdapter = contentType === "url" ? "website" : "manual";
+  const sourceState = contentType === "url" ? "unsupported" : "current";
+  const sourceContentSha256 = await sha256BytesHex(originalBytes);
 
   const requestSha256 = await sha256Hex(JSON.stringify({
-    version: 1, tenantId, spaceId, projectId, title: body.title.trim(), contentType,
+    version: 2, tenantId, spaceId, projectId, title: body.title.trim(), contentType, sourceAdapter, sourceState,
     sourceUrl: body.source_url ?? null, sourceFileName,
     sourceSha256: await sha256BytesHex(originalBytes),
     parserVersion: pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null,
@@ -1350,7 +1363,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     const documentValues = [docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
       requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
       pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
-      pdfLineage?.approvedContentSha256 ?? null, now, now];
+      pdfLineage?.approvedContentSha256 ?? null, now, now, sourceAdapter, sourceContentSha256, sourceState];
     const created = await insertKnowledgeDocumentOnce(c.env.PLATFORM_DB, { values: documentValues,
       idempotency: { ...idempotencyScope, requestSha256, documentId: docId, createdAt: now } });
     if (!created.created && created.existing) return returnExistingKnowledgeDocument(created.existing);
@@ -1406,7 +1419,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   const documentValues = [docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
     requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
     pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
-    pdfLineage?.approvedContentSha256 ?? null, now, now];
+    pdfLineage?.approvedContentSha256 ?? null, now, now, sourceAdapter, sourceContentSha256, sourceState];
   const created = await insertKnowledgeDocumentOnce(c.env.PLATFORM_DB, { values: documentValues,
     idempotency: { ...idempotencyScope, requestSha256, documentId: docId, createdAt: now } });
   if (!created.created && created.existing) return returnExistingKnowledgeDocument(created.existing);
@@ -1580,7 +1593,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
 
     const doc = publicKnowledgeDocument(await c.env.PLATFORM_DB.prepare(
       `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
-              chunk_count, created_at, updated_at FROM kb_documents WHERE id = ?`
+              chunk_count, source_adapter, source_revision, source_state, source_content_sha256,
+              source_connection_ref, source_grant_revision, created_at, updated_at FROM kb_documents WHERE id = ?`
     )
       .bind(docId)
       .first<Record<string, unknown>>());
@@ -1661,13 +1675,15 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
 
     const updated = publicKnowledgeDocument(await c.env.PLATFORM_DB.prepare(
       `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
-              chunk_count, created_at, updated_at FROM kb_documents WHERE id = ?`
+              chunk_count, source_adapter, source_revision, source_state, source_content_sha256,
+              source_connection_ref, source_grant_revision, created_at, updated_at FROM kb_documents WHERE id = ?`
     ).bind(docId).first<Record<string, unknown>>());
     return c.json(updated, 200);
   }
 
   const newContent = body.content!;
   const newTitle = body.title?.trim() ?? existing.title;
+  const newSourceContentSha256 = await sha256Hex(newContent);
 
   // G-AA26: Scan updated content for injection
   const titleMod = moderateInput(newTitle);
@@ -1873,10 +1889,11 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     const publishReindex = await c.env.PLATFORM_DB.batch([
       c.env.PLATFORM_DB.prepare(
         `UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, required_role_rank=?,
-          allowed_user_ids_json=COALESCE(allowed_user_ids_json, ?), updated_at = datetime('now')
+          allowed_user_ids_json=COALESCE(allowed_user_ids_json, ?), source_revision=source_revision+1,
+          source_content_sha256=?, updated_at = datetime('now')
         WHERE id = ? AND status='processing'
           AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
-      ).bind(newTitle, chunks.length, requiredRoleRank, JSON.stringify(allowedUserIds), docId, docId),
+      ).bind(newTitle, chunks.length, requiredRoleRank, JSON.stringify(allowedUserIds), newSourceContentSha256, docId, docId),
       ...revisionExternalPublicationsForDocument(c.env.PLATFORM_DB,
         { tenantId, spaceId, projectId, documentId: docId, updatedAt: new Date().toISOString() }),
     ]);
@@ -1884,7 +1901,8 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
 
     const updated = publicKnowledgeDocument(await c.env.PLATFORM_DB.prepare(
       `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
-              chunk_count, created_at, updated_at FROM kb_documents WHERE id = ?`
+              chunk_count, source_adapter, source_revision, source_state, source_content_sha256,
+              source_connection_ref, source_grant_revision, created_at, updated_at FROM kb_documents WHERE id = ?`
     ).bind(docId).first<Record<string, unknown>>());
     await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, true, storageOperationId);
     return c.json(updated, 200);
@@ -1932,7 +1950,9 @@ app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
         (document_id,tenant_id,space_id,project_id,chunk_count,state,next_attempt_at,created_at,updated_at)
         VALUES(?,?,?,?,?,'pending',?,?,?)`)
         .bind(docId, tenantId, spaceId, doc.project_id, doc.chunk_count ?? 0, now, now, now),
-      c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET status='deleting',title='Deleted document',source_url=NULL,updated_at=?
+      c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET status='deleting',title='Deleted document',source_url=NULL,
+        source_revision=source_revision+1,source_state='revoked',source_content_sha256=NULL,
+        source_connection_ref=NULL,source_grant_revision=NULL,updated_at=?
         WHERE id=? AND tenant_id=? AND space_id=?`)
         .bind(now, docId, tenantId, spaceId),
       c.env.PLATFORM_DB.prepare(`DELETE FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?`)

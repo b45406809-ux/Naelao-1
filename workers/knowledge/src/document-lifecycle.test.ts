@@ -100,7 +100,8 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
           state: "active", dispatch_state: "claimed" });
         documents.set(documentId, { id: documentId, space_id: documentArgs[1], tenant_id: documentArgs[2],
           project_id: documentArgs[3], title: documentArgs[4], source_url: documentArgs[5], content_type: documentArgs[6],
-          status: "processing", chunk_count: 0, created_at: documentArgs[14], updated_at: documentArgs[15] });
+          status: "processing", chunk_count: 0, created_at: documentArgs[14], updated_at: documentArgs[15],
+          source_adapter: documentArgs[16], source_content_sha256: documentArgs[17], source_state: documentArgs[18], source_revision: 1 });
         return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
       }
       if (statements[0]?.sql.includes("UPDATE kb_documents SET status = 'indexed'"))
@@ -362,10 +363,26 @@ describe("Knowledge document lifecycle boundaries", () => {
     expect(second.status).toBe(200);
     expect(await second.json()).toMatchObject({ id: firstDocument.id, status: "indexed" });
     expect(f.documents.size).toBe(1);
+    expect([...f.documents.values()][0]).toMatchObject({ source_adapter: "manual", source_revision: 1,
+      source_state: "current", source_content_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(ai).toHaveBeenCalledTimes(1);
     expect(f.vectorUpserts).toHaveLength(1);
     expect(f.writes).toHaveLength(writesAfterFirst);
     expect(f.storageUsageEvents).toHaveLength(usageEventsAfterFirst);
+  });
+
+  it("marks URL-backed manual extraction as unsupported website refresh until a scoped adapter exists", async () => {
+    const f = fixture();
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
+      title: "Site excerpt", content: "owner-reviewed excerpt", content_type: "url", source_url: "https://example.com/policy",
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(201);
+    const document = await response.json() as Record<string, unknown>;
+    expect(document).toMatchObject({ source_adapter: "website", source_revision: 1, source_state: "unsupported" });
+    expect(document).not.toHaveProperty("source_content_sha256");
+    const stored = [...f.documents.values()][0];
+    expect(stored).toMatchObject({ source_adapter: "website", source_revision: 1, source_state: "unsupported",
+      source_content_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
   });
 
   it("rejects idempotency-key reuse after content or ACL changes before indexing", async () => {
@@ -619,6 +636,11 @@ describe("Knowledge document lifecycle boundaries", () => {
     });
     const chunkInsert = f.dbCalls.find(({ sql }) => sql.includes("INSERT INTO kb_chunks"));
     expect(chunkInsert?.args).toContain(30);
+    const sourceVersionUpdate = f.dbCalls.find(({ sql }) => sql.includes("source_revision=source_revision+1"));
+    expect(sourceVersionUpdate?.sql).toContain("source_content_sha256=?");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("replacement source"));
+    const expectedSourceHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    expect(sourceVersionUpdate?.args).toContain(expectedSourceHash);
   });
 
   it("continues to recover legacy ACLs from Vectorize when the D1 policy is unknown", async () => {

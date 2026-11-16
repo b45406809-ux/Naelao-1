@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0265_knowledge_publication_revisions",
+  "requiredSchemaVersion": "0270_knowledge_source_lineage",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1063,6 +1063,26 @@
     {
       "filename": "0265_knowledge_publication_revisions.sql",
       "sha256": "5ba5bd364a69351de538fe9b309cd1a6188d67f6a79182bff5c3e7565f5a86a6"
+    },
+    {
+      "filename": "0266_extension_installation_workflow_budgets.sql",
+      "sha256": "7b677d483c158c303c402663da61c47087aa497eb1ef7ffb29b01196f9156809"
+    },
+    {
+      "filename": "0267_extension_resource_jobs.sql",
+      "sha256": "1f474ee342552f0d1c92d13791017cbb3a738bc49e3d178e5e039b20ba510519"
+    },
+    {
+      "filename": "0268_knowledge_publication_archive.sql",
+      "sha256": "50c5e640d10a5b51f6371e16a3bc807edc2d09851ef198df004ba67a7fabbe13"
+    },
+    {
+      "filename": "0269_knowledge_publication_audit_and_tombstones.sql",
+      "sha256": "6f685b927bdd7924ba58f1ec11c09351fa83c13b7ec2b3c4f6ab773bf78a6bf8"
+    },
+    {
+      "filename": "0270_knowledge_source_lineage.sql",
+      "sha256": "ca7324877e8470529f0bb0563fb2d6da2e9e42566f6ee88c1236348c4c089422"
     }
   ]
 }
