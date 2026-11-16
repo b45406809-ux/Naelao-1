@@ -3621,6 +3621,31 @@ export interface KnowledgePdfPreview {
   extraction_warnings: string[];
 }
 
+export interface WebsiteKnowledgePreview {
+  content: string;
+  requested_url: string;
+  final_url: string;
+  content_type: string;
+  preview_sha256: string;
+  preview_token: string;
+  expires_in_seconds: number;
+  warnings: string[];
+}
+
+export async function previewWebsiteKnowledgeSource(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials,
+  input: { connection_id: string; url: string },
+): Promise<WebsiteKnowledgePreview> {
+  const response = await apiFetch<{ preview: WebsiteKnowledgePreview }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/sources/website/preview`,
+    { method: "POST", body: JSON.stringify(input), session, cache: "no-store" },
+  );
+  assertKnowledgeContentWithinScope(response.preview.content, projectId);
+  return response.preview;
+}
+
 export async function previewKbPdf(
   spaceId: string,
   session: SessionCredentials,
@@ -3637,7 +3662,8 @@ export async function createKbDocument(
   spaceId: string,
   session: SessionCredentials,
   input: { title: string; content: string; idempotency_key: string; content_type?: string; source_url?: string; project_id?: string;
-    preview_content?: string; preview_token?: string; preview_extraction_sha256?: string; source_file_name?: string }
+    preview_content?: string; preview_token?: string; preview_extraction_sha256?: string; source_file_name?: string;
+    website_connection_id?: string; website_requested_url?: string; website_preview_sha256?: string; website_preview_token?: string }
 ): Promise<KbDocument> {
   if (input.content_type === "pdf") {
     if (!input.preview_content) throw new Error("Preview and approve the PDF extraction before saving.");
@@ -3645,7 +3671,7 @@ export async function createKbDocument(
   } else {
     assertKnowledgeContentWithinScope(input.content, input.project_id);
   }
-  return apiFetch(`/v1/spaces/${spaceId}/kb/documents`, { method: "POST", body: JSON.stringify(input), session });
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/kb/documents`, { method: "POST", body: JSON.stringify(input), session });
 }
 
 export async function getRestoredKbDocumentContent(spaceId: string, docId: string, session: SessionCredentials) {

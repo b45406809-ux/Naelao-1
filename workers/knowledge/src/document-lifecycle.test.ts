@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
+import { createWebsitePreviewToken, sha256TextHex } from "./website-source-preview.js";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; reindexDoc?: boolean; reindexChunks?: Array<{ chunk_index: number; content: string; content_hash: string; deleted_at: string | null }>; queueFails?: boolean; queueAcceptThenThrow?: boolean; failFirstBucketPut?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean; legacyAcl?: boolean } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; reindexDoc?: boolean; reindexChunks?: Array<{ chunk_index: number; content: string; content_hash: string; deleted_at: string | null }>; queueFails?: boolean; queueAcceptThenThrow?: boolean; failFirstBucketPut?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean; legacyAcl?: boolean; projectAccess?: boolean; websiteConnection?: boolean } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const idempotencyClaims = new Map<string, { request_sha256: string | null; document_id: string; state: "active" | "deleted"; dispatch_state: "claimed" | "dispatching" }>();
@@ -54,7 +55,12 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
                   allowed_user_ids_json: options.legacyAcl ? null : options.allowedUserIds ? JSON.stringify(options.allowedUserIds) : null,
                   legacy_required_role_rank: options.requiredRoleRank ?? 0, content_type: "text" }
               : null;
-            if (sql.includes("FROM project_access")) return options.workflowDoc ? { role_rank: 50, visibility: "private" } : null;
+            if (sql.includes("FROM project_access")) return options.workflowDoc || options.projectAccess ? { role_rank: 50, visibility: "private" } : null;
+            if (sql.includes("FROM website_connections")) return options.websiteConnection
+              ? { id: "website-1", tenant_id: "tenant-1", space_id: "space-1", owner_user_id: "user-1", project_id: "project-1",
+                  origins_json: '["https://docs.example"]', status: "active" }
+              : null;
+            if (sql.includes("COUNT(*) AS count FROM kb_documents") && sql.includes("source_connection_ref")) return { count: 0 };
             if (sql.includes("SELECT id, chunk_count, project_id FROM kb_documents")) return options.existing
               ? { id: "doc-1", chunk_count: 1, project_id: options.projectId ?? null }
               : null;
@@ -102,6 +108,8 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
           project_id: documentArgs[3], title: documentArgs[4], source_url: documentArgs[5], content_type: documentArgs[6],
           status: "processing", chunk_count: 0, created_at: documentArgs[14], updated_at: documentArgs[15],
           source_adapter: documentArgs[16], source_content_sha256: documentArgs[17], source_state: documentArgs[18], source_revision: 1 });
+        const stored = documents.get(documentId);
+        if (stored) documents.set(documentId, { ...stored, source_connection_ref: documentArgs[19] ?? null, source_grant_revision: documentArgs[20] ?? null });
         return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
       }
       if (statements[0]?.sql.includes("UPDATE kb_documents SET status = 'indexed'"))
@@ -371,7 +379,7 @@ describe("Knowledge document lifecycle boundaries", () => {
     expect(f.storageUsageEvents).toHaveLength(usageEventsAfterFirst);
   });
 
-  it("marks URL-backed manual extraction as unsupported website refresh until a scoped adapter exists", async () => {
+  it("keeps owner-supplied URL excerpts unsupported without a website approval receipt", async () => {
     const f = fixture();
     const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
       title: "Site excerpt", content: "owner-reviewed excerpt", content_type: "url", source_url: "https://example.com/policy",
@@ -383,6 +391,52 @@ describe("Knowledge document lifecycle boundaries", () => {
     const stored = [...f.documents.values()][0];
     expect(stored).toMatchObject({ source_adapter: "website", source_revision: 1, source_state: "unsupported",
       source_content_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  });
+
+  it("stores an owner-approved website snapshot with its exact host connection grant", async () => {
+    const f = fixture({ projectId: "project-1", projectAccess: true, websiteConnection: true });
+    const approvedContent = "Owner-approved website snapshot text";
+    const scope = { tenantId: "tenant-1", spaceId: "space-1", projectId: "project-1", userId: "user-1", connectionId: "website-1" };
+    const requestedUrl = "https://docs.example/start";
+    const finalUrl = "https://docs.example/current";
+    const previewSha256 = await sha256TextHex("Fetched website content before owner correction");
+    const previewToken = await createWebsitePreviewToken({ secret: "secret", scope, requestedUrl, finalUrl, previewSha256 });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
+      title: "Website guide", content: approvedContent, content_type: "url", source_url: finalUrl,
+      project_id: "project-1", idempotency_key: "website-create-idempotency-01", website_connection_id: "website-1",
+      website_requested_url: requestedUrl, website_preview_sha256: previewSha256, website_preview_token: previewToken,
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(201);
+    const document = await response.json() as Record<string, unknown>;
+    expect(document).toMatchObject({ source_adapter: "website", source_revision: 1, source_state: "current" });
+    expect(document).not.toHaveProperty("source_connection_ref");
+    expect(document).not.toHaveProperty("source_grant_revision");
+    const stored = [...f.documents.values()][0];
+    expect(stored).toMatchObject({ source_adapter: "website", source_state: "current", source_connection_ref: "website-1", source_grant_revision: 1 });
+    expect(stored?.source_content_sha256).toBe(await sha256TextHex(approvedContent));
+  });
+
+  it("rejects website create after the host connection is revoked or the receipt is changed", async () => {
+    const requestedUrl = "https://docs.example/start";
+    const finalUrl = "https://docs.example/current";
+    const previewSha256 = await sha256TextHex("Fetched website content");
+    const previewToken = await createWebsitePreviewToken({ secret: "secret",
+      scope: { tenantId: "tenant-1", spaceId: "space-1", projectId: "project-1", userId: "user-1", connectionId: "website-1" },
+      requestedUrl, finalUrl, previewSha256 });
+    const body = { title: "Website guide", content: "Approved text", content_type: "url", source_url: finalUrl,
+      project_id: "project-1", idempotency_key: "website-create-idempotency-02", website_connection_id: "website-1",
+      website_requested_url: requestedUrl, website_preview_sha256: previewSha256, website_preview_token: previewToken };
+    const revoked = fixture({ projectId: "project-1", projectAccess: true, websiteConnection: false });
+    const revokedResponse = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", body), revoked.env, {} as ExecutionContext);
+    expect(revokedResponse.status).toBe(409);
+    expect(revoked.dbCalls.some(({ sql }) => sql.includes("INSERT INTO kb_documents"))).toBe(false);
+
+    const f = fixture({ projectId: "project-1", projectAccess: true, websiteConnection: true });
+    const changedResponse = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
+      ...body, website_preview_sha256: "b".repeat(64), idempotency_key: "website-create-idempotency-03",
+    }), f.env, {} as ExecutionContext);
+    expect(changedResponse.status).toBe(409);
+    expect(f.dbCalls.some(({ sql }) => sql.includes("INSERT INTO kb_documents"))).toBe(false);
   });
 
   it("rejects idempotency-key reuse after content or ACL changes before indexing", async () => {

@@ -20,6 +20,7 @@ import { acquireKnowledgeDocumentMutationLease, hasKnowledgeDocumentDeletionSinc
 import { exportKnowledgeArchive, previewKnowledgeArchiveRestore, restoreKnowledgeArchive, validateKnowledgeArchiveSnapshot } from "./knowledge-archive.js";
 import { createKnowledgePdfPreviewToken, KNOWLEDGE_PDF_PARSER_VERSION, sha256BytesHex, verifyKnowledgePdfPreviewToken } from "./pdf-preview.js";
 import { revisionExternalPublicationsForDocument } from "./external-publication-lifecycle.js";
+import { createWebsitePreviewToken, sha256TextHex, verifyWebsitePreviewToken } from "./website-source-preview.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -220,17 +221,21 @@ function effectiveRoleRank(c: { req: { header: (h: string) => string | undefined
  * project ACL is owned by SpaceDO; until a read-only binding is introduced, the mirrored D1
  * project ACL is the fail-closed authority used by this worker. */
 async function authorizeProject(db: D1Database, scope: RetrievalScope, userId: string): Promise<boolean> {
-  if (!scope.projectId || !userId) return false;
+  return await projectRoleRank(db, scope.tenantId, scope.spaceId, scope.projectId, userId) !== null;
+}
+
+async function projectRoleRank(db: D1Database, tenantId: string, spaceId: string, projectId: string | null, userId: string): Promise<number | null> {
+  if (!projectId || !userId) return null;
   try {
     const access = await db.prepare(
-      `SELECT visibility, role_rank FROM project_access
+      `SELECT role_rank FROM project_access
        WHERE project_id = ? AND user_id = ? AND tenant_id = ? AND space_id = ?`
-    ).bind(scope.projectId, userId, scope.tenantId, scope.spaceId)
-      .first<{ visibility: string; role_rank: number }>();
-    return Boolean(access && access.role_rank >= 0);
+    ).bind(projectId, userId, tenantId, spaceId)
+      .first<{ role_rank: number }>();
+    return access && Number.isSafeInteger(access.role_rank) && access.role_rank >= 0 ? access.role_rank : null;
   } catch {
     // Schema/service-policy failures must never widen access.
-    return false;
+    return null;
   }
 }
 
@@ -238,14 +243,37 @@ async function requireProjectAccess(c: any, projectId: string, minimumRoleRank =
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
   const userId = c.req.header("x-naelao-user-id") ?? "";
-  const roleRank = effectiveRoleRank(c);
+  const projectRank = await projectRoleRank(c.env.PLATFORM_DB, tenantId, spaceId, projectId, userId);
+  if (projectRank === null) throw notFound("Project not found");
+  // Product sessions carry a fixed `product_end_user` platform role. For Project actions, the
+  // exact user ACL is the authority that distinguishes owner/admin/editor/member/viewer.
+  const roleRank = c.req.header("x-naelao-role") === "product_end_user" ? projectRank : effectiveRoleRank(c);
   if (roleRank < minimumRoleRank) return c.json({ error_code: "forbidden", message: "Project owner access required" }, 403);
-  const scope: RetrievalScope = { tenantId, spaceId, projectId, roleRank };
-  if (!(await authorizeProject(c.env.PLATFORM_DB, scope, userId))) throw notFound("Project not found");
   return { tenantId, spaceId, userId };
 }
 
 const EXTERNAL_PUBLICATION_ID = /^[a-z][a-z0-9_-]{2,63}$/;
+const WEBSITE_SOURCE_CONTENT_CAP = 1_048_576;
+
+interface WebsiteConnectionGrant {
+  id: string;
+  tenant_id: string;
+  space_id: string;
+  owner_user_id: string;
+  project_id: string | null;
+  origins_json: string;
+  status: string;
+}
+
+function websiteConnectionOrigins(row: WebsiteConnectionGrant): string[] | null {
+  try {
+    const value: unknown = JSON.parse(row.origins_json);
+    if (!Array.isArray(value) || value.length > 16 || value.some((origin) => typeof origin !== "string")) return null;
+    return [...new Set(value as string[])];
+  } catch {
+    return null;
+  }
+}
 
 function collectionProjectAction(c: any, projectId: string, action: "discover" | "read" | "manage" | "share" | "delete" | "administer") {
   const minimumRole = action === "discover" || action === "read" ? 0 : 40;
@@ -267,6 +295,11 @@ app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications", async (
      FROM kb_external_publications p LEFT JOIN kb_external_publication_documents d
        ON d.publication_id=p.id AND d.tenant_id=p.tenant_id AND d.space_id=p.space_id AND d.project_id=p.project_id
          AND d.publication_revision=p.revision
+         AND EXISTS (SELECT 1 FROM kb_documents source_doc WHERE source_doc.id=d.document_id AND source_doc.status='indexed'
+           AND (source_doc.source_adapter!='website' OR (source_doc.source_state='current' AND EXISTS (
+             SELECT 1 FROM website_connections wc WHERE wc.id=source_doc.source_connection_ref AND wc.tenant_id=source_doc.tenant_id
+               AND wc.space_id=source_doc.space_id AND wc.project_id=source_doc.project_id AND wc.status='active'
+           ))))
      WHERE p.tenant_id=? AND p.space_id=? AND p.project_id=? GROUP BY p.id ORDER BY p.name,p.id`
   ).bind(access.tenantId, access.spaceId, projectId).all<{ id: string; name: string; updated_at: string; revision: number; archived_at: string | null; document_count: number }>();
   return c.json({ publications: results.map(({ archived_at, ...publication }) => ({
@@ -291,7 +324,11 @@ app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
        AND p.project_id=x.project_id AND p.revision=x.publication_revision AND p.archived_at IS NULL
      JOIN kb_documents d ON d.id=x.document_id AND d.tenant_id=x.tenant_id AND d.space_id=x.space_id AND d.project_id=x.project_id
      WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND p.revision=?
-       AND d.status='indexed' ORDER BY x.document_id LIMIT 100`
+       AND d.status='indexed'
+       AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
+         SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
+           AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
+       ))) ORDER BY x.document_id LIMIT 100`
   ).bind(publicationId, access.tenantId, spaceId, projectId, publication.revision).all<{ document_id: string }>();
   const stillCurrent = await c.env.PLATFORM_DB.prepare(
     `SELECT revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?
@@ -354,7 +391,11 @@ app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
   if (documentIds.length) {
     const placeholders = documentIds.map(() => "?").join(",");
     const { results } = await c.env.PLATFORM_DB.prepare(
-      `SELECT id FROM kb_documents WHERE tenant_id=? AND space_id=? AND project_id=? AND status='indexed' AND id IN (${placeholders})`
+      `SELECT id FROM kb_documents WHERE tenant_id=? AND space_id=? AND project_id=? AND status='indexed'
+        AND (source_adapter!='website' OR (source_state='current' AND EXISTS (
+          SELECT 1 FROM website_connections wc WHERE wc.id=kb_documents.source_connection_ref AND wc.tenant_id=kb_documents.tenant_id
+            AND wc.space_id=kb_documents.space_id AND wc.project_id=kb_documents.project_id AND wc.status='active'
+        ))) AND id IN (${placeholders})`
     ).bind(access.tenantId, spaceId, projectId, ...documentIds).all<{ id: string }>();
     if (results.length !== documentIds.length) throw badRequest("Every document must be indexed and belong to this project");
   }
@@ -536,7 +577,11 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
      JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id
        AND p.project_id=x.project_id AND p.revision=x.publication_revision AND p.archived_at IS NULL
      WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND x.publication_revision=? AND d.tenant_id=x.tenant_id
-       AND d.space_id=x.space_id AND d.project_id=x.project_id AND d.status='indexed' ORDER BY d.id LIMIT 100`
+       AND d.space_id=x.space_id AND d.project_id=x.project_id AND d.status='indexed'
+       AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
+         SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
+           AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
+       ))) ORDER BY d.id LIMIT 100`
   ).bind(body.publication_id, tenantId, spaceId, projectId, body.publication_revision).all<{ id: string; title: string }>();
   if (!docs.results.length) return c.json({ data: [], context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
   const topK = Math.max(1, Math.min(Number.isInteger(body.top_k) ? Number(body.top_k) : 5, 10));
@@ -555,7 +600,11 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
      JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id AND p.project_id=x.project_id
      WHERE k.id IN (${placeholders}) AND x.publication_id=? AND x.publication_revision=? AND p.revision=? AND p.archived_at IS NULL
        AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
-       AND d.status='indexed' AND k.deleted_at IS NULL`
+       AND d.status='indexed' AND k.deleted_at IS NULL
+       AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
+         SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
+           AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
+       )))`
   ).bind(...ids, body.publication_id, body.publication_revision, body.publication_revision, tenantId, spaceId, projectId).all<{ id: string; document_id: string; content: string; content_hash: string; title: string }>();
   const byId = new Map(rows.results.map(row => [row.id, row]));
   const scoreById = new Map((matches.matches ?? []).map(match => [match.id, match.score ?? 0]));
@@ -688,8 +737,8 @@ async function insertKnowledgeDocumentOnce(
 ): Promise<{ created: boolean; existing: IdempotentKnowledgeCreate | null }> {
   const columns = `(id,space_id,tenant_id,project_id,title,source_url,content_type,status,chunk_count,required_role_rank,
     allowed_user_ids_json,source_sha256,source_file_name,parser_version,parser_output_sha256,approved_content_sha256,
-    created_at,updated_at,source_adapter,source_content_sha256,source_state)`;
-  const projection = `SELECT ?,?,?,?,?,?,?,'processing',0,?,?,?,?,?,?,?,?,?,?,?,?`;
+    created_at,updated_at,source_adapter,source_content_sha256,source_state,source_connection_ref,source_grant_revision)`;
+  const projection = `SELECT ?,?,?,?,?,?,?,'processing',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?`;
   const idem = input.idempotency;
   const projectScope = idem.projectId ?? "";
   const results = await db.batch([
@@ -1095,6 +1144,61 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
 
 // ── POST /spaces/:spaceId/kb/documents ────────────────────────────────────────
 
+app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/preview", async (c) => {
+  const tenantId = requireTenant(c);
+  const { spaceId, projectId } = c.req.param();
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  const access = await requireProjectAccess(c, projectId, 40);
+  if (access instanceof Response) return access;
+  const body = await readBoundedJson<{ connection_id?: unknown; url?: unknown }>(c.req.raw, 8 * 1024);
+  if (typeof body.connection_id !== "string" || !body.connection_id || body.connection_id.length > 256
+    || typeof body.url !== "string" || !body.url.trim() || body.url.length > WEB_TARGET_URL_MAX_CHARS) {
+    throw badRequest("connection_id and a URL from the approved website connection are required");
+  }
+  let requested: URL;
+  try { requested = new URL(body.url); }
+  catch { throw badRequest("Website source URL is invalid"); }
+  if (requested.protocol !== "https:" || requested.username || requested.password) {
+    throw badRequest("Website Knowledge sources must use HTTPS without embedded credentials");
+  }
+  const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,status
+    FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND project_id=? AND status='active'`)
+    .bind(body.connection_id, tenantId, spaceId, access.userId, projectId).first<WebsiteConnectionGrant>();
+  if (!connection) return c.json({ error_code: "website_connection_not_found" }, 404);
+  const origins = websiteConnectionOrigins(connection);
+  if (!origins || !origins.includes(requested.origin)) return c.json({ error_code: "website_origin_not_authorized" }, 403);
+
+  try {
+    const guarded = await fetchSsrfGuarded(requested.href, {
+      headers: { "user-agent": "naelao-knowledge/1.0", accept: "text/markdown, text/plain;q=0.9, text/html;q=0.8, application/xhtml+xml;q=0.7" },
+    }, origins);
+    if (!guarded.ok) return c.json({ error_code: guarded.status === 403 ? "forbidden" : "bad_gateway", message: guarded.message }, guarded.status);
+    if (!guarded.response.ok) return c.json({ error_code: "website_upstream_status", upstream_status: guarded.response.status }, 502);
+    const mime = (guarded.response.headers.get("content-type") ?? "").split(";", 1)[0]!.trim().toLowerCase();
+    if (!["text/markdown", "text/plain", "text/html", "application/xhtml+xml"].includes(mime)) {
+      await guarded.response.body?.cancel().catch(() => undefined);
+      return c.json({ error_code: "website_content_type_unsupported", message: "Only HTML, Markdown, and plain-text pages are supported" }, 415);
+    }
+    const fetched = await readBoundedText(guarded.response, WEBSITE_SOURCE_CONTENT_CAP);
+    if (fetched.truncated) return c.json({ error_code: "website_source_too_large", limit_bytes: WEBSITE_SOURCE_CONTENT_CAP }, 413);
+    const { sanitized, injectionDetected } = sanitizeKbContent(fetched.content);
+    if (!sanitized.trim()) return c.json({ error_code: "website_source_empty" }, 422);
+    const approvedPreview = sanitized.trim();
+    const previewSha256 = await sha256TextHex(approvedPreview);
+    const token = await createWebsitePreviewToken({ secret: c.env.PLATFORM_SECRET,
+      scope: { tenantId, spaceId, projectId, userId: access.userId, connectionId: connection.id },
+      requestedUrl: requested.href, finalUrl: guarded.url.href, previewSha256 });
+    const warnings = ["Review the extracted page text before adding it. HTML markup is stripped; this is a bounded page snapshot and will not refresh automatically."];
+    if (mime === "text/html" || mime === "application/xhtml+xml") warnings.push("Page extraction strips markup and may not preserve layout, tables, or client-rendered content.");
+    if (injectionDetected) warnings.push("Potential prompt-injection text was detected. Indexed content remains untrusted and is subject to Knowledge safety filtering.");
+    return c.json({ preview: { content: approvedPreview, requested_url: requested.href, final_url: guarded.url.href,
+      content_type: mime, preview_sha256: previewSha256, preview_token: token, expires_in_seconds: 900, warnings } }, 200,
+      { "cache-control": "private, no-store" });
+  } catch {
+    return c.json({ error_code: "website_preview_unavailable", message: "The website could not be fetched safely. Retry the preview." }, 502);
+  }
+});
+
 app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
@@ -1105,10 +1209,8 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
   }
   const projectId = body.project_id ?? null;
   if (projectId) {
-    const userId = c.req.header("x-naelao-user-id") ?? "";
-    if (!await authorizeProject(c.env.PLATFORM_DB, { tenantId, spaceId, projectId, roleRank: effectiveRoleRank(c) }, userId)) {
-      throw notFound("Project not found");
-    }
+    const access = await requireProjectAccess(c, projectId);
+    if (access instanceof Response) return access;
   }
   if (typeof body.content !== "string" || !body.content) throw badRequest("PDF content is required");
   const sourceFileName = safeKnowledgeSourceFileName(body.source_file_name);
@@ -1158,6 +1260,10 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     preview_token?: string;
     preview_extraction_sha256?: string;
     source_file_name?: string;
+    website_connection_id?: string;
+    website_requested_url?: string;
+    website_preview_sha256?: string;
+    website_preview_token?: string;
     idempotency_key: string;
     /** WS-4: optional — isolates this document to a single project's own KB, distinct from the
      *  space-wide default (omitted/null). */
@@ -1190,10 +1296,10 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       .filter(([role, rank]) => role in KNOWLEDGE_ROLE_MASK && rank >= requiredRoleRank)
       .map(([role]) => role);
   const accessMasks = allowedRoles.map((role) => KNOWLEDGE_ROLE_MASK[role as KnowledgeRole]);
+  const creatingWebsiteSource = body.website_connection_id !== undefined;
   if (projectId) {
-    const scope = { tenantId, spaceId, projectId, roleRank: effectiveRoleRank(c) };
-    const userId = c.req.header("x-naelao-user-id") ?? "";
-    if (!(await authorizeProject(c.env.PLATFORM_DB, scope, userId))) throw notFound("Project not found");
+    const access = await requireProjectAccess(c, projectId, creatingWebsiteSource ? 40 : 0);
+    if (access instanceof Response) return access;
   }
 
   // Validate required fields
@@ -1239,15 +1345,52 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   if (contentType !== "pdf" && originalBytes.byteLength > contentLimit) {
     throw badRequest(projectId ? "Project Knowledge content exceeds the 5 MiB limit" : "Space-wide Knowledge content exceeds the 1 MiB limit");
   }
-  // URL content is currently only an explicit URL reference plus owner-supplied extracted text.
-  // It is persisted as unsupported until a scoped, approved website refresh adapter is wired.
-  const sourceAdapter = contentType === "url" ? "website" : "manual";
-  const sourceState = contentType === "url" ? "unsupported" : "current";
+  // Bare URL excerpts remain unsupported. A source is current only when this exact owner and
+  // Project approve text returned by a scoped, signed website preview receipt.
+  let sourceConnectionRef: string | null = null;
+  let sourceGrantRevision: number | null = null;
+  let sourceAdapter: "manual" | "website" = contentType === "url" ? "website" : "manual";
+  let sourceState: "current" | "unsupported" = contentType === "url" ? "unsupported" : "current";
+  if (creatingWebsiteSource) {
+    if (!projectId || contentType !== "url" || typeof body.website_connection_id !== "string"
+      || body.website_connection_id.length < 1 || body.website_connection_id.length > 256
+      || typeof body.website_requested_url !== "string" || body.website_requested_url.length > WEB_TARGET_URL_MAX_CHARS
+      || typeof body.website_preview_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.website_preview_sha256)
+      || typeof body.website_preview_token !== "string" || typeof body.source_url !== "string") {
+      throw badRequest("A Project website preview receipt is required for website Knowledge sources");
+    }
+    let requestedUrl: URL;
+    let finalUrl: URL;
+    try { requestedUrl = new URL(body.website_requested_url); finalUrl = new URL(body.source_url); }
+    catch { throw badRequest("Website preview URLs are invalid"); }
+    if (requestedUrl.protocol !== "https:" || finalUrl.protocol !== "https:" || requestedUrl.username || requestedUrl.password
+      || finalUrl.username || finalUrl.password || requestedUrl.href !== body.website_requested_url || finalUrl.href !== body.source_url) {
+      throw badRequest("Website preview URLs must be canonical HTTPS URLs without credentials");
+    }
+    const userId = c.req.header("x-naelao-user-id") ?? "";
+    const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,status
+      FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND project_id=? AND status='active'`)
+      .bind(body.website_connection_id, tenantId, spaceId, userId, projectId).first<WebsiteConnectionGrant>();
+    const origins = connection ? websiteConnectionOrigins(connection) : null;
+    if (!connection || !origins || !origins.includes(requestedUrl.origin) || !origins.includes(finalUrl.origin)) {
+      throw new HttpError(409, "website_connection_changed", "The approved website connection is no longer active for this Project and URL");
+    }
+    const previewValid = await verifyWebsitePreviewToken({ token: body.website_preview_token, secret: c.env.PLATFORM_SECRET,
+      scope: { tenantId, spaceId, projectId, userId, connectionId: connection.id }, requestedUrl: requestedUrl.href,
+      finalUrl: finalUrl.href, previewSha256: body.website_preview_sha256 });
+    if (!previewValid) throw new HttpError(409, "website_preview_expired_or_changed", "Preview this website page again before saving");
+    const connectionCount = await c.env.PLATFORM_DB.prepare(`SELECT COUNT(*) AS count FROM kb_documents
+      WHERE tenant_id=? AND space_id=? AND source_connection_ref=?`).bind(tenantId, spaceId, connection.id).first<{ count: number }>();
+    if ((connectionCount?.count ?? 0) >= 100) throw new HttpError(429, "website_connection_document_limit", "This website connection has reached its 100-page Knowledge limit");
+    sourceConnectionRef = connection.id;
+    sourceGrantRevision = 1; // The host connection scope is immutable; revocation changes its active state.
+    sourceState = "current";
+  }
   const sourceContentSha256 = await sha256BytesHex(originalBytes);
 
   const requestSha256 = await sha256Hex(JSON.stringify({
-    version: 2, tenantId, spaceId, projectId, title: body.title.trim(), contentType, sourceAdapter, sourceState,
-    sourceUrl: body.source_url ?? null, sourceFileName,
+    version: 3, tenantId, spaceId, projectId, title: body.title.trim(), contentType, sourceAdapter, sourceState,
+    sourceUrl: body.source_url ?? null, sourceFileName, sourceConnectionRef, sourceGrantRevision,
     sourceSha256: await sha256BytesHex(originalBytes),
     parserVersion: pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null,
     extractionSha256: pdfLineage?.extractionSha256 ?? null,
@@ -1363,7 +1506,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     const documentValues = [docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
       requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
       pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
-      pdfLineage?.approvedContentSha256 ?? null, now, now, sourceAdapter, sourceContentSha256, sourceState];
+      pdfLineage?.approvedContentSha256 ?? null, now, now, sourceAdapter, sourceContentSha256, sourceState,
+      sourceConnectionRef, sourceGrantRevision];
     const created = await insertKnowledgeDocumentOnce(c.env.PLATFORM_DB, { values: documentValues,
       idempotency: { ...idempotencyScope, requestSha256, documentId: docId, createdAt: now } });
     if (!created.created && created.existing) return returnExistingKnowledgeDocument(created.existing);
@@ -1419,7 +1563,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   const documentValues = [docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
     requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
     pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
-    pdfLineage?.approvedContentSha256 ?? null, now, now, sourceAdapter, sourceContentSha256, sourceState];
+    pdfLineage?.approvedContentSha256 ?? null, now, now, sourceAdapter, sourceContentSha256, sourceState,
+    sourceConnectionRef, sourceGrantRevision];
   const created = await insertKnowledgeDocumentOnce(c.env.PLATFORM_DB, { values: documentValues,
     idempotency: { ...idempotencyScope, requestSha256, documentId: docId, createdAt: now } });
   if (!created.created && created.existing) return returnExistingKnowledgeDocument(created.existing);
@@ -1983,6 +2128,53 @@ app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     retry_after_seconds: 300, provider_mirror_status: deletion.provider_mirror_status } }, 202, { "retry-after": "300" });
 });
 
+// Website connection revocation is the host grant boundary. Revoke every attached page through
+// the same durable deletion ledger used by explicit document deletion; the connection status
+// itself is checked at every retrieval and citation boundary before this cleanup runs.
+app.post("/internal/spaces/:spaceId/kb/sources/website/revoke", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const body = await readBoundedJson<{ connection_id?: unknown }>(c.req.raw, 8 * 1024);
+  if (typeof body.connection_id !== "string" || !body.connection_id || body.connection_id.length > 256) {
+    throw badRequest("connection_id is required");
+  }
+  const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,status
+    FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND status='revoked'`)
+    .bind(body.connection_id, tenantId, spaceId).first<WebsiteConnectionGrant>();
+  if (!connection) return c.json({ error_code: "revoked_website_connection_not_found" }, 404);
+  const { results: documents } = await c.env.PLATFORM_DB.prepare(`SELECT id,project_id,chunk_count FROM kb_documents
+    WHERE tenant_id=? AND space_id=? AND source_connection_ref=? AND status!='deleting' AND status!='purged'
+    ORDER BY id LIMIT 100`)
+    .bind(tenantId, spaceId, connection.id).all<{ id: string; project_id: string | null; chunk_count: number }>();
+  const now = new Date().toISOString();
+  for (let offset = 0; offset < documents.length; offset += 10) {
+    const batchDocs = documents.slice(offset, offset + 10);
+    const statements = batchDocs.flatMap((doc) => [
+      c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO kb_document_deletion_operations
+        (document_id,tenant_id,space_id,project_id,chunk_count,state,next_attempt_at,created_at,updated_at)
+        VALUES(?,?,?,?,?,'pending',?,?,?)`).bind(doc.id, tenantId, spaceId, doc.project_id, doc.chunk_count ?? 0, now, now, now),
+      c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET status='deleting',title='Revoked website source',source_url=NULL,
+        source_revision=source_revision+1,source_state='revoked',source_content_sha256=NULL,
+        source_connection_ref=NULL,source_grant_revision=NULL,updated_at=?
+        WHERE id=? AND tenant_id=? AND space_id=? AND source_connection_ref=? AND status!='deleting'`)
+        .bind(now, doc.id, tenantId, spaceId, connection.id),
+      c.env.PLATFORM_DB.prepare(`DELETE FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+        .bind(doc.id, tenantId, spaceId, doc.project_id ?? SPACE_WIDE_PROJECT_SENTINEL),
+      ...revisionExternalPublicationsForDocument(c.env.PLATFORM_DB,
+        { tenantId, spaceId, projectId: doc.project_id, documentId: doc.id, updatedAt: now }),
+      c.env.PLATFORM_DB.prepare(`DELETE FROM kb_external_publication_documents WHERE document_id=? AND tenant_id=? AND space_id=?`)
+        .bind(doc.id, tenantId, spaceId),
+    ]);
+    await c.env.PLATFORM_DB.batch(statements);
+  }
+  let completed = 0;
+  for (const doc of documents) {
+    const outcome = await processKnowledgeDocumentDeletion(deletionBindings(c.env), doc.id).catch(() => null);
+    if (outcome?.state === "complete") completed += 1;
+  }
+  return c.json({ revoked: documents.length, cleanup_completed: completed, cleanup_pending: documents.length - completed });
+});
+
 app.get("/spaces/:spaceId/kb/documents/:docId/deletion", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
@@ -2008,14 +2200,18 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
   const spaceId = c.req.param("spaceId");
   const projectId = c.req.param("projectId");
   const userId = c.req.header("x-naelao-user-id") ?? "";
-  const roleRank = effectiveRoleRank(c);
+  const roleRank = await projectRoleRank(c.env.PLATFORM_DB, tenantId, spaceId, projectId, userId);
+  if (roleRank === null) throw notFound("Citation not found");
   const scope = { tenantId, spaceId, projectId, roleRank };
-  if (!(await authorizeProject(c.env.PLATFORM_DB, scope, userId))) throw notFound("Citation not found");
   const row = await c.env.PLATFORM_DB.prepare(
     `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end
      FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
      WHERE k.id=? AND k.document_id=? AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
-       AND k.required_role_rank<=? AND k.deleted_at IS NULL AND d.status='indexed'`
+       AND k.required_role_rank<=? AND k.deleted_at IS NULL AND d.status='indexed'
+       AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
+         SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
+           AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
+       )))`
   ).bind(c.req.param("chunkId"), c.req.param("documentId"), tenantId, spaceId, projectId, roleRank)
     .first<Record<string, unknown>>();
   if (!row) throw notFound("Citation not found");
@@ -2065,8 +2261,11 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     throw badRequest("q parameter is required and cannot exceed 1000 characters");
   }
 
-  const roleRank = effectiveRoleRank(c);
   const userId = c.req.header("x-naelao-user-id") ?? "";
+  const roleRank = projectId !== null
+    ? await projectRoleRank(c.env.PLATFORM_DB, tenantId, spaceId, projectId, userId)
+    : effectiveRoleRank(c);
+  if (roleRank === null) throw notFound("Project not found");
   const retrievalStartedAt = new Date().toISOString();
   const scope: RetrievalScope = {
     tenantId,
@@ -2074,10 +2273,6 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     projectId: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
     roleRank,
   };
-  if (projectId && !(await authorizeProject(c.env.PLATFORM_DB, scope, userId))) {
-    // Conceal absent and inaccessible private projects identically.
-    throw notFound("Project not found");
-  }
   const retrievalPredicate = buildRetrievalPredicate("k", { tenantId, spaceId, projectId: scope.projectId, userId, roleRank });
   const policyVersion = c.env.RETRIEVAL_POLICY_VERSION ?? "1";
   let mode: "autorag" | "hybrid" = useAutoRag ? "autorag" : "hybrid";
@@ -2184,7 +2379,11 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       const placeholders = ids.map(() => "?").join(",");
       const rows = await c.env.PLATFORM_DB.prepare(
         `SELECT k.*, d.title FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
-         WHERE k.id IN (${placeholders}) AND ${retrievalPredicate.sql} AND k.deleted_at IS NULL AND d.status='indexed'`
+         WHERE k.id IN (${placeholders}) AND ${retrievalPredicate.sql} AND k.deleted_at IS NULL AND d.status='indexed'
+           AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
+             SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
+               AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
+           )))`
       ).bind(...ids, ...retrievalPredicate.binds).all<Record<string, unknown>>();
       const byId = new Map(rows.results.map((row) => [String(row.id), row]));
       return (found.matches ?? []).flatMap((match) => {
@@ -2664,7 +2863,7 @@ type GuardedFetchResult =
   | { ok: true; response: Response; url: URL }
   | { ok: false; status: 403 | 502; message: string };
 
-async function fetchSsrfGuarded(rawUrl: string, init: RequestInit): Promise<GuardedFetchResult> {
+async function fetchSsrfGuarded(rawUrl: string, init: RequestInit, allowedOrigins?: readonly string[]): Promise<GuardedFetchResult> {
   let target: URL;
   try { target = new URL(rawUrl); }
   catch { return { ok: false, status: 403, message: "Destination URL is invalid" }; }
@@ -2672,6 +2871,9 @@ async function fetchSsrfGuarded(rawUrl: string, init: RequestInit): Promise<Guar
   for (let hop = 0; hop <= 5; hop++) {
     if ((target.protocol !== "http:" && target.protocol !== "https:") || target.username || target.password) {
       return { ok: false, status: 403, message: "Destination must be an http(s) URL without embedded credentials" };
+    }
+    if (allowedOrigins && !allowedOrigins.includes(target.origin)) {
+      return { ok: false, status: 403, message: "Website redirect destination is outside the approved connection origins" };
     }
     const ssrf = await checkSsrf(target.href);
     if (ssrf.blocked) return { ok: false, status: 403, message: ssrf.reason ?? "url failed SSRF validation" };

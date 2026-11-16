@@ -81,4 +81,75 @@ describe("website account authorization", () => {
     );
     expect(res.status).toBe(403);
   });
+
+  it("revokes the host connection and calls Knowledge cleanup with a signed internal request", async () => {
+    const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
+    const connection = { id: "connection", tenant_id: "tenant", space_id: "space", owner_user_id: "user", project_id: "project",
+      name: "Docs", start_url: "https://example.com", origins_json: '["https://example.com"]', agent_ids_json: "[]", status: "active" };
+    const db = {
+      prepare: vi.fn((sql: string) => ({ bind: (...args: unknown[]) => {
+        dbCalls.push({ sql, args });
+        return {
+          first: async () => sql.includes("FROM website_connections") ? connection
+            : sql.includes("JOIN space_members") ? { role: "owner" }
+              : sql.includes("SELECT id FROM spaces") ? { id: "space" } : null,
+          run: async () => ({ meta: { changes: 1 } }),
+        };
+      } })),
+    };
+    const knowledgeFetch = vi.fn(async () => Response.json({ revoked: 1, cleanup_completed: 0, cleanup_pending: 1 }));
+    const app = new Hono<{ Bindings: Env }>();
+    registerWebsiteConnectionRoutes(app);
+    const env = {
+      PLATFORM_SECRET: "secret",
+      PLATFORM_DB: db,
+      SPACE_DO: {
+        idFromName: vi.fn(() => "space-do-id"),
+        get: vi.fn(() => ({ fetch: async (request: Request) => request.url.includes("assistant-access")
+          ? Response.json({ effective_role: "editor" }) : Response.json({ data: [] }) })),
+      },
+      KNOWLEDGE_WORKER: { fetch: knowledgeFetch },
+      BROWSER_WORKER: { fetch: vi.fn(async () => Response.json({ ok: true })) },
+    } as unknown as Env;
+    const token = await mintInternalToken("secret", "tenant");
+    const response = await app.request("/spaces/space/website-connections?id=connection", { method: "DELETE", headers: {
+      "x-naelao-tenant-id": "tenant", "x-naelao-user-id": "user", "x-naelao-internal-token": token,
+    } }, env);
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ status: "revoked", cleanup_pending: 1 });
+    expect(dbCalls.some(({ sql, args }) => sql.includes("UPDATE website_connections SET status='revoked'")
+      && args.join(":") === "connection:tenant:space:user")).toBe(true);
+    expect(knowledgeFetch).toHaveBeenCalledOnce();
+    const knowledgeRequest = knowledgeFetch.mock.calls[0]?.[0] as Request;
+    expect(new URL(knowledgeRequest.url).pathname).toBe("/internal/spaces/space/kb/sources/website/revoke");
+    expect(knowledgeRequest.headers.get("x-naelao-tenant-id")).toBe("tenant");
+    await expect(knowledgeRequest.json()).resolves.toEqual({ connection_id: "connection" });
+  });
+
+  it("still revokes the browser profile when Knowledge cleanup is temporarily unavailable", async () => {
+    const connection = { id: "connection", tenant_id: "tenant", space_id: "space", owner_user_id: "user", project_id: "project",
+      name: "Docs", start_url: "https://example.com", origins_json: '["https://example.com"]', agent_ids_json: "[]", status: "active" };
+    const db = { prepare: (sql: string) => ({ bind: () => ({
+      first: async () => sql.includes("FROM website_connections") ? connection
+        : sql.includes("JOIN space_members") ? { role: "owner" }
+          : sql.includes("SELECT id FROM spaces") ? { id: "space" } : null,
+      run: async () => ({ meta: { changes: 1 } }),
+    }) }) };
+    const knowledgeFetch = vi.fn(async () => { throw new Error("Knowledge worker unavailable"); });
+    const browserFetch = vi.fn(async () => Response.json({ ok: true }));
+    const app = new Hono<{ Bindings: Env }>();
+    registerWebsiteConnectionRoutes(app);
+    const env = {
+      PLATFORM_SECRET: "secret", PLATFORM_DB: db,
+      SPACE_DO: { idFromName: vi.fn(() => "space-do-id"), get: vi.fn(() => ({ fetch: async (request: Request) => request.url.includes("assistant-access")
+        ? Response.json({ effective_role: "editor" }) : Response.json({ data: [] }) })) },
+      KNOWLEDGE_WORKER: { fetch: knowledgeFetch }, BROWSER_WORKER: { fetch: browserFetch },
+    } as unknown as Env;
+    const token = await mintInternalToken("secret", "tenant");
+    const response = await app.request("/spaces/space/website-connections?id=connection", { method: "DELETE", headers: {
+      "x-naelao-tenant-id": "tenant", "x-naelao-user-id": "user", "x-naelao-internal-token": token,
+    } }, env);
+    expect(response.status).toBe(503);
+    expect(browserFetch).toHaveBeenCalledOnce();
+  });
 });

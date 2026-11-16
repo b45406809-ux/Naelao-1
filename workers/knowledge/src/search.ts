@@ -87,6 +87,10 @@ export async function queryScopedFtsCandidates(input: {
         OR (json_valid(d.allowed_user_ids_json) AND json_type(d.allowed_user_ids_json)='array'
           AND (json_array_length(d.allowed_user_ids_json)=0
             OR EXISTS (SELECT 1 FROM json_each(d.allowed_user_ids_json) acl WHERE acl.value=?))))
+      AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
+        SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
+          AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
+      )))
     ORDER BY bm25(kb_chunks_fts) ASC,k.id ASC
     LIMIT ?
   `).bind(matchExpression, ...scope.binds, input.userId, limit).all<{

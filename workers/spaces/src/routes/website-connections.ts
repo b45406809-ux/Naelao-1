@@ -307,12 +307,21 @@ export function registerWebsiteConnectionRoutes(app: Hono<{ Bindings: Env }>) {
       )
       .first<Connection>();
     if (!row) return c.json({ error_code: "not_found" }, 404);
+    if (!c.env.KNOWLEDGE_WORKER) return c.json({ error_code: "knowledge_source_revocation_unavailable" }, 503);
     await c.env.PLATFORM_DB.prepare(
-      "UPDATE website_connections SET status='revoked' WHERE id=?"
+      "UPDATE website_connections SET status='revoked' WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=?"
     )
-      .bind(row.id)
+      .bind(row.id, caller.tenant, row.space_id, caller.user)
       .run();
-    return browser(c, caller.tenant, "website-profile/revoke", {
+    const knowledgeRevocation = await c.env.KNOWLEDGE_WORKER.fetch(new Request(
+      `http://knowledge-worker/internal/spaces/${encodeURIComponent(row.space_id)}/kb/sources/website/revoke`,
+      { method: "POST", headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": caller.tenant,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, caller.tenant),
+      }, body: JSON.stringify({ connection_id: row.id }) },
+    )).catch(() => null);
+    const browserRevocation = await browser(c, caller.tenant, "website-profile/revoke", {
       tenantId: caller.tenant,
       spaceId: row.space_id,
       actorId: caller.user,
@@ -326,6 +335,12 @@ export function registerWebsiteConnectionRoutes(app: Hono<{ Bindings: Env }>) {
       authorizedOrigins: JSON.parse(row.origins_json),
       authorizedActions: [],
     });
+    if (!knowledgeRevocation?.ok) return c.json({ error_code: "knowledge_source_cleanup_pending", retryable: true }, 503);
+    const cleanup = await knowledgeRevocation.json<{ cleanup_pending?: number }>().catch(() => ({} as { cleanup_pending?: number }));
+    if (Number.isSafeInteger(cleanup.cleanup_pending) && Number(cleanup.cleanup_pending) > 0) {
+      return c.json({ status: "revoked", cleanup_pending: Number(cleanup.cleanup_pending) }, 202, { "retry-after": "300" });
+    }
+    return browserRevocation;
   });
   app.post("/spaces/:spaceId/website-browser", async (c) => {
     const caller = await identity(c);

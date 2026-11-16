@@ -366,6 +366,9 @@ export async function restoreKnowledgeArchive(
       continue;
     }
     if (disposition === "insert") {
+      // A Space restore does not re-authorize a website connection. Keep the source URL/content
+      // as an inert archive snapshot and require the owner to preview and attach it again.
+      const restoredWebsite = document.source_adapter === "website";
       const result = await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO kb_documents
         (id,space_id,tenant_id,project_id,title,source_url,content_type,status,chunk_count,required_role_rank,
          allowed_user_ids_json,source_sha256,source_file_name,parser_version,parser_output_sha256,approved_content_sha256,
@@ -377,9 +380,11 @@ export async function restoreKnowledgeArchive(
           document.content_type, document.chunk_count, document.required_role_rank, document.allowed_user_ids_json,
           document.source_sha256 ?? null, document.source_file_name ?? null, document.parser_version ?? null,
           document.parser_output_sha256 ?? null, document.approved_content_sha256 ?? null,
-          document.created_at, document.updated_at, document.source_adapter ?? "manual", document.source_revision ?? 1,
-          document.source_content_sha256 ?? null, document.source_connection_ref ?? null, document.source_grant_revision ?? null,
-          document.source_state ?? "current", restoreId, document.id, document.tenant_id, document.space_id).run();
+          document.created_at, document.updated_at, document.source_adapter ?? "manual",
+          (document.source_revision ?? 1) + (restoredWebsite ? 1 : 0),
+          document.source_content_sha256 ?? null, restoredWebsite ? null : document.source_connection_ref ?? null,
+          restoredWebsite ? null : document.source_grant_revision ?? null,
+          restoredWebsite ? "unsupported" : document.source_state ?? "current", restoreId, document.id, document.tenant_id, document.space_id).run();
       if (!result.meta.changes) {
         const refreshed = await documentDisposition(env, document, restoreId);
         if (refreshed === "tombstoned") {

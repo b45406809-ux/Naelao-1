@@ -27,12 +27,14 @@ import {
   createDepartment,
   createKbDocument,
   previewKbPdf,
+  previewWebsiteKnowledgeSource,
   createThread,
   deleteKbDocument,
   getExternalKnowledgePublicationSources,
   getProject,
   getProjectUsageSummary,
   listAgentDefinitions,
+  listWebsiteConnections,
   listExternalKnowledgePublicationEvents,
   listExternalKnowledgePublications,
   listSpaceTemplateInstallations,
@@ -57,6 +59,8 @@ import {
   type ProjectDepartment,
   type ProjectUsageSummary,
   type ThreadSummary,
+  type WebsiteConnection,
+  type WebsiteKnowledgePreview,
 } from "@/lib/api";
 import { knowledgeContentByteLength, PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES } from "@/lib/knowledge-upload-limits";
 import { readKnowledgePdfFile } from "@/lib/knowledge-pdf-preview";
@@ -114,6 +118,11 @@ export default function ProjectDetailPage() {
   const [addingDoc, setAddingDoc] = React.useState(false);
   const [pdfPreview, setPdfPreview] = React.useState<{ base64: string; receipt: Awaited<ReturnType<typeof previewKbPdf>> } | null>(null);
   const [previewingPdf, setPreviewingPdf] = React.useState(false);
+  const [websiteConnections, setWebsiteConnections] = React.useState<WebsiteConnection[]>([]);
+  const [websiteConnectionId, setWebsiteConnectionId] = React.useState("");
+  const [websiteSourceUrl, setWebsiteSourceUrl] = React.useState("");
+  const [websitePreview, setWebsitePreview] = React.useState<WebsiteKnowledgePreview | null>(null);
+  const [previewingWebsite, setPreviewingWebsite] = React.useState(false);
   const createIdempotencyKeyRef = React.useRef<string | null>(null);
   const [externalPublications, setExternalPublications] = React.useState<ExternalKnowledgePublication[]>([]);
   const [publicationId, setPublicationId] = React.useState("course_material");
@@ -254,6 +263,21 @@ export default function ProjectDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSpaceId, params.projectId, session]);
 
+  const refreshWebsiteConnections = React.useCallback(async () => {
+    if (!creds) return;
+    try {
+      const connections = (await listWebsiteConnections(activeSpaceId, creds))
+        .filter((connection) => connection.project_id === params.projectId);
+      setWebsiteConnections(connections);
+      setWebsiteConnectionId((current) => connections.some((connection) => connection.id === current)
+        ? current : connections[0]?.id ?? "");
+      setWebsiteSourceUrl((current) => current || connections[0]?.start_url || "");
+    } catch {
+      setWebsiteConnections([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpaceId, params.projectId, session]);
+
   const refreshExternalKnowledge = React.useCallback(async () => {
     if (!creds) return;
     setPublicationLoadError(false);
@@ -296,8 +320,9 @@ export default function ProjectDetailPage() {
   React.useEffect(() => {
     void refresh();
     void refreshDocs();
+    void refreshWebsiteConnections();
     void refreshExternalKnowledge();
-  }, [refresh, refreshDocs, refreshExternalKnowledge]);
+  }, [refresh, refreshDocs, refreshExternalKnowledge, refreshWebsiteConnections]);
 
   React.useEffect(() => {
     if (searchParams.get("setup") !== "knowledge") return;
@@ -364,6 +389,7 @@ export default function ProjectDetailPage() {
     e.target.value = ""; // allow re-picking the same file
     if (!file) return;
     createIdempotencyKeyRef.current = null;
+    setWebsitePreview(null);
     if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
       if (!creds) return;
       setPdfPreview(null);
@@ -406,6 +432,32 @@ export default function ProjectDetailPage() {
     }
   }
 
+  async function handlePreviewWebsiteSource() {
+    if (!creds || !websiteConnectionId || !websiteSourceUrl.trim() || previewingWebsite) return;
+    createIdempotencyKeyRef.current = null;
+    setPdfPreview(null);
+    setWebsitePreview(null);
+    setPreviewingWebsite(true);
+    try {
+      const receipt = await previewWebsiteKnowledgeSource(activeSpaceId, params.projectId, creds, {
+        connection_id: websiteConnectionId,
+        url: websiteSourceUrl.trim(),
+      });
+      setWebsitePreview(receipt);
+      setWebsiteSourceUrl(receipt.requested_url);
+      setNewDocContent(receipt.content);
+      if (!newDocTitle.trim()) {
+        const finalUrl = new URL(receipt.final_url);
+        const pathLeaf = finalUrl.pathname.split("/").filter(Boolean).pop();
+        setNewDocTitle(pathLeaf ? pathLeaf.replace(/[-_]+/g, " ") : finalUrl.hostname);
+      }
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't preview this website page.");
+    } finally {
+      setPreviewingWebsite(false);
+    }
+  }
+
   async function handleAddDoc(e: React.FormEvent) {
     e.preventDefault();
     if (!creds || !newDocTitle.trim() || !newDocContent.trim()) return;
@@ -417,7 +469,18 @@ export default function ProjectDetailPage() {
     setAddingDoc(true);
     try {
       const idempotencyKey = createIdempotencyKeyRef.current ?? (createIdempotencyKeyRef.current = crypto.randomUUID());
-      const created = await createKbDocument(activeSpaceId, creds, pdfPreview ? {
+      const created = await createKbDocument(activeSpaceId, creds, websitePreview ? {
+        title: newDocTitle.trim(),
+        content: submittedContent,
+        content_type: "url",
+        source_url: websitePreview.final_url,
+        idempotency_key: idempotencyKey,
+        project_id: params.projectId,
+        website_connection_id: websiteConnectionId,
+        website_requested_url: websitePreview.requested_url,
+        website_preview_sha256: websitePreview.preview_sha256,
+        website_preview_token: websitePreview.preview_token,
+      } : pdfPreview ? {
         title: newDocTitle.trim(),
         content: pdfPreview.base64,
         content_type: "pdf",
@@ -443,6 +506,7 @@ export default function ProjectDetailPage() {
       setNewDocTitle("");
       setNewDocContent("");
       setPdfPreview(null);
+      setWebsitePreview(null);
       await refreshDocs();
       await refreshExternalKnowledge();
     } catch (err) {
@@ -967,8 +1031,58 @@ export default function ProjectDetailPage() {
 
       <form onSubmit={handleAddDoc} className="settings-block" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
         <FormInput placeholder="Document title" value={newDocTitle} onChange={(e) => { createIdempotencyKeyRef.current = null; setNewDocTitle(e.target.value); }} required />
+        <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "grid", gap: 8 }}>
+          <strong style={{ fontSize: 13 }}>Add an approved website page</strong>
+          {websiteConnections.length === 0 ? (
+            <div style={{ color: "var(--text3)", fontSize: 12 }}>
+              No active website connection is scoped to this Project. <Link href="/connectors">Manage website connections</Link>.
+            </div>
+          ) : (
+            <>
+              <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
+                Website connection
+                <select value={websiteConnectionId} onChange={(event) => {
+                  const connection = websiteConnections.find((item) => item.id === event.target.value);
+                  setWebsiteConnectionId(event.target.value);
+                  setWebsiteSourceUrl(connection?.start_url ?? "");
+                  setWebsitePreview(null);
+                  createIdempotencyKeyRef.current = null;
+                }}>
+                  {websiteConnections.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}</option>)}
+                </select>
+              </label>
+              <FormInput
+                type="url"
+                placeholder="HTTPS page URL within the approved origins"
+                value={websiteSourceUrl}
+                onChange={(event) => {
+                  setWebsiteSourceUrl(event.target.value);
+                  setWebsitePreview(null);
+                  createIdempotencyKeyRef.current = null;
+                }}
+              />
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button type="button" className="btn btn-ghost btn-sm" disabled={previewingWebsite || addingDoc || !websiteSourceUrl.trim()}
+                  onClick={() => void handlePreviewWebsiteSource()}>
+                  {previewingWebsite ? "Fetching page…" : "Fetch and review page"}
+                </button>
+                {websitePreview && <button type="button" className="btn btn-ghost btn-sm" onClick={() => {
+                  setWebsitePreview(null);
+                  createIdempotencyKeyRef.current = null;
+                }}>Clear website source</button>}
+              </div>
+              {websitePreview && <div role="status" style={{ borderTop: "1px solid var(--border)", paddingTop: 8, fontSize: 12 }}>
+                <strong>Website snapshot preview</strong>
+                <div>Source: <a href={websitePreview.final_url} target="_blank" rel="noreferrer">{websitePreview.final_url}</a></div>
+                <div>Fetched as {websitePreview.content_type} · approval expires in 15 minutes</div>
+                <p>Review and edit the extracted text below. Saving stores this approved snapshot; refresh is manual.</p>
+                <ul>{websitePreview.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+              </div>}
+            </>
+          )}
+        </div>
         <FormTextarea
-          placeholder="Paste content to ingest into this project's KB…"
+          placeholder={websitePreview ? "Review and edit the approved website text…" : "Paste content to ingest into this project's KB…"}
           value={newDocContent}
           onChange={(e) => { createIdempotencyKeyRef.current = null; setNewDocContent(e.target.value); }}
           rows={4}

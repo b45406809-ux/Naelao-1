@@ -1,10 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { getExternalKnowledgePublicationSources, listExternalKnowledgePublicationEvents, listExternalKnowledgePublications } from "./api";
+import { createKbDocument, getExternalKnowledgePublicationSources, listExternalKnowledgePublicationEvents, listExternalKnowledgePublications,
+  previewWebsiteKnowledgeSource } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
 it("separates collection discovery from the no-store source membership read", async () => {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input);
     const body = url.endsWith("/sources")
       ? { publication_id: "course_material", revision: 4, document_ids: ["doc-a"] }
@@ -36,4 +37,38 @@ it("separates collection discovery from the no-store source membership read", as
     "http://localhost:8787/v1/spaces/space%2Fa/kb/projects/project%20b/external-publications/course_material/events",
     expect.objectContaining({ cache: "no-store", headers: expect.any(Headers) }),
   );
+});
+
+it("previews and saves only a Project-scoped website source receipt", async () => {
+  const preview = { content: "Approved page text", requested_url: "https://docs.example/start", final_url: "https://docs.example/current",
+    content_type: "text/markdown", preview_sha256: "a".repeat(64), preview_token: "signed-preview", expires_in_seconds: 900, warnings: [] };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    return new Response(String(input).endsWith("/preview")
+      ? JSON.stringify({ preview })
+      : JSON.stringify({ id: "doc-a", status: "indexed" }),
+      { status: 200, headers: { "content-type": "application/json" } });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const session = { sessionToken: "session-token", endUserId: "owner-a" };
+  await expect(previewWebsiteKnowledgeSource("space/a", "project b", session, {
+    connection_id: "connection-a", url: "https://docs.example/start",
+  })).resolves.toEqual(preview);
+  expect(fetchMock).toHaveBeenLastCalledWith(
+    "http://localhost:8787/v1/spaces/space%2Fa/kb/projects/project%20b/sources/website/preview",
+    expect.objectContaining({ method: "POST", cache: "no-store", headers: expect.any(Headers),
+      body: JSON.stringify({ connection_id: "connection-a", url: "https://docs.example/start" }) }),
+  );
+
+  await createKbDocument("space-a", session, {
+    title: "Approved page", content: "Corrected owner-approved text", content_type: "url", source_url: preview.final_url,
+    project_id: "project b", idempotency_key: "website-source-idempotency-01", website_connection_id: "connection-a",
+    website_requested_url: preview.requested_url, website_preview_sha256: preview.preview_sha256, website_preview_token: preview.preview_token,
+  });
+  const [createUrl, createInit] = fetchMock.mock.calls.at(-1) ?? [];
+  expect(createUrl).toBe("http://localhost:8787/v1/spaces/space-a/kb/documents");
+  expect(createInit).toEqual(expect.objectContaining({ method: "POST", headers: expect.any(Headers) }));
+  expect(JSON.parse(String(createInit?.body))).toMatchObject({
+    website_connection_id: "connection-a", website_preview_token: "signed-preview", content_type: "url",
+    project_id: "project b", content: "Corrected owner-approved text",
+  });
 });
