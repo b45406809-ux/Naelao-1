@@ -1,0 +1,204 @@
+#!/usr/bin/env node
+import { readFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
+
+const REVIEW_STATES = new Set(["synthetic_unreviewed", "human_reviewed", "needs_native_review"]);
+
+export function parseJsonLines(text, label = "JSONL") {
+  return text.split(/\r?\n/).flatMap((line, index) => {
+    if (!line.trim()) return [];
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      throw new Error(`${label} line ${index + 1} is not valid JSON`);
+    }
+  });
+}
+
+function assertCase(sample, seen) {
+  if (!sample || sample.recordType !== "case" || typeof sample.caseId !== "string"
+      || !/^[A-Za-z0-9_-]{1,100}$/.test(sample.caseId) || seen.has(sample.caseId)) {
+    throw new Error("benchmark contains an invalid or duplicate caseId");
+  }
+  if (typeof sample.language !== "string" || !/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(sample.language)
+      || !REVIEW_STATES.has(sample.reviewStatus) || typeof sample.answerable !== "boolean"
+      || typeof sample.query !== "string" || sample.query.length > 2_000
+      || !Array.isArray(sample.relevantChunkIds) || !Array.isArray(sample.forbiddenChunkIds)
+      || !Array.isArray(sample.expectedCitationChunkIds) || sample.relevantChunkIds.length > 100
+      || sample.forbiddenChunkIds.length > 100 || sample.expectedCitationChunkIds.length > 100 || !sample.expectedVersions
+      || typeof sample.expectedVersions !== "object" || Array.isArray(sample.expectedVersions)) {
+    throw new Error(`benchmark case ${sample.caseId} has invalid fields`);
+  }
+  const ids = [...sample.relevantChunkIds, ...sample.forbiddenChunkIds, ...sample.expectedCitationChunkIds];
+  if (ids.some((id) => typeof id !== "string" || !id || id.length > 160)
+      || new Set(sample.relevantChunkIds).size !== sample.relevantChunkIds.length
+      || new Set(sample.forbiddenChunkIds).size !== sample.forbiddenChunkIds.length
+      || new Set(sample.expectedCitationChunkIds).size !== sample.expectedCitationChunkIds.length
+      || sample.relevantChunkIds.some((id) => sample.forbiddenChunkIds.includes(id))) {
+    throw new Error(`benchmark case ${sample.caseId} has invalid chunk expectations`);
+  }
+  if (sample.answerable !== (sample.relevantChunkIds.length > 0)) {
+    throw new Error(`benchmark case ${sample.caseId} answerability disagrees with relevant chunks`);
+  }
+  if (sample.expectedCitationChunkIds.some((id) => !sample.relevantChunkIds.includes(id))) {
+    throw new Error(`benchmark case ${sample.caseId} expects citations outside relevant chunks`);
+  }
+  for (const [chunkId, version] of Object.entries(sample.expectedVersions)) {
+    if (!sample.relevantChunkIds.includes(chunkId) || typeof version !== "string" || !version || version.length > 128) {
+      throw new Error(`benchmark case ${sample.caseId} has an invalid expected source version`);
+    }
+  }
+  seen.add(sample.caseId);
+}
+
+function average(values) {
+  return values.length ? values.reduce((total, value) => total + value, 0) / values.length : null;
+}
+
+function percentile95(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.ceil(sorted.length * 0.95) - 1] ?? null;
+}
+
+function rankedMetrics(sample, retrieved) {
+  if (!sample.answerable) return { precisionAtK: null, recallAtK: null, reciprocalRank: null, ndcgAtK: null };
+  const relevant = new Set(sample.relevantChunkIds);
+  const hits = retrieved.map((item) => relevant.has(item.chunkId));
+  const truePositives = hits.filter(Boolean).length;
+  const firstRelevantRank = hits.indexOf(true) + 1;
+  const dcg = hits.reduce((sum, isRelevant, index) => sum + (isRelevant ? 1 / Math.log2(index + 2) : 0), 0);
+  const idealHits = Math.min(sample.relevantChunkIds.length, hits.length);
+  const idealDcg = Array.from({ length: idealHits }, (_, index) => 1 / Math.log2(index + 2)).reduce((sum, value) => sum + value, 0);
+  return {
+    precisionAtK: hits.length ? truePositives / hits.length : 0,
+    recallAtK: truePositives / sample.relevantChunkIds.length,
+    reciprocalRank: firstRelevantRank ? 1 / firstRelevantRank : 0,
+    ndcgAtK: idealDcg ? dcg / idealDcg : 0,
+  };
+}
+
+/** Score content-free retrieval traces against synthetic or reviewed cases. */
+export function evaluateKnowledgeRetrieval({ cases, results, topK = 10 }) {
+  if (!Array.isArray(cases) || cases.length === 0 || cases.length > 10_000 || !Array.isArray(results)
+      || results.length > cases.length) {
+    throw new Error("cases and results must be nonempty/array inputs");
+  }
+  if (!Number.isSafeInteger(topK) || topK < 1 || topK > 100) throw new Error("topK must be an integer from 1 to 100");
+  const ids = new Set();
+  for (const sample of cases) assertCase(sample, ids);
+  const resultById = new Map();
+  for (const result of results) {
+    if (!result || typeof result.caseId !== "string" || !ids.has(result.caseId) || resultById.has(result.caseId)
+        || !Array.isArray(result.retrieved) || result.retrieved.length > 200
+        || !Array.isArray(result.citedChunkIds) || result.citedChunkIds.length > 100
+        || typeof result.abstained !== "boolean" || !Number.isFinite(result.latencyMs) || result.latencyMs < 0
+        || !Number.isFinite(result.costMicrosUsd) || result.costMicrosUsd < 0) {
+      throw new Error("results contain an invalid, duplicate, or unknown case");
+    }
+    const retrievedIds = new Set();
+    for (const item of result.retrieved) {
+      if (!item || typeof item.chunkId !== "string" || !item.chunkId || item.chunkId.length > 160
+          || retrievedIds.has(item.chunkId) || !Number.isFinite(item.score)
+          || (item.sourceVersion !== undefined && (typeof item.sourceVersion !== "string" || item.sourceVersion.length > 128))) {
+        throw new Error(`result ${result.caseId} has invalid ranked candidates`);
+      }
+      retrievedIds.add(item.chunkId);
+    }
+    if (new Set(result.citedChunkIds).size !== result.citedChunkIds.length
+        || result.citedChunkIds.some((id) => typeof id !== "string" || !retrievedIds.has(id))) {
+      throw new Error(`result ${result.caseId} cites a chunk absent from its retrieved candidates`);
+    }
+    resultById.set(result.caseId, result);
+  }
+
+  const perCase = cases.map((sample) => {
+    const result = resultById.get(sample.caseId);
+    if (!result) return { caseId: sample.caseId, missing: true };
+    const retrieved = result.retrieved.slice(0, topK);
+    const retrievedIds = new Set(retrieved.map((item) => item.chunkId));
+    const citations = new Set(result.citedChunkIds);
+    const expectedCitations = new Set(sample.expectedCitationChunkIds);
+    const citationTruePositives = [...citations].filter((id) => expectedCitations.has(id)).length;
+    const staleCitations = [...citations].filter((id) => sample.expectedVersions[id] !== undefined
+      && result.retrieved.find((item) => item.chunkId === id)?.sourceVersion !== sample.expectedVersions[id]);
+    const forbiddenExposures = [...new Set([...retrievedIds, ...citations])].filter((id) => sample.forbiddenChunkIds.includes(id));
+    const citationRecall = expectedCitations.size ? citationTruePositives / expectedCitations.size : (citations.size ? 0 : 1);
+    const citationPrecision = citations.size ? citationTruePositives / citations.size : (expectedCitations.size ? 0 : 1);
+    return {
+      caseId: sample.caseId,
+      ...rankedMetrics(sample, retrieved),
+      citationPrecision,
+      citationRecall,
+      forbiddenExposureCount: forbiddenExposures.length,
+      staleCitationCount: staleCitations.length,
+      abstentionCorrect: result.abstained === !sample.answerable,
+      latencyMs: result.latencyMs,
+      costMicrosUsd: result.costMicrosUsd,
+    };
+  });
+  const completed = perCase.filter((item) => !item.missing);
+  const answerable = completed.filter((item) => item.recallAtK !== null);
+  const byLanguage = Object.fromEntries([...new Set(cases.map((sample) => sample.language))].sort().map((language) => {
+    const languageCases = cases.filter((sample) => sample.language === language);
+    return [language, {
+      caseCount: languageCases.length,
+      reviewedCount: languageCases.filter((sample) => sample.reviewStatus === "human_reviewed").length,
+      reviewComplete: languageCases.every((sample) => sample.reviewStatus === "human_reviewed"),
+    }];
+  }));
+  const forbiddenExposureCount = completed.reduce((total, item) => total + item.forbiddenExposureCount, 0);
+  const staleCitationCount = completed.reduce((total, item) => total + item.staleCitationCount, 0);
+  const allCasesReviewed = cases.every((sample) => sample.reviewStatus === "human_reviewed");
+  const missingResultCount = perCase.filter((item) => item.missing).length;
+  return {
+    version: 1,
+    topK,
+    caseCount: cases.length,
+    completedCaseCount: completed.length,
+    missingResultCount,
+    metrics: {
+      precisionAtK: average(answerable.map((item) => item.precisionAtK)),
+      recallAtK: average(answerable.map((item) => item.recallAtK)),
+      mrrAtK: average(answerable.map((item) => item.reciprocalRank)),
+      ndcgAtK: average(answerable.map((item) => item.ndcgAtK)),
+      citationPrecision: average(completed.map((item) => item.citationPrecision)),
+      citationRecall: average(completed.map((item) => item.citationRecall)),
+      abstentionAccuracy: average(completed.map((item) => Number(item.abstentionCorrect))),
+      p95LatencyMs: percentile95(completed.map((item) => item.latencyMs)),
+      totalCostMicrosUsd: completed.reduce((total, item) => total + item.costMicrosUsd, 0),
+      forbiddenExposureCount,
+      staleCitationCount,
+    },
+    languageReview: byLanguage,
+    readiness: {
+      acceptanceEligible: false,
+      reasons: [
+        ...(missingResultCount ? [`${missingResultCount} benchmark cases have no result`] : []),
+        ...(forbiddenExposureCount ? [`${forbiddenExposureCount} forbidden candidates were retrieved or cited`] : []),
+        ...(staleCitationCount ? [`${staleCitationCount} citations reference an unexpected source version`] : []),
+        ...(!allCasesReviewed ? ["benchmark contains cases without human review"] : []),
+        "quality, latency, cost, and multilingual release thresholds are not configured by this local evaluator",
+      ],
+    },
+    perCase,
+  };
+}
+
+async function main(argv) {
+  const [datasetPath, resultsPath, topKArg] = argv;
+  if (!datasetPath || !resultsPath) {
+    throw new Error("usage: knowledge-retrieval-eval.mjs <dataset.jsonl> <results.jsonl> [top-k]");
+  }
+  const cases = parseJsonLines(await readFile(datasetPath, "utf8"), "dataset");
+  const results = parseJsonLines(await readFile(resultsPath, "utf8"), "results");
+  const topK = topKArg === undefined ? 10 : Number(topKArg);
+  process.stdout.write(`${JSON.stringify(evaluateKnowledgeRetrieval({ cases, results, topK }), null, 2)}\n`);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main(process.argv.slice(2)).catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : "evaluation_failed"}\n`);
+    process.exitCode = 1;
+  });
+}
