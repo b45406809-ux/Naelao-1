@@ -1,5 +1,11 @@
 # Mature knowledge platform implementation progress
 
+## Cross-plan pointer — 2026-11-16 (EP02 contract slice; code `6871563e` pushed)
+
+Structured-data resource declarations are now restricted to a bound PROJECT_BOUND Gadget and the signed workflow role's exact operations/tables. This does not change Knowledge backend selection or retrieval authority. Code `6871563ea9e70019c42d98a88eabf6b3daf0707c` is pushed; SDK **36/36**, SpaceDO install **32/32**, SDK/Spaces typechecks, and diff check pass. Resource kinds remain unavailable; no broker, grant/usage ledger, deployment or live acceptance exists.
+
+Exact next action: continue EP02 by implementing durable grant/operation receipts around scoped MicroAppDO calls, then return to open K05 lifecycle and K06–K30 work. Keep Cloudflare AI Search unselected and all rollouts disabled.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (EP01 SDK/resource admission; code 9abf5efa pushed)
 
 EP01's versioned resource requirements, host-grant/client types, scoped schemas, idempotency, quotas, status and metering units are implemented in the Agent SDK. A labeled simulated harness supports local authoring. Spaces exposes an authenticated capability catalog; SpaceDO denies resource-bearing installs while the host broker is absent. The `objects`, `structured_data` and `jobs` kinds remain unavailable, so this adds no Knowledge retrieval provider or authority path.

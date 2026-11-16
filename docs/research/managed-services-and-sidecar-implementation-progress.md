@@ -1,5 +1,9 @@
 # Managed services and sidecar implementation progress
 
+## Cross-plan checkpoint pointer — 2026-11-16 (EP02 contract slice; code `6871563e` pushed)
+
+The signed Project bundle's structured-data request is now constrained to its existing PROJECT_BOUND Gadget and signed worker-role tables/actions. SDK **36/36**, SpaceDO install **32/32**, SDK/Spaces typechecks and diff check pass. This leaves S3–S9/U01–U12 status unchanged; see the row-level ledger and prior checkpoints. No provider credentials are blocking ordinary implementation. Exact current action is EP02 durable grant/operation receipts through the scoped MicroAppDO caller; keep resources unavailable pending that broker and continue open S/U work afterward.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (EP01 SDK/resource admission; code 9abf5efa pushed)
 
 EP01's versioned resource requirements, host-grant/client types, exact scope and operation checks, schemas, idempotency, byte/rate/concurrency limits and metering-unit contract are implemented in the Agent SDK. A local simulated harness is labeled as simulated. Spaces exposes an authenticated member catalog and SpaceDO rejects unsupported resource requests before installation. All object, structured-data and job capabilities remain unavailable until EP02 wires a trusted grant issuer and operation broker.

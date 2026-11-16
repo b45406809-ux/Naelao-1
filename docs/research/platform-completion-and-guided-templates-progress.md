@@ -1,5 +1,11 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 structured-data binding; code `6871563e` pushed)
+
+The Agent SDK now requires structured-data declarations to bind to a PROJECT_BOUND Gadget and validates CRUD schemas, byte-bounded JSON envelopes, write idempotency, and exact workflow-role operation/table coverage. This reuses existing scoped MicroAppDO storage and grants; it does not widen Gadget authority. Code `6871563ea9e70019c42d98a88eabf6b3daf0707c` is pushed to `origin/Mcbt5s-Backup-2`. Local evidence: SDK **36/36**, SpaceDO install **32/32**, SDK/Spaces typechecks and `git diff --check`. No broker ledger, migration, deployment or live acceptance exists; all resource kinds remain unavailable and rollouts remain disabled.
+
+Exact next action: add durable resource grant/operation receipts and connect the authenticated workflow Gadget route, with installer/release digest, installation generation, idempotency, revocation fencing and bounded usage receipts. Add a reachable owner/admin status/revoke caller and concurrency/replay tests. Keep capability availability off until complete; continue other EP/K/S/U/P/PW requirements afterward.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (EP01 resource SDK contract; code 9abf5efa pushed)
 
 EP01 now defines backward-compatible versioned object/structured-data/job requirements, scoped input/output schemas, host-grant shape, operation idempotency and metering units. SDK calls check active grant status/expiry and exact tenant/Space/Project/installation/principal scope, declared operation, schema, byte cap, concurrency and request-rate limits. The local harness labels all grants and handles `simulated`. The authenticated Space member catalog endpoint currently reports all three resource kinds unavailable. SpaceDO rejects any package requesting unavailable resource operations before creating the installation; a declaration or client-supplied capability cannot enable one.

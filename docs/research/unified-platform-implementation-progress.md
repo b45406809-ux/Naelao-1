@@ -1,5 +1,9 @@
 # Unified platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (EP02 structured-data binding; code `6871563e` pushed)
+
+The SDK now fences structured-data requests to an existing PROJECT_BOUND Gadget and the signed workflow role's allowed tables/actions. Local evidence: Agent SDK **36/36**, SpaceDO install **32/32**, SDK/Spaces typechecks and diff check. No durable resource broker, grants/usage ledger, migration, deployment or live acceptance; every resource kind remains unavailable. Exact next action is the EP02 persistent grant/operation ledger and authenticated Gadget caller; the remaining S/U/P/PW/K/EP gaps remain active and rollouts stay disabled.
+
 ## Active cross-plan mission pointer (2026-11-16)
 
 The active autonomous mission tracks managed services S1–S9/U01–U12, platform P01–P24/PW01–PW06, Knowledge K01–K30 and extensible resources EP01–EP06. The plan from `plan/microapps-ui-sdk-voice:e950f02bdf0726f05db456a50ef29699e200d3b3` is copied into platform §15; no planning branch was merged. K04 is pushed at `4f390061`; K05 revision-pinned owner publication/extension grants are pushed at `cb0a63fb3f3fe2f9ad78b962323c4121f60b1496`; EP01's SDK/resource admission checkpoint is pushed at `9abf5efa36231a96bf8e337a2fb7b702cf672954`. Local evidence and limits are in the dedicated ledgers. Exact next task is EP02's durable structured-data grant/operation ledger through existing scoped Gadget storage and callers; K05 broader lifecycle and remaining K/S/U/P/PW/EP gaps stay active. After interruption read AGENTS, all active plans/progress ledgers and inspect actual worktree. Keep rollout disabled and push non-force to `Mcbt5s-Backup-2`.
