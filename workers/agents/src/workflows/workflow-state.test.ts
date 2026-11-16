@@ -19,6 +19,20 @@ function storageFixture() {
 }
 
 describe("WorkflowJournal usage accounting", () => {
+  it("records bounded durable step checkpoints idempotently and rejects conflicting replay", async () => {
+    const fixture = storageFixture();
+    const journal = new WorkflowJournal(fixture.storage);
+    await journal.reserveArtifact({ schema: 1, r2_key: "workflow-artifacts/tenant/space/run/step-1.json", sha256: "c".repeat(64), bytes: 12 });
+    const pointer = { schema: 1 as const, r2_key: "workflow-artifacts/tenant/space/run/step-1.json", sha256: "c".repeat(64), bytes: 12 };
+    const first = await journal.recordCheckpoint("fetch-source", pointer);
+    const replay = await journal.recordCheckpoint("fetch-source", pointer);
+    expect(replay).toEqual(first);
+    expect((await journal.read())).toMatchObject({ checkpointSequence: 1, checkpoints: [first] });
+    await expect(journal.recordCheckpoint("fetch-source", { ...pointer, sha256: "d".repeat(64) })).rejects.toThrow("workflow_checkpoint_conflict");
+    await journal.recordCheckpoint("publish-review", { ...pointer, r2_key: "workflow-artifacts/tenant/space/run/step-2.json", sha256: "e".repeat(64) });
+    expect((await journal.read()).checkpointSequence).toBe(2);
+  });
+
   it("atomically accumulates concurrent credit measurements", async () => {
     const fixture = storageFixture();
     const journal = new WorkflowJournal(fixture.storage);

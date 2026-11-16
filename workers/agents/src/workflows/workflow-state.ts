@@ -23,6 +23,8 @@ export interface WorkflowJournalRecord extends DurableWorkflowRecord {
   uncertainEffects?: string[];
   launched: boolean;
   cleanupPending: boolean;
+  checkpointSequence?: number;
+  checkpoints?: Array<{ sequence: number; stepName: string; pointer: WorkflowCheckpointPointer; recordedAt: number }>;
 }
 
 export const MAX_WORKFLOW_ARTIFACTS = 256;
@@ -78,6 +80,25 @@ export class WorkflowJournal {
       const bytes = (run.artifactBytes ?? run.input.bytes) + pointer.bytes;
       if (keys.length >= MAX_WORKFLOW_ARTIFACTS || !Number.isSafeInteger(bytes) || bytes > MAX_WORKFLOW_ARTIFACT_BYTES) throw new Error("workflow_artifact_budget_exceeded");
       await storage.put("run", { ...run, artifactKeys: [...keys, pointer.r2_key], artifactBytes: bytes, updatedAt: Date.now() });
+    });
+  }
+  async recordCheckpoint(stepName: string, pointer: WorkflowCheckpointPointer): Promise<WorkflowJournalRecord["checkpoints"] extends Array<infer T> | undefined ? T : never> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(stepName) || !pointer || !/^[a-f0-9]{64}$/.test(pointer.sha256)
+      || !Number.isSafeInteger(pointer.bytes) || pointer.bytes < 0) throw new Error("workflow_checkpoint_invalid");
+    return this.storage.transaction(async (storage) => {
+      const run = await storage.get<WorkflowJournalRecord>("run");
+      if (!run) throw new Error("workflow_not_found");
+      if (isTerminalWorkflow(run.status) || run.cleanupPending) throw new Error("workflow_already_terminal");
+      const checkpoints = run.checkpoints ?? [];
+      const prior = checkpoints.find((item) => item.stepName === stepName);
+      if (prior) {
+        if (prior.pointer.sha256 !== pointer.sha256 || prior.pointer.bytes !== pointer.bytes) throw new Error("workflow_checkpoint_conflict");
+        return prior;
+      }
+      const sequence = (run.checkpointSequence ?? 0) + 1;
+      const checkpoint = { sequence, stepName, pointer, recordedAt: Date.now() };
+      await storage.put("run", { ...run, checkpointSequence: sequence, checkpoints: [...checkpoints, checkpoint].slice(-64), updatedAt: Date.now() });
+      return checkpoint;
     });
   }
   async transition(status: WorkflowJournalRecord["status"], result?: WorkflowCheckpointPointer, error?: string): Promise<WorkflowJournalRecord> {

@@ -94,6 +94,13 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       await this.journal.reserveArtifact(pointer);
     });
   }
+  async recordCheckpoint(runId: string, stepName: string, pointer: WorkflowCheckpointPointer): Promise<unknown> {
+    const identity = await this.authorize(runId);
+    validateWorkflowPointer(identity, pointer);
+    const record = await this.journal.read();
+    if (!record.artifactKeys.includes(pointer.r2_key)) throw new Error("workflow_checkpoint_artifact_unregistered");
+    return this.journal.recordCheckpoint(stepName, pointer);
+  }
   async readArtifact(runId: string, pointer: WorkflowCheckpointPointer): Promise<unknown> { return readWorkflowArtifact(this.env, await this.authorize(runId), pointer); }
   async effect(runId: string, key: string, operation: string, params: Record<string, unknown>): Promise<unknown> {
     const identity = await this.authorize(runId);

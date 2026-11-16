@@ -40,6 +40,8 @@ export async function checkpointAgentTask(env: Env, runId: string, params: Agent
           return stub.putArtifact(runId, result === undefined ? null : JSON.parse(JSON.stringify(result)));
         });
         await stub.authorize(runId);
+        await stub.recordCheckpoint(runId, name, pointer);
+        await stub.authorize(runId);
         return readWorkflowArtifact(env, pinned, pointer);
       };
     },
