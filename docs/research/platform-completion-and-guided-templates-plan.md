@@ -614,3 +614,18 @@ Requested package permissions, publisher identity, installer review, active gran
 ### 15.3 Provider and deployment evaluation boundary
 
 Cloudflare Pages, Workers for Platforms, Dynamic Workers/Worker Loader, the existing microapp page route, and a sidecar/container are different products and isolation models. Verify API, limits, egress, custom-domain ownership, TLS, region, terms, pricing and operations for each adapter. Do not label Worker Loader as general application hosting. Cloudflare AI Search remains only an evaluated candidate under K15/K16; its metadata filter limitations, user/role ACL mapping, update/deletion lifecycle, multilingual/citation quality, scale and invoice cost must be proven before any adapter is selected. Never silently change the current retrieval path.
+
+## 16. Template-defined business roles and member onboarding
+
+The full requirements are incorporated from [`template-business-roles-and-member-onboarding-plan.md`](template-business-roles-and-member-onboarding-plan.md), copied from `plan/microapps-ui-sdk-voice` commit `28d7c460` with the explicit builder-defined-role clarification from follow-up commit `cdeb7def`. Track TBR01–TBR12 in [the dedicated implementation progress record](template-business-roles-and-member-onboarding-progress.md). This adds no role grant by itself: signed template roles are proposals; an authorized owner/admin must review and approve host-enforced permissions. Preserve old blueprints, identity separation, existing Project and extension boundaries, private data, and disabled rollouts.
+
+### 16.1 Reconciled execution order
+
+- **TBR01–TBR02 — authoring contract:** define stable, localized, bounded template business roles and symbolic resource/action/assistant/onboarding/spend proposals; validate and sign them as data, and provide builder authoring/preview without embedding customer IDs or active grants.
+- **TBR03–TBR05 — review and onboarding:** preview actual installed resources and effects; add owner/admin-reviewed invitation, authenticated single-use redemption, idempotent membership/grant application, partial-failure recovery and member-facing onboarding. Do not send invitations during implementation.
+- **TBR06–TBR10 — effective authority:** intersect template roles with current Space/Project/resource membership, policy, assistant clamp, installation/provider grants and budget at each effect. Preserve shared records while keeping private chat/project content separate; autonomous work requires a named, separately authorized service principal.
+- **TBR11–TBR12 — privacy and acceptance:** reconcile one explicit owner/admin private-Project policy across SpaceDO, Knowledge and every assistant/resource caller; provide audit and effective-permission views, then test multiple roles, revocation, scheduled jobs and partial failures. Keep live multi-user/provider acceptance separate from local tests.
+
+### 16.2 Fixed authorization boundary
+
+Template role labels, descriptions, prompts, AI-generated onboarding text and hidden UI never grant access. Only a verified inviter or owner/admin may approve actual roles within their own authority, current organization/Space policy, installed resources and subscription. Autonomous cron/event/provider wakes without an acting user may not borrow an owner's permissions; they need their own revocable identity, exact scopes, allowed actions and budget. Private Project admin visibility remains an explicit product/security decision until current SpaceDO and Knowledge behavior is reconciled; do not claim universal visibility or absolute privacy.
