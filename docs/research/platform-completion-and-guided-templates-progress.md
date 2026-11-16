@@ -1,10 +1,18 @@
 # Platform completion and guided templates progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (K14/K17 language-pair evaluation; `d6f6cfb7` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (AgentMail per-conversation routing; `3ee64def` pushed)
+
+The owner Shell and AgentMail service now support explicit per-conversation assistant overrides while preserving the account-level default. The service exposes at most 100 active conversations as hashed keys and timestamps; sender data and message content remain with AgentMail. Save verifies the active owner connection, AgentPort subscription/channel/thread and provisioned assistant. Dispatch selects the matching active override first, persists its route kind/hash/revision, drops stale revisions and treats a paused override as an explicit suppression. Migration 0274 is source-only and the rollout remains disabled.
+
+Code `3ee64defbc429f66a16d5a26070eadc85a42a431` is pushed and remote-verified. Evidence: AgentMail/dispatch tests **22/22**, Agents/Shell typechecks, **274** migration inventory, release/deployment manifest checks, Python release migration **20/20**, manifest **5/5**, and `git diff --check`. These are local mocks/SQLite. No browser, deployed Worker, live provider/identity acceptance or rollout ran. S6 remains partial for generic provider routing and externally verified sender identity; no user switch commands were added.
+
+Exact next action: implement EP02's host-managed R2 object adapter on the existing scoped Project/install object caller, owner grant and versioned archive support. Preserve opaque handles, current signed manifest/grant/generation fences, quotas and retryable deletion; keep the resource catalog unavailable until applicable acceptance. Continue the other uncoded S/U/P/PW/K/EP requirements afterward.
+
+## Previous cross-plan checkpoint — 2026-11-16 (K14/K17 language-pair evaluation; `d6f6cfb7` pushed)
 
 The local Knowledge search route now feeds K17 through a content-free trace whitelist. The evaluator reports retrieval, citation/source-version, forbidden-scope, abstention, latency and cost metrics overall, per query language and per query/source-language pair; caller-supplied thresholds must pass at each level. It reports schema v2 and `acceptanceEligible:false`. Codes `4e3c3a7a`, `3d67805e` and `d6f6cfb7` are pushed and remote-verified. P01 source reconciliation also confirmed post-Worker health probes are already wired into both deployment workflows before frontend publication; probe tests **5/5** and the manifest validator pass locally. They have not been run against a deployed environment.
 
-Evidence: evaluator tests **6/6**, Knowledge search-route integration **6/6**, Node syntax check and diff check. Fixtures are synthetic and local. The checked-in dataset remains English-only; reviewed Shona/Ndebele/domain corpus, provider/deployed measurement, invoice or rollout evidence is absent. K14/K17 remain in progress. Exact next action: implement owner-authorized per-conversation assistant routing for AgentMail threads, preserving account defaults, route revisions and the owner Shell caller. User-issued switch commands remain unsupported until a verifiable channel-identity contract exists.
+Evidence: evaluator tests **6/6**, Knowledge search-route integration **6/6**, Node syntax check and diff check. Fixtures are synthetic and local. The checked-in dataset remains English-only; reviewed Shona/Ndebele/domain corpus, provider/deployed measurement, invoice or rollout evidence is absent. K14/K17 remain in progress. The per-conversation AgentMail code action is recorded in the checkpoint above; native/domain quality review and deployed evidence remain open.
 
 ## Previous cross-plan checkpoint — 2026-11-16 (K17 evaluator and K14 language coverage guard; `ab01086d` pushed)
 
