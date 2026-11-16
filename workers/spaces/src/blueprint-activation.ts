@@ -127,14 +127,14 @@ export function previewBlueprintActivation(
     const dependency = extId ? dependencies.find(item => item.extension_id === extId) : undefined;
     const summary = dependency?.summary;
     let availability: BlueprintActivationPreview["business_roles"][number]["resource_reviews"][number]["availability"];
-    let targetPrimitives = summary?.primitives ?? [];
+    let targetPrimitives = resource.kind === "extension" ? summary?.primitives ?? [] : [];
     if (resource.kind === "project") availability = blueprint.projects.some(project => (project.id ?? project.name) === resource.projectId) ? "planned_project" : "unsupported";
     else if (!dependency || ["unavailable", "version_mismatch", "version_unpinned", "disabled", "not_active"].includes(dependency.status)) availability = "unavailable";
     else if (dependency.status === "installable") availability = "available_in_catalog";
     else {
       if (resource.kind === "extension") availability = "installed";
       else if (resource.kind === "microapp") {
-        targetPrimitives = targetPrimitives.filter(item => item.id === resource.microappId && item.kind === "canvas");
+        targetPrimitives = (summary?.primitives ?? []).filter(item => item.id === resource.microappId && item.kind === "canvas");
         availability = targetPrimitives.length ? "installed" : "resource_not_declared";
       } else if (resource.kind === "knowledge") {
         availability = summary?.knowledge.some(item => item.id === resource.knowledgeId) ? "declared_only" : "resource_not_declared";
