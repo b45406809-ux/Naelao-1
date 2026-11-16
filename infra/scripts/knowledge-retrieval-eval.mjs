@@ -79,12 +79,17 @@ function rankedMetrics(sample, retrieved) {
 }
 
 /** Score content-free retrieval traces against synthetic or reviewed cases. */
-export function evaluateKnowledgeRetrieval({ cases, results, topK = 10 }) {
+export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, requiredLanguages = ["en", "sn", "nd"] }) {
   if (!Array.isArray(cases) || cases.length === 0 || cases.length > 10_000 || !Array.isArray(results)
       || results.length > cases.length) {
     throw new Error("cases and results must be nonempty/array inputs");
   }
   if (!Number.isSafeInteger(topK) || topK < 1 || topK > 100) throw new Error("topK must be an integer from 1 to 100");
+  if (!Array.isArray(requiredLanguages) || requiredLanguages.length === 0
+      || new Set(requiredLanguages).size !== requiredLanguages.length
+      || requiredLanguages.some((language) => typeof language !== "string" || !/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(language))) {
+    throw new Error("requiredLanguages must contain unique language tags");
+  }
   const ids = new Set();
   for (const sample of cases) assertCase(sample, ids);
   const resultById = new Map();
@@ -139,17 +144,18 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10 }) {
   });
   const completed = perCase.filter((item) => !item.missing);
   const answerable = completed.filter((item) => item.recallAtK !== null);
-  const byLanguage = Object.fromEntries([...new Set(cases.map((sample) => sample.language))].sort().map((language) => {
+  const byLanguage = Object.fromEntries([...new Set([...requiredLanguages, ...cases.map((sample) => sample.language)])].sort().map((language) => {
     const languageCases = cases.filter((sample) => sample.language === language);
     return [language, {
       caseCount: languageCases.length,
       reviewedCount: languageCases.filter((sample) => sample.reviewStatus === "human_reviewed").length,
-      reviewComplete: languageCases.every((sample) => sample.reviewStatus === "human_reviewed"),
+      reviewComplete: languageCases.length > 0 && languageCases.every((sample) => sample.reviewStatus === "human_reviewed"),
     }];
   }));
   const forbiddenExposureCount = completed.reduce((total, item) => total + item.forbiddenExposureCount, 0);
   const staleCitationCount = completed.reduce((total, item) => total + item.staleCitationCount, 0);
   const allCasesReviewed = cases.every((sample) => sample.reviewStatus === "human_reviewed");
+  const incompleteRequiredLanguages = requiredLanguages.filter((language) => !byLanguage[language]?.reviewComplete);
   const missingResultCount = perCase.filter((item) => item.missing).length;
   return {
     version: 1,
@@ -170,6 +176,7 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10 }) {
       forbiddenExposureCount,
       staleCitationCount,
     },
+    requiredLanguages,
     languageReview: byLanguage,
     readiness: {
       acceptanceEligible: false,
@@ -178,6 +185,7 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10 }) {
         ...(forbiddenExposureCount ? [`${forbiddenExposureCount} forbidden candidates were retrieved or cited`] : []),
         ...(staleCitationCount ? [`${staleCitationCount} citations reference an unexpected source version`] : []),
         ...(!allCasesReviewed ? ["benchmark contains cases without human review"] : []),
+        ...(incompleteRequiredLanguages.length ? [`required language coverage is missing or unreviewed: ${incompleteRequiredLanguages.join(", ")}`] : []),
         "quality, latency, cost, and multilingual release thresholds are not configured by this local evaluator",
       ],
     },

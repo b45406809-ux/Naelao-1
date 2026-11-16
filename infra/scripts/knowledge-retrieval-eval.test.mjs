@@ -28,6 +28,9 @@ test("scores current citations, stale source versions, forbidden exposure, abste
   assert.equal(result.metrics.staleCitationCount, 0);
   assert.equal(result.readiness.acceptanceEligible, false);
   assert.equal(result.languageReview.en.reviewComplete, false);
+  assert.equal(result.languageReview.sn.caseCount, 0);
+  assert.equal(result.languageReview.nd.caseCount, 0);
+  assert.ok(result.readiness.reasons.some((reason) => reason.includes("sn, nd")));
 });
 
 test("detects a stale cited version without disclosing query text in the report", () => {
