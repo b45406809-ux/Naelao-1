@@ -41,6 +41,7 @@ import {
   listProjects,
   listThreads,
   publishExternalKnowledge,
+  setExternalKnowledgePublicationArchived,
   setSpaceSharedChannelKnowledge,
   unpublishExternalKnowledge,
   updateProject,
@@ -276,7 +277,7 @@ export default function ProjectDetailPage() {
         ...(installationsByExtension.get(installation.extension_id) === 1 && activationSelections[installation.extension_id]?.length
           ? { activation_selected_publication_ids: activationSelections[installation.extension_id] } : {}) }));
       setSharedChannelKnowledge(installations);
-      const currentPublications = new Set(publications.map(publication => publication.id));
+      const currentPublications = new Set(publications.filter(publication => !publication.archived).map(publication => publication.id));
       setSharedChannelKnowledgeDrafts(Object.fromEntries(installations.map(installation => [installation.instance_id,
         (installation.configured ? installation.granted_publication_ids : installation.activation_selected_publication_ids ?? [])
           .filter(id => installation.declared_publication_ids.includes(id) && currentPublications.has(id)),
@@ -489,6 +490,23 @@ export default function ProjectDetailPage() {
     } catch (error) {
       await refreshExternalKnowledge();
       show(error instanceof Error ? error.message : "Couldn't unpublish this Knowledge collection");
+    }
+  }
+
+  async function handleArchiveExternalCollection(id: string, archived: boolean) {
+    if (!creds) return;
+    try {
+      const publication = externalPublications.find(item => item.id === id);
+      if (!publication) throw new Error("Reload the current collection list before changing its archive state");
+      await setExternalKnowledgePublicationArchived(activeSpaceId, params.projectId, id, creds, publication.revision, archived);
+      if (publicationId === id) setPublishedDocumentIds([]);
+      show(archived
+        ? "Collection archived; extension access is paused and its published document list was removed."
+        : "Collection restored as an empty draft; select documents, publish the new revision, then approve extension access again.");
+      await refreshExternalKnowledge();
+    } catch (error) {
+      await refreshExternalKnowledge();
+      show(error instanceof Error ? error.message : "Couldn't change the collection archive state");
     }
   }
 
@@ -990,12 +1008,19 @@ export default function ProjectDetailPage() {
           {externalPublications.map(publication => (
             <div className="settings-row" key={publication.id}>
               <div>
-                <div className="settings-row-label">{publication.name}</div>
+                <div className="settings-row-label">{publication.name}{publication.archived ? " · Archived" : ""}</div>
                 <div className="settings-row-sub">{publication.id} · revision {publication.revision} · {publication.document_count} published document{publication.document_count === 1 ? "" : "s"}</div>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <Button size="sm" variant="ghost" onClick={() => editExternalCollection(publication)}>Edit</Button>
-                <Button size="sm" variant="ghost" onClick={() => void handleUnpublishExternalCollection(publication.id)}>Unpublish</Button>
+                {publication.archived ? (
+                  <Button size="sm" variant="ghost" onClick={() => void handleArchiveExternalCollection(publication.id, false)}>Restore draft</Button>
+                ) : (
+                  <>
+                    <Button size="sm" variant="ghost" onClick={() => editExternalCollection(publication)}>Edit</Button>
+                    <Button size="sm" variant="ghost" onClick={() => void handleArchiveExternalCollection(publication.id, true)}>Archive</Button>
+                    <Button size="sm" variant="ghost" onClick={() => void handleUnpublishExternalCollection(publication.id)}>Delete</Button>
+                  </>
+                )}
               </div>
             </div>
           ))}
@@ -1019,7 +1044,7 @@ export default function ProjectDetailPage() {
         <div className="settings-block" aria-label="Space-shared channel Project Knowledge access">
           {sharedChannelKnowledge.map(installation => {
             const draft = sharedChannelKnowledgeDrafts[installation.instance_id] ?? [];
-            const available = externalPublications.filter(publication => installation.declared_publication_ids.includes(publication.id));
+            const available = externalPublications.filter(publication => !publication.archived && installation.declared_publication_ids.includes(publication.id));
             const unavailableGrants = installation.granted_publication_ids.filter(id => !available.some(publication => publication.id === id));
             const staleGrants = (installation.granted_publications ?? []).filter(grant => {
               const current = externalPublications.find(publication => publication.id === grant.id);

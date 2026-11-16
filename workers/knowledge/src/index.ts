@@ -261,14 +261,14 @@ app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications", async (
   const access = await collectionProjectAction(c, projectId, "discover");
   if (access instanceof Response) return access;
   const { results } = await c.env.PLATFORM_DB.prepare(
-    `SELECT p.id,p.name,p.updated_at,p.revision,COUNT(d.document_id) AS document_count,GROUP_CONCAT(d.document_id, ',') AS document_ids
+    `SELECT p.id,p.name,p.updated_at,p.revision,p.archived_at,COUNT(d.document_id) AS document_count,GROUP_CONCAT(d.document_id, ',') AS document_ids
      FROM kb_external_publications p LEFT JOIN kb_external_publication_documents d
        ON d.publication_id=p.id AND d.tenant_id=p.tenant_id AND d.space_id=p.space_id AND d.project_id=p.project_id
          AND d.publication_revision=p.revision
      WHERE p.tenant_id=? AND p.space_id=? AND p.project_id=? GROUP BY p.id ORDER BY p.name,p.id`
-  ).bind(access.tenantId, access.spaceId, projectId).all<{ id: string; name: string; updated_at: string; revision: number; document_count: number; document_ids: string | null }>();
-  return c.json({ publications: results.map(({ document_ids, ...publication }) => ({
-    ...publication, document_ids: document_ids ? document_ids.split(",") : [],
+  ).bind(access.tenantId, access.spaceId, projectId).all<{ id: string; name: string; updated_at: string; revision: number; archived_at: string | null; document_count: number; document_ids: string | null }>();
+  return c.json({ publications: results.map(({ document_ids, archived_at, ...publication }) => ({
+    ...publication, archived: archived_at !== null, document_ids: document_ids ? document_ids.split(",") : [],
   })) });
 });
 
@@ -278,7 +278,7 @@ app.get("/internal/spaces/:spaceId/kb/projects/:projectId/external-publications"
   const tenantId = requireTenant(c), { spaceId, projectId } = c.req.param();
   const { results } = await c.env.PLATFORM_DB.prepare(
     `SELECT id,revision FROM kb_external_publications
-     WHERE tenant_id=? AND space_id=? AND project_id=? ORDER BY id LIMIT 100`
+     WHERE tenant_id=? AND space_id=? AND project_id=? AND archived_at IS NULL ORDER BY id LIMIT 100`
   ).bind(tenantId, spaceId, projectId).all<{ id: string; revision: number }>();
   c.header("cache-control", "private, no-store");
   return c.json({ publications: results });
@@ -306,14 +306,16 @@ app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
     if (results.length !== documentIds.length) throw badRequest("Every document must be indexed and belong to this project");
   }
   const existing = await c.env.PLATFORM_DB.prepare(
-    "SELECT id,revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
-  ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ id: string; revision: number }>();
+    "SELECT id,revision,archived_at FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ id: string; revision: number; archived_at: string | null }>();
   const collision = existing ? null : await c.env.PLATFORM_DB.prepare("SELECT id FROM kb_external_publications WHERE id=?").bind(publicationId).first();
   if (collision) throw notFound("Knowledge publication");
   const currentRevision = existing?.revision ?? 0;
   if (body.expected_revision !== currentRevision) {
     return c.json({ error_code: "knowledge_publication_revision_conflict", current_revision: currentRevision }, 409);
   }
+  if (existing?.archived_at !== null && existing?.archived_at !== undefined)
+    return c.json({ error_code: "knowledge_publication_archived", current_revision: currentRevision }, 409);
   const now = new Date().toISOString();
   const mutationToken = crypto.randomUUID();
   const nextRevision = currentRevision + 1;
@@ -324,7 +326,8 @@ app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
      VALUES(?,?,?,?,?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at,
        revision=kb_external_publications.revision+1,mutation_token=excluded.mutation_token
      WHERE kb_external_publications.tenant_id=excluded.tenant_id AND kb_external_publications.space_id=excluded.space_id
-       AND kb_external_publications.project_id=excluded.project_id AND kb_external_publications.revision=?`
+       AND kb_external_publications.project_id=excluded.project_id AND kb_external_publications.revision=?
+       AND kb_external_publications.archived_at IS NULL`
   ).bind(publicationId, access.tenantId, spaceId, projectId, body.name.trim(), access.userId, now, now, mutationToken, body.expected_revision),
   c.env.PLATFORM_DB.prepare(`DELETE FROM kb_external_publication_documents
      WHERE publication_id=? AND tenant_id=? AND space_id=? AND project_id=? AND ${currentMutation}`)
@@ -345,7 +348,62 @@ app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
     if (!current) throw notFound("Knowledge publication");
     return c.json({ error_code: "knowledge_publication_revision_conflict", current_revision: current.revision }, 409);
   }
-  return c.json({ publication_id: publicationId, project_id: projectId, name: body.name.trim(), document_ids: documentIds, revision: saved.revision }, 200);
+  return c.json({ publication_id: publicationId, project_id: projectId, name: body.name.trim(), document_ids: documentIds, revision: saved.revision, archived: false }, 200);
+});
+
+app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId/archive", async c => {
+  const { spaceId, projectId, publicationId } = c.req.param();
+  if (!EXTERNAL_PUBLICATION_ID.test(publicationId)) throw badRequest("Invalid publication id");
+  const access = await collectionProjectAction(c, projectId, "manage");
+  if (access instanceof Response) return access;
+  const body = await readBoundedJsonOr(c.req.raw, 8 * 1024, null as { expected_revision?: unknown; archived?: unknown } | null);
+  if (!body || !validCollectionRevision(body.expected_revision) || body.expected_revision < 1 || typeof body.archived !== "boolean")
+    throw badRequest("expected_revision and archived are required");
+  const current = await c.env.PLATFORM_DB.prepare(
+    "SELECT revision,archived_at FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ revision: number; archived_at: string | null }>();
+  if (!current) return c.json({ error_code: "not_found" }, 404);
+  if (current.revision !== body.expected_revision)
+    return c.json({ error_code: "knowledge_publication_revision_conflict", current_revision: current.revision }, 409);
+  const isArchived = current.archived_at !== null;
+  if (isArchived === body.archived)
+    return c.json({ publication_id: publicationId, archived: isArchived, revision: current.revision }, 200);
+
+  const now = new Date().toISOString();
+  const mutationToken = crypto.randomUUID();
+  const nextRevision = current.revision + 1;
+  const statements = [c.env.PLATFORM_DB.prepare(
+    `UPDATE kb_external_publications SET archived_at=?,archived_by=?,revision=revision+1,updated_at=?,mutation_token=?
+     WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=? AND archived_at IS ?`
+  ).bind(body.archived ? now : null, body.archived ? access.userId : null, now, mutationToken,
+    publicationId, access.tenantId, spaceId, projectId, current.revision, current.archived_at),
+  c.env.PLATFORM_DB.prepare(`INSERT INTO kb_external_publication_events (
+      event_id,tenant_id,space_id,project_id,publication_id,actor_id,action,from_revision,to_revision,created_at
+    ) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (
+      SELECT 1 FROM kb_external_publications p WHERE p.id=? AND p.tenant_id=? AND p.space_id=? AND p.project_id=?
+        AND p.revision=? AND p.mutation_token=?
+    )`)
+    .bind(crypto.randomUUID(), access.tenantId, spaceId, projectId, publicationId, access.userId,
+      body.archived ? "archived" : "restored_as_draft", current.revision, nextRevision, now,
+      publicationId, access.tenantId, spaceId, projectId, nextRevision, mutationToken),
+  c.env.PLATFORM_DB.prepare(`DELETE FROM kb_external_publication_documents
+     WHERE publication_id=? AND tenant_id=? AND space_id=? AND project_id=?
+       AND EXISTS (SELECT 1 FROM kb_external_publications p WHERE p.id=? AND p.tenant_id=? AND p.space_id=?
+         AND p.project_id=? AND p.revision=? AND p.mutation_token=?)`)
+    .bind(publicationId, access.tenantId, spaceId, projectId, publicationId, access.tenantId, spaceId,
+      projectId, nextRevision, mutationToken)];
+  await c.env.PLATFORM_DB.batch(statements);
+  const saved = await c.env.PLATFORM_DB.prepare(
+    "SELECT revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND mutation_token=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId, mutationToken).first<{ revision: number }>();
+  if (!saved) {
+    const latest = await c.env.PLATFORM_DB.prepare(
+      "SELECT revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
+    ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ revision: number }>();
+    return latest ? c.json({ error_code: "knowledge_publication_revision_conflict", current_revision: latest.revision }, 409)
+      : c.json({ error_code: "not_found" }, 404);
+  }
+  return c.json({ publication_id: publicationId, archived: body.archived, revision: saved.revision }, 200);
 });
 
 app.delete("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId", async (c) => {
@@ -387,11 +445,13 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
     || !Number.isSafeInteger(body.publication_revision) || Number(body.publication_revision) < 1
     || typeof body.query !== "string" || !body.query.trim() || body.query.length > 1_000) throw badRequest("publication_id, publication_revision, and query are required");
   const publication = await c.env.PLATFORM_DB.prepare(
-    `SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=?`
+    `SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=? AND archived_at IS NULL`
   ).bind(body.publication_id, tenantId, spaceId, projectId, body.publication_revision).first();
   if (!publication) throw notFound("Knowledge publication");
   const docs = await c.env.PLATFORM_DB.prepare(
     `SELECT d.id,d.title FROM kb_external_publication_documents x JOIN kb_documents d ON d.id=x.document_id
+     JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id
+       AND p.project_id=x.project_id AND p.revision=x.publication_revision AND p.archived_at IS NULL
      WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND x.publication_revision=? AND d.tenant_id=x.tenant_id
        AND d.space_id=x.space_id AND d.project_id=x.project_id AND d.status='indexed' ORDER BY d.id LIMIT 100`
   ).bind(body.publication_id, tenantId, spaceId, projectId, body.publication_revision).all<{ id: string; title: string }>();
@@ -410,7 +470,7 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
      JOIN kb_documents d ON d.id=k.document_id
      JOIN kb_external_publication_documents x ON x.document_id=k.document_id AND x.tenant_id=k.tenant_id AND x.space_id=k.space_id AND x.project_id=k.project_id
      JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id AND p.project_id=x.project_id
-     WHERE k.id IN (${placeholders}) AND x.publication_id=? AND x.publication_revision=? AND p.revision=?
+     WHERE k.id IN (${placeholders}) AND x.publication_id=? AND x.publication_revision=? AND p.revision=? AND p.archived_at IS NULL
        AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
        AND d.status='indexed' AND k.deleted_at IS NULL`
   ).bind(...ids, body.publication_id, body.publication_revision, body.publication_revision, tenantId, spaceId, projectId).all<{ id: string; document_id: string; content: string; content_hash: string; title: string }>();

@@ -17,6 +17,7 @@ function harness(options: { duringVectorQuery?: (db: ReturnType<typeof createFak
     "CREATE TABLE kb_chunks(id TEXT PRIMARY KEY,document_id TEXT NOT NULL,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,project_id TEXT NOT NULL,content TEXT NOT NULL,content_hash TEXT NOT NULL,deleted_at TEXT)",
     migration("0104_kb_external_publications.sql"),
     migration("0265_knowledge_publication_revisions.sql"),
+    migration("0268_knowledge_publication_archive.sql"),
   ]);
   db.db.exec(`INSERT INTO orgs VALUES('tenant-a','active');
     INSERT INTO spaces VALUES('space-a','tenant-a','active',NULL);
@@ -119,5 +120,71 @@ describe("revisioned external Knowledge publication SQL", () => {
       .bind("course_material", "doc-a").run();
     const current = await worker.fetch(await call("/spaces/space-a/kb/projects/project-a/external-publications"), h.env, {} as ExecutionContext);
     await expect(current.json()).resolves.toMatchObject({ publications: [{ id: "course_material", revision: 3, document_ids: ["doc-b"] }] });
+  });
+
+  it("archives with a revision fence, drops active membership and requires explicit republish before discovery", async () => {
+    const h = harness();
+    const path = "/spaces/space-a/kb/projects/project-a/external-publications/course_material";
+    const created = await worker.fetch(await call(path, { name: "Course material", document_ids: ["doc-a"], expected_revision: 0 }), h.env, {} as ExecutionContext);
+    expect(created.status).toBe(200);
+
+    const archived = await worker.fetch(await call(`${path}/archive`, { expected_revision: 1, archived: true }, "PUT"), h.env, {} as ExecutionContext);
+    expect(archived.status).toBe(200);
+    await expect(archived.json()).resolves.toMatchObject({ archived: true, revision: 2 });
+    expect(h.db.db.prepare("SELECT * FROM kb_external_publication_documents").all()).toEqual([]);
+    expect(h.db.db.prepare("SELECT actor_id,action,from_revision,to_revision FROM kb_external_publication_events ORDER BY to_revision").all())
+      .toEqual([{ actor_id: "owner-a", action: "archived", from_revision: 1, to_revision: 2 }]);
+    const archiveReplay = await worker.fetch(await call(`${path}/archive`, { expected_revision: 2, archived: true }, "PUT"), h.env, {} as ExecutionContext);
+    await expect(archiveReplay.json()).resolves.toMatchObject({ archived: true, revision: 2 });
+    expect(h.db.db.prepare("SELECT COUNT(*) AS count FROM kb_external_publication_events").get()).toEqual({ count: 1 });
+    const ownerList = await worker.fetch(await call("/spaces/space-a/kb/projects/project-a/external-publications"), h.env, {} as ExecutionContext);
+    await expect(ownerList.json()).resolves.toMatchObject({ publications: [{ id: "course_material", archived: true, revision: 2, document_count: 0 }] });
+    const currentGrants = await worker.fetch(await call("/internal/spaces/space-a/kb/projects/project-a/external-publications"), h.env, {} as ExecutionContext);
+    await expect(currentGrants.json()).resolves.toEqual({ publications: [] });
+
+    const archivedSearch = await worker.fetch(await call("/internal/spaces/space-a/kb/projects/project-a/external-search",
+      { publication_id: "course_material", publication_revision: 2, query: "approved fact" }, "POST"), h.env, {} as ExecutionContext);
+    expect(archivedSearch.status).toBe(404);
+    expect(h.vectorQuery).not.toHaveBeenCalled();
+    const archivedEdit = await worker.fetch(await call(path, { name: "Course material", document_ids: ["doc-b"], expected_revision: 2 }), h.env, {} as ExecutionContext);
+    expect(archivedEdit.status).toBe(409);
+    await expect(archivedEdit.json()).resolves.toMatchObject({ error_code: "knowledge_publication_archived" });
+
+    const restored = await worker.fetch(await call(`${path}/archive`, { expected_revision: 2, archived: false }, "PUT"), h.env, {} as ExecutionContext);
+    expect(restored.status).toBe(200);
+    await expect(restored.json()).resolves.toMatchObject({ archived: false, revision: 3 });
+    expect(h.db.db.prepare("SELECT actor_id,action,from_revision,to_revision FROM kb_external_publication_events ORDER BY to_revision").all())
+      .toEqual([{ actor_id: "owner-a", action: "archived", from_revision: 1, to_revision: 2 },
+        { actor_id: "owner-a", action: "restored_as_draft", from_revision: 2, to_revision: 3 }]);
+    const restoredGrantDirectory = await worker.fetch(await call("/internal/spaces/space-a/kb/projects/project-a/external-publications"), h.env, {} as ExecutionContext);
+    await expect(restoredGrantDirectory.json()).resolves.toEqual({ publications: [{ id: "course_material", revision: 3 }] });
+    const restoredSearch = await worker.fetch(await call("/internal/spaces/space-a/kb/projects/project-a/external-search",
+      { publication_id: "course_material", publication_revision: 3, query: "approved fact" }, "POST"), h.env, {} as ExecutionContext);
+    expect(restoredSearch.status).toBe(200);
+    await expect(restoredSearch.json()).resolves.toMatchObject({ data: [] });
+    expect(h.vectorQuery).not.toHaveBeenCalled();
+
+    const republished = await worker.fetch(await call(path, { name: "Course material", document_ids: ["doc-b"], expected_revision: 3 }), h.env, {} as ExecutionContext);
+    expect(republished.status).toBe(200);
+    await expect(republished.json()).resolves.toMatchObject({ revision: 4, document_ids: ["doc-b"] });
+    expect(h.db.db.prepare("SELECT document_id,publication_revision FROM kb_external_publication_documents").all())
+      .toEqual([{ document_id: "doc-b", publication_revision: 4 }]);
+  });
+
+  it("requires owner authority and current revision for archive transitions", async () => {
+    const h = harness();
+    const path = "/spaces/space-a/kb/projects/project-a/external-publications/course_material";
+    const created = await worker.fetch(await call(path, { name: "Course material", document_ids: ["doc-a"], expected_revision: 0 }), h.env, {} as ExecutionContext);
+    expect(created.status).toBe(200);
+    const denied = await worker.fetch(await call(`${path}/archive`, { expected_revision: 1, archived: true }, "PUT", "member"), h.env, {} as ExecutionContext);
+    expect(denied.status).toBe(403);
+    const archived = await worker.fetch(await call(`${path}/archive`, { expected_revision: 1, archived: true }, "PUT"), h.env, {} as ExecutionContext);
+    expect(archived.status).toBe(200);
+    const stale = await worker.fetch(await call(`${path}/archive`, { expected_revision: 1, archived: false }, "PUT"), h.env, {} as ExecutionContext);
+    expect(stale.status).toBe(409);
+    const status = await worker.fetch(await call(`${path}/archive`, { expected_revision: 2, archived: "yes" }, "PUT"), h.env, {} as ExecutionContext);
+    expect(status.status).toBe(400);
+    const current = await worker.fetch(await call("/spaces/space-a/kb/projects/project-a/external-publications"), h.env, {} as ExecutionContext);
+    await expect(current.json()).resolves.toMatchObject({ publications: [{ archived: true, revision: 2, document_count: 0, document_ids: [] }] });
   });
 });

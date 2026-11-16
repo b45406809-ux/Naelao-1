@@ -3691,6 +3691,7 @@ export interface ExternalKnowledgePublication {
   name: string;
   updated_at: string;
   revision: number;
+  archived: boolean;
   document_count: number;
   document_ids: string[];
 }
@@ -3752,6 +3753,15 @@ export async function unpublishExternalKnowledge(
 ): Promise<void> {
   await apiFetch(`/v1/spaces/${spaceId}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}`, {
     method: "DELETE", body: JSON.stringify({ expected_revision: expectedRevision }), session,
+  });
+}
+
+export async function setExternalKnowledgePublicationArchived(
+  spaceId: string, projectId: string, publicationId: string, session: SessionCredentials,
+  expectedRevision: number, archived: boolean,
+): Promise<{ publication_id: string; archived: boolean; revision: number }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}/archive`, {
+    method: "PUT", body: JSON.stringify({ expected_revision: expectedRevision, archived }), session,
   });
 }
 
