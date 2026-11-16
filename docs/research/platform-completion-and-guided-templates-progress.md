@@ -1,10 +1,10 @@
 # Platform completion and guided templates progress
 
-## Cross-plan code checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
+## Cross-plan code checkpoint — 2026-11-16 (PW exact worker branch revision pin; `c17b6e01` pushed)
 
-Owner/admin activation now resolves builder role proposals against the target Space's trusted exact extension pins, distinguishes package declaration from installed resources, reports requested/declaration-matched actions, and shows zero proposal-effective actions. It never applies grants. Actual independent permission composition, published Knowledge backing, role conflicts and role cost remain unresolved. AgentPhone remains an unverified provider gate; no provider activity occurred.
+Delegated worker execution now carries the current exact Coordinator revision/hash through signed runtime scope and fails closed if stale before/after journal recovery. Branch creation atomically checks the expected source head and run-branch base. Local tests: Agents **155/155**, Agents typecheck, diff check; code is remote-verified. No deployed runtime acceptance. Previous TBR04 preview remains at `9fc1930d`/`f9596f4a`/`889bc42b`; effective independent grants, conflicts, published Knowledge backing, cost and role grant lifecycle remain open. AgentPhone remains unverified; no provider activity occurred.
 
-Code `9fc1930db1462ae2b185688cade6e648c255efa1`, `f9596f4a81d2a6848cf3f14995220c07f459a88f` and `889bc42b75cd268da1866b48dde973a0c548bc12` are remote-verified. Spaces preview tests **27/27**, Spaces/Shell typechecks and diff check pass. No browser/deployed acceptance; rollout disabled. Exact next action: resume PW exact Coordinator revision binding; `shared_data.collectionId` remains unsupported until a signed collection-to-host-resource and ACL contract exists. Then continue TBR04–TBR12 and all remaining S/U/P/PW/K/EP/AP gaps.
+Code `c17b6e01709d16cfa8ea01eaf57f37abc52dc0ce` is remote-verified. Exact next action: continue TBR05 by tracing current Space membership and Product-user identity authorities, then implement only the owner-reviewed one-time invite lifecycle compatible with those authorities; do not send invitations. Continue TBR06–TBR12 and other independent S/U/P/PW/K/EP/AP gaps. Rollout disabled.
 
 ## Cross-plan code checkpoint — 2026-11-16 (TBR02 template role authoring; `1f4945aa` pushed)
 

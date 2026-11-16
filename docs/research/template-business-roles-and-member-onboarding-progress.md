@@ -1,12 +1,16 @@
 # Template-defined business roles and member onboarding progress
 
-## Latest code checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (PW exact worker branch revision pin; `c17b6e01` pushed)
+
+PW delegated runtime launches now pass the host-read Coordinator head and validate it before/after durable checkpoint replay, then atomically create/reuse the runtime run branch against that exact revision/hash. Tests Agents **155/155**, typecheck, and diff check pass; code `c17b6e01709d16cfa8ea01eaf57f37abc52dc0ce` is remote-verified. No deployed Container isolation acceptance. Exact next action: continue TBR05 identity-bound invitation work; keep invites simulated and rollouts off.
+
+## Previous code checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
 
 The existing owner/admin activation preview now resolves role references against the target Space's trusted, exact extension pin. It distinguishes planned Projects, installed extension/microapp packages, catalog-only packages, undeclared symbols, and unsupported shared-data; requested actions are compared with signed package declarations. The proposal's effective role actions are always empty and no grants are written. Knowledge references are labeled `declared_only` because a package declaration does not prove a published Project collection. Costs remain unavailable without an approved role pricing contract.
 
 Code `9fc1930db1462ae2b185688cade6e648c255efa1`, `f9596f4a81d2a6848cf3f14995220c07f459a88f`, and resource-action scoping fix `889bc42b75cd268da1866b48dde973a0c548bc12` are remote-verified. Spaces preview tests **27/27**, Spaces/Shell typechecks and `git diff --check` pass. Action matches are restricted to the referenced Canvas primitive (or deliberately broad extension refs); Knowledge/Project actions cannot inherit unrelated package actions. Local checks only; no browser, deployment or grant lifecycle acceptance. TBR04 remains partial for current effective host grants, role conflict/composition, published Knowledge availability and cost. Rollout remains disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: close the TBR03 shared-data contract review. Signed Canvas `gadgetReads` can validate microapp-local action declarations, but `shared_data.collectionId` has no signed mapping to a Gadget/table or host ACL policy; keep it unsupported and record the missing mapping/ACL contract. Then resume PW exact Coordinator revision binding and continue TBR04–TBR12 plus other plan code gaps.
+TBR03's known gaps: `shared_data.collectionId` lacks a signed mapping to a Gadget/table or host ACL policy and remains unsupported; role-combination deny/composition policy and an action catalog remain unspecified. Exact next role action: continue TBR05's authenticated identity/invitation boundary, while recording these TBR03 gaps as contract work rather than guessing. PW Coordinator-head pinning is implemented locally in `c17b6e01`; deployed isolation remains a separate gate.
 
 ## Latest code checkpoint — 2026-11-16 (TBR02 builder authoring; `1f4945aa` pushed)
 

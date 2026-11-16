@@ -1,6 +1,12 @@
 # Resumable workers, durable workflows and branches progress
 
-## Latest code checkpoint — 2026-11-16 (delegated branch runtime isolation; `21de8512` pushed)
+## Latest code checkpoint — 2026-11-16 (exact Coordinator worker branch pin; `c17b6e01` pushed)
+
+For unified-workspace delegated worker executions, the host now supplies the exact current Coordinator branch revision and manifest hash through the authenticated Container invocation scope. Script execution reads the head for each launch; ToolSandbox validates the pin before replaying pending durable writes and rechecks it after recovery. Coordinator `/v1/branch` accepts an expected source head and atomically rejects a raced/stale source; runtime hydration verifies the exact worker branch base and its materialized run head. Tests: ToolSandbox, WorkspaceCoordinatorDO, container policy and execution ladder **155/155**, Agents typecheck and diff check. Code `c17b6e01709d16cfa8ea01eaf57f37abc52dc0ce` is remote-verified.
+
+This covers local Coordinator-backed source pinning only. Legacy R2 branches have no immutable Coordinator revision; deployed Container process/filesystem/dependency/cache/credential/network isolation and cross-DO concurrency acceptance remain open. No deployed/runtime/live acceptance or rollout occurred. Exact next action: continue TBR05 invitation/identity boundaries in the platform ledger, then resume remaining PW isolation and S/U/P/K/EP/TBR/AP implementation gaps. Preserve `infra/scripts/__pycache__/` and keep rollout disabled.
+
+## Previous code checkpoint — 2026-11-16 (delegated branch runtime isolation; `21de8512` pushed)
 
 The actual code-runner and lifecycle callers both use `sandboxInstanceName`. That router now assigns distinct exact-branch ToolSandbox/DynamicSandbox DO identities for delegated `workers/...` branches, isolating their warm process and private `/workspace` disk. Main and ordinary feature branches retain the existing shared project runtime; `race/...` remains isolated. Code `21de85123e85ead3aa1f7c2b107c0aa6ce890973` is remote-verified. Routing/execution-ladder tests **27/27**, Agents typecheck and diff check pass. This is local implementation evidence; no deployed container test ran. It does not bind the runtime to an immutable WorkspaceCoordinator head/revision, prove provider-level cache/credential/network isolation or restore unsaved process memory.
 
@@ -27,7 +33,7 @@ The new plan extends, and does not replace, PW01–PW06. Current code/ledger evi
 | Area | Status | Next evidence/gap |
 | --- | --- | --- |
 | Multiple logical branches and coordinator publication | PARTIAL | Audit simultaneous branch callers and branch lifecycle/retention; do not equate logical branch with process isolation. |
-| Runtime isolation and branch mount | CODE_GAP | Prove exact branch/revision mounts and isolate process, filesystem, dependencies, caches, ports, env and credentials; fail closed/queue when unsupported. |
+| Runtime isolation and branch mount | PARTIAL_LOCAL + LIVE_GATE | Exact Coordinator branch/revision pin and stale-head fail-closed behavior are implemented in `c17b6e01`; legacy R2 has no immutable Coordinator revision, and deployed process/filesystem/dependency/cache/port/env/credential isolation remains unverified. |
 | Durable worker checkpoints/recovery | CODE_GAP | Persist bounded versioned checkpoint lineage and recovery states; resume only verified durable state, disclose missing unsaved memory, fence attempts and recheck authority/budget. |
 | Durable workflow steps/artifacts | PARTIAL | Reconcile WorkflowRunDO step receipts, pinned inputs/code, retry/idempotency and artifact retention with interruption/recovery cases. |
 | Effects, billing, cancellation | PARTIAL | Preserve unknown outcomes; no replay of indeterminate effects; close per-run compute/currency settlement and cross-DO cancellation/publication races. |
@@ -35,4 +41,4 @@ The new plan extends, and does not replace, PW01–PW06. Current code/ledger evi
 
 No rollout, deployment, provider call or migration occurred for this plan. These are mostly ordinary code and runtime-contract gaps, not credential blockers. Distinguish logical branches, actual runtime isolation, durable checkpoint recovery and unsaved process memory. Never claim the latter is recovered.
 
-Exact next action: trace the current `WorkflowRunDO` step/artifact journal and worker recovery/approval-resume callers against PW01–PW06, then implement the smallest missing durable checkpoint/recovery-state transition with a focused interruption/replay test. Continue runtime isolation and branch mount independently; keep rollout disabled.
+The prior action to trace WorkflowRunDO checkpoint/recovery was completed in `1dd54057`/`fc3318bb`; delegated branch runtime separation is completed locally in `21de8512`, and exact Coordinator head binding is completed locally in `c17b6e01`. Continue from the top checkpoint: TBR05 invitation and identity boundaries, then remaining independent PW and cross-plan code gaps. Keep rollout disabled.

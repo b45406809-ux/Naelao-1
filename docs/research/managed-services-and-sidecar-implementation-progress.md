@@ -1,8 +1,8 @@
 # Managed services and sidecar implementation progress
 
-## Cross-plan checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
+## Cross-plan checkpoint — 2026-11-16 (PW exact worker branch revision pin; `c17b6e01` pushed)
 
-No managed-service source/status changed in this slice. The incorporated AgentPhone adapter plan remains provider-gated: generic capability evidence and AgentPort discovery do not establish AgentPhone API, auth, events, voice or pricing. No registration, provisioning, messaging, calling or spend occurred. The independent TBR04 preview work is pushed as `9fc1930d`, `f9596f4a`, and `889bc42b`; Spaces tests **27/27**, Spaces/Shell typechecks and diff check pass. Exact next action: resume PW exact Coordinator revision binding, then return to first-plan S/U work and all other independent requirements; keep rollouts disabled.
+No managed-service source/status changed in this slice. The incorporated AgentPhone adapter plan remains provider-gated: generic capability evidence and AgentPort discovery do not establish AgentPhone API, auth, events, voice or pricing. No registration, provisioning, messaging, calling or spend occurred. PW exact Coordinator branch-head pin code `c17b6e01` is pushed; Agents suites **155/155**, typecheck and diff check pass locally. Exact next action: TBR05 invitation/identity authority review, then return to S/U first-plan work and all other independent requirements; keep rollouts disabled.
 
 ## Cross-plan checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
 

@@ -1,8 +1,8 @@
 # Unified platform implementation progress
 
-## Cross-plan checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
+## Cross-plan checkpoint — 2026-11-16 (PW exact worker branch revision pin; `c17b6e01` pushed)
 
-Owner/admin template activation now resolves role resource symbols against target-Space trusted exact extension pins and scopes declared actions to the referenced Canvas or extension. It marks Knowledge `declared_only`, keeps proposal grants unapplied, and labels cost unavailable. Code `9fc1930d`, `f9596f4a`, `889bc42b` are pushed. Spaces preview tests **27/27**, Spaces/Shell typechecks and diff check pass; local only, no deployment/browser. Exact next action: resume PW exact Coordinator revision binding; `shared_data` needs a signed collection-to-host-resource/ACL contract. Continue remaining S/U/P/PW/K/EP/TBR/AP code gaps. Rollouts remain disabled.
+Delegated worker runtime calls now carry and enforce an exact Coordinator branch revision/hash, with atomic expected-source checks during run-branch creation and fail-closed stale-head handling. Code `c17b6e01` is pushed; Agents focused suites **155/155**, typecheck and diff check pass. Local only; deployed Container isolation and acceptance remain unverified. TBR04 preview remains pushed at `9fc1930d`/`f9596f4a`/`889bc42b`; independent effective grants, conflicts, published Knowledge and cost remain unresolved. Exact next action: TBR05 invitation/identity scope, followed by remaining S/U/P/PW/K/EP/TBR/AP code gaps. Rollouts remain disabled.
 
 ## Cross-plan checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
 
