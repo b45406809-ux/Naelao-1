@@ -3,6 +3,8 @@ export interface KnowledgeEvalCase {
   caseId: string;
   language: string;
   reviewStatus: "synthetic_unreviewed" | "human_reviewed" | "needs_native_review";
+  /** Language of the expected source evidence; defaults to the query language for same-language cases. */
+  sourceLanguage?: string;
   query: string;
   answerable: boolean;
   relevantChunkIds: string[];
@@ -49,9 +51,18 @@ export function evaluateKnowledgeRetrieval(input: {
   requiredLanguages?: string[];
   thresholds?: KnowledgeEvalThresholds | null;
 }): {
+  version: 2;
   caseCount: number;
   metrics: Record<string, number | null>;
   languageReview: Record<string, {
+    caseCount: number;
+    completedCaseCount: number;
+    missingResultCount: number;
+    reviewedCount: number;
+    reviewComplete: boolean;
+    metrics: Record<string, number | null>;
+  }>;
+  languagePairs: Record<string, {
     caseCount: number;
     completedCaseCount: number;
     missingResultCount: number;
@@ -66,6 +77,8 @@ export function evaluateKnowledgeRetrieval(input: {
     failed: string[];
     failedLanguages: string[];
     byLanguage: Record<string, { passed: boolean; failed: string[] }>;
+    failedLanguagePairs: string[];
+    byLanguagePair: Record<string, { passed: boolean; failed: string[] }>;
   } | null;
   perCase: Array<Record<string, unknown>>;
 };

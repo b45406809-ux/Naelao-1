@@ -61,6 +61,10 @@ function assertCase(sample, seen) {
       || typeof sample.expectedVersions !== "object" || Array.isArray(sample.expectedVersions)) {
     throw new Error(`benchmark case ${sample.caseId} has invalid fields`);
   }
+  if (sample.sourceLanguage !== undefined
+      && (typeof sample.sourceLanguage !== "string" || !/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(sample.sourceLanguage))) {
+    throw new Error(`benchmark case ${sample.caseId} has an invalid sourceLanguage`);
+  }
   const ids = [...sample.relevantChunkIds, ...sample.forbiddenChunkIds, ...sample.expectedCitationChunkIds];
   if (ids.some((id) => typeof id !== "string" || !id || id.length > 160)
       || new Set(sample.relevantChunkIds).size !== sample.relevantChunkIds.length
@@ -141,6 +145,10 @@ function compareThresholds(metrics, thresholds) {
     return typeof value !== "number" || !(threshold.startsWith("min") ? value >= thresholds[threshold] : value <= thresholds[threshold]);
   }).map(([threshold]) => threshold);
   return { passed: failed.length === 0, failed };
+}
+
+function languagePairKey(sample) {
+  return `${sample.language}->${sample.sourceLanguage ?? sample.language}`;
 }
 
 /** Score content-free retrieval traces against synthetic or reviewed cases. */
@@ -230,6 +238,20 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
       metrics: summarizeMetrics(languageResults),
     }];
   }));
+  const languagePairs = Object.fromEntries([...new Set(cases.map(languagePairKey))].sort().map((languagePair) => {
+    const pairCases = cases.filter((sample) => languagePairKey(sample) === languagePair);
+    const pairCaseIds = new Set(pairCases.map((sample) => sample.caseId));
+    const pairResults = perCase.filter((item) => pairCaseIds.has(item.caseId));
+    const completedCaseCount = pairResults.filter((item) => !item.missing).length;
+    return [languagePair, {
+      caseCount: pairCases.length,
+      completedCaseCount,
+      missingResultCount: pairCases.length - completedCaseCount,
+      reviewedCount: pairCases.filter((sample) => sample.reviewStatus === "human_reviewed").length,
+      reviewComplete: pairCases.length > 0 && pairCases.every((sample) => sample.reviewStatus === "human_reviewed"),
+      metrics: summarizeMetrics(pairResults),
+    }];
+  }));
   const metrics = summarizeMetrics(perCase);
   const forbiddenExposureCount = metrics.forbiddenExposureCount;
   const staleCitationCount = metrics.staleCitationCount;
@@ -241,15 +263,22 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
   const languageThresholdEvaluations = thresholds === null ? null : Object.fromEntries(
     Object.entries(byLanguage).map(([language, report]) => [language, compareThresholds(report.metrics, thresholds)]),
   );
+  const languagePairThresholdEvaluations = thresholds === null ? null : Object.fromEntries(
+    Object.entries(languagePairs).map(([languagePair, report]) => [languagePair, compareThresholds(report.metrics, thresholds)]),
+  );
   const thresholdEvaluation = thresholds === null ? null : {
     configured: true,
-    passed: globalThresholdEvaluation.passed && Object.values(languageThresholdEvaluations).every((evaluation) => evaluation.passed),
+    passed: globalThresholdEvaluation.passed
+      && Object.values(languageThresholdEvaluations).every((evaluation) => evaluation.passed)
+      && Object.values(languagePairThresholdEvaluations).every((evaluation) => evaluation.passed),
     failed: globalThresholdEvaluation.failed,
     failedLanguages: Object.entries(languageThresholdEvaluations).filter(([, evaluation]) => !evaluation.passed).map(([language]) => language),
     byLanguage: languageThresholdEvaluations,
+    failedLanguagePairs: Object.entries(languagePairThresholdEvaluations).filter(([, evaluation]) => !evaluation.passed).map(([languagePair]) => languagePair),
+    byLanguagePair: languagePairThresholdEvaluations,
   };
   return {
-    version: 1,
+    version: 2,
     topK,
     caseCount: cases.length,
     completedCaseCount,
@@ -258,6 +287,7 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
     thresholdEvaluation,
     requiredLanguages,
     languageReview: byLanguage,
+    languagePairs,
     readiness: {
       acceptanceEligible: false,
       reasons: [
@@ -267,7 +297,7 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
         ...(!allCasesReviewed ? ["benchmark contains cases without human review"] : []),
         ...(incompleteRequiredLanguages.length ? [`required language coverage is missing or unreviewed: ${incompleteRequiredLanguages.join(", ")}`] : []),
         ...(thresholds === null ? ["quality, latency, cost, and safety thresholds are not configured"] : []),
-        ...(thresholdEvaluation && !thresholdEvaluation.passed ? ["one or more aggregate or per-language thresholds failed"] : []),
+        ...(thresholdEvaluation && !thresholdEvaluation.passed ? ["one or more aggregate, per-language, or language-pair thresholds failed"] : []),
         "human release approval, reviewed language data, and deployed/provider acceptance are outside this local evaluator",
       ],
     },
