@@ -1,5 +1,9 @@
 # Managed services and sidecar implementation progress
 
+## Cross-plan checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
+
+No managed-service source/status changed in this slice. The incorporated AgentPhone adapter plan remains provider-gated: generic capability evidence and AgentPort discovery do not establish AgentPhone API, auth, events, voice or pricing. No registration, provisioning, messaging, calling or spend occurred. The independent TBR04 preview work is pushed as `9fc1930d` + `f9596f4a`; Spaces tests **27/27**, Spaces/Shell typechecks and diff check pass. Exact next action: continue TBR03 in the platform/TBR ledger, then return to the first-plan S/U work queue and all other independent requirements; keep rollouts disabled.
+
 ## Cross-plan checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
 
 The static AgentTask workflow's latest verified durable step is now persisted as a bounded, ordered checkpoint pointer in `WorkflowJournal`. Focused tests **26/26**, Agents typecheck and diff check pass; code `1dd540579b8af79c5dcbfcc638c0a384d5b3502c` is remote-verified. This is local workflow metadata, not unsaved process-memory recovery or runtime isolation; no deployed acceptance ran. S2–S9/U01–U12 status remains as below. Exact next action: expose authorized checkpoint state through task/worker status and Shell, then continue S3/U05 and remaining independent gaps.

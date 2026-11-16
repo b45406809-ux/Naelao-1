@@ -1,5 +1,13 @@
 # Template-defined business roles and member onboarding progress
 
+## Latest code checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
+
+The existing owner/admin activation preview now resolves role references against the target Space's trusted, exact extension pin. It distinguishes planned Projects, installed extension/microapp packages, catalog-only packages, undeclared symbols, and unsupported shared-data; requested actions are compared with signed package declarations. The proposal's effective role actions are always empty and no grants are written. Knowledge references are labeled `declared_only` because a package declaration does not prove a published Project collection. Costs remain unavailable without an approved role pricing contract.
+
+Code `9fc1930db1462ae2b185688cade6e648c255efa1` and follow-up `f9596f4a81d2a6848cf3f14995220c07f459a88f` are remote-verified. Spaces preview tests **27/27**, Spaces/Shell typechecks and `git diff --check` pass. Local checks only; no browser, deployment or grant lifecycle acceptance. TBR04 remains partial for current effective host grants, role conflict/composition, published Knowledge availability and cost. Rollout remains disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: continue TBR03's remaining microapp/collection/shared-data/action symbol resolution against actual signed resource IDs and host declarations; do not equate declarations with grants. Then continue TBR04–TBR12 and remaining PW/S/U/P/K/EP/AP work.
+
 ## Latest code checkpoint — 2026-11-16 (TBR02 builder authoring; `1f4945aa` pushed)
 
 Foundry Template Studio has a proposal-only role JSON authoring/editor surface with preview, durable draft save/restore and export round-trip. Public SDK `authorBlueprintBusinessRoles` canonicalizes only against the blueprint's declared Projects, selected extension IDs and extension Knowledge references. The owner-authorized Space export route requires schema version 1, rejects mismatch/malformed proposals, adds the roles to the signed blueprint, then runs existing SDK/security/conformance checks. No identities, invitations or grants are created. Foundry package release bumped to `1.4.0`.
@@ -11,9 +19,9 @@ Code `1f4945aac8656320fae5f1fa10c6ae4cdae7a81f` is remote-verified. Local eviden
 | TBR01 | IMPLEMENTED_LOCAL | Signed versioned non-granting role proposal contract and owner activation preview; see checkpoint below. |
 | TBR02 | IMPLEMENTED_LOCAL | Foundry Studio editor/draft/export path above; no browser/marketplace acceptance. |
 | TBR03 | PARTIAL | Strict role schema/security validation exists; installed microapp/shared-data symbol resolution, role-combination conflicts and product action catalog remain. |
-| TBR04 | PARTIAL | Proposal-only activation preview exists; exact target Space resource availability, existing permission, conflict/cost/effective action resolution remains uncoded. |
+| TBR04 | PARTIAL | Owner/admin preview now resolves planned Project and exact trusted package/microapp declarations, shows requested vs declared actions, and explicitly shows no proposal-effective grants. Existing independent grants, published Knowledge source state, role conflicts, and usable cost resolution remain open. |
 
-Exact next action: add owner-only TBR04 resolution against exact selected package digests and current installed resource/Project permission state. Return requested versus effective actions and unavailable references as preview only; add stale release/grant/revocation tests, with no grant writes. Then continue TBR03/TBR05–TBR12, private-Project policy decision and named service identities. Keep rollout disabled and preserve `infra/scripts/__pycache__/`.
+Exact next action: complete TBR03 resolution for signed microapp/collection/shared-data resources and unsupported action mappings using current host resource identifiers. Continue TBR04 effective existing-access/conflict review without writes, then TBR05–TBR12. TBR10 remains an explicit private-Project policy decision and TBR11's separately authorized named service identities remain uncoded. Keep rollout disabled and preserve `infra/scripts/__pycache__/`.
 
 ## Latest code checkpoint — 2026-11-16 (TBR01 signed role proposals; `9ccd7395` pushed)
 

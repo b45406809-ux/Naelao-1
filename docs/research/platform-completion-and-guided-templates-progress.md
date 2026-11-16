@@ -1,5 +1,11 @@
 # Platform completion and guided templates progress
 
+## Cross-plan code checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
+
+Owner/admin activation now resolves builder role proposals against the target Space's trusted exact extension pins, distinguishes package declaration from installed resources, reports requested/declaration-matched actions, and shows zero proposal-effective actions. It never applies grants. Actual independent permission composition, published Knowledge backing, role conflicts and role cost remain unresolved. AgentPhone remains an unverified provider gate; no provider activity occurred.
+
+Code `9fc1930db1462ae2b185688cade6e648c255efa1` and `f9596f4a81d2a6848cf3f14995220c07f459a88f` are remote-verified. Spaces preview tests **27/27**, Spaces/Shell typechecks and diff check pass. No browser/deployed acceptance; rollout disabled. Exact next action: TBR03 signed resource/action resolution; then continue TBR04–TBR12 and all remaining S/U/P/PW/K/EP/AP gaps.
+
 ## Cross-plan code checkpoint — 2026-11-16 (TBR02 template role authoring; `1f4945aa` pushed)
 
 Foundry Template Studio now saves/restores localized business-role proposal JSON in its authoring draft, displays it as explicitly non-granting, and submits it through owner-authorized template export. SDK canonicalization binds symbolic requests to declared Project/extension/Knowledge symbols. The Spaces route accepts only matching schema v1 and includes proposals in the signed blueprint path. Package release is `1.4.0`. Tests: SDK/Studio **8/8**, Spaces **17/17**, both typechecks and diff check pass. `1f4945aac8656320fae5f1fa10c6ae4cdae7a81f` is remote-verified. No browser/marketplace/deployment or membership/grant acceptance ran. Exact next action: TBR04 installed-resource/effective-access preview, then remaining TBR/S/U/P/PW/K/EP/AP gaps.

@@ -18,6 +18,14 @@ The requirements from `docs/research/planner-worker-isolation-and-conflict-resol
 
 For every coherent source, configuration or documentation change, verify it, commit it, then fetch and push it to `origin/Mcbt5s-Backup-2` before moving to the next change. Record the pushed SHA, evidence, remaining uncoded work, separate live/deployment gates and exact next action in this runbook and the relevant progress ledgers. Fetch immediately before each push; preserve concurrent remote commits and integrate them without force-pushing. Never stage unrelated untracked files such as `infra/scripts/__pycache__/`.
 
+## Current cross-plan checkpoint — 2026-11-16 (TBR04 target-resource proposal review; `f9596f4a` pushed)
+
+The owner/admin activation preview resolves role proposal symbols against the target Space's current trusted extension pin: planned Projects, installed extensions/microapps, catalog-only dependencies, undeclared resources and unsupported shared-data are distinct. It shows requested versus package-declared actions, but role-effective actions stay empty because proposals create no grants; Knowledge symbols say `declared_only` because package declarations do not prove a published target collection. Cost is explicitly unavailable without a role pricing contract. Shell displays these limits. TBR04 remains partial: independent current grants, role conflict/composition, published Knowledge state and an actionable cost model are not fully resolved, and no grant writes exist.
+
+Code `9fc1930db1462ae2b185688cade6e648c255efa1` plus the Knowledge status accuracy fix `f9596f4a81d2a6848cf3f14995220c07f459a88f` are pushed and remote-verified on `origin/Mcbt5s-Backup-2`. Evidence: Spaces activation-preview tests **27/27**, Spaces and Shell typechecks, `git diff --check`. Local unit tests only; no browser/deployed/role-grant acceptance. Preserve untracked `infra/scripts/__pycache__/`; rollout remains disabled. AgentPhone remains provider-unsupported pending verified API/auth/event/voice/commercial contracts; no number, call, message or spend action occurred.
+
+Exact next action: continue TBR03 by resolving signed role microapp/collection/shared-data symbols against real current package declarations and host resource IDs, and record unsupported action mappings rather than inferring grants. Then proceed through TBR04–TBR12, PW exact revision binding, and the remaining S/U/P/PW/K/EP/AP uncoded gaps. After interruption read all seven plan sources and all seven progress ledgers above, inspect this worktree, and continue from the newest exact action.
+
 ## Latest code checkpoint — 2026-11-16 (AgentTask recovery status in task API/Shell; `fc3318bb` pushed)
 
 The already-authorized Space/session or Project task list and task detail now include a content-free checkpoint summary after task-scope authorization. It exposes the latest completed step, sequence, timestamp, digest prefix and byte count, detects a journal update after that checkpoint, and never returns the R2 key or result body. Scope mismatch and unavailable/no-checkpoint states fail closed. Shell shows the last verified step and explicitly warns that later work may be unsaved and process memory is not recoverable. This does not implement runtime isolation or restore unsaved memory.
@@ -1771,7 +1779,7 @@ the current owner phone panel, exact-installation Space route and Agents host va
 Focused Agents tests pass **46/46**, the Space route tests **18/18**, and Agents/Spaces/Shell typechecks
 pass. These are local tests only; no carrier call occurred. The prior P17 and simulator next-action
 notes are historical; current source reconciliation is already recorded in the two progress files.
-After compaction, interruption or a new session, read all four active plan sources, all four durable progress records and this
+After compaction, interruption or a new session, read all seven active plan sources, all seven durable progress records and this
 runbook; inspect the actual branch and worktree; resume from the exact current action at the top. Do not deploy,
 purchase, reset, clean, switch branches or force-push.
 The user authorized normal commits and pushes of each coherent checkpoint to `Mcbt5s-Backup-2`:
@@ -2264,7 +2272,7 @@ Latest continuation (2026-11-12): U01 code `afc0c4fe` is pushed to `origin/Mcbt5
 
 ## Autonomous continuation and verification
 
-- After compaction, interruption or a new session, read all four active plan sources and all four progress records
+- After compaction, interruption or a new session, read all seven active plan sources and all seven progress records
   and this runbook, inspect the actual worktree/branch/dirty files, and resume the exact next action.
   Reconcile earlier status with current source and
   newer evidence. Preserve original transcripts. Historical guidance is archived at

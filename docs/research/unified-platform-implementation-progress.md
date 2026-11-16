@@ -1,5 +1,9 @@
 # Unified platform implementation progress
 
+## Cross-plan checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
+
+Owner/admin template activation now resolves role resource symbols against target-Space trusted exact extension pins and separates requested actions from declarations and effective role grants. It marks Knowledge `declared_only`, keeps all proposal grants unapplied, and labels role cost unavailable. Code `9fc1930d` + `f9596f4a` are pushed. Spaces preview tests **27/27**, Spaces/Shell typechecks and diff check pass; local only, no deployment or browser. Exact next action: continue TBR03 microapp/collection/shared-data declaration resolution, then all remaining S/U/P/PW/K/EP/TBR/AP code gaps. Rollouts remain disabled.
+
 ## Cross-plan checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
 
 Static AgentTask workflow steps now leave a bounded ordered durable checkpoint lineage tied to registered content-hashed artifacts. Focused workflow/DO/checkpoint tests **26/26**, Agents typecheck and diff check pass; code `1dd540579b8af79c5dcbfcc638c0a384d5b3502c` is remote-verified. No deployed/live recovery evidence. This does not recover unsaved process memory or prove branch/runtime isolation. Exact next action: expose the last verified checkpoint safely in current task/worker status and Shell, then continue all remaining S/U/P/PW/K/TBR/EP work.
