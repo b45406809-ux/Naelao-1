@@ -1922,7 +1922,7 @@ export function setProjectExtensionEnabled(spaceId: string, projectId: string, i
   return apiFetch<{ instance_id: string; status: "active" | "disabled" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(instanceId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable" }) });
 }
 export interface ProjectExtensionResourceRequirement {
-  id: string; kind: string; apiVersion?: string; scope: string;
+  id: string; kind: "structured_data" | "objects" | "jobs"; apiVersion?: string; scope: string;
   binding?: { gadgetId: string; tables: string[] };
   operations: Array<{ id: string; input?: unknown; output?: unknown; idempotency?: string; meteringUnit?: string }>;
 }
@@ -1935,7 +1935,7 @@ export interface ProjectExtensionResourceGrant {
 export interface ProjectExtensionResourceGrantSnapshot {
   installation: { instance_id: string; extension_id: string; tenant_id: string; space_id: string; project_id: string;
     scope: "PROJECT_BOUND"; status: string; generation: number; installed_by: string; manifest_sha256: string; release_version: string };
-  requirements: Array<{ requirement_id: string; kind: "structured_data"; scope: "project"; gadget_id: string | null;
+  requirements: Array<{ requirement_id: string; kind: "structured_data" | "objects"; scope: string; gadget_id: string | null;
     requested_tables: string[]; requested_operations: Array<{ id: string; input: unknown; output: unknown; idempotency: string; metering_unit: string }> }>;
   grants: ProjectExtensionResourceGrant[];
 }

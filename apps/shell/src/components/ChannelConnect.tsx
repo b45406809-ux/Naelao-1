@@ -74,32 +74,36 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
   if (loading) return <div style={{ color: "var(--text3)", fontSize: 11 }}>Loading owner-reviewed resource requests…</div>;
   if (!snapshot) return <div role="alert" style={{ color: "var(--danger, #d33)", fontSize: 11 }}>{error ?? "Resource grant status is unavailable."}</div>;
   return <div style={{ marginTop: 8, padding: 8, border: "1px solid var(--border)", borderRadius: 7 }}>
-    <strong style={{ fontSize: 11.5 }}>Structured-data access review</strong>
+    <strong style={{ fontSize: 11.5 }}>Resource access review</strong>
     <p style={{ margin: "4px 0 8px", color: "var(--text3)", fontSize: 10.5 }}>
-      Approval records only the selected operations and tables for this signed release and install generation. It does not activate this staged extension; structured-data execution is still unavailable.
+      Approval records selected operations for this signed release and install generation. Structured-data approvals also name exact tables. It does not activate this staged extension; resource capabilities remain unavailable until their host adapters pass acceptance.
     </p>
-    {requirements.filter(requirement => requirement.kind === "structured_data").map(requirement => {
+    {requirements.filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects").map(requirement => {
       const grant = snapshot.grants.find(item => item.requirement_id === requirement.id);
       const blocked = snapshot.installation.status === "active";
+      const requiresTables = requirement.kind === "structured_data";
       return <div key={requirement.id} style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-          <strong>{requirement.id}</strong><span style={{ color: grant?.status === "approved" ? "var(--text2)" : "var(--text3)" }}>
+          <strong>{requirement.id} · {requirement.kind === "objects" ? "objects" : "structured data"}</strong><span style={{ color: grant?.status === "approved" ? "var(--text2)" : "var(--text3)" }}>
             {grant?.status === "approved" ? `approved · revision ${grant.revision}` : grant?.status === "revoked" ? `revoked · revision ${grant.revision}` : "not approved"}
           </span>
         </div>
-        <div style={{ marginTop: 5, color: "var(--text3)" }}>Requested tables: {(requirement.binding?.tables ?? []).join(", ") || "none"}</div>
+        {requiresTables
+          ? <div style={{ marginTop: 5, color: "var(--text3)" }}>Requested tables: {(requirement.binding?.tables ?? []).join(", ") || "none"}</div>
+          : <div style={{ marginTop: 5, color: "var(--text3)" }}>Object namespace and access operations are not active until the host object adapter is accepted.</div>}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginTop: 5 }}>
           <div><div style={{ fontWeight: 600 }}>Allow operations</div>{requirement.operations.map(operation => <label key={operation.id} style={{ display: "flex", gap: 5, alignItems: "center" }}>
             <input type="checkbox" checked={(operations[requirement.id] ?? []).includes(operation.id)} disabled={blocked || !!busyRequirement}
               onChange={event => setOperations(value => ({ ...value, [requirement.id]: toggle(value[requirement.id] ?? [], operation.id, event.target.checked) }))} />{operation.id}
           </label>)}</div>
-          <div><div style={{ fontWeight: 600 }}>Allow tables</div>{(requirement.binding?.tables ?? []).map(table => <label key={table} style={{ display: "flex", gap: 5, alignItems: "center" }}>
+          {requiresTables && <div><div style={{ fontWeight: 600 }}>Allow tables</div>{(requirement.binding?.tables ?? []).map(table => <label key={table} style={{ display: "flex", gap: 5, alignItems: "center" }}>
             <input type="checkbox" checked={(tables[requirement.id] ?? []).includes(table)} disabled={blocked || !!busyRequirement}
               onChange={event => setTables(value => ({ ...value, [requirement.id]: toggle(value[requirement.id] ?? [], table, event.target.checked) }))} />{table}
-          </label>)}</div>
+          </label>)}</div>}
         </div>
         <div style={{ display: "flex", gap: 6, marginTop: 7 }}>
-          <button type="button" className="btn-ghost" disabled={blocked || !!busyRequirement || !(operations[requirement.id]?.length) || !(tables[requirement.id]?.length)}
+          <button type="button" className="btn-ghost" disabled={blocked || !!busyRequirement || !(operations[requirement.id]?.length)
+            || requiresTables && !(tables[requirement.id]?.length)}
             onClick={() => void approve(requirement.id)}>{busyRequirement === requirement.id ? "Saving…" : grant?.status === "approved" ? "Update grant" : "Approve selected access"}</button>
           {grant?.status === "approved" && <button type="button" className="btn-ghost" disabled={!!busyRequirement} onClick={() => void revoke(requirement.id)}>
             {busyRequirement === requirement.id ? "Revoking…" : "Revoke"}</button>}
@@ -1134,7 +1138,7 @@ export function ChannelConnect({
           if (!instanceId || !extensionId) return null;
           const storageApps = projectGadgetStorageApps(item, projectId);
           const statusLabel = item.instance.status === "active" ? "enabled" : item.instance.status === "staging"
-            ? item.manifest.resourceRequirements?.some(requirement => requirement.kind === "structured_data") ? "resource approval required" : "setup incomplete" : "paused";
+            ? item.manifest.resourceRequirements?.some(requirement => requirement.kind === "structured_data" || requirement.kind === "objects") ? "resource approval required" : "setup incomplete" : "paused";
           return <div key={instanceId} style={{ padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 11.5 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
               <span>{extensionId} · {item.manifest.bundle?.version ?? "legacy"} · {item.instance.instance_key ?? "default"} · {item.instance.publisher_trusted === false ? "publisher trust blocked" : statusLabel}</span>
@@ -1148,7 +1152,7 @@ export function ChannelConnect({
               </div>
             </div>
             {storageApps.map(app => <MicroAppStorageStatus key={app.appId} spaceId={spaceId} projectId={projectId} appId={app.appId} name={app.name} session={session} />)}
-            {projectId && item.manifest.resourceRequirements?.some(requirement => requirement.kind === "structured_data") && <ExtensionResourceGrantReview
+            {projectId && item.manifest.resourceRequirements?.some(requirement => requirement.kind === "structured_data" || requirement.kind === "objects") && <ExtensionResourceGrantReview
               spaceId={spaceId} projectId={projectId} instanceId={instanceId}
               requirements={item.manifest.resourceRequirements.filter(requirement => requirement.kind === "structured_data")} session={session} />}
             {item.instance.status === "staging" && <div style={{ color: "var(--text3)", fontSize: 11 }}>Setup did not finish. This extension is not available to workers or channels; uninstall it or retry installation.</div>}

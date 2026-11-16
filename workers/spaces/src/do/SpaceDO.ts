@@ -17551,9 +17551,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
     if (!target) return Response.json({ error_code: "extension_resource_installation_untrusted" }, { status: 404 });
-    const requirements = (target.manifest.resourceRequirements ?? []).filter(item => item.kind === "structured_data").map(item => ({
-      requirement_id: item.id, kind: item.kind, scope: item.scope, gadget_id: item.binding?.gadgetId ?? null,
-      requested_tables: [...(item.binding?.tables ?? [])], requested_operations: item.operations.map(operation => ({
+    const requirements = (target.manifest.resourceRequirements ?? []).filter(item => item.kind === "structured_data" || item.kind === "objects").map(item => ({
+      requirement_id: item.id, kind: item.kind, scope: item.scope, gadget_id: item.kind === "structured_data" ? item.binding?.gadgetId ?? null : null,
+      requested_tables: item.kind === "structured_data" ? [...(item.binding?.tables ?? [])] : [], requested_operations: item.operations.map(operation => ({
         id: operation.id, input: operation.input, output: operation.output, idempotency: operation.idempotency, metering_unit: operation.meteringUnit,
       })),
     }));
@@ -17580,8 +17580,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
     if (!target) return Response.json({ error_code: "extension_resource_installation_untrusted" }, { status: 404 });
-    const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "structured_data");
-    if (!requirement || requirement.scope !== "project" || !requirement.binding)
+    const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId
+      && (item.kind === "structured_data" || item.kind === "objects"));
+    const structuredTables = requirement?.kind === "structured_data" ? requirement.binding?.tables : undefined;
+    const projectObjectRequirement = requirement?.kind === "objects" && requirement.scope === "project";
+    if (!requirement || requirement.scope !== "project" || requirement.kind === "structured_data" && !structuredTables
+      || requirement.kind !== "structured_data" && !projectObjectRequirement)
       return Response.json({ error_code: "extension_resource_requirement_not_found" }, { status: 404 });
     let operations: string[], tables: string[];
     if (action === "approved") {
@@ -17589,8 +17593,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (!Array.isArray(body.operations) || !body.operations.length || body.operations.length > requirement.operations.length
         || body.operations.some(item => typeof item !== "string" || !requirement.operations.some(operation => operation.id === item))
         || new Set(body.operations).size !== body.operations.length
-        || !Array.isArray(body.tables) || !body.tables.length || body.tables.length > requirement.binding.tables.length
-        || body.tables.some(item => typeof item !== "string" || !requirement.binding!.tables.includes(item))
+        || !Array.isArray(body.tables)
+        || requirement.kind === "structured_data" && (!body.tables.length || body.tables.length > structuredTables!.length
+          || body.tables.some(item => typeof item !== "string" || !structuredTables!.includes(item)))
+        || requirement.kind === "objects" && body.tables.length !== 0
         || new Set(body.tables).size !== body.tables.length)
         return Response.json({ error_code: "extension_resource_grant_selection_invalid" }, { status: 400 });
       operations = [...body.operations as string[]].sort();
@@ -17959,12 +17965,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // This staging exception only makes the request reviewable; it never activates a resource.
     const unsupportedResources = findUnsupportedExtensionResources(manifest.resourceRequirements ?? []);
     const hasResourceRequirements = (manifest.resourceRequirements?.length ?? 0) > 0;
-    const reviewableStructuredResources = hasResourceRequirements && manifest.resourceRequirements!.every(item => item.kind === "structured_data")
+    const reviewableProjectResources = hasResourceRequirements && manifest.resourceRequirements!.every(item =>
+      item.scope === "project" && (item.kind === "structured_data" || item.kind === "objects"))
       && manifest.bundle !== undefined && body.scope === "PROJECT_BOUND" && body.projectId !== undefined && body.deferActivation === true
       && typeof body.publisherKeyId === "string" && typeof body.publisherSignature === "string" && typeof body.publisherPayloadSha256 === "string";
-    if (unsupportedResources.length && !reviewableStructuredResources) return Response.json({ error_code: "extension_resource_capability_unavailable",
+    if (unsupportedResources.length && !reviewableProjectResources) return Response.json({ error_code: "extension_resource_capability_unavailable",
       unsupported: unsupportedResources }, { status: 409, headers: { "cache-control": "private, no-store" } });
-    if (hasResourceRequirements && !reviewableStructuredResources) return Response.json({ error_code: "extension_resource_owner_review_stage_required" },
+    if (hasResourceRequirements && !reviewableProjectResources) return Response.json({ error_code: "extension_resource_owner_review_stage_required" },
       { status: 409, headers: { "cache-control": "private, no-store" } });
     if (manifest.dependencies?.length) {
       if (!body.tenantId || !body.spaceId || !body.scope || !["SPACE_SHARED", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED"].includes(body.scope)
@@ -18199,16 +18206,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           .map(byte => byte.toString(16).padStart(2, "0")).join("");
         const declaredOperations = new Set(requirement.operations.map(operation => operation.id));
         const declaredTables = new Set(requirement.kind === "structured_data" ? requirement.binding?.tables ?? [] : []);
-        const grant = grants.find(item => item.requirement_id === requirement.id && item.status === "approved"
-          && item.manifest_sha256 === manifestSha256 && item.resource_sha256 === resourceSha256
-          && item.installation_generation === row.generation
-          && requirement.kind === "structured_data" && requirement.binding !== undefined
-          && Array.isArray(item.operations) && item.operations.length > 0
-          && item.operations.every(operation => typeof operation === "string" && declaredOperations.has(operation))
-          && new Set(item.operations).size === item.operations.length
-          && Array.isArray(item.tables) && item.tables.length > 0
-          && item.tables.every(table => typeof table === "string" && declaredTables.has(table))
-          && new Set(item.tables).size === item.tables.length);
+        const grant = grants.find(item => {
+          if (item.requirement_id !== requirement.id || item.status !== "approved" || item.manifest_sha256 !== manifestSha256
+            || item.resource_sha256 !== resourceSha256 || item.installation_generation !== row.generation
+            || !Array.isArray(item.operations) || item.operations.length === 0 || !Array.isArray(item.tables)) return false;
+          const operations = item.operations as unknown[], tables = item.tables as unknown[];
+          const validTableApproval = requirement.kind === "structured_data"
+            ? requirement.binding !== undefined && tables.length > 0 && tables.every(table => typeof table === "string" && declaredTables.has(table))
+            : requirement.kind === "objects" && requirement.scope === "project" && tables.length === 0;
+          return validTableApproval && operations.every(operation => typeof operation === "string" && declaredOperations.has(operation))
+            && new Set(operations).size === operations.length && new Set(tables).size === tables.length;
+        });
         if (!grant) return Response.json({ error_code: "extension_resource_owner_approval_required", requirement_id: requirement.id }, { status: 409 });
       }
       const unsupported = findUnsupportedExtensionResources(manifest.resourceRequirements);

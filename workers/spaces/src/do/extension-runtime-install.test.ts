@@ -54,7 +54,12 @@ describe("runtime extension installation", () => {
             output: { schemaVersion: "1.0", fields: { resultJson: { type: "string", required: true, maxLength: 32768 } } }, idempotency: "none", meteringUnit: "request" },
           { id: "insert", input: { schemaVersion: "1.0", fields: { table: { type: "string", required: true, maxLength: 63 }, recordJson: { type: "string", required: true, maxLength: 32768 } } },
             output: { schemaVersion: "1.0", fields: { resultJson: { type: "string", required: true, maxLength: 32768 } } }, idempotency: "required", meteringUnit: "request" },
-        ], limits: { requestsPerMinute: 2, maxConcurrent: 1, maxBytesPerOperation: 32768 } }],
+        ], limits: { requestsPerMinute: 2, maxConcurrent: 1, maxBytesPerOperation: 32768 } }, {
+        id: "attachments", kind: "objects", apiVersion: "1.0", scope: "project",
+        operations: [{ id: "get", input: { schemaVersion: "1.0", fields: { key: { type: "string", required: true, maxLength: 128 } } },
+          output: { schemaVersion: "1.0", fields: { dataBase64: { type: "string", required: true, maxLength: 512 } } }, idempotency: "none", meteringUnit: "byte" }],
+        limits: { requestsPerMinute: 2, maxConcurrent: 1, maxBytesPerOperation: 1024 },
+      }],
       bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_granted_catalog", version: "1.0.0", primitives: [
         { schemaVersion: "1.0", kind: "gadget", id: "catalog", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
           scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE records(id TEXT PRIMARY KEY, name TEXT NOT NULL)" },
@@ -76,7 +81,8 @@ describe("runtime extension installation", () => {
     const grantsUrl = "http://space/extension-resource-grants?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", instance_id: installationId });
     const snapshot = await space.fetch(new Request(grantsUrl, { headers }));
     expect(await snapshot.json()).toMatchObject({ installation: { instance_id: installationId, status: "staging", generation: 1 },
-      requirements: [{ requirement_id: "records", requested_tables: ["records"] }], grants: [] });
+      requirements: expect.arrayContaining([expect.objectContaining({ requirement_id: "records", kind: "structured_data", requested_tables: ["records"] }),
+        expect.objectContaining({ requirement_id: "attachments", kind: "objects", requested_tables: [] })]), grants: [] });
     const approve = (expectedRevision: number, operations = ["get"]) => space.fetch(new Request("http://space/extension-resource-grants", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
         requirementId: "records", actorId: "owner", expectedRevision, operations, tables: ["records"] }) }));
@@ -86,6 +92,11 @@ describe("runtime extension installation", () => {
     expect(approvedBody).toMatchObject({ revision: 1, installation_generation: 1 });
     expect(await (await approve(0)).json()).toMatchObject({ replayed: true, revision: 1 });
     expect((await approve(0, ["get", "insert"])).status).toBe(409);
+    const approveObjects = (expectedRevision: number, tables: string[] = []) => space.fetch(new Request("http://space/extension-resource-grants", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
+        requirementId: "attachments", actorId: "owner", expectedRevision, operations: ["get"], tables }) }));
+    expect((await approveObjects(0, ["records"])).status).toBe(400);
+    expect(await (await approveObjects(0)).json()).toMatchObject({ status: "approved", revision: 1, tables: [] });
     const wrongProject = await space.fetch(new Request("http://space/extension-resource-grants?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-b", instance_id: installationId }), { headers }));
     expect(wrongProject.status).toBe(404);
     storage.sql.exec("UPDATE extension_resource_grants SET operations_json='[\"delete\"]' WHERE instance_id=? AND requirement_id='records'", installationId);
@@ -103,7 +114,12 @@ describe("runtime extension installation", () => {
       body: JSON.stringify({ installationId, extensionId: manifest.id, version: "1.0.0", artifactSha256, tenantId: "tenant", spaceId: "space",
         projectId: "project-a", scope: "PROJECT_BOUND" }) }));
     expect(activation.status).toBe(409);
-    expect(await activation.json()).toMatchObject({ error_code: "extension_resource_capability_unavailable" });
+    const activationBody = await activation.json();
+    expect(activationBody).toMatchObject({ error_code: "extension_resource_capability_unavailable" });
+    expect(activationBody).toMatchObject({ unsupported: expect.arrayContaining([
+      expect.objectContaining({ requirementId: "records", kind: "structured_data", operations: ["get", "insert"] }),
+      expect.objectContaining({ requirementId: "attachments", kind: "objects", operations: ["get"] }),
+    ]) });
 
     // Exercise the operation fence independently of the unavailable runtime activation gate.
     storage.sql.exec("UPDATE extension_instances SET status='active' WHERE instance_id=?", installationId);
@@ -136,7 +152,10 @@ describe("runtime extension installation", () => {
     expect(await revoked.json()).toMatchObject({ status: "revoked", revision: 2 });
     expect(await (await revoke(1)).json()).toMatchObject({ replayed: true, revision: 2 });
     const current = await space.fetch(new Request(grantsUrl, { headers }));
-    expect(await current.json()).toMatchObject({ grants: [{ status: "revoked", revision: 2, installation_generation: 1 }] });
+    expect(await current.json()).toMatchObject({ grants: expect.arrayContaining([
+      expect.objectContaining({ requirement_id: "records", status: "revoked", revision: 2, installation_generation: 1 }),
+      expect.objectContaining({ requirement_id: "attachments", status: "approved", revision: 1, tables: [] }),
+    ]) });
   });
   it("rechecks exact dependency closure at runtime and blocks removing an active dependency", async () => {
     const storage = createDOStorage(), secret = "extension-dependency-runtime-secret";
