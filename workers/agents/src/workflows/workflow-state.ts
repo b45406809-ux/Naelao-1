@@ -1,4 +1,5 @@
-import { isTerminalWorkflow, transitionWorkflow, type DurableWorkflowIdentity, type DurableWorkflowRecord, type DurableEffectRecord, type WorkflowCheckpointPointer } from "@naelao/agent-sdk";
+import { isTerminalWorkflow, transitionWorkflow, type DurableWorkflowIdentity, type DurableWorkflowRecord, type DurableEffectRecord,
+  type DurableStructuredDataOperationReceipt, type WorkflowCheckpointPointer } from "@naelao/agent-sdk";
 
 export interface WorkflowJournalStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -100,7 +101,7 @@ export class WorkflowJournal {
       return { effect: record, created: true };
     });
   }
-  async prepareExternalEffect(key: string, operation: string, inputDigest: string): Promise<{ effect: DurableEffectRecord; created: boolean }> {
+  async prepareExternalEffect(key: string, operation: string, inputDigest: string, resourceReceipt?: DurableStructuredDataOperationReceipt): Promise<{ effect: DurableEffectRecord; created: boolean }> {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(key)) throw new Error("workflow_effect_key_invalid");
     return this.storage.transaction(async (storage) => {
       const run = await storage.get<WorkflowJournalRecord>("run");
@@ -114,7 +115,7 @@ export class WorkflowJournal {
       if ((run.effectCount ?? 0) >= MAX_WORKFLOW_EFFECTS) throw new Error("workflow_effect_budget_exceeded");
       const activeEffects = run.activeEffects ?? [];
       if (activeEffects.length >= 128) throw new Error("workflow_effect_concurrency_limit");
-      const effect = { key, operation, inputDigest, status: "prepared" as const, startedAt: Date.now() };
+      const effect = { key, operation, inputDigest, status: "prepared" as const, startedAt: Date.now(), ...(resourceReceipt ? { resourceReceipt } : {}) };
       await storage.put("effect:" + key, effect);
       await storage.put("run", { ...run, effectCount: (run.effectCount ?? 0) + 1, activeEffects: [...activeEffects, key], updatedAt: Date.now() });
       return { effect, created: true };
@@ -136,7 +137,10 @@ export class WorkflowJournal {
       if (activeEffects.length === (run.activeEffects ?? []).length) throw new Error("workflow_effect_receipt_conflict");
       const usedCredits = run.usedCredits + credits;
       if (!Number.isFinite(usedCredits)) throw new Error("workflow_usage_overflow");
-      await storage.put("effect:" + effect.key, { ...effect, status: "committed", result, usageCredits: credits });
+      const resourceReceipt = effect.resourceReceipt ? { ...effect.resourceReceipt, status: "completed" as const,
+        responseSha256: result.sha256, responseBytes: result.bytes, meteredCredits: credits, completedAt: Date.now() } : undefined;
+      await storage.put("effect:" + effect.key, { ...effect, status: "committed", result, usageCredits: credits,
+        ...(resourceReceipt ? { resourceReceipt } : {}) });
       await storage.put("run", { ...run, activeEffects, usedCredits, updatedAt: Date.now() });
     });
   }
@@ -145,7 +149,8 @@ export class WorkflowJournal {
       const current = await storage.get<DurableEffectRecord>("effect:" + effect.key);
       const run = await storage.get<WorkflowJournalRecord>("run");
       if (!current || !run || current.status !== "prepared") return;
-      await storage.put("effect:" + effect.key, { ...current, status: "indeterminate" });
+      await storage.put("effect:" + effect.key, { ...current, status: "indeterminate",
+        ...(current.resourceReceipt ? { resourceReceipt: { ...current.resourceReceipt, status: "unknown" as const, uncertainAt: Date.now() } } : {}) });
       await storage.put("run", { ...run, activeEffects: (run.activeEffects ?? []).filter((key) => key !== effect.key), usageUncertain: true, updatedAt: Date.now() });
     });
   }
@@ -158,7 +163,8 @@ export class WorkflowJournal {
       for (const key of run.activeEffects ?? []) {
         const effect = await storage.get<DurableEffectRecord & { startedAt?: number }>("effect:" + key);
         if (effect?.status === "prepared" && typeof effect.startedAt === "number" && effect.startedAt <= before) {
-          await storage.put("effect:" + key, { ...effect, status: "indeterminate" });
+          await storage.put("effect:" + key, { ...effect, status: "indeterminate",
+            ...(effect.resourceReceipt ? { resourceReceipt: { ...effect.resourceReceipt, status: "unknown" as const, uncertainAt: Date.now() } } : {}) });
           usageUncertain = true;
         } else if (effect?.status === "prepared") remaining.push(key);
       }

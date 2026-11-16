@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { wrapWorkflowBinding } from "@cloudflare/dynamic-workflows";
-import { WORKFLOW_CLASS_POLICIES, isTerminalWorkflow, validateDurableWorkflowIdentity, validateWorkflowPointer, type DurableWorkflowIdentity, type WorkflowCheckpointPointer, type DurableWorkflowStatus } from "@naelao/agent-sdk";
+import { WORKFLOW_CLASS_POLICIES, isTerminalWorkflow, validateDurableWorkflowIdentity, validateWorkflowPointer,
+  type DurableStructuredDataOperationReceipt, type DurableWorkflowIdentity, type WorkflowCheckpointPointer, type DurableWorkflowStatus } from "@naelao/agent-sdk";
 import { WorkflowJournal, type WorkflowJournalStorage, type WorkflowJournalRecord } from "../workflows/workflow-state.js";
 import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowStepInfraUsage } from "../workflows/report-infra-usage.js";
@@ -94,7 +95,18 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     if (!identity.capabilities.includes(operation) || !/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/.test(operation)) throw new Error("workflow_capability_denied");
     const json = JSON.stringify(params);
     if (!json || new TextEncoder().encode(json).byteLength > 262144) throw new Error("workflow_effect_input_limit");
-    const { effect, created } = await this.journal.prepareExternalEffect(key, operation, await workflowHash(json));
+    const inputDigest = await workflowHash(json);
+    const gadgetOperation = operation.match(/^extension\.gadget\.(list|get|insert|update|delete)$/)?.[1];
+    const gadgetId = typeof params.gadget_id === "string" ? params.gadget_id : "";
+    const table = typeof params.table === "string" ? params.table : "";
+    const resourceReceipt: DurableStructuredDataOperationReceipt | undefined = gadgetOperation
+      && identity.workflowClass === "vertical_extension" && identity.projectId && identity.installationId
+      && /^[a-z][a-z0-9_-]{1,63}$/.test(gadgetId) && /^[a-z][a-z0-9_-]{0,62}$/.test(table)
+      ? { kind: "structured_data", installationId: identity.installationId, projectId: identity.projectId, principalId: identity.actorId,
+        gadgetId, table, operation: gadgetOperation as DurableStructuredDataOperationReceipt["operation"], requestSha256: inputDigest,
+        requestBytes: new TextEncoder().encode(json).byteLength, status: "prepared", preparedAt: Date.now() }
+      : undefined;
+    const { effect, created } = await this.journal.prepareExternalEffect(key, operation, inputDigest, resourceReceipt);
     if (effect.status === "committed" && effect.result) return readWorkflowArtifact(this.env, identity, effect.result);
     if (!created) {
       // A prepared receipt after a crash proves neither failure nor success. Never repeat it.

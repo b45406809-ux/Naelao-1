@@ -73,9 +73,17 @@ export interface DurableWorkflowIdentity {
 }
 export type DurableWorkflowStatus = "queued" | "running" | "sleeping" | "waiting" | "succeeded" | "failed" | "cancelled" | "expired";
 export interface WorkflowCheckpointPointer { schema: 1; r2_key: string; sha256: string; bytes: number }
+/** Content-free operation accounting carried in the durable workflow effect journal. */
+export interface DurableStructuredDataOperationReceipt {
+  kind: "structured_data"; installationId: string; projectId: string; principalId: string;
+  gadgetId: string; table: string; operation: "list" | "get" | "insert" | "update" | "delete";
+  requestSha256: string; requestBytes: number; status: "prepared" | "completed" | "unknown";
+  responseSha256?: string; responseBytes?: number; meteredCredits?: number;
+  preparedAt: number; completedAt?: number; uncertainAt?: number;
+}
 export interface DurableEffectRecord {
   key: string; operation: string; inputDigest: string; status: "prepared" | "committed" | "indeterminate";
-  result?: WorkflowCheckpointPointer; providerReceipt?: string;
+  result?: WorkflowCheckpointPointer; providerReceipt?: string; resourceReceipt?: DurableStructuredDataOperationReceipt;
 }
 export interface DurableWorkflowRecord {
   identity: DurableWorkflowIdentity; status: DurableWorkflowStatus;
