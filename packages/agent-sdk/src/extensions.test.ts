@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createExtensionResourceClient, createLocalExtensionResourceHarness, digestExtensionManifest, findUnsupportedExtensionResources, isSharedFilesystemPathAllowed,
-  parseExtensionBundle, parseExtensionPrimitive, resolveExtensionDependencyClosure, resolveExtensionStructuredDataRequest,
+  parseExtensionBundle, parseExtensionPrimitive, resolveExtensionDependencyClosure, resolveExtensionJobResourceRequest, resolveExtensionStructuredDataRequest,
   validateExtensionManifest, validateExtensionSettingsValues } from "./extensions.js";
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
@@ -11,6 +11,30 @@ function objectWorkflowBundle(id = valid.id) {
       executionMode: "headless", entry: "./resource.ts", steps: ["resource"], toolNames: ["extension.resource.objects"] },
   ], workerRoles: [{ id: "resource_role", principal: "project_member", invocation: "workflow_step", execution: "worker",
     entry: "./resource.ts", primitiveIds: ["resource_workflow"] }] };
+}
+function jobWorkflowBundle(id = valid.id, recursiveTarget = false) {
+  return { schemaVersion: "1.0", kind: "extension_bundle", id, version: "1.0.0", primitives: [
+    { schemaVersion: "1.0", kind: "workflow", id: "request_jobs", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+      executionMode: "headless", entry: "./request.ts", steps: ["enqueue"], toolNames: ["extension.resource.jobs"] },
+    { schemaVersion: "1.0", kind: "workflow", id: "process_job", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+      executionMode: "headless", entry: "./process.ts", steps: ["process"], toolNames: recursiveTarget ? ["extension.resource.jobs"] : [] },
+  ], workerRoles: [
+    { id: "request_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./request.ts", primitiveIds: ["request_jobs"] },
+    { id: "process_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./process.ts", primitiveIds: ["process_job"] },
+  ] };
+}
+function jobsRequirement(maxBytesPerOperation = 1024) {
+  return { id: "background", kind: "jobs", apiVersion: "1.0", scope: "project", binding: { workflowIds: ["process_job"] },
+    operations: [
+      { id: "enqueue", input: { schemaVersion: "1.0", fields: { workflowId: { type: "string", required: true, maxLength: 64 },
+        paramsJson: { type: "string", maxLength: maxBytesPerOperation }, deadlineSeconds: { type: "number", minimum: 1, maximum: 3600 } } },
+        output: { schemaVersion: "1.0", fields: { jobId: { type: "string", required: true, maxLength: 128 }, status: { type: "string", required: true, maxLength: 16 } } },
+        idempotency: "required", meteringUnit: "job" },
+      { id: "status", input: { schemaVersion: "1.0", fields: { jobId: { type: "string", required: true, maxLength: 128 } } },
+        output: { schemaVersion: "1.0", fields: { jobId: { type: "string", required: true, maxLength: 128 },
+          status: { type: "string", required: true, maxLength: 16 }, attempt: { type: "number", required: true, minimum: 0, maximum: 5 } } },
+        idempotency: "none", meteringUnit: "request" },
+    ], limits: { requestsPerMinute: 2, maxConcurrent: 1, maxBytesPerOperation } };
 }
 describe("immutable extension kernel", () => {
   it("binds structured data requests to existing project workflow Gadget grants", () => {
@@ -47,6 +71,24 @@ describe("immutable extension kernel", () => {
       .toThrow("structured_data_binding_exceeds_installed_workflow_grant");
     expect(() => validateExtensionManifest({ ...manifest, resourceRequirements: [{ ...structured, binding: undefined }] }))
       .toThrow("structured_data_project_gadget_binding_required");
+  });
+  it("binds jobs to named signed workflows and rejects recursive or widened targets", () => {
+    const manifest = validateExtensionManifest({ ...valid, capabilityRequirements: ["extension.workflow"], bundle: jobWorkflowBundle(),
+      resourceRequirements: [jobsRequirement()] });
+    expect(manifest.resourceRequirements?.[0]?.binding).toEqual({ workflowIds: ["process_job"] });
+    expect(resolveExtensionJobResourceRequest({ manifest, workflowId: "request_jobs", requirementId: "background", operationId: "enqueue",
+      input: { workflowId: "process_job", paramsJson: "{\"recordId\":\"item-1\"}", deadlineSeconds: 30 } }))
+      .toMatchObject({ targetWorkflowId: "process_job", params: { recordId: "item-1" }, deadlineSeconds: 30 });
+    expect(resolveExtensionJobResourceRequest({ manifest, workflowId: "request_jobs", requirementId: "background", operationId: "enqueue",
+      input: { workflowId: "unlisted_workflow" } })).toBeNull();
+    expect(resolveExtensionJobResourceRequest({ manifest, workflowId: "process_job", requirementId: "background", operationId: "enqueue",
+      input: { workflowId: "process_job" } })).toBeNull();
+    expect(resolveExtensionJobResourceRequest({ manifest, workflowId: "request_jobs", requirementId: "background", operationId: "enqueue",
+      input: { workflowId: "process_job", paramsJson: "[]" } })).toBeNull();
+    expect(() => validateExtensionManifest({ ...valid, capabilityRequirements: ["extension.workflow"], bundle: jobWorkflowBundle(valid.id, true),
+      resourceRequirements: [jobsRequirement()] })).toThrow("jobs_target_workflow_invalid_or_recursive");
+    expect(() => validateExtensionManifest({ ...valid, resourceRequirements: [{ ...jobsRequirement(), scope: "installation" }] }))
+      .toThrow("jobs_project_workflow_binding_required");
   });
   it("parses versioned resource requirements without treating them as grants", async () => {
     const requirement = { id: "catalog", kind: "objects", apiVersion: "1.0", scope: "project", operations: [
@@ -94,24 +136,26 @@ describe("immutable extension kernel", () => {
     expect(calls).toHaveLength(1);
   });
   it("applies declared byte and request quotas in the SDK adapter contract", async () => {
-    const requirement = validateExtensionManifest({ ...valid, resourceRequirements: [{ id: "queue", kind: "jobs", apiVersion: "1.0", scope: "installation",
-      operations: [{ id: "enqueue", input: { schemaVersion: "1.0", fields: { item: { type: "string", required: true, maxLength: 32 } } },
-        output: { schemaVersion: "1.0", fields: { accepted: { type: "boolean", required: true } } }, idempotency: "required", meteringUnit: "job" }],
-      limits: { requestsPerMinute: 2, maxConcurrent: 1, maxBytesPerOperation: 24 } }] }).resourceRequirements!;
-    const scope = { tenantId: "tenant_a", spaceId: "space_a", projectId: null, installationId: "install_a", principalId: "user_a" };
-    const grant = { handle: "host:opaque", requirementId: "queue", kind: "jobs" as const, apiVersion: "1.0" as const, scope,
+    const requirement = validateExtensionManifest({ ...valid, capabilityRequirements: ["extension.workflow"], bundle: jobWorkflowBundle(),
+      resourceRequirements: [jobsRequirement(128)] }).resourceRequirements!;
+    const scope = { tenantId: "tenant_a", spaceId: "space_a", projectId: "project_a", installationId: "install_a", principalId: "user_a" };
+    const grant = { handle: "host:opaque", requirementId: "background", kind: "jobs" as const, apiVersion: "1.0" as const, scope,
       operations: ["enqueue"], status: "active" as const, expiresAt: "2030-01-01T00:00:00.000Z" };
-    let finish: ((value: { accepted: boolean }) => void) | undefined, firstCall = true;
-    const client = createExtensionResourceClient(requirement, [grant], scope,
-      { execute: () => firstCall ? (firstCall = false, new Promise(resolve => { finish = resolve; })) : Promise.resolve({ accepted: true }) },
+    let finish: ((value: { jobId: string; status: string }) => void) | undefined, firstCall = true;
+    const operationClient = createExtensionResourceClient(requirement, [grant], scope,
+      { execute: () => firstCall ? (firstCall = false, new Promise(resolve => { finish = resolve; })) : Promise.resolve({ jobId: "job_b", status: "queued" }) },
       () => Date.parse("2029-01-01T00:00:00.000Z"));
-    await expect(client.execute("queue", "enqueue", { item: "this payload is much too large" }, "request-0001")).rejects.toThrow("resource_operation_size_exceeded");
-    const first = client.execute("queue", "enqueue", { item: "x" }, "request-0001");
-    await expect(client.execute("queue", "enqueue", { item: "y" }, "request-0002")).rejects.toThrow("resource_concurrency_limit_exceeded");
-    finish?.({ accepted: true });
-    await expect(first).resolves.toEqual({ accepted: true });
-    await expect(client.execute("queue", "enqueue", { item: "y" }, "request-0002")).resolves.toEqual({ accepted: true });
-    await expect(client.execute("queue", "enqueue", { item: "z" }, "request-0003")).rejects.toThrow("resource_rate_limit_exceeded");
+    await expect(operationClient.execute("background", "enqueue", { workflowId: "process_job", paramsJson: "x".repeat(110) }, "request-0001"))
+      .rejects.toThrow("resource_operation_size_exceeded");
+    const first = operationClient.execute("background", "enqueue", { workflowId: "process_job", paramsJson: "{}" }, "request-0001");
+    await expect(operationClient.execute("background", "enqueue", { workflowId: "process_job" }, "request-0002"))
+      .rejects.toThrow("resource_concurrency_limit_exceeded");
+    finish?.({ jobId: "job_a", status: "queued" });
+    await expect(first).resolves.toMatchObject({ jobId: "job_a", status: "queued" });
+    await expect(operationClient.execute("background", "enqueue", { workflowId: "process_job" }, "request-0002"))
+      .resolves.toMatchObject({ jobId: "job_b", status: "queued" });
+    await expect(operationClient.execute("background", "enqueue", { workflowId: "process_job" }, "request-0003"))
+      .rejects.toThrow("resource_rate_limit_exceeded");
   });
   it("validates and canonicalizes exact dependency pins", () => {
     const manifest = validateExtensionManifest({ ...valid, dependencies: [

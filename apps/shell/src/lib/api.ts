@@ -1923,7 +1923,7 @@ export function setProjectExtensionEnabled(spaceId: string, projectId: string, i
 }
 export interface ProjectExtensionResourceRequirement {
   id: string; kind: "structured_data" | "objects" | "jobs"; apiVersion?: string; scope: string;
-  binding?: { gadgetId: string; tables: string[] };
+  binding?: { gadgetId: string; tables: string[] } | { workflowIds: string[] };
   operations: Array<{ id: string; input?: unknown; output?: unknown; idempotency?: string; meteringUnit?: string }>;
 }
 export interface ProjectExtensionResourceGrant {
@@ -1935,8 +1935,9 @@ export interface ProjectExtensionResourceGrant {
 export interface ProjectExtensionResourceGrantSnapshot {
   installation: { instance_id: string; extension_id: string; tenant_id: string; space_id: string; project_id: string;
     scope: "PROJECT_BOUND"; status: string; generation: number; installed_by: string; manifest_sha256: string; release_version: string };
-  requirements: Array<{ requirement_id: string; kind: "structured_data" | "objects"; scope: string; gadget_id: string | null;
-    requested_tables: string[]; requested_operations: Array<{ id: string; input: unknown; output: unknown; idempotency: string; metering_unit: string }> }>;
+  requirements: Array<{ requirement_id: string; kind: "structured_data" | "objects" | "jobs"; scope: string; gadget_id: string | null;
+    requested_tables: string[]; requested_workflows: string[];
+    requested_operations: Array<{ id: string; input: unknown; output: unknown; idempotency: string; metering_unit: string }> }>;
   budget: { max_run_credits: number; monthly_credits: number; revision: number; installation_generation: number;
     approved_by: string; approved_at: string; updated_by: string; updated_at: string } | null;
   grants: ProjectExtensionResourceGrant[];

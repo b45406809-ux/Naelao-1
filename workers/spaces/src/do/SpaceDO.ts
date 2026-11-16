@@ -17831,12 +17831,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
     if (!target) return Response.json({ error_code: "extension_resource_installation_untrusted" }, { status: 404 });
-    const requirements = (target.manifest.resourceRequirements ?? []).filter(item => item.kind === "structured_data" || item.kind === "objects").map(item => ({
-      requirement_id: item.id, kind: item.kind, scope: item.scope, gadget_id: item.kind === "structured_data" ? item.binding?.gadgetId ?? null : null,
-      requested_tables: item.kind === "structured_data" ? [...(item.binding?.tables ?? [])] : [], requested_operations: item.operations.map(operation => ({
-        id: operation.id, input: operation.input, output: operation.output, idempotency: operation.idempotency, metering_unit: operation.meteringUnit,
-      })),
-    }));
+    const requirements = (target.manifest.resourceRequirements ?? []).filter(item => item.kind === "structured_data" || item.kind === "objects" || item.kind === "jobs").map(item => {
+      const binding = item.binding;
+      return {
+        requirement_id: item.id, kind: item.kind, scope: item.scope,
+        gadget_id: item.kind === "structured_data" && binding && "gadgetId" in binding ? binding.gadgetId : null,
+        requested_tables: item.kind === "structured_data" && binding && "tables" in binding ? [...binding.tables] : [],
+        requested_workflows: item.kind === "jobs" && binding && "workflowIds" in binding ? [...binding.workflowIds] : [],
+        requested_operations: item.operations.map(operation => ({
+          id: operation.id, input: operation.input, output: operation.output, idempotency: operation.idempotency, metering_unit: operation.meteringUnit,
+        })),
+      };
+    });
     return Response.json({ installation: { instance_id: target.row.instance_id, extension_id: target.row.extension_id,
       tenant_id: target.row.tenant_id, space_id: target.row.space_id, project_id: target.row.project_id, scope: target.row.scope,
       status: target.row.status, generation: target.row.generation, installed_by: target.row.installed_by,
@@ -17925,11 +17931,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
     if (!target) return Response.json({ error_code: "extension_resource_installation_untrusted" }, { status: 404 });
     const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId
-      && (item.kind === "structured_data" || item.kind === "objects"));
-    const structuredTables = requirement?.kind === "structured_data" ? requirement.binding?.tables : undefined;
+      && (item.kind === "structured_data" || item.kind === "objects" || item.kind === "jobs"));
+    const structuredTables = requirement?.kind === "structured_data" && requirement.binding && "tables" in requirement.binding
+      ? requirement.binding.tables : undefined;
     const projectObjectRequirement = requirement?.kind === "objects" && requirement.scope === "project";
+    const projectJobsRequirement = requirement?.kind === "jobs" && requirement.scope === "project" && requirement.binding !== undefined
+      && "workflowIds" in requirement.binding;
     if (!requirement || requirement.scope !== "project" || requirement.kind === "structured_data" && !structuredTables
-      || requirement.kind !== "structured_data" && !projectObjectRequirement)
+      || requirement.kind === "objects" && !projectObjectRequirement || requirement.kind === "jobs" && !projectJobsRequirement)
       return Response.json({ error_code: "extension_resource_requirement_not_found" }, { status: 404 });
     let operations: string[], tables: string[];
     if (action === "approved") {
@@ -17940,7 +17949,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         || !Array.isArray(body.tables)
         || requirement.kind === "structured_data" && (!body.tables.length || body.tables.length > structuredTables!.length
           || body.tables.some(item => typeof item !== "string" || !structuredTables!.includes(item)))
-        || requirement.kind === "objects" && body.tables.length !== 0
+        || (requirement.kind === "objects" || requirement.kind === "jobs") && body.tables.length !== 0
         || new Set(body.tables).size !== body.tables.length)
         return Response.json({ error_code: "extension_resource_grant_selection_invalid" }, { status: 400 });
       operations = [...body.operations as string[]].sort();
@@ -18033,13 +18042,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const resourceSha256 = typeof body.resourceSha256 === "string" ? body.resourceSha256 : "";
     const generation = body.installationGeneration, revision = body.grantRevision;
     const objectResource = body.resourceKind === "objects";
+    const jobsResource = body.resourceKind === "jobs";
     const invalidResourceTarget = objectResource
       ? !["get", "put", "delete"].includes(operationId) || gadgetId !== "objects" || table !== "objects"
+      : jobsResource
+        ? !["enqueue", "status"].includes(operationId) || gadgetId !== "jobs" || table !== "jobs"
       : !["list", "get", "insert", "update", "delete"].includes(operationId)
         || !/^[a-z][a-z0-9_-]{0,62}$/.test(table) || !/^[a-z][a-z0-9_-]{1,63}$/.test(gadgetId);
     if (!tenantId || request.headers.get("x-naelao-tenant-id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
       || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
-      || body.resourceKind !== undefined && body.resourceKind !== "objects" && body.resourceKind !== "structured_data"
+      || body.resourceKind !== undefined && body.resourceKind !== "objects" && body.resourceKind !== "structured_data" && body.resourceKind !== "jobs"
       || !/^[a-z][a-z0-9._-]{1,63}$/.test(requirementId) || invalidResourceTarget
       || !/^[a-f0-9]{64}$/.test(manifestSha256) || !/^[a-f0-9]{64}$/.test(resourceSha256)
       || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1
@@ -18049,10 +18061,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
     if (!target || target.row.status !== "active" || target.row.generation !== generation || target.manifestSha256 !== manifestSha256)
       return Response.json({ error_code: "extension_resource_installation_changed" }, { status: 409 });
-    const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId
-      && item.kind === (objectResource ? "objects" : "structured_data"));
-    if (!requirement || requirement.scope !== "project" || objectResource && requirement.binding !== undefined
-      || !objectResource && (requirement.binding?.gadgetId !== gadgetId || !requirement.binding.tables.includes(table))
+    const expectedKind = objectResource ? "objects" : jobsResource ? "jobs" : "structured_data";
+    const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === expectedKind);
+    if (!requirement || requirement.scope !== "project"
+      || objectResource && requirement.binding !== undefined
+      || jobsResource && (!requirement.binding || !("workflowIds" in requirement.binding))
+      || !objectResource && !jobsResource && (!requirement.binding || !("gadgetId" in requirement.binding)
+        || requirement.binding.gadgetId !== gadgetId || !requirement.binding.tables.includes(table))
       || !requirement.operations.some(item => item.id === operationId))
       return Response.json({ error_code: "extension_resource_operation_not_declared" }, { status: 403 });
     const currentGrant = queryOne<{ manifest_sha256: string; resource_sha256: string; installation_generation: number;
@@ -18068,7 +18083,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!currentGrant || currentGrant.status !== "approved" || currentGrant.revision !== revision
       || currentGrant.manifest_sha256 !== manifestSha256 || currentGrant.resource_sha256 !== resourceSha256 || resourceDigest !== resourceSha256
       || currentGrant.installation_generation !== generation || !Array.isArray(approvedOperations) || !approvedOperations.includes(operationId)
-      || !Array.isArray(approvedTables) || (objectResource ? approvedTables.length !== 0 : !approvedTables.includes(table)))
+      || !Array.isArray(approvedTables) || (objectResource || jobsResource ? approvedTables.length !== 0 : !approvedTables.includes(table)))
       return Response.json({ error_code: "extension_resource_grant_revoked_or_stale" }, { status: 403 });
     const leaseId = crypto.randomUUID(), now = new Date().toISOString(), expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     const outcome: { value: "claimed" | "rate_limit" | "concurrency_limit" | "stale" } = { value: "stale" };
@@ -18485,7 +18500,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const unsupportedResources = findUnsupportedExtensionResources(manifest.resourceRequirements ?? []);
     const hasResourceRequirements = (manifest.resourceRequirements?.length ?? 0) > 0;
     const reviewableProjectResources = hasResourceRequirements && manifest.resourceRequirements!.every(item =>
-      item.scope === "project" && (item.kind === "structured_data" || item.kind === "objects"))
+      item.scope === "project" && (item.kind === "structured_data" || item.kind === "objects" || item.kind === "jobs"))
       && manifest.bundle !== undefined && body.scope === "PROJECT_BOUND" && body.projectId !== undefined && body.deferActivation === true
       && typeof body.publisherKeyId === "string" && typeof body.publisherSignature === "string" && typeof body.publisherPayloadSha256 === "string";
     if (unsupportedResources.length && !reviewableProjectResources) return Response.json({ error_code: "extension_resource_capability_unavailable",
@@ -18730,7 +18745,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const resourceSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(requirement))))]
           .map(byte => byte.toString(16).padStart(2, "0")).join("");
         const declaredOperations = new Set(requirement.operations.map(operation => operation.id));
-        const declaredTables = new Set(requirement.kind === "structured_data" ? requirement.binding?.tables ?? [] : []);
+        const declaredTables = new Set(requirement.kind === "structured_data" && requirement.binding && "tables" in requirement.binding
+          ? requirement.binding.tables : []);
         const grant = grants.find(item => {
           if (item.requirement_id !== requirement.id || item.status !== "approved" || item.manifest_sha256 !== manifestSha256
             || item.resource_sha256 !== resourceSha256 || item.installation_generation !== row.generation
@@ -18738,7 +18754,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           const operations = item.operations as unknown[], tables = item.tables as unknown[];
           const validTableApproval = requirement.kind === "structured_data"
             ? requirement.binding !== undefined && tables.length > 0 && tables.every(table => typeof table === "string" && declaredTables.has(table))
-            : requirement.kind === "objects" && requirement.scope === "project" && tables.length === 0;
+            : (requirement.kind === "objects" && requirement.scope === "project" && tables.length === 0)
+              || (requirement.kind === "jobs" && requirement.scope === "project" && requirement.binding !== undefined
+                && "workflowIds" in requirement.binding && tables.length === 0);
           return validTableApproval && operations.every(operation => typeof operation === "string" && declaredOperations.has(operation))
             && new Set(operations).size === operations.length && new Set(tables).size === tables.length;
         });

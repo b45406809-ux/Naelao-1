@@ -124,25 +124,29 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
         {budgetBusy ? "Saving budget…" : snapshot.budget ? "Update installation budget" : "Approve installation budget"}
       </button>
     </div>
-    {requirements.filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects").map(requirement => {
+    {requirements.filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs").map(requirement => {
       const grant = snapshot.grants.find(item => item.requirement_id === requirement.id);
       const blocked = snapshot.installation.status === "active";
       const requiresTables = requirement.kind === "structured_data";
+      const requestedTables = requirement.binding && "tables" in requirement.binding ? requirement.binding.tables : [];
+      const requestedWorkflows = requirement.binding && "workflowIds" in requirement.binding ? requirement.binding.workflowIds : [];
       return <div key={requirement.id} style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-          <strong>{requirement.id} · {requirement.kind === "objects" ? "objects" : "structured data"}</strong><span style={{ color: grant?.status === "approved" ? "var(--text2)" : "var(--text3)" }}>
+          <strong>{requirement.id} · {requirement.kind === "objects" ? "objects" : requirement.kind === "jobs" ? "jobs" : "structured data"}</strong><span style={{ color: grant?.status === "approved" ? "var(--text2)" : "var(--text3)" }}>
             {grant?.status === "approved" ? `approved · revision ${grant.revision}` : grant?.status === "revoked" ? `revoked · revision ${grant.revision}` : "not approved"}
           </span>
         </div>
         {requiresTables
-          ? <div style={{ marginTop: 5, color: "var(--text3)" }}>Requested tables: {(requirement.binding?.tables ?? []).join(", ") || "none"}</div>
-          : <div style={{ marginTop: 5, color: "var(--text3)" }}>Object namespace and access operations are not active until the host object adapter is accepted.</div>}
+          ? <div style={{ marginTop: 5, color: "var(--text3)" }}>Requested tables: {requestedTables.join(", ") || "none"}</div>
+          : requirement.kind === "jobs"
+            ? <div style={{ marginTop: 5, color: "var(--text3)" }}>Approved workflow targets: {requestedWorkflows.join(", ") || "none"}. Dispatch, retry, deadline, concurrency and status are not active until the host jobs adapter is accepted.</div>
+            : <div style={{ marginTop: 5, color: "var(--text3)" }}>Object namespace and access operations are not active until the host object adapter is accepted.</div>}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginTop: 5 }}>
           <div><div style={{ fontWeight: 600 }}>Allow operations</div>{requirement.operations.map(operation => <label key={operation.id} style={{ display: "flex", gap: 5, alignItems: "center" }}>
             <input type="checkbox" checked={(operations[requirement.id] ?? []).includes(operation.id)} disabled={blocked || !!busyRequirement}
               onChange={event => setOperations(value => ({ ...value, [requirement.id]: toggle(value[requirement.id] ?? [], operation.id, event.target.checked) }))} />{operation.id}
           </label>)}</div>
-          {requiresTables && <div><div style={{ fontWeight: 600 }}>Allow tables</div>{(requirement.binding?.tables ?? []).map(table => <label key={table} style={{ display: "flex", gap: 5, alignItems: "center" }}>
+          {requiresTables && <div><div style={{ fontWeight: 600 }}>Allow tables</div>{requestedTables.map(table => <label key={table} style={{ display: "flex", gap: 5, alignItems: "center" }}>
             <input type="checkbox" checked={(tables[requirement.id] ?? []).includes(table)} disabled={blocked || !!busyRequirement}
               onChange={event => setTables(value => ({ ...value, [requirement.id]: toggle(value[requirement.id] ?? [], table, event.target.checked) }))} />{table}
           </label>)}</div>}

@@ -70,6 +70,18 @@ describe("runtime extension installation", () => {
             output: { schemaVersion: "1.0", fields: { deleted: { type: "boolean", required: true } } }, idempotency: "required", meteringUnit: "request" },
         ],
         limits: { requestsPerMinute: 40, maxConcurrent: 1, maxBytesPerOperation: 128 * 1024 },
+      }, {
+        id: "background", kind: "jobs", apiVersion: "1.0", scope: "project", binding: { workflowIds: ["process_job"] },
+        operations: [
+          { id: "enqueue", input: { schemaVersion: "1.0", fields: { workflowId: { type: "string", required: true, maxLength: 64 },
+            paramsJson: { type: "string", maxLength: 8192 }, deadlineSeconds: { type: "number", minimum: 1, maximum: 3600 } } },
+            output: { schemaVersion: "1.0", fields: { jobId: { type: "string", required: true, maxLength: 128 }, status: { type: "string", required: true, maxLength: 16 } } },
+            idempotency: "required", meteringUnit: "job" },
+          { id: "status", input: { schemaVersion: "1.0", fields: { jobId: { type: "string", required: true, maxLength: 128 } } },
+            output: { schemaVersion: "1.0", fields: { jobId: { type: "string", required: true, maxLength: 128 },
+              status: { type: "string", required: true, maxLength: 16 }, attempt: { type: "number", required: true, minimum: 0, maximum: 5 } } },
+            idempotency: "none", meteringUnit: "request" },
+        ], limits: { requestsPerMinute: 2, maxConcurrent: 1, maxBytesPerOperation: 8192 },
       }],
       bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_granted_catalog", version: "1.0.0", primitives: [
         { schemaVersion: "1.0", kind: "gadget", id: "catalog", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
@@ -77,8 +89,16 @@ describe("runtime extension installation", () => {
         { schemaVersion: "1.0", kind: "workflow", id: "lookup", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
           executionMode: "headless", entry: "./lookup.ts", steps: ["lookup"], toolNames: ["extension.gadget.get", "extension.gadget.insert",
             "extension.resource.structured_data", "extension.resource.objects"] },
-      ], workerRoles: [{ id: "lookup_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./lookup.ts",
-        primitiveIds: ["lookup"], gadgetActions: [{ gadgetId: "catalog", operations: ["extension.gadget.get", "extension.gadget.insert"], tables: ["records"] }] }] },
+        { schemaVersion: "1.0", kind: "workflow", id: "request_jobs", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+          executionMode: "headless", entry: "./request.ts", steps: ["enqueue"], toolNames: ["extension.resource.jobs"] },
+        { schemaVersion: "1.0", kind: "workflow", id: "process_job", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+          executionMode: "headless", entry: "./process.ts", steps: ["process"], toolNames: [] },
+      ], workerRoles: [
+        { id: "lookup_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./lookup.ts",
+          primitiveIds: ["lookup"], gadgetActions: [{ gadgetId: "catalog", operations: ["extension.gadget.get", "extension.gadget.insert"], tables: ["records"] }] },
+        { id: "request_jobs_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./request.ts", primitiveIds: ["request_jobs"] },
+        { id: "process_job_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./process.ts", primitiveIds: ["process_job"] },
+      ] },
     }, { gatekeeperCapabilities: ["extension.workflow"] });
     const artifactSha256 = "a".repeat(64), publisher = { publisherId: "pub_example", publisherKeyId: "b".repeat(64),
       publisherSignature: "signed-release", publisherPayloadSha256: "c".repeat(64) };
@@ -94,7 +114,8 @@ describe("runtime extension installation", () => {
     const snapshot = await space.fetch(new Request(grantsUrl, { headers }));
     expect(await snapshot.json()).toMatchObject({ installation: { instance_id: installationId, status: "staging", generation: 1 },
       requirements: expect.arrayContaining([expect.objectContaining({ requirement_id: "records", kind: "structured_data", requested_tables: ["records"] }),
-        expect.objectContaining({ requirement_id: "attachments", kind: "objects", requested_tables: [] })]), budget: null, grants: [] });
+        expect.objectContaining({ requirement_id: "attachments", kind: "objects", requested_tables: [] }),
+        expect.objectContaining({ requirement_id: "background", kind: "jobs", requested_tables: [], requested_workflows: ["process_job"] })]), budget: null, grants: [] });
     const setBudget = (expectedRevision: number, maxRunCredits = 25, monthlyCredits = 250) => space.fetch(new Request("http://space/extension-resource-budget", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
         actorId: "owner", expectedRevision, maxRunCredits, monthlyCredits }) }));
@@ -121,6 +142,15 @@ describe("runtime extension installation", () => {
     const approvedObjectBody = await (await approveObjects(0)).json() as { status: string; revision: number; manifest_sha256: string;
       resource_sha256: string; installation_generation: number };
     expect(approvedObjectBody).toMatchObject({ status: "approved", revision: 1, tables: [] });
+    const approveJobs = (expectedRevision: number, operations = ["enqueue", "status"], tables: string[] = []) => space.fetch(new Request("http://space/extension-resource-grants", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
+        requirementId: "background", actorId: "owner", expectedRevision, operations, tables }) }));
+    expect((await approveJobs(0, ["enqueue", "status"], ["records"])).status).toBe(400);
+    const approvedJobsResponse = await approveJobs(0);
+    expect(approvedJobsResponse.status, await approvedJobsResponse.clone().text()).toBe(200);
+    const approvedJobsBody = await approvedJobsResponse.json() as { manifest_sha256: string; resource_sha256: string; installation_generation: number; revision: number };
+    expect(approvedJobsBody).toMatchObject({ revision: 1, installation_generation: 1 });
+    expect(await (await approveJobs(0)).json()).toMatchObject({ replayed: true, revision: 1 });
     const wrongProject = await space.fetch(new Request("http://space/extension-resource-grants?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-b", instance_id: installationId }), { headers }));
     expect(wrongProject.status).toBe(404);
     storage.sql.exec("UPDATE extension_resource_grants SET operations_json='[\"delete\"]' WHERE instance_id=? AND requirement_id='records'", installationId);
@@ -143,6 +173,7 @@ describe("runtime extension installation", () => {
     expect(activationBody).toMatchObject({ unsupported: expect.arrayContaining([
       expect.objectContaining({ requirementId: "records", kind: "structured_data", operations: ["get", "insert"] }),
       expect.objectContaining({ requirementId: "attachments", kind: "objects", operations: ["get", "put", "delete"] }),
+      expect.objectContaining({ requirementId: "background", kind: "jobs", operations: ["enqueue", "status"] }),
     ]) });
 
     // Exercise the operation fence independently of the unavailable runtime activation gate.
@@ -159,6 +190,22 @@ describe("runtime extension installation", () => {
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, requirementId: "attachments",
         operationId, resourceKind: "objects", gadgetId: "objects", table: "objects", manifestSha256: approvedObjectBody.manifest_sha256,
         resourceSha256: approvedObjectBody.resource_sha256, installationGeneration: 1, grantRevision: 1 }) }));
+    const claimJob = (operationId: string) => space.fetch(new Request("http://space/extension-resource-operation", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, requirementId: "background",
+        operationId, resourceKind: "jobs", gadgetId: "jobs", table: "jobs", manifestSha256: approvedJobsBody.manifest_sha256,
+        resourceSha256: approvedJobsBody.resource_sha256, installationGeneration: 1, grantRevision: 1 }) }));
+    const jobClaim = await claimJob("enqueue");
+    expect(jobClaim.status, await jobClaim.clone().text()).toBe(200);
+    const { lease_id: jobLeaseId } = await jobClaim.json() as { lease_id: string };
+    expect((await claimJob("enqueue")).status).toBe(429);
+    const releaseLease = (lease: string) => space.fetch(new Request("http://space/extension-resource-operation/release", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, leaseId: lease }) }));
+    expect(await (await releaseLease(jobLeaseId)).json()).toMatchObject({ released: true, status: "released" });
+    const jobStatusClaim = await claimJob("status");
+    expect(jobStatusClaim.status, await jobStatusClaim.clone().text()).toBe(200);
+    const { lease_id: jobStatusLeaseId } = await jobStatusClaim.json() as { lease_id: string };
+    expect(await (await releaseLease(jobStatusLeaseId)).json()).toMatchObject({ released: true, status: "released" });
+    expect((await claimJob("status")).status).toBe(429);
     const putClaim = await claimObject("put");
     expect(putClaim.status, await putClaim.clone().text()).toBe(200);
     const { lease_id: putLeaseId } = await putClaim.json() as { lease_id: string };
@@ -173,8 +220,6 @@ describe("runtime extension installation", () => {
         resourceSha256: approvedObjectBody.resource_sha256, installationGeneration: 1, grantRevision: 1, input }) }));
     expect(await (await objectOperation("put", putLeaseId, objectInput)).json()).toMatchObject({ stored: true, size: 5, sha256: expect.any(String) });
     expect((await objectOperation("put", putLeaseId, objectInput)).status).toBe(403);
-    const releaseLease = (lease: string) => space.fetch(new Request("http://space/extension-resource-operation/release", { method: "POST", headers,
-      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, leaseId: lease }) }));
     expect(await (await releaseLease(putLeaseId)).json()).toMatchObject({ released: true });
     const getClaim = await claimObject("get");
     const { lease_id: getLeaseId } = await getClaim.json() as { lease_id: string };
@@ -241,6 +286,7 @@ describe("runtime extension installation", () => {
     expect(await current.json()).toMatchObject({ grants: expect.arrayContaining([
       expect.objectContaining({ requirement_id: "records", status: "revoked", revision: 2, installation_generation: 1 }),
       expect.objectContaining({ requirement_id: "attachments", status: "approved", revision: 1, tables: [] }),
+      expect.objectContaining({ requirement_id: "background", status: "approved", revision: 1, operations: ["enqueue", "status"], tables: [] }),
     ]) });
     const removed = await space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space",
       project_id: "project-a", instance_id: installationId }), { method: "DELETE" }));
