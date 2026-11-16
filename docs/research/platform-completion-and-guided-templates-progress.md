@@ -1,5 +1,13 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K05 versioned publication archive lifecycle; code `1e76c55c` pushed)
+
+The existing Project publication API and Shell now archive or restore a collection through owner/admin-authorized expected-revision CAS. Both transitions advance the revision and record a content-free audit event; the transition detaches source membership. Archived collections are omitted from current extension-grant resolution and rejected before/during retrieval. Restore creates an empty draft, requiring explicit source republish and new grant approval. Resource descriptors and rollouts remain disabled.
+
+Code `1e76c55cefc32df646cc49c0166cd7ea40e65a58` is remote-verified. Full Knowledge tests **119/119**, Knowledge and Shell typechecks, diff check, and SQLite-backed migration/API coverage pass. Migration 0268 is not deployed; no browser, Worker, provider or live acceptance ran. K05 remains partial; generic ownership transfer, retention policy and separated discovery/read/admin APIs are not complete.
+
+Exact next action: separate discovery metadata from collection source reading. Restrict the collection list to name/ID/revision/status/count, add an explicitly authorized `/:publicationId/sources` read path for document IDs, and update the Shell editor to fetch that data only when requested. Preserve the separate revision-pinned extension `use` grant. Test member, owner, outsider, archive and cross-Project behavior, then continue remaining K/S/U/P/PW/EP work.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (EP02 durable Project jobs broker; code `248d3838` pushed)
 
 EP02 now has a reachable Project/install jobs broker: the signed SDK caller and WorkflowRunDO effect receipt reach owner-grant/release validation, a D1 job ledger, scoped R2 input, owner-approved Billing reservation, and the existing Agents `AGENT_TICKS` queue. Rows pin exact tenant/Space/Project/install, requirement, manifest/resource and release digests, generation, grant revision, actor, idempotency and stable child identity. Active concurrency/rate/deadline, bounded payload, retry lease, status, revocation, unknown-start reconciliation and cleanup are implemented. A duplicate tick cannot dead-letter the final start while its lease is live. Resource descriptors remain unavailable.

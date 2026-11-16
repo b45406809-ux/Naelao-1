@@ -1,5 +1,11 @@
 # Unified platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (K05 versioned publication archive lifecycle; code `1e76c55c` pushed)
+
+The Project Knowledge collection lifecycle now supports owner/admin archive and restore-as-empty-draft under expected-revision CAS. It records content-free actor/action/revision events, removes published document membership, increments the version and keeps archived collections out of extension-grant lookup and retrieval. Restored collections have no published sources and old grants remain stale. Shell controls are reachable. Code `1e76c55cefc32df646cc49c0166cd7ea40e65a58` is remote-verified; Knowledge **119/119**, Knowledge/Shell typechecks and SQLite migration/API checks pass. Migration 0268 remains unapplied; rollouts are off.
+
+Exact next action: split collection discovery metadata from source-membership reads on the Knowledge API and Shell: add an authorized source-list route and fetch it only for collection editing. Keep `use` as the independent revision-pinned extension grant. Cover member/owner/outsider, archive and cross-Project scopes. Generic transfer/retention policy and other K/S/U/P/PW/EP code gaps remain open.
+
 ## Latest cross-plan pointer — 2026-11-16 (EP02 durable Project jobs broker; code `248d3838` pushed)
 
 The signed Project/install jobs caller now persists bounded work in D1/R2, reserves against the existing owner-approved tenant/install Billing policy, dispatches through Agents `AGENT_TICKS`, and reports status through the authenticated WorkflowRunDO path. The ledger pins owner grant and signed release revisions, enforces scoped idempotency/rate/concurrency/deadline, reconciles lost child-start replies with a stable identity, and cleans terminal payloads. Code `248d3838fbfa9314eae0ae9f854f655328c8cc06` is remote-verified. Local evidence: Agents **47/47**, SDK **44/44**, Agents/SDK typechecks, diff check and SQLite migration/admission check. Migration 0267 and queue wiring are not deployed or live-accepted; resource catalogs and rollout flags remain disabled.

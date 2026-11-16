@@ -1,5 +1,11 @@
 # Managed services and sidecar implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (K05 versioned publication archive lifecycle; code `1e76c55c` pushed)
+
+K05 now has owner/admin Project-collection archive and restore-as-empty-draft with revision CAS, content-free audit events, source detachment and extension-grant/retrieval exclusion until explicit republish. The Project Shell exposes these actions. Code `1e76c55cefc32df646cc49c0166cd7ea40e65a58` is remote-verified; Knowledge **119/119**, Knowledge/Shell typechecks, SQLite-backed API/migration checks and diff check pass. No deployment or live acceptance ran; migration 0268 and all rollouts remain disabled. No S1–S9/U01–U12 status changed.
+
+Exact next cross-plan action: complete K05's discover/read separation recorded in the Knowledge/platform/unified ledgers. Then resume the managed-services queue at S3/U05 candidate reservation and continue S4–S9/U01–U12; trusted U05 observations and the U06 writer/drain/flush contract remain runtime gates.
+
 ## Latest cross-plan pointer — 2026-11-16 (EP02 durable Project jobs broker; code `248d3838` pushed)
 
 The EP02 Project/install jobs broker is now implemented locally and pushed: signed caller, current owner grant and release fence, bounded D1/R2 job ledger, owner-approved Billing admission, Agents `AGENT_TICKS` dispatcher, stable child start, status, retries/leases, deadline/revocation cleanup and uncertainty reconciliation. Code `248d3838fbfa9314eae0ae9f854f655328c8cc06` is remote-verified. Local evidence: Agents **47/47**, SDK **44/44**, typechecks, `git diff --check` and SQLite migration/admission. Migration and queue are source-only; no deployment/provider/live acceptance ran. No S1–S9/U01–U12 status changed; rollout remains disabled and `infra/scripts/__pycache__/` remains untracked.
