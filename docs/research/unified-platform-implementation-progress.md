@@ -1,5 +1,11 @@
 # Unified platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (K05 publication lifecycle audit and ID retirement; code `890b2a55` pushed)
+
+Collection administration now includes owner/admin history for content-free publish/update/archive/restore/delete receipts. Exact-scope deletion is coupled to a tombstone that permanently retires the stable ID and prevents stale revision grants from becoming current after recreation. Code `890b2a55a56be746a1018016e63504f536795bab` is remote-verified. Knowledge **120/120**, Shell API **1/1**, typechecks, diff check and SQLite migration/API tests pass; migrations 0268–0269 remain unapplied.
+
+K05 remains partial for generic ownership transfer and retention policy. Exact next action: continue K06's ordinary attachment non-promotion and voice/web/email/WhatsApp current-grant caller audit; implement any independent reachable gap before advancing through K07–K30 and remaining S/U/P/PW/EP items. Rollouts remain disabled.
+
 ## Latest cross-plan pointer — 2026-11-16 (K05 separate discover/source-read APIs; code `0c93eade` pushed)
 
 Knowledge collection discovery is metadata-only; a separate Project-scoped `/sources` endpoint returns current indexed document IDs after authorization and revision rechecks. The Shell uses that endpoint only for editing and refuses a stale response. Extension retrieval remains governed by its separate revision-pinned `use` grant. Code `0c93eade2e3c861cd7d5ff254589c7c7ded380fc` is remote-verified. Knowledge **119/119**, Shell API **1/1**, typechecks, diff check and SQLite scope/archive/revision checks pass. No deployment or live acceptance ran.

@@ -1,5 +1,13 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K05 publication lifecycle audit and ID retirement; code `890b2a55` pushed)
+
+The owner/admin `administer` endpoint and Project Shell history view now show content-free published/updated/archive/restore/delete events. Delete writes the final receipt and a scoped tombstone atomically with row removal; the stable collection ID cannot be recreated, preventing a revision reset from reactivating old grants. Source document content is not copied into the audit ledger.
+
+Code `890b2a55a56be746a1018016e63504f536795bab` is remote-verified (`c4234acd` implementation plus test checkpoint). Local evidence: Knowledge **120/120**, Shell API **1/1**, Knowledge/Shell typechecks, diff check, and SQLite migration/API tests including forward migration preservation and deleted-ID replay denial. Migrations 0268–0269 are unapplied; no browser/deployment/live acceptance ran. K05 remains partial for generic ownership transfer and retention-policy contract; all rollouts remain off.
+
+Exact next action: continue K06's attachment/channel scope caller audit, starting with ordinary conversation attachment promotion and the voice/web/email/WhatsApp retrieval callers. Close any reachable path that bypasses explicit Project publication or current grant revision, with source-scope tests. Then continue other K/S/U/P/PW/EP code gaps.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (K05 separate discover/source-read APIs; code `0c93eade` pushed)
 
 Project publication discovery now returns metadata/status/count without document IDs. A separate authenticated source-membership endpoint returns indexed IDs only for the exact active Project publication revision, performs a final revision check and sets `private, no-store`. Shell reads sources only when an authorized user opens Edit and checks the revision again before populating the form. Extension use remains the separate revision-pinned owner grant.

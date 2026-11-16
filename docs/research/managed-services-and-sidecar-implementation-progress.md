@@ -1,5 +1,11 @@
 # Managed services and sidecar implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (K05 publication lifecycle audit and ID retirement; code `890b2a55` pushed)
+
+K05 now has an owner/admin lifecycle history API and Shell view for content-free publication changes; delete atomically records a tombstone so a stable collection ID cannot be reused to revive prior extension grants. Code `890b2a55a56be746a1018016e63504f536795bab` is remote-verified. Knowledge **120/120**, Shell API **1/1**, typechecks and SQLite-backed migration/API coverage pass. Migrations 0268–0269 remain unapplied; no rollout or live acceptance ran. No S1–S9/U01–U12 status changed.
+
+Exact next cross-plan action is K06 attachment/channel scope, then resume the managed-services queue at S3/U05 candidate reservation and continue S4–S9/U01–U12.
+
 ## Latest cross-plan pointer — 2026-11-16 (K05 separate discover/source-read APIs; code `0c93eade` pushed)
 
 Knowledge discovery now returns metadata only; the separately authorized Project source-read route retrieves indexed IDs at the current active revision, with post-read revision check and no-store. The Shell calls it only for collection editing. Code `0c93eade2e3c861cd7d5ff254589c7c7ded380fc` is remote-verified; Knowledge **119/119**, Shell API **1/1**, typechecks and SQLite-backed scope/archive tests pass. No S1–S9/U01–U12 status changed; no deployment/live acceptance ran and rollouts remain disabled.
