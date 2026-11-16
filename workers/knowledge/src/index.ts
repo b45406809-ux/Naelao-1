@@ -2621,7 +2621,7 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
   if (roleRank === null) throw notFound("Citation not found");
   const scope = { tenantId, spaceId, projectId, roleRank };
   const row = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end
+    `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end, d.source_revision
      FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
      WHERE k.id=? AND k.document_id=? AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
        AND k.required_role_rank<=? AND k.deleted_at IS NULL AND d.status='indexed'
@@ -2642,7 +2642,7 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
   return c.json({ citation: { version: 1, identity: `${row.document_id}:${row.id}:${row.content_hash}`,
     document_id: row.document_id, chunk_id: row.id, content_hash: row.content_hash,
     byte_start: coordinate.byteStart, byte_end: coordinate.byteEnd, line_start: coordinate.lineStart,
-    line_end: coordinate.lineEnd }, content });
+    line_end: coordinate.lineEnd, source_revision: Number(row.source_revision) }, content });
 });
 
 // ── GET /spaces/:spaceId/kb/search ────────────────────────────────────────────
@@ -2698,6 +2698,8 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     id: String(row.id), score, content: String(row.content), r2Key: String(row.r2_key),
     byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end),
     lineStart: Number(row.line_start), lineEnd: Number(row.line_end), title: String(row.title ?? ""),
+    ...(Number.isSafeInteger(row.source_revision) && Number(row.source_revision) > 0
+      ? { sourceRevision: Number(row.source_revision) } : {}),
   });
   if (useAutoRag) {
     try {
@@ -2848,14 +2850,14 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   const citationIndex = new Map(citationHits.map((hit, index) => [hit.id, index + 1]));
   const citations = citationHits.map((hit, index) => ({ index: index + 1, title: hit.title ?? "Untitled",
     docId: hit.id.split("_chunk_")[0], snippet: hit.content.slice(0, 280), r2Key: hit.r2Key,
-    charOffset: hit.byteStart,
+    charOffset: hit.byteStart, sourceRevision: hit.sourceRevision,
     url: `/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId ?? SPACE_WIDE_PROJECT_SENTINEL)}/citations/${encodeURIComponent(hit.id.split("_chunk_")[0] ?? "")}/${encodeURIComponent(hit.id)}` }));
   const data = await Promise.all(result.hits.map(async (hit) => ({
     chunk_id: hit.id, doc_id: hit.id.split("_chunk_")[0], content: await wrapContextChunk(hit), score: hit.score,
     citation: hit.r2Key ? { document_id: hit.id.split("_chunk_")[0], chunk_id: hit.id,
       index: citationIndex.get(hit.id), title: hit.title, snippet: hit.content.slice(0, 280),
       content_hash: undefined, byte_start: hit.byteStart, byte_end: hit.byteEnd,
-      line_start: hit.lineStart, line_end: hit.lineEnd } : null,
+      line_start: hit.lineStart, line_end: hit.lineEnd, source_revision: hit.sourceRevision } : null,
   })));
   const deletionStartedDuringRetrieval = await hasKnowledgeDocumentDeletionSince(
     c.env.PLATFORM_DB, tenantId, spaceId, retrievalStartedAt,

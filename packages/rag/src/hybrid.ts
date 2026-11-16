@@ -32,6 +32,8 @@ export interface GroundedSearchHit {
   byteEnd: number;
   lineStart?: number;
   lineEnd?: number;
+  /** Current canonical source revision associated with this indexed chunk. */
+  sourceRevision?: number;
   title?: string;
   url?: string;
 }

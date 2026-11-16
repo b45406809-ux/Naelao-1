@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
+import { evaluateKnowledgeRetrieval } from "../../../infra/scripts/knowledge-retrieval-eval.mjs";
 import worker from "./index.js";
 
-function bindings(owned: boolean, pendingDeletion = false, ftsFails = false) {
+function bindings(owned: boolean, pendingDeletion = false, ftsFails = false, searchFixture: {
+  matches?: Array<{ id: string; score: number }>;
+  chunkRows?: Array<Record<string, unknown>>;
+  ftsRows?: Array<Record<string, unknown>>;
+} = {}) {
   const run = vi.fn(async () => ({ data: [[0.1, 0.2]] }));
-  const query = vi.fn(async () => ({ matches: [] }));
+  const query = vi.fn(async () => ({ matches: searchFixture.matches ?? [] }));
   const cacheQuery = vi.fn(async () => ({ matches: [{ id: "cached-answer", score: 0.999 }] }));
   const groundedCacheGet = vi.fn(async () => ({ createdAt: Date.now(), expiresAt: Date.now() + 60_000, hits: [{ id: "doc-1_chunk_0", content: "deleted content" }] }));
   const prepare = vi.fn((sql: string) => ({
@@ -16,6 +21,8 @@ function bindings(owned: boolean, pendingDeletion = false, ftsFails = false) {
           : { config_json: "{}" }),
       all: vi.fn(async () => {
         if (ftsFails && sql.includes("kb_chunks_fts")) throw new Error("FTS unavailable");
+        if (sql.includes("kb_chunks_fts")) return { results: searchFixture.ftsRows ?? [] };
+        if (sql.includes("SELECT k.*, d.title FROM kb_chunks")) return { results: searchFixture.chunkRows ?? [] };
         return { results: [] };
       }),
       run: vi.fn(async () => ({ meta: { changes: 1 } })),
@@ -89,5 +96,67 @@ describe("knowledge search tenant and query bounds", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ retrieval_mode: "hybrid", lexical_search: "unavailable" });
     expect(env.query).toHaveBeenCalledOnce();
+  });
+});
+
+describe("content-free retrieval evaluation trace", () => {
+  it("scores actual local Knowledge route hits, exposes source revisions, and filters missing canonical rows", async () => {
+    const currentId = "catalog-rx0042_chunk_0";
+    const staleId = "policy-reagent-k_chunk_0";
+    const forbiddenId = "private-procurement_chunk_0";
+    const row = (id: string, sourceRevision: number) => ({
+      id, tenant_id: "tenant-a", space_id: "space-b", project_id: "_space", required_role_rank: 0,
+      content: `Synthetic indexed content for ${id}`, r2_key: `kb/${id}.txt`, byte_start: 0, byte_end: 32,
+      line_start: 1, line_end: 1, title: "Synthetic source", source_revision: sourceRevision,
+    });
+    const runRoute = async (caseId: string, query: string, id: string, canonicalRows: Array<Record<string, unknown>>) => {
+      const env = bindings(true, false, false, {
+        matches: [{ id, score: 0.98 }, { id: forbiddenId, score: 0.97 }],
+        chunkRows: canonicalRows,
+        ftsRows: canonicalRows,
+      });
+      const response = await worker.fetch!(await searchRequest(query), env as never, {} as ExecutionContext);
+      expect(response.status).toBe(200);
+      const body = await response.json() as {
+        data: Array<{ chunk_id: string; score: number; citation: { source_revision?: number } | null }>;
+        latency_ms: number;
+      };
+      return {
+        env,
+        result: {
+          caseId,
+          retrieved: body.data.map((item) => ({ chunkId: item.chunk_id, score: item.score,
+            ...(item.citation?.source_revision ? { sourceVersion: String(item.citation.source_revision) } : {}) })),
+          citedChunkIds: body.data.filter((item) => item.citation).map((item) => item.chunk_id),
+          abstained: body.data.length === 0,
+          latencyMs: body.latency_ms,
+          costMicrosUsd: 0,
+        },
+      };
+    };
+    const current = await runRoute("synthetic-exact-code", "Which catalog item uses code RX-0042?", currentId, [row(currentId, 2)]);
+    const stale = await runRoute("synthetic-current-policy", "What is the current policy?", staleId, [row(staleId, 1)]);
+    const noAnswer = await runRoute("synthetic-missing-answer", "Is stock guaranteed in 2035?", forbiddenId, []);
+    expect(current.result.retrieved.map(({ chunkId }) => chunkId)).toEqual([currentId]);
+    expect(stale.result.retrieved[0]?.sourceVersion).toBe("1");
+    expect(noAnswer.result.retrieved).toEqual([]);
+    expect(noAnswer.env.query).toHaveBeenCalled();
+
+    const report = evaluateKnowledgeRetrieval({ cases: [
+      { recordType: "case", caseId: "synthetic-exact-code", language: "en", reviewStatus: "synthetic_unreviewed",
+        query: "Which catalog item uses code RX-0042?", answerable: true, relevantChunkIds: [currentId],
+        expectedCitationChunkIds: [currentId], expectedVersions: { [currentId]: "2" }, forbiddenChunkIds: [forbiddenId] },
+      { recordType: "case", caseId: "synthetic-current-policy", language: "en", reviewStatus: "synthetic_unreviewed",
+        query: "What is the current policy?", answerable: true, relevantChunkIds: [staleId],
+        expectedCitationChunkIds: [staleId], expectedVersions: { [staleId]: "2" }, forbiddenChunkIds: [forbiddenId] },
+      { recordType: "case", caseId: "synthetic-missing-answer", language: "en", reviewStatus: "synthetic_unreviewed",
+        query: "Is stock guaranteed in 2035?", answerable: false, relevantChunkIds: [],
+        expectedCitationChunkIds: [], expectedVersions: {}, forbiddenChunkIds: [forbiddenId] },
+    ], results: [current.result, stale.result, noAnswer.result] });
+    expect(report.metrics.recallAtK).toBe(1);
+    expect(report.metrics.staleCitationCount).toBe(1);
+    expect(report.metrics.forbiddenExposureCount).toBe(0);
+    expect(report.readiness.acceptanceEligible).toBe(false);
+    expect(JSON.stringify(report).includes("Which catalog item uses code RX-0042?")).toBe(false);
   });
 });

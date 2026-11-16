@@ -457,7 +457,7 @@ describe("Knowledge document lifecycle boundaries", () => {
     const key = "kb/space-1/project-1/doc-1/chunk_1.txt";
     const f = fixture({ projectAccess: true,
       citationRow: { id: "doc-1_chunk_1", document_id: "doc-1", r2_key: key, content_hash: contentHash,
-        byte_start: 2_048, byte_end: 2_072, line_start: 5, line_end: 5 },
+        byte_start: 2_048, byte_end: 2_072, line_start: 5, line_end: 5, source_revision: 3 },
       citationObject: { key, content, contentHash },
     });
     const response = await worker.fetch(await request(
@@ -465,7 +465,8 @@ describe("Knowledge document lifecycle boundaries", () => {
     ), f.env, {} as ExecutionContext);
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ citation: { byte_start: 2_048, byte_end: 2_072, line_start: 5, line_end: 5 }, content });
+    expect(await response.json()).toMatchObject({ citation: { byte_start: 2_048, byte_end: 2_072, line_start: 5, line_end: 5,
+      source_revision: 3 }, content });
     expect((f.env as unknown as { KB_BUCKET: { get: ReturnType<typeof vi.fn> } }).KB_BUCKET.get).toHaveBeenCalledWith(key);
   });
 

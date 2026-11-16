@@ -53,3 +53,22 @@ test("reports missing results and rejects out-of-scope citations, malformed case
   assert.throws(() => evaluateKnowledgeRetrieval({ cases: [{ ...cases[0], answerable: false }], results: [] }), /answerability/);
   assert.throws(() => parseJsonLines("{broken", "fixture"), /line 1/);
 });
+
+test("compares caller-supplied thresholds without turning a local pass into release acceptance", () => {
+  const thresholds = {
+    minPrecisionAtK: 1, minRecallAtK: 1, minMrrAtK: 1, minNdcgAtK: 1,
+    minCitationPrecision: 1, minCitationRecall: 1, minAbstentionAccuracy: 1,
+    maxP95LatencyMs: 10, maxTotalCostMicrosUsd: 10, maxForbiddenExposureCount: 0, maxStaleCitationCount: 0,
+  };
+  const result = {
+    caseId: cases[0].caseId, retrieved: [{ chunkId: "catalog-rx0042-v2", sourceVersion: "v2", score: 1 }],
+    citedChunkIds: ["catalog-rx0042-v2"], abstained: false, latencyMs: 10, costMicrosUsd: 10,
+  };
+  const report = evaluateKnowledgeRetrieval({ cases: [cases[0]], results: [result], requiredLanguages: ["en"], thresholds });
+  assert.deepEqual(report.thresholdEvaluation, { configured: true, passed: true, failed: [] });
+  assert.equal(report.readiness.acceptanceEligible, false);
+  const failing = evaluateKnowledgeRetrieval({ cases: [cases[0]], results: [{ ...result, costMicrosUsd: 11 }],
+    requiredLanguages: ["en"], thresholds });
+  assert.deepEqual(failing.thresholdEvaluation?.failed, ["maxTotalCostMicrosUsd"]);
+  assert.throws(() => evaluateKnowledgeRetrieval({ cases: [cases[0]], results: [result], thresholds: { maxP95LatencyMs: 5 } }), /thresholds must define/);
+});

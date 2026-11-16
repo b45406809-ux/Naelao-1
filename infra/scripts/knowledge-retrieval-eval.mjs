@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const REVIEW_STATES = new Set(["synthetic_unreviewed", "human_reviewed", "needs_native_review"]);
+const THRESHOLD_FIELDS = [
+  "minPrecisionAtK", "minRecallAtK", "minMrrAtK", "minNdcgAtK", "minCitationPrecision", "minCitationRecall",
+  "minAbstentionAccuracy", "maxP95LatencyMs", "maxTotalCostMicrosUsd", "maxForbiddenExposureCount", "maxStaleCitationCount",
+];
 
 export function parseJsonLines(text, label = "JSONL") {
   return text.split(/\r?\n/).flatMap((line, index) => {
@@ -79,7 +83,7 @@ function rankedMetrics(sample, retrieved) {
 }
 
 /** Score content-free retrieval traces against synthetic or reviewed cases. */
-export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, requiredLanguages = ["en", "sn", "nd"] }) {
+export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, requiredLanguages = ["en", "sn", "nd"], thresholds = null }) {
   if (!Array.isArray(cases) || cases.length === 0 || cases.length > 10_000 || !Array.isArray(results)
       || results.length > cases.length) {
     throw new Error("cases and results must be nonempty/array inputs");
@@ -89,6 +93,15 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
       || new Set(requiredLanguages).size !== requiredLanguages.length
       || requiredLanguages.some((language) => typeof language !== "string" || !/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(language))) {
     throw new Error("requiredLanguages must contain unique language tags");
+  }
+  if (thresholds !== null) {
+    if (!thresholds || typeof thresholds !== "object" || Array.isArray(thresholds)
+        || Object.keys(thresholds).length !== THRESHOLD_FIELDS.length
+        || THRESHOLD_FIELDS.some((field) => !Number.isFinite(thresholds[field]) || thresholds[field] < 0)
+        || ["minPrecisionAtK", "minRecallAtK", "minMrrAtK", "minNdcgAtK", "minCitationPrecision", "minCitationRecall", "minAbstentionAccuracy"]
+          .some((field) => thresholds[field] > 1)) {
+      throw new Error("thresholds must define every supported non-negative quality, latency, cost and safety threshold");
+    }
   }
   const ids = new Set();
   for (const sample of cases) assertCase(sample, ids);
@@ -157,25 +170,45 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
   const allCasesReviewed = cases.every((sample) => sample.reviewStatus === "human_reviewed");
   const incompleteRequiredLanguages = requiredLanguages.filter((language) => !byLanguage[language]?.reviewComplete);
   const missingResultCount = perCase.filter((item) => item.missing).length;
+  const metrics = {
+    precisionAtK: average(answerable.map((item) => item.precisionAtK)),
+    recallAtK: average(answerable.map((item) => item.recallAtK)),
+    mrrAtK: average(answerable.map((item) => item.reciprocalRank)),
+    ndcgAtK: average(answerable.map((item) => item.ndcgAtK)),
+    citationPrecision: average(completed.map((item) => item.citationPrecision)),
+    citationRecall: average(completed.map((item) => item.citationRecall)),
+    abstentionAccuracy: average(completed.map((item) => Number(item.abstentionCorrect))),
+    p95LatencyMs: percentile95(completed.map((item) => item.latencyMs)),
+    totalCostMicrosUsd: completed.reduce((total, item) => total + item.costMicrosUsd, 0),
+    forbiddenExposureCount,
+    staleCitationCount,
+  };
+  const thresholdMetricFields = {
+    minPrecisionAtK: "precisionAtK", minRecallAtK: "recallAtK", minMrrAtK: "mrrAtK", minNdcgAtK: "ndcgAtK",
+    minCitationPrecision: "citationPrecision", minCitationRecall: "citationRecall",
+    minAbstentionAccuracy: "abstentionAccuracy", maxP95LatencyMs: "p95LatencyMs",
+    maxTotalCostMicrosUsd: "totalCostMicrosUsd", maxForbiddenExposureCount: "forbiddenExposureCount",
+    maxStaleCitationCount: "staleCitationCount",
+  };
+  const thresholdEvaluation = thresholds === null ? null : {
+    configured: true,
+    passed: Object.entries(thresholdMetricFields).every(([threshold, metric]) => {
+      const value = metrics[metric];
+      return typeof value === "number" && (threshold.startsWith("min") ? value >= thresholds[threshold] : value <= thresholds[threshold]);
+    }),
+    failed: Object.entries(thresholdMetricFields).filter(([threshold, metric]) => {
+      const value = metrics[metric];
+      return typeof value !== "number" || !(threshold.startsWith("min") ? value >= thresholds[threshold] : value <= thresholds[threshold]);
+    }).map(([threshold]) => threshold),
+  };
   return {
     version: 1,
     topK,
     caseCount: cases.length,
     completedCaseCount: completed.length,
     missingResultCount,
-    metrics: {
-      precisionAtK: average(answerable.map((item) => item.precisionAtK)),
-      recallAtK: average(answerable.map((item) => item.recallAtK)),
-      mrrAtK: average(answerable.map((item) => item.reciprocalRank)),
-      ndcgAtK: average(answerable.map((item) => item.ndcgAtK)),
-      citationPrecision: average(completed.map((item) => item.citationPrecision)),
-      citationRecall: average(completed.map((item) => item.citationRecall)),
-      abstentionAccuracy: average(completed.map((item) => Number(item.abstentionCorrect))),
-      p95LatencyMs: percentile95(completed.map((item) => item.latencyMs)),
-      totalCostMicrosUsd: completed.reduce((total, item) => total + item.costMicrosUsd, 0),
-      forbiddenExposureCount,
-      staleCitationCount,
-    },
+    metrics,
+    thresholdEvaluation,
     requiredLanguages,
     languageReview: byLanguage,
     readiness: {
@@ -186,7 +219,8 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
         ...(staleCitationCount ? [`${staleCitationCount} citations reference an unexpected source version`] : []),
         ...(!allCasesReviewed ? ["benchmark contains cases without human review"] : []),
         ...(incompleteRequiredLanguages.length ? [`required language coverage is missing or unreviewed: ${incompleteRequiredLanguages.join(", ")}`] : []),
-        "quality, latency, cost, and multilingual release thresholds are not configured by this local evaluator",
+        ...(thresholds === null ? ["quality, latency, cost, and safety thresholds are not configured"] : []),
+        "human release approval, reviewed language data, and deployed/provider acceptance are outside this local evaluator",
       ],
     },
     perCase,
@@ -194,14 +228,15 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
 }
 
 async function main(argv) {
-  const [datasetPath, resultsPath, topKArg] = argv;
+  const [datasetPath, resultsPath, topKArg, thresholdsPath] = argv;
   if (!datasetPath || !resultsPath) {
-    throw new Error("usage: knowledge-retrieval-eval.mjs <dataset.jsonl> <results.jsonl> [top-k]");
+    throw new Error("usage: knowledge-retrieval-eval.mjs <dataset.jsonl> <results.jsonl> [top-k] [thresholds.json]");
   }
   const cases = parseJsonLines(await readFile(datasetPath, "utf8"), "dataset");
   const results = parseJsonLines(await readFile(resultsPath, "utf8"), "results");
   const topK = topKArg === undefined ? 10 : Number(topKArg);
-  process.stdout.write(`${JSON.stringify(evaluateKnowledgeRetrieval({ cases, results, topK }), null, 2)}\n`);
+  const thresholds = thresholdsPath === undefined ? null : JSON.parse(await readFile(thresholdsPath, "utf8"));
+  process.stdout.write(`${JSON.stringify(evaluateKnowledgeRetrieval({ cases, results, topK, thresholds }), null, 2)}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -35,7 +35,7 @@ describe("independent permissioned FTS candidate generation", () => {
   it("scopes FTS rows by tenant, Space, Project, role, document status and user ACL before ranking", async () => {
     const all = vi.fn(async () => ({ results: [{
       id: "allowed_chunk_0", content: "exact audit identifier", r2_key: "kb/allowed", byte_start: 0,
-      byte_end: 22, line_start: 1, line_end: 1, title: "Allowed source",
+      byte_end: 22, line_start: 1, line_end: 1, title: "Allowed source", source_revision: 4,
     }] }));
     let boundArgs: unknown[] = [];
     const prepare = vi.fn((sql: string) => ({
@@ -48,7 +48,7 @@ describe("independent permissioned FTS candidate generation", () => {
       userId: "user-a", roleRank: 20,
     });
 
-    expect(results).toEqual([expect.objectContaining({ id: "allowed_chunk_0", title: "Allowed source", score: 0 })]);
+    expect(results).toEqual([expect.objectContaining({ id: "allowed_chunk_0", title: "Allowed source", score: 0, sourceRevision: 4 })]);
     const sql = prepare.mock.calls[0]?.[0] ?? "";
     expect(sql).toContain("kb_chunks_fts MATCH ?");
     expect(sql).toContain("k.tenant_id = ? AND k.space_id = ? AND k.project_id = ? AND k.required_role_rank <= ?");
