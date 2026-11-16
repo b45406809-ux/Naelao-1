@@ -7,9 +7,9 @@ export function workspaceBranchScope(branch?: string): string {
   return `:branch:${normalized}`;
 }
 export function sandboxInstanceName(spaceId: string, projectId?: string, branch?: string): string {
-  // A project has one main computer. Normal project branches are materialized from their
-  // checked coordinator revision into this serialized Durable Object. Speculative model-race
-  // branches remain isolated so concurrent candidates cannot share a writable filesystem.
-  const isolatedRace = Boolean(projectId && branch?.startsWith("race/"));
-  return `sandbox:${spaceId}:${projectId ?? "_assistant"}${isolatedRace ? workspaceBranchScope(branch) : ""}`;
+  // Keep the project main computer stable while giving delegated workers and model-race
+  // candidates distinct DO/container instances. A logical R2 branch prefix alone does not
+  // isolate the warm container process or its private /workspace disk.
+  const isolatedBranch = Boolean(projectId && (branch?.startsWith("race/") || branch?.startsWith("workers/")));
+  return `sandbox:${spaceId}:${projectId ?? "_assistant"}${isolatedBranch ? workspaceBranchScope(branch) : ""}`;
 }
