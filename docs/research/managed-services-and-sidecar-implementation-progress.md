@@ -1,10 +1,10 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (K14/K17 language-stratified evaluation; `3d67805e` pushed)
+## Latest cross-plan pointer — 2026-11-16 (K14/K17 language-pair evaluation; `d6f6cfb7` pushed)
 
-The local Knowledge search caller now supplies content-free traces; K17 reports overall and per-query-language metrics and checks caller-selected thresholds per language. Code `4e3c3a7a` and `3d67805e` are pushed and remote-verified. Evaluator and route integration tests pass **6/6** each, with Node syntax and diff checks. Shona/Ndebele/domain data remain synthetic or absent; no provider/deployed acceptance or rollout ran.
+The local Knowledge search caller now supplies content-free traces; K17 reports overall, per-query-language and query/source-language-pair metrics, and checks caller-selected thresholds at each level. Code `4e3c3a7a`, `3d67805e` and `d6f6cfb7` are pushed and remote-verified. Evaluator and route integration tests pass **6/6** each, with Node syntax and diff checks. Checked-in data remain English-only; no provider/deployed acceptance or rollout ran.
 
-S2 is `IMPLEMENTED_LOCAL` for currently supported provider lanes. S3–S9/U01–U12 remain partial at their recorded code, runtime-contract, provider-feed, product-policy and deployed-evidence gaps. Exact next action: add K14 query-language/source-language pair evaluation and per-pair threshold reporting using synthetic cross-language fixtures, then continue the remaining independent S/U/P/PW/EP gaps. Preserve rollout and runtime gates.
+S2 is `IMPLEMENTED_LOCAL` for currently supported provider lanes. S3–S9/U01–U12 remain partial at their recorded code, runtime-contract, provider-feed, product-policy and deployed-evidence gaps. Exact next action: implement owner-authorized per-conversation assistant routing for AgentMail threads, preserve the account-level default and route revision fences, and expose the setting in the owner Shell. Do not add user-issued switch commands until a verifiable channel-identity contract exists. Preserve rollout and runtime gates.
 
 ## Previous cross-plan pointer — 2026-11-16 (K07 versioned source lineage; `3bf31c66` pushed)
 

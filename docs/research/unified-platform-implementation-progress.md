@@ -1,10 +1,10 @@
 # Unified platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (K14/K17 language-stratified evaluation; `3d67805e` pushed)
+## Latest cross-plan pointer — 2026-11-16 (K14/K17 language-pair evaluation; `d6f6cfb7` pushed)
 
-The Knowledge search integration now produces content-free traces, with overall and per-query-language quality, safety, latency and cost metrics. Explicit thresholds must pass for each reported language. Code `4e3c3a7a` and `3d67805e` are pushed and remote-verified; evaluator and local route integration tests each pass **6/6**. No reviewed cross-language corpus or deployed/provider acceptance exists; rollout remains disabled.
+The Knowledge search integration now produces content-free traces, with overall, per-query-language and query/source-language-pair quality, safety, latency and cost metrics. Explicit thresholds must pass at every reported level. Code `4e3c3a7a`, `3d67805e` and `d6f6cfb7` are pushed and remote-verified; evaluator and local route integration tests each pass **6/6**. No reviewed cross-language corpus or deployed/provider acceptance exists; rollout remains disabled.
 
-Exact next action: add query-language/source-language pair evaluation and threshold checks with synthetic cross-language fixtures. Continue remaining S/U/P/PW/K/EP code gaps after that; keep all rollouts disabled.
+Exact next action: implement owner-authorized per-conversation AgentMail assistant routing with revision-pinned dispatch and an owner Shell caller. User-issued switch commands remain unsupported until the channel identity contract can prove the sender's Naelao principal. Continue remaining S/U/P/PW/K/EP code gaps; keep all rollouts disabled.
 
 ## Previous cross-plan pointer — 2026-11-16 (K07 source lineage; `3bf31c66` pushed)
 
