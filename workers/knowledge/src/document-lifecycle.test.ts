@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
+import { chunkTextWithOffsets } from "@naelao/rag";
 import { createWebsitePreviewToken, sha256TextHex } from "./website-source-preview.js";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; reindexDoc?: boolean; reindexChunks?: Array<{ chunk_index: number; content: string; content_hash: string; deleted_at: string | null }>; queueFails?: boolean; queueAcceptThenThrow?: boolean; failFirstBucketPut?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean; legacyAcl?: boolean; projectAccess?: boolean; websiteConnection?: boolean; websiteSource?: boolean; websiteRefreshOperation?: Record<string, unknown> } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; workflowChunkCount?: number; reindexDoc?: boolean; reindexChunks?: Array<{ chunk_index: number; content: string; content_hash: string; deleted_at: string | null }>; citationRow?: Record<string, unknown>; citationObject?: { key: string; content: string; contentHash: string }; queueFails?: boolean; queueAcceptThenThrow?: boolean; failFirstBucketPut?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean; legacyAcl?: boolean; projectAccess?: boolean; websiteConnection?: boolean; websiteSource?: boolean; websiteRefreshOperation?: Record<string, unknown> } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const idempotencyClaims = new Map<string, { request_sha256: string | null; document_id: string; state: "active" | "deleted"; dispatch_state: "claimed" | "dispatching" }>();
@@ -39,10 +40,11 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
             if (sql.includes("FROM spaces")) return { id: "space-1" };
             if (sql.includes("COUNT(*) as count FROM kb_documents")) return { count: 0 };
             if (sql.includes("SELECT id, title, status, chunk_count")) return options.workflowDoc
-              ? { id: "doc-1", title: "Guide", status: options.workflowStatus ?? "processing", chunk_count: 2,
+              ? { id: "doc-1", title: "Guide", status: options.workflowStatus ?? "processing", chunk_count: options.workflowChunkCount ?? 2,
                   required_role_rank: options.requiredRoleRank,
                   allowed_user_ids_json: options.allowedUserIds ? JSON.stringify(options.allowedUserIds) : null }
               : null;
+            if (sql.includes("FROM kb_chunks k JOIN kb_documents d")) return options.citationRow ?? null;
             if (sql.includes("SELECT id, status FROM kb_documents")) return options.workflowDoc
               ? { id: "doc-1", status: options.workflowStatus ?? "processing" }
               : null;
@@ -143,6 +145,10 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
         if (failFirstBucketPut) { failFirstBucketPut = false; throw new Error("temporary R2 outage"); }
         writes.push({ key, value }); bucketObjects.add(key);
       }),
+      get: vi.fn(async (key: string) => options.citationObject?.key === key ? {
+        customMetadata: { contentHash: options.citationObject.contentHash },
+        text: async () => options.citationObject!.content,
+      } : null),
       list: vi.fn(async () => ({ objects: [], truncated: false })),
       head: vi.fn(async (key: string) => bucketObjects.has(key) ? { key } : null),
       delete: vi.fn(async (key: string) => { bucketObjects.delete(key); }),
@@ -244,6 +250,36 @@ describe("Knowledge document lifecycle boundaries", () => {
       "kb/space-1/project-1/doc-1/chunk_0.json", "kb/space-1/project-1/doc-1/chunk_0.txt",
       "kb/space-1/project-1/doc-1/chunk_1.json", "kb/space-1/project-1/doc-1/chunk_1.txt",
     ]);
+  });
+
+  it("persists explicit overlapping source coordinates without accumulating prior chunk bytes", async () => {
+    const f = fixture({ workflowDoc: true });
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
+        projectId: "project-1", chunks: ["overlap alpha", "alpha beta"], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
+        chunkCoordinates: [
+          { byteStart: 0, byteEnd: 20, lineStart: 1, lineEnd: 2 },
+          { byteStart: 14, byteEnd: 24, lineStart: 2, lineEnd: 2 },
+        ],
+      },
+    ), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    const first = JSON.parse(String(f.writes.find(({ key }) => key.endsWith("chunk_0.json"))?.value)) as { byteStart: number; byteEnd: number; lineStart: number; lineEnd: number };
+    const second = JSON.parse(String(f.writes.find(({ key }) => key.endsWith("chunk_1.json"))?.value)) as { byteStart: number; byteEnd: number; lineStart: number; lineEnd: number };
+    expect(first).toMatchObject({ byteStart: 0, byteEnd: 20, lineStart: 1, lineEnd: 2 });
+    expect(second).toMatchObject({ byteStart: 14, byteEnd: 24, lineStart: 2, lineEnd: 2 });
+  });
+
+  it("accepts bounded workflow chunk ranges beyond the legacy 600-chunk ceiling", async () => {
+    const f = fixture({ workflowDoc: true, workflowChunkCount: 601 });
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
+        projectId: "project-1", chunks: ["last bounded chunk"], chunkOffset: 600, byteOffset: 0, lineOffset: 1,
+        chunkCoordinates: [{ byteStart: 1_000, byteEnd: 1_018, lineStart: 1, lineEnd: 1 }],
+      },
+    ), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(f.vectorUpserts.flat().map((vector) => vector.id)).toEqual(["doc-1_chunk_600"]);
   });
 
   it("stops internal workflow writes after the tenant or space is suspended", async () => {
@@ -384,6 +420,53 @@ describe("Knowledge document lifecycle boundaries", () => {
     expect(f.vectorUpserts).toHaveLength(1);
     expect(f.writes).toHaveLength(writesAfterFirst);
     expect(f.storageUsageEvents).toHaveLength(usageEventsAfterFirst);
+  });
+
+  it("keeps repeated Unicode synchronous chunks tied to their actual source spans", async () => {
+    const content = Array.from({ length: 180 }, () => "Repeated policy clause with emoji 😀 and the same wording.\r\n").join("");
+    const chunks = chunkTextWithOffsets(content);
+    const encoder = new TextEncoder();
+    const f = fixture();
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
+      title: "Repeated policy", content,
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(201);
+    const metadata = f.vectorUpserts.flat().map((vector) => vector.metadata);
+    expect(metadata).toHaveLength(chunks.length);
+    for (const [index, chunk] of chunks.entries()) {
+      const prefixStart = content.slice(0, chunk.charOffset).replace(/\r\n|\r/g, "\n");
+      const prefixEnd = content.slice(0, chunk.charEnd).replace(/\r\n|\r/g, "\n");
+      const expectedCoordinates = {
+        byte_start: encoder.encode(content.slice(0, chunk.charOffset)).byteLength,
+        byte_end: encoder.encode(content.slice(0, chunk.charEnd)).byteLength,
+        line_start: prefixStart.split("\n").length,
+        line_end: prefixEnd.split("\n").length,
+      };
+      expect(metadata[index]).toMatchObject(expectedCoordinates);
+      const insert = f.dbCalls.filter(({ sql }) => sql.includes("INSERT INTO kb_chunks"))[index];
+      expect(insert?.args.slice(12, 16)).toEqual([
+        expectedCoordinates.byte_start, expectedCoordinates.byte_end,
+        expectedCoordinates.line_start, expectedCoordinates.line_end,
+      ]);
+    }
+  });
+
+  it("resolves a source-coordinate citation from its bounded integrity-checked chunk object", async () => {
+    const content = "a bounded citation chunk";
+    const contentHash = await sha256TextHex(content);
+    const key = "kb/space-1/project-1/doc-1/chunk_1.txt";
+    const f = fixture({ projectAccess: true,
+      citationRow: { id: "doc-1_chunk_1", document_id: "doc-1", r2_key: key, content_hash: contentHash,
+        byte_start: 2_048, byte_end: 2_072, line_start: 5, line_end: 5 },
+      citationObject: { key, content, contentHash },
+    });
+    const response = await worker.fetch(await request(
+      "/spaces/space-1/projects/project-1/citations/doc-1/doc-1_chunk_1", "GET",
+    ), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ citation: { byte_start: 2_048, byte_end: 2_072, line_start: 5, line_end: 5 }, content });
+    expect((f.env as unknown as { KB_BUCKET: { get: ReturnType<typeof vi.fn> } }).KB_BUCKET.get).toHaveBeenCalledWith(key);
   });
 
   it("keeps owner-supplied URL excerpts unsupported without a website approval receipt", async () => {
@@ -600,7 +683,7 @@ describe("Knowledge document lifecycle boundaries", () => {
     const valid = fixture({ workflowDoc: true });
     const invalidResponse = await worker.fetch(await request(
       "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
-        projectId: "project-1", chunks: ["x".repeat(10 * 1024 + 1)], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
+        projectId: "project-1", chunks: ["x".repeat(2_049)], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
       },
     ), valid.env, {} as ExecutionContext);
     expect(invalidResponse.status).toBe(400);

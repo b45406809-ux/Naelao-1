@@ -17,6 +17,7 @@
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
 import { mintInternalToken, readBoundedResponseText } from "@naelao/http";
+import { chunkStructuredMarkdown, chunkTextWithOffsets, chunkSourceCoordinates, type StructuralChunk, type TextChunkWithOffsets } from "@naelao/rag";
 import type { Env } from "../env";
 
 export interface IngestionParams {
@@ -34,54 +35,10 @@ export interface IngestionParams {
 // 5 MB content limit per workflow run
 const MAX_CONTENT_BYTES = 5 * 1024 * 1024;
 
-// 10 KB target chunk size (character-based; actual split at word boundary)
-const CHUNK_SIZE_CHARS = 10 * 1024;
+type IngestionChunk = TextChunkWithOffsets | StructuralChunk;
 
-/**
- * Split text into chunks of up to chunkSize characters,
- * preferring to break at the last whitespace before the boundary
- * to avoid mid-word cuts.
- */
-function splitIntoChunks(text: string, chunkSize: number): string[] {
-  const chunks: string[] = [];
-  let offset = 0;
-
-  while (offset < text.length) {
-    if (offset + chunkSize >= text.length) {
-      // Last chunk — take whatever remains
-      chunks.push(text.slice(offset));
-      break;
-    }
-
-    // Find the last whitespace within the chunk window
-    let end = offset + chunkSize;
-    let nextOffset = end;
-    const slice = text.slice(offset, end);
-    const lastSpace = slice.lastIndexOf(" ");
-
-    if (lastSpace > 0) {
-      end = offset + lastSpace;
-      nextOffset = end + 1;
-    }
-
-    chunks.push(text.slice(offset, end).trim());
-    offset = nextOffset;
-  }
-
-  return chunks.filter(c => c.length > 0);
-}
-
-function chunkOffsets(text: string, chunks: string[]): Array<{ byteOffset: number; lineOffset: number }> {
-  let cursor = 0;
-  return chunks.map((chunk) => {
-    const characterOffset = Math.max(cursor, text.indexOf(chunk, cursor));
-    const offset = {
-      byteOffset: new TextEncoder().encode(text.slice(0, characterOffset)).byteLength,
-      lineOffset: text.slice(0, characterOffset).split("\n").length,
-    };
-    cursor = characterOffset + chunk.length;
-    return offset;
-  });
+function chunkKnowledgeText(text: string, contentType: string): IngestionChunk[] {
+  return contentType === "pdf" ? chunkStructuredMarkdown(text) : chunkTextWithOffsets(text);
 }
 
 export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams> {
@@ -191,7 +148,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
         const content = await obj.text();
         const contentBytes = new TextEncoder().encode(content).byteLength;
         if (contentBytes > MAX_CONTENT_BYTES) throw new Error(`Document content exceeds 5MB byte limit: size=${contentBytes}`);
-        return splitIntoChunks(content, CHUNK_SIZE_CHARS).length;
+        return chunkKnowledgeText(content, params.contentType).length;
       });
 
       await step.do("set-total-chunks", networkRetry, async () => {
@@ -211,16 +168,17 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
             throw new Error("Staged document changed or disappeared between workflow steps");
           }
           const content = await obj.text();
-          const chunks = splitIntoChunks(content, CHUNK_SIZE_CHARS);
+          const chunks = chunkKnowledgeText(content, params.contentType);
           if (chunks.length !== chunkCount) throw new Error("Staged document chunk count changed between workflow steps");
-          const offsets = chunkOffsets(content, chunks);
           const batch = chunks.slice(offset, offset + 50);
+          const coordinates = chunkSourceCoordinates(content, batch);
           const resp = await this.env.KNOWLEDGE_WORKER.fetch(`https://knowledge-worker${documentPath}/ingest-chunks`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...(await internalHeaders()) },
             body: JSON.stringify({
-              chunks: batch, projectId: params.projectId, chunkOffset: offset,
-              byteOffset: offsets[offset]?.byteOffset ?? 0, lineOffset: offsets[offset]?.lineOffset ?? 1,
+              chunks: batch.map((chunk) => chunk.content), chunkCoordinates: coordinates,
+              projectId: params.projectId, chunkOffset: offset,
+              byteOffset: coordinates[0]?.byteStart ?? 0, lineOffset: coordinates[0]?.lineStart ?? 1,
               requiredRoleRank: params.requiredRoleRank ?? 0, allowedUserIds: params.allowedUserIds ?? [],
             }),
           });

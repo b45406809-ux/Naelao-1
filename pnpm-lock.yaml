@@ -1541,6 +1541,9 @@ importers:
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@naelao/rag':
+        specifier: workspace:*
+        version: link:../../packages/rag
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types

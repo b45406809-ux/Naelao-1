@@ -12,7 +12,8 @@
   "dependencies": {
     "@naelao/agent-sdk": "workspace:*",
     "@naelao/types": "workspace:*",
-    "@naelao/http": "workspace:*"
+    "@naelao/http": "workspace:*",
+    "@naelao/rag": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

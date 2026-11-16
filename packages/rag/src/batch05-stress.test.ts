@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { chunkText } from "./chunk.js";
+import { chunkText, chunkTextWithOffsets, chunkSourceCoordinates } from "./chunk.js";
 import { embedBatch } from "./embed.js";
 import { googleModeSearch } from "./hybrid.js";
 import { lookupSemanticCache } from "./semantic-cache.js";
@@ -23,6 +23,52 @@ describe("RAG stress boundaries", () => {
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.every((chunk) => chunk.length <= 128)).toBe(true);
     expect(chunks[1]).toContain(chunks[0]?.slice(-32));
+  });
+
+  it("preserves exact offsets for repeated Unicode paragraphs and long sentences", () => {
+    const repeated = Array.from({ length: 400 }, () => "Repeated paragraph with emoji 😀 and the same wording. ").join("\n");
+    const repeatedChunks = chunkTextWithOffsets(repeated);
+    expect(repeatedChunks.length).toBeGreaterThan(1);
+    for (const chunk of repeatedChunks) {
+      expect(chunk.charEnd).toBeGreaterThan(chunk.charOffset);
+      expect(repeated.slice(chunk.charOffset, chunk.charEnd).trimEnd()).toBe(chunk.content);
+      expect(chunk.content.length).toBeLessThanOrEqual(2_048);
+    }
+    const repeatedCoordinates = chunkSourceCoordinates(repeated, repeatedChunks);
+    const encoder = new TextEncoder();
+    expect(repeatedCoordinates).toEqual(repeatedChunks.map((chunk) => ({
+      byteStart: encoder.encode(repeated.slice(0, chunk.charOffset)).byteLength,
+      byteEnd: encoder.encode(repeated.slice(0, chunk.charEnd)).byteLength,
+      lineStart: repeated.slice(0, chunk.charOffset).split("\n").length,
+      lineEnd: repeated.slice(0, chunk.charEnd).split("\n").length,
+    })));
+
+    const crlf = "first 😀 line\r\nsecond line\rthird line";
+    const crlfCoordinates = chunkSourceCoordinates(crlf, [{ charOffset: 0, charEnd: crlf.length }]);
+    expect(crlfCoordinates).toEqual([{
+      byteStart: 0,
+      byteEnd: encoder.encode(crlf).byteLength,
+      lineStart: 1,
+      lineEnd: 3,
+    }]);
+
+    const longSentence = `${"x".repeat(2_500)}😀${"y".repeat(2_500)}`;
+    const forced = chunkTextWithOffsets(longSentence);
+    expect(forced.length).toBeGreaterThan(1);
+    expect(forced.every((chunk) => chunk.content.length <= 2_048)).toBe(true);
+    for (const chunk of forced) {
+      expect(longSentence.slice(chunk.charOffset, chunk.charEnd)).toBe(chunk.content);
+      for (let index = 0; index < chunk.content.length; index++) {
+        const code = chunk.content.charCodeAt(index);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          expect(chunk.content.charCodeAt(index + 1)).toBeGreaterThanOrEqual(0xdc00);
+          expect(chunk.content.charCodeAt(index + 1)).toBeLessThanOrEqual(0xdfff);
+          index++;
+        } else {
+          expect(code < 0xdc00 || code > 0xdfff).toBe(true);
+        }
+      }
+    }
   });
 
   it("chunks punctuation-dense input without quadratic sentence-splitting work", () => {

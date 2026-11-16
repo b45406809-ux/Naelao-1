@@ -7,7 +7,7 @@
 
 import { Hono } from "hono";
 import { HttpError, RequestBodyTooLargeError, requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, parseBoundedInteger, readBoundedRequestText, readBoundedResponseJson } from "@naelao/http";
-import { chunkText, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope, type StructuralChunk } from "@naelao/rag";
+import { chunkTextWithOffsets, chunkSourceCoordinates, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationSourceSpan, type GroundedSearchHit, type RetrievalScope, type StructuralChunk, type TextChunkWithOffsets } from "@naelao/rag";
 import { buildRetrievalPredicate, checkSsrf, isRetrievalRecordAllowed, isSpaceNetworkEgressDenied, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
@@ -899,24 +899,8 @@ function docR2Prefix(spaceId: string, projectId: string | null | undefined, docI
   return `kb/${spaceId}/${projectId ?? "_space"}/${docId}/`;
 }
 
-function chunkCoordinates(document: string, chunks: string[], sourceChunks?: StructuralChunk[]): Array<{ byteStart: number; byteEnd: number; lineStart: number; lineEnd: number }> {
-  const encoder = new TextEncoder();
-  let cursor = 0;
-  return chunks.map((chunk, index) => {
-    const sourceChunk = sourceChunks?.[index];
-    const characterStart = sourceChunk ? sourceChunk.charOffset : document.indexOf(chunk, cursor);
-    const start = Math.max(0, Math.min(document.length, characterStart < 0 ? cursor : characterStart));
-    const end = sourceChunk
-      ? Math.max(start, Math.min(document.length, sourceChunk.charEnd))
-      : Math.min(document.length, start + chunk.length);
-    cursor = end;
-    return {
-      byteStart: encoder.encode(document.slice(0, start)).byteLength,
-      byteEnd: encoder.encode(document.slice(0, end)).byteLength,
-      lineStart: document.slice(0, start).split("\n").length,
-      lineEnd: document.slice(0, end).split("\n").length,
-    };
-  });
+function chunkCoordinates(document: string, sourceChunks: Array<StructuralChunk | TextChunkWithOffsets>) {
+  return chunkSourceCoordinates(document, sourceChunks);
 }
 
 // Foundry's source-reference checker and explicit cross-Space document-share route call these
@@ -1135,21 +1119,47 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
   const body = await readBoundedJson<{
     chunks?: unknown; projectId?: unknown; chunkOffset?: unknown; byteOffset?: unknown; lineOffset?: unknown;
-    requiredRoleRank?: unknown; allowedUserIds?: unknown;
+    requiredRoleRank?: unknown; allowedUserIds?: unknown; chunkCoordinates?: unknown;
   }>(c.req.raw, 700_000);
   if (!body || typeof body !== "object" || Array.isArray(body) ||
       typeof body.projectId !== "string" || !body.projectId || body.projectId.length > 256 ||
-      !Number.isSafeInteger(body.chunkOffset) || Number(body.chunkOffset) < 0 || Number(body.chunkOffset) >= 600 ||
+      !Number.isSafeInteger(body.chunkOffset) || Number(body.chunkOffset) < 0 || Number(body.chunkOffset) >= 12_000 ||
       !Number.isSafeInteger(body.byteOffset) || Number(body.byteOffset) < 0 || Number(body.byteOffset) > 5 * 1024 * 1024 ||
       !Number.isSafeInteger(body.lineOffset) || Number(body.lineOffset) < 1 || Number(body.lineOffset) > 5 * 1024 * 1024 ||
       (body.requiredRoleRank !== undefined && (!Number.isSafeInteger(body.requiredRoleRank) || Number(body.requiredRoleRank) < 0 || Number(body.requiredRoleRank) > 50)) ||
       (body.allowedUserIds !== undefined && (!Array.isArray(body.allowedUserIds) || body.allowedUserIds.length > 100 ||
         body.allowedUserIds.some((id) => typeof id !== "string" || !id || id.length > 256))) ||
       !Array.isArray(body.chunks) || body.chunks.length === 0 || body.chunks.length > 50 ||
-      body.chunks.some((chunk) => typeof chunk !== "string" || chunk.length === 0 || chunk.length > 10 * 1024)) {
+      body.chunks.some((chunk) => typeof chunk !== "string" || chunk.length === 0 || chunk.length > 2_048)) {
     throw badRequest("Invalid workflow chunks");
   }
   const rawChunks = body.chunks as string[];
+  let explicitCoordinates: Array<{ byteStart: number; byteEnd: number; lineStart: number; lineEnd: number }> | null = null;
+  if (body.chunkCoordinates !== undefined) {
+    if (!Array.isArray(body.chunkCoordinates) || body.chunkCoordinates.length !== rawChunks.length) {
+      throw badRequest("Workflow chunk coordinates must match the chunk batch");
+    }
+    explicitCoordinates = [];
+    let previousByteStart = -1;
+    let previousLineStart = 0;
+    for (const rawCoordinate of body.chunkCoordinates) {
+      if (!rawCoordinate || typeof rawCoordinate !== "object" || Array.isArray(rawCoordinate)) {
+        throw badRequest("Workflow chunk coordinates are invalid");
+      }
+      const coordinate = rawCoordinate as Record<string, unknown>;
+      const { byteStart, byteEnd, lineStart, lineEnd } = coordinate;
+      if (![byteStart, byteEnd, lineStart, lineEnd].every(Number.isSafeInteger)
+        || Number(byteStart) < 0 || Number(byteEnd) <= Number(byteStart) || Number(byteEnd) > 5 * 1024 * 1024
+        || Number(lineStart) < 1 || Number(lineEnd) < Number(lineStart) || Number(lineEnd) > 5 * 1024 * 1024
+        || Number(byteStart) < previousByteStart || Number(lineStart) < previousLineStart) {
+        throw badRequest("Workflow chunk coordinates are outside the source bounds");
+      }
+      explicitCoordinates.push({ byteStart: Number(byteStart), byteEnd: Number(byteEnd),
+        lineStart: Number(lineStart), lineEnd: Number(lineEnd) });
+      previousByteStart = Number(byteStart);
+      previousLineStart = Number(lineStart);
+    }
+  }
   const rawBytes = rawChunks.reduce((total, chunk) => total + new TextEncoder().encode(chunk).byteLength, 0);
   if (rawBytes > 5 * 1024 * 1024) throw new HttpError(413, "payload_too_large", "Workflow chunks exceed 5 MiB");
   for (const chunk of rawChunks) {
@@ -1213,10 +1223,11 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
     const chunk = chunks[i]!;
     const chunkIndex = chunkOffset + i;
     const byteLength = new TextEncoder().encode(chunk).byteLength;
-    const lineStart = Number(body.lineOffset) + chunks.slice(0, i).reduce((lines, value) => lines + (value.match(/\n/g)?.length ?? 0), 0);
-    const byteStart = Number(body.byteOffset) + chunks.slice(0, i).reduce((bytes, value) => bytes + new TextEncoder().encode(value).byteLength, 0);
-    const lineEnd = lineStart + (chunk.match(/\n/g)?.length ?? 0);
-    const coordinate = { byteStart, byteEnd: byteStart + byteLength, lineStart, lineEnd };
+    const explicitCoordinate = explicitCoordinates?.[i];
+    const lineStart = explicitCoordinate?.lineStart ?? Number(body.lineOffset) + chunks.slice(0, i).reduce((lines, value) => lines + (value.match(/\n/g)?.length ?? 0), 0);
+    const byteStart = explicitCoordinate?.byteStart ?? Number(body.byteOffset) + chunks.slice(0, i).reduce((bytes, value) => bytes + new TextEncoder().encode(value).byteLength, 0);
+    const lineEnd = explicitCoordinate?.lineEnd ?? lineStart + (chunk.match(/\n/g)?.length ?? 0);
+    const coordinate = { byteStart, byteEnd: explicitCoordinate?.byteEnd ?? byteStart + byteLength, lineStart, lineEnd };
     const chunkId = `${docId}_chunk_${chunkIndex}`;
     const contentHash = await sha256Hex(chunk);
     const record: ChunkRecord = {
@@ -1875,13 +1886,17 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
 
     // ── Chunking ────────────────────────────────────────────────────────────
     const structuralChunks = contentType === "pdf" ? chunkStructuredMarkdown(sanitizedContent) : [];
-    const chunks = structuralChunks.length ? structuralChunks.map((chunk) => chunk.content) : chunkText(sanitizedContent);
+    const sourceChunks: Array<StructuralChunk | TextChunkWithOffsets> = structuralChunks.length
+      ? structuralChunks
+      : chunkTextWithOffsets(sanitizedContent);
+    const chunks = sourceChunks.map((chunk) => chunk.content);
 
     if (chunks.length === 0) {
       // Content too short to chunk — treat as one chunk
       chunks.push(sanitizedContent.trim());
+      sourceChunks.push({ content: sanitizedContent.trim(), charOffset: 0, charEnd: sanitizedContent.length });
     }
-    const coordinates = chunkCoordinates(sanitizedContent, chunks, structuralChunks.length ? structuralChunks : undefined);
+    const coordinates = chunkCoordinates(sanitizedContent, sourceChunks);
 
     // ── Embedding (batch, 50 chunks per CF AI call) ─────────────────────────
     const EMBED_BATCH_SIZE = 50;
@@ -1976,7 +1991,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, NULL)`
       ).bind(chunkId, tenantId, spaceId, projectId ?? SPACE_WIDE_PROJECT_SENTINEL, docId, i,
         chunk, contentHash, projectId ? "project" : "space", requiredRoleRank, now,
-        citationR2Key(spaceId, projectId, docId, i), 0, new TextEncoder().encode(chunk).byteLength,
+        citationR2Key(spaceId, projectId, docId, i), coordinate.byteStart, coordinate.byteEnd,
         coordinate.lineStart, coordinate.lineEnd, now).run();
     }
 
@@ -2257,9 +2272,13 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   try {
     // Finish every fallible embedding request before replacing the current index. A provider
     // timeout or malformed embedding must leave the previously indexed document usable.
-    const chunks = chunkText(newContent);
-    if (chunks.length === 0) chunks.push(newContent.trim());
-    const coordinates = chunkCoordinates(newContent, chunks);
+    const sourceChunks = chunkTextWithOffsets(newContent);
+    const chunks = sourceChunks.map((chunk) => chunk.content);
+    if (chunks.length === 0) {
+      chunks.push(newContent.trim());
+      sourceChunks.push({ content: newContent.trim(), charOffset: 0, charEnd: newContent.length });
+    }
+    const coordinates = chunkCoordinates(newContent, sourceChunks);
     const indexedAt = new Date().toISOString();
     const EMBED_BATCH_SIZE = 50;
     const allEmbedResults: Array<{ embedding: number[]; tokenCount: number }> = [];
@@ -2342,7 +2361,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
          byte_end,line_start,line_end,created_at,deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'[]',?,?,?,?,?,?,NULL)`
       ).bind(chunkId, tenantId, spaceId, projectId ?? SPACE_WIDE_PROJECT_SENTINEL, docId, i, chunk,
         contentHash, projectId ? "project" : "space", requiredRoleRank, indexedAt, citationR2Key(spaceId, projectId, docId, i),
-        0, new TextEncoder().encode(chunk).byteLength, coordinate.lineStart, coordinate.lineEnd, indexedAt).run();
+        coordinate.byteStart, coordinate.byteEnd, coordinate.lineStart, coordinate.lineEnd, indexedAt).run();
 
       vectorUpserts.push({
         id: chunkId,
@@ -2591,8 +2610,8 @@ app.get("/spaces/:spaceId/kb/documents/:docId/deletion", async (c) => {
   return c.json({ deletion }, 200);
 });
 
-// Canonical citation resolver. Neither model nor browser supplies an R2 key: the key and range
-// are loaded from the immutable chunk record after tenant/project/role authorization.
+// Canonical citation resolver. Neither model nor browser supplies an R2 key: the key and source
+// span are loaded from the immutable chunk record after tenant/project/role authorization.
 app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
@@ -2613,16 +2632,11 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
   ).bind(c.req.param("chunkId"), c.req.param("documentId"), tenantId, spaceId, projectId, roleRank)
     .first<Record<string, unknown>>();
   if (!row) throw notFound("Citation not found");
-  const head = await c.env.KB_BUCKET.head(String(row.r2_key));
-  if (!head) throw notFound("Citation not found");
-  const coordinate = verifyCitationCoordinate({ r2Key: String(row.r2_key), byteStart: Number(row.byte_start),
-    byteEnd: Number(row.byte_end), lineStart: Number(row.line_start), lineEnd: Number(row.line_end) },
-    { r2Key: String(row.r2_key), size: head.size, lineCount: Number(row.line_end) });
-  if (head.customMetadata?.contentHash !== String(row.content_hash)) throw notFound("Citation not found");
-  const object = await c.env.KB_BUCKET.get(coordinate.r2Key, {
-    range: { offset: coordinate.byteStart, length: coordinate.byteEnd - coordinate.byteStart },
-  });
+  const coordinate = verifyCitationSourceSpan({ r2Key: String(row.r2_key), byteStart: Number(row.byte_start),
+    byteEnd: Number(row.byte_end), lineStart: Number(row.line_start), lineEnd: Number(row.line_end) }, String(row.r2_key), 5 * 1024 * 1024);
+  const object = await c.env.KB_BUCKET.get(coordinate.r2Key);
   if (!object) throw notFound("Citation not found");
+  if (object.customMetadata?.contentHash !== String(row.content_hash)) throw notFound("Citation not found");
   const content = await object.text();
   if (await sha256Hex(content) !== String(row.content_hash)) throw notFound("Citation not found");
   return c.json({ citation: { version: 1, identity: `${row.document_id}:${row.id}:${row.content_hash}`,

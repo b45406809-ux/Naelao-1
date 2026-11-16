@@ -3,6 +3,7 @@ import { chunkStructuredMarkdown } from "./chunking.js";
 import {
   formatNumberedCitations,
   verifyCitationCoordinate,
+  verifyCitationSourceSpan,
 } from "./citations.js";
 import { googleModeSearch, reciprocalRankFusion } from "./hybrid.js";
 import { lookupSemanticCache } from "./semantic-cache.js";
@@ -118,5 +119,9 @@ describe("Batch 05 phase 2", () => {
     expect(() =>
       verifyCitationCoordinate(candidate, { r2Key: "kb/other.txt", size: 10 })
     ).toThrow(/not accessible/);
+    expect(verifyCitationSourceSpan({ ...candidate, r2Key: "kb/doc-chunk.txt", byteStart: 2_048, byteEnd: 4_096 }, "kb/doc-chunk.txt"))
+      .toMatchObject({ byteStart: 2_048, byteEnd: 4_096 });
+    expect(() => verifyCitationSourceSpan({ ...candidate, r2Key: "kb/doc-chunk.txt", byteStart: 6, byteEnd: 6 }, "kb/doc-chunk.txt"))
+      .toThrow(/source span/);
   });
 });

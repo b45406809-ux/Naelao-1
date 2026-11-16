@@ -82,6 +82,28 @@ export function verifyCitationCoordinate(
   return proposed;
 }
 
+/** Validate persisted source provenance independently from the bounded citation chunk object. */
+export function verifyCitationSourceSpan(
+  proposed: CitationCoordinate,
+  expectedR2Key: string,
+  maxSourceBytes = Number.MAX_SAFE_INTEGER,
+): CitationCoordinate {
+  if (proposed.r2Key !== expectedR2Key) throw new Error("citation key is not accessible");
+  if (!Number.isSafeInteger(proposed.byteStart) || !Number.isSafeInteger(proposed.byteEnd)
+    || !Number.isSafeInteger(maxSourceBytes) || maxSourceBytes < 1
+    || proposed.byteStart < 0 || proposed.byteEnd <= proposed.byteStart || proposed.byteEnd > maxSourceBytes) {
+    throw new Error("citation source span is invalid");
+  }
+  if (proposed.lineStart !== undefined || proposed.lineEnd !== undefined) {
+    const { lineStart, lineEnd } = proposed;
+    if (lineStart === undefined || lineEnd === undefined || !Number.isSafeInteger(lineStart)
+      || !Number.isSafeInteger(lineEnd) || lineStart < 1 || lineEnd < lineStart || lineEnd > maxSourceBytes) {
+      throw new Error("citation source line span is invalid");
+    }
+  }
+  return proposed;
+}
+
 /** Numbering is based only on the immutable citation identity, so partial stream re-renders do
  * not renumber an already displayed badge. */
 export function stableCitationNumbers(

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { chunkTextWithOffsets } from "@naelao/rag";
 import { KbIngestionWorkflow } from "../../workers/workflows/src/workflows/KbIngestionWorkflow.js";
 
 const MAX_CONTENT_BYTES = 5 * 1024 * 1024;
@@ -67,6 +68,7 @@ describe("KB ingestion workflow bounds and side effects", () => {
       (request.init.headers as Record<string, string>)["X-Naelao-Internal-Token"])).toBe(true);
     expect(JSON.parse(String(ctx.requests[2]?.init?.body))).toMatchObject({
       chunks: ["alpha beta gamma"],
+      chunkCoordinates: [{ byteStart: 0, byteEnd: 16, lineStart: 1, lineEnd: 1 }],
       projectId: "project-1",
       chunkOffset: 0,
       byteOffset: 0,
@@ -116,13 +118,34 @@ describe("KB ingestion workflow bounds and side effects", () => {
 
   it("sends long documents in bounded batches without dropping non-whitespace boundary characters", async () => {
     const content = "a".repeat(10 * 1024 * 55);
+    const expectedChunks = chunkTextWithOffsets(content);
     const ctx = setup({ size: new TextEncoder().encode(content).byteLength, text: async () => content });
     await ctx.workflow.run(ctx.event as never, ctx.step as never);
     const requests = ctx.requests.filter(({ url }) => url.endsWith("/ingest-chunks"));
-    expect(requests).toHaveLength(2);
-    const bodies = requests.map(({ init }) => JSON.parse(String(init?.body)) as { chunks: string[]; chunkOffset: number });
-    expect(bodies.map(({ chunkOffset, chunks }) => [chunkOffset, chunks.length])).toEqual([[0, 50], [50, 5]]);
-    expect(bodies.flatMap(({ chunks }) => chunks).join("")).toBe(content);
+    expect(requests).toHaveLength(Math.ceil(expectedChunks.length / 50));
+    const bodies = requests.map(({ init }) => JSON.parse(String(init?.body)) as {
+      chunks: string[]; chunkOffset: number;
+      chunkCoordinates: Array<{ byteStart: number; byteEnd: number; lineStart: number; lineEnd: number }>;
+    });
+    expect(bodies.map(({ chunkOffset, chunks }) => [chunkOffset, chunks.length])).toEqual(
+      Array.from({ length: Math.ceil(expectedChunks.length / 50) }, (_, index) => [index * 50, Math.min(50, expectedChunks.length - index * 50)]),
+    );
+    expect(bodies.flatMap(({ chunks }) => chunks)).toEqual(expectedChunks.map(({ content: chunk }) => chunk));
+    expect(bodies.flatMap(({ chunkCoordinates }) => chunkCoordinates)).toEqual(expectedChunks.map((chunk) => ({
+      byteStart: chunk.charOffset, byteEnd: chunk.charEnd, lineStart: 1, lineEnd: 1,
+    })));
+    expect(expectedChunks.at(-1)?.charEnd).toBe(content.length);
+    expect(expectedChunks.every((chunk) => chunk.content.length <= 2_048)).toBe(true);
+  });
+
+  it("reports UTF-8 byte and line coordinates for Unicode text with CRLF newlines", async () => {
+    const content = "first 😀 line\r\nsecond line";
+    const ctx = setup({ size: new TextEncoder().encode(content).byteLength, text: async () => content });
+    await ctx.workflow.run(ctx.event as never, ctx.step as never);
+    const body = JSON.parse(String(ctx.requests.find(({ url }) => url.endsWith("/ingest-chunks"))?.init?.body)) as {
+      chunkCoordinates: Array<{ byteStart: number; byteEnd: number; lineStart: number; lineEnd: number }>;
+    };
+    expect(body.chunkCoordinates).toEqual([{ byteStart: 0, byteEnd: new TextEncoder().encode(content).byteLength, lineStart: 1, lineEnd: 2 }]);
   });
 
   it("rejects non-staging R2 keys before reading or deleting bucket data", async () => {
