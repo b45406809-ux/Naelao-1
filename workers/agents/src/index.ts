@@ -75,6 +75,7 @@ import { SkillLibrary } from "./script-engine/skill-library.js";
 import { compileDynamicCode } from "./script-engine/dynamic-code.js";
 import { compileWorkflowEntrypoint } from "./workflows/workflow-compiler.js";
 import { workflowRunStub, type DurableWorkflowHostEnv } from "./workflows/workflow-host.js";
+import { agentTaskRecoverySummary } from "./workflows/agent-task-recovery-summary.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
 import { verifyWebhookSignature, normalizeWebhook, webhookGoal } from "./connectors/webhook-normalizer.js";
@@ -3923,6 +3924,17 @@ app.patch("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) => {
 // GET  /spaces/:spaceId/tasks/:taskId     — poll task status (optional ?timeout=30)
 // POST /internal/tasks/:taskId/run        — internal: invoked by AgentTaskWorkflow
 
+async function addTaskRecoverySummary(env: AgentsEnv, task: Record<string, unknown>, tenantId: string, spaceId: string): Promise<Record<string, unknown>> {
+  const taskId = typeof task.task_id === "string" ? task.task_id : "";
+  const projectId = typeof task.project_id === "string" ? task.project_id : null;
+  try {
+    const record = await workflowRunStub(env as unknown as DurableWorkflowHostEnv, { tenantId, spaceId, runId: taskId }).existing();
+    return { ...task, recovery: agentTaskRecoverySummary(record, { tenantId, spaceId, taskId, projectId }) };
+  } catch {
+    return { ...task, recovery: { state: "journal_unavailable", limitations: ["unsaved_process_memory_is_not_recoverable", "runtime_isolation_is_not_proven"] } };
+  }
+}
+
 app.get("/spaces/:spaceId/tasks", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
@@ -3947,7 +3959,12 @@ app.get("/spaces/:spaceId/tasks", async (c) => {
 
   const stub = getTaskDO(c.env, spaceId);
   const query = new URLSearchParams({ space_id: spaceId, ...(sessionId ? { session_id: sessionId } : {}), ...(projectId ? { project_id: projectId } : {}), ...(cursor ? { cursor } : {}) });
-  return stub.fetch(`http://task-do/tasks?${query}`);
+  const response = await stub.fetch(`http://task-do/tasks?${query}`);
+  if (!response.ok) return response;
+  const result = await response.json<{ tasks?: Array<Record<string, unknown>>; [key: string]: unknown }>().catch(() => null);
+  if (!result || !Array.isArray(result.tasks)) return c.json({ error: "task_list_unavailable" }, 502);
+  const tasks = await Promise.all(result.tasks.map(task => addTaskRecoverySummary(c.env, task, tenantId, spaceId)));
+  return c.json({ ...result, tasks });
 });
 
 app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
@@ -3978,8 +3995,14 @@ app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
     // Do not reveal whether a task in another conversation exists.
     return c.json({ error: "not_found" }, 404);
   }
-  if (timeout === "0" || task.status === "complete" || task.status === "failed") return c.json(task);
-  return stub.fetch(`http://task-do/tasks/${encodeURIComponent(taskId)}?timeout=${encodeURIComponent(timeout)}`);
+  if (timeout !== "0" && task.status !== "complete" && task.status !== "failed") {
+    const polled = await stub.fetch(`http://task-do/tasks/${encodeURIComponent(taskId)}?timeout=${encodeURIComponent(timeout)}`);
+    if (!polled.ok) return polled;
+    const updated = await polled.json<Record<string, unknown>>().catch(() => null);
+    if (!updated) return c.json({ error: "task_status_unavailable" }, 502);
+    return c.json(await addTaskRecoverySummary(c.env, updated, tenantId, spaceId));
+  }
+  return c.json(await addTaskRecoverySummary(c.env, task as Record<string, unknown>, tenantId, spaceId));
 });
 
 // Internal route: AgentTaskWorkflow calls this to execute the agent synchronously.

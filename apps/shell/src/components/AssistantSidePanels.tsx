@@ -642,6 +642,13 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       </div>
       {projectId && !sessionId && <p style={{ color: "var(--text3)", fontSize: 11 }}>Conversation: <Link href={`/p/${product.slug}/sessions/${encodeURIComponent(task.session_id)}`}>{task.session_id.slice(0, 24)}</Link></p>}
       <p style={{ color: "var(--text3)", fontSize: 11 }}>Started {formatTaskStartTime(task.created_at)}{typeof task.elapsed_ms === "number" && Number.isFinite(task.elapsed_ms) && task.elapsed_ms >= 0 ? ` · Elapsed ${formatElapsedTime(task.elapsed_ms)} (includes approval waits)` : ""}</p>
+      {task.recovery?.state === "checkpoint_available" && task.recovery.checkpoint && <p role="status" style={{ color: task.recovery.checkpoint.stale ? "var(--text3)" : "var(--accent)", fontSize: 11 }}>
+        Last durable step: {task.recovery.checkpoint.step_name} · checkpoint {task.recovery.checkpoint.sequence} · {new Date(task.recovery.checkpoint.recorded_at).toLocaleString()}
+        {task.recovery.checkpoint.stale ? " · workflow advanced after this checkpoint; later work may be unsaved" : ""}. Unsaved process memory cannot be recovered.
+      </p>}
+      {task.recovery && task.recovery.state !== "checkpoint_available" && <p role="status" style={{ color: "var(--text3)", fontSize: 11 }}>
+        {task.recovery.state === "no_durable_checkpoint" ? "No durable step checkpoint is available." : task.recovery.state === "journal_unavailable" ? "Durable recovery status is unavailable." : "Durable recovery scope could not be verified."} Unsaved process memory cannot be recovered.
+      </p>}
       {!task.error && <p style={{ overflowWrap: "anywhere" }}>{taskProgressHint(task.status) ?? taskOutcomePreview(task)}</p>}
       {task.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{task.error.slice(0, 400)}</p>}
       {task.coordination_summary && <details style={{ marginTop: 8 }}>

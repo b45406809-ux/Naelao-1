@@ -994,6 +994,12 @@ export interface DurableAgentTask {
   created_at: string;
   /** Elapsed wall time; includes time spent waiting for user approval. */
   elapsed_ms?: number;
+  recovery?: {
+    state: "checkpoint_available" | "no_durable_checkpoint" | "scope_mismatch" | "journal_unavailable";
+    workflow_status?: string;
+    checkpoint?: { sequence: number; step_name: string; recorded_at: number; artifact_sha256_prefix: string; artifact_bytes: number; stale: boolean };
+    limitations: string[];
+  };
   /** Content-free aggregate; safe to show in a project-wide task list. */
   coordination_summary?: {
     graph_count: number;
