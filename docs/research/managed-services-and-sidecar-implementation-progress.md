@@ -2,7 +2,7 @@
 
 ## Cross-plan checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
 
-No managed-service source/status changed in this slice. The incorporated AgentPhone adapter plan remains provider-gated: generic capability evidence and AgentPort discovery do not establish AgentPhone API, auth, events, voice or pricing. No registration, provisioning, messaging, calling or spend occurred. The independent TBR04 preview work is pushed as `9fc1930d` + `f9596f4a`; Spaces tests **27/27**, Spaces/Shell typechecks and diff check pass. Exact next action: continue TBR03 in the platform/TBR ledger, then return to the first-plan S/U work queue and all other independent requirements; keep rollouts disabled.
+No managed-service source/status changed in this slice. The incorporated AgentPhone adapter plan remains provider-gated: generic capability evidence and AgentPort discovery do not establish AgentPhone API, auth, events, voice or pricing. No registration, provisioning, messaging, calling or spend occurred. The independent TBR04 preview work is pushed as `9fc1930d`, `f9596f4a`, and `889bc42b`; Spaces tests **27/27**, Spaces/Shell typechecks and diff check pass. Exact next action: resume PW exact Coordinator revision binding, then return to first-plan S/U work and all other independent requirements; keep rollouts disabled.
 
 ## Cross-plan checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
 

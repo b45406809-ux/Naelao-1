@@ -2,7 +2,7 @@
 
 ## Cross-plan checkpoint — 2026-11-16 (TBR04 target resource proposal review; `f9596f4a` pushed)
 
-Owner/admin template activation now resolves role resource symbols against target-Space trusted exact extension pins and separates requested actions from declarations and effective role grants. It marks Knowledge `declared_only`, keeps all proposal grants unapplied, and labels role cost unavailable. Code `9fc1930d` + `f9596f4a` are pushed. Spaces preview tests **27/27**, Spaces/Shell typechecks and diff check pass; local only, no deployment or browser. Exact next action: continue TBR03 microapp/collection/shared-data declaration resolution, then all remaining S/U/P/PW/K/EP/TBR/AP code gaps. Rollouts remain disabled.
+Owner/admin template activation now resolves role resource symbols against target-Space trusted exact extension pins and scopes declared actions to the referenced Canvas or extension. It marks Knowledge `declared_only`, keeps proposal grants unapplied, and labels cost unavailable. Code `9fc1930d`, `f9596f4a`, `889bc42b` are pushed. Spaces preview tests **27/27**, Spaces/Shell typechecks and diff check pass; local only, no deployment/browser. Exact next action: resume PW exact Coordinator revision binding; `shared_data` needs a signed collection-to-host-resource/ACL contract. Continue remaining S/U/P/PW/K/EP/TBR/AP code gaps. Rollouts remain disabled.
 
 ## Cross-plan checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
 

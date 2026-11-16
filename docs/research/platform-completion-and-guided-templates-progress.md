@@ -4,7 +4,7 @@
 
 Owner/admin activation now resolves builder role proposals against the target Space's trusted exact extension pins, distinguishes package declaration from installed resources, reports requested/declaration-matched actions, and shows zero proposal-effective actions. It never applies grants. Actual independent permission composition, published Knowledge backing, role conflicts and role cost remain unresolved. AgentPhone remains an unverified provider gate; no provider activity occurred.
 
-Code `9fc1930db1462ae2b185688cade6e648c255efa1` and `f9596f4a81d2a6848cf3f14995220c07f459a88f` are remote-verified. Spaces preview tests **27/27**, Spaces/Shell typechecks and diff check pass. No browser/deployed acceptance; rollout disabled. Exact next action: TBR03 signed resource/action resolution; then continue TBR04–TBR12 and all remaining S/U/P/PW/K/EP/AP gaps.
+Code `9fc1930db1462ae2b185688cade6e648c255efa1`, `f9596f4a81d2a6848cf3f14995220c07f459a88f` and `889bc42b75cd268da1866b48dde973a0c548bc12` are remote-verified. Spaces preview tests **27/27**, Spaces/Shell typechecks and diff check pass. No browser/deployed acceptance; rollout disabled. Exact next action: resume PW exact Coordinator revision binding; `shared_data.collectionId` remains unsupported until a signed collection-to-host-resource and ACL contract exists. Then continue TBR04–TBR12 and all remaining S/U/P/PW/K/EP/AP gaps.
 
 ## Cross-plan code checkpoint — 2026-11-16 (TBR02 template role authoring; `1f4945aa` pushed)
 
