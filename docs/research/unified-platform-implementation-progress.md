@@ -1,5 +1,11 @@
 # Unified platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (K07 source lineage; `3bf31c66` pushed)
+
+Migration 0270 persists versioned source lineage on canonical Knowledge documents; manual create/edit/delete and archive/restore callers use it, while URL excerpts are explicitly unsupported for refresh. Opaque connector reference/grant-revision fields are private and connector rows require both, but no grant issuer or adapter caller exists. Release migration inventory was stale at 0265 and is now verified through 0270 (**270** files). Code `3bf31c665451aceb48aa047680d67309524cac00` is remote-verified; Knowledge **121/121**, typecheck, SQLite source migration/insert exercises and diff check pass. No deployment/live acceptance ran.
+
+Exact next action: wire existing host-owned website connection grants into a bounded, origin-authorized Knowledge fetch/create path with redirect checks and revocation fencing. Then implement freshness/checkpoints and continue remaining K/S/U/P/PW/EP gaps. Keep rollout disabled; K05 transfer/retention product decisions remain open.
+
 ## Latest cross-plan pointer — 2026-11-16 (K06 attachment/channel scope verified; current code `0642ece4`)
 
 K06 trace confirms ordinary attachments remain task-scoped and are not promoted to Knowledge. Extension list/read calls require the exact active message and installation/provider binding and remain transient. Web, WhatsApp and email share current publication/revision checks; phone extensions reject Knowledge declarations. Agents focused suites **29/29**, Knowledge publication **9/9**. No code changed in this audit; no production/live acceptance ran. Rollouts stay off.

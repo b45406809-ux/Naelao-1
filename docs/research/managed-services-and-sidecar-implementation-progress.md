@@ -1,5 +1,11 @@
 # Managed services and sidecar implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (K07 versioned source lineage; `3bf31c66` pushed)
+
+Knowledge migration 0270 now persists source adapter kind, content hash, version and state, and opaque host connection/grant references; create/edit/delete and archive/restore callers preserve the lineage. Manual content is current; URL excerpts remain unsupported for refresh. The release schema manifest now verifies migrations 0266–0270; it had previously stopped at 0265. Code `3bf31c665451aceb48aa047680d67309524cac00` is remote-verified. Knowledge **121/121**, typecheck, SQLite migration/backfill/connector-guard/insert checks and release inventory **270 files** pass. No migration deployment or live acceptance ran; S/U statuses unchanged.
+
+Exact next action: connect the host-managed `website_connections` authorization record to a bounded Knowledge fetch/create caller with exact user/Project/origin checks, redirect revalidation, persisted grant revision and revocation handling. K07 connector issuance and K08 freshness remain open. Then continue the managed-services queue at S3/U05 and S4–S9/U01–U12 plus remaining platform/Knowledge work; keep rollouts off.
+
 ## Latest cross-plan pointer — 2026-11-16 (K06 attachment/channel scope verified; current code `0642ece4`)
 
 K06's exact-scope trace found no attachment promotion or channel grant bypass. Ordinary attachments stay task-scoped; extension reads bind the active tenant/Space/task/channel/Project/install/provider connection and remain transient. Web/WhatsApp/email use current publication revisions and shared-install grant checks. Phone extension Knowledge is rejected and unavailable. Local evidence: Agents **29/29**, Knowledge publication **9/9**; no live acceptance ran. No S1–S9/U01–U12 status changed.

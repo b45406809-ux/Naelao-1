@@ -1,5 +1,11 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K07 source lineage; `3bf31c66` pushed)
+
+Knowledge migration 0270 records adapter kind, source revision/hash/state and private opaque host connection/grant references. Manual create/edit/delete and archive/restore are wired; URL excerpts remain unsupported for refresh. Connector rows require a host reference and grant revision, but no connector issuer or refresh caller is implemented. The release schema manifest now includes existing migrations 0266–0269 and new 0270; it was previously stale at 0265. Code `3bf31c665451aceb48aa047680d67309524cac00` is remote-verified. Knowledge **121/121**, typecheck, SQLite migration/backfill/connector guard/insert tests and release inventory **270 files** pass. Migration is unapplied; no provider/live acceptance ran; rollouts remain off.
+
+Exact next action: connect host-owned website connections to a bounded Knowledge fetch/create path with exact user/Project/origin authorization, redirect revalidation, grant-revision persistence and revoke fencing. Keep provider connector support unavailable until its host grant/adapter caller is implemented; then continue K08 and remaining K/S/U/P/PW/EP gaps.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (K06 attachment/channel scope verified; current code `0642ece4`)
 
 K06 caller verification found no implicit attachment promotion or current-grant bypass. Ordinary uploads remain task-scoped and separate from Knowledge publication membership; channel reads are bound to the active task and exact installation/provider connection and only feed transient answer context. Web/WhatsApp/email share the owner-publication/revision-fenced handler. Phone extensions reject Knowledge declarations, so phone Knowledge remains unsupported and fails closed. Local evidence: Agents attachment/store/upload/selection/phone suites **29/29** and Knowledge publication suite **9/9**. No source code changed and no live channel acceptance ran; rollout remains disabled.
