@@ -7,7 +7,7 @@ function env(options: { roleRank?: number; indexedDocumentIds?: string[]; collec
   const vectorQuery = vi.fn(async () => ({ matches: [{ id: "chunk-1", score: 0.92 }] }));
   const aiRun = vi.fn(async () => ({ data: [[0.1, 0.2, 0.3]] }));
   const published = [{ id: "course_material", name: "Course material", updated_at: "2026-10-17T00:00:00.000Z",
-    revision: options.collectionRevision ?? 1, archived_at: null, document_count: 2, document_ids: "doc-1,doc-2" }];
+    revision: options.collectionRevision ?? 1, archived_at: null, document_count: 2 }];
   const db = {
     prepare: vi.fn((sql: string) => ({
       bind: (...args: unknown[]) => ({
@@ -116,7 +116,7 @@ describe("owner-published external Knowledge collections", () => {
     const h = env();
     const response = await worker.fetch(await request("/spaces/space-1/kb/projects/project-1/external-publications", undefined), h.env, {} as ExecutionContext);
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ publications: [{ id: "course_material", name: "Course material", updated_at: "2026-10-17T00:00:00.000Z", revision: 1, archived: false, document_count: 2, document_ids: ["doc-1", "doc-2"] }] });
+    await expect(response.json()).resolves.toEqual({ publications: [{ id: "course_material", name: "Course material", updated_at: "2026-10-17T00:00:00.000Z", revision: 1, archived: false, document_count: 2 }] });
   });
 
   it("exposes only current collection revisions to authenticated host services", async () => {

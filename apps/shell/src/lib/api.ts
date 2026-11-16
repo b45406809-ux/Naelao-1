@@ -3693,6 +3693,11 @@ export interface ExternalKnowledgePublication {
   revision: number;
   archived: boolean;
   document_count: number;
+}
+
+export interface ExternalKnowledgePublicationSources {
+  publication_id: string;
+  revision: number;
   document_ids: string[];
 }
 
@@ -3734,9 +3739,17 @@ export async function listExternalKnowledgePublications(
   spaceId: string, projectId: string, session: SessionCredentials
 ): Promise<ExternalKnowledgePublication[]> {
   const response = await apiFetch<{ publications: ExternalKnowledgePublication[] }>(
-    `/v1/spaces/${spaceId}/kb/projects/${encodeURIComponent(projectId)}/external-publications`, { session }
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/external-publications`, { session, cache: "no-store" }
   );
   return response.publications;
+}
+
+export async function getExternalKnowledgePublicationSources(
+  spaceId: string, projectId: string, publicationId: string, session: SessionCredentials,
+): Promise<ExternalKnowledgePublicationSources> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}/sources`, {
+    session, cache: "no-store",
+  });
 }
 
 export async function publishExternalKnowledge(

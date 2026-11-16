@@ -29,6 +29,7 @@ import {
   previewKbPdf,
   createThread,
   deleteKbDocument,
+  getExternalKnowledgePublicationSources,
   getProject,
   getProjectUsageSummary,
   listAgentDefinitions,
@@ -118,6 +119,7 @@ export default function ProjectDetailPage() {
   const [publishedDocumentIds, setPublishedDocumentIds] = React.useState<string[]>([]);
   const [savingPublication, setSavingPublication] = React.useState(false);
   const [publicationLoadError, setPublicationLoadError] = React.useState(false);
+  const [loadingPublicationSources, setLoadingPublicationSources] = React.useState<string | null>(null);
   const [sharedChannelKnowledge, setSharedChannelKnowledge] = React.useState<SpaceSharedChannelKnowledgeInstallation[]>([]);
   const [sharedChannelKnowledgeDrafts, setSharedChannelKnowledgeDrafts] = React.useState<Record<string, string[]>>({});
   const [sharedChannelKnowledgeLoadError, setSharedChannelKnowledgeLoadError] = React.useState(false);
@@ -526,10 +528,22 @@ export default function ProjectDetailPage() {
     }
   }
 
-  function editExternalCollection(publication: ExternalKnowledgePublication) {
-    setPublicationId(publication.id);
-    setPublicationName(publication.name);
-    setPublishedDocumentIds(publication.document_ids);
+  async function editExternalCollection(publication: ExternalKnowledgePublication) {
+    if (!creds || loadingPublicationSources) return;
+    setLoadingPublicationSources(publication.id);
+    try {
+      const sources = await getExternalKnowledgePublicationSources(activeSpaceId, params.projectId, publication.id, creds);
+      const current = externalPublications.find(item => item.id === publication.id);
+      if (!current || current.archived || current.revision !== sources.revision)
+        throw new Error("The collection changed while loading its sources. Reload and try again.");
+      setPublicationId(publication.id);
+      setPublicationName(publication.name);
+      setPublishedDocumentIds(sources.document_ids);
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't read collection sources");
+    } finally {
+      setLoadingPublicationSources(null);
+    }
   }
 
   if (loading) return <div className="page-view">Loading…</div>;
@@ -1016,7 +1030,10 @@ export default function ProjectDetailPage() {
                   <Button size="sm" variant="ghost" onClick={() => void handleArchiveExternalCollection(publication.id, false)}>Restore draft</Button>
                 ) : (
                   <>
-                    <Button size="sm" variant="ghost" onClick={() => editExternalCollection(publication)}>Edit</Button>
+                    <Button size="sm" variant="ghost" disabled={loadingPublicationSources !== null}
+                      onClick={() => void editExternalCollection(publication)}>
+                      {loadingPublicationSources === publication.id ? "Loading…" : "Edit"}
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={() => void handleArchiveExternalCollection(publication.id, true)}>Archive</Button>
                     <Button size="sm" variant="ghost" onClick={() => void handleUnpublishExternalCollection(publication.id)}>Delete</Button>
                   </>

@@ -261,15 +261,43 @@ app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications", async (
   const access = await collectionProjectAction(c, projectId, "discover");
   if (access instanceof Response) return access;
   const { results } = await c.env.PLATFORM_DB.prepare(
-    `SELECT p.id,p.name,p.updated_at,p.revision,p.archived_at,COUNT(d.document_id) AS document_count,GROUP_CONCAT(d.document_id, ',') AS document_ids
+    `SELECT p.id,p.name,p.updated_at,p.revision,p.archived_at,COUNT(d.document_id) AS document_count
      FROM kb_external_publications p LEFT JOIN kb_external_publication_documents d
        ON d.publication_id=p.id AND d.tenant_id=p.tenant_id AND d.space_id=p.space_id AND d.project_id=p.project_id
          AND d.publication_revision=p.revision
      WHERE p.tenant_id=? AND p.space_id=? AND p.project_id=? GROUP BY p.id ORDER BY p.name,p.id`
-  ).bind(access.tenantId, access.spaceId, projectId).all<{ id: string; name: string; updated_at: string; revision: number; archived_at: string | null; document_count: number; document_ids: string | null }>();
-  return c.json({ publications: results.map(({ document_ids, archived_at, ...publication }) => ({
-    ...publication, archived: archived_at !== null, document_ids: document_ids ? document_ids.split(",") : [],
-  })) });
+  ).bind(access.tenantId, access.spaceId, projectId).all<{ id: string; name: string; updated_at: string; revision: number; archived_at: string | null; document_count: number }>();
+  return c.json({ publications: results.map(({ archived_at, ...publication }) => ({
+    ...publication, archived: archived_at !== null,
+  })) }, 200, { "cache-control": "private, no-store" });
+});
+
+// Discovery reveals collection metadata only. Call the scoped source endpoint to read the
+// selected collection's current document membership.
+app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId/sources", async c => {
+  const { spaceId, projectId, publicationId } = c.req.param();
+  if (!EXTERNAL_PUBLICATION_ID.test(publicationId)) throw badRequest("Invalid publication id");
+  const access = await collectionProjectAction(c, projectId, "read");
+  if (access instanceof Response) return access;
+  const publication = await c.env.PLATFORM_DB.prepare(
+    `SELECT revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND archived_at IS NULL`
+  ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ revision: number }>();
+  if (!publication) return c.json({ error_code: "not_found" }, 404);
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT x.document_id FROM kb_external_publication_documents x
+     JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id
+       AND p.project_id=x.project_id AND p.revision=x.publication_revision AND p.archived_at IS NULL
+     JOIN kb_documents d ON d.id=x.document_id AND d.tenant_id=x.tenant_id AND d.space_id=x.space_id AND d.project_id=x.project_id
+     WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND p.revision=?
+       AND d.status='indexed' ORDER BY x.document_id LIMIT 100`
+  ).bind(publicationId, access.tenantId, spaceId, projectId, publication.revision).all<{ document_id: string }>();
+  const stillCurrent = await c.env.PLATFORM_DB.prepare(
+    `SELECT revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?
+       AND revision=? AND archived_at IS NULL`
+  ).bind(publicationId, access.tenantId, spaceId, projectId, publication.revision).first<{ revision: number }>();
+  if (!stillCurrent) return c.json({ error_code: "knowledge_publication_revision_conflict" }, 409);
+  return c.json({ publication_id: publicationId, revision: publication.revision, document_ids: results.map(row => row.document_id) }, 200,
+    { "cache-control": "private, no-store" });
 });
 
 // Host-only revision directory used to compare a stored installation grant with the current
