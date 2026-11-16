@@ -1,5 +1,11 @@
 # Managed services and sidecar implementation progress
 
+## Related-plan reconciliation — extensible resource platform (2026-11-16; source e950f02b)
+
+Fetched and copied `extensible-platform-and-managed-resources-plan.md` from planning commit `e950f02bdf0726f05db456a50ef29699e200d3b3`; no branch switch or merge occurred. EP01–EP06 are incorporated in platform §15 and tracked in the platform ledger. Managed-service operation journals, payer/usage receipts, sidecar gates, extension manifests and the bounded dynamic-page route provide reusable pieces, but they are not a generic resource broker, provider-neutral custom site host or live runtime contract. Reuse S/U/P/PW/K evidence; implement all remaining code independently of live account access. Rollouts remain disabled.
+
+Current implementation task is K04 in progress. Exact next action: finish and verify durable scope-bound Knowledge create idempotency, then record/push its code checkpoint; after that continue open S/U/P/PW/K/EP gaps. Preserve the untracked `infra/scripts/__pycache__/`.
+
 ## Latest cross-plan checkpoint — 2026-11-15 (K02/K03 PDF preview and provenance; code 08d9c509 pushed)
 
 All three reachable Knowledge add surfaces now preview bounded PDFs and require review/correction before ingestion. Scope authorization is repeated by Knowledge Worker; the signed 15-minute receipt binds tenant/Space/Project, original byte hash, extracted-text hash and parser version. The original PDF, parser metadata and approved-text hash persist through sync and workflow ingestion, and archive export/restore verifies source bytes. Migration 0263 and its release/deployment manifest versions are recorded; rollout and deployment remain off.

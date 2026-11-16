@@ -1,5 +1,9 @@
 # Mature knowledge platform implementation progress
 
+## Related-plan reconciliation — extensible resources (2026-11-16; source e950f02b)
+
+The plan at `plan/microapps-ui-sdk-voice:e950f02bdf0726f05db456a50ef29699e200d3b3` is copied to `extensible-platform-and-managed-resources-plan.md` and its requirements are in platform §15/EP01–EP06. Current code already provides owner-published Project Knowledge subsets and restricted channel retrieval, but not the generic parser/index/retrieval extension API, host resource broker, or complete dashboard/test/publish/revoke lifecycle. Reuse K01–K30 rather than duplicate those requirements. Cloudflare AI Search remains an unselected, disabled candidate under K15/K16; Vectorize plus D1 FTS is unchanged pending ACL, lifecycle, quality and cost acceptance. This is local source reconciliation only.
+
 ## Latest checkpoint — 2026-11-15 (K02/K03 PDF preview and provenance; 08d9c509 pushed)
 
 Code `08d9c509a9ab2a9b8e66e4fa4707bc1d2e442324` is pushed and verified on `origin/Mcbt5s-Backup-2`. All three reachable Space/Project Knowledge upload forms now offer bounded PDF parse preview, warnings, explicit editable approval and source-file binding. Knowledge Worker uses a short-lived HMAC receipt scoped to tenant/Space/Project and exact source/extraction hashes; it stores the original PDF, parser version, extraction hash and approved-content hash. Archive export/restore preserves these fields and checks the raw PDF hash. Migration 0263 is included in release schema/deployment manifests; nothing was applied or deployed.

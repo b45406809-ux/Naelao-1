@@ -1,5 +1,9 @@
 # Unified platform implementation progress
 
+## Active cross-plan mission pointer (2026-11-16)
+
+The active autonomous mission also tracks managed services S1–S9/U01–U12, platform P01–P24/PW01–PW06, Knowledge K01–K30, and extensible resources EP01–EP06. The new extensible-resource plan at planning commit `e950f02bdf0726f05db456a50ef29699e200d3b3` is copied and incorporated in platform §15; no planning branch was merged. Read the current-work branch records in `AGENTS.md` and the dedicated managed/platform/Knowledge ledgers before choosing new code work. Current exact task is K04 idempotent Knowledge ingestion; work is uncommitted until a code checkpoint is recorded. Keep rollouts disabled and the recovery branch push non-force.
+
 Branch: `Mcbt5s-Backup-2`
 Plan: [Naelao unified platform plan](naelao-unified-platform-deep-plan.md)
 Requirements: [unified workspace requirements](unified-workspace-requirements.md)
