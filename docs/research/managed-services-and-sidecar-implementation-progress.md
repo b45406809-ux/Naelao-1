@@ -1,5 +1,13 @@
 # Managed services and sidecar implementation progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K05 publication revision fencing; code cb0a63fb pushed)
+
+Owner-published Knowledge membership and SpaceDO installation grants are now revision-pinned. The Shell uses optimistic revisions and surfaces stale grants; the Agent host rereads the current grant per external channel use; Knowledge checks the same revision around vector search. Document edit/removal advances affected collection revisions and fails closed until owner approval catches up. This completes a cross-plan K05 slice, not the broader generic collection or EP03 lifecycle.
+
+Code `cb0a63fb3f3fe2f9ad78b962323c4121f60b1496` is pushed and remote-verified. Local checks: Knowledge **117/117**, Spaces **43/43**, Agents grant helper **5/5**, Knowledge/Spaces/Agents/Shell typechecks, release migration tests **20/20**, release/deployment validators and real-SQLite revision/revocation tests. No D1/SpaceDO migration, Worker, browser/provider or live acceptance ran. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: implement EP01's typed, versioned resource and capability contract through the existing Agent SDK and gatekeeper callers; support safe legacy adapters, scoped operation schemas and explicit deny for unsupported runtime capabilities. Then EP02 the object/structured-data/job resource broker and continue S/U/P/PW/K/EP gaps. Do not treat absent provider credentials as a reason to leave independent code unwritten.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (K04 durable create idempotency; code 4f390061 pushed)
 
 Knowledge create callers now require a client idempotency key bound in D1 to tenant/Space/Project and a canonical request hash. Sync duplicates return the same document; large queued creates retain/resume the same staged document after uncertain dispatch; `docId` is the deterministic Workflow ID; deletion tombstones the hashed request key. Extensible resource requirements EP01–EP06 are copied/integrated from `e950f02b` under platform §15 (docs commit `ea97179738bc967338cf23ac607d9721e5cb6dba`).
