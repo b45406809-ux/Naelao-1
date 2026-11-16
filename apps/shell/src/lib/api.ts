@@ -4194,11 +4194,11 @@ export async function resolveInterruptedRun(
   );
 }
 
-export interface WebsiteConnection { id: string; name: string; project_id: string | null; start_url: string; origins: string[]; agent_ids: string[] }
+export interface WebsiteConnection { id: string; name: string; project_id: string | null; start_url: string; origins: string[]; knowledge_path_prefixes: string[]; agent_ids: string[] }
 export async function listWebsiteConnections(spaceId: string, session: SessionCredentials) {
   return (await apiFetch<{data:WebsiteConnection[]}>(`/v1/spaces/${encodeURIComponent(spaceId)}/website-connections`,{session})).data;
 }
-export async function createWebsiteConnection(spaceId: string, session: SessionCredentials, input: {name:string;start_url:string;project_id?:string;origins:string[];agent_ids:string[]}) {
+export async function createWebsiteConnection(spaceId: string, session: SessionCredentials, input: {name:string;start_url:string;project_id?:string;origins:string[];knowledge_path_prefixes:string[];agent_ids:string[]}) {
   return apiFetch<{id:string}>(`/v1/spaces/${encodeURIComponent(spaceId)}/website-connections`,{session,method:"POST",body:JSON.stringify(input)});
 }
 export async function disconnectWebsite(spaceId: string, session: SessionCredentials, id: string) {

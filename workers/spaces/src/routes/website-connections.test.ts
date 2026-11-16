@@ -1,7 +1,12 @@
 import { Hono } from "hono";
 import { it, expect, describe, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
-import { registerWebsiteConnectionRoutes } from "./website-connections.js";
+const { checkSsrf } = vi.hoisted(() => ({ checkSsrf: vi.fn(async () => ({ blocked: false as const })) }));
+vi.mock("@naelao/security", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@naelao/security")>();
+  return { ...actual, checkSsrf };
+});
+import { normalizeKnowledgePathPrefixes, registerWebsiteConnectionRoutes } from "./website-connections.js";
 import type { Env } from "../index.js";
 const base = {
   tenantId: "tenant",
@@ -41,6 +46,56 @@ const row = {
   origins_json: '["https://example.com"]',
 };
 describe("website account authorization", () => {
+  it("normalizes bounded canonical path prefixes and rejects traversal or query syntax", () => {
+    expect(normalizeKnowledgePathPrefixes(["/docs", "/help/", "/docs"])).toEqual(["/docs", "/help/"]);
+    expect(normalizeKnowledgePathPrefixes(["/docs/../private"])).toBeNull();
+    expect(normalizeKnowledgePathPrefixes(["/docs?token=secret"])).toBeNull();
+    expect(normalizeKnowledgePathPrefixes([])).toBeNull();
+  });
+
+  it("persists owner-selected Knowledge path prefixes on the host website connection", async () => {
+    const calls: Array<{ sql: string; args: unknown[] }> = [];
+    const db = { prepare: vi.fn((sql: string) => ({ bind: (...args: unknown[]) => {
+      calls.push({ sql, args });
+      return {
+        first: async () => sql.includes("SELECT id FROM spaces") ? { id: "space" }
+          : sql.includes("space_members sm") ? { role: "owner" } : null,
+        run: async () => ({ meta: { changes: 1 } }),
+      };
+    } })) };
+    const app = new Hono<{ Bindings: Env }>();
+    registerWebsiteConnectionRoutes(app);
+    const env = { PLATFORM_SECRET: "secret", PLATFORM_DB: db,
+      SPACE_DO: { idFromName: vi.fn(() => "space-id"), get: vi.fn(() => ({ fetch: vi.fn(async () => Response.json({ data: [] })) })) } } as unknown as Env;
+    const response = await app.request("/spaces/space/website-connections", {
+      method: "POST", headers: { ...(await headers()), "x-naelao-user-id": "user" },
+      body: JSON.stringify({ name: "Docs", start_url: "https://example.com/docs", knowledge_path_prefixes: ["/docs", "/help"] }),
+    }, env);
+    expect(response.status).toBe(201);
+    const insert = calls.find(({ sql }) => sql.includes("INSERT INTO website_connections"));
+    expect(insert?.sql).toContain("knowledge_path_prefixes_json");
+    expect(insert?.args[8]).toBe('["/docs","/help"]');
+    expect(checkSsrf).toHaveBeenCalledOnce();
+  });
+
+  it("returns the persisted Knowledge path policy to its exact owner", async () => {
+    const db = { prepare: vi.fn((sql: string) => ({ bind: () => ({
+      first: async () => sql.includes("SELECT id FROM spaces") ? { id: "space" }
+        : sql.includes("space_members sm") ? { role: "owner" } : null,
+      all: async () => ({ results: [{ id: "connection", name: "Docs", project_id: "project", start_url: "https://example.com/docs",
+        origins_json: '["https://example.com"]', knowledge_path_prefixes_json: '["/docs","/help"]', agent_ids_json: "[]" }] }),
+    }) })) };
+    const app = new Hono<{ Bindings: Env }>();
+    registerWebsiteConnectionRoutes(app);
+    const env = { PLATFORM_SECRET: "secret", PLATFORM_DB: db,
+      SPACE_DO: { idFromName: vi.fn(() => "space-id"), get: vi.fn(() => ({ fetch: vi.fn(async () => Response.json({ data: [] })) })) } } as unknown as Env;
+    const response = await app.request("/spaces/space/website-connections", {
+      headers: { ...(await headers()), "x-naelao-user-id": "user" },
+    }, env);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ data: [{ id: "connection", knowledge_path_prefixes: ["/docs", "/help"] }] });
+  });
+
   it("rejects unsigned requests before reading account data", async () => {
     const f = fixture(row);
     const res = await f.app.request(

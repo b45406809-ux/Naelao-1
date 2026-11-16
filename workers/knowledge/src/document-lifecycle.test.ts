@@ -63,7 +63,7 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
             if (sql.includes("FROM kb_source_refresh_operations")) return options.websiteRefreshOperation ?? null;
             if (sql.includes("FROM website_connections")) return options.websiteConnection
               ? { id: "website-1", tenant_id: "tenant-1", space_id: "space-1", owner_user_id: "user-1", project_id: "project-1",
-                  origins_json: '["https://docs.example"]', status: "active" }
+                  origins_json: '["https://docs.example"]', knowledge_path_prefixes_json: '["/"]', status: "active" }
               : null;
             if (sql.includes("COUNT(*) AS count FROM kb_documents") && sql.includes("source_connection_ref")) return { count: 0 };
             if (sql.includes("SELECT id, chunk_count, project_id FROM kb_documents")) return options.existing

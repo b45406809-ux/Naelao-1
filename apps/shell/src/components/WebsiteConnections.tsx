@@ -26,6 +26,7 @@ export function WebsiteConnections({
     [url, setUrl] = React.useState(""),
     [project, setProject] = React.useState(""),
     [origins, setOrigins] = React.useState(""),
+    [knowledgePaths, setKnowledgePaths] = React.useState("/"),
     [agents, setAgents] = React.useState("");
   const [error, setError] = React.useState(""),
     [busy, setBusy] = React.useState(false),
@@ -180,6 +181,10 @@ export function WebsiteConnections({
         start_url: url,
         ...(project ? { project_id: project } : {}),
         origins: origins
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean),
+        knowledge_path_prefixes: knowledgePaths
           .split(",")
           .map((x) => x.trim())
           .filter(Boolean),
@@ -341,6 +346,17 @@ export function WebsiteConnections({
               placeholder="https://accounts.example.com, https://cdn.example.com"
               value={origins}
               onChange={(e) => setOrigins(e.target.value)}
+            />
+            <p>
+              Knowledge page reads are limited to these path prefixes on each
+              approved origin. Use / for the whole origin or enter narrower
+              prefixes such as /help and /docs.
+            </p>
+            <FormInput
+              aria-label="Knowledge path prefixes"
+              placeholder="/help, /docs"
+              value={knowledgePaths}
+              onChange={(e) => setKnowledgePaths(e.target.value)}
             />
             <p>
               Limit access to assistant IDs, or leave empty to allow workers

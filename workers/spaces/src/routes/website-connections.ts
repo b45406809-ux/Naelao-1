@@ -19,8 +19,29 @@ interface Connection {
   name: string;
   start_url: string;
   origins_json: string;
+  knowledge_path_prefixes_json: string;
   agent_ids_json: string;
   status: string;
+}
+
+export function normalizeKnowledgePathPrefixes(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 16) return null;
+  const prefixes = new Set<string>();
+  for (const candidate of value) {
+    if (typeof candidate !== "string" || candidate.length < 1 || candidate.length > 256
+      || !candidate.startsWith("/") || candidate.includes("\\") || /[?#\u0000-\u001f\u007f]/.test(candidate)) return null;
+    let parsed: URL;
+    let decoded: string;
+    try {
+      parsed = new URL(candidate, "https://knowledge-path.invalid");
+      decoded = decodeURIComponent(parsed.pathname);
+    } catch { return null; }
+    if (parsed.origin !== "https://knowledge-path.invalid" || parsed.pathname !== candidate
+      || decoded.includes("\\") || /%2f|%5c/i.test(candidate)
+      || decoded.split("/").some((segment) => segment === "." || segment === "..")) return null;
+    prefixes.add(candidate);
+  }
+  return [...prefixes].sort();
 }
 async function workspaceAccess(
   c: C,
@@ -179,7 +200,7 @@ export function registerWebsiteConnectionRoutes(app: Hono<{ Bindings: Env }>) {
     const caller = await identity(c);
     if (!caller) return c.json({ error_code: "forbidden" }, 403);
     const { results } = await c.env.PLATFORM_DB.prepare(
-      "SELECT id,name,project_id,start_url,origins_json,agent_ids_json FROM website_connections WHERE tenant_id=? AND space_id=? AND owner_user_id=? AND status='active' ORDER BY created_at DESC LIMIT 100"
+      "SELECT id,name,project_id,start_url,origins_json,knowledge_path_prefixes_json,agent_ids_json FROM website_connections WHERE tenant_id=? AND space_id=? AND owner_user_id=? AND status='active' ORDER BY created_at DESC LIMIT 100"
     )
       .bind(caller.tenant, c.req.param("spaceId"), caller.user)
       .all<Connection>();
@@ -190,6 +211,7 @@ export function registerWebsiteConnectionRoutes(app: Hono<{ Bindings: Env }>) {
         project_id: row.project_id,
         start_url: row.start_url,
         origins: JSON.parse(row.origins_json),
+        knowledge_path_prefixes: JSON.parse(row.knowledge_path_prefixes_json),
         agent_ids: JSON.parse(row.agent_ids_json),
       })),
     });
@@ -202,6 +224,7 @@ export function registerWebsiteConnectionRoutes(app: Hono<{ Bindings: Env }>) {
       start_url?: string;
       project_id?: string;
       origins?: string[];
+      knowledge_path_prefixes?: unknown;
       agent_ids?: string[];
     };
     if (
@@ -242,6 +265,8 @@ export function registerWebsiteConnectionRoutes(app: Hono<{ Bindings: Env }>) {
     }
     if (url.username || url.password || url.protocol !== "https:")
       return c.json({ error_code: "invalid_url" }, 400);
+    const knowledgePathPrefixes = normalizeKnowledgePathPrefixes(body.knowledge_path_prefixes ?? ["/"]);
+    if (!knowledgePathPrefixes) return c.json({ error_code: "invalid_knowledge_path_prefixes" }, 400);
     if (
       body.project_id !== undefined &&
       (typeof body.project_id !== "string" ||
@@ -272,7 +297,7 @@ export function registerWebsiteConnectionRoutes(app: Hono<{ Bindings: Env }>) {
       return c.json({ error_code: "invalid_agents" }, 400);
     const id = crypto.randomUUID();
     const inserted = await c.env.PLATFORM_DB.prepare(
-      "INSERT INTO website_connections(id,tenant_id,space_id,owner_user_id,project_id,name,start_url,origins_json,agent_ids_json) SELECT ?,?,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM website_connections WHERE tenant_id=? AND space_id=? AND owner_user_id=? AND status='active')<100"
+      "INSERT INTO website_connections(id,tenant_id,space_id,owner_user_id,project_id,name,start_url,origins_json,knowledge_path_prefixes_json,agent_ids_json) SELECT ?,?,?,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM website_connections WHERE tenant_id=? AND space_id=? AND owner_user_id=? AND status='active')<100"
     )
       .bind(
         id,
@@ -283,6 +308,7 @@ export function registerWebsiteConnectionRoutes(app: Hono<{ Bindings: Env }>) {
         body.name.trim(),
         url.href,
         JSON.stringify(origins),
+        JSON.stringify(knowledgePathPrefixes),
         JSON.stringify(agents),
         caller.tenant,
         c.req.param("spaceId"),

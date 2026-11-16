@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0272_website_source_refresh_ledger",
+  "requiredSchemaVersion": "0273_website_knowledge_path_policy",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1091,6 +1091,10 @@
     {
       "filename": "0272_website_source_refresh_ledger.sql",
       "sha256": "ed6c6d688b98ae7186fc338cb3a662b662c85a8af4f3b2ddcea425d85b3a2546"
+    },
+    {
+      "filename": "0273_website_knowledge_path_policy.sql",
+      "sha256": "bfb4f2afc2335e76bb4bbc7462698826807a082027373c59eb95307653c5c094"
     }
   ]
 }

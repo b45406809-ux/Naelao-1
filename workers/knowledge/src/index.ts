@@ -263,6 +263,7 @@ interface WebsiteConnectionGrant {
   owner_user_id: string;
   project_id: string | null;
   origins_json: string;
+  knowledge_path_prefixes_json: string;
   status: string;
 }
 
@@ -274,6 +275,119 @@ function websiteConnectionOrigins(row: WebsiteConnectionGrant): string[] | null 
   } catch {
     return null;
   }
+}
+
+function websiteConnectionPathPrefixes(row: WebsiteConnectionGrant): string[] | null {
+  try {
+    const value: unknown = JSON.parse(row.knowledge_path_prefixes_json);
+    if (!Array.isArray(value) || value.length < 1 || value.length > 16
+      || value.some((prefix) => typeof prefix !== "string" || !prefix.startsWith("/") || prefix.length > 256
+        || prefix.includes("\\") || /[?#\u0000-\u001f\u007f]/.test(prefix))) return null;
+    return [...new Set(value as string[])];
+  } catch {
+    return null;
+  }
+}
+
+function websitePathAllowed(pathname: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((prefix) => {
+    if (prefix === "/") return true;
+    const base = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
+    return pathname === base || pathname.startsWith(`${base}/`);
+  });
+}
+
+type WebsiteTargetAuthorization =
+  | { ok: true }
+  | { ok: false; status: 403 | 502; message: string };
+
+function parseWebsiteRobots(content: string): Array<{ agents: string[]; rules: Array<{ allow: boolean; path: string }> }> {
+  const groups: Array<{ agents: string[]; rules: Array<{ allow: boolean; path: string }> }> = [];
+  let group: { agents: string[]; rules: Array<{ allow: boolean; path: string }> } | null = null;
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.split("#", 1)[0]!.trim();
+    const separator = line.indexOf(":");
+    if (separator < 1) continue;
+    const key = line.slice(0, separator).trim().toLowerCase();
+    const value = line.slice(separator + 1).trim();
+    if (key === "user-agent" && value) {
+      if (!group || group.rules.length) {
+        group = { agents: [], rules: [] };
+        groups.push(group);
+      }
+      group.agents.push(value.toLowerCase());
+    } else if (group && (key === "allow" || key === "disallow") && value) {
+      group.rules.push({ allow: key === "allow", path: value });
+    }
+  }
+  return groups;
+}
+
+function robotsAllowsPath(groups: ReturnType<typeof parseWebsiteRobots>, pathname: string): boolean {
+  const productGroups = groups.filter((entry) => entry.agents.some((agent) => agent.includes("naelaoknowledge")));
+  const selected = productGroups.length ? productGroups : groups.filter((entry) => entry.agents.includes("*"));
+  const matches: Array<{ allow: boolean; specificity: number }> = [];
+  for (const entry of selected) for (const rule of entry.rules) {
+    const anchored = rule.path.endsWith("$");
+    const source = rule.path.slice(0, anchored ? -1 : undefined);
+    const escaped = source.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    if (new RegExp(`^${escaped}${anchored ? "$" : ""}`).test(pathname)) {
+      matches.push({ allow: rule.allow, specificity: source.replace(/\*/g, "").length });
+    }
+  }
+  if (!matches.length) return true;
+  const longest = Math.max(...matches.map((entry) => entry.specificity));
+  return matches.filter((entry) => entry.specificity === longest).some((entry) => entry.allow);
+}
+
+function createWebsiteTargetAuthorizer(origins: readonly string[], prefixes: readonly string[], signal: AbortSignal) {
+  type RobotsPolicy =
+    | { ok: true; groups: ReturnType<typeof parseWebsiteRobots> }
+    | { ok: false; status: 403 | 502; message: string };
+  const robotsByOrigin = new Map<string, Promise<RobotsPolicy>>();
+  return async (target: URL): Promise<WebsiteTargetAuthorization> => {
+    if (!websitePathAllowed(target.pathname, prefixes)) {
+      return { ok: false, status: 403, message: "The page path is outside the owner-approved Knowledge paths" };
+    }
+    let robots = robotsByOrigin.get(target.origin);
+    if (!robots) {
+      robots = (async (): Promise<RobotsPolicy> => {
+        const robotsUrl = new URL("/robots.txt", target.origin).href;
+        const result = await fetchSsrfGuarded(robotsUrl, {
+          headers: { "user-agent": "NaelaoKnowledge", accept: "text/plain" },
+          signal,
+        }, origins);
+        if (!result.ok) return { ok: false, status: result.status, message: "The site's robots policy could not be checked safely" };
+        if (result.response.status === 404 || result.response.status === 410) {
+          await result.response.body?.cancel().catch(() => undefined);
+          return { ok: true, groups: [] };
+        }
+        if (result.response.status === 401 || result.response.status === 403) {
+          await result.response.body?.cancel().catch(() => undefined);
+          return { ok: false, status: 403, message: "The site does not permit reading its robots policy" };
+        }
+        if (!result.response.ok) {
+          await result.response.body?.cancel().catch(() => undefined);
+          return { ok: false, status: 502, message: "The site's robots policy is temporarily unavailable" };
+        }
+        const contentType = (result.response.headers.get("content-type") ?? "").split(";", 1)[0]!.trim().toLowerCase();
+        if (contentType && contentType !== "text/plain") {
+          await result.response.body?.cancel().catch(() => undefined);
+          return { ok: false, status: 502, message: "The site's robots policy response has an unsupported content type" };
+        }
+        const body = await readBoundedText(result.response, 256 * 1024);
+        if (body.truncated) return { ok: false, status: 502, message: "The site's robots policy exceeds the supported size" };
+        const groups = parseWebsiteRobots(body.content);
+        return { ok: true, groups };
+      })();
+      robotsByOrigin.set(target.origin, robots);
+    }
+    const policy = await robots;
+    if (!policy.ok) return policy;
+    return robotsAllowsPath(policy.groups, target.pathname)
+      ? { ok: true }
+      : { ok: false, status: 403, message: "The site's robots policy disallows this page" };
+  };
 }
 
 function collectionProjectAction(c: any, projectId: string, action: "discover" | "read" | "manage" | "share" | "delete" | "administer") {
@@ -1184,12 +1298,14 @@ app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/preview", asyn
       || (refreshDocument.source_requested_url ?? refreshDocument.source_url) !== requested.href) return c.json({ error_code: "website_source_not_refreshable" }, 404);
     connectionId = refreshDocument.source_connection_ref;
   }
-  const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,status
+  const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,knowledge_path_prefixes_json,status
     FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND project_id=? AND status='active'`)
     .bind(connectionId, tenantId, spaceId, access.userId, projectId).first<WebsiteConnectionGrant>();
   if (!connection) return c.json({ error_code: "website_connection_not_found" }, 404);
   const origins = websiteConnectionOrigins(connection);
-  if (!origins || !origins.includes(requested.origin)) return c.json({ error_code: "website_origin_not_authorized" }, 403);
+  const pathPrefixes = websiteConnectionPathPrefixes(connection);
+  if (!origins || !pathPrefixes) return c.json({ error_code: "website_connection_policy_invalid" }, 409);
+  if (!origins.includes(requested.origin)) return c.json({ error_code: "website_origin_not_authorized" }, 403);
 
   let refreshOperationId: string | null = null;
   let refreshAttempt = 1;
@@ -1286,9 +1402,12 @@ app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/preview", asyn
           .bind(errorCode, retryAt, refreshDocument.id, tenantId, spaceId, refreshDocument.source_revision, connection.id),
       ]).catch(() => undefined);
     };
+    const websiteFetchSignal = AbortSignal.timeout(45_000);
+    const authorizeWebsiteTarget = createWebsiteTargetAuthorizer(origins, pathPrefixes, websiteFetchSignal);
     const guarded = await fetchSsrfGuarded(requested.href, {
       headers: { "user-agent": "naelao-knowledge/1.0", accept: "text/markdown, text/plain;q=0.9, text/html;q=0.8, application/xhtml+xml;q=0.7" },
-    }, origins);
+      signal: websiteFetchSignal,
+    }, origins, authorizeWebsiteTarget);
     if (!guarded.ok) {
       await failRefresh(guarded.status === 403 ? "website_destination_rejected" : "website_upstream_unavailable");
       return c.json({ error_code: guarded.status === 403 ? "forbidden" : "bad_gateway", message: guarded.message }, guarded.status);
@@ -1524,11 +1643,13 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       throw badRequest("Website preview URLs must be canonical HTTPS URLs without credentials");
     }
     const userId = c.req.header("x-naelao-user-id") ?? "";
-    const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,status
+    const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,knowledge_path_prefixes_json,status
       FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND project_id=? AND status='active'`)
       .bind(body.website_connection_id, tenantId, spaceId, userId, projectId).first<WebsiteConnectionGrant>();
     const origins = connection ? websiteConnectionOrigins(connection) : null;
-    if (!connection || !origins || !origins.includes(requestedUrl.origin) || !origins.includes(finalUrl.origin)) {
+    const pathPrefixes = connection ? websiteConnectionPathPrefixes(connection) : null;
+    if (!connection || !origins || !pathPrefixes || !origins.includes(requestedUrl.origin) || !origins.includes(finalUrl.origin)
+      || !websitePathAllowed(requestedUrl.pathname, pathPrefixes) || !websitePathAllowed(finalUrl.pathname, pathPrefixes)) {
       throw new HttpError(409, "website_connection_changed", "The approved website connection is no longer active for this Project and URL");
     }
     const previewValid = await verifyWebsitePreviewToken({ token: body.website_preview_token, secret: c.env.PLATFORM_SECRET,
@@ -1999,11 +2120,13 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       throw new HttpError(409, "website_refresh_source_changed", "The website source URL changed; preview it again");
     }
     const userId = c.req.header("x-naelao-user-id") ?? "";
-    const connection = existing.source_connection_ref ? await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,status
+    const connection = existing.source_connection_ref ? await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,knowledge_path_prefixes_json,status
       FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND project_id=? AND status='active'`)
       .bind(existing.source_connection_ref, tenantId, spaceId, userId, projectId).first<WebsiteConnectionGrant>() : null;
     const origins = connection ? websiteConnectionOrigins(connection) : null;
-    if (!connection || !origins?.includes(requestedUrl.origin) || !origins.includes(finalUrl.origin)) {
+    const pathPrefixes = connection ? websiteConnectionPathPrefixes(connection) : null;
+    if (!connection || !origins || !pathPrefixes || !origins.includes(requestedUrl.origin) || !origins.includes(finalUrl.origin)
+      || !websitePathAllowed(requestedUrl.pathname, pathPrefixes) || !websitePathAllowed(finalUrl.pathname, pathPrefixes)) {
       throw new HttpError(409, "website_connection_changed", "The approved website connection is no longer active for this Project and URL");
     }
     const operation = await c.env.PLATFORM_DB.prepare(`SELECT id,state,source_revision,connection_ref,requested_url,final_url,preview_sha256,attempt_count
@@ -3138,14 +3261,15 @@ type GuardedFetchResult =
   | { ok: true; response: Response; url: URL }
   | { ok: false; status: 403 | 502; message: string };
 
-async function fetchSsrfGuarded(rawUrl: string, init: RequestInit, allowedOrigins?: readonly string[]): Promise<GuardedFetchResult> {
+async function fetchSsrfGuarded(rawUrl: string, init: RequestInit, allowedOrigins?: readonly string[],
+  authorizeTarget?: (target: URL) => Promise<WebsiteTargetAuthorization>): Promise<GuardedFetchResult> {
   let target: URL;
   try { target = new URL(rawUrl); }
   catch { return { ok: false, status: 403, message: "Destination URL is invalid" }; }
-  const signal = AbortSignal.timeout(30_000);
+  const signal = init.signal ?? AbortSignal.timeout(30_000);
   for (let hop = 0; hop <= 5; hop++) {
     if ((target.protocol !== "http:" && target.protocol !== "https:") || target.username || target.password
-      || (allowedOrigins !== undefined && (target.search || target.hash))) {
+      || (allowedOrigins !== undefined && (target.protocol !== "https:" || target.search || target.hash))) {
       return { ok: false, status: 403, message: "Destination must be an http(s) URL without embedded credentials" };
     }
     if (allowedOrigins && !allowedOrigins.includes(target.origin)) {
@@ -3153,6 +3277,10 @@ async function fetchSsrfGuarded(rawUrl: string, init: RequestInit, allowedOrigin
     }
     const ssrf = await checkSsrf(target.href);
     if (ssrf.blocked) return { ok: false, status: 403, message: ssrf.reason ?? "url failed SSRF validation" };
+    if (authorizeTarget) {
+      const authorization = await authorizeTarget(target);
+      if (!authorization.ok) return authorization;
+    }
     const response = await fetch(target.href, { ...init, signal, redirect: "manual" });
     if (![301, 302, 303, 307, 308].includes(response.status)) return { ok: true, response, url: target };
     const location = response.headers.get("location");

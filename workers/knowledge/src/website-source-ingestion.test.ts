@@ -13,7 +13,7 @@ import worker from "./index.js";
 
 const connection = {
   id: "connection-1", tenant_id: "tenant-1", space_id: "space-1", owner_user_id: "owner-1",
-  project_id: "project-1", origins_json: '["https://docs.example"]', status: "active",
+  project_id: "project-1", origins_json: '["https://docs.example"]', knowledge_path_prefixes_json: '["/"]', status: "active",
 };
 
 function fixture(options: { connection?: typeof connection | null; projectRank?: number; refreshDocument?: Record<string, unknown> | null;
@@ -69,6 +69,7 @@ describe("scoped website Knowledge preview", () => {
 
   it("fetches only an approved page, strips markup, and returns an owner-bound receipt", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "https://docs.example/robots.txt") return new Response(null, { status: 404 });
       expect(String(input)).toBe("https://docs.example/guide");
       expect(init?.redirect).toBe("manual");
       return new Response("<h1>Guide</h1><script>bad()</script><p>Approved text</p>", {
@@ -94,7 +95,9 @@ describe("scoped website Knowledge preview", () => {
   });
 
   it("resolves the product-user owner role from the exact Project ACL", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("# Project guide", { headers: { "content-type": "text/markdown" } })));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/robots.txt")
+      ? new Response(null, { status: 404 })
+      : new Response("# Project guide", { headers: { "content-type": "text/markdown" } })));
     const owner = fixture({ projectRank: 50 });
     const allowed = await worker.fetch!(await request({ connection_id: "connection-1", url: "https://docs.example/guide" }, "product_end_user"), owner.env, {} as ExecutionContext);
     expect(allowed.status).toBe(200);
@@ -132,17 +135,83 @@ describe("scoped website Knowledge preview", () => {
   });
 
   it("revalidates origin allowlists on every redirect before fetching the destination", async () => {
-    const outbound = vi.fn().mockResolvedValue(new Response(null, { status: 302, headers: { location: "https://other.example/secret" } }));
+    const outbound = vi.fn(async (input: RequestInfo | URL) => String(input) === "https://docs.example/robots.txt"
+      ? new Response(null, { status: 404 })
+      : new Response(null, { status: 302, headers: { location: "https://other.example/secret" } }));
     vi.stubGlobal("fetch", outbound);
     const f = fixture();
     const response = await worker.fetch!(await request({ connection_id: "connection-1", url: "https://docs.example/guide" }), f.env, {} as ExecutionContext);
     expect(response.status).toBe(403);
-    expect(outbound).toHaveBeenCalledTimes(1);
-    expect(checkSsrf).toHaveBeenCalledTimes(1);
+    expect(outbound).toHaveBeenCalledTimes(2);
+    expect(checkSsrf).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects page paths outside the host connection's owner-approved prefixes", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const f = fixture({ connection: { ...connection, knowledge_path_prefixes_json: '["/docs"]' } });
+    const response = await worker.fetch!(await request({ connection_id: "connection-1", url: "https://docs.example/docs-private/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(403);
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it("checks robots.txt and rejects a disallowed page before fetching its content", async () => {
+    const outbound = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe("https://docs.example/robots.txt");
+      return new Response("User-agent: *\nDisallow: /private", { headers: { "content-type": "text/plain" } });
+    });
+    vi.stubGlobal("fetch", outbound);
+    const f = fixture();
+    const response = await worker.fetch!(await request({ connection_id: "connection-1", url: "https://docs.example/private/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(403);
+    expect(outbound).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when robots.txt cannot be checked", async () => {
+    const outbound = vi.fn(async () => new Response("Unavailable", { status: 503, headers: { "content-type": "text/plain" } }));
+    vi.stubGlobal("fetch", outbound);
+    const f = fixture();
+    const response = await worker.fetch!(await request({ connection_id: "connection-1", url: "https://docs.example/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(502);
+    expect(outbound).toHaveBeenCalledOnce();
+  });
+
+  it("reapplies owner path-prefix policy to each redirect destination", async () => {
+    const outbound = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://docs.example/robots.txt") return new Response(null, { status: 404 });
+      if (url === "https://docs.example/docs/guide") return new Response(null, { status: 302, headers: { location: "/private/guide" } });
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", outbound);
+    const f = fixture({ connection: { ...connection, knowledge_path_prefixes_json: '["/docs"]' } });
+    const response = await worker.fetch!(await request({ connection_id: "connection-1", url: "https://docs.example/docs/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(403);
+    expect(outbound).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors the longest matching robots rule and checks redirects against each target's policy", async () => {
+    const outbound = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://docs.example/robots.txt") {
+        return new Response("User-agent: *\nDisallow: /\nAllow: /docs/", { headers: { "content-type": "text/plain" } });
+      }
+      if (url === "https://docs.example/docs/guide") {
+        return new Response(null, { status: 302, headers: { location: "https://docs.example/private/guide" } });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", outbound);
+    const f = fixture();
+    const response = await worker.fetch!(await request({ connection_id: "connection-1", url: "https://docs.example/docs/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(403);
+    expect(outbound).toHaveBeenCalledTimes(2);
   });
 
   it("records an idempotent, source-revision-bound refresh before returning an owner review receipt", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("Updated guide", { headers: { "content-type": "text/plain" } })));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/robots.txt")
+      ? new Response("", { headers: { "content-type": "text/plain" } })
+      : new Response("Updated guide", { headers: { "content-type": "text/plain" } })));
     const f = fixture({ refreshDocument: { id: "doc-1", source_url: "https://docs.example/guide", source_revision: 4,
       source_connection_ref: "connection-1", source_state: "current", source_adapter: "website" } });
     const response = await worker.fetch!(await request({ document_id: "doc-1", idempotency_key: "refresh-request-0001",
