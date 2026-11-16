@@ -1,5 +1,9 @@
 # Unified platform implementation progress
 
+## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
+
+TBR01's backward-compatible signed role schema, strict validator/security scan and proposal-only owner activation preview are implemented locally and pushed at `9ccd739538f4e0a8751ff9d289385adc5df4661b`. SDK/Security/Spaces tests **11/11**, **6/6**, **26/26**, three typechecks and diff check pass. No invitation/grant write, deployment or live acceptance ran; rollouts remain disabled. See the dedicated TBR ledger for partial TBR03/TBR04 and unimplemented TBR02/TBR05–TBR12. Exact next action: TBR02 builder authoring and safe import/export round-trip, then actual installed-resource review.
+
 ## Latest code checkpoint — 2026-11-16 (K09 bounded website crawl; `0842ac0e` pushed)
 
 K09's multi-page discovery code is implemented locally in migration 0277 with tenant/Space/Project/owner/connection scope, idempotent durable page checkpoints, expiry cleanup, active-grant/owner fencing and deletion triggers. Same-origin/path/robots/SSRF checks run at each redirect; pages, depth, links, redirects, bytes, elapsed time, retries, per-request work and tenant concurrency are bounded. The owner Shell offers explicit URL review through the existing single-page ingestion flow. Content stays out of persistence/indexing and all crawl rollout flags are false.

@@ -1,5 +1,9 @@
 # Mature knowledge platform implementation progress
 
+## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
+
+The role proposal contract/validator and proposal-only owner activation preview are pushed at `9ccd739538f4e0a8751ff9d289385adc5df4661b`; SDK/Security/Spaces tests **11/11**, **6/6**, **26/26**, three typechecks and diff check pass. This does not change K01–K30 status. No deployment or live acceptance ran; rollouts remain disabled. Exact next action across the active mission: TBR02 owner-controlled role authoring via existing template tooling; then TBR04 actual installed-resource preview. Continue K/S/U/P/PW/EP code gaps afterward.
+
 ## Latest code checkpoint — 2026-11-16 (K09 bounded website crawl; `0842ac0e` pushed)
 
 The new crawl path uses migration 0277 for owner/grant-scoped URL-only operation/page checkpoints, idempotency, lease generations, TTL cleanup and revocation triggers. It reuses the current site connection, path prefix, robots policy and SSRF-guarded redirect path; page content is sanitized only to compute a hash and is never stored or indexed. Shell selects an explicit URL for the existing one-page preview and review. Page/depth/link/redirect/bytes/time/retry/per-request and two-active-operation tenant caps are enforced. `KNOWLEDGE_WEBSITE_CRAWL_ENABLED` stays false in all Wrangler environments.

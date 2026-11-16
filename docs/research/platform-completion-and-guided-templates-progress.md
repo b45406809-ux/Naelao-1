@@ -1,5 +1,9 @@
 # Platform completion and guided templates progress
 
+## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
+
+TBR01's optional signed role contract, strict bounded validation/security scan and proposal-only owner activation preview are implemented locally and remote-verified at `9ccd739538f4e0a8751ff9d289385adc5df4661b`. Local evidence: SDK **11/11**, Security **6/6**, Spaces preview **26/26**, three typechecks and diff check. No grants/invitations, migration, deployment or live acceptance ran; all rollouts remain disabled. See the dedicated TBR ledger for the gap matrix. Exact next action: implement TBR02 role authoring/round-trip through the existing template authoring path, then TBR04 actual installed-resource/effective-access preview; other S/U/P/PW/K/EP requirements remain active.
+
 ## Latest code checkpoint — 2026-11-16 (K09 bounded website crawl; `0842ac0e` pushed)
 
 Migration 0277 adds a tenant/Space/Project/owner/connection-scoped, idempotent crawl operation and page checkpoint. Each request is leased and fenced by generation; expired operations are cleaned by the scheduled Knowledge Worker, and connection policy change/revocation or owner demotion deletes the stored URL frontier. The disabled-by-default owner UI exposes bounded URL discovery and sends selected pages into the existing manual preview/edit/approval flow. No page text is returned, indexed or persisted. The crawl has fixed page/depth/link/redirect/byte/time/retry/request-work caps and a two-active-operation tenant lease cap. Development, staging and production flags remain false.

@@ -1,5 +1,9 @@
 # Managed services and sidecar implementation progress
 
+## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
+
+TBR01's optional signed `SpaceBlueprint.businessRoles` contract, strict bounded validator/security scan, and proposal-only owner activation preview are implemented locally and remote-verified at `9ccd739538f4e0a8751ff9d289385adc5df4661b`. SDK tests **11/11**, Security **6/6**, Spaces activation preview **26/26**, three typechecks, and diff check pass. No grants/invitations, migration, deployment or live acceptance ran; rollouts remain disabled. S2–S9/U01–U12 status is unchanged from the K09 checkpoint below. Exact next action: TBR02 owner-controlled template role authoring and safe import/export round-trip; see the dedicated TBR ledger.
+
 ## Latest code checkpoint — 2026-11-16 (K09 bounded website crawl; `0842ac0e` pushed)
 
 Migration 0277 adds scoped content-free crawl operations/pages with stable idempotency, generation leases, seven-day scheduled cleanup, and connection/owner-revocation triggers. Project owners can discover bounded same-origin/path-approved URLs only while the feature flag is explicitly true; the existing website grant, Project owner and policy hash are rechecked before/after fetches. Each redirect repeats origin/path/robots/SSRF checks. The crawl bounds pages, depth, links, redirects, bytes, elapsed time, retries, per-request work and two active operations per tenant. It stores only URL/state/size/hash metadata; discovered text is not returned or indexed. Shell lets an owner select a URL for the existing one-page review flow. The crawl flag is false in all Wrangler environments.
