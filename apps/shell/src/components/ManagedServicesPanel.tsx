@@ -12,6 +12,8 @@ function title(value: string) {
 type ProviderRecord = Record<string, unknown>;
 type AgentMailUsageObservation = { connectionId:string;scope:"agentmail_inbox";region:"us"|"eu";usage:{storageBytes:number;messageCount:number;threadCount:number};
   pointAt:string;observedAt:string;sourceApi:string;provenance:"provider_api_observed";inserted:boolean;replayed:boolean;notice:string };
+type AgentMailThreadRoute = {threadKey:string;lastActivityAt:string|null;createdAt:string|null;assistantId:string|null;wakeEnabled:boolean|null;routeRevision:number|null};
+type AgentMailThreadRouteList = {connectionId:string;threads:AgentMailThreadRoute[];truncated:boolean};
 function providerRecord(value: unknown): ProviderRecord | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as ProviderRecord : null;
 }
@@ -122,6 +124,10 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
   const [higgsfieldBusy, setHiggsfieldBusy] = React.useState(false);
   const [assistantRoutes, setAssistantRoutes] = React.useState<Record<string, string>>({});
   const [assistantWake, setAssistantWake] = React.useState<Record<string, boolean>>({});
+  const [agentMailThreadRoutes,setAgentMailThreadRoutes]=React.useState<Record<string,AgentMailThreadRouteList>>({});
+  const [agentMailThreadRoutesBusy,setAgentMailThreadRoutesBusy]=React.useState<string|null>(null);
+  const [agentMailThreadAssistant,setAgentMailThreadAssistant]=React.useState<Record<string,string>>({});
+  const [agentMailThreadWake,setAgentMailThreadWake]=React.useState<Record<string,boolean>>({});
   const [agentMailConnectionId, setAgentMailConnectionId] = React.useState("");
   const [agentMailQuery, setAgentMailQuery] = React.useState("");
   const [agentMailPageToken, setAgentMailPageToken] = React.useState("");
@@ -169,6 +175,29 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
     } finally {
       setBusy(false);
     }
+  }
+
+  async function loadAgentMailThreadRoutes(account:ManagedServiceDashboard["accounts"][number]){
+    setAgentMailThreadRoutesBusy(account.id);setError("");
+    try{
+      const routes=await assistantMailApi<AgentMailThreadRouteList>(spaceId,session,{action:"agentport-thread-routes-list",
+        ...(account.projectId?{projectId:account.projectId}:{}),connection_id:account.id},true);
+      setAgentMailThreadRoutes(current=>({...current,[account.id]:routes}));
+    }catch(failure){setError(failure instanceof Error?failure.message:"Conversation routes are unavailable");}
+    finally{setAgentMailThreadRoutesBusy(current=>current===account.id?null:current);}
+  }
+
+  async function saveAgentMailThreadRoute(account:ManagedServiceDashboard["accounts"][number],thread:AgentMailThreadRoute,assistantId:string|null){
+    const key=`${account.id}:${thread.threadKey}`;
+    setBusy(true);setNotice("");setError("");
+    try{
+      await assistantMailApi(spaceId,session,{action:"agentport-thread-route-set",...(account.projectId?{projectId:account.projectId}:{}),
+        connection_id:account.id,thread_key:thread.threadKey,assistant_id:assistantId,
+        wake_enabled:agentMailThreadWake[key]??thread.wakeEnabled??true},true);
+      setNotice(assistantId?"Conversation routing override saved.":"Conversation now uses the account-level route.");
+      await loadAgentMailThreadRoutes(account);
+    }catch(failure){setError(failure instanceof Error?failure.message:"Conversation route update failed");}
+    finally{setBusy(false);}
   }
 
   function connectCustomerInbox() {
@@ -684,6 +713,34 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
                           assistant_id: (assistantRoutes[account.id] ?? account.assistantId ?? "").trim(),
                           wake_enabled: assistantWake[account.id] ?? account.wakeEnabled },
                           (assistantWake[account.id] ?? account.wakeEnabled) ? "AgentPort events now wake the selected assistant." : "AgentPort event wakeups are paused for this connection.")}>Save event routing</Button></div>
+                      <div style={{borderTop:"1px solid var(--border-subtle, #ddd)",paddingTop:8,display:"grid",gap:8}}>
+                        <div className="settings-row-label">Conversation routing overrides</div>
+                        <p className="settings-row-sub">Overrides are selected by this account owner. Each conversation is identified by a private hash and activity time; sender details and message content stay with AgentMail. A disabled override suppresses the account route for that conversation. Reset it to resume the account route.</p>
+                        <Button size="sm" variant="secondary" disabled={agentMailThreadRoutesBusy===account.id||busy}
+                          onClick={()=>void loadAgentMailThreadRoutes(account)}>{agentMailThreadRoutesBusy===account.id?"Loading conversations…":"Load conversations"}</Button>
+                        {agentMailThreadRoutes[account.id]?.truncated&&<p className="settings-row-sub" role="status">Showing the provider's latest 100 conversations. Older conversations are not available for routing here.</p>}
+                        {(agentMailThreadRoutes[account.id]?.threads??[]).map((thread)=>{
+                          const key=`${account.id}:${thread.threadKey}`;
+                          const assistantValue=agentMailThreadAssistant[key]??thread.assistantId??account.assistantId??"";
+                          const routeLabel=thread.lastActivityAt?new Date(thread.lastActivityAt).toLocaleString():`conversation ${thread.threadKey.slice(0,10)}`;
+                          return <div key={thread.threadKey} style={{display:"grid",gap:6,borderTop:"1px solid var(--border-subtle, #eee)",paddingTop:8}}>
+                            <div className="settings-row-sub">Conversation {thread.threadKey.slice(0,10)} · last activity {routeLabel}
+                              {thread.assistantId?` · override: ${thread.assistantId} (${thread.wakeEnabled?"wake enabled":"wake paused"})`:" · account-level route"}</div>
+                            <FormInput aria-label={`Assistant route for conversation ${thread.threadKey.slice(0,10)}`} value={assistantValue}
+                              onChange={(event)=>setAgentMailThreadAssistant(current=>({...current,[key]:event.target.value}))}/>
+                            <label style={{display:"flex",alignItems:"center",gap:8}}>
+                              <input type="checkbox" checked={agentMailThreadWake[key]??thread.wakeEnabled??true}
+                                onChange={(event)=>setAgentMailThreadWake(current=>({...current,[key]:event.target.checked}))}/>
+                              Wake this assistant for this conversation
+                            </label>
+                            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                              <Button size="sm" disabled={busy||!assistantValue.trim()} onClick={()=>void saveAgentMailThreadRoute(account,thread,assistantValue.trim())}>Save conversation override</Button>
+                              {thread.assistantId&&<Button size="sm" variant="secondary" disabled={busy}
+                                onClick={()=>void saveAgentMailThreadRoute(account,thread,null)}>Use account-level route</Button>}
+                            </div>
+                          </div>;
+                        })}
+                      </div>
                     </div>
                   )}
                   {account.provider === "agentmail" && agentMailUsageByConnection[account.id] && (

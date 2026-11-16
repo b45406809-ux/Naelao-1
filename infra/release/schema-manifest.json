@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0273_website_knowledge_path_policy",
+  "requiredSchemaVersion": "0274_agentport_thread_assistant_routing",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1095,6 +1095,10 @@
     {
       "filename": "0273_website_knowledge_path_policy.sql",
       "sha256": "bfb4f2afc2335e76bb4bbc7462698826807a082027373c59eb95307653c5c094"
+    },
+    {
+      "filename": "0274_agentport_thread_assistant_routing.sql",
+      "sha256": "25ce2d2e8c18fbdec7089031821bdf730d42cb7f95edf41c44ee64927d94d8f6"
     }
   ]
 }

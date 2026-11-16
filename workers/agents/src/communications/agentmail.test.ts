@@ -2,7 +2,7 @@ import { afterEach,describe,expect,it,vi } from "vitest";
 import { Hono } from "hono";
 import { mintInternalToken } from "@naelao/http";
 import type { AgentsEnv } from "../index.js";
-import { connectUserAgentMail,callAgentMailTool,createManagedAgentMailQuote,provisionManagedAgentMail,getAssistantAgentMailStatus,receiveAgentPortNotification,sweepManagedAgentMailRentals,sweepManagedAgentMailReconciliations,stopManagedAgentMailRenewal,revokeAgentPortOwnerLink,setAgentPortEventAssistant } from "./agentmail.js";
+import { connectUserAgentMail,callAgentMailTool,createManagedAgentMailQuote,provisionManagedAgentMail,getAssistantAgentMailStatus,getAgentPortThreadAssistantRoutes,receiveAgentPortNotification,sweepManagedAgentMailRentals,sweepManagedAgentMailReconciliations,stopManagedAgentMailRenewal,revokeAgentPortOwnerLink,setAgentPortEventAssistant,setAgentPortThreadAssistant } from "./agentmail.js";
 import { ensureIdentity,ensureAgentPortAssistantIdentity } from "./core.js";
 import { registerCommunicationRoutes } from "./routes.js";
 import { fixture,scope } from "../../../../tests/fixtures/assistant-communications.js";
@@ -309,6 +309,59 @@ describe("AgentMail provider account boundary",()=>{
     await expect(setAgentPortEventAssistant(f.env,scope,"connection-route","unprovisioned-agent")).rejects.toThrow("naelao_assistant_not_provisioned");
     await expect(setAgentPortEventAssistant(f.env,scope,"connection-route","naelao-agent")).rejects.toThrow("agentport_assistant_route_subscription_unavailable");
     expect(await f.db.prepare("SELECT COUNT(*) AS count FROM assistant_agentport_event_routes").first<{count:number}>()).toEqual({count:0});
+  });
+  it("lists owner-scoped AgentMail conversations by private hash and persists only verified per-thread overrides",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope);
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,agentport_account_id,
+      agentport_subscription_id,owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
+      VALUES('connection-thread-route','tenant','space',?,'agent-a','account-a','subscription-a','user','user_connected','inbox-a','assistant@example.test','active',datetime('now'),datetime('now'))`)
+      .bind(identity.id).run();
+    f.objects.set("spaces/space/agents/specialist-thread/system-prompt.md","specialist prompt");
+    f.objects.set("spaces/space/agents/specialist-thread/scripts.json",JSON.stringify({prebuilt:[]}));
+    const providerThreadId="provider-thread-private-123";
+    const agentPort=vi.fn(async(request:Request)=>{
+      const url=new URL(request.url);
+      if(url.pathname.endsWith("/agents"))return Response.json({agent:{id:"naelao-agent",status:"active"}},{status:201});
+      if(url.pathname.endsWith("/subscriptions/subscription-a"))return Response.json({subscription:{id:"subscription-a",agentId:"agent-a",accountId:"account-a",serviceId:"agentmail:tenant",status:"active"}});
+      if(url.pathname.endsWith("/channels"))return Response.json({channels:[{id:"channel-a",account_id:"account-a",service_id:"agentmail:tenant"}]});
+      if(url.pathname.endsWith("/threads"))return Response.json({threads:[{provider_thread_id:providerThreadId,participants:["sender-private"],metadata:{subject:"private subject"},last_message_at:"2026-11-16T10:00:00.000Z",created_at:"2026-11-15T10:00:00.000Z"}]});
+      return Response.json({error_code:"unavailable"},{status:404});
+    });
+    (f.env as unknown as {AGENTPORT_WORKER:{fetch:typeof agentPort}}).AGENTPORT_WORKER={fetch:agentPort};
+    const listed=await getAgentPortThreadAssistantRoutes(f.env,scope,"connection-thread-route");
+    expect(listed.threads).toHaveLength(1);
+    expect(listed.threads[0]).toMatchObject({lastActivityAt:"2026-11-16T10:00:00.000Z",assistantId:null,wakeEnabled:null});
+    expect(JSON.stringify(listed)).not.toContain(providerThreadId);
+    expect(JSON.stringify(listed)).not.toContain("sender-private");
+    expect(JSON.stringify(listed)).not.toContain("private subject");
+    const app=new Hono<{Bindings:AgentsEnv}>();registerCommunicationRoutes(app);
+    await expect(ensureIdentity(f.env,scope)).resolves.toMatchObject({owner_user_id:"user"});
+    const headers={"content-type":"application/json","x-naelao-tenant-id":scope.tenantId,"x-naelao-user-id":scope.userId,
+      "x-naelao-role":"owner","x-naelao-internal-token":await mintInternalToken("secret",scope.tenantId)};
+    const routeResponse=await app.request("/spaces/space/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({action:"agentport-thread-routes-list",connection_id:"connection-thread-route"})},f.env);
+    const routeBody=await routeResponse.json();
+    expect(routeResponse.status,JSON.stringify(routeBody)).toBe(200);
+    expect(JSON.stringify(routeBody)).not.toContain(providerThreadId);
+    const threadKey=listed.threads[0]!.threadKey;
+    const setResponse=await app.request("/spaces/space/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({action:"agentport-thread-route-set",connection_id:"connection-thread-route",thread_key:threadKey,
+        assistant_id:"specialist-thread",wake_enabled:false})},f.env);
+    expect(setResponse.status).toBe(200);
+    expect(await setResponse.json()).toMatchObject({assistantId:"specialist-thread",wakeEnabled:false,usesAccountDefault:false});
+    const saved=await f.db.prepare(`SELECT thread_ref_sha256,naelao_agent_id,wake_enabled,route_revision FROM assistant_agentport_thread_event_routes`).first<Record<string,unknown>>();
+    expect(saved).toMatchObject({thread_ref_sha256:threadKey,naelao_agent_id:"specialist-thread",wake_enabled:0,route_revision:1});
+    expect(JSON.stringify(saved)).not.toContain(providerThreadId);
+    await expect(setAgentPortThreadAssistant(f.env,scope,"connection-thread-route","b".repeat(64),"specialist-thread"))
+      .rejects.toThrow("agentport_thread_route_thread_unavailable");
+    const listedOverride=await getAgentPortThreadAssistantRoutes(f.env,scope,"connection-thread-route");
+    expect(listedOverride.threads[0]).toMatchObject({assistantId:"specialist-thread",wakeEnabled:false,routeRevision:1});
+    await expect(setAgentPortThreadAssistant(f.env,scope,"connection-thread-route",threadKey,null))
+      .resolves.toMatchObject({assistantId:null,usesAccountDefault:true});
+    expect(await f.db.prepare("SELECT status,route_revision FROM assistant_agentport_thread_event_routes").first<Record<string,unknown>>())
+      .toMatchObject({status:"revoked",route_revision:2});
+    await expect(getAgentPortThreadAssistantRoutes(f.env,{...scope,userId:"intruder"},"connection-thread-route"))
+      .rejects.toThrow("agentport_thread_route_account_unavailable");
   });
   it("validates and encrypts a user connected scoped inbox credential, then authorizes provider reads",async()=>{
     const f=fixture();

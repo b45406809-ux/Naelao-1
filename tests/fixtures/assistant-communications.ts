@@ -78,6 +78,7 @@ export function fixture() {
   db.db.exec(readFileSync(new URL("../../infra/migrations/0188_managed_service_model_entitlements.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0192_managed_service_provider_cost_receipts.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0193_agentport_assistant_routing.sql", import.meta.url), "utf8"));
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0274_agentport_thread_assistant_routing.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0194_agentport_scoped_managed_service_spend.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0195_telnyx_number_order_journal.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0200_telnyx_number_order_reconciliation.sql", import.meta.url), "utf8"));

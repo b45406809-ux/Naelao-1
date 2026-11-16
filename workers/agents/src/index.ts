@@ -2746,6 +2746,11 @@ async function stableChannelSessionId(spaceId: string, channelType: string, endU
   return createStableChannelSessionId({ spaceId, ...(projectId ? { projectId } : {}), channelType, conversationId: endUserId, agentId });
 }
 
+async function hashAgentPortThreadRef(threadRef:string):Promise<string>{
+  const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(threadRef));
+  return [...new Uint8Array(digest)].map(byte=>byte.toString(16).padStart(2,"0")).join("");
+}
+
 async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSessionQueueMessage, queueMessageId: string): Promise<void> {
   const inbound = message.type === "inbound_channel";
   const providerEvent=message.type==="provider_event_reference";
@@ -2792,6 +2797,18 @@ async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSes
           : null;
       },
       resolveAssistant: async (queued) => {
+        if(!queued.threadRef||queued.threadRef.length>512)return null;
+        const threadKey=await hashAgentPortThreadRef(queued.threadRef);
+        const threadRoute=await env.PLATFORM_DB.prepare(`SELECT subscription_id,agentport_agent_id,agentport_account_id,service_id,naelao_agent_id,wake_enabled,route_revision
+          FROM assistant_agentport_thread_event_routes WHERE tenant_id=? AND space_id=? AND project_id IS ? AND account_id=?
+            AND thread_ref_sha256=? AND status='active' LIMIT 1`)
+          .bind(tenantId,spaceId,projectId??null,queued.connectionId,threadKey)
+          .first<{subscription_id:string;agentport_agent_id:string;agentport_account_id:string;service_id:string;naelao_agent_id:string;wake_enabled:number;route_revision:number}>();
+        if(threadRoute&&threadRoute.subscription_id===queued.subscriptionId&&threadRoute.agentport_agent_id===queued.agentId
+          &&threadRoute.agentport_account_id===queued.accountId&&threadRoute.service_id===queued.serviceId){
+          return {assistantId:threadRoute.naelao_agent_id,wakeEnabled:threadRoute.wake_enabled===1,routeRevision:threadRoute.route_revision,
+            routeKind:"thread" as const,routeKeySha256:threadKey};
+        }
         const route = await env.PLATFORM_DB.prepare(`SELECT subscription_id,agentport_agent_id,agentport_account_id,service_id,naelao_agent_id,wake_enabled,route_revision
           FROM assistant_agentport_event_routes WHERE tenant_id=? AND space_id=? AND project_id IS ? AND account_id=? AND status='active' LIMIT 1`)
           .bind(tenantId,spaceId,projectId??null,queued.connectionId)
@@ -2801,21 +2818,29 @@ async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSes
         if (!route) return null;
         if (route.subscription_id !== queued.subscriptionId || route.agentport_agent_id !== queued.agentId
           || route.agentport_account_id !== queued.accountId || route.service_id !== queued.serviceId) return null;
-        return { assistantId: route.naelao_agent_id, wakeEnabled: route.wake_enabled === 1, routeRevision: route.route_revision };
+        return { assistantId: route.naelao_agent_id, wakeEnabled: route.wake_enabled === 1, routeRevision: route.route_revision, routeKind:"account" as const, routeKeySha256:null };
       },
       persistAssistant: async (queued, route) => {
-        await env.PLATFORM_DB.prepare(`UPDATE assistant_agentport_event_runs SET target_assistant_id=COALESCE(target_assistant_id,?),
-            target_route_revision=COALESCE(target_route_revision,?),updated_at=?
-          WHERE delivery_id=? AND status='running' AND (
-            (?=0 AND NOT EXISTS(SELECT 1 FROM assistant_agentport_event_routes WHERE tenant_id=? AND space_id=? AND project_id IS ? AND account_id=? AND status='active'))
-            OR EXISTS(SELECT 1 FROM assistant_agentport_event_routes WHERE tenant_id=? AND space_id=? AND project_id IS ? AND account_id=?
+        const routeKind=route.routeKind??"account",routeKey=routeKind==="thread"?route.routeKeySha256??null:null;
+        if(routeKind==="thread"&&(!routeKey||!/^[a-f0-9]{64}$/.test(routeKey)))return null;
+        const update=await env.PLATFORM_DB.prepare(`UPDATE assistant_agentport_event_runs SET target_assistant_id=COALESCE(target_assistant_id,?),
+            target_route_revision=COALESCE(target_route_revision,?),target_route_kind=COALESCE(target_route_kind,?),
+            target_route_key_sha256=COALESCE(target_route_key_sha256,?),updated_at=?
+          WHERE delivery_id=? AND status='running' AND ((?='thread' AND ? IS NOT NULL AND EXISTS(
+            SELECT 1 FROM assistant_agentport_thread_event_routes WHERE tenant_id=? AND space_id=? AND project_id IS ? AND account_id=?
+              AND thread_ref_sha256=? AND subscription_id=? AND agentport_agent_id=? AND agentport_account_id=? AND service_id=?
+              AND naelao_agent_id=? AND wake_enabled=1 AND route_revision=? AND status='active')) OR (?='account' AND EXISTS(
+            SELECT 1 FROM assistant_agentport_event_routes WHERE tenant_id=? AND space_id=? AND project_id IS ? AND account_id=?
               AND subscription_id=? AND agentport_agent_id=? AND agentport_account_id=? AND service_id=? AND naelao_agent_id=?
-              AND wake_enabled=1 AND route_revision=? AND status='active'))`)
-          .bind(route.assistantId,route.routeRevision,new Date().toISOString(),queued.deliveryId,route.routeRevision,tenantId,spaceId,projectId??null,queued.connectionId,
-            tenantId,spaceId,projectId??null,queued.connectionId,queued.subscriptionId,queued.agentId,queued.accountId,queued.serviceId,route.assistantId,route.routeRevision).run();
-        const result = await env.PLATFORM_DB.prepare("SELECT target_assistant_id,target_route_revision FROM assistant_agentport_event_runs WHERE delivery_id=? AND tenant_id=? AND status='running'")
-          .bind(queued.deliveryId,tenantId).first<{target_assistant_id:string|null;target_route_revision:number|null}>();
-        return result?.target_assistant_id === route.assistantId && result.target_route_revision === route.routeRevision ? result.target_assistant_id : null;
+              AND wake_enabled=1 AND route_revision=? AND status='active')))`)
+          .bind(route.assistantId,route.routeRevision,routeKind,routeKey,new Date().toISOString(),queued.deliveryId,routeKind,routeKey,
+            tenantId,spaceId,projectId??null,queued.connectionId,routeKey,queued.subscriptionId,queued.agentId,queued.accountId,queued.serviceId,route.assistantId,route.routeRevision,
+            routeKind,tenantId,spaceId,projectId??null,queued.connectionId,queued.subscriptionId,queued.agentId,queued.accountId,queued.serviceId,route.assistantId,route.routeRevision).run();
+        if(!update.meta.changes)return null;
+        const result = await env.PLATFORM_DB.prepare("SELECT target_assistant_id,target_route_revision,target_route_kind,target_route_key_sha256 FROM assistant_agentport_event_runs WHERE delivery_id=? AND tenant_id=? AND status='running'")
+          .bind(queued.deliveryId,tenantId).first<{target_assistant_id:string|null;target_route_revision:number|null;target_route_kind:string|null;target_route_key_sha256:string|null}>();
+        return result?.target_assistant_id===route.assistantId&&result.target_route_revision===route.routeRevision
+          &&result.target_route_kind===routeKind&&result.target_route_key_sha256===routeKey?result.target_assistant_id:null;
       },
       stableSessionId: (queued, assistantId) => stableChannelSessionId(spaceId, "agentmail", `${queued.connectionId}:${queued.threadRef}`, projectId, assistantId),
       persistSessionId: async (queued, sessionId) => {

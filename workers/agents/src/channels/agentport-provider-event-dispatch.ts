@@ -3,8 +3,10 @@ import type { ProviderEventReferenceQueueMessage } from "./session-queue.js";
 
 export interface AgentPortProviderEventDispatchDeps {
   currentSubscription(event: ProviderEventReferenceQueueMessage): Promise<AgentPortSubscriptionState | null>;
-  resolveAssistant(event: ProviderEventReferenceQueueMessage): Promise<{ assistantId: string; wakeEnabled: boolean; routeRevision: number } | null>;
-  persistAssistant(event: ProviderEventReferenceQueueMessage, route: { assistantId: string; wakeEnabled: boolean; routeRevision: number }): Promise<string | null>;
+  resolveAssistant(event: ProviderEventReferenceQueueMessage): Promise<{ assistantId: string; wakeEnabled: boolean; routeRevision: number;
+    routeKind?: "account" | "thread"; routeKeySha256?: string | null } | null>;
+  persistAssistant(event: ProviderEventReferenceQueueMessage, route: { assistantId: string; wakeEnabled: boolean; routeRevision: number;
+    routeKind?: "account" | "thread"; routeKeySha256?: string | null }): Promise<string | null>;
   stableSessionId(event: ProviderEventReferenceQueueMessage, assistantId: string): Promise<string>;
   persistSessionId(event: ProviderEventReferenceQueueMessage, sessionId: string): Promise<void>;
   ensureSession(event: ProviderEventReferenceQueueMessage, sessionId: string, assistantId: string): Promise<void>;

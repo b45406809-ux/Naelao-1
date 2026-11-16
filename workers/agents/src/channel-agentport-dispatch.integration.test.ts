@@ -23,17 +23,18 @@ describe("AgentPort channel queue → session → assistant dispatch", () => {
             if (sql.includes("SELECT s.id FROM spaces")) return { id: "space-a" } as T;
             if (sql.includes("SELECT name, config_json FROM spaces")) return { name: "Test space", config_json: "{}" } as T;
             if (sql.includes("SELECT status,lease_until FROM assistant_agentport_event_runs")) return { status: persisted.status, lease_until: null } as T;
+            if (sql.includes("FROM assistant_agentport_thread_event_routes")) return null;
             if (sql.includes("FROM assistant_agentport_event_routes")) return { subscription_id: event.subscriptionId, agentport_agent_id: event.agentId,
               agentport_account_id: event.accountId, service_id: event.serviceId, naelao_agent_id: routeAssistant, wake_enabled: 1, route_revision: 2 } as T;
             if (sql.includes("SELECT target_assistant_id")) return { target_assistant_id: persisted.targetAssistantId,
-              target_route_revision: persisted.targetRouteRevision } as T;
+              target_route_revision: persisted.targetRouteRevision,target_route_kind:persisted.targetRouteKind,target_route_key_sha256:persisted.targetRouteKey } as T;
             return null;
           },
           run: async () => {
             statements.push({ sql, values });
             if (sql.includes("INSERT OR IGNORE INTO assistant_agentport_event_runs")) persisted.status ??= "pending";
             if (sql.includes("SET status='running'")) persisted.status = "running";
-            if (sql.includes("SET target_assistant_id=COALESCE")) { persisted.targetAssistantId ??= values[0]; persisted.targetRouteRevision ??= values[1]; }
+            if (sql.includes("SET target_assistant_id=COALESCE")) { persisted.targetAssistantId ??= values[0]; persisted.targetRouteRevision ??= values[1]; persisted.targetRouteKind ??= values[2]; persisted.targetRouteKey ??= values[3]; }
             if (sql.includes("SET session_id=")) persisted.sessionId = values[0];
             if (sql.includes("SET status='accepted'")) persisted.status = "accepted";
             if (sql.includes("SET status='failed'")) persisted.status = "failed";
@@ -74,6 +75,7 @@ describe("AgentPort channel queue → session → assistant dispatch", () => {
     expect(message.retry).not.toHaveBeenCalled();
     expect(agentPort).toHaveBeenCalledOnce();
     expect(persisted).toMatchObject({ status: "accepted", sessionId: expect.stringMatching(/^channel-/) });
+    expect(persisted).toMatchObject({targetRouteKind:"account",targetRouteKey:null});
     expect(spacesCalls.map(call => call.url.split("/").at(-1))).toEqual(["threads", "sessions", "messages"]);
     expect(spacesCalls[1]?.body).toMatchObject({ metadata: { agentport_agent_id: event.agentId, naelao_assistant_id: routeAssistant, channel_type: "agentmail" } });
     const appended = JSON.parse(String(spacesCalls[2]?.body.content)) as { provider_event_reference: Record<string, unknown> };
@@ -129,5 +131,74 @@ describe("AgentPort channel queue → session → assistant dispatch", () => {
     expect(message.retry).not.toHaveBeenCalled();
     expect(agentPort).toHaveBeenCalledOnce();
     expect(persisted.status).toBe("accepted");
+  });
+
+  async function dispatchThreadOverride(persistRoute:boolean,threadWakeEnabled=true){
+    const event:ProviderEventReferenceQueueMessage={type:"provider_event_reference",tenantId:"tenant-a",spaceId:"space-a",projectId:"project-a",
+      agentId:"agentport-agent-a",connectionId:"connection-a",accountId:"account-a",subscriptionId:"subscription-a",eventId:"thread-event-a",
+      deliveryId:"thread-delivery-a",serviceId:"agentmail:tenant-a",eventType:"message.received",threadRef:"thread-a",dataRef:"message-a"};
+    const threadDigest=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(event.threadRef)));
+    const threadKey=[...threadDigest].map(byte=>byte.toString(16).padStart(2,"0")).join("");
+    const persisted:Record<string,unknown>={};
+    const database={prepare(sql:string){let values:unknown[]=[];return {bind(...args:unknown[]){values=args;return this;},
+      first:async<T>()=>{
+        if(sql.includes("SELECT s.id FROM spaces"))return {id:"space-a"} as T;
+        if(sql.includes("SELECT name, config_json FROM spaces"))return {name:"Test space",config_json:"{}"} as T;
+        if(sql.includes("SELECT status,lease_until FROM assistant_agentport_event_runs"))return {status:persisted.status,lease_until:null} as T;
+        if(sql.includes("FROM assistant_agentport_thread_event_routes"))return {subscription_id:event.subscriptionId,agentport_agent_id:event.agentId,
+          agentport_account_id:event.accountId,service_id:event.serviceId,naelao_agent_id:"thread-specialist",wake_enabled:threadWakeEnabled?1:0,route_revision:7} as T;
+        if(sql.includes("FROM assistant_agentport_event_routes"))return {subscription_id:event.subscriptionId,agentport_agent_id:event.agentId,
+          agentport_account_id:event.accountId,service_id:event.serviceId,naelao_agent_id:"account-default",wake_enabled:1,route_revision:3} as T;
+        if(sql.includes("SELECT target_assistant_id"))return {target_assistant_id:persisted.targetAssistantId,target_route_revision:persisted.targetRouteRevision,
+          target_route_kind:persisted.targetRouteKind,target_route_key_sha256:persisted.targetRouteKey} as T;
+        return null;
+      },run:async()=>{
+        if(sql.includes("INSERT OR IGNORE INTO assistant_agentport_event_runs"))persisted.status??="pending";
+        if(sql.includes("SET status='running'"))persisted.status="running";
+        if(sql.includes("SET target_assistant_id=COALESCE")){if(!persistRoute)return {meta:{changes:0}};
+          persisted.targetAssistantId??=values[0];persisted.targetRouteRevision??=values[1];persisted.targetRouteKind??=values[2];persisted.targetRouteKey??=values[3];}
+        if(sql.includes("SET session_id="))persisted.sessionId=values[0];
+        if(sql.includes("SET status='accepted'"))persisted.status="accepted";
+        if(sql.includes("SET status='failed'"))persisted.status="failed";
+        return {meta:{changes:1}};
+      }};}};
+    const agentPort=vi.fn(async()=>Response.json({subscription:{id:event.subscriptionId,agentId:event.agentId,accountId:event.accountId,serviceId:event.serviceId,status:"active"}}));
+    const spacesCalls:string[]=[];
+    const spaces=vi.fn(async(request:Request)=>{const url=new URL(request.url),body=request.method==="POST"?await request.clone().json().catch(()=>({})) as Record<string,unknown>:{};spacesCalls.push(url.pathname);
+      if(url.pathname.endsWith("/threads"))return Response.json({id:"thread-record-a"});
+      return url.pathname.endsWith("/sessions")?Response.json({id:body.id??"session-a"}):Response.json({ok:true});});
+    const wakePayloads:Record<string,unknown>[]=[];
+    const agentNamespace={idFromName:(name:string)=>name,get:()=>({fetch:async(request:Request)=>{wakePayloads.push(await request.json() as Record<string,unknown>);return Response.json({ok:true});}})};
+    const env={PLATFORM_SECRET:"agentport-dispatch-test-secret",PLATFORM_DB:database,AGENTPORT_WORKER:{fetch:agentPort},SPACES_WORKER:{fetch:spaces},
+      NAELAO_AGENT_DO:agentNamespace,ANTHROPIC_API_KEY:"test-model-key"};
+    const message={id:"queue-thread-a",body:event,ack:vi.fn(),retry:vi.fn()};
+    await handleWorkerQueue({queue:"naelao-channel-sessions",messages:[message]} as never,env as never);
+    return {event,threadKey,persisted,wakePayloads,message,agentPort,spacesCalls};
+  }
+
+  it("prefers an owner-pinned conversation override and stores its route revision and hash",async()=>{
+    const result=await dispatchThreadOverride(true);
+    expect(result.message.ack).toHaveBeenCalledOnce();
+    expect(result.message.retry).not.toHaveBeenCalled();
+    expect(result.persisted).toMatchObject({status:"accepted",targetAssistantId:"thread-specialist",targetRouteRevision:7,
+      targetRouteKind:"thread",targetRouteKey:result.threadKey});
+    expect(result.wakePayloads).toHaveLength(1);
+    expect(result.wakePayloads[0]).toMatchObject({agentId:"thread-specialist"});
+  });
+
+  it("drops a conversation event when the selected route revision is stale before persistence",async()=>{
+    const result=await dispatchThreadOverride(false);
+    expect(result.message.ack).toHaveBeenCalledOnce();
+    expect(result.wakePayloads).toHaveLength(0);
+    expect(result.persisted).toMatchObject({status:"accepted"});
+    expect(result.persisted.targetAssistantId).toBeUndefined();
+  });
+
+  it("does not fall through to the account route when a conversation override is paused",async()=>{
+    const result=await dispatchThreadOverride(true,false);
+    expect(result.message.ack).toHaveBeenCalledOnce();
+    expect(result.wakePayloads).toHaveLength(0);
+    expect(result.persisted).toMatchObject({status:"accepted"});
+    expect(result.persisted.targetAssistantId).toBeUndefined();
   });
 });

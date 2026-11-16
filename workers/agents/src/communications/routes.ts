@@ -11,7 +11,7 @@ import {
   MAX_EMAIL_ATTACHMENT_BYTES,
   safeFilename,
 } from "../channels/cloudflare-email.js";
-import { connectUserAgentMail, callAgentMailTool, createManagedAgentMailQuote, getAssistantAgentMailStatus, getAgentPortSyncIdentity, provisionManagedAgentMail, readAgentMailUsage, receiveAgentMailWebhook, receiveAgentPortNotification, stopManagedAgentMailRenewal, revokeAgentPortOwnerLink, setAgentPortEventAssistant, syncAgentPortAgentMail } from "./agentmail.js";
+import { connectUserAgentMail, callAgentMailTool, createManagedAgentMailQuote, getAssistantAgentMailStatus, getAgentPortSyncIdentity, getAgentPortThreadAssistantRoutes, provisionManagedAgentMail, readAgentMailUsage, receiveAgentMailWebhook, receiveAgentPortNotification, stopManagedAgentMailRenewal, revokeAgentPortOwnerLink, setAgentPortEventAssistant, setAgentPortThreadAssistant, syncAgentPortAgentMail } from "./agentmail.js";
 import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
 import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget } from "./managed-service-cost-budgets.js";
@@ -333,6 +333,26 @@ async function handle(c: C, agent: boolean) {
     if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
     try{return c.json(await setAgentPortEventAssistant(c.env,scope,body.connection_id,body.assistant_id,body.wake_enabled!==false));}
     catch(error){const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentport_assistant_route_failed";
+      return c.json({error_code:code},code.includes("not_provisioned")?404:code.includes("conflict")?409:code.includes("unavailable")?409:400);}
+  }
+  if(action==="agentport-thread-routes-list"){
+    if(c.req.method!=="POST"||typeof body.connection_id!=="string"||!ID.test(body.connection_id))return c.json({error_code:"invalid_agentport_thread_route"},400);
+    let identity:CommunicationIdentity;
+    try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+    if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    try{return c.json(await getAgentPortThreadAssistantRoutes(c.env,scope,body.connection_id));}
+    catch(error){const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentport_thread_route_list_failed";
+      return c.json({error_code:code},code.includes("not_found")?404:code.includes("unavailable")?409:502);}
+  }
+  if(action==="agentport-thread-route-set"){
+    if(c.req.method!=="POST"||typeof body.connection_id!=="string"||!ID.test(body.connection_id)
+      ||typeof body.thread_key!=="string"||(body.assistant_id!==null&&typeof body.assistant_id!=="string")
+      ||(body.wake_enabled!==undefined&&typeof body.wake_enabled!=="boolean"))return c.json({error_code:"invalid_agentport_thread_route"},400);
+    let identity:CommunicationIdentity;
+    try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+    if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    try{return c.json(await setAgentPortThreadAssistant(c.env,scope,body.connection_id,body.thread_key,body.assistant_id as string|null,body.wake_enabled!==false));}
+    catch(error){const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentport_thread_route_failed";
       return c.json({error_code:code},code.includes("not_provisioned")?404:code.includes("conflict")?409:code.includes("unavailable")?409:400);}
   }
   if(action==="userport-agentport-owner-unlink"){

@@ -145,6 +145,114 @@ export async function setAgentPortEventAssistant(
   if(saved?.naelao_agent_id!==assistantId||saved.wake_enabled!==(wakeEnabled?1:0))throw new Error("agentport_assistant_route_conflict");
   return {connectionId:account.id,assistantId,wakeEnabled:saved.wake_enabled===1,subscriptionVerified:true};
 }
+
+type AgentPortThreadRouteContext={account:{id:string;tenant_id:string;space_id:string;project_id:string|null;owner_user_id:string;
+  agentport_agent_id:string;agentport_account_id:string;agentport_subscription_id:string;status:string};serviceId:string;channelId:string};
+type AgentPortThreadRouteRow={thread_ref_sha256:string;naelao_agent_id:string;wake_enabled:number;route_revision:number;
+  subscription_id:string;agentport_agent_id:string;agentport_account_id:string;service_id:string};
+
+async function loadAgentPortThreadRouteContext(env:AgentsEnv,scope:CommunicationScope,connectionId:string):Promise<AgentPortThreadRouteContext>{
+  if(!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(connectionId))throw new Error("agentport_thread_route_invalid");
+  const account=await env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,project_id,owner_user_id,agentport_agent_id,agentport_account_id,
+      agentport_subscription_id,status FROM assistant_agentmail_accounts
+    WHERE id=? AND tenant_id=? AND space_id=? AND project_id IS ? AND owner_user_id=? LIMIT 1`)
+    .bind(connectionId,scope.tenantId,scope.spaceId,scope.projectId??null,scope.userId)
+    .first<AgentPortThreadRouteContext["account"]>();
+  if(!account||account.status!=="active"||!account.agentport_agent_id||!account.agentport_account_id||!account.agentport_subscription_id)
+    throw new Error("agentport_thread_route_account_unavailable");
+  const serviceId=`agentmail:${scope.tenantId}`;
+  const current=await agentPort(env,scope.tenantId,`/events/subscriptions/${encodeURIComponent(account.agentport_subscription_id)}`);
+  const subscription=current.result.subscription as {id?:unknown;agentId?:unknown;accountId?:unknown;serviceId?:unknown;status?:unknown}|undefined;
+  if(!subscription||subscription.id!==account.agentport_subscription_id||subscription.agentId!==account.agentport_agent_id
+    ||subscription.accountId!==account.agentport_account_id||subscription.serviceId!==serviceId||subscription.status!=="active")
+    throw new Error("agentport_thread_route_subscription_unavailable");
+  const channels=await agentPort(env,scope.tenantId,`/channels?agentId=${encodeURIComponent(account.agentport_agent_id)}`);
+  const channel=(channels.result.channels as Array<Record<string,unknown>>|undefined)?.find(row=>(row.account_id??row.accountId)===account.agentport_account_id
+    &&(row.service_id??row.serviceId)===serviceId);
+  if(typeof channel?.id!=="string")throw new Error("agentport_thread_route_channel_unavailable");
+  return {account,serviceId,channelId:channel.id};
+}
+
+/** Lists bounded conversation routing metadata. Provider thread IDs and all conversation
+ * participants/content stay inside this service and are represented to the owner by a hash. */
+export async function getAgentPortThreadAssistantRoutes(env:AgentsEnv,scope:CommunicationScope,connectionId:string){
+  const context=await loadAgentPortThreadRouteContext(env,scope,connectionId);
+  const response=await agentPort(env,scope.tenantId,`/channels/${encodeURIComponent(context.channelId)}/threads?agentId=${encodeURIComponent(context.account.agentport_agent_id)}`);
+  const providerThreads=response.result.threads;
+  if(!Array.isArray(providerThreads))throw new Error("agentport_thread_list_invalid");
+  const saved=await env.PLATFORM_DB.prepare(`SELECT thread_ref_sha256,naelao_agent_id,wake_enabled,route_revision,subscription_id,
+      agentport_agent_id,agentport_account_id,service_id FROM assistant_agentport_thread_event_routes
+    WHERE tenant_id=? AND space_id=? AND project_id IS ? AND account_id=? AND status='active'`)
+    .bind(scope.tenantId,scope.spaceId,scope.projectId??null,context.account.id).all<AgentPortThreadRouteRow>();
+  const byThread=new Map(saved.results.filter(row=>row.subscription_id===context.account.agentport_subscription_id
+    &&row.agentport_agent_id===context.account.agentport_agent_id&&row.agentport_account_id===context.account.agentport_account_id
+    &&row.service_id===context.serviceId).map(row=>[row.thread_ref_sha256,row]));
+  const threads=(await Promise.all(providerThreads.slice(0,100).map(async(raw:unknown)=>{
+    if(!raw||typeof raw!=="object")return [];
+    const thread=raw as Record<string,unknown>,providerThreadId=thread.provider_thread_id??thread.providerThreadId;
+    if(typeof providerThreadId!=="string"||providerThreadId.length===0||providerThreadId.length>512)return [];
+    const threadKey=await hashString(providerThreadId),route=byThread.get(threadKey);
+    const activity=thread.last_message_at??thread.lastMessageAt,created=thread.created_at??thread.createdAt;
+    const safeDate=(value:unknown)=>typeof value==="string"&&Number.isFinite(Date.parse(value))?new Date(value).toISOString():null;
+    return [{threadKey,lastActivityAt:safeDate(activity),createdAt:safeDate(created),assistantId:route?.naelao_agent_id??null,
+      wakeEnabled:route?route.wake_enabled===1:null,routeRevision:route?.route_revision??null}];
+  }))).flat();
+  return {connectionId:context.account.id,threads,truncated:providerThreads.length>=100};
+}
+
+/** Sets an owner-authorized per-conversation override. A null assistant retires the override
+ * and resumes the account-level route. The raw provider thread reference is never persisted here. */
+export async function setAgentPortThreadAssistant(env:AgentsEnv,scope:CommunicationScope,connectionId:string,threadKey:string,
+  assistantId:string|null,wakeEnabled=true){
+  if(!/^[a-f0-9]{64}$/.test(threadKey)||typeof wakeEnabled!=="boolean"
+    ||(assistantId!==null&&!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(assistantId)))throw new Error("agentport_thread_route_invalid");
+  const context=await loadAgentPortThreadRouteContext(env,scope,connectionId);
+  const response=await agentPort(env,scope.tenantId,`/channels/${encodeURIComponent(context.channelId)}/threads?agentId=${encodeURIComponent(context.account.agentport_agent_id)}`);
+  const providerThreads=response.result.threads;
+  if(!Array.isArray(providerThreads))throw new Error("agentport_thread_list_invalid");
+  let threadExists=false;
+  for(const raw of providerThreads.slice(0,100)){
+    if(!raw||typeof raw!=="object")continue;
+    const thread=raw as Record<string,unknown>,providerThreadId=thread.provider_thread_id??thread.providerThreadId;
+    if(typeof providerThreadId==="string"&&providerThreadId.length<=512&&await hashString(providerThreadId)===threadKey){threadExists=true;break;}
+  }
+  if(!threadExists)throw new Error("agentport_thread_route_thread_unavailable");
+  const at=new Date().toISOString(),account=context.account;
+  if(assistantId===null){
+    await env.PLATFORM_DB.prepare(`UPDATE assistant_agentport_thread_event_routes SET status='revoked',route_revision=route_revision+1,
+        selected_by_user_id=?,updated_at=?,revoked_at=? WHERE tenant_id=? AND space_id=? AND project_id IS ? AND account_id=?
+        AND thread_ref_sha256=? AND status='active'`).bind(scope.userId,at,at,scope.tenantId,scope.spaceId,scope.projectId??null,account.id,threadKey).run();
+    return {connectionId:account.id,threadKey,assistantId:null,wakeEnabled:null,usesAccountDefault:true};
+  }
+  if(assistantId!=="naelao-agent"&&(!env.SCRIPTS_R2||!(await loadAgentConfig(env.SCRIPTS_R2,scope.spaceId,assistantId))))
+    throw new Error("naelao_assistant_not_provisioned");
+  await env.PLATFORM_DB.prepare(`INSERT INTO assistant_agentport_thread_event_routes(account_id,tenant_id,space_id,project_id,thread_ref_sha256,
+      subscription_id,agentport_agent_id,agentport_account_id,service_id,naelao_agent_id,wake_enabled,route_revision,status,
+      selected_by_user_id,created_at,updated_at,revoked_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,1,'active',?,?,?,NULL)
+    ON CONFLICT(account_id,thread_ref_sha256) DO UPDATE SET subscription_id=excluded.subscription_id,
+      agentport_agent_id=excluded.agentport_agent_id,agentport_account_id=excluded.agentport_account_id,service_id=excluded.service_id,
+      naelao_agent_id=excluded.naelao_agent_id,
+      route_revision=assistant_agentport_thread_event_routes.route_revision+CASE WHEN assistant_agentport_thread_event_routes.subscription_id IS NOT excluded.subscription_id
+        OR assistant_agentport_thread_event_routes.agentport_agent_id IS NOT excluded.agentport_agent_id
+        OR assistant_agentport_thread_event_routes.agentport_account_id IS NOT excluded.agentport_account_id
+        OR assistant_agentport_thread_event_routes.service_id IS NOT excluded.service_id
+        OR assistant_agentport_thread_event_routes.naelao_agent_id IS NOT excluded.naelao_agent_id
+        OR assistant_agentport_thread_event_routes.wake_enabled IS NOT excluded.wake_enabled
+        OR assistant_agentport_thread_event_routes.status IS NOT 'active' THEN 1 ELSE 0 END,
+      wake_enabled=excluded.wake_enabled,status='active',selected_by_user_id=excluded.selected_by_user_id,
+      updated_at=excluded.updated_at,revoked_at=NULL
+    WHERE assistant_agentport_thread_event_routes.tenant_id=excluded.tenant_id AND assistant_agentport_thread_event_routes.space_id=excluded.space_id
+      AND assistant_agentport_thread_event_routes.project_id IS excluded.project_id`)
+    .bind(account.id,scope.tenantId,scope.spaceId,scope.projectId??null,threadKey,account.agentport_subscription_id,account.agentport_agent_id,
+      account.agentport_account_id,context.serviceId,assistantId,wakeEnabled?1:0,scope.userId,at,at).run();
+  const saved=await env.PLATFORM_DB.prepare(`SELECT naelao_agent_id,wake_enabled,route_revision FROM assistant_agentport_thread_event_routes
+    WHERE account_id=? AND tenant_id=? AND space_id=? AND project_id IS ? AND thread_ref_sha256=? AND status='active'`)
+    .bind(account.id,scope.tenantId,scope.spaceId,scope.projectId??null,threadKey)
+    .first<{naelao_agent_id:string;wake_enabled:number;route_revision:number}>();
+  if(saved?.naelao_agent_id!==assistantId||saved.wake_enabled!==(wakeEnabled?1:0))throw new Error("agentport_thread_route_conflict");
+  return {connectionId:account.id,threadKey,assistantId,wakeEnabled:saved.wake_enabled===1,routeRevision:saved.route_revision,usesAccountDefault:false};
+}
 async function linkAgentPort(env:AgentsEnv,scope:CommunicationScope,identity:CommunicationIdentity,account:AgentMailAccount,providerOwner:{type:"individual"|"organization";id:string},activateLocal=true){
   const {agentId,serviceId,principalId:agentPrincipalId}=await platformIdentity(env,scope,identity);
   let ownerPrincipalId=agentPrincipalId;
