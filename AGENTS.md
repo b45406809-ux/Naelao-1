@@ -15,6 +15,14 @@ The requirements from `docs/research/planner-worker-isolation-and-conflict-resol
 
 For every coherent source, configuration or documentation change, verify it, commit it, then fetch and push it to `origin/Mcbt5s-Backup-2` before moving to the next change. Record the pushed SHA, evidence, remaining uncoded work, separate live/deployment gates and exact next action in this runbook and the relevant progress ledgers. Fetch immediately before each push; preserve concurrent remote commits and integrate them without force-pushing. Never stage unrelated untracked files such as `infra/scripts/__pycache__/`.
 
+## Latest code checkpoint — 2026-11-16 (K07 owner-approved website snapshot; `99f9081c` pushed)
+
+Project owners can preview a page through their exact active host-owned `website_connections` grant. Knowledge rechecks tenant/Space/user/Project and approved origin, follows at most five redirects while applying both origin and SSRF checks at every hop, accepts bounded HTML/Markdown/plain text, sanitizes it, and issues a 15-minute HMAC receipt bound to the preview hash, requested/final URLs, connection and owner. Project Shell lets the owner review/edit and save that snapshot through the idempotent Knowledge create path. Migration 0271 requires a host connection reference/grant revision for current website sources and caps each connection at 100 pages. Publication, retrieval and citations check the live connection; revocation immediately blocks reads and starts the existing durable deletion pipeline. If Knowledge cleanup is unavailable, the host still revokes the browser profile and returns retryable status.
+
+Code `99f9081ced263c219831757c2d504124050a5ff5` is pushed and remote-verified on `origin/Mcbt5s-Backup-2`. Local evidence: Knowledge **131/131**, Spaces website-connection tests **11/11**, Shell Knowledge API **2/2**, Knowledge/Spaces/Shell typechecks, release manifest inventory **271 migrations**, standalone SQLite grant/100-page-trigger check, and `git diff --check`. Migration 0271 is source-only and unapplied. Tests use local mocks/SQLite; no browser, deployed Worker/D1, scheduled crawler, provider or live acceptance ran. Rollouts stay disabled, AI Search remains unselected, and untracked `infra/scripts/__pycache__/` remains untouched.
+
+K07 remains `IN_PROGRESS`: this is an owner-approved single-page snapshot with manual refresh, not a logical connector registry, scheduled sync or provider connector. K08 incremental cursors/checkpoints/retries/freshness UI remain uncoded; K09 still needs an approved path/robots policy and durable crawl/refresh lifecycle. Exact next action: implement K08's durable provider-neutral refresh state and owner-visible freshness/retry status for the existing website source, fencing updates by source revision and connection grant; test duplicate/lost responses, out-of-order completion, revoke-during-refresh and deletion. Then continue the remaining K/S/U/P/PW/EP gaps. Keep rollout disabled.
+
 ## Latest code checkpoint — 2026-11-16 (K07 versioned Knowledge source lineage; `3bf31c66` pushed)
 
 Migration 0270 adds versioned source lineage to canonical `kb_documents`: adapter kind, source revision, private content hash, opaque host connection reference/grant revision and source state. Existing manual sources backfill as current; URL-backed entries are marked `unsupported` for refresh rather than implying they are synced. New manual creates persist a hash/version; content edits advance the version and hash; deletion advances/revokes the source and clears private references. Archive export/restore preserves the fields. Public document responses omit content hashes and connector references. Connector rows cannot be written without a bounded opaque host reference and grant revision.
@@ -1652,7 +1660,7 @@ the current owner phone panel, exact-installation Space route and Agents host va
 Focused Agents tests pass **46/46**, the Space route tests **18/18**, and Agents/Spaces/Shell typechecks
 pass. These are local tests only; no carrier call occurred. The prior P17 and simulator next-action
 notes are historical; current source reconciliation is already recorded in the two progress files.
-After compaction, interruption or a new session, read all three active plans, all three progress records and this
+After compaction, interruption or a new session, read all four active plan sources, all four durable progress records and this
 runbook; inspect the actual branch and worktree; resume from the exact current action at the top. Do not deploy,
 purchase, reset, clean, switch branches or force-push.
 The user authorized normal commits and pushes of each coherent checkpoint to `Mcbt5s-Backup-2`:
@@ -1722,14 +1730,14 @@ actual invoices, billed-idle/CPU-size feeds, approved policies and live evidence
 that audit without new source evidence. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9 and
 U01–U12 keep their row-level status and gaps. §5, §9.5 and §10 remain PARTIAL. P01/P02 fail closed on
 actual environment separation, ownership/resource receipts and operator-attested D1 baselines; other
-product, policy, runtime contract and live acceptance gates remain in all three progress records.
+product, policy, runtime contract and live acceptance gates remain in all four progress records.
 
 Historical next action: continue §9.5 through the signed extension and bounded Telnyx `say`/DTMF
 callers. Its phone simulator/package work is recorded in later checkpoints; resume from the active
 P24 action at the top. Keep public streaming and provider/live acceptance gated.
 The earlier §10.2 expected-version-fenced, audience-confirmed amendment is already implemented and
-pushed as `bfc22ce6`; do not repeat it. After compaction, interruption or a new session, read all three
-active plans and all three progress records and this runbook; inspect the actual worktree, branch and dirty state;
+pushed as `bfc22ce6`; do not repeat it. After compaction, interruption or a new session, read all four
+active plan sources and all four durable progress records and this runbook; inspect the actual worktree, branch and dirty state;
 resume from that exact action. Older next-action notes below are historical; this checkpoint and the
 two progress records govern.
 
@@ -2145,7 +2153,7 @@ Latest continuation (2026-11-12): U01 code `afc0c4fe` is pushed to `origin/Mcbt5
 
 ## Autonomous continuation and verification
 
-- After compaction, interruption or a new session, read all three active plans and all three progress records
+- After compaction, interruption or a new session, read all four active plan sources and all four progress records
   and this runbook, inspect the actual worktree/branch/dirty files, and resume the exact next action.
   Reconcile earlier status with current source and
   newer evidence. Preserve original transcripts. Historical guidance is archived at

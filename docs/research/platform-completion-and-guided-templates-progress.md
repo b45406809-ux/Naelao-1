@@ -1,5 +1,13 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K07 owner-approved website snapshot; `99f9081c` pushed)
+
+The Project Shell reaches a Knowledge preview/create path backed by the exact host-owned active website connection. Preview enforces owner/Project/origin and redirect-time SSRF/origin checks, bounded HTML/Markdown/plain text, sanitized content and a 15-minute HMAC receipt. The owner reviews/edits before idempotent create. Migration 0271 binds searchable website docs to the connection and caps it at 100 pages; publication/search/citation paths check live status, while host revocation blocks access and starts durable cleanup. The browser profile is still revoked when Knowledge cleanup is unavailable.
+
+Code `99f9081ced263c219831757c2d504124050a5ff5` is remote-verified. Local evidence: Knowledge **131/131**, Spaces **11/11**, Shell API **2/2**, three typechecks, release inventory **271 migrations**, standalone SQLite trigger exercise and `git diff --check`. Migration 0271 is unapplied; tests are local mocks/SQLite. No browser, deployment, scheduled sync, provider or live acceptance ran. Keep rollouts off and preserve `infra/scripts/__pycache__/`.
+
+This closes the K07 website preview/create caller only. A logical source registry, provider connector adapters, scheduled/incremental refresh and freshness UI remain uncoded. Exact next action: implement K08's durable provider-neutral refresh state and owner-visible freshness/retry path, fenced by source revision and active host grant; test replay/lost response, stale completion, revoke race and deletion. Continue remaining K09/K/S/U/P/PW/EP gaps.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (K07 source lineage; `3bf31c66` pushed)
 
 Knowledge migration 0270 records adapter kind, source revision/hash/state and private opaque host connection/grant references. Manual create/edit/delete and archive/restore are wired; URL excerpts remain unsupported for refresh. Connector rows require a host reference and grant revision, but no connector issuer or refresh caller is implemented. The release schema manifest now includes existing migrations 0266–0269 and new 0270; it was previously stale at 0265. Code `3bf31c665451aceb48aa047680d67309524cac00` is remote-verified. Knowledge **121/121**, typecheck, SQLite migration/backfill/connector guard/insert tests and release inventory **270 files** pass. Migration is unapplied; no provider/live acceptance ran; rollouts remain off.
