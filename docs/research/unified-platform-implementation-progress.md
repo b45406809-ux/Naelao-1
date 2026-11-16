@@ -1,5 +1,9 @@
 # Unified platform implementation progress
 
+## Cross-plan checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
+
+Static AgentTask workflow steps now leave a bounded ordered durable checkpoint lineage tied to registered content-hashed artifacts. Focused workflow/DO/checkpoint tests **26/26**, Agents typecheck and diff check pass; code `1dd540579b8af79c5dcbfcc638c0a384d5b3502c` is remote-verified. No deployed/live recovery evidence. This does not recover unsaved process memory or prove branch/runtime isolation. Exact next action: expose the last verified checkpoint safely in current task/worker status and Shell, then continue all remaining S/U/P/PW/K/TBR/EP work.
+
 ## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
 
 TBR01's backward-compatible signed role schema, strict validator/security scan and proposal-only owner activation preview are implemented locally and pushed at `9ccd739538f4e0a8751ff9d289385adc5df4661b`. SDK/Security/Spaces tests **11/11**, **6/6**, **26/26**, three typechecks and diff check pass. No invitation/grant write, deployment or live acceptance ran; rollouts remain disabled. See the dedicated TBR ledger for partial TBR03/TBR04 and unimplemented TBR02/TBR05–TBR12. Exact next action: TBR02 builder authoring and safe import/export round-trip, then actual installed-resource review.

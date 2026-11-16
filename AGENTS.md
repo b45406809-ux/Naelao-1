@@ -2,7 +2,7 @@
 
 ## Active mission and checkpoint
 
-The following five plan sources are active and jointly govern this mission:
+The following six plan sources are active and jointly govern this mission:
 
 - [Managed services and sidecar runtime plan](docs/research/managed-services-and-sidecar-runtime-plan.md), including S1–S9 and inherited U01–U12.
 - [Platform completion and guided templates plan](docs/research/platform-completion-and-guided-templates-plan.md), including release/environment safety, commercial integrity and recovery, guided templates and microapp setup, voice, shared-Space coordination, and the incorporated planner/worker requirements in section 12.
@@ -17,7 +17,13 @@ The requirements from `docs/research/planner-worker-isolation-and-conflict-resol
 
 For every coherent source, configuration or documentation change, verify it, commit it, then fetch and push it to `origin/Mcbt5s-Backup-2` before moving to the next change. Record the pushed SHA, evidence, remaining uncoded work, separate live/deployment gates and exact next action in this runbook and the relevant progress ledgers. Fetch immediately before each push; preserve concurrent remote commits and integrate them without force-pushing. Never stage unrelated untracked files such as `infra/scripts/__pycache__/`.
 
-## Latest code checkpoint — 2026-11-16 (TBR01 signed role proposals; `9ccd7395` pushed)
+## Latest code checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
+
+`WorkflowJournal` now stores a bounded ordered lineage of completed AgentTask workflow steps, each tied to its already-registered, scope-validated immutable artifact pointer. The static AgentTask wrapper records a checkpoint only after the native durable step returns; exact replay is idempotent and a changed pointer for the same step conflicts. This establishes last verified step output, not full assistant transcript recovery, process memory, or runtime isolation. Evidence: workflow state, WorkflowRunDO and AgentTask checkpoint tests **26/26**, Agents typecheck, and diff check. Local tests only; no deployed Workflow/DO/R2 recovery acceptance ran. Code `1dd540579b8af79c5dcbfcc638c0a384d5b3502c` is pushed and remote-verified.
+
+Exact next action: expose the last verified checkpoint and explicit recovery limitations through the existing authorized worker/task status API and Shell view; test exact-user/private-Project access and stale checkpoint reporting. Then continue runtime branch mount/isolation and TBR02 builder authoring. Keep rollouts disabled and preserve untracked `infra/scripts/__pycache__/`.
+
+## Previous code checkpoint — 2026-11-16 (TBR01 signed role proposals; `9ccd7395` pushed)
 
 The Agent SDK adds an optional, backward-compatible v1 business-role proposal contract to signed `SpaceBlueprint`s. It covers localized arbitrary role IDs/names, descriptions, generic Space-role recommendations, symbolic Project/extension/microapp/Knowledge/collection/shared-data/action requests, assistant mode/instructions, onboarding steps and non-binding spend/approval suggestions. Strict validation rejects unknown fields, duplicate or ambiguous references, undeclared Project/extension/Knowledge references, invalid bounds and oversized declarations. Security scanning covers role text and rejects injection/script payloads. The owner/admin activation preview surfaces only `proposal_requires_owner_review` data with `grants_applied: false`; it does not resolve installed-resource permissions or apply grants.
 

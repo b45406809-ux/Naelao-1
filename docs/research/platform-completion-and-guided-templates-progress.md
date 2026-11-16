@@ -1,5 +1,9 @@
 # Platform completion and guided templates progress
 
+## Cross-plan checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
+
+`WorkflowJournal` now records bounded ordered completed-step checkpoint pointers for static AgentTask workflows; native step completion precedes checkpoint recording, exact replay is idempotent, and changed-output replay conflicts. Local tests **26/26**, Agents typecheck and diff check pass. No deployed recovery acceptance; this is not process-memory restoration or runtime isolation. Exact next action: expose authorized last-checkpoint/loss-state details through task status and Shell; continue PW runtime isolation and the other plan gaps.
+
 ## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
 
 TBR01's optional signed role contract, strict bounded validation/security scan and proposal-only owner activation preview are implemented locally and remote-verified at `9ccd739538f4e0a8751ff9d289385adc5df4661b`. Local evidence: SDK **11/11**, Security **6/6**, Spaces preview **26/26**, three typechecks and diff check. No grants/invitations, migration, deployment or live acceptance ran; all rollouts remain disabled. See the dedicated TBR ledger for the gap matrix. Exact next action: implement TBR02 role authoring/round-trip through the existing template authoring path, then TBR04 actual installed-resource/effective-access preview; other S/U/P/PW/K/EP requirements remain active.

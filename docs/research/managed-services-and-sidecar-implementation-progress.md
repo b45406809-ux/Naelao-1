@@ -1,5 +1,9 @@
 # Managed services and sidecar implementation progress
 
+## Cross-plan checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
+
+The static AgentTask workflow's latest verified durable step is now persisted as a bounded, ordered checkpoint pointer in `WorkflowJournal`. Focused tests **26/26**, Agents typecheck and diff check pass; code `1dd540579b8af79c5dcbfcc638c0a384d5b3502c` is remote-verified. This is local workflow metadata, not unsaved process-memory recovery or runtime isolation; no deployed acceptance ran. S2–S9/U01–U12 status remains as below. Exact next action: expose authorized checkpoint state through task/worker status and Shell, then continue S3/U05 and remaining independent gaps.
+
 ## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
 
 TBR01's optional signed `SpaceBlueprint.businessRoles` contract, strict bounded validator/security scan, and proposal-only owner activation preview are implemented locally and remote-verified at `9ccd739538f4e0a8751ff9d289385adc5df4661b`. SDK tests **11/11**, Security **6/6**, Spaces activation preview **26/26**, three typechecks, and diff check pass. No grants/invitations, migration, deployment or live acceptance ran; rollouts remain disabled. S2–S9/U01–U12 status is unchanged from the K09 checkpoint below. Exact next action: TBR02 owner-controlled template role authoring and safe import/export round-trip; see the dedicated TBR ledger.
