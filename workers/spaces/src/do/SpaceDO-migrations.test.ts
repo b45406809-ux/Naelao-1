@@ -201,7 +201,7 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(148);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(149);
     const storage = createDOStorage();
     applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, space.SPACE_DO_MIGRATIONS);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('event_triggers')").toArray().map(column => column.name)).toContain("updated_by");
@@ -226,6 +226,8 @@ describe("SpaceDO migration replay", () => {
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='product_user_micro_app_uninstalls'").toArray()).toHaveLength(1);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('extension_settings_audit_events')").toArray().map(column => column.name)).toContain("target");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('extension_project_knowledge_policies','extension_project_knowledge_grants','extension_project_knowledge_events')").toArray()).toHaveLength(3);
+    expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('extension_project_knowledge_grants')").toArray().map(column => column.name)).toContain("publication_revision");
+    expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('extension_project_knowledge_events')").toArray().map(column => column.name)).toContain("publication_revisions_json");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='space_shared_extension_update_receipts'").toArray()).toHaveLength(1);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='extension_publisher_revocation_receipts'").toArray()).toHaveLength(1);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='space_coordination_audit_events'").toArray()).toHaveLength(1);

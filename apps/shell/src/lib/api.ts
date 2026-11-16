@@ -3647,6 +3647,7 @@ export interface ExternalKnowledgePublication {
   id: string;
   name: string;
   updated_at: string;
+  revision: number;
   document_count: number;
   document_ids: string[];
 }
@@ -3658,6 +3659,7 @@ export interface SpaceSharedChannelKnowledgeInstallation {
   declared_publication_ids: string[];
   configured: boolean;
   granted_publication_ids: string[];
+  granted_publications?: Array<{ id: string; revision: number }>;
   revision: number;
   updated_by?: string;
   updated_at?: string;
@@ -3695,18 +3697,18 @@ export async function listExternalKnowledgePublications(
 
 export async function publishExternalKnowledge(
   spaceId: string, projectId: string, publicationId: string, session: SessionCredentials,
-  input: { name: string; document_ids: string[] }
-): Promise<void> {
-  await apiFetch(`/v1/spaces/${spaceId}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}`, {
+  input: { name: string; document_ids: string[]; expected_revision: number }
+): Promise<{ revision: number }> {
+  return apiFetch(`/v1/spaces/${spaceId}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}`, {
     method: "PUT", body: JSON.stringify(input), session,
   });
 }
 
 export async function unpublishExternalKnowledge(
-  spaceId: string, projectId: string, publicationId: string, session: SessionCredentials
+  spaceId: string, projectId: string, publicationId: string, session: SessionCredentials, expectedRevision: number
 ): Promise<void> {
   await apiFetch(`/v1/spaces/${spaceId}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}`, {
-    method: "DELETE", session,
+    method: "DELETE", body: JSON.stringify({ expected_revision: expectedRevision }), session,
   });
 }
 

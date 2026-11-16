@@ -464,10 +464,12 @@ export default function ProjectDetailPage() {
     try {
       await publishExternalKnowledge(activeSpaceId, params.projectId, publicationId.trim(), creds, {
         name: publicationName.trim(), document_ids: publishedDocumentIds,
+        expected_revision: externalPublications.find(item => item.id === publicationId.trim())?.revision ?? 0,
       });
       show("Published Knowledge collection updated");
       await refreshExternalKnowledge();
     } catch (error) {
+      await refreshExternalKnowledge();
       show(error instanceof Error ? error.message : "Couldn't publish this Knowledge collection");
     } finally {
       setSavingPublication(false);
@@ -477,12 +479,15 @@ export default function ProjectDetailPage() {
   async function handleUnpublishExternalCollection(id: string) {
     if (!creds) return;
     try {
-      await unpublishExternalKnowledge(activeSpaceId, params.projectId, id, creds);
+      const publication = externalPublications.find(item => item.id === id);
+      if (!publication) throw new Error("Reload the current collection list before unpublishing");
+      await unpublishExternalKnowledge(activeSpaceId, params.projectId, id, creds, publication.revision);
       setExternalPublications(items => items.filter(item => item.id !== id));
       if (publicationId === id) setPublishedDocumentIds([]);
       show("Knowledge collection unpublished");
       await refreshExternalKnowledge();
     } catch (error) {
+      await refreshExternalKnowledge();
       show(error instanceof Error ? error.message : "Couldn't unpublish this Knowledge collection");
     }
   }
@@ -496,6 +501,7 @@ export default function ProjectDetailPage() {
       show("Project Knowledge access updated");
       await refreshExternalKnowledge();
     } catch (error) {
+      await refreshExternalKnowledge();
       show(error instanceof Error ? error.message : "Couldn't update Project Knowledge access");
     } finally {
       setSavingSharedKnowledge(null);
@@ -985,7 +991,7 @@ export default function ProjectDetailPage() {
             <div className="settings-row" key={publication.id}>
               <div>
                 <div className="settings-row-label">{publication.name}</div>
-                <div className="settings-row-sub">{publication.id} · {publication.document_count} published document{publication.document_count === 1 ? "" : "s"}</div>
+                <div className="settings-row-sub">{publication.id} · revision {publication.revision} · {publication.document_count} published document{publication.document_count === 1 ? "" : "s"}</div>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <Button size="sm" variant="ghost" onClick={() => editExternalCollection(publication)}>Edit</Button>
@@ -1015,6 +1021,10 @@ export default function ProjectDetailPage() {
             const draft = sharedChannelKnowledgeDrafts[installation.instance_id] ?? [];
             const available = externalPublications.filter(publication => installation.declared_publication_ids.includes(publication.id));
             const unavailableGrants = installation.granted_publication_ids.filter(id => !available.some(publication => publication.id === id));
+            const staleGrants = (installation.granted_publications ?? []).filter(grant => {
+              const current = externalPublications.find(publication => publication.id === grant.id);
+              return current && current.revision !== grant.revision;
+            });
             const activationSelectionsPending = (installation.activation_selected_publication_ids ?? [])
               .filter(id => !installation.granted_publication_ids.includes(id));
             return (
@@ -1060,6 +1070,11 @@ export default function ProjectDetailPage() {
                   {unavailableGrants.length > 0 && (
                     <div role="status" className="settings-row-sub" style={{ marginTop: 8 }}>
                       These saved selections are not currently selectable and will be revoked when you save: {unavailableGrants.join(", ")}.
+                    </div>
+                  )}
+                  {staleGrants.length > 0 && (
+                    <div role="status" className="settings-row-sub" style={{ marginTop: 8 }}>
+                      Access is paused for collections whose published contents changed: {staleGrants.map(grant => grant.id).join(", ")}. Review the current documents and save Project access to approve the new revision.
                     </div>
                   )}
                   <div style={{ marginTop: 10 }}>

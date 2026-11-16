@@ -3314,6 +3314,14 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_product_user_micro_app_uninstalls_status
       ON product_user_micro_app_uninstalls(tenant_id,space_id,user_key_sha256,status,owner_installation_id);`,
   },
+  {
+    version: 149,
+    description: "bind owner-approved extension Knowledge grants to an exact published collection revision",
+    up: `ALTER TABLE extension_project_knowledge_grants
+      ADD COLUMN publication_revision INTEGER NOT NULL DEFAULT 1 CHECK(publication_revision >= 1);
+    ALTER TABLE extension_project_knowledge_events
+      ADD COLUMN publication_revisions_json TEXT NOT NULL DEFAULT '{}';`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -17476,21 +17484,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const policy = queryOne<{ revision: number; updated_by: string; updated_at: string }>(this.ctx.storage.sql as never,
         `SELECT revision,updated_by,updated_at FROM extension_project_knowledge_policies
          WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`, tenantId, spaceId, projectId, installation.instance_id);
-      const granted = queryAll<{ publication_id: string }>(this.ctx.storage.sql as never,
-        `SELECT publication_id FROM extension_project_knowledge_grants
+      const grantedRows = queryAll<{ publication_id: string; publication_revision: number }>(this.ctx.storage.sql as never,
+        `SELECT publication_id,publication_revision FROM extension_project_knowledge_grants
          WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? ORDER BY publication_id`,
-        tenantId, spaceId, projectId, installation.instance_id).map(row => row.publication_id);
+        tenantId, spaceId, projectId, installation.instance_id);
+      const granted = grantedRows.map(row => row.publication_id);
       result.push({ instance_id: installation.instance_id, extension_id: installation.extension_id,
         name: manifest.bundle?.id ?? manifest.id, declared_publication_ids: declared,
         configured: Boolean(policy), granted_publication_ids: granted,
+        granted_publications: grantedRows.map(row => ({ id: row.publication_id, revision: row.publication_revision })),
         revision: policy?.revision ?? 0, ...(policy ? { updated_by: policy.updated_by, updated_at: policy.updated_at } : {}) });
     }
     return Response.json({ installations: result }, { headers: { "cache-control": "private, no-store" } });
   }
 
   private async updateExtensionProjectKnowledgeGrants(request: Request): Promise<Response> {
-    const body = await request.json<{ tenantId?: unknown; spaceId?: unknown; projectId?: unknown; instanceId?: unknown; actorId?: unknown; expectedRevision?: unknown; publicationIds?: unknown }>()
-      .catch(() => ({} as { tenantId?: unknown; spaceId?: unknown; projectId?: unknown; instanceId?: unknown; actorId?: unknown; expectedRevision?: unknown; publicationIds?: unknown }));
+    const body = await request.json<{ tenantId?: unknown; spaceId?: unknown; projectId?: unknown; instanceId?: unknown; actorId?: unknown; expectedRevision?: unknown; publicationIds?: unknown; publicationRevisions?: unknown }>()
+      .catch(() => ({} as { tenantId?: unknown; spaceId?: unknown; projectId?: unknown; instanceId?: unknown; actorId?: unknown; expectedRevision?: unknown; publicationIds?: unknown; publicationRevisions?: unknown }));
     if (typeof body.tenantId !== "string" || !body.tenantId || typeof body.spaceId !== "string" || !body.spaceId
       || typeof body.projectId !== "string" || !body.projectId || typeof body.instanceId !== "string" || !body.instanceId
       || typeof body.actorId !== "string" || !body.actorId
@@ -17500,6 +17510,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || body.publicationIds.some(id => typeof id !== "string" || !/^[a-z][a-z0-9_-]{2,63}$/.test(id))
       || new Set(body.publicationIds).size !== body.publicationIds.length)
       return Response.json({ error_code: "extension_project_knowledge_selection_invalid" }, { status: 400 });
+    if (!body.publicationRevisions || typeof body.publicationRevisions !== "object" || Array.isArray(body.publicationRevisions))
+      return Response.json({ error_code: "extension_project_knowledge_revisions_invalid" }, { status: 400 });
+    const publicationRevisions = body.publicationRevisions as Record<string, unknown>;
+    const selectedIds = body.publicationIds as string[];
+    if (Object.keys(publicationRevisions).length !== selectedIds.length
+      || selectedIds.some(id => !Number.isSafeInteger(publicationRevisions[id]) || Number(publicationRevisions[id]) < 1))
+      return Response.json({ error_code: "extension_project_knowledge_revisions_invalid" }, { status: 400 });
     if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0 || Number(body.expectedRevision) >= Number.MAX_SAFE_INTEGER)
       return Response.json({ error_code: "extension_project_knowledge_revision_invalid" }, { status: 400 });
     if (!queryOne(this.ctx.storage.sql as never,
@@ -17540,13 +17557,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       execute(this.ctx.storage.sql as never, `DELETE FROM extension_project_knowledge_grants
         WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
       body.tenantId, body.spaceId, body.projectId, body.instanceId);
-      for (const publicationId of body.publicationIds as string[]) execute(this.ctx.storage.sql as never,
+      for (const publicationId of selectedIds) execute(this.ctx.storage.sql as never,
         `INSERT INTO extension_project_knowledge_grants
-          (tenant_id,space_id,project_id,instance_id,publication_id,granted_by,granted_at) VALUES(?,?,?,?,?,?,?)`,
-        body.tenantId, body.spaceId, body.projectId, body.instanceId, publicationId, body.actorId, now);
+          (tenant_id,space_id,project_id,instance_id,publication_id,publication_revision,granted_by,granted_at) VALUES(?,?,?,?,?,?,?,?)`,
+        body.tenantId, body.spaceId, body.projectId, body.instanceId, publicationId,
+        Number(publicationRevisions[publicationId]), body.actorId, now);
       execute(this.ctx.storage.sql as never, `INSERT INTO extension_project_knowledge_events
-        (tenant_id,space_id,project_id,instance_id,revision,publication_ids_json,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?)`,
-      body.tenantId, body.spaceId, body.projectId, body.instanceId, revision, JSON.stringify(body.publicationIds), body.actorId, now);
+        (tenant_id,space_id,project_id,instance_id,revision,publication_ids_json,publication_revisions_json,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+      body.tenantId, body.spaceId, body.projectId, body.instanceId, revision, JSON.stringify(body.publicationIds),
+      JSON.stringify(publicationRevisions), body.actorId, now);
       execute(this.ctx.storage.sql as never, `DELETE FROM extension_project_knowledge_events WHERE rowid IN (
         SELECT rowid FROM extension_project_knowledge_events WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?
         ORDER BY revision DESC LIMIT -1 OFFSET 100)`, body.tenantId, body.spaceId, body.projectId, body.instanceId);

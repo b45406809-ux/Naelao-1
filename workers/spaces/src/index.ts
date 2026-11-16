@@ -2673,16 +2673,21 @@ app.put(`${spaceSharedProjectKnowledgePath}/:instanceId/knowledge-grants`, async
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) } },
   ));
   if (!knowledgeResponse.ok) return c.json({ error_code: knowledgeResponse.status === 403 ? "space_admin_required" : "knowledge_publication_list_unavailable" }, knowledgeResponse.status === 403 ? 403 : 503);
-  const publications = await readBoundedResponseJson<{ publications?: Array<{ id?: unknown }> }>(knowledgeResponse, 256 * 1024).catch(() => null);
+  const publications = await readBoundedResponseJson<{ publications?: Array<{ id?: unknown; revision?: unknown }> }>(knowledgeResponse, 256 * 1024).catch(() => null);
   if (!publications || !Array.isArray(publications.publications)) return c.json({ error_code: "knowledge_publication_list_invalid" }, 503);
-  const currentPublicationIds = new Set(publications.publications.flatMap(item => typeof item.id === "string" ? [item.id] : []));
+  const currentPublicationRevisions = new Map(publications.publications.flatMap(item =>
+    typeof item.id === "string" && Number.isSafeInteger(item.revision) && Number(item.revision) >= 1
+      ? [[item.id, Number(item.revision)] as const] : []));
+  const currentPublicationIds = new Set(currentPublicationRevisions.keys());
   if ((body.publication_ids as string[]).some(id => !currentPublicationIds.has(id)))
     return c.json({ error_code: "knowledge_publication_not_currently_published" }, 409);
+  const publicationRevisions = Object.fromEntries((body.publication_ids as string[])
+    .map(id => [id, currentPublicationRevisions.get(id)!]));
   const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
   const response = await stub.fetch(new Request("http://space-do/extension-project-knowledge-grants", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) },
     body: JSON.stringify({ tenantId: owned.tenantId, spaceId, projectId, instanceId, actorId: identity.userId,
-      expectedRevision: body.expected_revision, publicationIds: body.publication_ids }),
+      expectedRevision: body.expected_revision, publicationIds: body.publication_ids, publicationRevisions }),
   }));
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
 });

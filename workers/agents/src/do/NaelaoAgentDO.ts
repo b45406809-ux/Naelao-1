@@ -16,7 +16,7 @@ import { publishCompletedTask, type TaskPublication } from "../script-engine/tas
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
 import { clearChannelExtensionConversationSessions, clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
-import { resolveExtensionProjectKnowledge } from "../channels/extension-knowledge-selection.js";
+import { resolveExtensionProjectKnowledge, resolveCurrentExtensionKnowledgeRevision } from "../channels/extension-knowledge-selection.js";
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { createScaleDownProcessor } from "../shared/scaledown.js";
 import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, validateVoiceExtensionStreamEvent, validateVoiceExtensionStreamResponse, type DocumentProcessingGateway } from "@naelao/agent-sdk";
@@ -10880,7 +10880,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async loadActiveChannelHandler(input: {
     spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null; settingsSource?: "active" | "draft"; settingsRevision?: number | null;
-  }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; attachmentAccess?: { mode: "read_text" | "read_image"; maxFiles: number; maxTotalBytes: number }; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
+  }): Promise<{ name: string; extensionId: string; scope: "SPACE_SHARED" | "PROJECT_BOUND"; code: string; maxConcurrency: number; knowledgeCollections: string[]; attachmentAccess?: { mode: "read_text" | "read_image"; maxFiles: number; maxTotalBytes: number }; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
       method: "POST", headers: await this.internalHeaders(input.tenantId, { "content-type": "application/json" }),
@@ -10990,7 +10990,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!selected) return null;
       knowledgeCollections = selected;
     }
-    return { name: path[1]!, code: script.code, maxConcurrency: maxConcurrency ?? 1,
+    return { name: path[1]!, extensionId: installation.manifest.id, scope: instance.scope as "SPACE_SHARED" | "PROJECT_BOUND",
+      code: script.code, maxConcurrency: maxConcurrency ?? 1,
       knowledgeCollections,
       ...(attachmentAccess ? { attachmentAccess: { mode: attachmentAccess.mode as "read_text" | "read_image",
         maxFiles: attachmentAccess.maxFiles ?? (attachmentAccess.mode === "read_image" ? 1 : 3),
@@ -11316,15 +11317,55 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             takeover("The handler requires published project Knowledge, but the restricted search service is unavailable. Review the conversation manually."); escalated++; continue;
           }
           let knowledgeFailed = false;
+          let knowledgeGrantDenied = false;
           for (const collectionId of handler.knowledgeCollections) {
             if (publishedKnowledge.length >= 3) break;
             try {
+              // Extension manifests describe requested collections; they do not grant use.
+              // Re-read the active collection revision for every external reply. A shared install
+              // must still hold the host owner's exact publication-revision grant immediately
+              // before retrieval. Knowledge rechecks that revision before ranking and before
+              // returning any chunk, fencing concurrent unpublish/replacement at the result edge.
+              const publicationsResponse = await this.env.KNOWLEDGE_WORKER.fetch(new Request(
+                `http://knowledge-worker/internal/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(msg.project_id)}/external-publications`,
+                { headers: await this.internalHeaders(tenantId) },
+              ));
+              if (!publicationsResponse.ok) { knowledgeFailed = true; break; }
+              const publicationDirectory = await readBoundedResponseJson<{
+                publications?: Array<{ id?: unknown; revision?: unknown }>;
+              }>(publicationsResponse, 64 * 1024);
+              if (!publicationDirectory.publications?.some(item => item.id === collectionId)) {
+                knowledgeGrantDenied = true; break;
+              }
+              let grant: { instanceId?: unknown; extensionId?: unknown; publications?: unknown } | undefined;
+              if (handler.scope === "SPACE_SHARED") {
+                const grantResponse = await this.env.SPACES_WORKER.fetch(new Request(
+                  `http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(msg.project_id)}`
+                    + `/space-shared-channel-knowledge/${encodeURIComponent(msg.channel_extension_instance_id)}`,
+                  { headers: await this.internalHeaders(tenantId) },
+                ));
+                if (!grantResponse.ok) { knowledgeGrantDenied = true; break; }
+                const selection = await readBoundedResponseJson<{
+                  instance_id?: unknown; extension_id?: unknown; granted_publications?: Array<{ id?: unknown; revision?: unknown }>;
+                }>(grantResponse, 64 * 1024);
+                grant = { instanceId: selection.instance_id, extensionId: selection.extension_id,
+                  publications: selection.granted_publications };
+              }
+              const authorizedRevision = resolveCurrentExtensionKnowledgeRevision({ scope: handler.scope,
+                instanceId: msg.channel_extension_instance_id, extensionId: handler.extensionId, publicationId: collectionId,
+                publications: publicationDirectory.publications, ...(grant ? { grant } : {}) });
+              if (authorizedRevision === null) { knowledgeGrantDenied = true; break; }
               const search = await this.env.KNOWLEDGE_WORKER.fetch(new Request(
                 `http://knowledge-worker/internal/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(msg.project_id)}/external-search`,
                 { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-                  body: JSON.stringify({ publication_id: collectionId, query: msg.text.slice(0, 1_000), top_k: 3 }) },
+                  body: JSON.stringify({ publication_id: collectionId, publication_revision: authorizedRevision,
+                    query: msg.text.slice(0, 1_000), top_k: 3 }) },
               ));
-              if (!search.ok) { knowledgeFailed = true; break; }
+              if (!search.ok) {
+                if (search.status === 404 || search.status === 409) knowledgeGrantDenied = true;
+                else knowledgeFailed = true;
+                break;
+              }
               const result = await readBoundedResponseJson<{ data?: Array<{ document_id?: string; title?: string; content?: string }> }>(search, 2 * 1024 * 1024);
               for (const hit of result.data ?? []) {
                 if (publishedKnowledge.length >= 3 || typeof hit.content !== "string" || typeof hit.document_id !== "string") break;
@@ -11334,10 +11375,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             } catch { knowledgeFailed = true; break; }
           }
           const contextBytes = new TextEncoder().encode(JSON.stringify(publishedKnowledge)).byteLength;
-          if (knowledgeFailed || !publishedKnowledge.length || contextBytes > 4_096) {
+          if (knowledgeFailed || knowledgeGrantDenied || !publishedKnowledge.length || contextBytes > 4_096) {
+            const accessChanged = knowledgeGrantDenied;
             this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code=? WHERE message_id=?",
-              knowledgeFailed ? "knowledge_search_unavailable" : "published_knowledge_no_match", msg.id);
-            takeover(knowledgeFailed
+              accessChanged ? "knowledge_access_changed" : knowledgeFailed ? "knowledge_search_unavailable" : "published_knowledge_no_match", msg.id);
+            takeover(accessChanged
+              ? "A published Knowledge collection or owner grant changed during handling. The extension did not answer; review the conversation manually."
+              : knowledgeFailed
               ? "The required published Knowledge collection could not be searched. Review the conversation manually."
               : "No matching content was found in the published Knowledge collections. The handler will not guess; review the conversation manually.");
             escalated++; continue;

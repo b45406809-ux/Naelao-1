@@ -19,6 +19,7 @@ import { acquireKnowledgeDocumentMutationLease, hasKnowledgeDocumentDeletionSinc
   type KnowledgeDocumentDeletion } from "./document-deletion.js";
 import { exportKnowledgeArchive, previewKnowledgeArchiveRestore, restoreKnowledgeArchive, validateKnowledgeArchiveSnapshot } from "./knowledge-archive.js";
 import { createKnowledgePdfPreviewToken, KNOWLEDGE_PDF_PARSER_VERSION, sha256BytesHex, verifyKnowledgePdfPreviewToken } from "./pdf-preview.js";
+import { revisionExternalPublicationsForDocument } from "./external-publication-lifecycle.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -244,33 +245,56 @@ async function requireProjectAccess(c: any, projectId: string, minimumRoleRank =
 
 const EXTERNAL_PUBLICATION_ID = /^[a-z][a-z0-9_-]{2,63}$/;
 
+function collectionProjectAction(c: any, projectId: string, action: "discover" | "read" | "manage" | "share" | "delete" | "administer") {
+  const minimumRole = action === "discover" || action === "read" ? 0 : 40;
+  return requireProjectAccess(c, projectId, minimumRole);
+}
+
+function validCollectionRevision(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) < Number.MAX_SAFE_INTEGER;
+}
+
 // Owner-approved publication is an explicit list of canonical, indexed project documents.
 // Merely uploading a project file never adds it to this declassification boundary.
 app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications", async (c) => {
   const projectId = c.req.param("projectId");
-  const access = await requireProjectAccess(c, projectId);
+  const access = await collectionProjectAction(c, projectId, "discover");
   if (access instanceof Response) return access;
   const { results } = await c.env.PLATFORM_DB.prepare(
-    `SELECT p.id,p.name,p.updated_at,COUNT(d.document_id) AS document_count,GROUP_CONCAT(d.document_id, ',') AS document_ids
+    `SELECT p.id,p.name,p.updated_at,p.revision,COUNT(d.document_id) AS document_count,GROUP_CONCAT(d.document_id, ',') AS document_ids
      FROM kb_external_publications p LEFT JOIN kb_external_publication_documents d
        ON d.publication_id=p.id AND d.tenant_id=p.tenant_id AND d.space_id=p.space_id AND d.project_id=p.project_id
+         AND d.publication_revision=p.revision
      WHERE p.tenant_id=? AND p.space_id=? AND p.project_id=? GROUP BY p.id ORDER BY p.name,p.id`
-  ).bind(access.tenantId, access.spaceId, projectId).all<{ id: string; name: string; updated_at: string; document_count: number; document_ids: string | null }>();
+  ).bind(access.tenantId, access.spaceId, projectId).all<{ id: string; name: string; updated_at: string; revision: number; document_count: number; document_ids: string | null }>();
   return c.json({ publications: results.map(({ document_ids, ...publication }) => ({
     ...publication, document_ids: document_ids ? document_ids.split(",") : [],
   })) });
 });
 
+// Host-only revision directory used to compare a stored installation grant with the current
+// owner-published collection before extension retrieval. It intentionally omits document IDs.
+app.get("/internal/spaces/:spaceId/kb/projects/:projectId/external-publications", async c => {
+  const tenantId = requireTenant(c), { spaceId, projectId } = c.req.param();
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT id,revision FROM kb_external_publications
+     WHERE tenant_id=? AND space_id=? AND project_id=? ORDER BY id LIMIT 100`
+  ).bind(tenantId, spaceId, projectId).all<{ id: string; revision: number }>();
+  c.header("cache-control", "private, no-store");
+  return c.json({ publications: results });
+});
+
 app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId", async (c) => {
   const { spaceId, projectId, publicationId } = c.req.param();
   if (!EXTERNAL_PUBLICATION_ID.test(publicationId)) throw badRequest("Invalid publication id");
-  const access = await requireProjectAccess(c, projectId, 40);
+  const access = await collectionProjectAction(c, projectId, "manage");
   if (access instanceof Response) return access;
-  const body = await readBoundedJsonOr(c.req.raw, 64 * 1024, null as { name?: unknown; document_ids?: unknown } | null);
+  const body = await readBoundedJsonOr(c.req.raw, 64 * 1024, null as { name?: unknown; document_ids?: unknown; expected_revision?: unknown } | null);
   if (!body || typeof body.name !== "string" || !body.name.trim() || body.name.length > 120
     || !Array.isArray(body.document_ids) || body.document_ids.length > 100
-    || body.document_ids.some((id) => typeof id !== "string" || id.length < 1 || id.length > 160)) {
-    throw badRequest("name and at most 100 document_ids are required");
+    || body.document_ids.some((id) => typeof id !== "string" || id.length < 1 || id.length > 160)
+    || !validCollectionRevision(body.expected_revision)) {
+    throw badRequest("name, expected_revision, and at most 100 document_ids are required");
   }
   const documentIds = [...new Set(body.document_ids as string[])];
   if (documentIds.length !== body.document_ids.length) throw badRequest("document_ids must be unique");
@@ -282,33 +306,72 @@ app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
     if (results.length !== documentIds.length) throw badRequest("Every document must be indexed and belong to this project");
   }
   const existing = await c.env.PLATFORM_DB.prepare(
-    "SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
-  ).bind(publicationId, access.tenantId, spaceId, projectId).first();
+    "SELECT id,revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ id: string; revision: number }>();
   const collision = existing ? null : await c.env.PLATFORM_DB.prepare("SELECT id FROM kb_external_publications WHERE id=?").bind(publicationId).first();
   if (collision) throw notFound("Knowledge publication");
+  const currentRevision = existing?.revision ?? 0;
+  if (body.expected_revision !== currentRevision) {
+    return c.json({ error_code: "knowledge_publication_revision_conflict", current_revision: currentRevision }, 409);
+  }
   const now = new Date().toISOString();
+  const mutationToken = crypto.randomUUID();
+  const nextRevision = currentRevision + 1;
+  const currentMutation = `EXISTS (SELECT 1 FROM kb_external_publications p WHERE p.id=? AND p.tenant_id=? AND p.space_id=?
+    AND p.project_id=? AND p.revision=? AND p.mutation_token=?)`;
   const statements = [c.env.PLATFORM_DB.prepare(
-    `INSERT INTO kb_external_publications(id,tenant_id,space_id,project_id,name,created_by,created_at,updated_at)
-     VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at
-     WHERE tenant_id=excluded.tenant_id AND space_id=excluded.space_id AND project_id=excluded.project_id`
-  ).bind(publicationId, access.tenantId, spaceId, projectId, body.name.trim(), access.userId, now, now),
-  c.env.PLATFORM_DB.prepare("DELETE FROM kb_external_publication_documents WHERE publication_id=? AND tenant_id=? AND space_id=? AND project_id=?")
-    .bind(publicationId, access.tenantId, spaceId, projectId)];
+    `INSERT INTO kb_external_publications(id,tenant_id,space_id,project_id,name,created_by,created_at,updated_at,revision,mutation_token)
+     VALUES(?,?,?,?,?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at,
+       revision=kb_external_publications.revision+1,mutation_token=excluded.mutation_token
+     WHERE kb_external_publications.tenant_id=excluded.tenant_id AND kb_external_publications.space_id=excluded.space_id
+       AND kb_external_publications.project_id=excluded.project_id AND kb_external_publications.revision=?`
+  ).bind(publicationId, access.tenantId, spaceId, projectId, body.name.trim(), access.userId, now, now, mutationToken, body.expected_revision),
+  c.env.PLATFORM_DB.prepare(`DELETE FROM kb_external_publication_documents
+     WHERE publication_id=? AND tenant_id=? AND space_id=? AND project_id=? AND ${currentMutation}`)
+    .bind(publicationId, access.tenantId, spaceId, projectId, publicationId, access.tenantId, spaceId, projectId, nextRevision, mutationToken)];
   for (const documentId of documentIds) statements.push(c.env.PLATFORM_DB.prepare(
-    "INSERT INTO kb_external_publication_documents(publication_id,tenant_id,space_id,project_id,document_id,added_at) VALUES(?,?,?,?,?,?)"
-  ).bind(publicationId, access.tenantId, spaceId, projectId, documentId, now));
+    `INSERT INTO kb_external_publication_documents(publication_id,tenant_id,space_id,project_id,document_id,added_at,publication_revision)
+     SELECT ?,?,?,?,?,?,? WHERE ${currentMutation}`
+  ).bind(publicationId, access.tenantId, spaceId, projectId, documentId, now, nextRevision,
+    publicationId, access.tenantId, spaceId, projectId, nextRevision, mutationToken));
   await c.env.PLATFORM_DB.batch(statements);
-  return c.json({ publication_id: publicationId, project_id: projectId, name: body.name.trim(), document_ids: documentIds }, 200);
+  const saved = await c.env.PLATFORM_DB.prepare(
+    "SELECT revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND mutation_token=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId, mutationToken).first<{ revision: number }>();
+  if (!saved) {
+    const current = await c.env.PLATFORM_DB.prepare(
+      "SELECT revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
+    ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ revision: number }>();
+    if (!current) throw notFound("Knowledge publication");
+    return c.json({ error_code: "knowledge_publication_revision_conflict", current_revision: current.revision }, 409);
+  }
+  return c.json({ publication_id: publicationId, project_id: projectId, name: body.name.trim(), document_ids: documentIds, revision: saved.revision }, 200);
 });
 
 app.delete("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId", async (c) => {
   const { spaceId, projectId, publicationId } = c.req.param();
-  const access = await requireProjectAccess(c, projectId, 40);
+  const access = await collectionProjectAction(c, projectId, "delete");
   if (access instanceof Response) return access;
+  const body = await readBoundedJsonOr(c.req.raw, 8 * 1024, null as { expected_revision?: unknown } | null);
+  if (!body || !validCollectionRevision(body.expected_revision) || body.expected_revision < 1)
+    throw badRequest("expected_revision is required");
+  const current = await c.env.PLATFORM_DB.prepare(
+    "SELECT revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ revision: number }>();
+  if (!current) return c.json({ error_code: "not_found" }, 404);
+  if (body.expected_revision !== current.revision)
+    return c.json({ error_code: "knowledge_publication_revision_conflict", current_revision: current.revision }, 409);
   const result = await c.env.PLATFORM_DB.prepare(
-    "DELETE FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
-  ).bind(publicationId, access.tenantId, spaceId, projectId).run();
-  return result.meta.changes ? c.json({ deleted: true, publication_id: publicationId }) : c.json({ error_code: "not_found" }, 404);
+    "DELETE FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId, body.expected_revision).run();
+  if (!result.meta.changes) {
+    const latest = await c.env.PLATFORM_DB.prepare(
+      "SELECT revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
+    ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ revision: number }>();
+    return latest ? c.json({ error_code: "knowledge_publication_revision_conflict", current_revision: latest.revision }, 409)
+      : c.json({ error_code: "not_found" }, 404);
+  }
+  return c.json({ deleted: true, publication_id: publicationId });
 });
 
 // Service-only retrieval contract for the Agents host. It ranks only vectors whose doc_id is in
@@ -319,18 +382,19 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
   const { spaceId, projectId } = c.req.param();
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
   if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space not found");
-  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, null as { publication_id?: unknown; query?: unknown; top_k?: unknown } | null);
+  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, null as { publication_id?: unknown; publication_revision?: unknown; query?: unknown; top_k?: unknown } | null);
   if (!body || typeof body.publication_id !== "string" || !EXTERNAL_PUBLICATION_ID.test(body.publication_id)
-    || typeof body.query !== "string" || !body.query.trim() || body.query.length > 1_000) throw badRequest("publication_id and query are required");
+    || !Number.isSafeInteger(body.publication_revision) || Number(body.publication_revision) < 1
+    || typeof body.query !== "string" || !body.query.trim() || body.query.length > 1_000) throw badRequest("publication_id, publication_revision, and query are required");
   const publication = await c.env.PLATFORM_DB.prepare(
-    `SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?`
-  ).bind(body.publication_id, tenantId, spaceId, projectId).first();
+    `SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=?`
+  ).bind(body.publication_id, tenantId, spaceId, projectId, body.publication_revision).first();
   if (!publication) throw notFound("Knowledge publication");
   const docs = await c.env.PLATFORM_DB.prepare(
     `SELECT d.id,d.title FROM kb_external_publication_documents x JOIN kb_documents d ON d.id=x.document_id
-     WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND d.tenant_id=x.tenant_id
+     WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND x.publication_revision=? AND d.tenant_id=x.tenant_id
        AND d.space_id=x.space_id AND d.project_id=x.project_id AND d.status='indexed' ORDER BY d.id LIMIT 100`
-  ).bind(body.publication_id, tenantId, spaceId, projectId).all<{ id: string; title: string }>();
+  ).bind(body.publication_id, tenantId, spaceId, projectId, body.publication_revision).all<{ id: string; title: string }>();
   if (!docs.results.length) return c.json({ data: [], context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
   const topK = Math.max(1, Math.min(Number.isInteger(body.top_k) ? Number(body.top_k) : 5, 10));
   const embedding = await embedText(c.env.AI, body.query.trim());
@@ -345,9 +409,11 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
     `SELECT k.id,k.document_id,k.content,k.content_hash,d.title FROM kb_chunks k
      JOIN kb_documents d ON d.id=k.document_id
      JOIN kb_external_publication_documents x ON x.document_id=k.document_id AND x.tenant_id=k.tenant_id AND x.space_id=k.space_id AND x.project_id=k.project_id
-     WHERE k.id IN (${placeholders}) AND x.publication_id=? AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
+     JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id AND p.project_id=x.project_id
+     WHERE k.id IN (${placeholders}) AND x.publication_id=? AND x.publication_revision=? AND p.revision=?
+       AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
        AND d.status='indexed' AND k.deleted_at IS NULL`
-  ).bind(...ids, body.publication_id, tenantId, spaceId, projectId).all<{ id: string; document_id: string; content: string; content_hash: string; title: string }>();
+  ).bind(...ids, body.publication_id, body.publication_revision, body.publication_revision, tenantId, spaceId, projectId).all<{ id: string; document_id: string; content: string; content_hash: string; title: string }>();
   const byId = new Map(rows.results.map(row => [row.id, row]));
   const scoreById = new Map((matches.matches ?? []).map(match => [match.id, match.score ?? 0]));
   const data = (await Promise.all(ids.map(async id => {
@@ -1663,13 +1729,17 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       }
     }
 
-    const publishReindex = await c.env.PLATFORM_DB.prepare(
-      `UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, required_role_rank=?,
+    const publishReindex = await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(
+        `UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, required_role_rank=?,
           allowed_user_ids_json=COALESCE(allowed_user_ids_json, ?), updated_at = datetime('now')
         WHERE id = ? AND status='processing'
           AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
-    ).bind(newTitle, chunks.length, requiredRoleRank, JSON.stringify(allowedUserIds), docId, docId).run();
-    if (!publishReindex.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+      ).bind(newTitle, chunks.length, requiredRoleRank, JSON.stringify(allowedUserIds), docId, docId),
+      ...revisionExternalPublicationsForDocument(c.env.PLATFORM_DB,
+        { tenantId, spaceId, projectId, documentId: docId, updatedAt: new Date().toISOString() }),
+    ]);
+    if (!publishReindex[0]?.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
 
     const updated = publicKnowledgeDocument(await c.env.PLATFORM_DB.prepare(
       `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
@@ -1714,6 +1784,8 @@ app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     const now = new Date().toISOString();
     // One D1 batch makes the read barrier, content redaction, publication unlink, and retry
     // intent durable together before any Vectorize, R2, or cache operation begins.
+    const publicationRevisionUpdates = revisionExternalPublicationsForDocument(c.env.PLATFORM_DB,
+      { tenantId, spaceId, projectId: doc.project_id, documentId: docId, updatedAt: now });
     await c.env.PLATFORM_DB.batch([
       c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO kb_document_deletion_operations
         (document_id,tenant_id,space_id,project_id,chunk_count,state,next_attempt_at,created_at,updated_at)
@@ -1724,6 +1796,7 @@ app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
         .bind(now, docId, tenantId, spaceId),
       c.env.PLATFORM_DB.prepare(`DELETE FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?`)
         .bind(docId, tenantId, spaceId, doc.project_id ?? SPACE_WIDE_PROJECT_SENTINEL),
+      ...publicationRevisionUpdates,
       c.env.PLATFORM_DB.prepare(`DELETE FROM kb_external_publication_documents
         WHERE document_id=? AND tenant_id=? AND space_id=?`)
         .bind(docId, tenantId, spaceId),

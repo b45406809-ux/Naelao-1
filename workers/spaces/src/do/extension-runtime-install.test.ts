@@ -411,25 +411,32 @@ describe("runtime extension installation", () => {
     const list = () => space.fetch(new Request("http://space/extension-project-knowledge-grants?" + new URLSearchParams({
       tenant_id: "tenant", space_id: "space", project_id: "project-a",
     }), { headers: { "x-naelao-internal-token": token } }));
-    const update = (expectedRevision: number, publicationIds: string[]) => space.fetch(new Request("http://space/extension-project-knowledge-grants", {
+    const update = (expectedRevision: number, publicationIds: string[], publicationRevision = 4) => space.fetch(new Request("http://space/extension-project-knowledge-grants", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": token },
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
-        actorId: "owner", expectedRevision, publicationIds }),
+        actorId: "owner", expectedRevision, publicationIds,
+        publicationRevisions: Object.fromEntries(publicationIds.map(id => [id, publicationRevision])) }),
     }));
     expect(await (await list()).json()).toMatchObject({ installations: [{ instance_id: installationId, configured: false,
       declared_publication_ids: ["course_material"], granted_publication_ids: [], revision: 0 }] });
     expect((await update(0, ["secret_docs"])).status).toBe(400);
     expect((await update(0, ["course_material"])).status).toBe(200);
-    expect(await (await list()).json()).toMatchObject({ installations: [{ configured: true, granted_publication_ids: ["course_material"], revision: 1 }] });
+    expect(await (await list()).json()).toMatchObject({ installations: [{ configured: true, granted_publication_ids: ["course_material"],
+      granted_publications: [{ id: "course_material", revision: 4 }], revision: 1 }] });
     expect((await update(0, [])).status).toBe(409);
     expect((await update(1, [])).status).toBe(200);
     expect(await (await list()).json()).toMatchObject({ installations: [{ configured: true, granted_publication_ids: [], revision: 2 }] });
+    expect((await update(2, ["course_material"], 5)).status).toBe(200);
+    expect(storage.sql.exec("SELECT publication_revision FROM extension_project_knowledge_grants WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ publication_revision: 5 }]);
+    expect(storage.sql.exec("SELECT publication_revisions_json FROM extension_project_knowledge_events WHERE instance_id=? ORDER BY revision DESC LIMIT 1", installationId).toArray())
+      .toEqual([{ publication_revisions_json: '{"course_material":5}' }]);
     const removal = await space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({
       instance_id: installationId, tenant_id: "tenant", space_id: "space",
     }), { method: "DELETE" }));
     expect(removal.status).toBe(200);
     expect(storage.sql.exec("SELECT revision,updated_by FROM extension_project_knowledge_policies WHERE instance_id=?", installationId).toArray())
-      .toEqual([{ revision: 3, updated_by: "system:installation_removed" }]);
+      .toEqual([{ revision: 4, updated_by: "system:installation_removed" }]);
     expect(storage.sql.exec("SELECT publication_id FROM extension_project_knowledge_grants WHERE instance_id=?", installationId).toArray()).toEqual([]);
     expect(storage.sql.exec("SELECT publication_ids_json,actor_id FROM extension_project_knowledge_events WHERE instance_id=? ORDER BY revision DESC LIMIT 1", installationId).toArray())
       .toEqual([{ publication_ids_json: "[]", actor_id: "system:installation_removed" }]);

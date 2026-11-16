@@ -103,6 +103,8 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
           status: "processing", chunk_count: 0, created_at: documentArgs[14], updated_at: documentArgs[15] });
         return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
       }
+      if (statements[0]?.sql.includes("UPDATE kb_documents SET status = 'indexed'"))
+        return statements.map(() => ({ meta: { changes: 1 } }));
       return [];
     }),
   };

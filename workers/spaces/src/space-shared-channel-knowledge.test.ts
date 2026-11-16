@@ -7,10 +7,11 @@ const secret = "space-shared-project-knowledge-route-secret";
 
 function harness(options: { knowledgeAvailable?: boolean; publicationIds?: string[] } = {}) {
   const platformDb = createFakeD1([
-    "CREATE TABLE spaces(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,status TEXT NOT NULL,name TEXT NOT NULL,spacetype_id TEXT NOT NULL,config_json TEXT);",
+    "CREATE TABLE spaces(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,status TEXT NOT NULL,name TEXT NOT NULL,spacetype_id TEXT NOT NULL,config_json TEXT,product_id TEXT);",
     "CREATE TABLE space_members(space_id TEXT NOT NULL,end_user_id TEXT NOT NULL,role TEXT NOT NULL,suspended_at TEXT,PRIMARY KEY(space_id,end_user_id));",
+    "CREATE TABLE product_end_users(product_space_id TEXT NOT NULL,end_user_id TEXT NOT NULL,erasure_started_at TEXT,deleted_at TEXT);",
   ]);
-  platformDb.db.exec(`INSERT INTO spaces VALUES('space-a','tenant-a','active','Space','default',NULL);
+  platformDb.db.exec(`INSERT INTO spaces(id,tenant_id,status,name,spacetype_id,config_json) VALUES('space-a','tenant-a','active','Space','default',NULL);
     INSERT INTO space_members VALUES('space-a','product-owner','owner',NULL);
     INSERT INTO space_members VALUES('space-a','product-member','member',NULL);`);
   const forwarded: Request[] = [];
@@ -21,7 +22,7 @@ function harness(options: { knowledgeAvailable?: boolean; publicationIds?: strin
       granted_publication_ids: ["course_material"], revision: 1, updated_by: "owner-a", updated_at: "2026-11-14T00:00:00.000Z" });
   }) };
   const knowledgeWorker = options.knowledgeAvailable === false ? undefined : { fetch: vi.fn(async () => Response.json({
-    publications: (options.publicationIds ?? ["course_material"]).map(id => ({ id, name: id, document_count: 1, document_ids: ["doc-a"] })),
+    publications: (options.publicationIds ?? ["course_material"]).map(id => ({ id, name: id, revision: 4, document_count: 1, document_ids: ["doc-a"] })),
   })) };
   const env = {
     PLATFORM_SECRET: secret,
@@ -76,7 +77,7 @@ describe("Space-shared channel Project Knowledge routes", () => {
     expect(h.forwarded).toHaveLength(1);
     expect(h.forwarded[0]!.method).toBe("POST");
     expect(await h.forwarded[0]!.clone().json()).toMatchObject({ tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a",
-      instanceId: "install-a", actorId: "product-owner", expectedRevision: 0, publicationIds: ["course_material"] });
+      instanceId: "install-a", actorId: "product-owner", expectedRevision: 0, publicationIds: ["course_material"], publicationRevisions: { course_material: 4 } });
   });
 
   it("fails closed when the Knowledge publication source is not bound", async () => {
