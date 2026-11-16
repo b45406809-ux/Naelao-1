@@ -1,4 +1,4 @@
-import { validateBlueprintBusinessRoles, validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateBlueprintBusinessRoles, validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type BlueprintBusinessRoleResourceRefV1, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 export interface BlueprintActivationDependency {
   extension_id: string;
@@ -24,6 +24,10 @@ export interface BlueprintActivationPreview {
   /** Signed template proposals surfaced for owner review; never applied as grants here. */
   business_roles: Array<{ id: string; name: Record<string, string>; description: Record<string, string> | null;
     recommended_space_role: "member" | "admin" | null; resource_requests: NonNullable<SpaceBlueprint["businessRoles"]>[number]["resourceRequests"];
+    resource_reviews: Array<{ resource: BlueprintBusinessRoleResourceRefV1;
+      availability: "planned_project" | "installed" | "available_in_catalog" | "unavailable" | "resource_not_declared" | "unsupported";
+      requested_actions: string[]; declared_actions: string[]; effective_role_actions: string[];
+      access_state: "not_granted_by_proposal"; grants_applied: false; cost_estimate: null; cost_reason: "no_role_budget_rate_contract" }>;
     assistant: NonNullable<SpaceBlueprint["businessRoles"]>[number]["assistant"] | null;
     onboarding_steps: NonNullable<SpaceBlueprint["businessRoles"]>[number]["onboardingSteps"];
     spending_suggestion: NonNullable<SpaceBlueprint["businessRoles"]>[number]["spendingSuggestion"] | null;
@@ -117,6 +121,35 @@ export function previewBlueprintActivation(
         ...(summary ? { summary } : {}),
       };
     });
+  const businessRoleResourceReview = (resource: BlueprintBusinessRoleResourceRefV1,
+    actions: string[]) => {
+    const extId = "extensionId" in resource ? resource.extensionId : null;
+    const dependency = extId ? dependencies.find(item => item.extension_id === extId) : undefined;
+    const summary = dependency?.summary;
+    let availability: BlueprintActivationPreview["business_roles"][number]["resource_reviews"][number]["availability"];
+    let targetPrimitives = summary?.primitives ?? [];
+    if (resource.kind === "project") availability = blueprint.projects.some(project => (project.id ?? project.name) === resource.projectId) ? "planned_project" : "unsupported";
+    else if (!dependency || ["unavailable", "version_mismatch", "version_unpinned", "disabled", "not_active"].includes(dependency.status)) availability = "unavailable";
+    else if (dependency.status === "installable") availability = "available_in_catalog";
+    else {
+      if (resource.kind === "extension") availability = "installed";
+      else if (resource.kind === "microapp") {
+        targetPrimitives = targetPrimitives.filter(item => item.id === resource.microappId && item.kind === "canvas");
+        availability = targetPrimitives.length ? "installed" : "resource_not_declared";
+      } else if (resource.kind === "knowledge") {
+        availability = summary?.knowledge.some(item => item.id === resource.knowledgeId) ? "installed" : "resource_not_declared";
+      } else if (resource.kind === "collection") {
+        availability = summary?.knowledge.some(item => item.id === resource.collectionId) ? "installed" : "resource_not_declared";
+      } else availability = "unsupported"; // No shared-record ACL contract exists yet.
+    }
+    const declaredActions = [...new Set(targetPrimitives.flatMap(item => item.permission_grants.map(grant => grant.action))
+      .filter(action => actions.includes(action)))].sort();
+    return { resource, availability, requested_actions: [...actions], declared_actions: declaredActions,
+      // The proposal itself never creates role permissions. Other independent host grants are not
+      // inferred here; TBR06/TBR07 must define their review and composition before they can resolve.
+      effective_role_actions: [], access_state: "not_granted_by_proposal" as const, grants_applied: false as const,
+      cost_estimate: null, cost_reason: "no_role_budget_rate_contract" as const };
+  };
   const blockers = dependencies
     .filter(
       (item) =>
@@ -194,6 +227,7 @@ export function previewBlueprintActivation(
     projects: blueprint.projects.map(project => ({ project_id: project.id ?? project.name, project_name: project.name })),
     business_roles: businessRoleProposals.map(role => ({ id: role.id, name: role.name, description: role.description ?? null,
       recommended_space_role: role.recommendedSpaceRole ?? null, resource_requests: role.resourceRequests,
+      resource_reviews: (role.resourceRequests ?? []).map(request => businessRoleResourceReview(request.resource, request.actions)),
       assistant: role.assistant ?? null, onboarding_steps: role.onboardingSteps ?? [], spending_suggestion: role.spendingSuggestion ?? null,
       status: "proposal_requires_owner_review" as const, grants_applied: false as const })),
     coordination_defaults: blueprint.coordinationDefaults ? structuredClone(blueprint.coordinationDefaults) : null,

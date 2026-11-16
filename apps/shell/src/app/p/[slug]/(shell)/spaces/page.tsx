@@ -1038,6 +1038,18 @@ export default function SpacesPage() {
                   <span>Apply these exact singleton rules to approved coordination facts now. This requires explicit owner/admin approval and will not replace an existing policy.</span>
                 </label>}
             </section>}
+            {activationReview.preview.business_roles.length > 0 && <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
+              <strong>Template business-role proposals · no grants applied</strong>
+              <p style={{ margin: "4px 0", color: "var(--text3)" }}>These role requests are checked against this Space’s current trusted package declarations. Requested and declared actions are shown separately; role permissions remain ineffective until a reviewed role-grant system is available. This preview does not estimate service costs or evaluate independent access granted elsewhere.</p>
+              {activationReview.preview.business_roles.map(role => <div key={role.id} style={{ borderTop: "1px solid var(--border)", marginTop: 8, paddingTop: 8 }}>
+                <strong>{role.name.en ?? role.id}</strong>{role.recommended_space_role && <span> · recommends Space {role.recommended_space_role}</span>}
+                {role.description?.en && <p>{role.description.en}</p>}
+                {role.resource_reviews.length ? <ul>{role.resource_reviews.map((review, index) => <li key={`${role.id}:${index}`}>
+                  <code>{JSON.stringify(review.resource)}</code> · {review.availability} · requested: {review.requested_actions.join(", ")} · package-declared match: {review.declared_actions.join(", ") || "none"} · effective role actions: none · cost: unavailable ({review.cost_reason})
+                </li>)}</ul> : <p>No resource permissions requested.</p>}
+                <p role="status">Proposal only. No membership, invitation, permission, assistant access, or spending mandate was created.</p>
+              </div>)}
+            </section>}
             <strong>Assistant channel availability defaults</strong>
             {activationReview.preview.assistant_channel_defaults
               && (activationReview.preview.assistant_channel_defaults.spaceAssistant || activationReview.preview.assistant_channel_defaults.projectAssistants)

@@ -69,6 +69,21 @@ describe("Space Template activation preview", () => {
     expect(preview.installs_or_grants_applied).toBe(false);
   });
 
+  it("resolves role symbols against the target Space's exact trusted package preview without making grants effective", () => {
+    const artifact = blueprint({ requiredExtensions: ["ext_stock"], requiredCredentials: [],
+      projects: [{ id: "accounts", name: "Accounts", kind: "DualPane", templateMode: "cowork_studio", viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [] }],
+      businessRolesSchemaVersion: 1, businessRoles: [{ id: "stock_lead", name: { en: "Stock lead" }, resourceRequests: [
+        { resource: { kind: "project", projectId: "accounts" }, actions: ["files.read"], purpose: { en: "Review work" } },
+        { resource: { kind: "microapp", extensionId: "ext_stock", microappId: "inventory" }, actions: ["stock.read", "stock.write"], purpose: { en: "Use inventory" } },
+      ] }],
+    });
+    const summary = { primitives: [{ kind: "canvas", id: "inventory", permission_grants: [{ scope: "PROJECT_BOUND", resource: "inventory", action: "stock.read" }] }], knowledge: [] } as never;
+    const preview = previewBlueprintActivation(artifact, new Map([["ext_stock", { version: "1.0.0", digest: "a".repeat(64), status: "active", summary }]]), new Map());
+    const reviews = preview.business_roles[0]?.resource_reviews ?? [];
+    expect(reviews.find(item => item.resource.kind === "project")).toMatchObject({ availability: "planned_project", requested_actions: ["files.read"], declared_actions: [], effective_role_actions: [], access_state: "not_granted_by_proposal", grants_applied: false, cost_estimate: null });
+    expect(reviews.find(item => item.resource.kind === "microapp")).toMatchObject({ availability: "installed", requested_actions: ["stock.read", "stock.write"], declared_actions: ["stock.read"], effective_role_actions: [], access_state: "not_granted_by_proposal", grants_applied: false, cost_estimate: null });
+  });
+
   it("previews validated channel availability without exposing account provisioning directives", () => {
     const preview = previewBlueprintActivation(blueprint({ requiredExtensions: [], requiredCredentials: [], assistantChannels: {
       spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" },

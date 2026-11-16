@@ -3375,6 +3375,21 @@ export function listSpaceTemplateInstallations(spaceId: string, session: Session
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
   projects: Array<{ project_id: string; project_name: string }>;
+  business_roles: Array<{ id: string; name: Record<string, string>; description: Record<string, string> | null;
+    recommended_space_role: "member" | "admin" | null; resource_requests: Array<{ resource:
+      | { kind: "project"; projectId: string } | { kind: "extension"; extensionId: string }
+      | { kind: "microapp"; extensionId: string; microappId: string } | { kind: "knowledge"; extensionId: string; knowledgeId: string }
+      | { kind: "collection"; extensionId: string; collectionId: string }
+      | { kind: "shared_data"; projectId: string; extensionId: string; microappId: string; collectionId: string };
+      actions: string[]; purpose: Record<string, string> }>;
+    resource_reviews: Array<{ resource: SpaceTemplateActivationPreview["business_roles"][number]["resource_requests"][number]["resource"];
+      availability: "planned_project" | "installed" | "available_in_catalog" | "unavailable" | "resource_not_declared" | "unsupported";
+      requested_actions: string[]; declared_actions: string[]; effective_role_actions: string[];
+      access_state: "not_granted_by_proposal"; grants_applied: false; cost_estimate: null; cost_reason: "no_role_budget_rate_contract" }>;
+    assistant: { mode?: "inherit" | "read_only" | "none"; instructions?: Record<string, string>; allowedActions?: string[] } | null;
+    onboarding_steps: Array<{ id: string; title: Record<string, string>; instructions: Record<string, string>; required: boolean }>;
+    spending_suggestion: { monthlyCredits?: number; approvalActions?: string[] } | null;
+    status: "proposal_requires_owner_review"; grants_applied: false }>;
   coordination_defaults: { memberFactsEnabled?: boolean; singletonCapabilityKeys?: string[] } | null;
   expected_usage_defaults: SpaceTemplateExpectedUsageV1 | null;
   coordination_policy_current: { configured: boolean; member_facts_enabled: boolean; revision: number; active_member_facts: number } | null;
