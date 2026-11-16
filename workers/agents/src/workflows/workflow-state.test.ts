@@ -70,6 +70,59 @@ describe("WorkflowJournal usage accounting", () => {
     expect((fixture.values.get("run") as { usedCredits: number }).usedCredits).toBe(0);
   });
 
+  it("admits vertical extension effects only against the reserved run budget", async () => {
+    const fixture = storageFixture();
+    const run = fixture.values.get("run") as WorkflowJournalRecord;
+    Object.assign(run, { identity: { workflowClass: "vertical_extension" }, budgetCredits: 1 });
+    fixture.values.set("run", run);
+    const journal = new WorkflowJournal(fixture.storage);
+    const receipt = { kind: "objects" as const, installationId: "install-a", projectId: "project-a", principalId: "actor-a",
+      requirementId: "project-cache", objectKeySha256: "d".repeat(64), operation: "put" as const, requestSha256: "c".repeat(64),
+      requestBytes: 128, status: "prepared" as const, meteringUnit: "byte" as const, meteredUnits: 128, preparedAt: Date.now() };
+
+    const outcomes = await Promise.allSettled([
+      journal.prepareExternalEffect("resource-1", "extension.resource.objects", "digest-1", receipt),
+      journal.prepareExternalEffect("resource-2", "extension.resource.objects", "digest-2", receipt),
+    ]);
+    const prepared = outcomes.filter(outcome => outcome.status === "fulfilled");
+    expect(prepared).toHaveLength(1);
+    expect(outcomes.filter(outcome => outcome.status === "rejected").map(outcome => (outcome as PromiseRejectedResult).reason.message))
+      .toEqual(["workflow_extension_budget_exhausted"]);
+    const effect = (prepared[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof journal.prepareExternalEffect>>>).value.effect;
+    expect(effect.reservedCredits).toBe(1);
+    await expect(journal.prepareExternalEffect(effect.key, effect.operation, effect.inputDigest, receipt)).resolves.toMatchObject({ created: false });
+    expect((fixture.values.get("run") as WorkflowJournalRecord).effectCount).toBe(1);
+    await journal.markIndeterminate(effect);
+    expect(fixture.values.get("effect:resource-1")).toMatchObject({ reservedCredits: 1, status: "indeterminate", resourceReceipt: { status: "unknown" } });
+  });
+
+  it("rejects a vertical extension resource effect without an authorized budget reservation", async () => {
+    const fixture = storageFixture();
+    const run = fixture.values.get("run") as WorkflowJournalRecord;
+    Object.assign(run, { identity: { workflowClass: "vertical_extension" } });
+    fixture.values.set("run", run);
+    const journal = new WorkflowJournal(fixture.storage);
+    await expect(journal.prepareExternalEffect("resource-1", "extension.resource.objects", "digest-1", {
+      kind: "objects", installationId: "install-a", projectId: "project-a", principalId: "actor-a", requirementId: "project-cache",
+      objectKeySha256: "d".repeat(64), operation: "put", requestSha256: "c".repeat(64), requestBytes: 128, status: "prepared", preparedAt: Date.now(),
+    })).rejects.toThrow("workflow_extension_budget_required");
+    expect(fixture.values.has("effect:resource-1")).toBe(false);
+  });
+
+  it("rejects settlement above the reserved per-effect budget", async () => {
+    const fixture = storageFixture();
+    const run = fixture.values.get("run") as WorkflowJournalRecord;
+    Object.assign(run, { identity: { workflowClass: "vertical_extension" }, budgetCredits: 2 });
+    fixture.values.set("run", run);
+    const journal = new WorkflowJournal(fixture.storage);
+    const { effect } = await journal.prepareExternalEffect("resource-1", "extension.resource.objects", "digest-1", {
+      kind: "objects", installationId: "install-a", projectId: "project-a", principalId: "actor-a", requirementId: "project-cache",
+      objectKeySha256: "d".repeat(64), operation: "put", requestSha256: "c".repeat(64), requestBytes: 128, status: "prepared", preparedAt: Date.now(),
+    });
+    await expect(journal.commitEffect(effect, { schema: 1, r2_key: "result", sha256: "a".repeat(64), bytes: 2 }, 2)).rejects.toThrow("workflow_effect_budget_exceeded");
+    expect(fixture.values.get("effect:resource-1")).toMatchObject({ status: "prepared" });
+  });
+
   it("prevents new effects after terminal cleanup begins and expires stale in-flight receipts", async () => {
     const fixture = storageFixture();
     const journal = new WorkflowJournal(fixture.storage);

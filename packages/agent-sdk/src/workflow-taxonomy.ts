@@ -95,6 +95,8 @@ export type DurableResourceOperationReceipt = DurableStructuredDataOperationRece
 export interface DurableEffectRecord {
   key: string; operation: string; inputDigest: string; status: "prepared" | "committed" | "indeterminate";
   result?: WorkflowCheckpointPointer; providerReceipt?: string; resourceReceipt?: DurableResourceOperationReceipt;
+  /** Credit hold charged to the extension run budget while this effect is in flight. */
+  reservedCredits?: number;
 }
 export interface DurableWorkflowRecord {
   identity: DurableWorkflowIdentity; status: DurableWorkflowStatus;

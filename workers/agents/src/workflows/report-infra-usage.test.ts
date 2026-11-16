@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
+import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowResourceUsage, reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
 
 function env(fetcher: (request: Request) => Promise<Response>) {
   return { PLATFORM_SECRET: "secret", BILLING_WORKER: { fetch: fetcher } } as never;
@@ -36,5 +36,21 @@ describe("workflow budget contract", () => {
       space_id: "space", project_id: "project-1", installation_id: "install-1", run_id: "wf",
       runtime_tier: 3, payer_kind: "plan_quota", decision: "charged", idempotency_key: "workflow:wf:step",
     });
+  });
+
+  it("records installation-scoped resource units as durable unpriced measurements", async () => {
+    const requests: Request[] = [];
+    const fetcher = vi.fn(async (request: Request) => { requests.push(request); return new Response(null, { status: 201 }); });
+    const dimensions = { projectId: "project-1", installationId: "install-1", runId: "workflow-1" };
+    await reportWorkflowResourceUsage(env(fetcher), "tenant", "space", "workflow-1:step-1:resource-units", "byte", 8192, dimensions);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(await requests[0]!.json()).toEqual({ event_type: "extension_resource_bytes", quantity: 8192, unit: "bytes", schema_version: 2,
+      space_id: "space", project_id: "project-1", installation_id: "install-1", run_id: "workflow-1",
+      idempotency_key: "workflow-1:step-1:resource-units" });
+  });
+
+  it("fails the effect path when the durable usage meter cannot accept the event", async () => {
+    await expect(reportWorkflowResourceUsage(env(async () => new Response(null, { status: 503 })), "tenant", "space", "meter-1", "request", 1,
+      { projectId: "project-1", installationId: "install-1", runId: "workflow-1" })).rejects.toThrow("workflow_resource_meter_failed:503");
   });
 });

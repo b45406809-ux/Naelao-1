@@ -17,6 +17,35 @@ export interface WorkflowUsageDimensions {
   runId?: string;
 }
 
+/** Persist resource units separately from the flat Workflow-step credit charge. These rows are
+ * deliberately unpriced until an approved per-byte/storage rate exists; the billing summary will
+ * expose them as unpriced instead of implying an invented rate. */
+export async function reportWorkflowResourceUsage(
+  env: Env,
+  tenantId: string,
+  spaceId: string,
+  idempotencyKey: string,
+  meteringUnit: "request" | "byte" | "job",
+  meteredUnits: number,
+  dimensions: WorkflowUsageDimensions & { projectId: string; installationId: string; runId: string },
+): Promise<void> {
+  if (!env.BILLING_WORKER) throw new Error("workflow_resource_meter_unavailable");
+  if (!Number.isSafeInteger(meteredUnits) || meteredUnits < 0 || meteredUnits > 5 * 1024 * 1024)
+    throw new Error("workflow_resource_meter_invalid");
+  const eventType = meteringUnit === "request" ? "extension_resource_requests"
+    : meteringUnit === "job" ? "extension_resource_jobs" : "extension_resource_bytes";
+  const unit = meteringUnit === "request" ? "invocations" : meteringUnit === "job" ? "units" : "bytes";
+  const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+  const response = await env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
+    body: JSON.stringify({ event_type: eventType, quantity: meteredUnits, unit, schema_version: 2,
+      space_id: spaceId, project_id: dimensions.projectId, installation_id: dimensions.installationId, run_id: dimensions.runId,
+      idempotency_key: idempotencyKey }),
+  }));
+  if (!response.ok) throw new Error("workflow_resource_meter_failed:" + response.status);
+}
+
 export async function reportWorkflowStepInfraUsage(
   env: Env,
   tenantId: string,

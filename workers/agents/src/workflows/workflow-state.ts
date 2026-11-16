@@ -1,5 +1,6 @@
 import { isTerminalWorkflow, transitionWorkflow, type DurableWorkflowIdentity, type DurableWorkflowRecord, type DurableEffectRecord,
   type DurableResourceOperationReceipt, type WorkflowCheckpointPointer } from "@naelao/agent-sdk";
+import { calculateResourceCredits } from "@naelao/billing-core";
 
 export interface WorkflowJournalStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -24,6 +25,7 @@ export interface WorkflowJournalRecord extends DurableWorkflowRecord {
 export const MAX_WORKFLOW_ARTIFACTS = 256;
 export const MAX_WORKFLOW_ARTIFACT_BYTES = 64 * 1024 * 1024;
 export const MAX_WORKFLOW_EFFECTS = 1024;
+const EXTENSION_EFFECT_CREDITS = calculateResourceCredits("workflow_step", 1);
 
 /** The journal is persisted by WorkflowRunDO. No memory-only replay protection. */
 export class WorkflowJournal {
@@ -115,7 +117,24 @@ export class WorkflowJournal {
       if ((run.effectCount ?? 0) >= MAX_WORKFLOW_EFFECTS) throw new Error("workflow_effect_budget_exceeded");
       const activeEffects = run.activeEffects ?? [];
       if (activeEffects.length >= 128) throw new Error("workflow_effect_concurrency_limit");
-      const effect = { key, operation, inputDigest, status: "prepared" as const, startedAt: Date.now(), ...(resourceReceipt ? { resourceReceipt } : {}) };
+      const extensionEffect = run.identity?.workflowClass === "vertical_extension";
+      let reservedCredits: number | undefined;
+      if (extensionEffect) {
+        if (!Number.isSafeInteger(run.budgetCredits) || (run.budgetCredits ?? 0) <= 0)
+          throw new Error("workflow_extension_budget_required");
+        let inFlightCredits = 0;
+        for (const activeKey of activeEffects) {
+          const active = await storage.get<DurableEffectRecord>("effect:" + activeKey);
+          // Old prepared records predate effect-level holds. Treat their possible cost as the
+          // entire remaining run budget until the existing uncertain-effect reconciliation runs.
+          inFlightCredits += active?.reservedCredits ?? run.budgetCredits!;
+        }
+        reservedCredits = EXTENSION_EFFECT_CREDITS;
+        if (run.usedCredits + inFlightCredits + reservedCredits > run.budgetCredits!)
+          throw new Error("workflow_extension_budget_exhausted");
+      }
+      const effect = { key, operation, inputDigest, status: "prepared" as const, startedAt: Date.now(),
+        ...(reservedCredits !== undefined ? { reservedCredits } : {}), ...(resourceReceipt ? { resourceReceipt } : {}) };
       await storage.put("effect:" + key, effect);
       await storage.put("run", { ...run, effectCount: (run.effectCount ?? 0) + 1, activeEffects: [...activeEffects, key], updatedAt: Date.now() });
       return { effect, created: true };
@@ -133,6 +152,8 @@ export class WorkflowJournal {
         return;
       }
       if (current.status !== "prepared") throw new Error("workflow_effect_receipt_conflict");
+      if (current.reservedCredits !== undefined && credits > current.reservedCredits)
+        throw new Error("workflow_effect_budget_exceeded");
       const activeEffects = (run.activeEffects ?? []).filter((key) => key !== effect.key);
       if (activeEffects.length === (run.activeEffects ?? []).length) throw new Error("workflow_effect_receipt_conflict");
       const usedCredits = run.usedCredits + credits;

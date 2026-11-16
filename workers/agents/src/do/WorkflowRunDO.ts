@@ -7,7 +7,7 @@ import { WORKFLOW_CLASS_POLICIES, isTerminalWorkflow, validateDurableWorkflowIde
 import { WorkflowJournal, type WorkflowJournalStorage, type WorkflowJournalRecord } from "../workflows/workflow-state.js";
 import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, resolveApprovedObjectGrant, resolveApprovedStructuredDataGrant,
   workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
-import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowStepInfraUsage } from "../workflows/report-infra-usage.js";
+import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowResourceUsage, reportWorkflowStepInfraUsage } from "../workflows/report-infra-usage.js";
 import type { Env } from "../env.js";
 import { readBoundedResponseText } from "../shared/bounded-response-text.js";
 
@@ -175,6 +175,17 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       const pointer = await this.putArtifact(runId, result);
       const credits = await reportWorkflowStepInfraUsage(this.env as Env, identity.tenantId, identity.spaceId, Date.now() - started, runId + ":" + key, false,
         { ...(identity.projectId ? { projectId: identity.projectId } : {}), ...(identity.installationId ? { installationId: identity.installationId } : {}), runId });
+      if (resourceReceipt && identity.projectId && identity.installationId) {
+        const responseBytes = new TextEncoder().encode(JSON.stringify(result)).byteLength;
+        const requestBytes = resourceReceipt.requestBytes;
+        const meteredUnits = resourceReceipt.meteringUnit === "request" ? 1
+          : resourceReceipt.meteringUnit === "job" ? 1 : requestBytes + responseBytes;
+        await reportWorkflowResourceUsage(this.env as Env, identity.tenantId, identity.spaceId, runId + ":" + key + ":resource-units",
+          resourceReceipt.meteringUnit ?? "request", meteredUnits,
+          { projectId: identity.projectId, installationId: identity.installationId, runId });
+        resourceReceipt.meteredUnits = meteredUnits;
+        if (effect.resourceReceipt) effect.resourceReceipt.meteredUnits = meteredUnits;
+      }
       // Receipt and measured usage must commit together. If the worker dies after the
       // external effect, replay must neither repeat it nor lose its credits at settlement.
       await this.journal.commitEffect(effect, pointer, credits);
