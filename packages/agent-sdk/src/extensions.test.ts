@@ -6,6 +6,31 @@ import { createExtensionResourceClient, createLocalExtensionResourceHarness, dig
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
 describe("immutable extension kernel", () => {
+  it("binds structured data requests to existing project workflow Gadget grants", () => {
+    const structured = {
+      id: "records", kind: "structured_data", apiVersion: "1.0", scope: "project", binding: { gadgetId: "catalog", tables: ["records"] },
+      operations: [{ id: "get", input: { schemaVersion: "1.0", fields: {
+        table: { type: "string", required: true, maxLength: 63 }, id: { type: "string", required: true, maxLength: 256 },
+      } }, output: { schemaVersion: "1.0", fields: { resultJson: { type: "string", required: true, maxLength: 32768 } } },
+      idempotency: "none", meteringUnit: "request" }],
+      limits: { requestsPerMinute: 30, maxConcurrent: 2, maxBytesPerOperation: 32768 },
+    };
+    const manifest = { ...valid, capabilityRequirements: ["extension.workflow"], resourceRequirements: [structured], bundle: {
+      schemaVersion: "1.0", kind: "extension_bundle", id: valid.id, version: "1.0.0", primitives: [
+        { schemaVersion: "1.0", kind: "gadget", id: "catalog", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+          scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE records (id TEXT PRIMARY KEY, name TEXT NOT NULL)" },
+        { schemaVersion: "1.0", kind: "workflow", id: "lookup", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+          executionMode: "headless", entry: "./lookup.ts", steps: ["lookup"], toolNames: ["extension.gadget.get"] },
+      ], workerRoles: [{ id: "lookup_role", principal: "project_member", invocation: "workflow_step", execution: "worker",
+        entry: "./lookup.ts", primitiveIds: ["lookup"], gadgetActions: [{ gadgetId: "catalog", operations: ["extension.gadget.get"], tables: ["records"] }] }],
+    } };
+    const parsed = validateExtensionManifest(manifest);
+    expect(parsed.resourceRequirements?.[0]?.binding).toEqual({ gadgetId: "catalog", tables: ["records"] });
+    expect(() => validateExtensionManifest({ ...manifest, resourceRequirements: [{ ...structured, binding: { gadgetId: "catalog", tables: ["private_records"] } }] }))
+      .toThrow("structured_data_binding_exceeds_installed_workflow_grant");
+    expect(() => validateExtensionManifest({ ...manifest, resourceRequirements: [{ ...structured, binding: undefined }] }))
+      .toThrow("structured_data_project_gadget_binding_required");
+  });
   it("parses versioned resource requirements without treating them as grants", async () => {
     const requirement = { id: "catalog", kind: "objects", apiVersion: "1.0", scope: "project", operations: [
       { id: "put", input: { schemaVersion: "1.0", fields: { name: { type: "string", required: true, maxLength: 40 } } },

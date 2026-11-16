@@ -31,10 +31,14 @@ export interface ExtensionResourceOperation {
   id: string; input: ExtensionResourceObjectSchema; output: ExtensionResourceObjectSchema;
   idempotency: "required" | "none"; meteringUnit: "request" | "byte" | "job";
 }
+/** Structured data may bind only to an existing project Gadget. This is a requested backing
+ * resource, not a grant; the effective operations still come from the installed workflow role. */
+export interface ExtensionStructuredDataBinding { gadgetId: string; tables: readonly string[] }
 export interface ExtensionResourceRequirement {
   id: string; kind: ExtensionResourceKind; apiVersion: "1.0"; scope: ExtensionResourceScope;
   operations: readonly ExtensionResourceOperation[];
   limits: { requestsPerMinute: number; maxConcurrent: number; maxBytesPerOperation: number };
+  binding?: ExtensionStructuredDataBinding;
 }
 export interface ExtensionResourceCapabilityDescriptor {
   kind: ExtensionResourceKind; apiVersion: "1.0"; status: "unavailable" | "available"; operations: readonly string[];
@@ -196,7 +200,7 @@ function parseResourceRequirements(value: unknown): ExtensionResourceRequirement
   return value.map(rawValue => {
     assert(rawValue !== null && typeof rawValue === "object" && !Array.isArray(rawValue), "invalid_resource_requirement");
     const raw = rawValue as Record<string, unknown>;
-    assert(Object.keys(raw).every(key => ["id", "kind", "apiVersion", "scope", "operations", "limits"].includes(key)), "invalid_resource_requirement_field");
+    assert(Object.keys(raw).every(key => ["id", "kind", "apiVersion", "scope", "operations", "limits", "binding"].includes(key)), "invalid_resource_requirement_field");
     assert(typeof raw.id === "string" && /^[a-z][a-z0-9._-]{1,63}$/.test(raw.id) && !ids.has(raw.id), "invalid_resource_requirement_id"); ids.add(raw.id);
     assert((EXTENSION_RESOURCE_CAPABILITIES as readonly { kind: string; apiVersion: string }[]).some(item => item.kind === raw.kind && item.apiVersion === raw.apiVersion), "unsupported_resource_api_version");
     assert(["installation", "project", "space"].includes(String(raw.scope)), "invalid_resource_scope");
@@ -218,8 +222,48 @@ function parseResourceRequirements(value: unknown): ExtensionResourceRequirement
     assert(Number.isInteger(limits.requestsPerMinute) && Number(limits.requestsPerMinute) >= 1 && Number(limits.requestsPerMinute) <= 1000
       && Number.isInteger(limits.maxConcurrent) && Number(limits.maxConcurrent) >= 1 && Number(limits.maxConcurrent) <= 64
       && Number.isInteger(limits.maxBytesPerOperation) && Number(limits.maxBytesPerOperation) >= 1 && Number(limits.maxBytesPerOperation) <= 10 * 1024 * 1024, "invalid_resource_limits");
+    let binding: ExtensionStructuredDataBinding | undefined;
+    if (raw.binding !== undefined) {
+      assert(raw.kind === "structured_data" && raw.binding !== null && typeof raw.binding === "object" && !Array.isArray(raw.binding), "resource_binding_kind_mismatch");
+      const bindingRaw = raw.binding as Record<string, unknown>;
+      assert(Object.keys(bindingRaw).every(key => key === "gadgetId" || key === "tables"), "invalid_resource_binding_field");
+      assert(typeof bindingRaw.gadgetId === "string" && /^[a-z][a-z0-9_-]{1,63}$/.test(bindingRaw.gadgetId), "invalid_resource_binding_gadget");
+      assert(Array.isArray(bindingRaw.tables) && bindingRaw.tables.length > 0 && bindingRaw.tables.length <= 64
+        && new Set(bindingRaw.tables).size === bindingRaw.tables.length
+        && bindingRaw.tables.every(table => typeof table === "string" && /^[a-z][a-z0-9_-]{0,62}$/.test(table)), "invalid_resource_binding_tables");
+      binding = Object.freeze({ gadgetId: bindingRaw.gadgetId, tables: Object.freeze([...(bindingRaw.tables as string[])].sort()) });
+    }
+    assert(raw.kind !== "structured_data" || (raw.scope === "project" && binding !== undefined), "structured_data_project_gadget_binding_required");
+    assert(raw.kind === "structured_data" || binding === undefined, "resource_binding_kind_mismatch");
+    if (raw.kind === "structured_data") {
+      const allowedOperations = new Set(["list", "get", "insert", "update", "delete"]);
+      assert(operations.every(operation => allowedOperations.has(operation.id)), "structured_data_operation_unsupported");
+      assert(operations.filter(operation => ["insert", "update", "delete"].includes(operation.id)).every(operation => operation.idempotency === "required"), "structured_data_write_idempotency_required");
+      for (const operation of operations) {
+        const inputFields = operation.input.fields, outputFields = operation.output.fields;
+        const expectedInputFields = operation.id === "list" ? ["table", "filterJson", "limit"]
+          : operation.id === "get" || operation.id === "delete" ? ["table", "id"]
+          : operation.id === "insert" ? ["table", "recordJson"] : ["table", "id", "recordJson"];
+        assert(Object.keys(inputFields).every(key => expectedInputFields.includes(key))
+          && inputFields.table?.type === "string" && inputFields.table.required === true
+          && (inputFields.table.maxLength ?? 0) > 0 && inputFields.table.maxLength! <= 63, "structured_data_operation_schema_invalid");
+        if (operation.id === "get" || operation.id === "delete" || operation.id === "update")
+          assert(inputFields.id?.type === "string" && inputFields.id.required === true
+            && (inputFields.id.maxLength ?? 0) > 0 && inputFields.id.maxLength! <= 256, "structured_data_operation_schema_invalid");
+        if (operation.id === "insert" || operation.id === "update")
+          assert(inputFields.recordJson?.type === "string" && inputFields.recordJson.required === true
+            && (inputFields.recordJson.maxLength ?? 0) > 0 && inputFields.recordJson.maxLength! <= Number(limits.maxBytesPerOperation), "structured_data_operation_schema_invalid");
+        if (inputFields.filterJson) assert(operation.id === "list" && inputFields.filterJson.type === "string"
+          && (inputFields.filterJson.maxLength ?? 0) > 0 && inputFields.filterJson.maxLength! <= Number(limits.maxBytesPerOperation), "structured_data_operation_schema_invalid");
+        if (inputFields.limit) assert(operation.id === "list" && inputFields.limit.type === "number" && inputFields.limit.required !== true
+          && (inputFields.limit.minimum ?? 0) >= 1 && (inputFields.limit.maximum ?? 0) >= Number(inputFields.limit.minimum ?? 1)
+          && inputFields.limit.maximum! <= 100, "structured_data_operation_schema_invalid");
+        assert(Object.keys(outputFields).length === 1 && outputFields.resultJson?.type === "string" && outputFields.resultJson.required === true
+          && (outputFields.resultJson.maxLength ?? 0) > 0 && outputFields.resultJson.maxLength! <= Number(limits.maxBytesPerOperation), "structured_data_operation_schema_invalid");
+      }
+    }
     return Object.freeze({ id: raw.id, kind: raw.kind, apiVersion: "1.0", scope: raw.scope,
-      operations: Object.freeze(operations), limits: Object.freeze({ ...limits }) }) as ExtensionResourceRequirement;
+      operations: Object.freeze(operations), limits: Object.freeze({ ...limits }), ...(binding ? { binding } : {}) }) as ExtensionResourceRequirement;
   });
 }
 
@@ -442,6 +486,25 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
       assert(JSON.stringify(legacyChannels) === JSON.stringify(channels), "bundle_channel_declaration_mismatch");
     }
     canonicalChannels = channels;
+  }
+  for (const requirement of resourceRequirements ?? []) {
+    if (requirement.kind !== "structured_data") continue;
+    const binding = requirement.binding!;
+    assert(canonicalBundle !== undefined, "structured_data_bundle_required");
+    const gadget = canonicalBundle.primitives.find((item): item is GadgetContract => item.kind === "gadget" && item.id === binding.gadgetId);
+    assert(gadget?.scope === "PROJECT_BOUND", "structured_data_gadget_must_be_project_bound");
+    const workflows = canonicalBundle.primitives.filter((item): item is WorkflowContract => item.kind === "workflow");
+    const roles = canonicalBundle.workerRoles ?? [];
+    for (const operation of requirement.operations) {
+      const toolName = `extension.gadget.${operation.id}`;
+      const authorized = workflows.some(workflow => workflow.toolNames.includes(toolName)
+        && roles.some(role => role.principal === "project_member" && role.execution === "worker"
+          && ["workflow_step", "tool"].includes(role.invocation) && role.entry === workflow.entry
+          && role.primitiveIds.includes(workflow.id)
+          && role.gadgetActions?.some(grant => grant.gadgetId === binding.gadgetId
+            && grant.operations.includes(toolName) && binding.tables.every(table => grant.tables.includes(table)))));
+      assert(authorized, "structured_data_binding_exceeds_installed_workflow_grant");
+    }
   }
   const scopes = new Set<GadgetScope>(["SPACE_WIDE", "PROJECT_BOUND", "USER_PRIVATE", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
   const ids = new Set<string>();

@@ -21,16 +21,25 @@ describe("runtime extension installation", () => {
     const storage = createDOStorage();
     const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "resource-admission-secret" } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
-    const manifest = { id: "ext_resource_request", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"],
+    const manifest = { id: "ext_resource_request", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.workflow"],
       gadgets: [], daemons: [], commands: [], resourceRequirements: [{ id: "data", kind: "structured_data", apiVersion: "1.0", scope: "project",
-        operations: [{ id: "read", input: { schemaVersion: "1.0", fields: {} }, output: { schemaVersion: "1.0", fields: {} }, idempotency: "none", meteringUnit: "request" }],
-        limits: { requestsPerMinute: 10, maxConcurrent: 1, maxBytesPerOperation: 1024 } }] };
+        binding: { gadgetId: "catalog", tables: ["records"] },
+        operations: [{ id: "get", input: { schemaVersion: "1.0", fields: { table: { type: "string", required: true, maxLength: 63 }, id: { type: "string", required: true, maxLength: 256 } } },
+          output: { schemaVersion: "1.0", fields: { resultJson: { type: "string", required: true, maxLength: 32768 } } }, idempotency: "none", meteringUnit: "request" }],
+        limits: { requestsPerMinute: 10, maxConcurrent: 1, maxBytesPerOperation: 32768 } }],
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_resource_request", version: "1.0.0", primitives: [
+        { schemaVersion: "1.0", kind: "gadget", id: "catalog", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+          scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE records (id TEXT PRIMARY KEY, name TEXT NOT NULL)" },
+        { schemaVersion: "1.0", kind: "workflow", id: "lookup", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+          executionMode: "headless", entry: "./lookup.ts", steps: ["lookup"], toolNames: ["extension.gadget.get"] },
+      ], workerRoles: [{ id: "lookup_role", principal: "project_member", invocation: "workflow_step", execution: "worker",
+        entry: "./lookup.ts", primitiveIds: ["lookup"], gadgetActions: [{ gadgetId: "catalog", operations: ["extension.gadget.get"], tables: ["records"] }] }] } };
     const response = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND",
-        gatekeeperCapabilities: ["repo.read"] }) }));
+        gatekeeperCapabilities: ["extension.workflow"] }) }));
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error_code: "extension_resource_capability_unavailable",
-      unsupported: [{ requirementId: "data", kind: "structured_data", operations: ["read"] }] });
+      unsupported: [{ requirementId: "data", kind: "structured_data", operations: ["get"] }] });
     expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_instances WHERE extension_id='ext_resource_request'").toArray()[0]?.count).toBe(0);
   });
   it("rechecks exact dependency closure at runtime and blocks removing an active dependency", async () => {
