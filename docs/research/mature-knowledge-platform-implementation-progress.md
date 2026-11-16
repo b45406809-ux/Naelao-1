@@ -1,5 +1,9 @@
 # Mature knowledge platform implementation progress
 
+## Cross-plan pointer — 2026-11-16 (EP02 structured-data workflow bridge; code `66fdbd2e` pushed)
+
+The latent structured-data workflow call now resolves the signed manifest and worker-role grant, uses the durable WorkflowRunDO effect journal and dispatches through the existing scoped Gadget route. Local SDK/Agents/Spaces suites passed **36/36**, **31/31**, **35/35**, with all three typechecks and diff check. Commit `66fdbd2e3e8ebf295fcb8892de0c7338a86ab9a3` is remote-verified. No resource grant issuer/owner lifecycle is complete; all resource kinds remain unavailable and no Knowledge retrieval/provider path changed. Exact next task: owner grant persistence/revoke fencing and reachable approval callers, then return to K05 lifecycle and K06–K30. Keep AI Search unselected and rollouts disabled.
+
 ## Cross-plan pointer — 2026-11-16 (EP02 run-scoped receipts; code `27f571d0` pushed)
 
 Existing workflow Gadget effects now carry content-free input/result hashes, byte counts, installation/project/actor identity, outcome and measured credits in the durable run journal. This adds no Knowledge grant or retrieval path. Workflow tests **19/19**, SDK/Agents typechecks and diff check pass. Grant registry, resource SDK caller and live acceptance remain open; resource kinds stay unavailable.

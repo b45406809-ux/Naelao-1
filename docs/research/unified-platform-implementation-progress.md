@@ -1,5 +1,9 @@
 # Unified platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (EP02 structured-data workflow bridge; code `66fdbd2e` pushed)
+
+`ctx.resources.execute` now resolves against the signed workflow resource binding and durable effect journal, then calls the existing authenticated scope-checked Gadget path. SDK/Agents/Spaces suites **36/36**, **31/31**, and **35/35** passed; all three typechecks and diff check passed. Code `66fdbd2e3e8ebf295fcb8892de0c7338a86ab9a3` is pushed and remote-verified. The bridge is latent: SpaceDO continues denying resource-bearing installs, and no owner grant registry/approval caller or resource capability is active. No migration, deployment or live acceptance ran. Exact next action: persist exact-manifest/installation-generation owner grants, add authorized approve/status/revoke callers and per-effect revocation fencing; test replay, changed-payload conflicts, races and cross-install denial. Continue open S/U/P/PW/K/EP work; keep rollouts disabled.
+
 ## Latest cross-plan pointer — 2026-11-16 (EP02 operation receipts; code `27f571d0` pushed)
 
 The durable workflow run journal now stores content-free structured-data receipts for existing Gadget operations, including scope identity, operation/table, request/result hashes and bytes, outcome and measured credits. Workflow tests **19/19**, SDK/Agents typechecks and diff check pass. This does not add grant issuance or a resource SDK caller; resource kinds remain unavailable. Exact next action: owner-reviewed exact-manifest grant registry and `ctx.resources.execute` through current authorization checks; remaining S/U/P/PW/K/EP gaps stay active.

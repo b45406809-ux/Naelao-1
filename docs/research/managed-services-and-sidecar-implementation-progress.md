@@ -1,5 +1,11 @@
 # Managed services and sidecar implementation progress
 
+## Cross-plan checkpoint pointer — 2026-11-16 (EP02 structured-data workflow bridge; code `66fdbd2e` pushed)
+
+The Agent SDK resource call now resolves through the signed Project workflow declaration and durable effect journal into the existing authenticated scoped Gadget route. Local evidence: SDK **36/36**, Agents workflow/scope/journal **31/31**, Spaces install/Gadget route **35/35**, three typechecks and diff check. Code `66fdbd2e3e8ebf295fcb8892de0c7338a86ab9a3` is pushed and verified. This does not activate resources: install admission and catalog remain fail-closed; no durable owner grant registry or approval caller exists. No migration/deployment/live acceptance ran; preserve untracked `infra/scripts/__pycache__/` and keep rollouts disabled.
+
+Exact next action: add the structured-data owner grant ledger and authorized approve/status/revoke caller, bound to exact signed manifest digest and installation generation; fence each effect on current grant/install/publisher state. Test duplicate writes, changed-payload key reuse, revocation races and cross-install denial. Continue remaining EP, S/U/P/PW/K code gaps afterward.
+
 ## Cross-plan checkpoint pointer — 2026-11-16 (EP02 run-scoped receipts; code `27f571d0` pushed)
 
 The existing durable workflow effect journal now records content-free hashes, byte counts, installation/project/actor, outcome and measured credits for Gadget-backed structured-data operations. Local workflow tests **19/19**, SDK/Agents typechecks and diff check pass. S/U row statuses do not change; resume the EP02 exact action in AGENTS, then continue open S/U implementation. All provider/runtime rollouts remain disabled.
