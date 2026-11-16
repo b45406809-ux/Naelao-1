@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { applyWebsiteKnowledgeRefresh, createKbDocument, getExternalKnowledgePublicationSources, listExternalKnowledgePublicationEvents, listExternalKnowledgePublications,
-  previewWebsiteKnowledgeSource, setWebsiteKnowledgeRefreshSchedule } from "./api";
+  getWebsiteKnowledgeCrawlCapability, previewWebsiteKnowledgeCrawl, previewWebsiteKnowledgeSource, setWebsiteKnowledgeRefreshSchedule } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -107,4 +107,27 @@ it("exposes an explicit owner opt-in for a daily or weekly website refresh sched
   const [url, init] = fetchMock.mock.calls.at(-1) ?? [];
   expect(url).toBe("http://localhost:8787/v1/spaces/space%2Fa/kb/projects/project%20b/sources/website/doc%20c/schedule");
   expect(init).toEqual(expect.objectContaining({ method: "POST", body: JSON.stringify({ enabled: true, interval_hours: 168 }) }));
+});
+
+it("loads crawl capability and resumes a scoped crawl with an idempotent owner confirmation", async () => {
+  const result = { operation_id: "crawl-a", status: "partial", continuation_available: true,
+    limits: { max_pages: 8, max_depth: 2, max_page_bytes: 524288, max_total_bytes: 2097152, max_links_per_page: 100,
+      max_redirects: 5, elapsed_ms_per_request: 20000 },
+    totals: { page_count: 1, byte_count: 42, queued_count: 1, retryable_count: 0 }, pages: [] };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
+    String(input).endsWith("/capability") ? { available: true, max_pages: 8, max_depth: 2, requires_owner_site_terms_confirmation: true } : result,
+  ), { status: 200, headers: { "content-type": "application/json" } }));
+  vi.stubGlobal("fetch", fetchMock);
+  const session = { sessionToken: "session-token", endUserId: "owner-a" };
+  await expect(getWebsiteKnowledgeCrawlCapability("space/a", "project b", session)).resolves.toMatchObject({ available: true });
+  await expect(previewWebsiteKnowledgeCrawl("space/a", "project b", session, {
+    connection_id: "connection-a", url: "https://docs.example/start", idempotency_key: "crawl-request-0001",
+    max_pages: 8, max_depth: 2, owner_confirmed_site_terms: true,
+  })).resolves.toMatchObject({ operation_id: "crawl-a", continuation_available: true });
+  expect(fetchMock).toHaveBeenLastCalledWith(
+    "http://localhost:8787/v1/spaces/space%2Fa/kb/projects/project%20b/sources/website/crawl/preview",
+    expect.objectContaining({ method: "POST", cache: "no-store", headers: expect.any(Headers),
+      body: JSON.stringify({ connection_id: "connection-a", url: "https://docs.example/start", idempotency_key: "crawl-request-0001",
+        max_pages: 8, max_depth: 2, owner_confirmed_site_terms: true }) }),
+  );
 });

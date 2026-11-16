@@ -21,6 +21,7 @@ import { exportKnowledgeArchive, previewKnowledgeArchiveRestore, restoreKnowledg
 import { createKnowledgePdfPreviewToken, KNOWLEDGE_PDF_PARSER_VERSION, sha256BytesHex, verifyKnowledgePdfPreviewToken } from "./pdf-preview.js";
 import { revisionExternalPublicationsForDocument } from "./external-publication-lifecycle.js";
 import { createWebsitePreviewToken, sha256TextHex, verifyWebsitePreviewToken } from "./website-source-preview.js";
+import { boundedWebsiteCrawlFrontier, extractWebsiteCrawlLinks, WEBSITE_CRAWL_LIMITS, type WebsiteCrawlPageRef } from "./website-crawl.js";
 import { runScheduledWebsiteRefreshes } from "./website-refresh-scheduler.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
@@ -59,6 +60,8 @@ interface KnowledgeEnv {
   KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
   /** Scheduled source refresh is implemented but remains disabled until its rollout gates pass. */
   KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED?: string;
+  /** Multi-page website crawl discovery is implemented but remains disabled pending site-terms and live gates. */
+  KNOWLEDGE_WEBSITE_CRAWL_ENABLED?: string;
   KNOWLEDGE_ANALYTICS?: AnalyticsEngineDataset;
 }
 
@@ -268,6 +271,13 @@ interface WebsiteConnectionGrant {
   origins_json: string;
   knowledge_path_prefixes_json: string;
   status: string;
+}
+
+interface WebsiteCrawlOperationRecord {
+  id: string; tenant_id: string; space_id: string; project_id: string; connection_ref: string; owner_user_id: string;
+  root_url: string; connection_policy_sha256: string; idempotency_key_hash: string; request_sha256: string;
+  max_pages: number; max_depth: number; status: "running" | "partial" | "completed" | "paused";
+  generation: number; lease_token: string | null; lease_expires_at: string | null; expires_at: string;
 }
 
 function websiteConnectionOrigins(row: WebsiteConnectionGrant): string[] | null {
@@ -1548,6 +1558,304 @@ app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/preview", asyn
     }
     return c.json({ error_code: "website_preview_unavailable", message: "The website could not be fetched safely. Retry the preview." }, 502);
   }
+});
+
+app.get("/spaces/:spaceId/kb/projects/:projectId/sources/website/crawl/capability", async (c) => {
+  const { projectId } = c.req.param();
+  const access = await requireProjectAccess(c, projectId, 40);
+  if (access instanceof Response) return access;
+  return c.json({ available: c.env.KNOWLEDGE_WEBSITE_CRAWL_ENABLED === "true",
+    max_pages: WEBSITE_CRAWL_LIMITS.pages, max_depth: WEBSITE_CRAWL_LIMITS.depth,
+    active_operations_per_tenant: WEBSITE_CRAWL_LIMITS.activeOperationsPerTenant,
+    requires_owner_site_terms_confirmation: true }, 200, { "cache-control": "private, no-store" });
+});
+
+// Bounded discovery stores URL/hash metadata only. Owners select a result and then use the
+// existing single-page preview/edit/approve caller; discovered text is never indexed here.
+app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/crawl/preview", async (c) => {
+  const tenantId = requireTenant(c);
+  const { spaceId, projectId } = c.req.param();
+  if (c.env.KNOWLEDGE_WEBSITE_CRAWL_ENABLED !== "true") return c.json({ error_code: "website_crawl_unavailable" }, 404);
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  const access = await requireProjectAccess(c, projectId, 40);
+  if (access instanceof Response) return access;
+  const body = await readBoundedJson<{ connection_id?: unknown; url?: unknown; idempotency_key?: unknown;
+    max_pages?: unknown; max_depth?: unknown; owner_confirmed_site_terms?: unknown }>(c.req.raw, 8 * 1024);
+  const maxPages = body.max_pages === undefined ? WEBSITE_CRAWL_LIMITS.pages : body.max_pages;
+  const maxDepth = body.max_depth === undefined ? WEBSITE_CRAWL_LIMITS.depth : body.max_depth;
+  if (typeof body.connection_id !== "string" || !body.connection_id || body.connection_id.length > 256
+    || typeof body.url !== "string" || !body.url.trim() || body.url.length > WEB_TARGET_URL_MAX_CHARS
+    || typeof body.idempotency_key !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(body.idempotency_key)
+    || !Number.isSafeInteger(maxPages) || Number(maxPages) < 1 || Number(maxPages) > WEBSITE_CRAWL_LIMITS.pages
+    || !Number.isSafeInteger(maxDepth) || Number(maxDepth) < 0 || Number(maxDepth) > WEBSITE_CRAWL_LIMITS.depth
+    || body.owner_confirmed_site_terms !== true) {
+    throw badRequest("Choose a bounded crawl and confirm you have permission and the site's terms allow it");
+  }
+  let root: URL;
+  try { root = new URL(body.url); }
+  catch { throw badRequest("Website crawl URL is invalid"); }
+  if (root.protocol !== "https:" || root.username || root.password || root.search || root.hash) {
+    throw badRequest("Website crawl roots must use HTTPS without credentials, query strings, or fragments");
+  }
+  const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,
+      knowledge_path_prefixes_json,status FROM website_connections
+    WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND project_id=? AND status='active'`)
+    .bind(body.connection_id, tenantId, spaceId, access.userId, projectId).first<WebsiteConnectionGrant>();
+  if (!connection) return c.json({ error_code: "website_connection_not_found" }, 404);
+  const origins = websiteConnectionOrigins(connection);
+  const pathPrefixes = websiteConnectionPathPrefixes(connection);
+  if (!origins || !pathPrefixes) return c.json({ error_code: "website_connection_policy_invalid" }, 409);
+  if (!origins.includes(root.origin) || !websitePathAllowed(root.pathname, pathPrefixes)) {
+    return c.json({ error_code: "website_origin_or_path_not_authorized" }, 403);
+  }
+  const connectionPolicySha256 = await sha256TextHex(JSON.stringify({ origins, pathPrefixes }));
+  const idempotencyKeyHash = await sha256TextHex(`${tenantId}:${spaceId}:${projectId}:${connection.id}:${access.userId}:${body.idempotency_key}`);
+  const requestSha256 = await sha256TextHex(JSON.stringify({ tenantId, spaceId, projectId, ownerUserId: access.userId,
+    connectionId: connection.id, connectionPolicySha256, rootUrl: root.href, maxPages: Number(maxPages),
+    maxDepth: Number(maxDepth), ownerConfirmedSiteTerms: true }));
+  const now = new Date();
+  const nowIso = now.toISOString();
+  await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_website_crawl_operations WHERE tenant_id=? AND expires_at<=?`)
+    .bind(tenantId, nowIso).run();
+  const loadOperation = () => c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,project_id,connection_ref,owner_user_id,
+      root_url,connection_policy_sha256,idempotency_key_hash,request_sha256,max_pages,max_depth,status,generation,
+      lease_token,lease_expires_at,expires_at FROM kb_website_crawl_operations
+    WHERE tenant_id=? AND space_id=? AND project_id=? AND connection_ref=? AND owner_user_id=? AND idempotency_key_hash=?`)
+    .bind(tenantId, spaceId, projectId, connection.id, access.userId, idempotencyKeyHash)
+    .first<WebsiteCrawlOperationRecord>();
+  let operation = await loadOperation();
+  if (operation && operation.request_sha256 !== requestSha256) return c.json({ error_code: "website_crawl_key_reused" }, 409);
+  if (!operation) {
+    const operationId = crypto.randomUUID();
+    const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60_000).toISOString();
+    try {
+      await c.env.PLATFORM_DB.batch([
+        c.env.PLATFORM_DB.prepare(`INSERT INTO kb_website_crawl_operations
+          (id,tenant_id,space_id,project_id,connection_ref,owner_user_id,root_url,connection_policy_sha256,
+           idempotency_key_hash,request_sha256,max_pages,max_depth,owner_terms_confirmed_at,status,generation,
+           expires_at,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'partial',1,?,?,?)`)
+          .bind(operationId, tenantId, spaceId, projectId, connection.id, access.userId, root.href,
+            connectionPolicySha256, idempotencyKeyHash, requestSha256, Number(maxPages), Number(maxDepth), nowIso,
+            expiresAt, nowIso, nowIso),
+        c.env.PLATFORM_DB.prepare(`INSERT INTO kb_website_crawl_pages
+          (id,operation_id,tenant_id,space_id,project_id,requested_url,depth,status,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,0,'queued',?,?)`)
+          .bind(crypto.randomUUID(), operationId, tenantId, spaceId, projectId, root.href, nowIso, nowIso),
+      ]);
+    } catch {
+      // A same-key concurrent request may have created the operation first; validate it below.
+    }
+    operation = await loadOperation();
+    if (!operation) throw internalError("Website crawl operation could not be created");
+    if (operation.request_sha256 !== requestSha256) return c.json({ error_code: "website_crawl_key_reused" }, 409);
+  }
+  const getPages = (operationId: string) => c.env.PLATFORM_DB.prepare(`SELECT requested_url,final_url,depth,status,content_sha256,byte_count,error_code
+      FROM kb_website_crawl_pages WHERE operation_id=? AND tenant_id=? AND space_id=? AND project_id=?
+      ORDER BY depth,requested_url LIMIT ?`)
+    .bind(operationId, tenantId, spaceId, projectId, WEBSITE_CRAWL_LIMITS.pages).all<{
+      requested_url: string; final_url: string | null; depth: number; status: string; content_sha256: string | null;
+      byte_count: number; error_code: string | null;
+    }>();
+  const respond = async (current: WebsiteCrawlOperationRecord) => {
+    const [pages, totals] = await Promise.all([
+      getPages(current.id),
+      c.env.PLATFORM_DB.prepare(`SELECT COUNT(*) AS page_count,COALESCE(SUM(byte_count),0) AS byte_count,
+          SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued_count,
+          SUM(CASE WHEN status='failed' AND retry_count<3 THEN 1 ELSE 0 END) AS retryable_count
+        FROM kb_website_crawl_pages WHERE operation_id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+        .bind(current.id, tenantId, spaceId, projectId)
+        .first<{ page_count: number; byte_count: number; queued_count: number; retryable_count: number }>(),
+    ]);
+    return c.json({ operation_id: current.id, status: current.status, continuation_available: current.status === "partial",
+      limits: { max_pages: current.max_pages, max_depth: current.max_depth, max_page_bytes: WEBSITE_CRAWL_LIMITS.pageBytes,
+        max_total_bytes: WEBSITE_CRAWL_LIMITS.totalBytes, max_links_per_page: WEBSITE_CRAWL_LIMITS.linksPerPage,
+        max_redirects: WEBSITE_CRAWL_LIMITS.redirects, elapsed_ms_per_request: WEBSITE_CRAWL_LIMITS.elapsedMs },
+      totals: { page_count: totals?.page_count ?? 0, byte_count: totals?.byte_count ?? 0,
+        queued_count: totals?.queued_count ?? 0, retryable_count: totals?.retryable_count ?? 0 },
+      pages: pages.results ?? [] }, 200, { "cache-control": "private, no-store" });
+  };
+  if (operation.status === "completed" || operation.status === "paused") return respond(operation);
+  const leaseToken = crypto.randomUUID();
+  const generation = operation.generation + 1;
+  const leaseExpiresAt = new Date(now.getTime() + 60_000).toISOString();
+  const claimed = await c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_operations SET status='running',generation=?,
+      lease_token=?,lease_expires_at=?,last_error_code=NULL,updated_at=?
+    WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND generation=?
+      AND status IN ('partial','running') AND (lease_token IS NULL OR lease_expires_at<=?)
+      AND (SELECT COUNT(*) FROM kb_website_crawl_operations active
+        WHERE active.tenant_id=? AND active.status='running' AND active.lease_expires_at>?) < ?`)
+    .bind(generation, leaseToken, leaseExpiresAt, nowIso, operation.id,
+      tenantId, spaceId, projectId, operation.generation, nowIso, tenantId, nowIso,
+      WEBSITE_CRAWL_LIMITS.activeOperationsPerTenant).run();
+  if (!claimed.meta.changes) return c.json({ error_code: "website_crawl_in_progress" }, 409);
+  operation = { ...operation, status: "running", generation, lease_token: leaseToken, lease_expires_at: leaseExpiresAt };
+  const operationId = operation.id;
+  await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status='queued',error_code=NULL,updated_at=?
+      WHERE operation_id=? AND status='fetching'`).bind(nowIso, operation.id),
+    c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status='queued',error_code=NULL,updated_at=?
+      WHERE operation_id=? AND status='failed' AND retry_count<3`).bind(nowIso, operation.id),
+  ]);
+
+  const policyIsCurrent = async (): Promise<boolean> => {
+    const [grant, projectAccess] = await Promise.all([
+      c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,knowledge_path_prefixes_json,status
+        FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND owner_user_id=? AND status='active'`)
+        .bind(connection.id, tenantId, spaceId, projectId, access.userId).first<WebsiteConnectionGrant>(),
+      c.env.PLATFORM_DB.prepare(`SELECT role_rank FROM project_access
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND user_id=?`)
+        .bind(tenantId, spaceId, projectId, access.userId).first<{ role_rank: number }>(),
+    ]);
+    if (!grant || (projectAccess?.role_rank ?? -1) < 40) return false;
+    const currentOrigins = websiteConnectionOrigins(grant);
+    const currentPrefixes = websiteConnectionPathPrefixes(grant);
+    return Boolean(currentOrigins && currentPrefixes && currentOrigins.includes(root.origin)
+      && await sha256TextHex(JSON.stringify({ origins: currentOrigins, pathPrefixes: currentPrefixes })) === connectionPolicySha256);
+  };
+
+  const signal = AbortSignal.timeout(WEBSITE_CRAWL_LIMITS.elapsedMs);
+  const authorizeWebsiteTarget = createWebsiteTargetAuthorizer([root.origin], pathPrefixes, signal);
+  let processed = 0;
+  while (processed < 4) {
+    if (!await policyIsCurrent()) {
+      await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_website_crawl_operations WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+        .bind(operation.id, tenantId, spaceId, projectId).run();
+      return c.json({ error_code: "website_crawl_grant_changed" }, 409);
+    }
+    const page = await c.env.PLATFORM_DB.prepare(`SELECT id,requested_url,depth FROM kb_website_crawl_pages
+      WHERE operation_id=? AND tenant_id=? AND space_id=? AND project_id=? AND status='queued'
+      ORDER BY depth,created_at,id LIMIT 1`)
+      .bind(operation.id, tenantId, spaceId, projectId).first<{ id: string; requested_url: string; depth: number }>();
+    if (!page) break;
+    const pageClaim = await c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status='fetching',
+        retry_count=MIN(retry_count+1,3),updated_at=? WHERE id=? AND operation_id=? AND status='queued'
+        AND EXISTS (SELECT 1 FROM kb_website_crawl_operations WHERE id=? AND status='running' AND lease_token=? AND generation=?)`)
+      .bind(new Date().toISOString(), page.id, operation.id, operation.id, leaseToken, generation).run();
+    if (!pageClaim.meta.changes) continue;
+    const totals = await c.env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(byte_count),0) AS byte_count
+      FROM kb_website_crawl_pages WHERE operation_id=?`).bind(operation.id).first<{ byte_count: number }>();
+    const remainingBytes = WEBSITE_CRAWL_LIMITS.totalBytes - Number(totals?.byte_count ?? 0);
+    if (remainingBytes <= 0) {
+      await c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status='blocked',error_code='website_crawl_total_bytes',updated_at=?
+        WHERE id=? AND operation_id=? AND status='fetching' AND EXISTS (SELECT 1 FROM kb_website_crawl_operations
+          WHERE id=? AND lease_token=? AND generation=?)`)
+        .bind(new Date().toISOString(), page.id, operation.id, operation.id, leaseToken, generation).run();
+      processed++;
+      continue;
+    }
+    try {
+      const guarded = await fetchSsrfGuarded(page.requested_url, { headers: { "user-agent": "naelao-knowledge/1.0",
+        accept: "text/markdown, text/plain;q=0.9, text/html;q=0.8, application/xhtml+xml;q=0.7" }, signal },
+      [root.origin], authorizeWebsiteTarget, WEBSITE_CRAWL_LIMITS.redirects);
+      if (!guarded.ok) {
+        await c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status=?,error_code=?,updated_at=?
+          WHERE id=? AND operation_id=? AND status='fetching' AND EXISTS (SELECT 1 FROM kb_website_crawl_operations
+            WHERE id=? AND lease_token=? AND generation=?)`)
+          .bind(guarded.status === 403 ? "blocked" : "failed", guarded.status === 403 ? "website_destination_rejected" : "website_upstream_unavailable",
+            new Date().toISOString(), page.id, operation.id, operation.id, leaseToken, generation).run();
+        processed++;
+        continue;
+      }
+      if (!await policyIsCurrent()) {
+        await guarded.response.body?.cancel().catch(() => undefined);
+        await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_website_crawl_operations WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+          .bind(operation.id, tenantId, spaceId, projectId).run();
+        return c.json({ error_code: "website_crawl_grant_changed" }, 409);
+      }
+      if (!guarded.response.ok) {
+        await guarded.response.body?.cancel().catch(() => undefined);
+        await c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status='failed',error_code='website_upstream_status',updated_at=?
+          WHERE id=? AND operation_id=? AND status='fetching' AND EXISTS (SELECT 1 FROM kb_website_crawl_operations
+            WHERE id=? AND lease_token=? AND generation=?)`)
+          .bind(new Date().toISOString(), page.id, operation.id, operation.id, leaseToken, generation).run();
+        processed++;
+        continue;
+      }
+      const mime = (guarded.response.headers.get("content-type") ?? "").split(";", 1)[0]!.trim().toLowerCase();
+      if (!["text/markdown", "text/plain", "text/html", "application/xhtml+xml"].includes(mime)) {
+        await guarded.response.body?.cancel().catch(() => undefined);
+        await c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status='blocked',error_code='website_content_type_unsupported',updated_at=?
+          WHERE id=? AND operation_id=? AND status='fetching' AND EXISTS (SELECT 1 FROM kb_website_crawl_operations
+            WHERE id=? AND lease_token=? AND generation=?)`)
+          .bind(new Date().toISOString(), page.id, operation.id, operation.id, leaseToken, generation).run();
+        processed++;
+        continue;
+      }
+      const pageByteLimit = Math.min(WEBSITE_CRAWL_LIMITS.pageBytes, remainingBytes);
+      const fetched = await readBoundedText(guarded.response, pageByteLimit);
+      const byteCount = new TextEncoder().encode(fetched.content).byteLength;
+      if (fetched.truncated) {
+        await c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status='blocked',byte_count=?,error_code=?,updated_at=?
+          WHERE id=? AND operation_id=? AND status='fetching' AND EXISTS (SELECT 1 FROM kb_website_crawl_operations
+            WHERE id=? AND lease_token=? AND generation=?)`)
+          .bind(byteCount, pageByteLimit < WEBSITE_CRAWL_LIMITS.pageBytes ? "website_crawl_total_bytes" : "website_crawl_page_too_large",
+            new Date().toISOString(), page.id, operation.id, operation.id, leaseToken, generation).run();
+        processed++;
+        continue;
+      }
+      const sanitized = sanitizeKbContent(fetched.content).sanitized.trim();
+      if (!sanitized) {
+        await c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status='blocked',byte_count=?,error_code='website_source_empty',updated_at=?
+          WHERE id=? AND operation_id=? AND status='fetching' AND EXISTS (SELECT 1 FROM kb_website_crawl_operations
+            WHERE id=? AND lease_token=? AND generation=?)`)
+          .bind(byteCount, new Date().toISOString(), page.id, operation.id, operation.id, leaseToken, generation).run();
+        processed++;
+        continue;
+      }
+      const existingPages = await c.env.PLATFORM_DB.prepare(`SELECT requested_url,depth FROM kb_website_crawl_pages
+        WHERE operation_id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+        .bind(operation.id, tenantId, spaceId, projectId).all<{ requested_url: string; depth: number }>();
+      const links = mime === "text/html" || mime === "application/xhtml+xml"
+        ? extractWebsiteCrawlLinks(fetched.content, { pageUrl: guarded.url.href, origin: root.origin, pathPrefixes }) : [];
+      const frontier = boundedWebsiteCrawlFrontier({ rootUrl: root.href,
+        completed: existingPages.results.map((item) => ({ url: item.requested_url, depth: item.depth })),
+        discovered: links.map((url) => ({ url, depth: page.depth + 1 })), maxPages: operation.max_pages, maxDepth: operation.max_depth });
+      if (!await policyIsCurrent()) {
+        await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_website_crawl_operations WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+          .bind(operation.id, tenantId, spaceId, projectId).run();
+        return c.json({ error_code: "website_crawl_grant_changed" }, 409);
+      }
+      const timestamp = new Date().toISOString();
+      const statements = [c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status='preview_ready',final_url=?,
+          content_sha256=?,byte_count=?,error_code=NULL,updated_at=? WHERE id=? AND operation_id=? AND status='fetching'
+          AND EXISTS (SELECT 1 FROM kb_website_crawl_operations WHERE id=? AND status='running' AND lease_token=? AND generation=?)`)
+        .bind(guarded.url.href, await sha256TextHex(sanitized), byteCount, timestamp, page.id,
+          operation.id, operation.id, leaseToken, generation),
+        ...frontier.map((child: WebsiteCrawlPageRef) => c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO kb_website_crawl_pages
+          (id,operation_id,tenant_id,space_id,project_id,requested_url,parent_page_id,depth,status,created_at,updated_at)
+          SELECT ?,?,?,?,?,?,?,?,'queued',?,? WHERE EXISTS (SELECT 1 FROM kb_website_crawl_operations
+            WHERE id=? AND status='running' AND lease_token=? AND generation=?)`)
+          .bind(crypto.randomUUID(), operationId, tenantId, spaceId, projectId, child.url, page.id, child.depth,
+            timestamp, timestamp, operationId, leaseToken, generation)),
+      ];
+      await c.env.PLATFORM_DB.batch(statements);
+      processed++;
+    } catch {
+      await c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_pages SET status='failed',error_code=?,updated_at=?
+        WHERE id=? AND operation_id=? AND status='fetching' AND EXISTS (SELECT 1 FROM kb_website_crawl_operations
+          WHERE id=? AND lease_token=? AND generation=?)`)
+        .bind(signal.aborted ? "website_crawl_timeout" : "website_crawl_unavailable", new Date().toISOString(),
+          page.id, operation.id, operation.id, leaseToken, generation).run();
+      processed++;
+      if (signal.aborted) break;
+    }
+  }
+  const [queued, retryable] = await Promise.all([
+    c.env.PLATFORM_DB.prepare(`SELECT COUNT(*) AS count FROM kb_website_crawl_pages WHERE operation_id=? AND status='queued'`)
+      .bind(operation.id).first<{ count: number }>(),
+    c.env.PLATFORM_DB.prepare(`SELECT COUNT(*) AS count FROM kb_website_crawl_pages WHERE operation_id=? AND status='failed' AND retry_count<3`)
+      .bind(operation.id).first<{ count: number }>(),
+  ]);
+  const finalStatus = Number(queued?.count ?? 0) > 0 || Number(retryable?.count ?? 0) > 0 ? "partial" : "completed";
+  const finished = await c.env.PLATFORM_DB.prepare(`UPDATE kb_website_crawl_operations SET status=?,lease_token=NULL,
+      lease_expires_at=NULL,completed_at=?,updated_at=? WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?
+        AND status='running' AND lease_token=? AND generation=?`)
+    .bind(finalStatus, finalStatus === "completed" ? new Date().toISOString() : null, new Date().toISOString(),
+      operation.id, tenantId, spaceId, projectId, leaseToken, generation).run();
+  if (!finished.meta.changes) return c.json({ error_code: "website_crawl_superseded" }, 409);
+  operation = { ...operation, status: finalStatus, lease_token: null, lease_expires_at: null };
+  return respond(operation);
 });
 
 app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
@@ -3390,12 +3698,12 @@ type GuardedFetchResult =
   | { ok: false; status: 403 | 502; message: string };
 
 async function fetchSsrfGuarded(rawUrl: string, init: RequestInit, allowedOrigins?: readonly string[],
-  authorizeTarget?: (target: URL) => Promise<WebsiteTargetAuthorization>): Promise<GuardedFetchResult> {
+  authorizeTarget?: (target: URL) => Promise<WebsiteTargetAuthorization>, maxRedirects = 5): Promise<GuardedFetchResult> {
   let target: URL;
   try { target = new URL(rawUrl); }
   catch { return { ok: false, status: 403, message: "Destination URL is invalid" }; }
   const signal = init.signal ?? AbortSignal.timeout(30_000);
-  for (let hop = 0; hop <= 5; hop++) {
+  for (let hop = 0; hop <= maxRedirects; hop++) {
     if ((target.protocol !== "http:" && target.protocol !== "https:") || target.username || target.password
       || (allowedOrigins !== undefined && (target.protocol !== "https:" || target.search || target.hash))) {
       return { ok: false, status: 403, message: "Destination must be an http(s) URL without embedded credentials" };
@@ -3413,7 +3721,7 @@ async function fetchSsrfGuarded(rawUrl: string, init: RequestInit, allowedOrigin
     if (![301, 302, 303, 307, 308].includes(response.status)) return { ok: true, response, url: target };
     const location = response.headers.get("location");
     if (!location) return { ok: false, status: 502, message: "redirect response omitted Location" };
-    if (hop === 5) return { ok: false, status: 502, message: "redirect limit exceeded" };
+    if (hop === maxRedirects) return { ok: false, status: 502, message: "redirect limit exceeded" };
     try { target = new URL(location, target); }
     catch { return { ok: false, status: 403, message: "redirect destination is invalid" }; }
     await response.body?.cancel().catch(() => undefined);
@@ -3567,6 +3875,7 @@ export default {
   scheduled(_controller: ScheduledController, env: KnowledgeEnv, ctx: ExecutionContext) {
     ctx.waitUntil(Promise.allSettled([
       reconcileKnowledgeDocumentDeletions(deletionBindings(env), 20),
+      env.PLATFORM_DB.prepare("DELETE FROM kb_website_crawl_operations WHERE expires_at<=?").bind(new Date().toISOString()).run(),
       runScheduledWebsiteRefreshes(env, async (request, scheduleEnv, executionCtx) =>
         await app.fetch(request, scheduleEnv as KnowledgeEnv, executionCtx), ctx),
     ]));

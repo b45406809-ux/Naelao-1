@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0276_knowledge_website_refresh_usage_outbox",
+  "requiredSchemaVersion": "0277_knowledge_website_crawl_preview",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1107,6 +1107,10 @@
     {
       "filename": "0276_knowledge_website_refresh_usage_outbox.sql",
       "sha256": "41474e3f619412d6f1acf02c58abb7f261852ce1081ada47c517af509498f61b"
+    },
+    {
+      "filename": "0277_knowledge_website_crawl_preview.sql",
+      "sha256": "5c4baf2c89413cc020b7f736fe0a8b2f76f7a70ef13f937c2b0ecccd8eb7c982"
     }
   ]
 }

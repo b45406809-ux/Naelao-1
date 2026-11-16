@@ -3650,6 +3650,35 @@ export interface WebsiteKnowledgePreview {
   expected_source_revision?: number;
 }
 
+export interface WebsiteKnowledgeCrawlResult {
+  operation_id: string;
+  status: "partial" | "completed" | "paused" | "running";
+  continuation_available: boolean;
+  limits: { max_pages: number; max_depth: number; max_page_bytes: number; max_total_bytes: number;
+    max_links_per_page: number; max_redirects: number; elapsed_ms_per_request: number };
+  totals: { page_count: number; byte_count: number; queued_count: number; retryable_count: number };
+  pages: Array<{ requested_url: string; final_url: string | null; depth: number; status: string;
+    content_sha256: string | null; byte_count: number; error_code: string | null }>;
+}
+
+export async function getWebsiteKnowledgeCrawlCapability(spaceId: string, projectId: string, session: SessionCredentials) {
+  return apiFetch<{ available: boolean; max_pages: number; max_depth: number; active_operations_per_tenant: number;
+    requires_owner_site_terms_confirmation: boolean }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/sources/website/crawl/capability`,
+    { session, cache: "no-store" },
+  );
+}
+
+export async function previewWebsiteKnowledgeCrawl(spaceId: string, projectId: string, session: SessionCredentials, input: {
+  connection_id: string; url: string; idempotency_key: string; max_pages: number; max_depth: number;
+  owner_confirmed_site_terms: true;
+}): Promise<WebsiteKnowledgeCrawlResult> {
+  return apiFetch<WebsiteKnowledgeCrawlResult>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/sources/website/crawl/preview`,
+    { method: "POST", body: JSON.stringify(input), session, cache: "no-store" },
+  );
+}
+
 export async function previewWebsiteKnowledgeSource(
   spaceId: string,
   projectId: string,

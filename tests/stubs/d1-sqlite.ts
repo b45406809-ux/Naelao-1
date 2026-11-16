@@ -15,7 +15,7 @@ interface FakeD1Statement {
 }
 
 export interface FakeD1 {
-  db: DatabaseSync;
+  db: InstanceType<typeof DatabaseSync>;
   prepare(sql: string): FakeD1Statement;
   batch(statements: FakeD1Statement[]): Promise<{ meta: { changes: number } }[]>;
 }

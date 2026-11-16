@@ -30,11 +30,13 @@ import {
   setWebsiteKnowledgeRefreshSchedule,
   previewKbPdf,
   previewWebsiteKnowledgeSource,
+  previewWebsiteKnowledgeCrawl,
   createThread,
   deleteKbDocument,
   getExternalKnowledgePublicationSources,
   getProject,
   getProjectUsageSummary,
+  getWebsiteKnowledgeCrawlCapability,
   listAgentDefinitions,
   listWebsiteConnections,
   listExternalKnowledgePublicationEvents,
@@ -62,6 +64,7 @@ import {
   type ProjectUsageSummary,
   type ThreadSummary,
   type WebsiteConnection,
+  type WebsiteKnowledgeCrawlResult,
   type WebsiteKnowledgePreview,
 } from "@/lib/api";
 import { knowledgeContentByteLength, PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES } from "@/lib/knowledge-upload-limits";
@@ -125,11 +128,17 @@ export default function ProjectDetailPage() {
   const [websiteSourceUrl, setWebsiteSourceUrl] = React.useState("");
   const [websitePreview, setWebsitePreview] = React.useState<WebsiteKnowledgePreview | null>(null);
   const [previewingWebsite, setPreviewingWebsite] = React.useState(false);
+  const [websiteCrawlAvailable, setWebsiteCrawlAvailable] = React.useState(false);
+  const [websiteCrawlConcurrencyLimit, setWebsiteCrawlConcurrencyLimit] = React.useState(2);
+  const [websiteCrawlTermsConfirmed, setWebsiteCrawlTermsConfirmed] = React.useState(false);
+  const [websiteCrawl, setWebsiteCrawl] = React.useState<WebsiteKnowledgeCrawlResult | null>(null);
+  const [crawlingWebsite, setCrawlingWebsite] = React.useState(false);
   const [websiteRefreshDraft, setWebsiteRefreshDraft] = React.useState<{ documentId: string; content: string; preview: WebsiteKnowledgePreview } | null>(null);
   const [refreshingWebsiteId, setRefreshingWebsiteId] = React.useState<string | null>(null);
   const [savingWebsiteScheduleId, setSavingWebsiteScheduleId] = React.useState<string | null>(null);
   const [websiteScheduleIntervals, setWebsiteScheduleIntervals] = React.useState<Record<string, 24 | 168>>({});
   const websiteRefreshRequestKeysRef = React.useRef(new Map<string, string>());
+  const websiteCrawlRequestKeyRef = React.useRef<string | null>(null);
   const createIdempotencyKeyRef = React.useRef<string | null>(null);
   const [externalPublications, setExternalPublications] = React.useState<ExternalKnowledgePublication[]>([]);
   const [publicationId, setPublicationId] = React.useState("course_material");
@@ -173,6 +182,20 @@ export default function ProjectDetailPage() {
       .finally(() => { if (current) setUsageLoading(false); });
     return () => { current = false; };
   }, [activeSpaceId, params.projectId, session, usageDays]);
+
+  React.useEffect(() => {
+    let current = true;
+    setWebsiteCrawlAvailable(false);
+    setWebsiteCrawlConcurrencyLimit(2);
+    if (!creds) return () => { current = false; };
+    void getWebsiteKnowledgeCrawlCapability(activeSpaceId, params.projectId, creds)
+      .then((capability) => { if (current) {
+        setWebsiteCrawlAvailable(capability.available);
+        setWebsiteCrawlConcurrencyLimit(capability.active_operations_per_tenant);
+      } })
+      .catch(() => { if (current) setWebsiteCrawlAvailable(false); });
+    return () => { current = false; };
+  }, [activeSpaceId, params.projectId, session]);
 
   const refresh = React.useCallback(async () => {
     if (!creds) return;
@@ -462,6 +485,26 @@ export default function ProjectDetailPage() {
       show(error instanceof Error ? error.message : "Couldn't preview this website page.");
     } finally {
       setPreviewingWebsite(false);
+    }
+  }
+
+  async function handlePreviewWebsiteCrawl() {
+    if (!creds || !websiteCrawlAvailable || !websiteCrawlTermsConfirmed || !websiteConnectionId
+      || !websiteSourceUrl.trim() || crawlingWebsite) return;
+    const idempotencyKey = websiteCrawlRequestKeyRef.current ?? crypto.randomUUID();
+    websiteCrawlRequestKeyRef.current = idempotencyKey;
+    setCrawlingWebsite(true);
+    try {
+      const result = await previewWebsiteKnowledgeCrawl(activeSpaceId, params.projectId, creds, {
+        connection_id: websiteConnectionId, url: websiteSourceUrl.trim(), idempotency_key: idempotencyKey,
+        max_pages: 8, max_depth: 2, owner_confirmed_site_terms: true,
+      });
+      setWebsiteCrawl(result);
+      if (!result.continuation_available) websiteCrawlRequestKeyRef.current = null;
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't discover approved website pages.");
+    } finally {
+      setCrawlingWebsite(false);
     }
   }
 
@@ -1127,6 +1170,9 @@ export default function ProjectDetailPage() {
                   setWebsiteConnectionId(event.target.value);
                   setWebsiteSourceUrl(connection?.start_url ?? "");
                   setWebsitePreview(null);
+                  setWebsiteCrawl(null);
+                  setWebsiteCrawlTermsConfirmed(false);
+                  websiteCrawlRequestKeyRef.current = null;
                   createIdempotencyKeyRef.current = null;
                 }}>
                   {websiteConnections.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}</option>)}
@@ -1139,6 +1185,9 @@ export default function ProjectDetailPage() {
                 onChange={(event) => {
                   setWebsiteSourceUrl(event.target.value);
                   setWebsitePreview(null);
+                  setWebsiteCrawl(null);
+                  setWebsiteCrawlTermsConfirmed(false);
+                  websiteCrawlRequestKeyRef.current = null;
                   createIdempotencyKeyRef.current = null;
                 }}
               />
@@ -1152,6 +1201,33 @@ export default function ProjectDetailPage() {
                   createIdempotencyKeyRef.current = null;
                 }}>Clear website source</button>}
               </div>
+              {websiteCrawlAvailable ? (
+                <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, display: "grid", gap: 8 }}>
+                  <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12 }}>
+                    <input type="checkbox" checked={websiteCrawlTermsConfirmed}
+                      onChange={(event) => setWebsiteCrawlTermsConfirmed(event.target.checked)} />
+                    <span>I confirm I have permission to crawl this site and its applicable terms allow this bounded discovery.</span>
+                  </label>
+                  <div className="settings-row-sub">Discovery is limited to 8 same-origin pages, depth 2, 100 links per page, 5 redirects, 512 KiB per page, 2 MiB total, 20 seconds per request and {websiteCrawlConcurrencyLimit} active operations per tenant. It never stores or indexes page text; every selected page still requires its own preview and owner review.</div>
+                  <Button size="sm" variant="ghost" type="button"
+                    disabled={!websiteCrawlTermsConfirmed || !websiteSourceUrl.trim() || crawlingWebsite}
+                    onClick={() => void handlePreviewWebsiteCrawl()}>
+                    {crawlingWebsite ? "Discovering pages…" : websiteCrawl?.continuation_available ? "Continue discovery" : "Discover related pages"}
+                  </Button>
+                </div>
+              ) : <div role="status" className="settings-row-sub">Multi-page discovery remains disabled while site-terms and live acceptance gates are open.</div>}
+              {websiteCrawl && <div role="status" style={{ borderTop: "1px solid var(--border)", paddingTop: 8, fontSize: 12 }}>
+                <strong>Discovery {websiteCrawl.status} · {websiteCrawl.totals.page_count} pages · {websiteCrawl.totals.byte_count.toLocaleString()} bytes</strong>
+                {websiteCrawl.pages.map((page) => <div key={page.requested_url} className="settings-row-sub" style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+                  <span style={{ paddingLeft: page.depth * 12 }}>{page.status} · {page.requested_url}{page.error_code ? ` · ${page.error_code}` : ""}</span>
+                  {page.status === "preview_ready" && <Button size="sm" variant="ghost" type="button" onClick={() => {
+                    setWebsiteSourceUrl(page.requested_url);
+                    setWebsitePreview(null);
+                    websiteCrawlRequestKeyRef.current = null;
+                  }}>Select page</Button>}
+                </div>)}
+                {websiteCrawl.continuation_available && <div className="settings-row-sub" style={{ marginTop: 6 }}>Continue discovery to process the remaining bounded pages.</div>}
+              </div>}
               {websitePreview && <div role="status" style={{ borderTop: "1px solid var(--border)", paddingTop: 8, fontSize: 12 }}>
                 <strong>Website snapshot preview</strong>
                 <div>Source: <a href={websitePreview.final_url} target="_blank" rel="noreferrer">{websitePreview.final_url}</a></div>
