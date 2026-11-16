@@ -1,5 +1,9 @@
 # Platform completion and guided templates progress
 
+## Cross-plan code checkpoint — 2026-11-16 (TBR02 template role authoring; `1f4945aa` pushed)
+
+Foundry Template Studio now saves/restores localized business-role proposal JSON in its authoring draft, displays it as explicitly non-granting, and submits it through owner-authorized template export. SDK canonicalization binds symbolic requests to declared Project/extension/Knowledge symbols. The Spaces route accepts only matching schema v1 and includes proposals in the signed blueprint path. Package release is `1.4.0`. Tests: SDK/Studio **8/8**, Spaces **17/17**, both typechecks and diff check pass. `1f4945aac8656320fae5f1fa10c6ae4cdae7a81f` is remote-verified. No browser/marketplace/deployment or membership/grant acceptance ran. Exact next action: TBR04 installed-resource/effective-access preview, then remaining TBR/S/U/P/PW/K/EP/AP gaps.
+
 ## Cross-plan code checkpoint — 2026-11-16 (delegated worker runtime isolation; `21de8512` pushed)
 
 `workers/...` delegation branches now get a distinct exact-branch ToolSandbox/DynamicSandbox object, avoiding reuse of another branch's warm process and private container disk. Main and ordinary feature branches remain stable; model-race branches were already isolated. Code `21de85123e85ead3aa1f7c2b107c0aa6ce890973` is remote-verified. Routing/execution-ladder tests **27/27**, Agents typecheck and diff check pass. This does not pin runtime mounts to exact Coordinator revisions or establish deployed cache/credential/network isolation. Exact next action: bind branch runtime to Coordinator base/head revision and fail closed on stale/wrong head; continue remaining PW/TBR/S/U/P/K/EP/AP gaps.

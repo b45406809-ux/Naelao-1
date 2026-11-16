@@ -1,5 +1,20 @@
 # Template-defined business roles and member onboarding progress
 
+## Latest code checkpoint — 2026-11-16 (TBR02 builder authoring; `1f4945aa` pushed)
+
+Foundry Template Studio has a proposal-only role JSON authoring/editor surface with preview, durable draft save/restore and export round-trip. Public SDK `authorBlueprintBusinessRoles` canonicalizes only against the blueprint's declared Projects, selected extension IDs and extension Knowledge references. The owner-authorized Space export route requires schema version 1, rejects mismatch/malformed proposals, adds the roles to the signed blueprint, then runs existing SDK/security/conformance checks. No identities, invitations or grants are created. Foundry package release bumped to `1.4.0`.
+
+Code `1f4945aac8656320fae5f1fa10c6ae4cdae7a81f` is remote-verified. Local evidence: Agent SDK business-role + Foundry canvas tests **8/8**, Spaces authoring/export tests **17/17**, both typechecks and diff check. No browser, marketplace release/deployment, or membership/grant write ran; rollout remains off.
+
+| ID | Status | Evidence / remaining gap |
+| --- | --- | --- |
+| TBR01 | IMPLEMENTED_LOCAL | Signed versioned non-granting role proposal contract and owner activation preview; see checkpoint below. |
+| TBR02 | IMPLEMENTED_LOCAL | Foundry Studio editor/draft/export path above; no browser/marketplace acceptance. |
+| TBR03 | PARTIAL | Strict role schema/security validation exists; installed microapp/shared-data symbol resolution, role-combination conflicts and product action catalog remain. |
+| TBR04 | PARTIAL | Proposal-only activation preview exists; exact target Space resource availability, existing permission, conflict/cost/effective action resolution remains uncoded. |
+
+Exact next action: add owner-only TBR04 resolution against exact selected package digests and current installed resource/Project permission state. Return requested versus effective actions and unavailable references as preview only; add stale release/grant/revocation tests, with no grant writes. Then continue TBR03/TBR05–TBR12, private-Project policy decision and named service identities. Keep rollout disabled and preserve `infra/scripts/__pycache__/`.
+
 ## Latest code checkpoint — 2026-11-16 (TBR01 signed role proposals; `9ccd7395` pushed)
 
 `SpaceBlueprint` now has optional additive v1 business-role proposals for localized arbitrary role names, descriptions, generic Space-role recommendations, Project/extension/microapp/Knowledge/collection/shared-data references, symbolic actions and purposes, assistant policy/instructions, onboarding steps, and non-binding spend/approval suggestions. The SDK compiler strictly validates bounds, IDs, duplicate/unknown fields, declared Project/extension/Knowledge references and canonical form while preserving legacy blueprints. Blueprint security scanning includes role text and rejects prompt injection/script payloads. The owner/admin activation preview shows validated proposals as `proposal_requires_owner_review` with `grants_applied: false`; it does not resolve effective access, install resources or apply grants.
@@ -11,7 +26,7 @@ Code `9ccd739538f4e0a8751ff9d289385adc5df4661b` is pushed and remote-verified on
 | ID | Status | Evidence and remaining work |
 | --- | --- | --- |
 | TBR01 Versioned role contract | IMPLEMENTED_LOCAL | Backward-compatible signed data contract includes arbitrary builder-defined roles, localized text, symbolic Project/extension/microapp/Knowledge/collection/shared-data/action requests, assistant/onboarding proposals and non-binding budget hints. No customer IDs or active grants are accepted. Not deployed or live-accepted. |
-| TBR02 Builder authoring SDK/UI | NOT_STARTED | No role editor, round-trip authoring surface or permission simulation exists yet. |
+| TBR02 Builder authoring SDK/UI | IMPLEMENTED_LOCAL | Foundry Template Studio role-proposal JSON editor has durable draft save/restore and v1 signed export round-trip through the shared SDK canonicalizer. Proposal preview states no grants applied. Browser/marketplace acceptance not run. |
 | TBR03 Role declaration validation | PARTIAL | Bounded strict SDK validation and security scanning are implemented. Resolution of microapp/shared-data symbols against installed manifests, full role-combination conflict policy and product-defined action catalog remain open. |
 | TBR04 Owner review and effective-access preview | PARTIAL | Owner/admin-only activation preview surfaces proposals and applies nothing. It does not resolve availability, current grants, role composition, costs or effective access against installed resources. |
 | TBR05 Invitation and identity binding | NOT_STARTED | No general Space invite/redemption route; implement authenticated, one-time, expiring, audience/Space-bound redemption and identity separation. |
@@ -25,7 +40,7 @@ Code `9ccd739538f4e0a8751ff9d289385adc5df4661b` is pushed and remote-verified on
 
 The copied plan source and original reconciliation remain below for provenance. The source came from `origin/plan/microapps-ui-sdk-voice` commit `28d7c4601a2cba50fef092040dfe351aa76a3`, supplemented by clarification `cdeb7deff22f23b65e91df0086523313550e640a`. The copied plan SHA-256 is `4cbfe5c7d3d523661ddef1a77df716a37624b350b7ef83bec86d2042ba9c7607`; no planning branch was checked out or merged.
 
-Exact next action: implement TBR02 by extending the existing template authoring/export caller with owner-controlled role create/edit/validation and an import/export round-trip that preserves the signed proposals without copying customer identities or data. Add authoring tests and keep the editor proposal-only; then implement TBR04's installed-resource permission preview before any invitation or grant lifecycle. Continue other S/U/P/PW/K/EP gaps after this reachable slice.
+TBR02 is complete locally in the checkpoint above. Exact next action: implement TBR04's owner-only installed-resource/effective-access preview before adding any invitation or grant lifecycle. Continue other S/U/P/PW/K/EP/AP gaps after this slice.
 
 ## Original plan checkpoint — 2026-11-16 (source incorporated)
 
