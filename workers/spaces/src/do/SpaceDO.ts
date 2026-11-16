@@ -3322,6 +3322,49 @@ const MIGRATIONS: Migration[] = [
     ALTER TABLE extension_project_knowledge_events
       ADD COLUMN publication_revisions_json TEXT NOT NULL DEFAULT '{}';`,
   },
+  {
+    version: 150,
+    description: "owner-reviewed extension resource grants pinned to manifest and installation generation",
+    up: `ALTER TABLE extension_instances ADD COLUMN generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1);
+      CREATE TABLE extension_resource_grants (
+        tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        instance_id TEXT NOT NULL, extension_id TEXT NOT NULL, requirement_id TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256)=64),
+        resource_sha256 TEXT NOT NULL CHECK(length(resource_sha256)=64),
+        installation_generation INTEGER NOT NULL CHECK(installation_generation >= 1),
+        operations_json TEXT NOT NULL, tables_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('approved','revoked')),
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        installed_by TEXT NOT NULL, approved_by TEXT NOT NULL, approved_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+        revoked_by TEXT, revoked_at TEXT,
+        PRIMARY KEY(instance_id,requirement_id)
+      );
+      CREATE INDEX idx_extension_resource_grants_scope
+        ON extension_resource_grants(tenant_id,space_id,project_id,instance_id,status);
+      CREATE TABLE extension_resource_grant_events (
+        event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        instance_id TEXT NOT NULL, requirement_id TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
+        resource_sha256 TEXT NOT NULL, installation_generation INTEGER NOT NULL,
+        revision INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('approved','revoked')),
+        operations_json TEXT NOT NULL, tables_json TEXT NOT NULL, actor_id TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_extension_resource_grant_events_instance
+        ON extension_resource_grant_events(tenant_id,space_id,instance_id,created_at);`,
+  },
+  {
+    version: 151,
+    description: "fence structured data grant revocation against in-flight operations",
+    up: `CREATE TABLE extension_resource_operation_leases (
+        lease_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        instance_id TEXT NOT NULL, requirement_id TEXT NOT NULL, operation_id TEXT NOT NULL, table_name TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL, resource_sha256 TEXT NOT NULL, installation_generation INTEGER NOT NULL,
+        grant_revision INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('active','released','expired')),
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL, released_at TEXT
+      );
+      CREATE INDEX idx_extension_resource_operation_leases_active
+        ON extension_resource_operation_leases(instance_id,requirement_id,status,expires_at);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -5830,6 +5873,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/space-shared-extensions" && method === "GET") return this.listSpaceSharedExtensions(url.searchParams);
       if (url.pathname === "/space-shared-extension-runtime" && method === "GET") return this.spaceSharedExtensionRuntime(url.searchParams);
       if (url.pathname === "/extension-shared-filesystem-grants" && method === "POST") return this.updateSharedFilesystemGrants(request);
+      if (url.pathname === "/extension-resource-grants" && method === "GET") return this.getExtensionResourceGrants(request, url.searchParams);
+      if (url.pathname === "/extension-resource-grants" && method === "POST") return this.approveExtensionResourceGrant(request);
+      if (url.pathname === "/extension-resource-grants/revoke" && method === "POST") return this.revokeExtensionResourceGrant(request);
+      if (url.pathname === "/extension-resource-operation" && method === "POST") return this.claimExtensionResourceOperation(request);
+      if (url.pathname === "/extension-resource-operation/release" && method === "POST") return this.releaseExtensionResourceOperation(request);
       if (url.pathname === "/extension-project-knowledge-grants" && method === "GET") return this.listExtensionProjectKnowledgeGrants(request, url.searchParams);
       if (url.pathname === "/extension-project-knowledge-grants" && method === "POST") return this.updateExtensionProjectKnowledgeGrants(request);
       if (url.pathname === "/space-shared-extension-lifecycle" && method === "PATCH") return this.updateSpaceSharedExtensionLifecycle(request);
@@ -5985,14 +6033,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const manifest = JSON.parse(manifest_json) as ExtensionManifest;
         const bundle = manifest.bundle;
         const approved_shared_filesystem = this.listApprovedSharedFilesystemGrants(instance.instance_id);
+        const resource_grants = this.listExtensionResourceGrantRows(instance.instance_id);
         const dependenciesResolved = await this.extensionDependencyClosureActive(instance.tenant_id, instance.space_id, manifest,
           instance.scope, instance.project_id ?? undefined);
-        if (!bundle) return Response.json({ instance, manifest, approved_shared_filesystem, dependenciesResolved });
+        if (!bundle) return Response.json({ instance, manifest, approved_shared_filesystem, resource_grants, dependenciesResolved });
         const release = queryOne<PublisherReleaseFields & { manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
           "SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, bundle.version);
         const expected = release ? await this.signExtensionRelease(manifest.id, bundle.version, manifest_json, release.artifact_sha256) : "";
         const releaseValid = Boolean(release && release.manifest_json === manifest_json && expected === release.host_signature && publisherReleaseFieldsValid(release));
-        return Response.json({ instance, manifest, approved_shared_filesystem, release: release ? { version: bundle.version, artifactSha256: release.artifact_sha256,
+        return Response.json({ instance, manifest, approved_shared_filesystem, resource_grants, release: release ? { version: bundle.version, artifactSha256: release.artifact_sha256,
           signatureValid: releaseValid, dependenciesResolved: releaseValid && dependenciesResolved, signer: "naelao-host",
           ...(hasPublisherReleaseFields(release) ? { publisher: { id: release.publisher_id, keyId: release.publisher_key_id, signature: release.publisher_signature,
             payloadSha256: release.publisher_payload_sha256, revoked: Boolean(release.publisher_revoked_at) } } : {}) } : null, dependenciesResolved });
@@ -17454,6 +17503,276 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ instance_id: body.instanceId, approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(body.instanceId) });
   }
 
+  private listExtensionResourceGrantRows(instanceId: string): Array<Record<string, unknown>> {
+    const rows = queryAll<{ requirement_id: string; manifest_sha256: string; resource_sha256: string; installation_generation: number;
+      operations_json: string; tables_json: string; status: string; revision: number; installed_by: string; approved_by: string;
+      approved_at: string; updated_by: string; updated_at: string; revoked_by: string | null; revoked_at: string | null }>(this.ctx.storage.sql as never,
+      `SELECT requirement_id,manifest_sha256,resource_sha256,installation_generation,operations_json,tables_json,status,revision,
+        installed_by,approved_by,approved_at,updated_by,updated_at,revoked_by,revoked_at
+       FROM extension_resource_grants WHERE instance_id=? ORDER BY requirement_id LIMIT 32`, instanceId);
+    return rows.map(row => {
+      let operations: string[] = [], tables: string[] = [];
+      try { const parsed: unknown = JSON.parse(row.operations_json); if (Array.isArray(parsed) && parsed.every(item => typeof item === "string")) operations = parsed; } catch { /* deny on malformed stored data */ }
+      try { const parsed: unknown = JSON.parse(row.tables_json); if (Array.isArray(parsed) && parsed.every(item => typeof item === "string")) tables = parsed; } catch { /* deny on malformed stored data */ }
+      return { requirement_id: row.requirement_id, manifest_sha256: row.manifest_sha256, resource_sha256: row.resource_sha256,
+        installation_generation: row.installation_generation, operations, tables, status: row.status, revision: row.revision,
+        installed_by: row.installed_by, approved_by: row.approved_by, approved_at: row.approved_at, updated_by: row.updated_by,
+        updated_at: row.updated_at, revoked_by: row.revoked_by, revoked_at: row.revoked_at };
+    });
+  }
+
+  private async extensionResourceGrantTarget(tenantId: string, spaceId: string, projectId: string, instanceId: string) {
+    const row = queryOne<{ instance_id: string; extension_id: string; tenant_id: string; space_id: string; project_id: string | null;
+      scope: string; status: string; generation: number; installed_by: string; release_version: string | null; manifest_json: string;
+      artifact_sha256: string | null; host_signature: string | null } & PublisherReleaseFields>(this.ctx.storage.sql as never,
+      `SELECT i.instance_id,i.extension_id,i.tenant_id,i.space_id,i.project_id,i.scope,i.status,i.generation,i.installed_by,
+        i.release_version,i.manifest_json,r.artifact_sha256,r.host_signature,r.publisher_id,r.publisher_key_id,r.publisher_signature,
+        r.publisher_payload_sha256,r.publisher_revoked_at
+       FROM extension_installation_manifests i LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
+       WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.status IN ('active','disabled','staging')`,
+      instanceId, tenantId, spaceId, projectId);
+    if (!row || row.scope !== "PROJECT_BOUND" || row.generation < 1 || !row.release_version || !row.artifact_sha256 || !row.host_signature
+      || !hasPublisherReleaseFields(row) || !publisherReleaseFieldsValid(row)) return null;
+    let manifest: ExtensionManifest;
+    try { manifest = validateExtensionManifest(JSON.parse(row.manifest_json)); } catch { return null; }
+    const bundle = manifest.bundle;
+    if (!bundle || manifest.id !== row.extension_id || bundle.id !== row.extension_id || bundle.version !== row.release_version
+      || await this.signExtensionRelease(bundle.id, bundle.version, row.manifest_json, row.artifact_sha256)
+        !== row.host_signature) return null;
+    return { row, manifest, manifestSha256: await digestExtensionManifest(manifest) };
+  }
+
+  private async getExtensionResourceGrants(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    const projectId = params.get("project_id") ?? "", instanceId = params.get("instance_id") ?? "";
+    if (!tenantId || request.headers.get("x-naelao-tenant-id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
+    if (!target) return Response.json({ error_code: "extension_resource_installation_untrusted" }, { status: 404 });
+    const requirements = (target.manifest.resourceRequirements ?? []).filter(item => item.kind === "structured_data").map(item => ({
+      requirement_id: item.id, kind: item.kind, scope: item.scope, gadget_id: item.binding?.gadgetId ?? null,
+      requested_tables: [...(item.binding?.tables ?? [])], requested_operations: item.operations.map(operation => ({
+        id: operation.id, input: operation.input, output: operation.output, idempotency: operation.idempotency, metering_unit: operation.meteringUnit,
+      })),
+    }));
+    return Response.json({ installation: { instance_id: target.row.instance_id, extension_id: target.row.extension_id,
+      tenant_id: target.row.tenant_id, space_id: target.row.space_id, project_id: target.row.project_id, scope: target.row.scope,
+      status: target.row.status, generation: target.row.generation, installed_by: target.row.installed_by,
+      manifest_sha256: target.manifestSha256, release_version: target.row.release_version }, requirements,
+      grants: this.listExtensionResourceGrantRows(instanceId) }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async mutateExtensionResourceGrant(request: Request, action: "approved" | "revoked"): Promise<Response> {
+    let body: { tenantId?: unknown; spaceId?: unknown; projectId?: unknown; instanceId?: unknown; requirementId?: unknown;
+      actorId?: unknown; expectedRevision?: unknown; operations?: unknown; tables?: unknown };
+    try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(await readBoundedRequestBytes(request, 32 * 1024))) as typeof body; }
+    catch { return Response.json({ error_code: "extension_resource_grant_request_invalid" }, { status: 400 }); }
+    const tenantId = typeof body.tenantId === "string" ? body.tenantId : "", spaceId = typeof body.spaceId === "string" ? body.spaceId : "";
+    const projectId = typeof body.projectId === "string" ? body.projectId : "", instanceId = typeof body.instanceId === "string" ? body.instanceId : "";
+    const requirementId = typeof body.requirementId === "string" ? body.requirementId : "", actorId = typeof body.actorId === "string" ? body.actorId : "";
+    if (!tenantId || request.headers.get("x-naelao-tenant-id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || !/^[a-z][a-z0-9._-]{1,63}$/.test(requirementId) || !/^[A-Za-z0-9._:-]{1,192}$/.test(actorId)
+      || typeof body.expectedRevision !== "number" || !Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0 || body.expectedRevision >= Number.MAX_SAFE_INTEGER
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
+    if (!target) return Response.json({ error_code: "extension_resource_installation_untrusted" }, { status: 404 });
+    const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "structured_data");
+    if (!requirement || requirement.scope !== "project" || !requirement.binding)
+      return Response.json({ error_code: "extension_resource_requirement_not_found" }, { status: 404 });
+    let operations: string[], tables: string[];
+    if (action === "approved") {
+      if (target.row.status === "active") return Response.json({ error_code: "extension_resource_review_requires_staged_install" }, { status: 409 });
+      if (!Array.isArray(body.operations) || !body.operations.length || body.operations.length > requirement.operations.length
+        || body.operations.some(item => typeof item !== "string" || !requirement.operations.some(operation => operation.id === item))
+        || new Set(body.operations).size !== body.operations.length
+        || !Array.isArray(body.tables) || !body.tables.length || body.tables.length > requirement.binding.tables.length
+        || body.tables.some(item => typeof item !== "string" || !requirement.binding!.tables.includes(item))
+        || new Set(body.tables).size !== body.tables.length)
+        return Response.json({ error_code: "extension_resource_grant_selection_invalid" }, { status: 400 });
+      operations = [...body.operations as string[]].sort();
+      tables = [...body.tables as string[]].sort();
+    } else {
+      const current = queryOne<{ operations_json: string; tables_json: string }>(this.ctx.storage.sql as never,
+        `SELECT operations_json,tables_json FROM extension_resource_grants WHERE instance_id=? AND requirement_id=?`, instanceId, requirementId);
+      try {
+        const parsedOperations: unknown = current ? JSON.parse(current.operations_json) : null;
+        const parsedTables: unknown = current ? JSON.parse(current.tables_json) : null;
+        if (!current || !Array.isArray(parsedOperations) || !parsedOperations.every(value => typeof value === "string")
+          || !Array.isArray(parsedTables) || !parsedTables.every(value => typeof value === "string"))
+          return Response.json({ error_code: "extension_resource_grant_not_found" }, { status: 404 });
+        operations = parsedOperations;
+        tables = parsedTables;
+      } catch { return Response.json({ error_code: "extension_resource_grant_state_invalid" }, { status: 409 }); }
+    }
+    const resourceSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(requirement))))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const now = new Date().toISOString(), expectedRevision = Number(body.expectedRevision);
+    const outcome: { value: "updated" | "replayed" | "revision_conflict" | "grant_not_found" | "operation_in_flight" } = { value: "revision_conflict" };
+    let revision = expectedRevision + 1;
+    this.ctx.storage.transactionSync(() => {
+      const current = queryOne<{ manifest_sha256: string; resource_sha256: string; installation_generation: number; operations_json: string;
+        tables_json: string; status: string; revision: number; updated_by: string }>(this.ctx.storage.sql as never,
+        `SELECT manifest_sha256,resource_sha256,installation_generation,operations_json,tables_json,status,revision,updated_by
+         FROM extension_resource_grants WHERE instance_id=? AND requirement_id=?`, instanceId, requirementId);
+      if (action === "revoked" && !current) { outcome.value = "grant_not_found"; return; }
+      if (action === "revoked" && current?.status === "approved" && queryOne(this.ctx.storage.sql as never,
+        `SELECT lease_id FROM extension_resource_operation_leases WHERE tenant_id=? AND space_id=? AND project_id=?
+         AND instance_id=? AND requirement_id=? AND grant_revision=? AND status='active' AND expires_at>? LIMIT 1`,
+        tenantId, spaceId, projectId, instanceId, requirementId, current.revision, now)) {
+        outcome.value = "operation_in_flight"; return;
+      }
+      if (current && current.revision !== expectedRevision) {
+        if (current.revision === expectedRevision + 1 && current.updated_by === actorId && current.status === action
+          && (action === "revoked" || current.manifest_sha256 === target.manifestSha256 && current.resource_sha256 === resourceSha256
+            && current.installation_generation === target.row.generation) && current.operations_json === JSON.stringify(operations)
+          && current.tables_json === JSON.stringify(tables)) outcome.value = "replayed";
+        return;
+      }
+      if (!current && expectedRevision !== 0) return;
+      revision = (current?.revision ?? 0) + 1;
+      if (action === "approved") execute(this.ctx.storage.sql as never, `INSERT INTO extension_resource_grants
+        (tenant_id,space_id,project_id,instance_id,extension_id,requirement_id,manifest_sha256,resource_sha256,installation_generation,
+         operations_json,tables_json,status,revision,installed_by,approved_by,approved_at,updated_by,updated_at,revoked_by,revoked_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,'approved',?,?,?,?,?,?,NULL,NULL)
+        ON CONFLICT(instance_id,requirement_id) DO UPDATE SET manifest_sha256=excluded.manifest_sha256,resource_sha256=excluded.resource_sha256,
+          installation_generation=excluded.installation_generation,operations_json=excluded.operations_json,tables_json=excluded.tables_json,
+          status='approved',revision=excluded.revision,installed_by=excluded.installed_by,approved_by=excluded.approved_by,
+          approved_at=excluded.approved_at,updated_by=excluded.updated_by,updated_at=excluded.updated_at,revoked_by=NULL,revoked_at=NULL`,
+        tenantId, spaceId, projectId, instanceId, target.row.extension_id, requirementId, target.manifestSha256, resourceSha256,
+        target.row.generation, JSON.stringify(operations), JSON.stringify(tables), revision, target.row.installed_by, actorId, now, actorId, now);
+      else execute(this.ctx.storage.sql as never, `UPDATE extension_resource_grants SET status='revoked',revision=?,updated_by=?,updated_at=?,revoked_by=?,revoked_at=?
+        WHERE instance_id=? AND requirement_id=? AND revision=? AND status='approved'`, revision, actorId, now, actorId, now,
+        instanceId, requirementId, expectedRevision);
+      if (action === "revoked" && !queryOne(this.ctx.storage.sql as never,
+        `SELECT requirement_id FROM extension_resource_grants WHERE instance_id=? AND requirement_id=? AND revision=? AND status='revoked'`, instanceId, requirementId, revision)) {
+        outcome.value = "revision_conflict"; return;
+      }
+      execute(this.ctx.storage.sql as never, `INSERT INTO extension_resource_grant_events
+        (event_id,tenant_id,space_id,project_id,instance_id,requirement_id,manifest_sha256,resource_sha256,installation_generation,
+         revision,action,operations_json,tables_json,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        crypto.randomUUID(), tenantId, spaceId, projectId, instanceId, requirementId, target.manifestSha256, resourceSha256,
+        target.row.generation, revision, action, JSON.stringify(operations), JSON.stringify(tables), actorId, now);
+      execute(this.ctx.storage.sql as never, `DELETE FROM extension_resource_grant_events WHERE rowid IN (
+        SELECT rowid FROM extension_resource_grant_events WHERE tenant_id=? AND space_id=? AND instance_id=?
+        ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET 100)`, tenantId, spaceId, instanceId);
+      outcome.value = "updated";
+    });
+    if (outcome.value === "grant_not_found") return Response.json({ error_code: "extension_resource_grant_not_found" }, { status: 404 });
+    if (outcome.value === "operation_in_flight") return Response.json({ error_code: "extension_resource_grant_operation_in_flight" }, { status: 409,
+      headers: { "retry-after": "2" } });
+    if (outcome.value === "revision_conflict") return Response.json({ error_code: "extension_resource_grant_revision_conflict" }, { status: 409 });
+    return Response.json({ instance_id: instanceId, requirement_id: requirementId, status: action, revision,
+      operations, tables, manifest_sha256: target.manifestSha256, resource_sha256: resourceSha256,
+      installation_generation: target.row.generation, updated_by: actorId, updated_at: now, replayed: outcome.value === "replayed" },
+    { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async claimExtensionResourceOperation(request: Request): Promise<Response> {
+    let body: Record<string, unknown>;
+    try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(await readBoundedRequestBytes(request, 16 * 1024))) as Record<string, unknown>; }
+    catch { return Response.json({ error_code: "extension_resource_operation_request_invalid" }, { status: 400 }); }
+    const tenantId = typeof body.tenantId === "string" ? body.tenantId : "", spaceId = typeof body.spaceId === "string" ? body.spaceId : "";
+    const projectId = typeof body.projectId === "string" ? body.projectId : "", instanceId = typeof body.instanceId === "string" ? body.instanceId : "";
+    const requirementId = typeof body.requirementId === "string" ? body.requirementId : "", operationId = typeof body.operationId === "string" ? body.operationId : "";
+    const table = typeof body.table === "string" ? body.table : "", gadgetId = typeof body.gadgetId === "string" ? body.gadgetId : "";
+    const manifestSha256 = typeof body.manifestSha256 === "string" ? body.manifestSha256 : "";
+    const resourceSha256 = typeof body.resourceSha256 === "string" ? body.resourceSha256 : "";
+    const generation = body.installationGeneration, revision = body.grantRevision;
+    if (!tenantId || request.headers.get("x-naelao-tenant-id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || !/^[a-z][a-z0-9._-]{1,63}$/.test(requirementId) || !["list", "get", "insert", "update", "delete"].includes(operationId)
+      || !/^[a-z][a-z0-9_-]{0,62}$/.test(table) || !/^[a-z][a-z0-9_-]{1,63}$/.test(gadgetId)
+      || !/^[a-f0-9]{64}$/.test(manifestSha256) || !/^[a-f0-9]{64}$/.test(resourceSha256)
+      || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1
+      || typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
+    if (!target || target.row.status !== "active" || target.row.generation !== generation || target.manifestSha256 !== manifestSha256)
+      return Response.json({ error_code: "extension_resource_installation_changed" }, { status: 409 });
+    const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "structured_data");
+    if (!requirement || requirement.scope !== "project" || requirement.binding?.gadgetId !== gadgetId
+      || !requirement.binding.tables.includes(table) || !requirement.operations.some(item => item.id === operationId))
+      return Response.json({ error_code: "extension_resource_operation_not_declared" }, { status: 403 });
+    const currentGrant = queryOne<{ manifest_sha256: string; resource_sha256: string; installation_generation: number;
+      operations_json: string; tables_json: string; status: string; revision: number }>(this.ctx.storage.sql as never,
+      `SELECT manifest_sha256,resource_sha256,installation_generation,operations_json,tables_json,status,revision
+       FROM extension_resource_grants WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND requirement_id=?`,
+      tenantId, spaceId, projectId, instanceId, requirementId);
+    const resourceDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(requirement))))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    let approvedOperations: unknown, approvedTables: unknown;
+    try { approvedOperations = currentGrant ? JSON.parse(currentGrant.operations_json) : null; approvedTables = currentGrant ? JSON.parse(currentGrant.tables_json) : null; }
+    catch { return Response.json({ error_code: "extension_resource_grant_state_invalid" }, { status: 409 }); }
+    if (!currentGrant || currentGrant.status !== "approved" || currentGrant.revision !== revision
+      || currentGrant.manifest_sha256 !== manifestSha256 || currentGrant.resource_sha256 !== resourceSha256 || resourceDigest !== resourceSha256
+      || currentGrant.installation_generation !== generation || !Array.isArray(approvedOperations) || !approvedOperations.includes(operationId)
+      || !Array.isArray(approvedTables) || !approvedTables.includes(table))
+      return Response.json({ error_code: "extension_resource_grant_revoked_or_stale" }, { status: 403 });
+    const leaseId = crypto.randomUUID(), now = new Date().toISOString(), expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const outcome: { value: "claimed" | "rate_limit" | "concurrency_limit" | "stale" } = { value: "stale" };
+    this.ctx.storage.transactionSync(() => {
+      execute(this.ctx.storage.sql as never, `UPDATE extension_resource_operation_leases SET status='expired'
+        WHERE tenant_id=? AND space_id=? AND instance_id=? AND status='active' AND expires_at<=?`, tenantId, spaceId, instanceId, now);
+      execute(this.ctx.storage.sql as never, `DELETE FROM extension_resource_operation_leases WHERE rowid IN (
+        SELECT rowid FROM extension_resource_operation_leases WHERE tenant_id=? AND space_id=? AND instance_id=? AND status!='active'
+        ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET 1000)`, tenantId, spaceId, instanceId);
+      const current = queryOne<{ revision: number; status: string }>(this.ctx.storage.sql as never,
+        `SELECT revision,status FROM extension_resource_grants WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND requirement_id=?`,
+        tenantId, spaceId, projectId, instanceId, requirementId);
+      if (!current || current.status !== "approved" || current.revision !== revision) return;
+      const windowStart = new Date(Date.now() - 60_000).toISOString();
+      const recent = queryOne<{ count: number }>(this.ctx.storage.sql as never,
+        `SELECT COUNT(*) AS count FROM extension_resource_operation_leases WHERE tenant_id=? AND space_id=? AND instance_id=?
+         AND requirement_id=? AND created_at>=?`, tenantId, spaceId, instanceId, requirementId, windowStart)?.count ?? 0;
+      if (recent >= requirement.limits.requestsPerMinute) { outcome.value = "rate_limit"; return; }
+      const active = queryOne<{ count: number }>(this.ctx.storage.sql as never,
+        `SELECT COUNT(*) AS count FROM extension_resource_operation_leases WHERE instance_id=? AND requirement_id=?
+         AND grant_revision=? AND status='active' AND expires_at>?`, instanceId, requirementId, revision, now)?.count ?? 0;
+      if (active >= requirement.limits.maxConcurrent) { outcome.value = "concurrency_limit"; return; }
+      execute(this.ctx.storage.sql as never, `INSERT INTO extension_resource_operation_leases
+        (lease_id,tenant_id,space_id,project_id,instance_id,requirement_id,operation_id,table_name,manifest_sha256,resource_sha256,
+         installation_generation,grant_revision,status,created_at,expires_at,released_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'active',?,?,NULL)`, leaseId, tenantId, spaceId, projectId, instanceId, requirementId,
+        operationId, table, manifestSha256, resourceSha256, generation, revision, now, expiresAt);
+      outcome.value = "claimed";
+    });
+    if (outcome.value === "rate_limit") return Response.json({ error_code: "extension_resource_rate_limit" }, { status: 429, headers: { "retry-after": "2" } });
+    if (outcome.value === "concurrency_limit") return Response.json({ error_code: "extension_resource_concurrency_limit" }, { status: 429, headers: { "retry-after": "2" } });
+    if (outcome.value !== "claimed") return Response.json({ error_code: "extension_resource_grant_revoked_or_stale" }, { status: 403 });
+    return Response.json({ lease_id: leaseId, expires_at: expiresAt }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async releaseExtensionResourceOperation(request: Request): Promise<Response> {
+    let body: { tenantId?: unknown; spaceId?: unknown; projectId?: unknown; instanceId?: unknown; leaseId?: unknown };
+    try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(await readBoundedRequestBytes(request, 8 * 1024))) as typeof body; }
+    catch { return Response.json({ error_code: "extension_resource_operation_request_invalid" }, { status: 400 }); }
+    const tenantId = typeof body.tenantId === "string" ? body.tenantId : "", spaceId = typeof body.spaceId === "string" ? body.spaceId : "";
+    const projectId = typeof body.projectId === "string" ? body.projectId : "", instanceId = typeof body.instanceId === "string" ? body.instanceId : "";
+    const leaseId = typeof body.leaseId === "string" ? body.leaseId : "";
+    if (!tenantId || request.headers.get("x-naelao-tenant-id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || !/^[a-f0-9-]{36}$/.test(leaseId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const now = new Date().toISOString();
+    const changed = this.ctx.storage.sql.exec(`UPDATE extension_resource_operation_leases SET status='released',released_at=?
+      WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND status='active'`,
+      now, leaseId, tenantId, spaceId, projectId, instanceId);
+    const status = queryOne<{ status: string }>(this.ctx.storage.sql as never,
+      `SELECT status FROM extension_resource_operation_leases WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+      leaseId, tenantId, spaceId, projectId, instanceId)?.status;
+    return Response.json({ released: changed.rowsWritten === 1 || status === "released", status: status ?? "not_found" },
+      { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async approveExtensionResourceGrant(request: Request): Promise<Response> { return this.mutateExtensionResourceGrant(request, "approved"); }
+  private async revokeExtensionResourceGrant(request: Request): Promise<Response> { return this.mutateExtensionResourceGrant(request, "revoked"); }
+
   private async listExtensionProjectKnowledgeGrants(request: Request, params: URLSearchParams): Promise<Response> {
     const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id") ?? "", instanceId = params.get("instance_id");
@@ -17636,11 +17955,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
-    // Resource requests are declarations, never grants. Fail closed until the host has an
-    // installed broker for the requested operations; callers cannot self-advertise support.
+    // Resource requests remain inactive until an owner reviews an exact signed Project package.
+    // This staging exception only makes the request reviewable; it never activates a resource.
     const unsupportedResources = findUnsupportedExtensionResources(manifest.resourceRequirements ?? []);
-    if (unsupportedResources.length) return Response.json({ error_code: "extension_resource_capability_unavailable",
+    const hasResourceRequirements = (manifest.resourceRequirements?.length ?? 0) > 0;
+    const reviewableStructuredResources = hasResourceRequirements && manifest.resourceRequirements!.every(item => item.kind === "structured_data")
+      && manifest.bundle !== undefined && body.scope === "PROJECT_BOUND" && body.projectId !== undefined && body.deferActivation === true
+      && typeof body.publisherKeyId === "string" && typeof body.publisherSignature === "string" && typeof body.publisherPayloadSha256 === "string";
+    if (unsupportedResources.length && !reviewableStructuredResources) return Response.json({ error_code: "extension_resource_capability_unavailable",
       unsupported: unsupportedResources }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    if (hasResourceRequirements && !reviewableStructuredResources) return Response.json({ error_code: "extension_resource_owner_review_stage_required" },
+      { status: 409, headers: { "cache-control": "private, no-store" } });
     if (manifest.dependencies?.length) {
       if (!body.tenantId || !body.spaceId || !body.scope || !["SPACE_SHARED", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED"].includes(body.scope)
         || ["PROJECT_BOUND", "PROJECT_SHARED"].includes(body.scope) && !body.projectId
@@ -17797,6 +18122,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
              VALUES(?,?,?,?,?,?,?,?,?,?,?, ?,NULL,?)
              ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,
                status=CASE WHEN extension_instances.status IN ('disabled','staging') AND ?=0 THEN extension_instances.status ELSE excluded.status END,
+               generation=CASE WHEN extension_instances.status IN ('removed','expired') OR extension_instances.release_version IS NOT excluded.release_version
+                 THEN extension_instances.generation+1 ELSE extension_instances.generation END,
                removed_at=NULL,release_version=excluded.release_version`,
             instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, instanceKey, ownerKey, body.installedBy,
             body.deferActivation ? "staging" : "active", now, manifest.bundle?.version ?? null, body.upgrade ? 1 : 0);
@@ -17846,8 +18173,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || request.headers.get("x-naelao-tenant-id") !== body.tenantId
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
-    const row = queryOne<{ status: string; extension_id: string; tenant_id: string; space_id: string; scope: string; project_id: string | null; user_id: string | null; manifest_json: string; artifact_sha256: string } & PublisherReleaseFields>(this.ctx.storage.sql as never,
-      `SELECT i.status,i.extension_id,i.tenant_id,i.space_id,i.scope,i.project_id,i.user_id,i.manifest_json,r.artifact_sha256,r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
+    const row = queryOne<{ status: string; generation: number; extension_id: string; tenant_id: string; space_id: string; scope: string; project_id: string | null; user_id: string | null; manifest_json: string; artifact_sha256: string } & PublisherReleaseFields>(this.ctx.storage.sql as never,
+      `SELECT i.status,i.generation,i.extension_id,i.tenant_id,i.space_id,i.scope,i.project_id,i.user_id,i.manifest_json,r.artifact_sha256,r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
        FROM extension_installation_manifests i JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
        WHERE i.instance_id=?`, body.installationId);
     if (!row || row.extension_id !== body.extensionId || row.tenant_id !== body.tenantId || row.space_id !== body.spaceId
@@ -17863,6 +18190,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "staged_extension_attestation_invalid" }, { status: 409 });
     if (!await this.extensionDependencyClosureActive(body.tenantId, body.spaceId, manifest, body.scope, body.projectId))
       return Response.json({ error_code: "staged_extension_dependency_unresolved" }, { status: 409 });
+    if (manifest.resourceRequirements?.length) {
+      const manifestSha256 = await digestExtensionManifest(manifest);
+      const grants = this.listExtensionResourceGrantRows(body.installationId) as Array<{ requirement_id?: unknown; manifest_sha256?: unknown;
+        resource_sha256?: unknown; installation_generation?: unknown; operations?: unknown; tables?: unknown; status?: unknown }>;
+      for (const requirement of manifest.resourceRequirements) {
+        const resourceSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(requirement))))]
+          .map(byte => byte.toString(16).padStart(2, "0")).join("");
+        const declaredOperations = new Set(requirement.operations.map(operation => operation.id));
+        const declaredTables = new Set(requirement.kind === "structured_data" ? requirement.binding?.tables ?? [] : []);
+        const grant = grants.find(item => item.requirement_id === requirement.id && item.status === "approved"
+          && item.manifest_sha256 === manifestSha256 && item.resource_sha256 === resourceSha256
+          && item.installation_generation === row.generation
+          && requirement.kind === "structured_data" && requirement.binding !== undefined
+          && Array.isArray(item.operations) && item.operations.length > 0
+          && item.operations.every(operation => typeof operation === "string" && declaredOperations.has(operation))
+          && new Set(item.operations).size === item.operations.length
+          && Array.isArray(item.tables) && item.tables.length > 0
+          && item.tables.every(table => typeof table === "string" && declaredTables.has(table))
+          && new Set(item.tables).size === item.tables.length);
+        if (!grant) return Response.json({ error_code: "extension_resource_owner_approval_required", requirement_id: requirement.id }, { status: 409 });
+      }
+      const unsupported = findUnsupportedExtensionResources(manifest.resourceRequirements);
+      if (unsupported.length) return Response.json({ error_code: "extension_resource_capability_unavailable", unsupported }, { status: 409 });
+    }
     if (row.status === "active") return Response.json({ activated: true, installationId: body.installationId, status: "active" });
     if (row.status !== "staging") return Response.json({ error_code: "staged_extension_not_activatable" }, { status: 409 });
     const changed = this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='active'

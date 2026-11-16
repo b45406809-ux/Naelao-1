@@ -5390,6 +5390,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const gadgets = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "gadget" }> => item.kind === "gadget");
   const channels = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "channel" }> => item.kind === "channel");
   const workflows = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "workflow" }> => item.kind === "workflow");
+  const requiresResourceApproval = (manifest.resourceRequirements?.length ?? 0) > 0;
   const widgetPaths = new Set((manifest.widgetSubscriptions ?? []).map(item => item.component));
   // v1 runs one isolated execute(step, ctx) entrypoint; it can compose sequential
   // actions with step.do and ctx.tools.call. Additional roles become separate workflow parts.
@@ -5497,14 +5498,15 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   }
   const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sourceEntries))))].map(x => x.toString(16).padStart(2, "0")).join("");
   const requiresRuntimeActivation = canvases.length > 0 || gadgets.length > 0;
+  const mustRemainStaged = requiresRuntimeActivation || requiresResourceApproval;
   const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: [...requiredCapabilities], artifactSha256: digest, instanceKey,
       publisherId: trustedPublisher.publisher_id, publisherKeyId, publisherSignature, publisherPayloadSha256,
-      ...(requiresRuntimeActivation ? { deferActivation: true } : {}), ...(body.upgrade ? { upgrade: true } : {}) }) }));
+      ...(mustRemainStaged ? { deferActivation: true } : {}), ...(body.upgrade ? { upgrade: true } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
   const installedResult = await readBoundedResponseJson<{ installationId?: string; release?: { version?: string; artifactSha256?: string; hostSignature?: string; publisher?: { keyId?: string } } }>(installed.clone(), 64 * 1024);
   const abortStagedInstall = async () => {
-    if (!requiresRuntimeActivation || typeof installedResult.installationId !== "string") return;
+    if (!mustRemainStaged || typeof installedResult.installationId !== "string") return;
     await stub.fetch(new Request("http://space-do/extension-installation/abort", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
         "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
@@ -5515,7 +5517,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     await abortStagedInstall();
     return c.json({ error_code: errorCode, installation: installedResult, message: message.slice(0, 300) }, status);
   };
-  if (requiresRuntimeActivation && (installedResult.release?.version !== bundle.version || installedResult.release.artifactSha256 !== digest
+  if (mustRemainStaged && (installedResult.release?.version !== bundle.version || installedResult.release.artifactSha256 !== digest
     || !/^[a-f0-9]{64}$/.test(installedResult.release.hostSignature ?? ""))) return stagedFailure("extension_runtime_release_attestation_unavailable", 503, "Host release attestation was unavailable.");
   const runtimeAppId = (primitiveId: string) => {
     const appId = instanceKey === "default" ? primitiveId : `${instanceKey}_${primitiveId}`;
@@ -5550,7 +5552,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
         extensionInstallationId: installedResult.installationId, sourceGadgetId: gadget.id, businessActions: gadget.businessActions ?? [], html, releaseProof }) }));
     if (!init.ok) return stagedFailure("extension_gadget_initialize_failed", 500, await readBoundedResponseText(init, 8 * 1024).catch(() => ""));
   }
-  if (requiresRuntimeActivation) {
+  if (requiresRuntimeActivation && !requiresResourceApproval) {
     const publisherKeyId = installedResult.release?.publisher?.keyId;
     if (publisherKeyId) {
       const activePublisher = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
@@ -5566,11 +5568,13 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     }));
     if (!activation.ok) return stagedFailure("extension_runtime_activation_failed", 503, await readBoundedResponseText(activation, 8 * 1024).catch(() => ""));
   }
-  if (canvases[0]) {
+  if (canvases[0] && !requiresResourceApproval) {
     const update = await stub.fetch(new Request(`http://space-do/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(identity.tenantId)}`, { method: "PATCH", headers: { "content-type": "application/json" },
       body: JSON.stringify({ viewport_config: { component: "CanvasMount", resourceId: runtimeAppId(canvases[0].id) } }) }));
     if (!update.ok) return c.json({ installed: true, ...installedResult, canvas_mount_warning: "The extension is installed and active, but this Canvas could not be selected as the project default. Select it from the project Canvas menu." }, 201);
   }
+  if (requiresResourceApproval) return c.json({ ...installedResult, installed: true, status: "staging", resource_approval_required: true }, installed.status as 200 | 201,
+    { "cache-control": "private, no-store" });
   return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
 });
 
@@ -5727,6 +5731,36 @@ app.patch("/spaces/:spaceId/projects/:projectId/extension-installations/:instanc
     headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
     body: JSON.stringify({ tenantId, spaceId, projectId, instanceId, action: body.action, drainTimeoutMs: body.drain_timeout_ms ?? 0 }) }));
 });
+
+const projectExtensionResourceGrantsPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/resource-grants";
+app.use(projectExtensionResourceGrantsPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+async function forwardProjectExtensionResourceGrants(c: any) {
+  const identity = getCallerIdentity(c), { spaceId, projectId, instanceId } = c.req.param();
+  if (!identity.tenantId || !identity.userId || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
+    || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_resource_grant_scope_required" }, 400);
+  const denied = await requireProjectOwnerForExtensionDelegation(c, spaceId, projectId);
+  if (denied) return denied;
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const query = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId, instance_id: instanceId });
+  if (c.req.method === "GET") return stub.fetch(new Request(`http://space-do/extension-resource-grants?${query}`, {
+    headers: { "x-naelao-tenant-id": identity.tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+  }));
+  let body: { requirement_id?: unknown; expected_revision?: unknown; operations?: unknown; tables?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 32 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "extension_resource_grant_request_invalid" }, 400); }
+  const targetPath = c.req.method === "DELETE" ? "/extension-resource-grants/revoke" : "/extension-resource-grants";
+  if (c.req.method !== "DELETE" && c.req.method !== "PUT") return c.json({ error_code: "method_not_allowed" }, 405);
+  return stub.fetch(new Request(`http://space-do${targetPath}`, { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+    body: JSON.stringify({ tenantId: identity.tenantId, spaceId, projectId, instanceId, actorId: identity.userId,
+      requirementId: body.requirement_id, expectedRevision: body.expected_revision,
+      ...(c.req.method === "PUT" ? { operations: body.operations, tables: body.tables } : {}) }),
+  }));
+}
+app.get(projectExtensionResourceGrantsPath, forwardProjectExtensionResourceGrants);
+app.put(projectExtensionResourceGrantsPath, forwardProjectExtensionResourceGrants);
+app.delete(projectExtensionResourceGrantsPath, forwardProjectExtensionResourceGrants);
 
 const projectExtensionSettingsPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/settings";
 app.use(projectExtensionSettingsPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));

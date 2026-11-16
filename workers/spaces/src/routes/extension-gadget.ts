@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import type { Env } from "../index.js";
 import { getDOName } from "@naelao/crypto";
-import { verifyInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError, verifyInternalToken } from "@naelao/http";
 import { gadgetActorId } from "../do/MicroAppDO.js";
 import { extensionRuntimeWork, releaseRuntimeWorkAfterResponse } from "./gadget-mcp.js";
 
@@ -13,7 +13,10 @@ export function registerExtensionGadgetRoutes(app: Hono<{ Bindings: Env }>): voi
     const { spaceId, installationId, primitiveId, operation } = c.req.param();
     if (!/^[A-Za-z0-9._:-]{1,160}$/.test(installationId) || !/^[a-z][a-z0-9_-]{1,63}$/.test(primitiveId)
       || !["list", "get", "insert", "update", "delete"].includes(operation)) return c.json({ error_code: "extension_gadget_request_invalid" }, 400);
-    const body = await c.req.json<{ project_id?: unknown; workflow_id?: unknown; arguments?: unknown }>().catch(() => ({} as { project_id?: unknown; workflow_id?: unknown; arguments?: unknown }));
+    let body: { project_id?: unknown; workflow_id?: unknown; arguments?: unknown; resource_mode?: unknown; resource_grant?: unknown };
+    try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(await readBoundedRequestBytes(c.req.raw, 300 * 1024))) as typeof body; }
+    catch (error) { return c.json({ error_code: error instanceof RequestBodyTooLargeError ? "extension_gadget_request_too_large" : "extension_gadget_request_invalid" },
+      error instanceof RequestBodyTooLargeError ? 413 : 400); }
     const projectId = typeof body.project_id === "string" ? body.project_id : "";
     const workflowId = typeof body.workflow_id === "string" ? body.workflow_id : "";
     const args = body.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments) ? body.arguments as Record<string, unknown> : {};
@@ -50,19 +53,63 @@ export function registerExtensionGadgetRoutes(app: Hono<{ Bindings: Env }>): voi
     const actionAllowed = roles.length === 1 && workflow?.toolNames?.includes(toolName)
       && roles[0]?.gadgetActions?.some(grant => grant.gadgetId === primitiveId && grant.operations.includes(toolName) && grant.tables.includes(table));
     if (!actionAllowed) return c.json({ error_code: "extension_gadget_action_not_granted" }, 403);
+    if (body.resource_mode !== undefined && body.resource_mode !== "structured_data")
+      return c.json({ error_code: "extension_resource_mode_invalid" }, 400);
+    const resourceGrant = body.resource_grant && typeof body.resource_grant === "object" && !Array.isArray(body.resource_grant)
+      ? body.resource_grant as Record<string, unknown> : null;
+    if (body.resource_mode === "structured_data" && !resourceGrant)
+      return c.json({ error_code: "extension_resource_owner_grant_required" }, 403);
+    let resourceLeaseId: string | null = null;
+    if (resourceGrant) {
+      const requirementId = typeof resourceGrant.requirement_id === "string" ? resourceGrant.requirement_id : "";
+      const resourceOperationId = typeof resourceGrant.operation_id === "string" ? resourceGrant.operation_id : "";
+      const resourceGadgetId = typeof resourceGrant.gadget_id === "string" ? resourceGrant.gadget_id : "";
+      if (body.resource_mode !== "structured_data" || resourceOperationId !== operation || resourceGadgetId !== primitiveId
+        || requirementId.length > 64 || typeof resourceGrant.manifest_sha256 !== "string" || typeof resourceGrant.resource_sha256 !== "string")
+        return c.json({ error_code: "extension_resource_grant_proof_invalid" }, 400);
+    }
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const workId = crypto.randomUUID();
     const admitted = await extensionRuntimeWork(c.env, { action: "acquire", tenantId, spaceId, projectId,
       installationId, workId, workKind: "gadget" });
-    if (admitted.acquired !== true) return c.json({ error_code: admitted.errorCode ?? "extension_installation_inactive" }, 409);
+    if (admitted.acquired !== true) {
+      return c.json({ error_code: admitted.errorCode ?? "extension_installation_inactive" }, 409);
+    }
     const release = () => extensionRuntimeWork(c.env, { action: "release", tenantId, spaceId, projectId, installationId, workId, workKind: "gadget" });
+    if (resourceGrant) {
+      const requirementId = String(resourceGrant.requirement_id), resourceOperationId = String(resourceGrant.operation_id), resourceGadgetId = String(resourceGrant.gadget_id);
+      const claim = await stub.fetch(new Request("http://space-do/extension-resource-operation", { method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+        body: JSON.stringify({ tenantId, spaceId, projectId, instanceId: installationId, requirementId,
+          operationId: resourceOperationId, gadgetId: resourceGadgetId, table,
+          manifestSha256: resourceGrant.manifest_sha256, resourceSha256: resourceGrant.resource_sha256,
+          installationGeneration: resourceGrant.installation_generation, grantRevision: resourceGrant.grant_revision }) }));
+      if (!claim.ok) {
+        await release();
+        return new Response(claim.body, { status: claim.status, headers: { "content-type": claim.headers.get("content-type") ?? "application/json" } });
+      }
+      const claimBody = await claim.json<{ lease_id?: unknown }>().catch(() => null);
+      if (typeof claimBody?.lease_id !== "string") {
+        await release();
+        return c.json({ error_code: "extension_resource_operation_claim_invalid" }, 503);
+      }
+      resourceLeaseId = claimBody.lease_id;
+    }
+    const releaseAll = async () => {
+      await release();
+      if (resourceLeaseId) await stub.fetch(new Request("http://space-do/extension-resource-operation/release", { method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+        body: JSON.stringify({ tenantId, spaceId, projectId, instanceId: installationId, leaseId: resourceLeaseId }) })).catch(() => undefined);
+    };
     try {
       const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/mcp", {
         method: "POST", headers: { "content-type": "application/json", "x-naelao-user-id": `workflow:${workflowId}` },
         body: JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: `app_${appId}_${operation}`, arguments: args } }),
       }));
       const relayed = new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
-      return await releaseRuntimeWorkAfterResponse(relayed, release);
-    } catch (error) { await release(); throw error; }
+      return await releaseRuntimeWorkAfterResponse(relayed, releaseAll);
+    } catch (error) { await releaseAll(); throw error; }
   });
 }

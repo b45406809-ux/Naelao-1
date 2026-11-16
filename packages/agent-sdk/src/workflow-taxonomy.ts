@@ -78,6 +78,8 @@ export interface DurableStructuredDataOperationReceipt {
   kind: "structured_data"; installationId: string; projectId: string; principalId: string;
   gadgetId: string; table: string; operation: "list" | "get" | "insert" | "update" | "delete";
   requestSha256: string; requestBytes: number; status: "prepared" | "completed" | "unknown";
+  manifestSha256?: string; resourceSha256?: string; installationGeneration?: number; grantRevision?: number;
+  meteringUnit?: "request" | "byte" | "job"; meteredUnits?: number;
   responseSha256?: string; responseBytes?: number; meteredCredits?: number;
   preparedAt: number; completedAt?: number; uncertainAt?: number;
 }

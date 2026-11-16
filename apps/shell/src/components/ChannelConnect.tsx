@@ -19,11 +19,97 @@ import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { ExtensionAgentMaintenanceDelegation } from "@/components/ExtensionAgentMaintenanceDelegation";
 import { MicroAppStorageStatus, projectGadgetStorageApps } from "@/components/MicroAppStorageStatus";
-import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionProviderRevocationOutcome, ExtensionPublisherKey, ExtensionPublisherRevocationReceipt, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
-import { callProjectExtensionSettingsAudit, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionProviderRevocationOutcome, ExtensionPublisherKey, ExtensionPublisherRevocationReceipt, ExtensionRelease, ProjectExtensionResourceGrantSnapshot, ProjectExtensionResourceRequirement, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
+import { approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, revokeProjectExtensionResourceGrant, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
+
+function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirements, session }: {
+  spaceId: string; projectId: string; instanceId: string; requirements: ProjectExtensionResourceRequirement[]; session: SessionCredentials;
+}) {
+  const [snapshot, setSnapshot] = React.useState<ProjectExtensionResourceGrantSnapshot | null>(null);
+  const [operations, setOperations] = React.useState<Record<string, string[]>>({});
+  const [tables, setTables] = React.useState<Record<string, string[]>>({});
+  const [loading, setLoading] = React.useState(true);
+  const [busyRequirement, setBusyRequirement] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const refresh = React.useCallback(async () => {
+    const current = await getProjectExtensionResourceGrants(spaceId, projectId, instanceId, session);
+    setSnapshot(current);
+    setOperations(previous => Object.fromEntries(current.requirements.map(requirement => [requirement.requirement_id,
+      previous[requirement.requirement_id] ?? current.grants.find(grant => grant.requirement_id === requirement.requirement_id && grant.status === "approved")?.operations ?? []])));
+    setTables(previous => Object.fromEntries(current.requirements.map(requirement => [requirement.requirement_id,
+      previous[requirement.requirement_id] ?? current.grants.find(grant => grant.requirement_id === requirement.requirement_id && grant.status === "approved")?.tables ?? []])));
+  }, [spaceId, projectId, instanceId, session]);
+  React.useEffect(() => {
+    let live = true;
+    void refresh().catch(err => { if (live) setError(err instanceof Error ? err.message : "Resource grant review is unavailable."); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [refresh]);
+  const toggle = (current: string[], value: string, checked: boolean) => checked ? [...current, value] : current.filter(item => item !== value);
+  async function approve(requirementId: string) {
+    if (!snapshot) return;
+    const current = snapshot.grants.find(grant => grant.requirement_id === requirementId);
+    setBusyRequirement(requirementId); setError(null);
+    try {
+      await approveProjectExtensionResourceGrant(spaceId, projectId, instanceId, session, { requirement_id: requirementId,
+        expected_revision: current?.revision ?? 0, operations: operations[requirementId] ?? [], tables: tables[requirementId] ?? [] });
+      await refresh();
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not save the resource grant."); }
+    finally { setBusyRequirement(null); }
+  }
+  async function revoke(requirementId: string) {
+    if (!snapshot) return;
+    const current = snapshot.grants.find(grant => grant.requirement_id === requirementId && grant.status === "approved");
+    if (!current) return;
+    setBusyRequirement(requirementId); setError(null);
+    try {
+      await revokeProjectExtensionResourceGrant(spaceId, projectId, instanceId, session, { requirement_id: requirementId, expected_revision: current.revision });
+      await refresh();
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not revoke the resource grant."); }
+    finally { setBusyRequirement(null); }
+  }
+  if (loading) return <div style={{ color: "var(--text3)", fontSize: 11 }}>Loading owner-reviewed resource requests…</div>;
+  if (!snapshot) return <div role="alert" style={{ color: "var(--danger, #d33)", fontSize: 11 }}>{error ?? "Resource grant status is unavailable."}</div>;
+  return <div style={{ marginTop: 8, padding: 8, border: "1px solid var(--border)", borderRadius: 7 }}>
+    <strong style={{ fontSize: 11.5 }}>Structured-data access review</strong>
+    <p style={{ margin: "4px 0 8px", color: "var(--text3)", fontSize: 10.5 }}>
+      Approval records only the selected operations and tables for this signed release and install generation. It does not activate this staged extension; structured-data execution is still unavailable.
+    </p>
+    {requirements.filter(requirement => requirement.kind === "structured_data").map(requirement => {
+      const grant = snapshot.grants.find(item => item.requirement_id === requirement.id);
+      const blocked = snapshot.installation.status === "active";
+      return <div key={requirement.id} style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <strong>{requirement.id}</strong><span style={{ color: grant?.status === "approved" ? "var(--text2)" : "var(--text3)" }}>
+            {grant?.status === "approved" ? `approved · revision ${grant.revision}` : grant?.status === "revoked" ? `revoked · revision ${grant.revision}` : "not approved"}
+          </span>
+        </div>
+        <div style={{ marginTop: 5, color: "var(--text3)" }}>Requested tables: {(requirement.binding?.tables ?? []).join(", ") || "none"}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginTop: 5 }}>
+          <div><div style={{ fontWeight: 600 }}>Allow operations</div>{requirement.operations.map(operation => <label key={operation.id} style={{ display: "flex", gap: 5, alignItems: "center" }}>
+            <input type="checkbox" checked={(operations[requirement.id] ?? []).includes(operation.id)} disabled={blocked || !!busyRequirement}
+              onChange={event => setOperations(value => ({ ...value, [requirement.id]: toggle(value[requirement.id] ?? [], operation.id, event.target.checked) }))} />{operation.id}
+          </label>)}</div>
+          <div><div style={{ fontWeight: 600 }}>Allow tables</div>{(requirement.binding?.tables ?? []).map(table => <label key={table} style={{ display: "flex", gap: 5, alignItems: "center" }}>
+            <input type="checkbox" checked={(tables[requirement.id] ?? []).includes(table)} disabled={blocked || !!busyRequirement}
+              onChange={event => setTables(value => ({ ...value, [requirement.id]: toggle(value[requirement.id] ?? [], table, event.target.checked) }))} />{table}
+          </label>)}</div>
+        </div>
+        <div style={{ display: "flex", gap: 6, marginTop: 7 }}>
+          <button type="button" className="btn-ghost" disabled={blocked || !!busyRequirement || !(operations[requirement.id]?.length) || !(tables[requirement.id]?.length)}
+            onClick={() => void approve(requirement.id)}>{busyRequirement === requirement.id ? "Saving…" : grant?.status === "approved" ? "Update grant" : "Approve selected access"}</button>
+          {grant?.status === "approved" && <button type="button" className="btn-ghost" disabled={!!busyRequirement} onClick={() => void revoke(requirement.id)}>
+            {busyRequirement === requirement.id ? "Revoking…" : "Revoke"}</button>}
+        </div>
+        {blocked && <div role="alert" style={{ color: "var(--text3)", marginTop: 4 }}>This install is active. Pause and stage a reviewed release before changing its resource approval.</div>}
+      </div>;
+    })}
+    {error && <div role="alert" style={{ color: "var(--danger, #d33)", fontSize: 11, marginTop: 6 }}>{error}</div>}
+  </div>;
+}
 
 function declaredChannelAttachmentModes(manifestText: string): Set<"read_text" | "read_image"> {
   try {
@@ -1041,15 +1127,17 @@ export function ChannelConnect({
         </form>
       </details>}
       {projectId && canManage && otherProjectInstallations.length > 0 && <details style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
-        <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Manage Canvas, Gadget, and workflow-only extensions ({otherProjectInstallations.length})</summary>
+        <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Manage Canvas, Gadget, workflow, and resource grants ({otherProjectInstallations.length})</summary>
         {otherProjectInstallations.map(item => {
           const instanceId = item.instance.instance_id;
           const extensionId = item.instance.extension_id;
           if (!instanceId || !extensionId) return null;
           const storageApps = projectGadgetStorageApps(item, projectId);
+          const statusLabel = item.instance.status === "active" ? "enabled" : item.instance.status === "staging"
+            ? item.manifest.resourceRequirements?.some(requirement => requirement.kind === "structured_data") ? "resource approval required" : "setup incomplete" : "paused";
           return <div key={instanceId} style={{ padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 11.5 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-              <span>{extensionId} · {item.manifest.bundle?.version ?? "legacy"} · {item.instance.instance_key ?? "default"} · {item.instance.publisher_trusted === false ? "publisher trust blocked" : item.instance.status === "active" ? "enabled" : item.instance.status === "staging" ? "setup incomplete" : "paused"}</span>
+              <span>{extensionId} · {item.manifest.bundle?.version ?? "legacy"} · {item.instance.instance_key ?? "default"} · {item.instance.publisher_trusted === false ? "publisher trust blocked" : statusLabel}</span>
               <div style={{ display: "flex", gap: 5 }}>
               {item.instance.status !== "staging" && <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!changingExtension || !!removingExtension || item.instance.status === "disabled" && item.instance.publisher_trusted === false} onClick={() => void changeProjectExtensionLifecycle(instanceId, item.instance.status !== "active")}>
                 {changingExtension === instanceId ? "Updating…" : item.instance.status === "active" ? "Pause" : item.instance.publisher_trusted === false ? "Resume blocked" : "Resume"}
@@ -1060,6 +1148,9 @@ export function ChannelConnect({
               </div>
             </div>
             {storageApps.map(app => <MicroAppStorageStatus key={app.appId} spaceId={spaceId} projectId={projectId} appId={app.appId} name={app.name} session={session} />)}
+            {projectId && item.manifest.resourceRequirements?.some(requirement => requirement.kind === "structured_data") && <ExtensionResourceGrantReview
+              spaceId={spaceId} projectId={projectId} instanceId={instanceId}
+              requirements={item.manifest.resourceRequirements.filter(requirement => requirement.kind === "structured_data")} session={session} />}
             {item.instance.status === "staging" && <div style={{ color: "var(--text3)", fontSize: 11 }}>Setup did not finish. This extension is not available to workers or channels; uninstall it or retry installation.</div>}
             {item.instance.publisher_trusted === false && <div role="alert" style={{ color: "var(--text2)", fontSize: 11 }}>The publisher key for this installed release is no longer trusted{item.instance.publisher_revoked_at ? ` (revoked ${new Date(item.instance.publisher_revoked_at).toLocaleString()})` : "."} The host blocks new work and resume attempts. Review a release signed by a currently trusted key before reinstalling.</div>}
             {item.instance.status !== "staging" && item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ instance_id: instanceId, extension_id: extensionId,

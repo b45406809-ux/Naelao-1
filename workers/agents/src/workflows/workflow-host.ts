@@ -34,10 +34,25 @@ export async function workflowHeaders(env: DurableWorkflowHostEnv, tenantId: str
 }
 /** Changes to membership, installation or agent configuration invalidate resumed grants. */
 export interface WorkflowInstallationGrant {
-  instance: { instance_id?: string; tenant_id: string; space_id: string; project_id?: string | null; instance_key?: string | null; user_id?: string | null; scope?: string; status: string };
+  instance: { instance_id?: string; tenant_id: string; space_id: string; project_id?: string | null; generation?: number; instance_key?: string | null; user_id?: string | null; scope?: string; status: string };
   approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
   manifest: Pick<ExtensionManifest, "id" | "daemons" | "resourceRequirements" | "shared_filesystem" | "capabilityRequirements" | "bundle">;
+  resource_grants?: Array<{ requirement_id: string; manifest_sha256: string; resource_sha256: string; installation_generation: number;
+    operations: string[]; tables: string[]; status: "approved" | "revoked"; revision: number }>;
   release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
+}
+export async function resolveApprovedStructuredDataGrant(installation: WorkflowInstallationGrant | undefined,
+  requirementId: string, operationId: string, table: string): Promise<NonNullable<WorkflowInstallationGrant["resource_grants"]>[number] | null> {
+  if (!installation || installation.instance.status !== "active" || installation.instance.scope !== "PROJECT_BOUND"
+    || !installation.instance.instance_id || !Number.isSafeInteger(installation.instance.generation)) return null;
+  const requirement = installation.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "structured_data");
+  if (!requirement || !requirement.binding?.tables.includes(table) || !requirement.operations.some(item => item.id === operationId)) return null;
+  const manifestSha256 = await workflowHash(JSON.stringify(installation.manifest));
+  const resourceSha256 = await workflowHash(JSON.stringify(requirement));
+  const grant = installation.resource_grants?.find(item => item.requirement_id === requirementId && item.status === "approved"
+    && item.manifest_sha256 === manifestSha256 && item.resource_sha256 === resourceSha256
+    && item.installation_generation === installation.instance.generation && item.operations.includes(operationId) && item.tables.includes(table));
+  return grant ?? null;
 }
 export function resolveExtensionGadgetAppId(input: { installation?: WorkflowInstallationGrant; workflowId: string; operation: string; gadgetId: string; table?: string }): string | null {
   const { installation, workflowId, operation, gadgetId, table } = input;

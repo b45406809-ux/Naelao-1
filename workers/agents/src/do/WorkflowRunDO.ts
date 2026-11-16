@@ -4,7 +4,7 @@ import { WORKFLOW_CLASS_POLICIES, isTerminalWorkflow, validateDurableWorkflowIde
   resolveExtensionStructuredDataRequest, type DurableStructuredDataOperationReceipt, type DurableWorkflowIdentity,
   type WorkflowCheckpointPointer, type DurableWorkflowStatus } from "@naelao/agent-sdk";
 import { WorkflowJournal, type WorkflowJournalStorage, type WorkflowJournalRecord } from "../workflows/workflow-state.js";
-import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, resolveApprovedStructuredDataGrant, workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowStepInfraUsage } from "../workflows/report-infra-usage.js";
 import type { Env } from "../env.js";
 import { readBoundedResponseText } from "../shared/bounded-response-text.js";
@@ -100,12 +100,22 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     let gadgetOperation = operation.match(/^extension\.gadget\.(list|get|insert|update|delete)$/)?.[1];
     let gadgetId = typeof params.gadget_id === "string" ? params.gadget_id : "";
     let table = typeof params.table === "string" ? params.table : "";
+    let approvedResourceGrant: Awaited<ReturnType<typeof resolveApprovedStructuredDataGrant>> = null;
+    let resourceMetering: { unit: "request" | "byte" | "job"; units: number } | null = null;
     if (operation === "extension.resource.structured_data" && identity.workflowClass === "vertical_extension" && identity.definitionId) {
       const grant = await readWorkflowGrant(this.env, identity);
+      const requirementId = typeof params.requirement_id === "string" ? params.requirement_id : "";
+      const operationId = typeof params.operation === "string" ? params.operation : "";
       const resolved = resolveExtensionStructuredDataRequest({ manifest: grant.installation?.manifest ?? {}, workflowId: identity.definitionId,
-        requirementId: typeof params.requirement_id === "string" ? params.requirement_id : "",
-        operationId: typeof params.operation === "string" ? params.operation : "", input: params.input });
+        requirementId, operationId, input: params.input });
       if (!resolved) throw new Error("workflow_structured_data_grant_invalid");
+      approvedResourceGrant = await resolveApprovedStructuredDataGrant(grant.installation, requirementId, operationId, resolved.table);
+      if (!approvedResourceGrant) throw new Error("workflow_structured_data_owner_grant_required");
+      const declaration = grant.installation?.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "structured_data")
+        ?.operations.find(item => item.id === operationId);
+      if (!declaration) throw new Error("workflow_structured_data_operation_not_declared");
+      const inputBytes = new TextEncoder().encode(JSON.stringify(params.input)).byteLength;
+      resourceMetering = { unit: declaration.meteringUnit, units: declaration.meteringUnit === "byte" ? inputBytes : 1 };
       gadgetOperation = resolved.gadgetOperation.slice("extension.gadget.".length);
       gadgetId = resolved.gadgetId;
       table = resolved.table;
@@ -115,7 +125,11 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       && /^[a-z][a-z0-9_-]{1,63}$/.test(gadgetId) && /^[a-z][a-z0-9_-]{0,62}$/.test(table)
       ? { kind: "structured_data", installationId: identity.installationId, projectId: identity.projectId, principalId: identity.actorId,
         gadgetId, table, operation: gadgetOperation as DurableStructuredDataOperationReceipt["operation"], requestSha256: inputDigest,
-        requestBytes: new TextEncoder().encode(json).byteLength, status: "prepared", preparedAt: Date.now() }
+        requestBytes: new TextEncoder().encode(json).byteLength, status: "prepared", preparedAt: Date.now(),
+        ...(approvedResourceGrant ? { manifestSha256: approvedResourceGrant.manifest_sha256,
+          resourceSha256: approvedResourceGrant.resource_sha256, installationGeneration: approvedResourceGrant.installation_generation,
+          grantRevision: approvedResourceGrant.revision } : {}),
+        ...(resourceMetering ? { meteringUnit: resourceMetering.unit, meteredUnits: resourceMetering.units } : {}) }
       : undefined;
     const { effect, created } = await this.journal.prepareExternalEffect(key, operation, inputDigest, resourceReceipt);
     if (effect.status === "committed" && effect.result) return readWorkflowArtifact(this.env, identity, effect.result);

@@ -53,7 +53,7 @@ type WorkerMergeOutcome = {
 
 import { DurableObject } from "cloudflare:workers";
 import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
-import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, resolveExtensionGadgetAppId, resolveApprovedStructuredDataGrant, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { normalizePreferredLanguage } from "@naelao/types";
 import { mintInternalToken, verifyInternalToken, broadcastSpaceEvent, readBoundedRequestText, readBoundedRequestBytes, readBoundedResponseJson, readBoundedResponseText, readResponsePrefixText, RequestBodyTooLargeError } from "@naelao/http";
@@ -1227,11 +1227,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const resolved = resolveExtensionStructuredDataRequest({ manifest: grant.installation.manifest, workflowId: identity.definitionId,
         requirementId, operationId, input: body.params?.input });
       if (!resolved) return Response.json({ error_code: "workflow_structured_data_operation_not_granted" }, { status: 403 });
+      const approvedGrant = await resolveApprovedStructuredDataGrant(grant.installation, requirementId, operationId, resolved.table);
+      if (!approvedGrant) return Response.json({ error_code: "workflow_structured_data_owner_grant_required" }, { status: 403 });
       const response = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/spaces/${encodeURIComponent(identity.spaceId)}/internal/extensions/${encodeURIComponent(identity.installationId)}/gadgets/${encodeURIComponent(resolved.gadgetId)}/${resolved.gadgetOperation.slice("extension.gadget.".length)}`,
         { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
           "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, identity.tenantId) },
-          body: JSON.stringify({ project_id: identity.projectId, workflow_id: identity.definitionId, arguments: resolved.arguments }) },
+          body: JSON.stringify({ project_id: identity.projectId, workflow_id: identity.definitionId, arguments: resolved.arguments,
+            resource_mode: "structured_data", resource_grant: { requirement_id: requirementId, operation_id: operationId, gadget_id: resolved.gadgetId,
+              manifest_sha256: approvedGrant.manifest_sha256, resource_sha256: approvedGrant.resource_sha256,
+              installation_generation: approvedGrant.installation_generation, grant_revision: approvedGrant.revision } }) },
       ));
       if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
       const rpc = await readBoundedResponseJson<{ error?: unknown; result?: { structuredContent?: unknown } }>(response, 4 * 1024 * 1024).catch(() => null);

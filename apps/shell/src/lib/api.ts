@@ -1710,7 +1710,7 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
 export interface ContainerInstallation {
   instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string; release_version?: string | null;
     publisher_key_id?: string | null; publisher_trusted?: boolean; publisher_revoked_at?: string | null };
-  manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; settingsSchema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; settingsActivation?: "owner_publish"; containers?: Array<{ id?: string }>; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; name?: string; scope?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }>; businessActions?: Array<{ id: string }> }> } };
+  manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; resourceRequirements?: ProjectExtensionResourceRequirement[]; settingsSchema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; settingsActivation?: "owner_publish"; containers?: Array<{ id?: string }>; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; name?: string; scope?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }>; businessActions?: Array<{ id: string }> }> } };
 }
 export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string, includeDisabled = false) {
   const params = new URLSearchParams();
@@ -1920,6 +1920,40 @@ export async function saveWorkspaceRetentionPolicy(spaceId: string, projectId: s
 }
 export function setProjectExtensionEnabled(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials, enabled: boolean) {
   return apiFetch<{ instance_id: string; status: "active" | "disabled" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(instanceId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable" }) });
+}
+export interface ProjectExtensionResourceRequirement {
+  id: string; kind: string; apiVersion?: string; scope: string;
+  binding?: { gadgetId: string; tables: string[] };
+  operations: Array<{ id: string; input?: unknown; output?: unknown; idempotency?: string; meteringUnit?: string }>;
+}
+export interface ProjectExtensionResourceGrant {
+  requirement_id: string; manifest_sha256: string; resource_sha256: string; installation_generation: number;
+  operations: string[]; tables: string[]; status: "approved" | "revoked"; revision: number;
+  installed_by?: string; approved_by?: string; approved_at?: string; updated_by?: string; updated_at?: string;
+  revoked_by?: string | null; revoked_at?: string | null;
+}
+export interface ProjectExtensionResourceGrantSnapshot {
+  installation: { instance_id: string; extension_id: string; tenant_id: string; space_id: string; project_id: string;
+    scope: "PROJECT_BOUND"; status: string; generation: number; installed_by: string; manifest_sha256: string; release_version: string };
+  requirements: Array<{ requirement_id: string; kind: "structured_data"; scope: "project"; gadget_id: string | null;
+    requested_tables: string[]; requested_operations: Array<{ id: string; input: unknown; output: unknown; idempotency: string; metering_unit: string }> }>;
+  grants: ProjectExtensionResourceGrant[];
+}
+function projectExtensionResourceGrantsPath(spaceId: string, projectId: string, instanceId: string) {
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(instanceId)}/resource-grants`;
+}
+export function getProjectExtensionResourceGrants(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials) {
+  return apiFetch<ProjectExtensionResourceGrantSnapshot>(projectExtensionResourceGrantsPath(spaceId, projectId, instanceId), { session, cache: "no-store" });
+}
+export function approveProjectExtensionResourceGrant(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials,
+  input: { requirement_id: string; expected_revision: number; operations: string[]; tables: string[] }) {
+  return apiFetch<ProjectExtensionResourceGrant>(projectExtensionResourceGrantsPath(spaceId, projectId, instanceId),
+    { method: "PUT", session, body: JSON.stringify(input) });
+}
+export function revokeProjectExtensionResourceGrant(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials,
+  input: { requirement_id: string; expected_revision: number }) {
+  return apiFetch<ProjectExtensionResourceGrant>(projectExtensionResourceGrantsPath(spaceId, projectId, instanceId),
+    { method: "DELETE", session, body: JSON.stringify(input) });
 }
 export async function installRuntime(spaceId: string, session: SessionCredentials, imageId: string, options: {
   scope?: "SPACE_SHARED" | "SPACE_ASSISTANT" | "PROJECT_SHARED"; projectId?: string; promoteExisting?: boolean; acknowledgePromotion?: boolean; acknowledgeIsolation?: boolean;

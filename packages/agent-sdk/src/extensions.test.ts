@@ -31,6 +31,11 @@ describe("immutable extension kernel", () => {
       arguments: { table: "records", id: "record-1" } });
     expect(resolveExtensionStructuredDataRequest({ manifest: parsed, workflowId: "lookup", requirementId: "records", operationId: "get",
       input: { table: "private_records", id: "secret" } })).toBeNull();
+    const boundedManifest = { ...parsed, resourceRequirements: parsed.resourceRequirements?.map(requirement => ({
+      ...requirement, limits: { ...requirement.limits, maxBytesPerOperation: 50 },
+    })) };
+    expect(resolveExtensionStructuredDataRequest({ manifest: boundedManifest, workflowId: "lookup", requirementId: "records", operationId: "get",
+      input: { table: "records", id: "x".repeat(40) } })).toBeNull();
     expect(() => validateExtensionManifest({ ...manifest, resourceRequirements: [{ ...structured, binding: { gadgetId: "catalog", tables: ["private_records"] } }] }))
       .toThrow("structured_data_binding_exceeds_installed_workflow_grant");
     expect(() => validateExtensionManifest({ ...manifest, resourceRequirements: [{ ...structured, binding: undefined }] }))

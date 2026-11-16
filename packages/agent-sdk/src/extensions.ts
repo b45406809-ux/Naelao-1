@@ -300,6 +300,7 @@ export function resolveExtensionStructuredDataRequest(input: {
   if (!requirement || requirement.scope !== "project" || !binding || !operation) return null;
   let value: Record<string, unknown>;
   try { value = validateExtensionResourceValue(operation.input, input.input, "input"); } catch { return null; }
+  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > requirement.limits.maxBytesPerOperation) return null;
   const table = value.table;
   if (typeof table !== "string" || !binding.tables.includes(table)) return null;
   const bundle = input.manifest.bundle;

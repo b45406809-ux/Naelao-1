@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertDeclaredExtensionWorkflow, extensionWorkflowName, readWorkflowGrant, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv, type WorkflowInstallationGrant } from "./workflow-host.js";
+import { assertDeclaredExtensionWorkflow, extensionWorkflowName, readWorkflowGrant, resolveApprovedStructuredDataGrant, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv, type WorkflowInstallationGrant } from "./workflow-host.js";
 
 const installation: WorkflowInstallationGrant = {
   instance: { tenant_id: "tenant", space_id: "space", status: "active", scope: "SPACE_SHARED" },
@@ -84,6 +84,24 @@ describe("verified extension workflow identity", () => {
     expect(resolveExtensionGadgetAppId({ installation: composed, workflowId: "place_order", operation: "extension.gadget.insert", gadgetId: "other", table: "trades" })).toBeNull();
     expect(resolveExtensionGadgetAppId({ installation: composed, workflowId: "place_order", operation: "extension.gadget.get", gadgetId: "trade_journal", table: "trades" })).toBeNull();
     expect(resolveExtensionGadgetAppId({ installation: { ...composed, instance: { ...composed.instance, project_id: null } }, workflowId: "place_order", operation: "extension.gadget.insert", gadgetId: "trade_journal", table: "trades" })).toBeNull();
+  });
+
+  it("requires current owner approval pinned to the exact resource, install generation, operation and table", async () => {
+    const requirement = { id: "records", kind: "structured_data", apiVersion: "1.0", scope: "project", binding: { gadgetId: "catalog", tables: ["records"] },
+      operations: [{ id: "get", input: { schemaVersion: "1.0", fields: {} }, output: { schemaVersion: "1.0", fields: {} }, idempotency: "none", meteringUnit: "request" }],
+      limits: { requestsPerMinute: 10, maxConcurrent: 1, maxBytesPerOperation: 1024 } };
+    const manifest = { id: "ext_catalog", resourceRequirements: [requirement] } as unknown as WorkflowInstallationGrant["manifest"];
+    const manifestSha256 = await workflowHash(JSON.stringify(manifest));
+    const resourceSha256 = await workflowHash(JSON.stringify(requirement));
+    const current: WorkflowInstallationGrant = { instance: { instance_id: "install-a", tenant_id: "tenant", space_id: "space", project_id: "project-a",
+      generation: 4, status: "active", scope: "PROJECT_BOUND" }, manifest,
+      resource_grants: [{ requirement_id: "records", manifest_sha256: manifestSha256, resource_sha256: resourceSha256, installation_generation: 4,
+        operations: ["get"], tables: ["records"], status: "approved", revision: 3 }] };
+    await expect(resolveApprovedStructuredDataGrant(current, "records", "get", "records")).resolves.toMatchObject({ revision: 3 });
+    await expect(resolveApprovedStructuredDataGrant({ ...current, instance: { ...current.instance, generation: 5 } }, "records", "get", "records")).resolves.toBeNull();
+    await expect(resolveApprovedStructuredDataGrant({ ...current, resource_grants: [{ ...current.resource_grants![0]!, status: "revoked" }] }, "records", "get", "records")).resolves.toBeNull();
+    await expect(resolveApprovedStructuredDataGrant({ ...current, resource_grants: [{ ...current.resource_grants![0]!, tables: ["private"] }] }, "records", "get", "records")).resolves.toBeNull();
+    await expect(resolveApprovedStructuredDataGrant({ ...current, resource_grants: [{ ...current.resource_grants![0]!, manifest_sha256: "0".repeat(64) }] }, "records", "get", "records")).resolves.toBeNull();
   });
 
   it("isolates space-wide durable extension workflows by the verified installation", () => {

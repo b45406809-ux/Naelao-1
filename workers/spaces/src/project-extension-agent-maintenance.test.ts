@@ -5,6 +5,7 @@ import spacesWorker from "./index.js";
 const secret = "project-extension-agent-maintenance-secret";
 const grantPath = "/spaces/space-a/projects/project-a/extension-installations/instance-a/agent-maintenance-grants";
 const proposalPath = "/spaces/space-a/projects/project-a/extension-installations/instance-a/settings-proposals";
+const resourceGrantPath = "/spaces/space-a/projects/project-a/extension-installations/instance-a/resource-grants";
 
 function setup(options: { projectOwner?: string; readable?: boolean; publisherActive?: boolean; trusted?: boolean } = {}) {
   const forwarded: Request[] = [];
@@ -94,6 +95,29 @@ describe("Project extension agent maintenance routes", () => {
     expect((await call(revoked.env, grantPath, { method: "PUT",
       body: { agent_id: "voice-agent", permission: "settings.propose", expected_revision: 0 } })).status).toBe(409);
     expect(revoked.forwarded.some(request => new URL(request.url).pathname === "/extension-agent-maintenance-grants")).toBe(false);
+  });
+
+  it("exposes resource grant review only to the exact Project owner", async () => {
+    const owner = setup({ projectOwner: "project-owner" });
+    const read = await call(owner.env, resourceGrantPath, { userId: "project-owner", role: "editor" });
+    expect(read.status).toBe(200);
+    const getForward = owner.forwarded.at(-1);
+    expect(getForward && new URL(getForward.url).pathname).toBe("/extension-resource-grants");
+    expect(getForward?.url).toContain("project_id=project-a");
+    expect(getForward?.url).toContain("instance_id=instance-a");
+
+    const change = await call(owner.env, resourceGrantPath, { userId: "project-owner", role: "editor", method: "PUT",
+      body: { requirement_id: "records", expected_revision: 0, operations: ["get"], tables: ["records"] } });
+    expect(change.status).toBe(200);
+    const putForward = owner.forwarded.at(-1);
+    expect(putForward && new URL(putForward.url).pathname).toBe("/extension-resource-grants");
+    await expect(putForward?.json()).resolves.toMatchObject({ actorId: "project-owner", requirementId: "records",
+      expectedRevision: 0, operations: ["get"], tables: ["records"] });
+
+    const denied = setup({ projectOwner: "different-owner" });
+    expect((await call(denied.env, resourceGrantPath, { userId: "editor-a", role: "editor", method: "PUT",
+      body: { requirement_id: "records", expected_revision: 0, operations: ["get"], tables: ["records"] } })).status).toBe(403);
+    expect(denied.forwarded.some(request => new URL(request.url).pathname === "/extension-resource-grants")).toBe(false);
   });
 
   it("forwards only a readable project's exact agent proposal with current installation checks", async () => {

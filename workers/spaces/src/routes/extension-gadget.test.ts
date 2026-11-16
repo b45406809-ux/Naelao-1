@@ -24,8 +24,12 @@ describe("extension workflow Gadget bridge", () => {
   it("forwards only a declared Gadget operation to the exact named project install", async () => {
     let rpc: Record<string, unknown> | null = null;
     let auditActor: string | null = null;
+    const resourceClaims: Record<string, unknown>[] = [], resourceReleases: Record<string, unknown>[] = [];
     const spaceStub = { fetch: vi.fn(async (request: Request) => {
-      if (new URL(request.url).pathname === "/extension-runtime-work") return Response.json({ acquired: true, released: true });
+      const path = new URL(request.url).pathname;
+      if (path === "/extension-runtime-work") return Response.json({ acquired: true, released: true });
+      if (path === "/extension-resource-operation") { resourceClaims.push(await request.json() as Record<string, unknown>); return Response.json({ lease_id: "12345678-1234-1234-1234-123456789abc" }); }
+      if (path === "/extension-resource-operation/release") { resourceReleases.push(await request.json() as Record<string, unknown>); return Response.json({ released: true, status: "released" }); }
       return new Response(JSON.stringify({
       instance: { instance_id: "install-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", instance_key: "mentor2", status: "active", scope: "PROJECT_BOUND" },
       release: { signatureValid: true, dependenciesResolved: true, publisher: { keyId: "publisher-key" } },
@@ -66,7 +70,18 @@ describe("extension workflow Gadget bridge", () => {
       body: JSON.stringify({ project_id: "project-a", workflow_id: "record_order", arguments: { table: "private_notes", record: { id: "secret" } } }),
     }, env as never);
     expect(deniedTable.status).toBe(403);
-    expect(spaceStub.fetch).toHaveBeenCalledTimes(7);
+    const resourceBacked = await app.request("/spaces/space-a/internal/extensions/install-a/gadgets/journal/insert", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      body: JSON.stringify({ project_id: "project-a", workflow_id: "record_order", arguments: { table: "orders", record: { id: "resource-backed" } },
+        resource_mode: "structured_data", resource_grant: { requirement_id: "orders", operation_id: "insert", gadget_id: "journal",
+          manifest_sha256: "a".repeat(64), resource_sha256: "b".repeat(64), installation_generation: 2, grant_revision: 4 } }),
+    }, env as never);
+    expect(resourceBacked.status).toBe(200);
+    await resourceBacked.json();
+    expect(resourceClaims).toMatchObject([{ requirementId: "orders", operationId: "insert", gadgetId: "journal", table: "orders",
+      manifestSha256: "a".repeat(64), resourceSha256: "b".repeat(64), installationGeneration: 2, grantRevision: 4 }]);
+    await vi.waitFor(() => expect(resourceReleases).toMatchObject([{ instanceId: "install-a", leaseId: "12345678-1234-1234-1234-123456789abc" }]));
+    expect(spaceStub.fetch).toHaveBeenCalledTimes(12);
   });
 
   it("rejects wrong-project and undeclared Gadget requests without touching the actor", async () => {
