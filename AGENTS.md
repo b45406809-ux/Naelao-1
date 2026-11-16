@@ -15,7 +15,13 @@ The requirements from `docs/research/planner-worker-isolation-and-conflict-resol
 
 For every coherent source, configuration or documentation change, verify it, commit it, then fetch and push it to `origin/Mcbt5s-Backup-2` before moving to the next change. Record the pushed SHA, evidence, remaining uncoded work, separate live/deployment gates and exact next action in this runbook and the relevant progress ledgers. Fetch immediately before each push; preserve concurrent remote commits and integrate them without force-pushing. Never stage unrelated untracked files such as `infra/scripts/__pycache__/`.
 
-## Latest code checkpoint — 2026-11-16 (EP02 structured-data binding; `6871563e` pushed)
+## Latest code checkpoint — 2026-11-16 (EP02 run-scoped operation receipts; `27f571d0` pushed)
+
+The durable WorkflowRunDO write-ahead journal now records content-free structured-data receipts for the reachable Gadget bridge: installation/project/actor, Gadget/table/action, request hash/bytes, result hash/bytes, outcome and measured credits. Uncertain work becomes `unknown` and is never replayed. Code `27f571d08ab40145b72977e48137daaa0318a3ad` is pushed to `origin/Mcbt5s-Backup-2`. Local evidence: workflow journal/WorkflowRunDO tests **19/19**, Agent SDK and Agents typechecks, and `git diff --check`. This is run-scoped accounting only, not the durable extension grant registry or owner-facing grant manager. No deployment/live acceptance; resources remain unavailable.
+
+Exact next action: implement an owner-reviewed grant record bound to the exact signed Project manifest resource digest and installation generation, plus a reachable approve/status/revoke caller. Then wire `ctx.resources.execute` through the durable effect journal into the current scope-checked Gadget route, validating request/response schemas and installation/publisher status on every use. Test duplicate writes, changed-payload key reuse, revocation races and cross-install denial. Keep all capability descriptors unavailable and rollout flags false until the broker path is complete. Continue object/jobs, EP03–EP06, and open K/S/U/P/PW requirements afterward.
+
+## Previous code checkpoint — 2026-11-16 (EP02 structured-data binding; `6871563e` pushed)
 
 The SDK now requires structured-data declarations to bind to an existing `PROJECT_BOUND` Gadget, name bounded tables, declare bounded CRUD input/output schemas, and require idempotency for mutations. Manifest validation verifies that the exact Gadget operations and every table are already authorized by a signed project-member workflow role. The existing authenticated catalog and SpaceDO install admission still report/reject every resource kind as unavailable; this contract does not issue grants or activate a runtime. Code `6871563ea9e70019c42d98a88eabf6b3daf0707c` is pushed to `origin/Mcbt5s-Backup-2`. Local evidence: SDK tests **36/36**, SpaceDO extension-install tests **32/32**, Agent SDK and Spaces typechecks, and `git diff --check`. No migration, deployment, browser, provider or live acceptance ran. Preserve the pre-existing `infra/scripts/__pycache__/` and keep rollouts disabled.
 
@@ -33,7 +39,7 @@ EP01 code checkpoint `9abf5efa36231a96bf8e337a2fb7b702cf672954` is pushed and re
 
 The signed Project bundle→workflow Gadget→MicroAppDO path is traced. SDK validation now binds any structured-data requirement to a PROJECT_BOUND Gadget and a subset of its exact signed worker-role operation/table grants; this code checkpoint is `6871563ea9e70019c42d98a88eabf6b3daf0707c`. Local evidence is Agent SDK **36/36**, SpaceDO install **32/32**, both typechecks, and diff check. This is contract validation only: no durable resource grant/operation ledger or broker is wired, all resource capabilities remain unavailable, and no migration/deployment/live acceptance ran.
 
-Exact next code action: implement the EP02 durable grant and operation-receipt ledger and authenticated reachable caller through scoped MicroAppDO; bind exact signed requirements, installer approval identity, installation generation, operations/tables, idempotency, revocation and bounded usage receipts. Keep the catalog unavailable until that path is complete. Then continue object/job broker slices, K05/K06–K30, and remaining S/U/P/PW/EP requirements. Preserve `infra/scripts/__pycache__/`, keep all rollouts disabled, and fetch before each non-force push.
+Historical next action superseded by the run-scoped receipts above: implement the EP02 durable owner-approved grant registry and resource SDK caller. All object/structured-data/job capabilities remain unavailable pending that work.
 
 ## Latest checkpoint — 2026-11-15 (K02/K03 PDF preview and source lineage; code 08d9c509 pushed)
 

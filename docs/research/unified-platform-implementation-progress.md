@@ -1,5 +1,9 @@
 # Unified platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (EP02 operation receipts; code `27f571d0` pushed)
+
+The durable workflow run journal now stores content-free structured-data receipts for existing Gadget operations, including scope identity, operation/table, request/result hashes and bytes, outcome and measured credits. Workflow tests **19/19**, SDK/Agents typechecks and diff check pass. This does not add grant issuance or a resource SDK caller; resource kinds remain unavailable. Exact next action: owner-reviewed exact-manifest grant registry and `ctx.resources.execute` through current authorization checks; remaining S/U/P/PW/K/EP gaps stay active.
+
 ## Latest cross-plan pointer — 2026-11-16 (EP02 structured-data binding; code `6871563e` pushed)
 
 The SDK now fences structured-data requests to an existing PROJECT_BOUND Gadget and the signed workflow role's allowed tables/actions. Local evidence: Agent SDK **36/36**, SpaceDO install **32/32**, SDK/Spaces typechecks and diff check. No durable resource broker, grants/usage ledger, migration, deployment or live acceptance; every resource kind remains unavailable. Exact next action is the EP02 persistent grant/operation ledger and authenticated Gadget caller; the remaining S/U/P/PW/K/EP gaps remain active and rollouts stay disabled.

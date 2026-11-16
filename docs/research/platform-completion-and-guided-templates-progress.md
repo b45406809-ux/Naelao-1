@@ -1,5 +1,11 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 Gadget operation receipts; code `27f571d0` pushed)
+
+The durable WorkflowRunDO write-ahead journal now stores content-free structured-data receipts for the reachable Gadget bridge: installation/project/actor, Gadget/table/action, request hash/bytes, result hash/bytes, outcome and measured credits. Uncertain effects become `unknown` and are never replayed. Code `27f571d08ab40145b72977e48137daaa0318a3ad` is pushed. Local evidence: workflow journal/WorkflowRunDO tests **19/19**, Agent SDK and Agents typechecks, and `git diff --check`. This is run-scoped accounting, not a durable extension grant registry. No deployment/live acceptance occurred; capabilities remain unavailable.
+
+Exact next action: persist an owner-reviewed grant bound to exact signed Project manifest requirements and installation generation; expose approve/status/revoke callers and connect `ctx.resources.execute` to existing scoped Gadget dispatch. Test duplicate writes, changed-key reuse, revocation races and cross-install denial before enabling any resource capability.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (EP02 structured-data binding; code `6871563e` pushed)
 
 The Agent SDK now requires structured-data declarations to bind to a PROJECT_BOUND Gadget and validates CRUD schemas, byte-bounded JSON envelopes, write idempotency, and exact workflow-role operation/table coverage. This reuses existing scoped MicroAppDO storage and grants; it does not widen Gadget authority. Code `6871563ea9e70019c42d98a88eabf6b3daf0707c` is pushed to `origin/Mcbt5s-Backup-2`. Local evidence: SDK **36/36**, SpaceDO install **32/32**, SDK/Spaces typechecks and `git diff --check`. No broker ledger, migration, deployment or live acceptance exists; all resource kinds remain unavailable and rollouts remain disabled.

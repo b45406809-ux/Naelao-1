@@ -1,5 +1,9 @@
 # Managed services and sidecar implementation progress
 
+## Cross-plan checkpoint pointer — 2026-11-16 (EP02 run-scoped receipts; code `27f571d0` pushed)
+
+The existing durable workflow effect journal now records content-free hashes, byte counts, installation/project/actor, outcome and measured credits for Gadget-backed structured-data operations. Local workflow tests **19/19**, SDK/Agents typechecks and diff check pass. S/U row statuses do not change; resume the EP02 exact action in AGENTS, then continue open S/U implementation. All provider/runtime rollouts remain disabled.
+
 ## Cross-plan checkpoint pointer — 2026-11-16 (EP02 contract slice; code `6871563e` pushed)
 
 The signed Project bundle's structured-data request is now constrained to its existing PROJECT_BOUND Gadget and signed worker-role tables/actions. SDK **36/36**, SpaceDO install **32/32**, SDK/Spaces typechecks and diff check pass. This leaves S3–S9/U01–U12 status unchanged; see the row-level ledger and prior checkpoints. No provider credentials are blocking ordinary implementation. Exact current action is EP02 durable grant/operation receipts through the scoped MicroAppDO caller; keep resources unavailable pending that broker and continue open S/U work afterward.

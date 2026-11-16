@@ -1,5 +1,11 @@
 # Mature knowledge platform implementation progress
 
+## Cross-plan pointer — 2026-11-16 (EP02 run-scoped receipts; code `27f571d0` pushed)
+
+Existing workflow Gadget effects now carry content-free input/result hashes, byte counts, installation/project/actor identity, outcome and measured credits in the durable run journal. This adds no Knowledge grant or retrieval path. Workflow tests **19/19**, SDK/Agents typechecks and diff check pass. Grant registry, resource SDK caller and live acceptance remain open; resource kinds stay unavailable.
+
+Exact next action: continue EP02 with exact-manifest owner grant persistence and runtime resource dispatch, then resume K05 lifecycle and K06–K30. Keep AI Search unselected and rollouts disabled.
+
 ## Cross-plan pointer — 2026-11-16 (EP02 contract slice; code `6871563e` pushed)
 
 Structured-data resource declarations are now restricted to a bound PROJECT_BOUND Gadget and the signed workflow role's exact operations/tables. This does not change Knowledge backend selection or retrieval authority. Code `6871563ea9e70019c42d98a88eabf6b3daf0707c` is pushed; SDK **36/36**, SpaceDO install **32/32**, SDK/Spaces typechecks, and diff check pass. Resource kinds remain unavailable; no broker, grant/usage ledger, deployment or live acceptance exists.
