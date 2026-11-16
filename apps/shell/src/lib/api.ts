@@ -3701,6 +3701,15 @@ export interface ExternalKnowledgePublicationSources {
   document_ids: string[];
 }
 
+export interface ExternalKnowledgePublicationEvent {
+  event_id: string;
+  actor_id: string;
+  action: "archived" | "restored_as_draft";
+  from_revision: number;
+  to_revision: number;
+  created_at: string;
+}
+
 export interface SpaceSharedChannelKnowledgeInstallation {
   instance_id: string;
   extension_id: string;
@@ -3750,6 +3759,16 @@ export async function getExternalKnowledgePublicationSources(
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}/sources`, {
     session, cache: "no-store",
   });
+}
+
+export async function listExternalKnowledgePublicationEvents(
+  spaceId: string, projectId: string, publicationId: string, session: SessionCredentials,
+): Promise<ExternalKnowledgePublicationEvent[]> {
+  const response = await apiFetch<{ publication_id: string; events: ExternalKnowledgePublicationEvent[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}/events`,
+    { session, cache: "no-store" },
+  );
+  return response.events;
 }
 
 export async function publishExternalKnowledge(

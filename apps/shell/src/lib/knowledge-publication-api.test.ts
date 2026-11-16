@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { getExternalKnowledgePublicationSources, listExternalKnowledgePublications } from "./api";
+import { getExternalKnowledgePublicationSources, listExternalKnowledgePublicationEvents, listExternalKnowledgePublications } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -8,7 +8,9 @@ it("separates collection discovery from the no-store source membership read", as
     const url = String(input);
     const body = url.endsWith("/sources")
       ? { publication_id: "course_material", revision: 4, document_ids: ["doc-a"] }
-      : { publications: [{ id: "course_material", name: "Course material", revision: 4, archived: false, document_count: 1 }] };
+      : url.endsWith("/events")
+        ? { publication_id: "course_material", events: [] }
+        : { publications: [{ id: "course_material", name: "Course material", revision: 4, archived: false, document_count: 1 }] };
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -26,6 +28,12 @@ it("separates collection discovery from the no-store source membership read", as
     .resolves.toEqual({ publication_id: "course_material", revision: 4, document_ids: ["doc-a"] });
   expect(fetchMock).toHaveBeenLastCalledWith(
     "http://localhost:8787/v1/spaces/space%2Fa/kb/projects/project%20b/external-publications/course_material/sources",
+    expect.objectContaining({ cache: "no-store", headers: expect.any(Headers) }),
+  );
+
+  await expect(listExternalKnowledgePublicationEvents("space/a", "project b", "course_material", session)).resolves.toEqual([]);
+  expect(fetchMock).toHaveBeenLastCalledWith(
+    "http://localhost:8787/v1/spaces/space%2Fa/kb/projects/project%20b/external-publications/course_material/events",
     expect.objectContaining({ cache: "no-store", headers: expect.any(Headers) }),
   );
 });

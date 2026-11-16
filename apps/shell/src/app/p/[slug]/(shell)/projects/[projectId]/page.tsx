@@ -33,6 +33,7 @@ import {
   getProject,
   getProjectUsageSummary,
   listAgentDefinitions,
+  listExternalKnowledgePublicationEvents,
   listExternalKnowledgePublications,
   listSpaceTemplateInstallations,
   listSpaceSharedChannelKnowledge,
@@ -48,6 +49,7 @@ import {
   updateProject,
   type AgentDefinitionSummary,
   type DepartmentOption,
+  type ExternalKnowledgePublicationEvent,
   type ExternalKnowledgePublication,
   type SpaceSharedChannelKnowledgeInstallation,
   type KbDocument,
@@ -120,6 +122,8 @@ export default function ProjectDetailPage() {
   const [savingPublication, setSavingPublication] = React.useState(false);
   const [publicationLoadError, setPublicationLoadError] = React.useState(false);
   const [loadingPublicationSources, setLoadingPublicationSources] = React.useState<string | null>(null);
+  const [loadingPublicationHistory, setLoadingPublicationHistory] = React.useState<string | null>(null);
+  const [publicationHistory, setPublicationHistory] = React.useState<{ publicationId: string; events: ExternalKnowledgePublicationEvent[] } | null>(null);
   const [sharedChannelKnowledge, setSharedChannelKnowledge] = React.useState<SpaceSharedChannelKnowledgeInstallation[]>([]);
   const [sharedChannelKnowledgeDrafts, setSharedChannelKnowledgeDrafts] = React.useState<Record<string, string[]>>({});
   const [sharedChannelKnowledgeLoadError, setSharedChannelKnowledgeLoadError] = React.useState(false);
@@ -486,6 +490,7 @@ export default function ProjectDetailPage() {
       if (!publication) throw new Error("Reload the current collection list before unpublishing");
       await unpublishExternalKnowledge(activeSpaceId, params.projectId, id, creds, publication.revision);
       setExternalPublications(items => items.filter(item => item.id !== id));
+      if (publicationHistory?.publicationId === id) setPublicationHistory(null);
       if (publicationId === id) setPublishedDocumentIds([]);
       show("Knowledge collection unpublished");
       await refreshExternalKnowledge();
@@ -543,6 +548,19 @@ export default function ProjectDetailPage() {
       show(error instanceof Error ? error.message : "Couldn't read collection sources");
     } finally {
       setLoadingPublicationSources(null);
+    }
+  }
+
+  async function showExternalCollectionHistory(publicationId: string) {
+    if (!creds || loadingPublicationHistory) return;
+    setLoadingPublicationHistory(publicationId);
+    try {
+      const events = await listExternalKnowledgePublicationEvents(activeSpaceId, params.projectId, publicationId, creds);
+      setPublicationHistory({ publicationId, events });
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't load Knowledge collection history");
+    } finally {
+      setLoadingPublicationHistory(null);
     }
   }
 
@@ -1034,9 +1052,19 @@ export default function ProjectDetailPage() {
                       onClick={() => void editExternalCollection(publication)}>
                       {loadingPublicationSources === publication.id ? "Loading…" : "Edit"}
                     </Button>
+                    <Button size="sm" variant="ghost" disabled={loadingPublicationHistory !== null}
+                      onClick={() => void showExternalCollectionHistory(publication.id)}>
+                      {loadingPublicationHistory === publication.id ? "Loading…" : "History"}
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={() => void handleArchiveExternalCollection(publication.id, true)}>Archive</Button>
                     <Button size="sm" variant="ghost" onClick={() => void handleUnpublishExternalCollection(publication.id)}>Delete</Button>
                   </>
+                )}
+                {publication.archived && (
+                  <Button size="sm" variant="ghost" disabled={loadingPublicationHistory !== null}
+                    onClick={() => void showExternalCollectionHistory(publication.id)}>
+                    {loadingPublicationHistory === publication.id ? "Loading…" : "History"}
+                  </Button>
                 )}
               </div>
             </div>
@@ -1044,6 +1072,20 @@ export default function ProjectDetailPage() {
         </div>
       ) : (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>No documents are published for external extensions.</p>
+      )}
+      {publicationHistory && (
+        <div className="settings-block" aria-label="Knowledge collection archive history" style={{ marginTop: 12, padding: 14 }}>
+          <div className="settings-row-label">Lifecycle history · {publicationHistory.publicationId}</div>
+          {publicationHistory.events.length === 0 ? (
+            <div className="settings-row-sub" style={{ marginTop: 6 }}>No archive or restore actions are recorded.</div>
+          ) : publicationHistory.events.map(event => (
+            <div className="settings-row" key={event.event_id}>
+              <div className="settings-row-label">{event.action === "archived" ? "Archived" : "Restored as draft"}</div>
+              <div className="settings-row-sub">Revision {event.from_revision} → {event.to_revision} · {event.actor_id} · <time dateTime={event.created_at}>{event.created_at}</time></div>
+            </div>
+          ))}
+          <Button size="sm" variant="ghost" onClick={() => setPublicationHistory(null)}>Close history</Button>
+        </div>
       )}
       <div className="page-header" style={{ marginTop: 24 }}>
         <div className="section-label" style={{ marginBottom: 0 }}>Space-shared channel access for this project</div>

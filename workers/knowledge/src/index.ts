@@ -300,6 +300,25 @@ app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
     { "cache-control": "private, no-store" });
 });
 
+// Administration exposes only lifecycle receipts and requires Project owner/admin authority.
+app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId/events", async c => {
+  const { spaceId, projectId, publicationId } = c.req.param();
+  if (!EXTERNAL_PUBLICATION_ID.test(publicationId)) throw badRequest("Invalid publication id");
+  const access = await collectionProjectAction(c, projectId, "administer");
+  if (access instanceof Response) return access;
+  const publication = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ id: string }>();
+  if (!publication) return c.json({ error_code: "not_found" }, 404);
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT event_id,actor_id,action,from_revision,to_revision,created_at FROM kb_external_publication_events
+     WHERE tenant_id=? AND space_id=? AND project_id=? AND publication_id=? ORDER BY to_revision DESC,event_id DESC LIMIT 100`
+  ).bind(access.tenantId, spaceId, projectId, publicationId).all<{
+    event_id: string; actor_id: string; action: "archived" | "restored_as_draft"; from_revision: number; to_revision: number; created_at: string;
+  }>();
+  return c.json({ publication_id: publicationId, events: results }, 200, { "cache-control": "private, no-store" });
+});
+
 // Host-only revision directory used to compare a stored installation grant with the current
 // owner-published collection before extension retrieval. It intentionally omits document IDs.
 app.get("/internal/spaces/:spaceId/kb/projects/:projectId/external-publications", async c => {
