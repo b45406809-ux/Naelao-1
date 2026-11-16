@@ -1,12 +1,14 @@
 # Unified platform implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (PW06 cancellation/publication fence; `73e3fcc4` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (K08 owner-opted scheduled refresh; `8512d262` pushed)
 
-Automatic checked worker publication now passes through an attempt-bound parent-DO SQLite permit. The permit transaction checks the live worker state and pins the exact validated candidate and target head. Cancellation before it blocks the publish call; after it, the operation may finish and the durable outcome is exposed through the scope-checked worker view without replacing `terminated`. Unknown attempts are reported as outcome-unknown and are not replayed.
+Owner-approved single-page website sources can now opt into daily or weekly refresh through Project Shell. A durable lease/generation ledger deduplicates scheduled ticks; every run rechecks the current Project owner role, website grant, source revision, K09 path/robots/redirect policy and signed preview receipt before indexing. Unchanged pages update freshness without re-embedding. Duplicate/missed events, stale completion, pause/revoke and off-rollout behavior have local tests. The rollout flag is false in all Wrangler environments.
 
-Code `73e3fcc4b27d24065c4ef26a0a5430c152685c18` is pushed and remote-verified. Local checks: integration/delegation tests **24/24**, Agents typecheck, diff check and an in-memory SQLite ordering exercise. No real Durable Object, Artifact Worker, Workspace Coordinator, deployment or runtime race acceptance ran. Worker/container isolation, cost settlement, broader revocation and deployed recovery remain open.
+Code `8512d262c22409514fce74706ee0c68c57baf09f` is pushed and remote-verified. Local checks: Knowledge **163/163**, worker typecheck, Shell API **4/4**, Shell typecheck, 275-migration inventory, release/deployment validators, release manifest/migration/Wrangler isolation **45/45**, diff check and SQLite schema/trigger/SQL exercises. Migration 0275 remains unapplied. No browser, deployed Worker/D1, live site/provider, invoice or rollout acceptance ran.
 
-Exact next action: implement K08 owner-opt-in scheduled/incremental refresh for existing owner-approved single-page sources, using source revision, live website grant, K09 path/robots policy and the existing refresh ledger. Test duplicate/missed ticks, stale completion and revoke-during-refresh. Keep crawler/provider sync and all rollout flags off until their respective consent and deployed acceptance gates pass.
+K08 remains partial for provider connectors, cursors/ETags, aggregate operation/cost reporting and a supported payer/rate contract. K09 still covers one-page snapshots only; crawling/site terms remain open. PW06 still lacks deployed race/runtime/cost acceptance. Keep all rollouts disabled.
+
+Exact next action: add a stable unpriced refresh invocation to the existing Billing usage ledger with payer and credit cost unset; verify no subscription meter event is emitted and show the result beside source freshness.
 
 ## Previous cross-plan pointer — 2026-11-16 (K14/K17 language-pair evaluation; `d6f6cfb7` pushed)
 
