@@ -1,10 +1,16 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (K07 versioned source lineage; `3bf31c66` pushed)
+## Latest cross-plan pointer — 2026-11-16 (K14/K17 language-stratified evaluation; `3d67805e` pushed)
+
+The local Knowledge search caller now supplies content-free traces; K17 reports overall and per-query-language metrics and checks caller-selected thresholds per language. Code `4e3c3a7a` and `3d67805e` are pushed and remote-verified. Evaluator and route integration tests pass **6/6** each, with Node syntax and diff checks. Shona/Ndebele/domain data remain synthetic or absent; no provider/deployed acceptance or rollout ran.
+
+S2 is `IMPLEMENTED_LOCAL` for currently supported provider lanes. S3–S9/U01–U12 remain partial at their recorded code, runtime-contract, provider-feed, product-policy and deployed-evidence gaps. Exact next action: add K14 query-language/source-language pair evaluation and per-pair threshold reporting using synthetic cross-language fixtures, then continue the remaining independent S/U/P/PW/EP gaps. Preserve rollout and runtime gates.
+
+## Previous cross-plan pointer — 2026-11-16 (K07 versioned source lineage; `3bf31c66` pushed)
 
 Knowledge migration 0270 now persists source adapter kind, content hash, version and state, and opaque host connection/grant references; create/edit/delete and archive/restore callers preserve the lineage. Manual content is current; URL excerpts remain unsupported for refresh. The release schema manifest now verifies migrations 0266–0270; it had previously stopped at 0265. Code `3bf31c665451aceb48aa047680d67309524cac00` is remote-verified. Knowledge **121/121**, typecheck, SQLite migration/backfill/connector-guard/insert checks and release inventory **270 files** pass. No migration deployment or live acceptance ran; S/U statuses unchanged.
 
-Exact next action: connect the host-managed `website_connections` authorization record to a bounded Knowledge fetch/create caller with exact user/Project/origin checks, redirect revalidation, persisted grant revision and revocation handling. K07 connector issuance and K08 freshness remain open. Then continue the managed-services queue at S3/U05 and S4–S9/U01–U12 plus remaining platform/Knowledge work; keep rollouts off.
+At that checkpoint the website connection caller and K08 refresh lifecycle were still open; those have since been implemented and are recorded in the Knowledge ledger. Do not resume this stale action.
 
 ## Latest cross-plan pointer — 2026-11-16 (K06 attachment/channel scope verified; current code `0642ece4`)
 

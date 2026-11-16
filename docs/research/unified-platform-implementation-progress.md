@@ -1,6 +1,12 @@
 # Unified platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (K07 source lineage; `3bf31c66` pushed)
+## Latest cross-plan pointer — 2026-11-16 (K14/K17 language-stratified evaluation; `3d67805e` pushed)
+
+The Knowledge search integration now produces content-free traces, with overall and per-query-language quality, safety, latency and cost metrics. Explicit thresholds must pass for each reported language. Code `4e3c3a7a` and `3d67805e` are pushed and remote-verified; evaluator and local route integration tests each pass **6/6**. No reviewed cross-language corpus or deployed/provider acceptance exists; rollout remains disabled.
+
+Exact next action: add query-language/source-language pair evaluation and threshold checks with synthetic cross-language fixtures. Continue remaining S/U/P/PW/K/EP code gaps after that; keep all rollouts disabled.
+
+## Previous cross-plan pointer — 2026-11-16 (K07 source lineage; `3bf31c66` pushed)
 
 Migration 0270 persists versioned source lineage on canonical Knowledge documents; manual create/edit/delete and archive/restore callers use it, while URL excerpts are explicitly unsupported for refresh. Opaque connector reference/grant-revision fields are private and connector rows require both, but no grant issuer or adapter caller exists. Release migration inventory was stale at 0265 and is now verified through 0270 (**270** files). Code `3bf31c665451aceb48aa047680d67309524cac00` is remote-verified; Knowledge **121/121**, typecheck, SQLite source migration/insert exercises and diff check pass. No deployment/live acceptance ran.
 
