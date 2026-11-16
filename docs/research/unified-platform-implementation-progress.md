@@ -1,6 +1,12 @@
 # Unified platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (EP02 bounded Project object runtime; code `ee7390e8` pushed)
+## Latest cross-plan pointer — 2026-11-16 (EP02 versioned object archive recovery; code `326779c1` pushed)
+
+Project object rows now have a separate bounded version-1 archive snapshot/restore path. Restore is fenced by the current exact Project install, signed release/resource digests, and generation; it preserves current rows, enforces quotas, skips missing/newer owners and respects Space erasure. Generic archives do not restore object rows, grants or active operation leases, including legacy grant/lease rows. Code `326779c1bc7fcab9ce7f66a2328ffe670a5b43da` is pushed. Archive/backup suites **30/30**, Spaces typecheck and diff check pass. No migration, deployment or live restore acceptance ran; migrations 152/153 and unified workspace/dual-read/Agent37 gates remain unchanged and disabled.
+
+Exact next action: trace current budget authority from the Agent workflow host and WorkflowRunDO to the SpaceDO resource route, then implement per-install resource request/byte admission and durable settled/unknown receipts with replay, concurrency and revocation tests. Continue job resources and S2–S9/U01–U12/P/PW/K/EP gaps afterward. Preserve `infra/scripts/__pycache__/` and keep all rollouts disabled.
+
+## Previous cross-plan pointer — 2026-11-16 (EP02 bounded Project object runtime; code `ee7390e8` pushed)
 
 The signed Project workflow caller now reaches fixed object operations in SpaceDO SQLite with current owner grant, release, install generation and Project status checks, single-use persisted leases, 64 KiB/object and 64-object/512 KiB/install quotas. Uninstall and release changes remove object content and active grants. The table is excluded from archives because versioned snapshot/restore is still uncoded; resource catalog and install admission remain unavailable. Commit `ee7390e861afd66bfcb14e551d8662c4dcb2f1be` is pushed. Local SDK/Spaces/Agents tests pass **36/36**, **47/47**, **14/14**, all three typechecks and diff check pass. Migrations 152/153 are unapplied; no deployed/archive/live acceptance ran. Unified workspace, dual-read, Agent37 and other rollout gates remain unchanged and disabled.
 

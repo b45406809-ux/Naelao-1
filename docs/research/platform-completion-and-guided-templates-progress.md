@@ -1,6 +1,14 @@
 # Platform completion and guided templates progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 bounded Project object runtime; code `ee7390e8` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 versioned object archive recovery; code `326779c1` pushed)
+
+EP02 now has bounded object runtime calls plus version-1 archive snapshot/restore for Project-bound install rows. Export validates exact signed release, manifest/resource digests, install generation and object bytes; coverage reports object count/bytes. Restore is additive only for an already-existing exact active/disabled install generation, preserves current data, respects per-install quotas and erasure tombstones, and skips stale or absent owners. Generic restore never replays object rows, owner grants or operation leases; legacy grant/lease rows are filtered. All resource descriptors and install admission remain unavailable.
+
+Code `326779c1bc7fcab9ce7f66a2328ffe670a5b43da` is pushed and verified. Local archive export/restore and backup tests **30/30**, Spaces typecheck and diff check pass. No migration, deployment, browser, invoice/provider or live acceptance ran; all rollouts remain disabled. EP02 install-level cost admission/settlement and jobs remain code gaps, not credential blockers. Other P01–P24/PW01–PW06, K01–K30, S1–S9/U01–U12 and EP03–EP06 work remains active; Knowledge retrieval and AI Search selection did not change.
+
+Exact next action: trace current Project/agent budget and settlement authority through `workers/agents/src/workflow-host.ts`, `WorkflowRunDO`, and the SpaceDO extension resource route; implement per-install request/byte cost admission and durable settled/unknown receipts with replay, concurrency, revocation and uncertain-outcome tests. Then implement jobs and continue independent open requirements. Keep resources and rollouts disabled; preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 bounded Project object runtime; code `ee7390e8` pushed)
 
 The EP02 workflow-to-SpaceDO object caller now implements fixed `get`/`put`/`delete` over separate Project/install SQLite rows. Calls require exact owner grant/revision, signed release, installation generation and active Project, use single-use leases, validate key/base64/MIME/output schemas, enforce 64 KiB/object and 64-object/512 KiB/install quotas, and clear content/grants on uninstall or release change. SDK/SpaceDO manifest and runtime checks keep every resource capability unavailable; the existing fail-closed catalog/install admission stays unchanged. `extension_resource_objects` is excluded from archive serialization while this data path lacks snapshot/recovery coverage.
 

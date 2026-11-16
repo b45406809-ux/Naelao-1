@@ -1,6 +1,12 @@
 # Mature knowledge platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (EP02 bounded Project object runtime; code `ee7390e8` pushed)
+## Latest cross-plan pointer — 2026-11-16 (EP02 versioned object archive recovery; code `326779c1` pushed)
+
+The Project object path now has bounded operation calls and a version-1 Space archive snapshot/restore. Restore checks the existing signed installation, exact generation and resource digest, preserves current values, respects quotas/tombstones and never restores owner grants or active leases. Code `326779c1bc7fcab9ce7f66a2328ffe670a5b43da` is pushed and verified; local archive/backup tests **30/30**, Spaces typecheck and diff check pass. No Knowledge retrieval/ACL/collection/provider requirement or K01–K30 status changed; Cloudflare AI Search remains unselected. No migration/deployment or live recovery acceptance ran, and all resource capabilities remain unavailable.
+
+Exact next cross-plan action: trace the authoritative budget reservation/settlement across the Agent workflow host, WorkflowRunDO and SpaceDO resource route; implement per-install request/byte admission and durable settled/unknown usage receipts with replay, concurrency and revocation tests. Then continue EP02 jobs and K05 lifecycle/K06–K30 plus other open plan requirements.
+
+## Previous cross-plan pointer — 2026-11-16 (EP02 bounded Project object runtime; code `ee7390e8` pushed)
 
 The object workflow now reaches a separately scoped SpaceDO table through exact signed Project install/grant checks, single-use leases and bounded per-install quotas. Object rows are deliberately excluded from Space archives while snapshot/restore is uncoded. No Knowledge retrieval, ACL, collection authority, AI Search evaluation or K01–K30 status changed. Local SDK/Spaces/Agents suites pass **36/36**, **47/47**, **14/14**; affected typechecks and diff check pass. Commit `ee7390e861afd66bfcb14e551d8662c4dcb2f1be` is pushed. No migration/deployment, archive/live/provider acceptance ran; all resource capabilities remain unavailable.
 

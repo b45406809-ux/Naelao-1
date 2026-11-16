@@ -1,6 +1,14 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 bounded object operation path; code `ee7390e8` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 versioned object archive recovery; code `326779c1` pushed)
+
+Full Space archives now capture version-1 Project-install object snapshots separately from generic SQLite rows, with exact signed release/manifest/resource digests, generation, canonical key/type/base64, size/hash and timestamps. Snapshot count/bytes are bounded and included in archive coverage. Restore requires the same pre-existing active/disabled Project-bound installation and generation, preserves current values, applies the per-install object quotas, skips stale/absent owners and respects the Space erasure tombstone. Resource grants and active leases never restore; those tables are excluded from new archives and legacy copies are filtered. Object catalog/install admission remain fail-closed.
+
+Code `326779c1bc7fcab9ce7f66a2328ffe670a5b43da` is pushed and remote-verified. Local archive export/restore and backup suites **30/30**, Spaces typecheck and diff check pass. No migration was added; 152/153 remain unapplied. No deployed Worker, browser, provider, invoice or live recovery test ran; all rollouts remain disabled. No S1–S9/U01–U12 status changes.
+
+EP02 archive recovery is implemented locally. Per-install resource cost admission/settlement, job resources, and remaining S2–S9/U01–U12/P/PW/K/EP code gaps remain; none are credential blockers. Exact next action: trace the authoritative Project/agent budget reservation and settlement from `workers/agents/src/workflow-host.ts`/`WorkflowRunDO` through the SpaceDO resource route, then implement request/byte cost admission and durable settled/unknown receipts using existing billing authority with replay, concurrency, revocation and uncertainty tests. Continue jobs and other plan requirements afterward. Keep object/job catalog and rollout flags disabled; preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 bounded object operation path; code `ee7390e8` pushed)
 
 The signed Project workflow caller now dispatches fixed `get`/`put`/`delete` object operations through SpaceDO's durable SQLite table. Exact owner approval, release/install generation, Project status, schema, single-use operation lease, bounded key/base64/MIME validation and per-install quotas are checked. Objects are limited to 64 KiB each and 64 objects/512 KiB per install. Uninstall and release changes clear object content and active grants. Resource installation/catalog remain unavailable. Local evidence: SDK **36/36**, Spaces **47/47**, Agents **14/14**, three package typechecks and `git diff --check`; commit `ee7390e861afd66bfcb14e551d8662c4dcb2f1be` is pushed and remote-verified. SpaceDO migrations 152/153 are not applied; no deploy, browser/provider/invoice or live acceptance ran. No S1–S9/U01–U12 status changes.
 
