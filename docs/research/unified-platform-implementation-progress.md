@@ -1,10 +1,18 @@
 # Unified platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (K14/K17 language-pair evaluation; `d6f6cfb7` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (PW06 cancellation/publication fence; `73e3fcc4` pushed)
+
+Automatic checked worker publication now passes through an attempt-bound parent-DO SQLite permit. The permit transaction checks the live worker state and pins the exact validated candidate and target head. Cancellation before it blocks the publish call; after it, the operation may finish and the durable outcome is exposed through the scope-checked worker view without replacing `terminated`. Unknown attempts are reported as outcome-unknown and are not replayed.
+
+Code `73e3fcc4b27d24065c4ef26a0a5430c152685c18` is pushed and remote-verified. Local checks: integration/delegation tests **24/24**, Agents typecheck, diff check and an in-memory SQLite ordering exercise. No real Durable Object, Artifact Worker, Workspace Coordinator, deployment or runtime race acceptance ran. Worker/container isolation, cost settlement, broader revocation and deployed recovery remain open.
+
+Exact next action: implement K08 owner-opt-in scheduled/incremental refresh for existing owner-approved single-page sources, using source revision, live website grant, K09 path/robots policy and the existing refresh ledger. Test duplicate/missed ticks, stale completion and revoke-during-refresh. Keep crawler/provider sync and all rollout flags off until their respective consent and deployed acceptance gates pass.
+
+## Previous cross-plan pointer — 2026-11-16 (K14/K17 language-pair evaluation; `d6f6cfb7` pushed)
 
 The Knowledge search integration now produces content-free traces, with overall, per-query-language and query/source-language-pair quality, safety, latency and cost metrics. Explicit thresholds must pass at every reported level. Code `4e3c3a7a`, `3d67805e` and `d6f6cfb7` are pushed and remote-verified; evaluator and local route integration tests each pass **6/6**. No reviewed cross-language corpus or deployed/provider acceptance exists; rollout remains disabled.
 
-Exact next action: implement owner-authorized per-conversation AgentMail assistant routing with revision-pinned dispatch and an owner Shell caller. User-issued switch commands remain unsupported until the channel identity contract can prove the sender's Naelao principal. Continue remaining S/U/P/PW/K/EP code gaps; keep all rollouts disabled.
+The AgentMail action recorded at this older checkpoint was completed and pushed at `3ee64def`; see the managed-services/platform checkpoint entries. Resume from the K08 action in the latest checkpoint above.
 
 ## Previous cross-plan pointer — 2026-11-16 (K07 source lineage; `3bf31c66` pushed)
 

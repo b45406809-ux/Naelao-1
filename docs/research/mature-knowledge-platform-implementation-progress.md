@@ -1,5 +1,9 @@
 # Mature knowledge platform implementation progress
 
+## Cross-plan resumption pointer — 2026-11-16
+
+The active cross-plan next action is the K08 owner-opt-in scheduled/incremental refresh recorded in `AGENTS.md` and the platform/managed-services progress files. K10 remains uncoded because no supported upstream file-ACL identity proof connector exists; do not repeat that source audit without new evidence. Preserve the current built-in retrieval path and keep all rollout flags disabled.
+
 ## Latest evaluation checkpoint — 2026-11-16 (K14/K17 language-pair evaluation; `d6f6cfb7` pushed)
 
 The existing local Knowledge search integration creates only content-free candidate/citation/source-revision traces and feeds them to the evaluator. The evaluator now reports ranking, citation, stale-version, forbidden exposure, abstention, latency and cost metrics overall, per query language, and per query/source-language pair. Explicit thresholds must pass at all three levels; no default threshold is selected. The output schema is version 2. Codes `4e3c3a7a`, `3d67805e` and `d6f6cfb7` are pushed and remote-verified.
