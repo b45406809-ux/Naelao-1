@@ -1,6 +1,12 @@
 # Mature knowledge platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (EP02 Project object grant staging; code `82bbee1e` pushed)
+## Latest cross-plan pointer — 2026-11-16 (EP02 bounded Project object runtime; code `ee7390e8` pushed)
+
+The object workflow now reaches a separately scoped SpaceDO table through exact signed Project install/grant checks, single-use leases and bounded per-install quotas. Object rows are deliberately excluded from Space archives while snapshot/restore is uncoded. No Knowledge retrieval, ACL, collection authority, AI Search evaluation or K01–K30 status changed. Local SDK/Spaces/Agents suites pass **36/36**, **47/47**, **14/14**; affected typechecks and diff check pass. Commit `ee7390e861afd66bfcb14e551d8662c4dcb2f1be` is pushed. No migration/deployment, archive/live/provider acceptance ran; all resource capabilities remain unavailable.
+
+Exact next cross-plan action: add versioned object snapshot/restore with Project/install generation checks and archive coverage tests. K05 broader lifecycle and K06–K30 remain code work; AI Search remains unselected.
+
+## Previous cross-plan pointer — 2026-11-16 (EP02 Project object grant staging; code `82bbee1e` pushed)
 
 The Project owner review caller can now record operation-only approvals for staged Project-scoped object requirements without granting bucket paths or activating runtime access. Code `82bbee1ecfb261a727c398978ea5c90135ef4731` is pushed. Latest delta evidence: Spaces **50/50**, Shell API **1/1**, affected Spaces/Shell typechecks and diff check. No Knowledge retrieval, provider, collection authority, D1/SpaceDO migration or live acceptance changed. All resource capabilities remain unavailable.
 

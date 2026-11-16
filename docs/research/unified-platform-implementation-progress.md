@@ -1,6 +1,12 @@
 # Unified platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (EP02 Project object grant staging; code `82bbee1e` pushed)
+## Latest cross-plan pointer — 2026-11-16 (EP02 bounded Project object runtime; code `ee7390e8` pushed)
+
+The signed Project workflow caller now reaches fixed object operations in SpaceDO SQLite with current owner grant, release, install generation and Project status checks, single-use persisted leases, 64 KiB/object and 64-object/512 KiB/install quotas. Uninstall and release changes remove object content and active grants. The table is excluded from archives because versioned snapshot/restore is still uncoded; resource catalog and install admission remain unavailable. Commit `ee7390e861afd66bfcb14e551d8662c4dcb2f1be` is pushed. Local SDK/Spaces/Agents tests pass **36/36**, **47/47**, **14/14**, all three typechecks and diff check pass. Migrations 152/153 are unapplied; no deployed/archive/live acceptance ran. Unified workspace, dual-read, Agent37 and other rollout gates remain unchanged and disabled.
+
+Exact next action: implement versioned archive snapshot/restore for object rows with exact tenant/Space/Project/install identity and generation, coverage/size accounting and stale restore fencing; add recovery tests. Continue the remaining S/U/P/PW/K/EP code gaps after that. Preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan pointer — 2026-11-16 (EP02 Project object grant staging; code `82bbee1e` pushed)
 
 Code `82bbee1ecfb261a727c398978ea5c90135ef4731` carries the exact owner grant ledger forward to Project-scoped object request review. Operations may be reviewed, but no arbitrary path/table is granted, no storage caller exists yet, and activation/capability catalog remain unavailable. Local delta evidence: Spaces **50/50**, Shell grant API **1/1**, Spaces/Shell typechecks and diff check. The prior structured-data caller at `aa290198532b2c7a47878b69d7528c04ce5685e1` passed its broader SDK/Agents/Router/Spaces/Shell suites and typechecks. No deploy or live acceptance ran.
 

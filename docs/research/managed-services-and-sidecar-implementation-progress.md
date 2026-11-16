@@ -1,6 +1,12 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 object request review staging; code `82bbee1e` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 bounded object operation path; code `ee7390e8` pushed)
+
+The signed Project workflow caller now dispatches fixed `get`/`put`/`delete` object operations through SpaceDO's durable SQLite table. Exact owner approval, release/install generation, Project status, schema, single-use operation lease, bounded key/base64/MIME validation and per-install quotas are checked. Objects are limited to 64 KiB each and 64 objects/512 KiB per install. Uninstall and release changes clear object content and active grants. Resource installation/catalog remain unavailable. Local evidence: SDK **36/36**, Spaces **47/47**, Agents **14/14**, three package typechecks and `git diff --check`; commit `ee7390e861afd66bfcb14e551d8662c4dcb2f1be` is pushed and remote-verified. SpaceDO migrations 152/153 are not applied; no deploy, browser/provider/invoice or live acceptance ran. No S1–S9/U01–U12 status changes.
+
+The object table is excluded from archives until versioned snapshot/restore is implemented. Archive recovery, extension resource billing admission/settlement, jobs and remaining S2–S9/U01–U12/P/PW/K/EP gaps are code work; no credentials block them. Exact next action: implement archive snapshot/restore for Project-install object data with exact generation/ownership checks, byte/count coverage and tombstone/fresh-install protection; test export, restore and stale archive non-resurrection. Keep object/job catalog and rollout flags disabled; preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 object request review staging; code `82bbee1e` pushed)
 
 Code `82bbee1ecfb261a727c398978ea5c90135ef4731` extends the exact Project owner grant/status/revoke API and Shell review caller to stage Project-scoped object requirements, with operation choices and no fabricated table/path grants. Activation validates the empty object table selection and still rejects the object capability as unavailable. Structured-data broker code remains at pushed `aa290198532b2c7a47878b69d7528c04ce5685e1`. Latest local delta evidence: Spaces **50/50**, Shell resource API **1/1**, Spaces/Shell typechecks and diff check. Migration 150/151, deploy, browser, provider/invoice and live acceptance remain unrun; rollout is off.
 

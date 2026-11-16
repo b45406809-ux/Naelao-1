@@ -1,6 +1,14 @@
 # Platform completion and guided templates progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 Project object grant staging; code `82bbee1e` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 bounded Project object runtime; code `ee7390e8` pushed)
+
+The EP02 workflow-to-SpaceDO object caller now implements fixed `get`/`put`/`delete` over separate Project/install SQLite rows. Calls require exact owner grant/revision, signed release, installation generation and active Project, use single-use leases, validate key/base64/MIME/output schemas, enforce 64 KiB/object and 64-object/512 KiB/install quotas, and clear content/grants on uninstall or release change. SDK/SpaceDO manifest and runtime checks keep every resource capability unavailable; the existing fail-closed catalog/install admission stays unchanged. `extension_resource_objects` is excluded from archive serialization while this data path lacks snapshot/recovery coverage.
+
+Code `ee7390e861afd66bfcb14e551d8662c4dcb2f1be` is pushed and verified. Local suites: SDK **36/36**, Spaces **47/47**, Agents **14/14**; SDK/Spaces/Agents typechecks and diff check pass. Migrations 152/153 remain unapplied; no Worker deployment, browser, provider/invoice, archive/restore or live acceptance ran. Rollouts are disabled.
+
+EP02 object archive recovery and installation-level monetary admission/settlement remain uncoded, as do job resources and other EP/K/S/U/P/PW requirements. No credentials block the remaining code. Exact next action: add versioned Space archive snapshot/restore for object rows with ownership/generation fencing and byte/count coverage, then test restoration and stale archive non-resurrection. Keep resource capabilities unavailable and Cloudflare AI Search unselected.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 Project object grant staging; code `82bbee1e` pushed)
 
 The owner review status/approve/revoke caller now accepts Project-scoped object requirements with operation-only approvals and no table or object-path authority. Shell distinguishes object requests and warns that storage remains unavailable; staged approval cannot activate them. Code `82bbee1ecfb261a727c398978ea5c90135ef4731` is pushed. Latest local delta: Spaces **50/50**, Shell grant API **1/1**, Spaces/Shell typechecks and diff check. The preceding structured-data broker checkpoint `aa290198532b2c7a47878b69d7528c04ce5685e1` passed SDK **36/36**, Agents **21/21**, Router **75/75**, and the same affected typechecks. No migrations/deployment/browser/provider/live acceptance ran; resource descriptors remain unavailable.
 
