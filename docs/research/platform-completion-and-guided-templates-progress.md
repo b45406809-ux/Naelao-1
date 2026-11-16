@@ -1,5 +1,13 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K08 bounded website refresh; `7732d992` pushed)
+
+K08 now has a manual website refresh path through the Project owner preview/review caller, a migration-backed idempotent operation ledger, revision/grant fencing, two-minute abandoned-fetch recovery, bounded retry/backoff, and freshness status in Project Shell. The previous indexed content remains authoritative until its approved replacement is successfully reindexed.
+
+Code `7732d992a471440ec6271e614705244e8bab59aa` is remote-verified. Knowledge **141/141**, Shell caller **3/3**, both typechecks, release inventory **272**, release/deployment validators and Python tests **39/39**, and diff check pass. Migration 0272 is unapplied; no browser, deployed Worker/D1, scheduler, provider or live acceptance ran. Rollouts remain disabled and `infra/scripts/__pycache__/` remains unstaged.
+
+K08 remains partial for scheduled/incremental sync, cursors, cost and operational reporting. Exact next action: implement K09's host-owner configured path restrictions and robots checks through website preview/create/refresh and every redirect; continue the remaining K/S/U/P/PW/EP requirements afterward.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (K07 owner-approved website snapshot; `99f9081c` pushed)
 
 The Project Shell reaches a Knowledge preview/create path backed by the exact host-owned active website connection. Preview enforces owner/Project/origin and redirect-time SSRF/origin checks, bounded HTML/Markdown/plain text, sanitized content and a 15-minute HMAC receipt. The owner reviews/edits before idempotent create. Migration 0271 binds searchable website docs to the connection and caps it at 100 pages; publication/search/citation paths check live status, while host revocation blocks access and starts durable cleanup. The browser profile is still revoked when Knowledge cleanup is unavailable.
