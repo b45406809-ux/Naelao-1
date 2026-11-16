@@ -9,6 +9,9 @@ interface SecurityProject {
 export interface SecurityBlueprint {
   schemaVersion: string;
   projects: SecurityProject[];
+  businessRolesSchemaVersion?: number;
+  /** Opaque JSON here; the SDK performs the detailed role/reference schema validation. */
+  businessRoles?: unknown;
 }
 
 export type BlueprintRating = "A+" | "A" | "B" | "REJECTED";
@@ -48,7 +51,30 @@ export function evaluateBlueprintSecurity(
   }
   if (blueprint.schemaVersion !== "2.0")
     criticalViolations.push("Unsupported blueprint schema");
-  let scannedChars = 0;
+  let businessRoleText = "";
+  if (blueprint.businessRolesSchemaVersion !== undefined || blueprint.businessRoles !== undefined) {
+    if (blueprint.businessRolesSchemaVersion !== 1 || !Array.isArray(blueprint.businessRoles)
+      || blueprint.businessRoles.length < 1 || blueprint.businessRoles.length > 32) {
+      criticalViolations.push("Malformed or unsupported business role proposals");
+    } else {
+      try {
+        businessRoleText = JSON.stringify(blueprint.businessRoles);
+        if (new TextEncoder().encode(businessRoleText).byteLength > 64 * 1024) {
+          criticalViolations.push("Business role proposals exceed the security scan limit");
+          businessRoleText = "";
+        }
+      } catch {
+        criticalViolations.push("Malformed business role proposals");
+      }
+    }
+  }
+  let scannedChars = businessRoleText.length;
+  if (businessRoleText && INJECTION.test(businessRoleText))
+    criticalViolations.push("Business role proposals: prompt injection or credential exfiltration payload");
+  if (businessRoleText && SCRIPT.test(businessRoleText))
+    criticalViolations.push("Business role proposals: unescaped script injection tag");
+  if (businessRoleText.includes("\0"))
+    criticalViolations.push("Business role proposals contain null bytes");
   for (const project of blueprint.projects ?? []) {
     if (
       !project ||

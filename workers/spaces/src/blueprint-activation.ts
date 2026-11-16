@@ -1,4 +1,4 @@
-import { validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateBlueprintBusinessRoles, validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 export interface BlueprintActivationDependency {
   extension_id: string;
@@ -21,6 +21,13 @@ export interface BlueprintActivationDependency {
 export interface BlueprintActivationPreview {
   ready: boolean;
   projects: Array<{ project_id: string; project_name: string }>;
+  /** Signed template proposals surfaced for owner review; never applied as grants here. */
+  business_roles: Array<{ id: string; name: Record<string, string>; description: Record<string, string> | null;
+    recommended_space_role: "member" | "admin" | null; resource_requests: NonNullable<SpaceBlueprint["businessRoles"]>[number]["resourceRequests"];
+    assistant: NonNullable<SpaceBlueprint["businessRoles"]>[number]["assistant"] | null;
+    onboarding_steps: NonNullable<SpaceBlueprint["businessRoles"]>[number]["onboardingSteps"];
+    spending_suggestion: NonNullable<SpaceBlueprint["businessRoles"]>[number]["spendingSuggestion"] | null;
+    status: "proposal_requires_owner_review"; grants_applied: false }>;
   coordination_defaults: SpaceBlueprint["coordinationDefaults"] | null;
   expected_usage_defaults: SpaceBlueprint["expectedUsage"] | null;
   dependencies: BlueprintActivationDependency[];
@@ -56,6 +63,13 @@ export function previewBlueprintActivation(
   >,
   runtimeInstallability: ReadonlyMap<string, { installable: boolean; reason?: BlueprintActivationPreview["runtime_requirements"][number]["reason"]; projectSlotsRequired?: number; projectSlotsLimit?: number; resources?: { cpuCores: number; memoryMb: number } }> = new Map()
 ): BlueprintActivationPreview {
+  let businessRoleProposals: NonNullable<SpaceBlueprint["businessRoles"]> = [];
+  if (blueprint.businessRolesSchemaVersion !== undefined || blueprint.businessRoles !== undefined) {
+    if (blueprint.businessRolesSchemaVersion !== 1) throw new Error("Unsupported business role schema version");
+    businessRoleProposals = validateBlueprintBusinessRoles(blueprint.businessRoles, { projects: blueprint.projects,
+      requiredExtensions: blueprint.requiredExtensions ?? [],
+      ...(blueprint.extensionRequirements ? { extensionRequirements: blueprint.extensionRequirements } : {}) });
+  }
   const dependencies = [...new Set(blueprint.requiredExtensions ?? [])]
     .sort()
     .map((extension_id) => {
@@ -178,6 +192,10 @@ export function previewBlueprintActivation(
   return {
     ready: blockers.length === 0,
     projects: blueprint.projects.map(project => ({ project_id: project.id ?? project.name, project_name: project.name })),
+    business_roles: businessRoleProposals.map(role => ({ id: role.id, name: role.name, description: role.description ?? null,
+      recommended_space_role: role.recommendedSpaceRole ?? null, resource_requests: role.resourceRequests,
+      assistant: role.assistant ?? null, onboarding_steps: role.onboardingSteps ?? [], spending_suggestion: role.spendingSuggestion ?? null,
+      status: "proposal_requires_owner_review" as const, grants_applied: false as const })),
     coordination_defaults: blueprint.coordinationDefaults ? structuredClone(blueprint.coordinationDefaults) : null,
     expected_usage_defaults: blueprint.expectedUsage ? structuredClone(blueprint.expectedUsage) : null,
     dependencies,

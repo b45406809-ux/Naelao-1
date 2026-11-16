@@ -4,6 +4,7 @@ import { validateAssistantChannelDefaults, validateAssistantChannelPatch, valida
 import { PROJECT_KINDS } from "./canvas-runtime.js";
 import { validateBlueprintSetupSchema } from "./blueprint-setup-fields.js";
 import { validateSpaceCoordinationSingletonKeys } from "./space-coordination.js";
+import { validateBlueprintBusinessRoles } from "./blueprint-business-roles.js";
 
 const BLUEPRINT_EXTENSION_SCOPES = new Set<GadgetScope>(["USER_PRIVATE", "SPACE_WIDE", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
 const BLUEPRINT_PERMISSION_ACTIONS = new Set<PermissionAction>(["read", "write", "execute", "network", "admin"]);
@@ -95,6 +96,14 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
   if (copy.expectedUsage !== undefined) copy.expectedUsage = validateBlueprintExpectedUsage(copy.expectedUsage);
   if (copy.extensionRequirements !== undefined)
     copy.extensionRequirements = validateBlueprintExtensionRequirements(copy.extensionRequirements, copy.requiredExtensions ?? []);
+  if (copy.businessRolesSchemaVersion !== undefined || copy.businessRoles !== undefined) {
+    if (copy.businessRolesSchemaVersion !== 1) throw new Error("Unsupported business role schema version");
+    copy.businessRoles = validateBlueprintBusinessRoles(copy.businessRoles, {
+      projects: copy.projects,
+      requiredExtensions: copy.requiredExtensions ?? [],
+      ...(copy.extensionRequirements ? { extensionRequirements: copy.extensionRequirements } : {}),
+    });
+  }
   if (copy.coordinationDefaults !== undefined) {
     const defaults = copy.coordinationDefaults as unknown;
     if (!defaults || typeof defaults !== "object" || Array.isArray(defaults)

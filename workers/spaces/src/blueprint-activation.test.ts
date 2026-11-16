@@ -49,6 +49,26 @@ describe("Space Template activation preview", () => {
     expect(preview).toMatchObject({ requires_human_activation: true, installs_or_grants_applied: false });
   });
 
+  it("shows validated business-role proposals to the activation reviewer without resolving or applying grants", () => {
+    const preview = previewBlueprintActivation(blueprint({ requiredExtensions: ["ext_finance", "ext_stock"], requiredCredentials: [],
+      projects: [{ id: "accounts", name: "Accounts", kind: "DualPane", templateMode: "cowork_studio", viewports: {},
+        systemPrompt: "", initialTasks: [], starterFiles: [] }],
+      extensionRequirements: { knowledge: [{ extensionId: "ext_finance", knowledgeId: "finance_faq", purpose: "Approved guidance",
+        access: "member_only", required: false }] },
+      businessRolesSchemaVersion: 1, businessRoles: [{ id: "accountant", name: { en: "Accountant" }, recommendedSpaceRole: "member",
+        resourceRequests: [
+          { resource: { kind: "project", projectId: "accounts" }, actions: ["records.read"], purpose: { en: "Maintain shared records" } },
+          { resource: { kind: "microapp", extensionId: "ext_stock", microappId: "inventory" }, actions: ["stock.read"], purpose: { en: "Check stock" } },
+          { resource: { kind: "knowledge", extensionId: "ext_finance", knowledgeId: "finance_faq" }, actions: ["knowledge.use"], purpose: { en: "Read approved guidance" } },
+        ], assistant: { mode: "read_only" }, onboardingSteps: [{ id: "policy", title: { en: "Policy" }, instructions: { en: "Review policy" }, required: true }],
+        spendingSuggestion: { monthlyCredits: 100 } }],
+    }), new Map(), new Map());
+    expect(preview.business_roles).toEqual([expect.objectContaining({ id: "accountant", status: "proposal_requires_owner_review", grants_applied: false,
+      recommended_space_role: "member", assistant: { mode: "read_only" }, spending_suggestion: { monthlyCredits: 100 },
+      resource_requests: expect.arrayContaining([expect.objectContaining({ resource: { kind: "project", projectId: "accounts" } })]) })]);
+    expect(preview.installs_or_grants_applied).toBe(false);
+  });
+
   it("previews validated channel availability without exposing account provisioning directives", () => {
     const preview = previewBlueprintActivation(blueprint({ requiredExtensions: [], requiredCredentials: [], assistantChannels: {
       spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" },

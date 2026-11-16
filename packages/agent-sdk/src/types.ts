@@ -236,6 +236,39 @@ export interface BlueprintProject {
   executionTier?: number;
 }
 
+/** Signed, portable references used by a template-defined business role proposal. */
+export type BlueprintBusinessRoleResourceRefV1 =
+  | { kind: "project"; projectId: string }
+  | { kind: "extension"; extensionId: string }
+  | { kind: "microapp"; extensionId: string; microappId: string }
+  | { kind: "knowledge"; extensionId: string; knowledgeId: string }
+  | { kind: "collection"; extensionId: string; collectionId: string }
+  | { kind: "shared_data"; projectId: string; extensionId: string; microappId: string; collectionId: string };
+
+export interface BlueprintBusinessRoleResourceRequestV1 {
+  resource: BlueprintBusinessRoleResourceRefV1;
+  /** Action identifiers are suggestions to be resolved to host capabilities after owner review. */
+  actions: string[];
+  purpose: Record<string, string>;
+}
+
+export interface BlueprintBusinessRoleV1 {
+  id: string;
+  name: Record<string, string>;
+  description?: Record<string, string>;
+  /** A recommendation only. A template may not assign Space ownership. */
+  recommendedSpaceRole?: "member" | "admin";
+  resourceRequests?: BlueprintBusinessRoleResourceRequestV1[];
+  assistant?: {
+    mode?: "inherit" | "read_only" | "none";
+    instructions?: Record<string, string>;
+    allowedActions?: string[];
+  };
+  onboardingSteps?: Array<{ id: string; title: Record<string, string>; instructions: Record<string, string>; required: boolean }>;
+  /** Suggestions for owner review; these fields never create a spending mandate or approval rule. */
+  spendingSuggestion?: { monthlyCredits?: number; approvalActions?: string[] };
+}
+
 export interface BlueprintSetupFieldLocalization {
   label?: Record<string, string>;
   helpText?: Record<string, string>;
@@ -300,6 +333,10 @@ export type BlueprintSetupField =
   | ({ id: string; type: "select"; label: string; helpText?: string; required?: boolean; defaultValue?: string; options: Array<{ value: string; label: string }> } & { localization?: BlueprintSetupFieldLocalization; visibleWhen?: BlueprintSetupVisibilityCondition });
 
 export interface SpaceBlueprint {
+  /** Optional additive signed contract; absent on legacy blueprints. */
+  businessRolesSchemaVersion?: 1;
+  /** Template-authored role proposals. These never grant permissions by themselves. */
+  businessRoles?: BlueprintBusinessRoleV1[];
   /** Required when any project declares setupFields. */
   setupSchemaVersion?: 1 | 2;
   /** Optional signed, data-only migrations for owner-reviewed template setup updates. */
