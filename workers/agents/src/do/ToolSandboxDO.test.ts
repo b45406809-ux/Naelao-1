@@ -19,7 +19,7 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; sidecarExecutionSeconds?: number; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; sidecarExecutionSeconds?: number; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean; workspaceBranch?: string; workspaceRevision?: number; workspaceManifestHash?: string } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
@@ -80,6 +80,16 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: workspaceNamespace, PLATFORM_SECRET: "test-secret" } as never,
         { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" }, "/v1/initialize",
         { body: { scope: { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" }, branch: "main", entries: [] } });
+      if (options.workspaceBranch) await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: workspaceNamespace, PLATFORM_SECRET: "test-secret" } as never,
+        { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" }, "/v1/branch",
+        { body: { scope: { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" }, sourceBranch: "main", branch: options.workspaceBranch } });
+      if (options.workspaceBranch) {
+        const headResponse = await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: workspaceNamespace, PLATFORM_SECRET: "test-secret" } as never,
+          { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" }, `/v1/head?branch=${encodeURIComponent(options.workspaceBranch)}`, {});
+        const value = await headResponse.json() as { head?: { revision?: number; manifestHash?: string } };
+        options.workspaceRevision ??= value.head?.revision;
+        options.workspaceManifestHash ??= value.head?.manifestHash;
+      }
     }
 
     const mockContainer = {
@@ -195,6 +205,8 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       headers.delete("x-test-execution-id");
       headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant"));
       headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", ...(options.workspaceProject ? { projectId: "project" } : {}), actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
+        ...(options.workspaceBranch ? { workspaceBranch: options.workspaceBranch } : {}), ...(options.workspaceRevision !== undefined ? { workspaceRevision: options.workspaceRevision } : {}),
+        ...(options.workspaceManifestHash ? { workspaceManifestHash: options.workspaceManifestHash } : {}),
         ...(options.sidecar ? { projectId: "project", installationId: "install-a", containerId: "container-a", installationScope: "PROJECT_SHARED", image: "registry.example/tool@sha256:" + "a".repeat(64), dynamicImage: false } : {}),
         executionId: testExecutionId ?? crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
       return realSandbox.fetch(new Request(request, { headers }));
@@ -664,6 +676,23 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(executionMetricsV2?.doubles?.slice(6, 10)).toEqual([0, 24, 24, 1]); // hydrated, captured, staged bytes, successful checkpoints
     expect(executionMetricsV2?.doubles?.slice(11, 14)).toEqual([0, 0, expect.any(Number)]); // failures, failed latency, pending stage age
     expect(executionMetricsV2?.blobs?.join(" ")).not.toContain("workspace-run");
+  });
+
+  it("pins unified worker runtime hydration to the exact coordinator head and fails closed when stale", async () => {
+    const valid = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, workspaceBranch: "workers/pinned", runId: "worker-pinned" });
+    const validResponse = await valid.sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: JSON.stringify({ code: "return true", workspaceBranch: "workers/pinned" }) }));
+    expect(validResponse.status, await validResponse.clone().text()).toBe(200);
+    const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("worker-pinned")))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+    const branchResponse = await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name, get: () => ({ fetch: (request: Request) => valid.coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, `/v1/head?branch=${encodeURIComponent(`runs/${runHash.slice(0, 32)}`)}`, {});
+    expect(await branchResponse.json()).toMatchObject({ branchBase: { parentBranch: "workers/pinned", revision: 1 } });
+
+    const stale = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, workspaceBranch: "workers/stale", workspaceRevision: 99, runId: "worker-stale" });
+    const staleResponse = await stale.sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: JSON.stringify({ code: "return true", workspaceBranch: "workers/stale" }) }));
+    expect(staleResponse.status).not.toBe(200);
+    expect(await staleResponse.clone().json()).toMatchObject({ error: expect.stringContaining("workspace_worker_head_stale") });
   });
 
   it("accepts workspace writes above the legacy 2 MiB cap and checkpoints the full content", async () => {

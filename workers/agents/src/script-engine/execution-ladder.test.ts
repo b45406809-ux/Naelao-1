@@ -396,6 +396,21 @@ describe("Execution Ladder & Code Runner", () => {
     expect(JSON.parse(requests[0]!.headers.get("x-naelao-container-scope")!).executionId).toBe("validation-worker-attempt-1");
   });
 
+  it("forwards the pinned coordinator head in the authenticated worker runtime scope", async () => {
+    const requests: Request[] = [];
+    const toolSandbox = { idFromName: (name: string) => name, get: () => ({ fetch: vi.fn(async (request: Request) => {
+      requests.push(request); return Response.json({ ok: true, result: { exit_code: 0 } });
+    }) }) };
+    const runner = buildCodeRunner({ toolSandbox: toolSandbox as never, authorizeContainer: async () => true, platformSecret: "secret" });
+    const result = await runner.run({ name: "Bash", code: "npm test", tier: 6, args: { commands: "npm test" },
+      tenantId: "t1", spaceId: "s1", projectId: "p1", agentId: "a1", userId: "u1", runId: "run",
+      workspaceBranch: "workers/task-a", workspaceRevision: 9, workspaceManifestHash: "c".repeat(64), maxTier: 6 });
+    expect(result.ok).toBe(true);
+    expect(JSON.parse(requests[0]!.headers.get("x-naelao-container-scope")!)).toMatchObject({
+      workspaceBranch: "workers/task-a", workspaceRevision: 9, workspaceManifestHash: "c".repeat(64),
+    });
+  });
+
   it("rehydrates lockfiles through the signed, branch-scoped sandbox protocol", async () => {
     const requests: Request[] = [];
     const stub = { fetch: vi.fn(async (request: Request) => {

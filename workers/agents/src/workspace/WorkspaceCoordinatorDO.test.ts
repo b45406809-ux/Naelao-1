@@ -1232,6 +1232,22 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(labels).not.toContain("runtime");
   });
 
+  it("creates a branch only from the caller's exact expected source revision and manifest", async () => {
+    const { instance } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const current = await (await call(instance, "/v1/head?branch=main")).json() as { head: { revision: number; manifestHash: string } };
+    const mismatch = await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "workers/stale",
+      expectedSourceRevision: current.head.revision + 1, expectedSourceManifestHash: current.head.manifestHash });
+    expect(mismatch.status).toBe(409);
+    expect(await mismatch.json()).toMatchObject({ error_code: "base_revision_mismatch" });
+    const created = await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "workers/exact",
+      expectedSourceRevision: current.head.revision, expectedSourceManifestHash: current.head.manifestHash });
+    expect(created.status).toBe(200);
+    expect(await created.json()).toMatchObject({ branch: { branch: "workers/exact", revision: current.head.revision, manifestHash: current.head.manifestHash }, created: true });
+    expect((await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "workers/invalid-pin",
+      expectedSourceRevision: current.head.revision, expectedSourceManifestHash: "wrong" })).status).toBe(400);
+  });
+
   it("keeps a conflicting branch staged without partially merging it", async () => {
     const { instance, objects, analyticsPoints } = setup({ analytics: true });
     const baseBytes = new TextEncoder().encode("base");

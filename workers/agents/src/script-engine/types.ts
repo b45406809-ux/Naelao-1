@@ -514,6 +514,9 @@ export interface TieredCodeRunner {
     containerImage?: string;
     containerOptions?: import("@naelao/agent-sdk").Tier6ContainerOptions;
     workspaceBranch?: string;
+    /** Coordinator head pinned by the host for a delegated worker runtime materialization. */
+    workspaceRevision?: number;
+    workspaceManifestHash?: string;
     language?: "javascript" | "typescript" | "python";
     signal?: AbortSignal;
     onOutput?: (output: { stdout: string; stderr: string }) => void;
@@ -1025,7 +1028,7 @@ export interface ScriptEngineEnv {
   /** Read-only canonical manifest adapter for project workspaces during unified-mode transition.
    *  Legacy R2 reads are used only until the coordinator creates its first branch head. */
   workspaceManifestRead?: () => Promise<{
-    head: { branch: string; revision: number; updatedAt: string };
+    head: { branch: string; revision: number; manifestHash?: string; updatedAt: string };
     entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string; contentType?: string }>;
   } | null>;
   /** Bounded per-file revision metadata for the coordinator-backed workspace history tool. */

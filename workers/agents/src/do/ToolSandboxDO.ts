@@ -1014,9 +1014,6 @@ export class ToolSandboxDO extends DurableObject {
     const tenantId = invocation?.tenantId ?? meter?.tenantId;
     if (!tenantId) throw new Error("workspace_tenant_scope_required");
     const identity = await this.unifiedWorkspaceIdentity(scope, tenantId);
-    // A checkpoint written by the previous allocation must be replayed against that live
-    // session before cold-start replacement closes it and advances allocation generation.
-    await this.replayPendingUnifiedCheckpoint(identity.scope);
     let headResponse = await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(identity.branch)}`);
     if (headResponse.status === 404) {
       // Existing project workspaces must be imported by the explicit migration workflow,
@@ -1044,14 +1041,34 @@ export class ToolSandboxDO extends DurableObject {
     }
     const current = await this.requireWorkspaceResponse(headResponse) as { head?: WorkspaceHead };
     if (!current.head) throw new Error("workspace_head_missing");
+    const pinWorkerHead = identity.branch.startsWith("workers/");
+    if (pinWorkerHead && (!invocation || invocation.workspaceBranch !== identity.branch
+      || !Number.isSafeInteger(invocation.workspaceRevision) || !invocation.workspaceManifestHash
+      || !/^[a-f0-9]{64}$/.test(invocation.workspaceManifestHash))) throw new Error("workspace_worker_head_pin_required");
+    if (pinWorkerHead && (current.head.revision !== invocation!.workspaceRevision
+      || current.head.manifestHash !== invocation!.workspaceManifestHash)) throw new Error("workspace_worker_head_stale");
+    // Validate the worker's requested source before replay can complete an older pending write.
+    // Recheck after replay because completing a durable checkpoint may advance that source head.
+    await this.replayPendingUnifiedCheckpoint(identity.scope);
+    if (pinWorkerHead) {
+      headResponse = await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(identity.branch)}`);
+      const afterReplay = await this.requireWorkspaceResponse(headResponse) as { head?: WorkspaceHead };
+      if (!afterReplay.head || afterReplay.head.revision !== invocation!.workspaceRevision
+        || afterReplay.head.manifestHash !== invocation!.workspaceManifestHash) throw new Error("workspace_worker_head_stale");
+    }
     const runId = invocation?.runId ?? "sandbox-session";
     const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(runId)))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     const workingBranch = `runs/${runHash.slice(0, 32)}`;
-    const createdBranch = await this.workspaceCoordinatorCall(identity.scope, "/v1/branch", { scope: identity.scope, sourceBranch: identity.branch, branch: workingBranch });
+    const createdBranch = await this.workspaceCoordinatorCall(identity.scope, "/v1/branch", { scope: identity.scope, sourceBranch: identity.branch, branch: workingBranch,
+      ...(pinWorkerHead ? { expectedSourceRevision: invocation!.workspaceRevision, expectedSourceManifestHash: invocation!.workspaceManifestHash } : {}) });
     if (!createdBranch.ok) await this.requireWorkspaceResponse(createdBranch);
-    const branchHead = await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(workingBranch)}`)) as { head?: WorkspaceHead };
+    const branchHead = await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(workingBranch)}`)) as { head?: WorkspaceHead; branchBase?: { parentBranch?: string; revision?: number; manifestHash?: string } };
+    if (pinWorkerHead && (branchHead.branchBase?.parentBranch !== identity.branch
+      || branchHead.branchBase.revision !== invocation!.workspaceRevision
+      || branchHead.branchBase.manifestHash !== invocation!.workspaceManifestHash)) throw new Error("workspace_worker_run_branch_base_mismatch");
     const read = await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, `/v1/read?branch=${encodeURIComponent(workingBranch)}`)) as { entries?: WorkspaceEntry[]; head?: WorkspaceHead };
-    if (!Array.isArray(read.entries) || !read.head || read.head.manifestHash !== branchHead.head?.manifestHash) throw new Error("workspace_head_changed_retry");
+    if (!Array.isArray(read.entries) || !read.head || read.head.manifestHash !== branchHead.head?.manifestHash
+      || read.head.revision !== branchHead.head?.revision || read.head.branch !== workingBranch) throw new Error("workspace_head_changed_retry");
     const expectedHashes: Record<string, string> = {};
     let hydratedBytes = 0;
     for (const entry of read.entries) {

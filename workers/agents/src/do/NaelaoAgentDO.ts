@@ -4257,9 +4257,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             }
             try {
               assertWorkerActive();
+              const workerWorkspaceHead = engineEnv.workspaceManifestRead ? (await engineEnv.workspaceManifestRead())?.head : undefined;
+              if (engineEnv.workspaceManifestRead && (!workerWorkspaceHead || workerWorkspaceHead.branch !== branch
+                || !Number.isSafeInteger(workerWorkspaceHead.revision) || workerWorkspaceHead.revision < 1
+                || !workerWorkspaceHead.manifestHash || !/^[a-f0-9]{64}$/.test(workerWorkspaceHead.manifestHash))) {
+                return finish({ status: "blocked", durationMs: Date.now() - startedAt, reason: "worker_workspace_head_unavailable" });
+              }
               const execution = await engineEnv.codeRunner.run({ name: "code-exec.execute_bash", code: BASH_HARNESS,
                 args: { commands: command, timeout: 55 }, tier: 6, tenantId, spaceId, agentId, projectId,
-                userId, runId, executionId, workspaceBranch: branch, maxTier: engineEnv.maxTier ?? 6 });
+                userId, runId, executionId, workspaceBranch: branch,
+                ...(workerWorkspaceHead ? { workspaceRevision: workerWorkspaceHead.revision, workspaceManifestHash: workerWorkspaceHead.manifestHash } : {}),
+                maxTier: engineEnv.maxTier ?? 6 });
               assertWorkerActive();
               const output = execution.output && typeof execution.output === "object" ? execution.output as { exit_code?: unknown } : undefined;
               if (execution.ok && output?.exit_code === 0) return finish({ status: "passed", exitCode: 0, durationMs: execution.duration_ms });

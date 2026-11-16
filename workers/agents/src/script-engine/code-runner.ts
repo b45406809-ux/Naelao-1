@@ -264,7 +264,8 @@ async function runContainer(
       if (installation.installationId !== params.installationId || installation.contract.image !== params.containerImage) return fail("container_image_installation_mismatch");
       const timeoutMs = Math.min(opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS, installation.contract.resources.timeoutSeconds * 1000);
       const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}), actorId: params.userId,
-        agentId: params.agentId, runId: params.runId, executionId: params.executionId ?? crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}), installationId: params.installationId, containerId: installation.contract.id,
+        agentId: params.agentId, runId: params.runId, executionId: params.executionId ?? crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}),
+        ...(params.workspaceRevision !== undefined && params.workspaceManifestHash ? { workspaceRevision: params.workspaceRevision, workspaceManifestHash: params.workspaceManifestHash } : {}), installationId: params.installationId, containerId: installation.contract.id,
         ...(installation.scope ? { installationScope: installation.scope } : {}), image: installation.contract.image,
         ...(installation.sharedFilesystemGrants?.length ? { sharedFilesystemGrants: installation.sharedFilesystemGrants } : {}),
         ...(dynamicImage ? { dynamicImage: true } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
@@ -331,7 +332,8 @@ async function runContainerRequest(
   const controller = new AbortController();
   const timeoutMs = Math.min(60000, suppliedScope?.timeoutMs ?? opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS);
   const scope: ContainerInvocationScope = suppliedScope ?? { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}),
-    actorId: params.userId!, agentId: params.agentId, runId: params.runId!, executionId: params.executionId ?? crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
+    actorId: params.userId!, agentId: params.agentId, runId: params.runId!, executionId: params.executionId ?? crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}),
+    ...(params.workspaceRevision !== undefined && params.workspaceManifestHash ? { workspaceRevision: params.workspaceRevision, workspaceManifestHash: params.workspaceManifestHash } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
   validateContainerScope(scope);
   const token = opts.platformSecret ? await mintInternalToken(opts.platformSecret, params.tenantId) : undefined;
   const runtimeObjectName = scope.installationId

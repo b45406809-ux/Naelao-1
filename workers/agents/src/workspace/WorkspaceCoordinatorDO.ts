@@ -1700,8 +1700,12 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const validated = await this.validateScope(body.scope, body.sourceBranch, tenantId);
     if (validated instanceof Response) return validated;
     if (!validateWorkspaceBranch(body.branch)) return fail("invalid_branch");
+    const hasExpectedRevision = body.expectedSourceRevision !== undefined || body.expectedSourceManifestHash !== undefined;
+    if (hasExpectedRevision && (!Number.isSafeInteger(body.expectedSourceRevision) || Number(body.expectedSourceRevision) < 1
+      || typeof body.expectedSourceManifestHash !== "string" || !HASH.test(body.expectedSourceManifestHash))) return fail("expected_source_head_invalid");
     const source = await this.ctx.storage.get<WorkspaceHead>(headKey(validated.branch));
     if (!source) return fail("workspace_not_found", 404);
+    if (hasExpectedRevision && (source.revision !== body.expectedSourceRevision || source.manifestHash !== body.expectedSourceManifestHash)) return fail("base_revision_mismatch", 409);
     const branch = body.branch;
     const created: WorkspaceHead = { ...source, branch, updatedAt: new Date().toISOString() };
     const result = await this.ctx.storage.transaction(async (tx) => {
@@ -1715,7 +1719,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         return base?.parentBranch === validated.branch ? "exists" : "branch_exists";
       }
       const latest = await tx.get<WorkspaceHead>(headKey(validated.branch));
-      if (!latest || latest.revision !== source.revision || latest.manifestHash !== source.manifestHash) return "source_changed";
+      if (!latest || latest.revision !== source.revision || latest.manifestHash !== source.manifestHash
+        || hasExpectedRevision && (latest.revision !== body.expectedSourceRevision || latest.manifestHash !== body.expectedSourceManifestHash)) return "source_changed";
       await tx.put(headKey(branch), created);
       await tx.put(branchBaseKey(branch), { parentBranch: validated.branch, revision: source.revision, manifestHash: source.manifestHash });
       await tx.put(retainedRevisionKey(branch, created.revision), { branch, revision: created.revision, manifestHash: created.manifestHash, createdAt: created.updatedAt } satisfies RetainedRevision);

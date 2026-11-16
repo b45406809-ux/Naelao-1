@@ -212,6 +212,13 @@ export async function runStoredScript(
   }
 
   try {
+    const workerHead = env.workspaceBranch?.startsWith("workers/") && env.workspaceManifestRead
+      ? (await env.workspaceManifestRead())?.head : undefined;
+    if (env.workspaceBranch?.startsWith("workers/") && env.workspaceManifestRead
+      && (!workerHead || workerHead.branch !== env.workspaceBranch || !Number.isSafeInteger(workerHead.revision)
+        || workerHead.revision < 1 || !workerHead.manifestHash || !/^[a-f0-9]{64}$/.test(workerHead.manifestHash))) {
+      return { ok: false, error: "container_worker_workspace_head_unavailable", tier, actual_tier: tier, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
+    }
     return await env.codeRunner.run({
       name: script.metadata.name,
       code: script.code,
@@ -229,6 +236,7 @@ export async function runStoredScript(
       ...(env.executionSignal ? { signal: env.executionSignal } : {}),
       ...(env.projectId ? { projectId: env.projectId } : {}),
       ...(env.workspaceBranch ? { workspaceBranch: env.workspaceBranch } : {}),
+      ...(workerHead ? { workspaceRevision: workerHead.revision, workspaceManifestHash: workerHead.manifestHash } : {}),
       ...(script.metadata.container_image
         ? { containerImage: script.metadata.container_image }
         : {}),

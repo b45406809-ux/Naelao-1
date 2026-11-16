@@ -72,6 +72,14 @@ describe("container capability resolution", () => {
     expect(() => validateContainerScope(base)).toThrow("project_runtime_project_scope_required");
   });
 
+  it("validates a worker revision and manifest hash as one authenticated pin", () => {
+    const base: ContainerInvocationScope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "person", agentId: "worker",
+      runId: "run", executionId: "exec", workspaceBranch: "workers/task-a", timeoutMs: 30_000, deadline: Date.now() + 30_000 };
+    expect(() => validateContainerScope({ ...base, workspaceRevision: 4 })).toThrow("container_workspace_head_invalid");
+    expect(() => validateContainerScope({ ...base, workspaceRevision: 4, workspaceManifestHash: "bad" })).toThrow("container_workspace_head_invalid");
+    expect(() => validateContainerScope({ ...base, workspaceRevision: 4, workspaceManifestHash: "d".repeat(64) })).not.toThrow();
+  });
+
   it("keeps an installed sidecar identity stable across worker runs but isolates one-off containers", () => {
     const base: ContainerInvocationScope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "person", agentId: "worker",
       runId: "run-one", executionId: "exec-one", installationId: "install-a", installationScope: "PROJECT_SHARED",
