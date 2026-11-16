@@ -309,12 +309,16 @@ app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
   const publication = await c.env.PLATFORM_DB.prepare(
     "SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
   ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ id: string }>();
-  if (!publication) return c.json({ error_code: "not_found" }, 404);
+  const tombstone = publication ? null : await c.env.PLATFORM_DB.prepare(
+    "SELECT publication_id FROM kb_external_publication_tombstones WHERE publication_id=? AND tenant_id=? AND space_id=? AND project_id=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ publication_id: string }>();
+  if (!publication && !tombstone) return c.json({ error_code: "not_found" }, 404);
   const { results } = await c.env.PLATFORM_DB.prepare(
     `SELECT event_id,actor_id,action,from_revision,to_revision,created_at FROM kb_external_publication_events
      WHERE tenant_id=? AND space_id=? AND project_id=? AND publication_id=? ORDER BY to_revision DESC,event_id DESC LIMIT 100`
   ).bind(access.tenantId, spaceId, projectId, publicationId).all<{
-    event_id: string; actor_id: string; action: "archived" | "restored_as_draft"; from_revision: number; to_revision: number; created_at: string;
+    event_id: string; actor_id: string; action: "published" | "updated" | "archived" | "restored_as_draft" | "deleted";
+    from_revision: number; to_revision: number; created_at: string;
   }>();
   return c.json({ publication_id: publicationId, events: results }, 200, { "cache-control": "private, no-store" });
 });
@@ -355,6 +359,14 @@ app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
   const existing = await c.env.PLATFORM_DB.prepare(
     "SELECT id,revision,archived_at FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
   ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ id: string; revision: number; archived_at: string | null }>();
+  const retired = existing ? null : await c.env.PLATFORM_DB.prepare(
+    "SELECT tenant_id,space_id,project_id FROM kb_external_publication_tombstones WHERE publication_id=?"
+  ).bind(publicationId).first<{ tenant_id: string; space_id: string; project_id: string }>();
+  if (retired) {
+    if (retired.tenant_id !== access.tenantId || retired.space_id !== spaceId || retired.project_id !== projectId)
+      throw notFound("Knowledge publication");
+    return c.json({ error_code: "knowledge_publication_id_retired" }, 409);
+  }
   const collision = existing ? null : await c.env.PLATFORM_DB.prepare("SELECT id FROM kb_external_publications WHERE id=?").bind(publicationId).first();
   if (collision) throw notFound("Knowledge publication");
   const currentRevision = existing?.revision ?? 0;
@@ -378,7 +390,13 @@ app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
   ).bind(publicationId, access.tenantId, spaceId, projectId, body.name.trim(), access.userId, now, now, mutationToken, body.expected_revision),
   c.env.PLATFORM_DB.prepare(`DELETE FROM kb_external_publication_documents
      WHERE publication_id=? AND tenant_id=? AND space_id=? AND project_id=? AND ${currentMutation}`)
-    .bind(publicationId, access.tenantId, spaceId, projectId, publicationId, access.tenantId, spaceId, projectId, nextRevision, mutationToken)];
+    .bind(publicationId, access.tenantId, spaceId, projectId, publicationId, access.tenantId, spaceId, projectId, nextRevision, mutationToken),
+  c.env.PLATFORM_DB.prepare(`INSERT INTO kb_external_publication_events
+      (event_id,tenant_id,space_id,project_id,publication_id,actor_id,action,from_revision,to_revision,created_at)
+    SELECT ?,?,?,?,?,?,?,?,?,? WHERE ${currentMutation}`)
+    .bind(crypto.randomUUID(), access.tenantId, spaceId, projectId, publicationId, access.userId,
+      existing ? "updated" : "published", currentRevision, nextRevision, now,
+      publicationId, access.tenantId, spaceId, projectId, nextRevision, mutationToken)];
   for (const documentId of documentIds) statements.push(c.env.PLATFORM_DB.prepare(
     `INSERT INTO kb_external_publication_documents(publication_id,tenant_id,space_id,project_id,document_id,added_at,publication_revision)
      SELECT ?,?,?,?,?,?,? WHERE ${currentMutation}`
@@ -466,10 +484,26 @@ app.delete("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publi
   if (!current) return c.json({ error_code: "not_found" }, 404);
   if (body.expected_revision !== current.revision)
     return c.json({ error_code: "knowledge_publication_revision_conflict", current_revision: current.revision }, 409);
-  const result = await c.env.PLATFORM_DB.prepare(
-    "DELETE FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=?"
-  ).bind(publicationId, access.tenantId, spaceId, projectId, body.expected_revision).run();
-  if (!result.meta.changes) {
+  const now = new Date().toISOString();
+  const deletedRevision = current.revision + 1;
+  const stillCurrent = `EXISTS (SELECT 1 FROM kb_external_publications p WHERE p.id=? AND p.tenant_id=? AND p.space_id=?
+    AND p.project_id=? AND p.revision=?)`;
+  const results = await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(`INSERT INTO kb_external_publication_events
+        (event_id,tenant_id,space_id,project_id,publication_id,actor_id,action,from_revision,to_revision,created_at)
+      SELECT ?,?,?,?,?,?,'deleted',?,?,? WHERE ${stillCurrent}`)
+      .bind(crypto.randomUUID(), access.tenantId, spaceId, projectId, publicationId, access.userId, current.revision, deletedRevision, now,
+        publicationId, access.tenantId, spaceId, projectId, current.revision),
+    c.env.PLATFORM_DB.prepare(`INSERT INTO kb_external_publication_tombstones
+        (publication_id,tenant_id,space_id,project_id,deleted_revision,deleted_by,deleted_at)
+      SELECT p.id,p.tenant_id,p.space_id,p.project_id,p.revision+1,?,? FROM kb_external_publications p
+      WHERE p.id=? AND p.tenant_id=? AND p.space_id=? AND p.project_id=? AND p.revision=?`)
+      .bind(access.userId, now, publicationId, access.tenantId, spaceId, projectId, current.revision),
+    c.env.PLATFORM_DB.prepare(
+      "DELETE FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=?"
+    ).bind(publicationId, access.tenantId, spaceId, projectId, current.revision),
+  ]);
+  if (!results[2]?.meta.changes) {
     const latest = await c.env.PLATFORM_DB.prepare(
       "SELECT revision FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
     ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ revision: number }>();

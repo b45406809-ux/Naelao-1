@@ -490,10 +490,10 @@ export default function ProjectDetailPage() {
       if (!publication) throw new Error("Reload the current collection list before unpublishing");
       await unpublishExternalKnowledge(activeSpaceId, params.projectId, id, creds, publication.revision);
       setExternalPublications(items => items.filter(item => item.id !== id));
-      if (publicationHistory?.publicationId === id) setPublicationHistory(null);
       if (publicationId === id) setPublishedDocumentIds([]);
       show("Knowledge collection unpublished");
       await refreshExternalKnowledge();
+      await showExternalCollectionHistory(id);
     } catch (error) {
       await refreshExternalKnowledge();
       show(error instanceof Error ? error.message : "Couldn't unpublish this Knowledge collection");
@@ -1078,12 +1078,16 @@ export default function ProjectDetailPage() {
           <div className="settings-row-label">Lifecycle history · {publicationHistory.publicationId}</div>
           {publicationHistory.events.length === 0 ? (
             <div className="settings-row-sub" style={{ marginTop: 6 }}>No archive or restore actions are recorded.</div>
-          ) : publicationHistory.events.map(event => (
-            <div className="settings-row" key={event.event_id}>
-              <div className="settings-row-label">{event.action === "archived" ? "Archived" : "Restored as draft"}</div>
-              <div className="settings-row-sub">Revision {event.from_revision} → {event.to_revision} · {event.actor_id} · <time dateTime={event.created_at}>{event.created_at}</time></div>
-            </div>
-          ))}
+          ) : publicationHistory.events.map(event => {
+            const label = { published: "Published", updated: "Updated published sources", archived: "Archived",
+              restored_as_draft: "Restored as draft", deleted: "Deleted" }[event.action];
+            return (
+              <div className="settings-row" key={event.event_id}>
+                <div className="settings-row-label">{label}</div>
+                <div className="settings-row-sub">Revision {event.from_revision} → {event.to_revision} · {event.actor_id} · <time dateTime={event.created_at}>{event.created_at}</time></div>
+              </div>
+            );
+          })}
           <Button size="sm" variant="ghost" onClick={() => setPublicationHistory(null)}>Close history</Button>
         </div>
       )}

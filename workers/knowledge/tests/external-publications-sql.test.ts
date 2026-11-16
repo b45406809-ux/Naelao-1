@@ -8,7 +8,7 @@ import { revisionExternalPublicationsForDocument } from "../src/external-publica
 const secret = "knowledge-publication-revision-sql-test-secret";
 const migration = (filename: string) => readFileSync(new URL(`../../../infra/migrations/${filename}`, import.meta.url), "utf8");
 
-function harness(options: { duringVectorQuery?: (db: ReturnType<typeof createFakeD1>["db"]) => void } = {}) {
+function harness(options: { duringVectorQuery?: (db: ReturnType<typeof createFakeD1>["db"]) => void; applyAuditMigration?: boolean } = {}) {
   const db = createFakeD1([
     "CREATE TABLE orgs(id TEXT PRIMARY KEY,status TEXT NOT NULL)",
     "CREATE TABLE spaces(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,status TEXT NOT NULL,config_json TEXT)",
@@ -18,6 +18,7 @@ function harness(options: { duringVectorQuery?: (db: ReturnType<typeof createFak
     migration("0104_kb_external_publications.sql"),
     migration("0265_knowledge_publication_revisions.sql"),
     migration("0268_knowledge_publication_archive.sql"),
+    ...(options.applyAuditMigration === false ? [] : [migration("0269_knowledge_publication_audit_and_tombstones.sql")]),
   ]);
   db.db.exec(`INSERT INTO orgs VALUES('tenant-a','active');
     INSERT INTO spaces VALUES('space-a','tenant-a','active',NULL);
@@ -46,6 +47,19 @@ async function call(path: string, body?: unknown, method = body === undefined ? 
 }
 
 describe("revisioned external Knowledge publication SQL", () => {
+  it("preserves existing lifecycle receipts when the event ledger adds publication and delete actions", () => {
+    const h = harness({ applyAuditMigration: false });
+    h.db.db.exec(`INSERT INTO kb_external_publication_events
+      (event_id,tenant_id,space_id,project_id,publication_id,actor_id,action,from_revision,to_revision,created_at)
+      VALUES('event-archive','tenant-a','space-a','project-a','course_material','owner-a','archived',1,2,'2026-11-16T00:00:00.000Z')`);
+    h.db.db.exec(migration("0269_knowledge_publication_audit_and_tombstones.sql"));
+    h.db.db.exec(`INSERT INTO kb_external_publication_events
+      (event_id,tenant_id,space_id,project_id,publication_id,actor_id,action,from_revision,to_revision,created_at)
+      VALUES('event-delete','tenant-a','space-a','project-a','course_material','owner-a','deleted',2,3,'2026-11-16T00:01:00.000Z')`);
+    expect(h.db.db.prepare("SELECT action,from_revision,to_revision FROM kb_external_publication_events ORDER BY to_revision").all())
+      .toEqual([{ action: "archived", from_revision: 1, to_revision: 2 }, { action: "deleted", from_revision: 2, to_revision: 3 }]);
+  });
+
   it("atomically replaces source membership, fences stale edits and pins retrieval to the approved version", async () => {
     const h = harness();
     const path = "/spaces/space-a/kb/projects/project-a/external-publications/course_material";
@@ -91,7 +105,15 @@ describe("revisioned external Knowledge publication SQL", () => {
     expect(deleted.status).toBe(200);
     expect(h.db.db.prepare("SELECT * FROM kb_external_publication_documents").all()).toEqual([]);
     const deletedHistory = await worker.fetch(await call(`${path}/events`), h.env, {} as ExecutionContext);
-    expect(deletedHistory.status).toBe(404);
+    expect(deletedHistory.status).toBe(200);
+    await expect(deletedHistory.json()).resolves.toMatchObject({ events: [
+      { action: "deleted", from_revision: 2, to_revision: 3 },
+      { action: "updated", from_revision: 1, to_revision: 2 },
+      { action: "published", from_revision: 0, to_revision: 1 },
+    ] });
+    const reusedId = await worker.fetch(await call(path, { name: "New collection", document_ids: ["doc-a"], expected_revision: 0 }), h.env, {} as ExecutionContext);
+    expect(reusedId.status).toBe(409);
+    await expect(reusedId.json()).resolves.toMatchObject({ error_code: "knowledge_publication_id_retired" });
   });
 
   it("rechecks the collection revision after vector ranking before returning content", async () => {
@@ -144,14 +166,16 @@ describe("revisioned external Knowledge publication SQL", () => {
     await expect(archived.json()).resolves.toMatchObject({ archived: true, revision: 2 });
     expect(h.db.db.prepare("SELECT * FROM kb_external_publication_documents").all()).toEqual([]);
     expect(h.db.db.prepare("SELECT actor_id,action,from_revision,to_revision FROM kb_external_publication_events ORDER BY to_revision").all())
-      .toEqual([{ actor_id: "owner-a", action: "archived", from_revision: 1, to_revision: 2 }]);
+      .toEqual([{ actor_id: "owner-a", action: "published", from_revision: 0, to_revision: 1 },
+        { actor_id: "owner-a", action: "archived", from_revision: 1, to_revision: 2 }]);
     const archiveReplay = await worker.fetch(await call(`${path}/archive`, { expected_revision: 2, archived: true }, "PUT"), h.env, {} as ExecutionContext);
     await expect(archiveReplay.json()).resolves.toMatchObject({ archived: true, revision: 2 });
-    expect(h.db.db.prepare("SELECT COUNT(*) AS count FROM kb_external_publication_events").get()).toEqual({ count: 1 });
+    expect(h.db.db.prepare("SELECT COUNT(*) AS count FROM kb_external_publication_events").get()).toEqual({ count: 2 });
     const history = await worker.fetch(await call(`${path}/events`), h.env, {} as ExecutionContext);
     expect(history.headers.get("cache-control")).toBe("private, no-store");
     await expect(history.json()).resolves.toMatchObject({ publication_id: "course_material", events: [
       { actor_id: "owner-a", action: "archived", from_revision: 1, to_revision: 2 },
+      { actor_id: "owner-a", action: "published", from_revision: 0, to_revision: 1 },
     ] });
     const memberHistory = await worker.fetch(await call(`${path}/events`, undefined, "GET", "member"), h.env, {} as ExecutionContext);
     expect(memberHistory.status).toBe(403);
@@ -176,12 +200,14 @@ describe("revisioned external Knowledge publication SQL", () => {
     expect(restored.status).toBe(200);
     await expect(restored.json()).resolves.toMatchObject({ archived: false, revision: 3 });
     expect(h.db.db.prepare("SELECT actor_id,action,from_revision,to_revision FROM kb_external_publication_events ORDER BY to_revision").all())
-      .toEqual([{ actor_id: "owner-a", action: "archived", from_revision: 1, to_revision: 2 },
+      .toEqual([{ actor_id: "owner-a", action: "published", from_revision: 0, to_revision: 1 },
+        { actor_id: "owner-a", action: "archived", from_revision: 1, to_revision: 2 },
         { actor_id: "owner-a", action: "restored_as_draft", from_revision: 2, to_revision: 3 }]);
     const restoredHistory = await worker.fetch(await call(`${path}/events`), h.env, {} as ExecutionContext);
     await expect(restoredHistory.json()).resolves.toMatchObject({ events: [
       { action: "restored_as_draft", from_revision: 2, to_revision: 3 },
       { action: "archived", from_revision: 1, to_revision: 2 },
+      { action: "published", from_revision: 0, to_revision: 1 },
     ] });
     const restoredGrantDirectory = await worker.fetch(await call("/internal/spaces/space-a/kb/projects/project-a/external-publications"), h.env, {} as ExecutionContext);
     await expect(restoredGrantDirectory.json()).resolves.toEqual({ publications: [{ id: "course_material", revision: 3 }] });
@@ -196,6 +222,11 @@ describe("revisioned external Knowledge publication SQL", () => {
     const republished = await worker.fetch(await call(path, { name: "Course material", document_ids: ["doc-b"], expected_revision: 3 }), h.env, {} as ExecutionContext);
     expect(republished.status).toBe(200);
     await expect(republished.json()).resolves.toMatchObject({ revision: 4, document_ids: ["doc-b"] });
+    expect(h.db.db.prepare("SELECT action,from_revision,to_revision FROM kb_external_publication_events ORDER BY to_revision").all())
+      .toEqual([{ action: "published", from_revision: 0, to_revision: 1 },
+        { action: "archived", from_revision: 1, to_revision: 2 },
+        { action: "restored_as_draft", from_revision: 2, to_revision: 3 },
+        { action: "updated", from_revision: 3, to_revision: 4 }]);
     expect(h.db.db.prepare("SELECT document_id,publication_revision FROM kb_external_publication_documents").all())
       .toEqual([{ document_id: "doc-b", publication_revision: 4 }]);
     const republishedSources = await worker.fetch(await call(`${path}/sources`), h.env, {} as ExecutionContext);

@@ -3704,7 +3704,7 @@ export interface ExternalKnowledgePublicationSources {
 export interface ExternalKnowledgePublicationEvent {
   event_id: string;
   actor_id: string;
-  action: "archived" | "restored_as_draft";
+  action: "published" | "updated" | "archived" | "restored_as_draft" | "deleted";
   from_revision: number;
   to_revision: number;
   created_at: string;
