@@ -3608,6 +3608,13 @@ export interface KbDocument {
   source_next_attempt_at?: string | null;
   source_refresh_failures?: number;
   source_last_error_code?: string | null;
+  source_refresh_schedule_enabled?: 0 | 1;
+  source_refresh_schedule_available?: boolean;
+  source_refresh_interval_hours?: 24 | 168 | null;
+  source_refresh_next_run_at?: string | null;
+  source_refresh_last_run_at?: string | null;
+  source_refresh_last_result?: "updated" | "unchanged" | "failed" | "paused" | null;
+  source_refresh_last_error_code?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -3677,6 +3684,19 @@ export async function applyWebsiteKnowledgeRefresh(
       preview_token: input.preview_token,
     } }),
     session,
+  });
+}
+
+export async function setWebsiteKnowledgeRefreshSchedule(
+  spaceId: string,
+  projectId: string,
+  documentId: string,
+  session: SessionCredentials,
+  input: { enabled: boolean; interval_hours: 24 | 168 },
+): Promise<{ schedule: { enabled: number; interval_hours: number; next_run_at: string | null; last_run_at?: string | null;
+  last_result?: "updated" | "unchanged" | "failed" | "paused" | null; last_error_code?: string | null } }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/sources/website/${encodeURIComponent(documentId)}/schedule`, {
+    method: "POST", body: JSON.stringify(input), session, cache: "no-store",
   });
 }
 

@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0274_agentport_thread_assistant_routing",
+  "requiredSchemaVersion": "0275_website_refresh_schedule_opt_in",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1099,6 +1099,10 @@
     {
       "filename": "0274_agentport_thread_assistant_routing.sql",
       "sha256": "25ce2d2e8c18fbdec7089031821bdf730d42cb7f95edf41c44ee64927d94d8f6"
+    },
+    {
+      "filename": "0275_website_refresh_schedule_opt_in.sql",
+      "sha256": "c9c4619fc24936e070529d3988bf9618d58c538fa6d38f092dff40ff7c35f7d4"
     }
   ]
 }

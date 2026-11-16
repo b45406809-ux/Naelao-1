@@ -4,7 +4,7 @@ import { chunkTextWithOffsets } from "@naelao/rag";
 import { createWebsitePreviewToken, sha256TextHex } from "./website-source-preview.js";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; workflowChunkCount?: number; reindexDoc?: boolean; reindexChunks?: Array<{ chunk_index: number; content: string; content_hash: string; deleted_at: string | null }>; citationRow?: Record<string, unknown>; citationObject?: { key: string; content: string; contentHash: string }; queueFails?: boolean; queueAcceptThenThrow?: boolean; failFirstBucketPut?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean; legacyAcl?: boolean; projectAccess?: boolean; websiteConnection?: boolean; websiteSource?: boolean; websiteRefreshOperation?: Record<string, unknown> } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; workflowChunkCount?: number; reindexDoc?: boolean; reindexChunks?: Array<{ chunk_index: number; content: string; content_hash: string; deleted_at: string | null }>; citationRow?: Record<string, unknown>; citationObject?: { key: string; content: string; contentHash: string }; queueFails?: boolean; queueAcceptThenThrow?: boolean; failFirstBucketPut?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean; legacyAcl?: boolean; projectAccess?: boolean; websiteConnection?: boolean; websiteSource?: boolean; websiteRefreshOperation?: Record<string, unknown>; websiteRefreshSchedule?: Record<string, unknown> | null } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const idempotencyClaims = new Map<string, { request_sha256: string | null; document_id: string; state: "active" | "deleted"; dispatch_state: "claimed" | "dispatching" }>();
@@ -63,6 +63,7 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
               : null;
             if (sql.includes("FROM project_access")) return options.workflowDoc || options.projectAccess ? { role_rank: 50, visibility: "private" } : null;
             if (sql.includes("FROM kb_source_refresh_operations")) return options.websiteRefreshOperation ?? null;
+            if (sql.includes("FROM kb_source_refresh_schedules")) return options.websiteRefreshSchedule ?? null;
             if (sql.includes("FROM website_connections")) return options.websiteConnection
               ? { id: "website-1", tenant_id: "tenant-1", space_id: "space-1", owner_user_id: "user-1", project_id: "project-1",
                   origins_json: '["https://docs.example"]', knowledge_path_prefixes_json: '["/"]', status: "active" }
@@ -840,6 +841,62 @@ describe("Knowledge document lifecycle boundaries", () => {
     expect(update?.sql).toContain("website_connections wc");
     expect(f.dbCalls.some(({ sql, args }) => sql.includes("SET state='completed'") && args.includes(refreshOperationId))).toBe(true);
     expect(f.storageUsageEvents.some((event) => event.idempotency_key === `knowledge-storage:${refreshOperationId}`)).toBe(true);
+  });
+
+  it("does not publish a scheduled page after its owner pauses the leased refresh", async () => {
+    const requestedUrl = "https://docs.example/guide";
+    const finalUrl = "https://docs.example/current";
+    const content = "Updated page after the schedule was paused";
+    const previewSha256 = await sha256TextHex(content);
+    const operationId = "refresh-op-scheduled-1";
+    const sourceRevision = 4;
+    const scope = { tenantId: "tenant-1", spaceId: "space-1", projectId: "project-1", userId: "user-1", connectionId: "website-1" };
+    const previewToken = await createWebsitePreviewToken({ secret: "secret", scope, requestedUrl, finalUrl, previewSha256,
+      operation: "refresh", documentId: "doc-1", sourceRevision, refreshOperationId: operationId,
+      nonce: "website-scheduled-refresh-test-01" });
+    const f = fixture({ existing: true, projectId: "project-1", projectAccess: true, websiteSource: true, websiteConnection: true,
+      websiteRefreshOperation: { id: operationId, state: "preview_ready", source_revision: sourceRevision,
+        connection_ref: "website-1", requested_url: requestedUrl, final_url: finalUrl, preview_sha256: previewSha256, attempt_count: 1 },
+      websiteRefreshSchedule: null });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents/doc-1", "PATCH", {
+      title: "Guide", content,
+      website_refresh: { operation_id: operationId, expected_source_revision: sourceRevision, requested_url: requestedUrl,
+        final_url: finalUrl, preview_sha256: previewSha256, preview_token: previewToken },
+      scheduled_refresh: { schedule_id: "schedule-1", lease_token: "old-lease-token", generation: 3 },
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(409);
+    expect(f.vectorize.deleteByIds).not.toHaveBeenCalled();
+    expect(f.vectorUpserts).toHaveLength(0);
+  });
+
+  it("pins scheduled publication and next-run advancement to the exact active lease", async () => {
+    const requestedUrl = "https://docs.example/guide";
+    const finalUrl = "https://docs.example/current";
+    const content = "Updated page from scheduled refresh";
+    const previewSha256 = await sha256TextHex(content);
+    const operationId = "refresh-op-scheduled-2";
+    const sourceRevision = 4;
+    const leaseToken = "lease-token-for-scheduled-refresh";
+    const scope = { tenantId: "tenant-1", spaceId: "space-1", projectId: "project-1", userId: "user-1", connectionId: "website-1" };
+    const previewToken = await createWebsitePreviewToken({ secret: "secret", scope, requestedUrl, finalUrl, previewSha256,
+      operation: "refresh", documentId: "doc-1", sourceRevision, refreshOperationId: operationId,
+      nonce: "website-scheduled-refresh-test-02" });
+    const f = fixture({ existing: true, projectId: "project-1", projectAccess: true, websiteSource: true, websiteConnection: true,
+      websiteRefreshOperation: { id: operationId, state: "preview_ready", source_revision: sourceRevision,
+        connection_ref: "website-1", requested_url: requestedUrl, final_url: finalUrl, preview_sha256: previewSha256, attempt_count: 1 },
+      websiteRefreshSchedule: { id: "schedule-1", lease_token: leaseToken, generation: 3, interval_hours: 24 } });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents/doc-1", "PATCH", {
+      title: "Guide", content,
+      website_refresh: { operation_id: operationId, expected_source_revision: sourceRevision, requested_url: requestedUrl,
+        final_url: finalUrl, preview_sha256: previewSha256, preview_token: previewToken },
+      scheduled_refresh: { schedule_id: "schedule-1", lease_token: leaseToken, generation: 3 },
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    const documentPublish = f.dbCalls.find(({ sql }) => sql.includes("source_revision=source_revision+1"));
+    expect(documentPublish?.sql).toContain("kb_source_refresh_schedules rs");
+    expect(documentPublish?.sql).toContain("project_access pa");
+    expect(documentPublish?.args).toContain(leaseToken);
+    expect(f.dbCalls.some(({ sql, args }) => sql.includes("UPDATE kb_source_refresh_schedules SET last_run_at=?") && args.includes(leaseToken))).toBe(true);
   });
 
   it("continues to recover legacy ACLs from Vectorize when the D1 policy is unknown", async () => {

@@ -17,7 +17,8 @@ const connection = {
 };
 
 function fixture(options: { connection?: typeof connection | null; projectRank?: number; refreshDocument?: Record<string, unknown> | null;
-  refreshOperation?: Record<string, unknown> | null } = {}) {
+  refreshOperation?: Record<string, unknown> | null; scheduleDocument?: Record<string, unknown> | null;
+  scheduleRow?: Record<string, unknown> | null; scheduleEnabled?: boolean } = {}) {
   const sqlCalls: string[] = [];
   const db = {
     prepare: vi.fn((sql: string) => { sqlCalls.push(sql); return ({
@@ -26,8 +27,9 @@ function fixture(options: { connection?: typeof connection | null; projectRank?:
           if (sql.includes("JOIN orgs")) return { id: "space-1" };
           if (sql === "SELECT config_json FROM spaces WHERE id = ? AND status != 'deleted'") return { config_json: "{}" };
           if (sql.includes("FROM project_access")) return { visibility: "private", role_rank: options.projectRank ?? 50 };
-          if (sql.includes("FROM kb_documents") && sql.includes("source_connection_ref")) return options.refreshDocument ?? null;
+          if (sql.includes("FROM kb_documents") && sql.includes("source_connection_ref")) return options.scheduleDocument ?? options.refreshDocument ?? null;
           if (sql.includes("FROM kb_source_refresh_operations")) return options.refreshOperation ?? null;
+          if (sql.includes("FROM kb_source_refresh_schedules")) return options.scheduleRow ?? null;
           if (sql.includes("FROM website_connections")) {
             const grant = options.connection === null ? null : options.connection ?? connection;
             if (!grant || grant.id !== args[0] || grant.tenant_id !== args[1] || grant.space_id !== args[2]
@@ -43,12 +45,24 @@ function fixture(options: { connection?: typeof connection | null; projectRank?:
       return statements.map(() => ({ meta: { changes: 1 } }));
     }),
   };
-  return { env: { ENVIRONMENT: "test", PLATFORM_SECRET: "secret", PLATFORM_DB: db } as unknown as Parameters<NonNullable<typeof worker.fetch>>[1], db, sqlCalls };
+  const env = { ENVIRONMENT: "test", PLATFORM_SECRET: "secret", PLATFORM_DB: db,
+    KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED: options.scheduleEnabled === false ? "false" : "true" } as unknown as Parameters<NonNullable<typeof worker.fetch>>[1];
+  return { env, db, sqlCalls };
 }
 
 async function request(body: unknown, role = "owner") {
   const token = await mintInternalToken("secret", "tenant-1");
   return new Request("https://knowledge/spaces/space-1/kb/projects/project-1/sources/website/preview", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "owner-1",
+      "x-naelao-role": role, "x-naelao-internal-token": token },
+    body: JSON.stringify(body),
+  });
+}
+
+async function scheduleRequest(body: unknown, role = "product_end_user") {
+  const token = await mintInternalToken("secret", "tenant-1");
+  return new Request("https://knowledge/spaces/space-1/kb/projects/project-1/sources/website/doc-1/schedule", {
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "owner-1",
       "x-naelao-role": role, "x-naelao-internal-token": token },
@@ -262,5 +276,43 @@ describe("scoped website Knowledge preview", () => {
     expect(outbound).not.toHaveBeenCalled();
     expect(f.sqlCalls.some((sql) => sql.includes("error_code='website_refresh_interrupted'") && sql.includes("state='fetching'"))).toBe(true);
     expect(f.sqlCalls.some((sql) => sql.includes("source_refresh_failures=source_refresh_failures+1"))).toBe(true);
+  });
+});
+
+describe("owner-controlled website refresh schedule", () => {
+  it("stores an explicit daily opt-in bound to the current Project source and owner grant", async () => {
+    const f = fixture({ scheduleDocument: { id: "doc-1", status: "indexed", source_adapter: "website",
+      source_state: "current", source_connection_ref: "connection-1" },
+    scheduleRow: { enabled: 1, interval_hours: 24, next_run_at: "2026-11-17T12:00:00.000Z" } });
+    const response = await worker.fetch!(await scheduleRequest({ enabled: true, interval_hours: 24 }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ schedule: { enabled: 1, interval_hours: 24 } });
+    const insert = f.sqlCalls.findIndex((sql) => sql.includes("INSERT INTO kb_source_refresh_schedules"));
+    expect(insert).toBeGreaterThanOrEqual(0);
+    expect(f.sqlCalls[insert]).toContain("ON CONFLICT(document_id) DO UPDATE");
+  });
+
+  it("does not let a Project member opt a website source into automatic refresh", async () => {
+    const f = fixture({ projectRank: 30, scheduleDocument: { id: "doc-1", status: "indexed", source_adapter: "website",
+      source_state: "current", source_connection_ref: "connection-1" } });
+    const response = await worker.fetch!(await scheduleRequest({ enabled: true, interval_hours: 24 }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(403);
+    expect(f.sqlCalls.some((sql) => sql.includes("INSERT INTO kb_source_refresh_schedules"))).toBe(false);
+  });
+
+  it("keeps schedule activation unavailable while the rollout flag is off", async () => {
+    const f = fixture({ scheduleEnabled: false, scheduleDocument: { id: "doc-1", status: "indexed", source_adapter: "website",
+      source_state: "current", source_connection_ref: "connection-1" } });
+    const response = await worker.fetch!(await scheduleRequest({ enabled: true, interval_hours: 24 }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(404);
+    expect(f.sqlCalls.some((sql) => sql.includes("INSERT INTO kb_source_refresh_schedules"))).toBe(false);
+  });
+
+  it("clears the persisted lease when an owner pauses an active schedule", async () => {
+    const f = fixture({ scheduleDocument: { id: "doc-1", status: "indexed", source_adapter: "website",
+      source_state: "current", source_connection_ref: "connection-1" }, scheduleRow: null });
+    const response = await worker.fetch!(await scheduleRequest({ enabled: false, interval_hours: 168 }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(f.sqlCalls.some((sql) => sql.includes("enabled=0,generation=generation+1") && sql.includes("lease_token=NULL"))).toBe(true);
   });
 });

@@ -6,7 +6,7 @@
  */
 
 import { Hono } from "hono";
-import { HttpError, RequestBodyTooLargeError, requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, parseBoundedInteger, readBoundedRequestText, readBoundedResponseJson } from "@naelao/http";
+import { HttpError, RequestBodyTooLargeError, requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, mintInternalToken, parseBoundedInteger, readBoundedRequestText, readBoundedResponseJson } from "@naelao/http";
 import { chunkTextWithOffsets, chunkSourceCoordinates, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationSourceSpan, type GroundedSearchHit, type RetrievalScope, type StructuralChunk, type TextChunkWithOffsets } from "@naelao/rag";
 import { buildRetrievalPredicate, checkSsrf, isRetrievalRecordAllowed, isSpaceNetworkEgressDenied, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
@@ -21,6 +21,7 @@ import { exportKnowledgeArchive, previewKnowledgeArchiveRestore, restoreKnowledg
 import { createKnowledgePdfPreviewToken, KNOWLEDGE_PDF_PARSER_VERSION, sha256BytesHex, verifyKnowledgePdfPreviewToken } from "./pdf-preview.js";
 import { revisionExternalPublicationsForDocument } from "./external-publication-lifecycle.js";
 import { createWebsitePreviewToken, sha256TextHex, verifyWebsitePreviewToken } from "./website-source-preview.js";
+import { runScheduledWebsiteRefreshes } from "./website-refresh-scheduler.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -56,6 +57,8 @@ interface KnowledgeEnv {
   RETRIEVAL_CONFIDENCE_THRESHOLD?: string;
   /** Response/retrieval caches remain off until caller and source/grant freshness are acceptance-tested. */
   KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
+  /** Scheduled source refresh is implemented but remains disabled until its rollout gates pass. */
+  KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED?: string;
   KNOWLEDGE_ANALYTICS?: AnalyticsEngineDataset;
 }
 
@@ -1016,25 +1019,87 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
 
   const { results } = await c.env.PLATFORM_DB.prepare(
     projectId
-      ? `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
-                chunk_count, source_adapter, source_revision, source_state, source_requested_url,source_last_attempt_at,source_last_success_at,
-                source_next_attempt_at,source_refresh_failures,source_last_error_code,created_at,updated_at
-         FROM kb_documents
-         WHERE space_id = ? AND tenant_id = ? AND project_id = ?
-         ORDER BY created_at DESC
+      ? `SELECT d.id, d.space_id, d.tenant_id, d.project_id, d.title, d.source_url, d.content_type, d.status,
+                d.chunk_count, d.source_adapter, d.source_revision, d.source_state, d.source_requested_url,d.source_last_attempt_at,d.source_last_success_at,
+                d.source_next_attempt_at,d.source_refresh_failures,d.source_last_error_code,
+                COALESCE(rs.enabled,0) AS source_refresh_schedule_enabled,rs.interval_hours AS source_refresh_interval_hours,
+                rs.next_run_at AS source_refresh_next_run_at,rs.last_run_at AS source_refresh_last_run_at,
+                rs.last_result AS source_refresh_last_result,rs.last_error_code AS source_refresh_last_error_code,
+                d.created_at,d.updated_at
+         FROM kb_documents d LEFT JOIN kb_source_refresh_schedules rs ON rs.document_id=d.id AND rs.tenant_id=d.tenant_id AND rs.space_id=d.space_id
+         WHERE d.space_id = ? AND d.tenant_id = ? AND d.project_id = ?
+         ORDER BY d.created_at DESC
          LIMIT ? OFFSET ?`
-      : `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
-                chunk_count, source_adapter, source_revision, source_state, source_requested_url,source_last_attempt_at,source_last_success_at,
-                source_next_attempt_at,source_refresh_failures,source_last_error_code,created_at,updated_at
-         FROM kb_documents
-         WHERE space_id = ? AND tenant_id = ? AND project_id IS NULL
-         ORDER BY created_at DESC
+      : `SELECT d.id, d.space_id, d.tenant_id, d.project_id, d.title, d.source_url, d.content_type, d.status,
+                d.chunk_count, d.source_adapter, d.source_revision, d.source_state, d.source_requested_url,d.source_last_attempt_at,d.source_last_success_at,
+                d.source_next_attempt_at,d.source_refresh_failures,d.source_last_error_code,
+                COALESCE(rs.enabled,0) AS source_refresh_schedule_enabled,rs.interval_hours AS source_refresh_interval_hours,
+                rs.next_run_at AS source_refresh_next_run_at,rs.last_run_at AS source_refresh_last_run_at,
+                rs.last_result AS source_refresh_last_result,rs.last_error_code AS source_refresh_last_error_code,
+                d.created_at,d.updated_at
+         FROM kb_documents d LEFT JOIN kb_source_refresh_schedules rs ON rs.document_id=d.id AND rs.tenant_id=d.tenant_id AND rs.space_id=d.space_id
+         WHERE d.space_id = ? AND d.tenant_id = ? AND d.project_id IS NULL
+         ORDER BY d.created_at DESC
          LIMIT ? OFFSET ?`
   )
     .bind(...(projectId ? [spaceId, tenantId, projectId, limit, offset] : [spaceId, tenantId, limit, offset]))
     .all();
 
-  return c.json({ data: results, count: results.length, limit, offset });
+  const scheduleSupported = c.env.KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED === "true";
+  return c.json({ data: results.map((row) => ({ ...row, source_refresh_schedule_available: scheduleSupported })),
+    count: results.length, limit, offset });
+});
+
+// Owners explicitly opt an existing owner-approved one-page source into a bounded schedule.
+// The scheduler never turns manual sources, provider connectors or crawls into active sync.
+app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/:docId/schedule", async (c) => {
+  const tenantId = requireTenant(c);
+  const { spaceId, projectId, docId } = c.req.param();
+  const access = await requireProjectAccess(c, projectId, 40);
+  if (access instanceof Response) return access;
+  const body = await readBoundedJson<{ enabled?: unknown; interval_hours?: unknown }>(c.req.raw, 2 * 1024);
+  if (typeof body.enabled !== "boolean" || (body.interval_hours !== 24 && body.interval_hours !== 168)) {
+    throw badRequest("Choose whether automatic refresh is enabled and a daily or weekly interval");
+  }
+  const document = await c.env.PLATFORM_DB.prepare(`SELECT id,status,source_adapter,source_state,source_connection_ref
+    FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+    .bind(docId, tenantId, spaceId, projectId)
+    .first<{ id: string; status: string; source_adapter: string; source_state: string; source_connection_ref: string | null }>();
+  if (!document || document.source_adapter !== "website" || document.source_state !== "current" || !document.source_connection_ref) {
+    return c.json({ error_code: "website_source_not_schedulable" }, 404);
+  }
+  if (body.enabled && document.status !== "indexed") return c.json({ error_code: "website_source_not_schedulable" }, 409);
+  const now = new Date();
+  if (body.enabled) {
+    if (c.env.KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED !== "true") {
+      return c.json({ error_code: "website_refresh_schedule_unavailable" }, 404);
+    }
+    const connection = await c.env.PLATFORM_DB.prepare(`SELECT id FROM website_connections
+      WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND project_id=? AND status='active'`)
+      .bind(document.source_connection_ref, tenantId, spaceId, access.userId, projectId).first<{ id: string }>();
+    if (!connection) return c.json({ error_code: "website_connection_not_found" }, 404);
+    const nextRunAt = new Date(now.getTime() + body.interval_hours * 60 * 60_000).toISOString();
+    await c.env.PLATFORM_DB.prepare(`INSERT INTO kb_source_refresh_schedules
+      (id,tenant_id,space_id,project_id,document_id,connection_ref,owner_user_id,enabled,interval_hours,generation,next_run_at,
+       created_by_user_id,updated_by_user_id,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,1,?,1,?,?,?,?,?)
+      ON CONFLICT(document_id) DO UPDATE SET connection_ref=excluded.connection_ref,owner_user_id=excluded.owner_user_id,
+        enabled=1,interval_hours=excluded.interval_hours,generation=kb_source_refresh_schedules.generation+1,
+        next_run_at=excluded.next_run_at,last_error_code=NULL,lease_token=NULL,lease_expires_at=NULL,
+        updated_by_user_id=excluded.updated_by_user_id,updated_at=excluded.updated_at`)
+      .bind(crypto.randomUUID(), tenantId, spaceId, projectId, docId, connection.id, access.userId,
+        body.interval_hours, nextRunAt, access.userId, access.userId, now.toISOString(), now.toISOString()).run();
+  } else {
+    await c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_schedules SET enabled=0,generation=generation+1,
+      next_run_at=NULL,last_result='paused',last_error_code=NULL,lease_token=NULL,lease_expires_at=NULL,
+      updated_by_user_id=?,updated_at=? WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+      .bind(access.userId, now.toISOString(), docId, tenantId, spaceId, projectId).run();
+  }
+  const schedule = await c.env.PLATFORM_DB.prepare(`SELECT enabled,interval_hours,next_run_at,last_run_at,last_result,last_error_code
+    FROM kb_source_refresh_schedules WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+    .bind(docId, tenantId, spaceId, projectId).first<Record<string, unknown>>();
+  return c.json({ schedule: schedule ?? { enabled: 0, interval_hours: body.interval_hours, next_run_at: null } }, 200,
+    { "cache-control": "private, no-store" });
 });
 
 // A restored Knowledge document has canonical D1 chunks but intentionally no Vectorize or
@@ -2077,6 +2142,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       preview_sha256?: string;
       preview_token?: string;
     };
+    scheduled_refresh?: { schedule_id?: string; lease_token?: string; generation?: number };
   }>(c.req.raw, 6_500_000);
 
   if (body.title !== undefined && (typeof body.title !== "string" || !body.title.trim() || body.title.length > 500)) {
@@ -2112,7 +2178,9 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     if (access instanceof Response) return access;
   }
 
-  let websiteRefresh: { operationId: string; expectedRevision: number; finalUrl: string; previewSha256: string; attemptCount: number } | null = null;
+  let websiteRefresh: { operationId: string; expectedRevision: number; finalUrl: string; previewSha256: string; attemptCount: number;
+    scheduled?: { id: string; leaseToken: string; generation: number; intervalHours: 24 | 168 } } | null = null;
+  let websiteRefreshUserId: string | null = null;
   if (existing.source_adapter === "website" && existing.source_state === "current" && body.content !== undefined) {
     if (!projectId || !body.website_refresh || typeof body.website_refresh.expected_source_revision !== "number"
       || !Number.isSafeInteger(body.website_refresh.expected_source_revision)
@@ -2135,6 +2203,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       throw new HttpError(409, "website_refresh_source_changed", "The website source URL changed; preview it again");
     }
     const userId = c.req.header("x-naelao-user-id") ?? "";
+    websiteRefreshUserId = userId;
     const connection = existing.source_connection_ref ? await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,knowledge_path_prefixes_json,status
       FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND project_id=? AND status='active'`)
       .bind(existing.source_connection_ref, tenantId, spaceId, userId, projectId).first<WebsiteConnectionGrant>() : null;
@@ -2171,10 +2240,29 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       finalUrl: finalUrl.href, previewSha256: body.website_refresh.preview_sha256, operation: "refresh", documentId: docId,
       sourceRevision: existing.source_revision, refreshOperationId: operation.id });
     if (!previewValid) throw new HttpError(409, "website_refresh_receipt_expired", "Preview this website page again before saving");
+    let scheduled: { id: string; leaseToken: string; generation: number; intervalHours: 24 | 168 } | undefined;
+    if (body.scheduled_refresh !== undefined) {
+      const scheduledInput = body.scheduled_refresh;
+      if (!scheduledInput || typeof scheduledInput.schedule_id !== "string" || typeof scheduledInput.lease_token !== "string"
+        || !Number.isSafeInteger(scheduledInput.generation)) {
+        throw badRequest("Scheduled website refresh receipt is invalid");
+      }
+      const schedule = await c.env.PLATFORM_DB.prepare(`SELECT id,lease_token,generation,interval_hours FROM kb_source_refresh_schedules
+        WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND document_id=? AND connection_ref=?
+          AND owner_user_id=? AND enabled=1 AND lease_token=? AND generation=?`)
+        .bind(scheduledInput.schedule_id, tenantId, spaceId, projectId, docId, connection.id, userId,
+          scheduledInput.lease_token, scheduledInput.generation)
+        .first<{ id: string; lease_token: string; generation: number; interval_hours: 24 | 168 }>();
+      if (!schedule) throw new HttpError(409, "website_refresh_schedule_changed", "The automatic refresh was paused or changed before this page could be indexed");
+      scheduled = { id: schedule.id, leaseToken: schedule.lease_token, generation: schedule.generation, intervalHours: schedule.interval_hours };
+    }
     websiteRefresh = { operationId: operation.id, expectedRevision: existing.source_revision,
-      finalUrl: finalUrl.href, previewSha256: body.website_refresh.preview_sha256, attemptCount: operation.attempt_count };
+      finalUrl: finalUrl.href, previewSha256: body.website_refresh.preview_sha256, attemptCount: operation.attempt_count, ...(scheduled ? { scheduled } : {}) };
   } else if (body.website_refresh !== undefined) {
     throw badRequest("website_refresh is valid only when updating a current website source");
+  }
+  if (body.scheduled_refresh !== undefined && !websiteRefresh) {
+    throw badRequest("scheduled_refresh is valid only with an approved website refresh");
   }
 
   // If only updating title (no content re-index needed)
@@ -2408,7 +2496,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     }
 
     const refreshFlag = websiteRefresh ? 1 : 0;
-    const publishReindex = await c.env.PLATFORM_DB.batch([
+    const publicationStatements: D1PreparedStatement[] = [
       c.env.PLATFORM_DB.prepare(
         `UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, required_role_rank=?,
           allowed_user_ids_json=COALESCE(allowed_user_ids_json, ?), source_revision=source_revision+1,
@@ -2424,28 +2512,52 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
             AND wc.project_id=kb_documents.project_id AND wc.status='active'))
           AND (? IS NULL OR EXISTS (SELECT 1 FROM kb_source_refresh_operations ro WHERE ro.id=?
             AND ro.document_id=kb_documents.id AND ro.state='preview_ready' AND ro.source_revision=? AND ro.preview_sha256=?))
-          AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
+          AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)
+          AND (? IS NULL OR EXISTS (SELECT 1 FROM kb_source_refresh_schedules rs WHERE rs.id=?
+            AND rs.document_id=kb_documents.id AND rs.tenant_id=kb_documents.tenant_id AND rs.space_id=kb_documents.space_id
+            AND rs.project_id=kb_documents.project_id AND rs.owner_user_id=? AND rs.enabled=1
+            AND rs.lease_token=? AND rs.generation=? AND EXISTS (
+              SELECT 1 FROM project_access pa WHERE pa.tenant_id=rs.tenant_id AND pa.space_id=rs.space_id
+                AND pa.project_id=rs.project_id AND pa.user_id=rs.owner_user_id AND pa.role_rank>=40
+            )))`
       ).bind(newTitle, chunks.length, requiredRoleRank, JSON.stringify(allowedUserIds), newSourceContentSha256,
         websiteRefresh?.finalUrl ?? null, refreshFlag, refreshFlag, refreshFlag, refreshFlag, refreshFlag, refreshFlag,
         docId, websiteRefresh?.expectedRevision ?? null, websiteRefresh?.expectedRevision ?? null,
         websiteRefresh?.operationId ?? null, websiteRefresh?.operationId ?? null, websiteRefresh?.expectedRevision ?? null,
-        websiteRefresh?.previewSha256 ?? null, docId),
-      ...(websiteRefresh ? [c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='completed',
+        websiteRefresh?.previewSha256 ?? null, docId, websiteRefresh?.scheduled?.id ?? null, websiteRefresh?.scheduled?.id ?? null,
+        websiteRefreshUserId, websiteRefresh?.scheduled?.leaseToken ?? null, websiteRefresh?.scheduled?.generation ?? null),
+    ];
+    if (websiteRefresh) publicationStatements.push(c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='completed',
         completed_at=datetime('now'),next_attempt_at=NULL,error_code=NULL,updated_at=datetime('now')
         WHERE id=? AND state='preview_ready' AND source_revision=? AND preview_sha256=? AND EXISTS (
           SELECT 1 FROM kb_documents d WHERE d.id=kb_source_refresh_operations.document_id AND d.source_revision=?+1
             AND d.source_url=kb_source_refresh_operations.final_url AND d.source_content_sha256=? AND d.source_state='current'
         )`).bind(websiteRefresh.operationId, websiteRefresh.expectedRevision, websiteRefresh.previewSha256,
-        websiteRefresh.expectedRevision, newSourceContentSha256)] : []),
-      ...revisionExternalPublicationsForDocument(c.env.PLATFORM_DB,
-        { tenantId, spaceId, projectId, documentId: docId, updatedAt: new Date().toISOString() }),
-    ]);
+        websiteRefresh.expectedRevision, newSourceContentSha256));
+    if (websiteRefresh?.scheduled) {
+      const completedAt = new Date();
+      const nextRunAt = new Date(completedAt.getTime() + websiteRefresh.scheduled.intervalHours * 60 * 60_000).toISOString();
+      publicationStatements.push(c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_schedules SET last_run_at=?,last_result='updated',
+        last_error_code=NULL,failure_count=0,next_run_at=?,lease_token=NULL,lease_expires_at=NULL,updated_at=?
+        WHERE id=? AND enabled=1 AND lease_token=? AND generation=? AND EXISTS (
+          SELECT 1 FROM kb_documents d JOIN website_connections wc ON wc.id=d.source_connection_ref
+          WHERE d.id=kb_source_refresh_schedules.document_id AND d.source_revision=?+1 AND d.source_state='current'
+            AND d.status='indexed' AND wc.id=kb_source_refresh_schedules.connection_ref AND wc.status='active'
+        )`).bind(completedAt.toISOString(), nextRunAt, completedAt.toISOString(), websiteRefresh.scheduled.id,
+        websiteRefresh.scheduled.leaseToken, websiteRefresh.scheduled.generation, websiteRefresh.expectedRevision));
+    }
+    publicationStatements.push(...revisionExternalPublicationsForDocument(c.env.PLATFORM_DB,
+      { tenantId, spaceId, projectId, documentId: docId, updatedAt: new Date().toISOString() }));
+    const publishReindex = await c.env.PLATFORM_DB.batch(publicationStatements);
     if (!publishReindex[0]?.meta.changes) {
       if (websiteRefresh) throw new HttpError(409, "website_refresh_superseded", "The source or its approved connection changed during refresh");
       throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
     }
     if (websiteRefresh && !publishReindex[1]?.meta.changes) {
       throw new HttpError(409, "website_refresh_receipt_expired", "The refresh receipt could not be completed; reload the source status");
+    }
+    if (websiteRefresh?.scheduled && !publishReindex[2]?.meta.changes) {
+      throw new HttpError(409, "website_refresh_schedule_changed", "The automatic refresh was paused before this page could be indexed");
     }
 
     const updated = publicKnowledgeDocument(await c.env.PLATFORM_DB.prepare(
@@ -3453,6 +3565,10 @@ app.notFound((c) =>
 export default {
   fetch: app.fetch,
   scheduled(_controller: ScheduledController, env: KnowledgeEnv, ctx: ExecutionContext) {
-    ctx.waitUntil(reconcileKnowledgeDocumentDeletions(deletionBindings(env), 20));
+    ctx.waitUntil(Promise.allSettled([
+      reconcileKnowledgeDocumentDeletions(deletionBindings(env), 20),
+      runScheduledWebsiteRefreshes(env, async (request, scheduleEnv, executionCtx) =>
+        await app.fetch(request, scheduleEnv as KnowledgeEnv, executionCtx), ctx),
+    ]));
   },
 } satisfies ExportedHandler<KnowledgeEnv>;

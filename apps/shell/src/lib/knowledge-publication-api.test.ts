@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { applyWebsiteKnowledgeRefresh, createKbDocument, getExternalKnowledgePublicationSources, listExternalKnowledgePublicationEvents, listExternalKnowledgePublications,
-  previewWebsiteKnowledgeSource } from "./api";
+  previewWebsiteKnowledgeSource, setWebsiteKnowledgeRefreshSchedule } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -96,4 +96,15 @@ it("keeps a website refresh receipt bound to its document version through the PA
   expect(JSON.parse(String(init?.body))).toMatchObject({ website_refresh: {
     operation_id: "refresh-op-1", expected_source_revision: 7, preview_token: "signed-refresh",
   }, content: "Owner-corrected updated text" });
+});
+
+it("exposes an explicit owner opt-in for a daily or weekly website refresh schedule", async () => {
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ schedule: { enabled: 1, interval_hours: 168,
+    next_run_at: "2026-11-23T12:00:00.000Z" } }), { status: 200, headers: { "content-type": "application/json" } }));
+  vi.stubGlobal("fetch", fetchMock);
+  await setWebsiteKnowledgeRefreshSchedule("space/a", "project b", "doc c", { sessionToken: "session-token", endUserId: "owner-a" },
+    { enabled: true, interval_hours: 168 });
+  const [url, init] = fetchMock.mock.calls.at(-1) ?? [];
+  expect(url).toBe("http://localhost:8787/v1/spaces/space%2Fa/kb/projects/project%20b/sources/website/doc%20c/schedule");
+  expect(init).toEqual(expect.objectContaining({ method: "POST", body: JSON.stringify({ enabled: true, interval_hours: 168 }) }));
 });

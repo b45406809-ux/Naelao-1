@@ -27,6 +27,7 @@ import {
   createDepartment,
   createKbDocument,
   applyWebsiteKnowledgeRefresh,
+  setWebsiteKnowledgeRefreshSchedule,
   previewKbPdf,
   previewWebsiteKnowledgeSource,
   createThread,
@@ -126,6 +127,8 @@ export default function ProjectDetailPage() {
   const [previewingWebsite, setPreviewingWebsite] = React.useState(false);
   const [websiteRefreshDraft, setWebsiteRefreshDraft] = React.useState<{ documentId: string; content: string; preview: WebsiteKnowledgePreview } | null>(null);
   const [refreshingWebsiteId, setRefreshingWebsiteId] = React.useState<string | null>(null);
+  const [savingWebsiteScheduleId, setSavingWebsiteScheduleId] = React.useState<string | null>(null);
+  const [websiteScheduleIntervals, setWebsiteScheduleIntervals] = React.useState<Record<string, 24 | 168>>({});
   const websiteRefreshRequestKeysRef = React.useRef(new Map<string, string>());
   const createIdempotencyKeyRef = React.useRef<string | null>(null);
   const [externalPublications, setExternalPublications] = React.useState<ExternalKnowledgePublication[]>([]);
@@ -516,6 +519,23 @@ export default function ProjectDetailPage() {
       show(error instanceof Error ? error.message : "Couldn't save the refreshed website snapshot.");
     } finally {
       setAddingDoc(false);
+    }
+  }
+
+  async function handleWebsiteRefreshSchedule(document: KbDocument, enabled: boolean) {
+    if (!creds || savingWebsiteScheduleId) return;
+    const intervalHours = websiteScheduleIntervals[document.id]
+      ?? (document.source_refresh_interval_hours === 168 ? 168 : 24);
+    setSavingWebsiteScheduleId(document.id);
+    try {
+      await setWebsiteKnowledgeRefreshSchedule(activeSpaceId, params.projectId, document.id, creds,
+        { enabled, interval_hours: intervalHours });
+      show(enabled ? `Automatic website refresh enabled (${intervalHours === 24 ? "daily" : "weekly"})` : "Automatic website refresh paused");
+      await refreshDocs();
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't update the website refresh schedule");
+    } finally {
+      setSavingWebsiteScheduleId(null);
     }
   }
 
@@ -1197,6 +1217,13 @@ export default function ProjectDetailPage() {
                     {d.source_last_error_code ? " · latest attempt failed" : ""}
                     {d.source_next_attempt_at && ` · retry after ${new Date(d.source_next_attempt_at).toLocaleString()}`}
                   </div>}
+                  {d.source_adapter === "website" && <div className="settings-row-sub" style={{ marginTop: 4 }}>
+                    {d.source_refresh_schedule_enabled === 1
+                      ? d.source_refresh_schedule_available === false
+                        ? "Automatic refresh is paused while this capability is unavailable"
+                        : `Automatic refresh ${d.source_refresh_interval_hours === 168 ? "weekly" : "daily"}${d.source_refresh_next_run_at ? ` · next ${new Date(d.source_refresh_next_run_at).toLocaleString()}` : ""}${d.source_refresh_last_result ? ` · last result ${d.source_refresh_last_result}` : ""}`
+                      : d.source_refresh_schedule_available === true ? "Automatic refresh is off" : ""}
+                  </div>}
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   {d.source_adapter === "website" && <Button size="sm" variant="ghost"
@@ -1204,11 +1231,36 @@ export default function ProjectDetailPage() {
                     onClick={() => void handlePreviewWebsiteRefresh(d)}>
                     {refreshingWebsiteId === d.id ? "Fetching…" : "Refresh page"}
                   </Button>}
+                  {d.source_adapter === "website" && d.source_state === "current"
+                    && (d.source_refresh_schedule_available === true || d.source_refresh_schedule_enabled === 1) && <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    {d.source_refresh_schedule_enabled === 1 ? <Button size="sm" variant="ghost"
+                      disabled={savingWebsiteScheduleId !== null}
+                      onClick={() => void handleWebsiteRefreshSchedule(d, false)}>
+                      {savingWebsiteScheduleId === d.id ? "Saving…" : "Pause automatic refresh"}
+                    </Button> : <>
+                      <label className="sr-only" htmlFor={`website-refresh-interval-${d.id}`}>Automatic refresh interval for {d.title}</label>
+                      <select id={`website-refresh-interval-${d.id}`} className="input input-sm"
+                        value={websiteScheduleIntervals[d.id] ?? 24}
+                        onChange={(event) => setWebsiteScheduleIntervals(current => ({ ...current,
+                          [d.id]: Number(event.target.value) === 168 ? 168 : 24 }))}>
+                        <option value={24}>Daily</option><option value={168}>Weekly</option>
+                      </select>
+                      <Button size="sm" variant="ghost"
+                        disabled={!d.source_url || d.status !== "indexed" || savingWebsiteScheduleId !== null}
+                        onClick={() => void handleWebsiteRefreshSchedule(d, true)}>
+                        {savingWebsiteScheduleId === d.id ? "Saving…" : "Enable automatic refresh"}
+                      </Button>
+                    </>}
+                  </div>}
                   <Button size="sm" variant="ghost" onClick={() => handleDeleteDoc(d.id)} disabled={d.status === "deleting"}>
                     {d.status === "deleting" ? "Deleting…" : "Remove"}
                   </Button>
                 </div>
               </div>
+              {d.source_adapter === "website" && (d.source_refresh_schedule_available === true || d.source_refresh_schedule_enabled === 1) && <p className="settings-row-sub" style={{ margin: "6px 0 0" }}>
+                {d.source_refresh_schedule_enabled === 1 ? "Changed page text is reindexed automatically without another review and may use your existing Knowledge processing quota. Pausing or revoking its website connection stops later runs."
+                  : "Opt in to recheck this one page daily or weekly. If its text changes, it is reindexed automatically without another review and may use your existing Knowledge processing quota. Pausing or revoking its website connection stops later runs."}
+              </p>}
               {websiteRefreshDraft?.documentId === d.id && <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
                 <div role="status" className="settings-row-sub">
                   Review the refreshed page before replacing version {websiteRefreshDraft.preview.expected_source_revision}. Saving updates this snapshot and any published collection revision.
