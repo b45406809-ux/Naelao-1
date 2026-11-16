@@ -31,8 +31,37 @@ export interface SpaceArchivePayload {
   };
   /** Absent only in legacy archives written before object-byte capture was added. */
   objectSnapshots?: Array<SpaceArchiveObjectSnapshot | SpaceArchiveChunkedObjectSnapshot>;
+  /** Bounded extension object data is versioned separately and never restores its host grant. */
+  extensionResourceSnapshotsVersion?: 1;
+  extensionResourceSnapshots?: SpaceArchiveExtensionResourceSnapshot[];
   selectionFingerprint?: string;
 }
+
+export interface SpaceArchiveExtensionResourceSnapshot {
+  version: 1;
+  tenantId: string;
+  spaceId: string;
+  projectId: string;
+  installationId: string;
+  extensionId: string;
+  releaseVersion: string;
+  artifactSha256: string;
+  installationGeneration: number;
+  manifestSha256: string;
+  requirementId: string;
+  resourceSha256: string;
+  key: string;
+  contentBase64: string;
+  contentType: string;
+  size: number;
+  sha256: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECTS = 128;
+export const MAX_ARCHIVE_EXTENSION_RESOURCE_BYTES = 4 * 1024 * 1024;
+export const MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECT_BYTES = 64 * 1024;
 
 export interface SpaceArchiveProjectRuntimeSettingsSnapshot {
   version: 1;
@@ -516,6 +545,7 @@ export async function verifySpaceArchiveObjectSnapshots(
   bucket: Pick<R2Bucket, "get">,
   keys: ArchiveKeys,
 ): Promise<void> {
+  await verifySpaceArchiveExtensionResourceSnapshots(payload);
   if (!Object.prototype.hasOwnProperty.call(payload, "objectSnapshots")) {
     if (payload.formatVersion === 2) throw new Error("archive_object_snapshot_set_incomplete");
     return;
@@ -536,6 +566,75 @@ export async function verifySpaceArchiveObjectSnapshots(
       if (isChunkedObjectSnapshot(snapshot)) throw new Error("archive_object_snapshot_invalid");
       await decodeSpaceArchiveObjectSnapshot(snapshot, ref);
     }
+  }
+}
+
+/** Decode one versioned host-managed resource object snapshot and verify its declared bytes. */
+export async function decodeSpaceArchiveExtensionResourceSnapshot(
+  snapshot: SpaceArchiveExtensionResourceSnapshot,
+  expected: { tenantId: string; spaceId: string },
+): Promise<Uint8Array> {
+  const allowed = new Set(["version", "tenantId", "spaceId", "projectId", "installationId", "extensionId", "releaseVersion", "artifactSha256",
+    "installationGeneration", "manifestSha256", "requirementId", "resourceSha256", "key", "contentBase64", "contentType",
+    "size", "sha256", "createdAt", "updatedAt"]);
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+    || Object.keys(snapshot).some(key => !allowed.has(key)) || snapshot.version !== 1
+    || snapshot.tenantId !== expected.tenantId || snapshot.spaceId !== expected.spaceId
+    || typeof snapshot.projectId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(snapshot.projectId)
+    || typeof snapshot.installationId !== "string" || !/^[A-Za-z0-9._:-]{1,768}$/.test(snapshot.installationId)
+    || typeof snapshot.extensionId !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(snapshot.extensionId)
+    || typeof snapshot.releaseVersion !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(snapshot.releaseVersion)
+    || !/^[a-f0-9]{64}$/.test(snapshot.artifactSha256)
+    || !Number.isSafeInteger(snapshot.installationGeneration) || snapshot.installationGeneration < 1
+    || !/^[a-f0-9]{64}$/.test(snapshot.manifestSha256) || !/^[a-z][a-z0-9._-]{0,63}$/.test(snapshot.requirementId)
+    || !/^[a-f0-9]{64}$/.test(snapshot.resourceSha256)
+    || typeof snapshot.key !== "string" || new TextEncoder().encode(snapshot.key).byteLength > 128
+    || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(snapshot.key)
+    || snapshot.key.split("/").some(part => !part || part === "." || part === ".." || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(part))
+    || typeof snapshot.contentType !== "string" || snapshot.contentType.length > 128
+    || !/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(snapshot.contentType)
+    || !Number.isSafeInteger(snapshot.size) || snapshot.size < 0 || snapshot.size > MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECT_BYTES
+    || typeof snapshot.contentBase64 !== "string" || snapshot.contentBase64.length > Math.ceil(MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECT_BYTES / 3) * 4
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(snapshot.contentBase64)
+    || !/^[a-f0-9]{64}$/.test(snapshot.sha256)
+    || typeof snapshot.createdAt !== "string" || snapshot.createdAt.length > 64 || !Number.isFinite(Date.parse(snapshot.createdAt))
+    || typeof snapshot.updatedAt !== "string" || snapshot.updatedAt.length > 64 || !Number.isFinite(Date.parse(snapshot.updatedAt))) {
+    throw new Error("archive_extension_resource_snapshot_invalid");
+  }
+  let bytes: Uint8Array;
+  try { bytes = fromBase64(snapshot.contentBase64); }
+  catch { throw new Error("archive_extension_resource_snapshot_invalid"); }
+  if (base64(bytes) !== snapshot.contentBase64 || bytes.byteLength !== snapshot.size
+    || bytes.byteLength > MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECT_BYTES || await sha256(bytes) !== snapshot.sha256) {
+    throw new Error("archive_extension_resource_snapshot_checksum_mismatch");
+  }
+  return bytes;
+}
+
+/** Validate the optional versioned object set; archives predating this contract remain readable. */
+export async function verifySpaceArchiveExtensionResourceSnapshots(payload: SpaceArchivePayload): Promise<void> {
+  const hasVersion = Object.prototype.hasOwnProperty.call(payload, "extensionResourceSnapshotsVersion");
+  const hasSnapshots = Object.prototype.hasOwnProperty.call(payload, "extensionResourceSnapshots");
+  if (!hasVersion && !hasSnapshots) return;
+  if (payload.extensionResourceSnapshotsVersion !== 1 || !Array.isArray(payload.extensionResourceSnapshots)
+    || payload.extensionResourceSnapshots.length > MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECTS) {
+    throw new Error("archive_extension_resource_snapshot_set_invalid");
+  }
+  const identities = new Set<string>(), counts = new Map<string, { count: number; bytes: number }>();
+  let totalBytes = 0;
+  for (const snapshot of payload.extensionResourceSnapshots) {
+    const bytes = await decodeSpaceArchiveExtensionResourceSnapshot(snapshot, { tenantId: payload.tenantId, spaceId: payload.spaceId });
+    const owner = `${snapshot.installationId}\u0000${snapshot.requirementId}`;
+    const identity = `${owner}\u0000${snapshot.key}`;
+    if (identities.has(identity)) throw new Error("archive_extension_resource_snapshot_duplicate");
+    identities.add(identity);
+    totalBytes += bytes.byteLength;
+    if (totalBytes > MAX_ARCHIVE_EXTENSION_RESOURCE_BYTES) throw new Error("archive_extension_resource_snapshot_limit_exceeded");
+    const usage = counts.get(snapshot.installationId) ?? { count: 0, bytes: 0 };
+    usage.count++;
+    usage.bytes += bytes.byteLength;
+    if (usage.count > 64 || usage.bytes > 512 * 1024) throw new Error("archive_extension_resource_installation_limit_exceeded");
+    counts.set(snapshot.installationId, usage);
   }
 }
 
@@ -608,6 +707,7 @@ async function archiveKey(secret: string, tenantId: string, spaceId: string): Pr
 export async function encodeSpaceArchive(payload: SpaceArchivePayload, keys: ArchiveKeys): Promise<{ bytes: Uint8Array; checksum: string; plaintextBytes: number }> {
   if (payload.format !== "naelao-space-archive" || ![1, 2].includes(payload.formatVersion) || !payload.spaceId || !payload.tenantId || !payload.archiveId) throw new Error("archive_manifest_invalid");
   if (payload.formatVersion === 2 && Array.isArray(payload.objectSnapshots) && payload.objectSnapshots.some(snapshot => !isChunkedObjectSnapshot(snapshot))) throw new Error("archive_object_snapshot_invalid");
+  await verifySpaceArchiveExtensionResourceSnapshots(payload);
   if (payload.formatVersion === 1 && Array.isArray(payload.objectSnapshots) && payload.objectSnapshots.some(isChunkedObjectSnapshot)) throw new Error("archive_object_snapshot_invalid");
   const plain = new TextEncoder().encode(stable(payload));
   if (plain.byteLength > MAX_ARCHIVE_BYTES) throw new Error("archive_size_limit_exceeded");

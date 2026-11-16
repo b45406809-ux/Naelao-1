@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { captureSpaceArchiveObjectChunked, decodeSpaceArchive, decodeSpaceArchiveChunkedObjectSnapshot, encodeSpaceArchive, isSpaceArchiveProjectRuntimeSettingsSnapshot, readSpaceArchiveObject, rewrapSpaceArchiveObjectChunks, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, verifySpaceArchiveObjectSnapshots, type SpaceArchivePayload } from "./space-backup.js";
+import { captureSpaceArchiveObjectChunked, decodeSpaceArchive, decodeSpaceArchiveChunkedObjectSnapshot, encodeSpaceArchive, isSpaceArchiveProjectRuntimeSettingsSnapshot, readSpaceArchiveObject, rewrapSpaceArchiveObjectChunks, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, verifySpaceArchiveExtensionResourceSnapshots, verifySpaceArchiveObjectSnapshots, type SpaceArchivePayload } from "./space-backup.js";
 
 const payload: SpaceArchivePayload = {
   format: "naelao-space-archive", formatVersion: 1,
@@ -34,6 +34,24 @@ describe("encrypted Space archive envelope", () => {
     expect(new TextDecoder().decode(encoded.bytes)).not.toContain("hello");
     expect(encoded.checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(await decodeSpaceArchive(encoded.bytes, secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId: "archive-a" })).toEqual(payload);
+  });
+
+  it("validates versioned extension object snapshot ownership, bytes and duplicate keys", async () => {
+    const bytes = new TextEncoder().encode("x");
+    const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const snapshot = { version: 1 as const, tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", installationId: "install-a",
+      extensionId: "ext_archive_demo", releaseVersion: "1.0.0", artifactSha256: "a".repeat(64), installationGeneration: 3,
+      manifestSha256: "b".repeat(64), requirementId: "attachments", resourceSha256: "c".repeat(64), key: "notes/readme.txt",
+      contentBase64: "eA==", contentType: "text/plain", size: 1, sha256,
+      createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-02T00:00:00.000Z" };
+    const withSnapshot: SpaceArchivePayload = { ...payload, extensionResourceSnapshotsVersion: 1, extensionResourceSnapshots: [snapshot] };
+    await expect(verifySpaceArchiveExtensionResourceSnapshots(withSnapshot)).resolves.toBeUndefined();
+    await expect(verifySpaceArchiveExtensionResourceSnapshots({ ...withSnapshot, extensionResourceSnapshots: [{ ...snapshot, spaceId: "space-b" }] }))
+      .rejects.toThrow("archive_extension_resource_snapshot_invalid");
+    await expect(verifySpaceArchiveExtensionResourceSnapshots({ ...withSnapshot, extensionResourceSnapshots: [{ ...snapshot, contentBase64: "eQ==" }] }))
+      .rejects.toThrow("archive_extension_resource_snapshot_checksum_mismatch");
+    await expect(verifySpaceArchiveExtensionResourceSnapshots({ ...withSnapshot, extensionResourceSnapshots: [snapshot, snapshot] }))
+      .rejects.toThrow("archive_extension_resource_snapshot_duplicate");
   });
 
   it("writes authenticated v2 object chunks and retains v1 manifest decoding", async () => {

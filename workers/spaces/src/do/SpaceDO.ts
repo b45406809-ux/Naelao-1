@@ -46,7 +46,7 @@ import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validate
 import { matchGlossaryTerms, normalizeGlossaryTerm, validateGlossaryEntry, type DomainGlossaryEntry } from "../domain-glossary.js";
 import { isAllowedModel } from "@naelao/billing-core";
 import { evaluationPasses, transitionCustomModelLifecycle, validateAdapterEvaluation, validateConsentAttestation, type CustomModelLifecycleAction } from "./custom-model-lifecycle.js";
-import { captureSpaceArchiveObject, captureSpaceArchiveObjectChunked, checksumSpaceArchiveObject, decodeSpaceArchiveChunkedObjectSnapshot, decodeSpaceArchiveObjectSnapshot, decodeSpaceArchive, deleteSpaceArchiveChunkObjects, encodeSpaceArchive, isSpaceArchiveProjectRuntimeSettingsSnapshot, MAX_ARCHIVE_CHUNKED_CAPTURE_BYTES, MAX_ARCHIVE_CHUNKED_OBJECT_BYTES, MAX_ARCHIVE_OBJECT_BYTES, MAX_ARCHIVE_OBJECT_CAPTURE_BYTES, MAX_ARCHIVE_PROJECT_RUNTIME_SETTINGS_BYTES, readSpaceArchiveObject, rewrapSpaceArchiveObjectChunks, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, verifySpaceArchiveObjectSnapshots, type ResumableArchiveUploadState, type SpaceArchivePayload, type SpaceArchiveProjectRuntimeSettingsSnapshot, type SpaceArchiveWorkspaceSnapshot } from "./space-backup.js";
+import { captureSpaceArchiveObject, captureSpaceArchiveObjectChunked, checksumSpaceArchiveObject, decodeSpaceArchiveChunkedObjectSnapshot, decodeSpaceArchiveObjectSnapshot, decodeSpaceArchiveExtensionResourceSnapshot, decodeSpaceArchive, deleteSpaceArchiveChunkObjects, encodeSpaceArchive, isSpaceArchiveProjectRuntimeSettingsSnapshot, MAX_ARCHIVE_CHUNKED_CAPTURE_BYTES, MAX_ARCHIVE_CHUNKED_OBJECT_BYTES, MAX_ARCHIVE_OBJECT_BYTES, MAX_ARCHIVE_OBJECT_CAPTURE_BYTES, MAX_ARCHIVE_EXTENSION_RESOURCE_BYTES, MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECTS, MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECT_BYTES, MAX_ARCHIVE_PROJECT_RUNTIME_SETTINGS_BYTES, readSpaceArchiveObject, rewrapSpaceArchiveObjectChunks, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, verifySpaceArchiveExtensionResourceSnapshots, verifySpaceArchiveObjectSnapshots, type ResumableArchiveUploadState, type SpaceArchiveExtensionResourceSnapshot, type SpaceArchivePayload, type SpaceArchiveProjectRuntimeSettingsSnapshot, type SpaceArchiveWorkspaceSnapshot } from "./space-backup.js";
 import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes, type RetainedMessageRow } from "./space-retention.js";
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
@@ -101,12 +101,13 @@ function normalizeBlueprintProjectKnowledgeSelections(blueprint: SpaceBlueprint,
 // Owner-managed access grants require fresh approval after archive recovery. Additive restore may
 // insert missing rows from old archives, so it must never replay a grant that was revoked later.
 const SPACE_ARCHIVE_PERMISSION_TABLES = [
-  "local_grants", "extension_shared_filesystem_grants", "extension_project_knowledge_grants",
+  "local_grants", "extension_shared_filesystem_grants", "extension_project_knowledge_grants", "extension_resource_grants",
 ] as const;
+const SPACE_ARCHIVE_EPHEMERAL_TABLES = ["extension_resource_operation_leases"] as const;
 const SPACE_ARCHIVE_EXCLUDED_TABLES = [
   "space_retention_policies", "space_storage_measurements", "space_archive_records", "space_archive_uploads",
   "space_retention_previews", "space_archive_restore_previews", "space_archive_restores", "space_retention_events",
-  "space_erasure_tombstones", "kb_documents", "extension_resource_objects", ...SPACE_ARCHIVE_PERMISSION_TABLES,
+  "space_erasure_tombstones", "kb_documents", "extension_resource_objects", ...SPACE_ARCHIVE_EPHEMERAL_TABLES, ...SPACE_ARCHIVE_PERMISSION_TABLES,
 ] as const;
 const SPACE_ARCHIVE_EXCLUDED_TABLE_SET: ReadonlySet<string> = new Set(SPACE_ARCHIVE_EXCLUDED_TABLES);
 const SPACE_ARCHIVE_EXCLUDED_TABLE_SQL = SPACE_ARCHIVE_EXCLUDED_TABLES.map(table => `'${table}'`).join(",");
@@ -117,6 +118,8 @@ type SpaceArchiveCoverage = {
   spaceTables: number;
   spaceRows: number;
   capturedObjects: number;
+  extensionResourceObjects?: number;
+  extensionResourceObjectBytes?: number;
   projectWorkspaces: number;
   projectRuntimeSettings: number;
   signedMicroAppActors: number;
@@ -135,6 +138,10 @@ function summarizeSpaceArchiveCoverage(payload: SpaceArchivePayload, kind: Space
     spaceTables: Object.keys(payload.tableRows).length,
     spaceRows: rowCounts.reduce((sum, count) => sum + (Number.isSafeInteger(count) && count > 0 ? count : 0), 0),
     capturedObjects: payload.objectSnapshots?.length ?? 0,
+    ...(payload.extensionResourceSnapshotsVersion === 1 ? {
+      extensionResourceObjects: payload.extensionResourceSnapshots?.length ?? 0,
+      extensionResourceObjectBytes: (payload.extensionResourceSnapshots ?? []).reduce((sum, snapshot) => sum + snapshot.size, 0),
+    } : {}),
     projectWorkspaces: payload.workspaceSnapshots?.length ?? 0,
     projectRuntimeSettings: payload.projectRuntimeSettings?.length ?? 0,
     signedMicroAppActors: payload.microAppSnapshots?.length ?? 0,
@@ -159,6 +166,8 @@ function parseSpaceArchiveCoverage(value: string | null | undefined): SpaceArchi
     if (parsed.version !== 1 || !["full", "retention_messages"].includes(String(parsed.kind))
       || ![parsed.spaceTables, parsed.spaceRows, parsed.capturedObjects, parsed.projectWorkspaces,
         parsed.projectRuntimeSettings, parsed.signedMicroAppActors].every(item => Number.isSafeInteger(item) && Number(item) >= 0)
+      || parsed.extensionResourceObjects !== undefined && (!Number.isSafeInteger(parsed.extensionResourceObjects) || Number(parsed.extensionResourceObjects) < 0)
+      || parsed.extensionResourceObjectBytes !== undefined && (!Number.isSafeInteger(parsed.extensionResourceObjectBytes) || Number(parsed.extensionResourceObjectBytes) < 0)
       || parsed.knowledgeDocuments !== undefined && (!Number.isSafeInteger(parsed.knowledgeDocuments) || Number(parsed.knowledgeDocuments) < 0)
       || parsed.knowledgeChunks !== undefined && (!Number.isSafeInteger(parsed.knowledgeChunks) || Number(parsed.knowledgeChunks) < 0)
       || parsed.knowledgeOmissions !== undefined && (!parsed.knowledgeOmissions
@@ -4948,6 +4957,60 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           }
         }
       }
+      const extensionResourceSnapshots: SpaceArchiveExtensionResourceSnapshot[] = [];
+      if (kind === "full") {
+        const resourceRows = queryAll<{ tenant_id: string; space_id: string; project_id: string; instance_id: string; requirement_id: string;
+          object_key: string; content_base64: string; content_type: string; size_bytes: number; sha256: string; created_at: string; updated_at: string }>(
+          sql, `SELECT tenant_id,space_id,project_id,instance_id,requirement_id,object_key,content_base64,content_type,size_bytes,sha256,created_at,updated_at
+            FROM extension_resource_objects WHERE tenant_id=? AND space_id=? ORDER BY instance_id,requirement_id,object_key LIMIT ?`,
+          tenantId, spaceId, MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECTS + 1);
+        if (resourceRows.length > MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECTS) {
+          return Response.json({ error_code: "archive_extension_resource_snapshot_limit_exceeded",
+            max_objects: MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECTS }, { status: 413 });
+        }
+        const targetByInstance = new Map<string, Awaited<ReturnType<SpaceDO["extensionResourceGrantTarget"]>>>();
+        let totalExtensionResourceBytes = 0;
+        const archivedProjectIds = new Set((tableRows.projects ?? []).filter(row => row.space_id === spaceId && typeof row.id === "string")
+          .map(row => String(row.id)));
+        for (const row of resourceRows) {
+          let target = targetByInstance.get(row.instance_id);
+          if (target === undefined) {
+            target = await this.extensionResourceGrantTarget(tenantId, spaceId, row.project_id, row.instance_id);
+            targetByInstance.set(row.instance_id, target);
+          }
+          if (!target || !["active", "disabled"].includes(target.row.status) || target.row.scope !== "PROJECT_BOUND"
+            || target.row.tenant_id !== row.tenant_id || target.row.space_id !== row.space_id || target.row.project_id !== row.project_id
+            || !target.row.release_version || !target.row.artifact_sha256 || !archivedProjectIds.has(row.project_id)
+            || !queryOne(sql, "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", row.project_id, spaceId)) {
+            return Response.json({ error_code: "archive_extension_resource_owner_unavailable", installation_id: row.instance_id }, { status: 409 });
+          }
+          const requirement = target.manifest.resourceRequirements?.find(item => item.id === row.requirement_id
+            && item.kind === "objects" && item.scope === "project" && item.binding === undefined);
+          if (!requirement || !isExtensionObjectKey(row.object_key) || !isExtensionObjectContentType(row.content_type)) {
+            return Response.json({ error_code: "archive_extension_resource_row_invalid", installation_id: row.instance_id }, { status: 409 });
+          }
+          const bytes = decodeExtensionObjectBase64(row.content_base64);
+          if (!bytes || bytes.byteLength !== row.size_bytes || !/^[a-f0-9]{64}$/.test(row.sha256)
+            || [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("") !== row.sha256
+            || typeof row.created_at !== "string" || !Number.isFinite(Date.parse(row.created_at))
+            || typeof row.updated_at !== "string" || !Number.isFinite(Date.parse(row.updated_at))) {
+            return Response.json({ error_code: "archive_extension_resource_row_invalid", installation_id: row.instance_id }, { status: 409 });
+          }
+          totalExtensionResourceBytes += bytes.byteLength;
+          if (bytes.byteLength > MAX_ARCHIVE_EXTENSION_RESOURCE_OBJECT_BYTES || totalExtensionResourceBytes > MAX_ARCHIVE_EXTENSION_RESOURCE_BYTES) {
+            return Response.json({ error_code: "archive_extension_resource_snapshot_limit_exceeded",
+              max_bytes: MAX_ARCHIVE_EXTENSION_RESOURCE_BYTES }, { status: 413 });
+          }
+          const resourceSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(requirement))))]
+            .map(byte => byte.toString(16).padStart(2, "0")).join("");
+          extensionResourceSnapshots.push({ version: 1, tenantId, spaceId, projectId: row.project_id, installationId: row.instance_id,
+            extensionId: target.row.extension_id, releaseVersion: target.row.release_version, artifactSha256: target.row.artifact_sha256,
+            installationGeneration: target.row.generation,
+            manifestSha256: target.manifestSha256, requirementId: row.requirement_id, resourceSha256, key: row.object_key,
+            contentBase64: row.content_base64, contentType: row.content_type, size: row.size_bytes, sha256: row.sha256,
+            createdAt: row.created_at, updatedAt: row.updated_at });
+        }
+      }
       let totalObjectBytes = 0;
       for (const ref of objectReferences) {
         if (!Number.isSafeInteger(ref.size) || ref.size < 0 || totalObjectBytes + ref.size > MAX_ARCHIVE_CHUNKED_CAPTURE_BYTES) {
@@ -4987,6 +5050,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const maxMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
       const payload: SpaceArchivePayload = { format: "naelao-space-archive", formatVersion: useChunkedObjects ? 2 : 1, tenantId, spaceId, archiveId, createdAt: now, migrationVersion: maxMigration, tableRows, rowCounts, objectReferences, objectSnapshots,
         ...(workspaceSnapshots.length ? { workspaceSnapshots } : {}), ...(projectRuntimeSettings.length ? { projectRuntimeSettingsVersion: 1 as const, projectRuntimeSettings } : {}),
+        ...(kind === "full" ? { extensionResourceSnapshotsVersion: 1 as const, extensionResourceSnapshots } : {}),
         ...(knowledgeSnapshot ? { knowledgeSnapshotVersion: 1 as const, knowledgeSnapshot } : {}),
         ...(microAppSnapshots.length || Object.values(microAppArchiveOmissions).some(count => count > 0)
           ? { microAppSnapshotsVersion: 1 as const, ...(microAppSnapshots.length ? { microAppSnapshots } : {}),
@@ -5139,6 +5203,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         payload = await decodeSpaceArchive(await readSpaceArchiveObject(object), this.archiveKeys(), { tenantId, spaceId, archiveId });
         if (await spaceArchiveChecksum(payload) !== record.checksum) throw new Error("archive_checksum_mismatch");
       } catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
+      try { await verifySpaceArchiveExtensionResourceSnapshots(payload); }
+      catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
       if (Object.entries(payload.tableRows).some(([table, rows]) => !Array.isArray(rows) || payload.rowCounts[table] !== rows.length)
         || Object.entries(payload.rowCounts).some(([table, count]) => !Number.isSafeInteger(count) || count < 0 || payload.tableRows[table]?.length !== count)) return Response.json({ error_code: "archive_row_count_mismatch" }, { status: 422 });
       const ownerManagedGrantRowsNotRestored: Record<string, number> = {};
@@ -5149,6 +5215,74 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           delete payload.tableRows[table];
           delete payload.rowCounts[table];
         }
+      }
+      const ephemeralRowsNotRestored: Record<string, number> = {};
+      for (const table of SPACE_ARCHIVE_EPHEMERAL_TABLES) {
+        const rows = payload.tableRows[table];
+        if (rows) {
+          if (rows.length > 0) ephemeralRowsNotRestored[table] = rows.length;
+          delete payload.tableRows[table];
+          delete payload.rowCounts[table];
+        }
+      }
+      const extensionResourceSnapshots = payload.extensionResourceSnapshots ?? [];
+      const archivedInstallations = new Map((payload.tableRows.extension_instances ?? []).map(row => [String(row.instance_id ?? ""), row]));
+      const archivedReleases = new Map((payload.tableRows.extension_releases ?? []).map(row => [`${String(row.extension_id ?? "")}\u0000${String(row.version ?? "")}`, row]));
+      const archivedProjectIds = new Set((payload.tableRows.projects ?? []).filter(row => row.space_id === spaceId && typeof row.id === "string")
+        .map(row => String(row.id)));
+      const checkedObjectInstallations = new Map<string, Awaited<ReturnType<typeof this.extensionResourceGrantTarget>>>();
+      const preExistingObjectInstallations = new Map<string, NonNullable<Awaited<ReturnType<typeof this.extensionResourceGrantTarget>>>>();
+      const extensionResourceSnapshotBytes = new Map<SpaceArchiveExtensionResourceSnapshot, Uint8Array>();
+      for (const snapshot of extensionResourceSnapshots) {
+        const archivedInstall = archivedInstallations.get(snapshot.installationId);
+        const archivedRelease = archivedReleases.get(`${snapshot.extensionId}\u0000${snapshot.releaseVersion}`);
+        if (!archivedInstall || archivedInstall.tenant_id !== tenantId || archivedInstall.space_id !== spaceId
+          || archivedInstall.project_id !== snapshot.projectId || archivedInstall.scope !== "PROJECT_BOUND"
+          || !["active", "disabled"].includes(String(archivedInstall.status)) || archivedInstall.extension_id !== snapshot.extensionId
+          || archivedInstall.release_version !== snapshot.releaseVersion || archivedInstall.generation !== snapshot.installationGeneration
+          || !archivedProjectIds.has(snapshot.projectId) || !archivedRelease || archivedRelease.artifact_sha256 !== snapshot.artifactSha256
+          || typeof archivedRelease.manifest_json !== "string" || typeof archivedRelease.host_signature !== "string"
+          || !publisherReleaseFieldsValid(archivedRelease as unknown as PublisherReleaseFields)
+          || await this.signExtensionRelease(snapshot.extensionId, snapshot.releaseVersion, archivedRelease.manifest_json, snapshot.artifactSha256)
+            !== archivedRelease.host_signature) {
+          return Response.json({ error_code: "archive_extension_resource_snapshot_owner_mismatch",
+            installation_id: snapshot.installationId }, { status: 422 });
+        }
+        let archivedManifest: ExtensionManifest;
+        try { archivedManifest = validateExtensionManifest(JSON.parse(archivedRelease.manifest_json)); }
+        catch { return Response.json({ error_code: "archive_extension_resource_manifest_invalid",
+          installation_id: snapshot.installationId }, { status: 422 }); }
+        const archivedRequirement = archivedManifest.resourceRequirements?.find(item => item.id === snapshot.requirementId
+          && item.kind === "objects" && item.scope === "project" && item.binding === undefined);
+        const archivedResourceSha256 = archivedRequirement
+          ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(archivedRequirement))))]
+            .map(byte => byte.toString(16).padStart(2, "0")).join("") : "";
+        if (archivedManifest.id !== snapshot.extensionId || archivedManifest.bundle?.version !== snapshot.releaseVersion
+          || await digestExtensionManifest(archivedManifest) !== snapshot.manifestSha256
+          || archivedResourceSha256 !== snapshot.resourceSha256) {
+          return Response.json({ error_code: "archive_extension_resource_snapshot_manifest_mismatch",
+            installation_id: snapshot.installationId }, { status: 422 });
+        }
+        let currentTarget = checkedObjectInstallations.get(snapshot.installationId);
+        if (!checkedObjectInstallations.has(snapshot.installationId)) {
+          currentTarget = await this.extensionResourceGrantTarget(tenantId, spaceId, snapshot.projectId, snapshot.installationId);
+          checkedObjectInstallations.set(snapshot.installationId, currentTarget);
+        }
+        const currentRequirement = currentTarget?.manifest.resourceRequirements?.find(item => item.id === snapshot.requirementId
+          && item.kind === "objects" && item.scope === "project" && item.binding === undefined);
+        const currentResourceSha256 = currentRequirement
+          ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(currentRequirement))))]
+            .map(byte => byte.toString(16).padStart(2, "0")).join("") : "";
+        if (currentTarget && ["active", "disabled"].includes(currentTarget.row.status) && currentTarget.row.scope === "PROJECT_BOUND"
+          && currentTarget.row.tenant_id === tenantId && currentTarget.row.space_id === spaceId && currentTarget.row.project_id === snapshot.projectId
+          && currentTarget.row.extension_id === snapshot.extensionId && currentTarget.row.release_version === snapshot.releaseVersion
+          && currentTarget.row.generation === snapshot.installationGeneration && currentTarget.row.artifact_sha256 === snapshot.artifactSha256
+          && currentTarget.manifestSha256 === snapshot.manifestSha256 && currentResourceSha256 === snapshot.resourceSha256
+          && queryOne(sql, "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", snapshot.projectId, spaceId)) {
+          preExistingObjectInstallations.set(snapshot.installationId, currentTarget);
+        }
+        try { extensionResourceSnapshotBytes.set(snapshot, await decodeSpaceArchiveExtensionResourceSnapshot(snapshot, { tenantId, spaceId })); }
+        catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
       }
       const currentMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
       if (payload.migrationVersion > currentMigration) return Response.json({ error_code: "archive_schema_from_future", archive_schema: payload.migrationVersion, current_schema: currentMigration }, { status: 409 });
@@ -5455,10 +5589,36 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         .filter(row => row.status === "pending" || row.status === "in_progress").length;
       const archivedTerminalTaskCount = (payload.tableRows.tasks ?? [])
         .filter(row => row.status === "completed" || row.status === "cancelled").length;
-      const mergeArchiveRows = () => {
+      const emptyExtensionResourceRestoreSummary = () => ({ snapshot_objects: extensionResourceSnapshots.length,
+        snapshot_bytes: extensionResourceSnapshots.reduce((sum, snapshot) => sum + snapshot.size, 0),
+        will_restore: 0, will_restore_bytes: 0,
+        restored: 0, restored_bytes: 0, preserved_current: 0, preserved_current_bytes: 0,
+        skipped_stale: 0, skipped_stale_bytes: 0, skipped_quota: 0, skipped_quota_bytes: 0 });
+      const currentObjectOwnerStillMatches = (snapshot: SpaceArchiveExtensionResourceSnapshot): boolean => {
+        const expected = preExistingObjectInstallations.get(snapshot.installationId);
+        if (!expected || queryOne(sql, "SELECT request_id FROM space_erasure_tombstones WHERE tenant_id=? AND space_id=?", tenantId, spaceId)
+          || !queryOne(sql, "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", snapshot.projectId, spaceId)) return false;
+        const current = queryOne<{ instance_id: string; extension_id: string; tenant_id: string; space_id: string; project_id: string | null;
+          scope: string; status: string; generation: number; release_version: string | null; manifest_json: string;
+          pinned_artifact_sha256: string | null }>(sql,
+          `SELECT instance_id,extension_id,tenant_id,space_id,project_id,scope,status,generation,release_version,manifest_json,pinned_artifact_sha256
+             FROM extension_installation_manifests WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=?`,
+          snapshot.installationId, tenantId, spaceId, snapshot.projectId);
+        const release = queryOne<{ host_signature: string; publisher_revoked_at: string | null }>(sql,
+          "SELECT host_signature,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?",
+          snapshot.extensionId, snapshot.releaseVersion);
+        return Boolean(current && release && ["active", "disabled"].includes(current.status) && current.scope === "PROJECT_BOUND"
+          && current.extension_id === snapshot.extensionId && current.generation === snapshot.installationGeneration
+          && current.release_version === snapshot.releaseVersion && current.pinned_artifact_sha256 === snapshot.artifactSha256
+          && current.manifest_json === expected.row.manifest_json
+          && release.host_signature === expected.row.host_signature && release.publisher_revoked_at === null);
+      };
+      const mergeArchiveRows = (previewMode = false) => {
         const inserted: Record<string, number> = {}, skipped: Record<string, number> = {};
         let restoredEventTriggersDisabled = 0;
         let restoredTasksBlockedForHumanIntervention = 0;
+        const extensionResourceObjects = emptyExtensionResourceRestoreSummary();
+        const usageByInstallation = new Map<string, { count: number; bytes: number }>();
         this.ctx.storage.sql.exec("PRAGMA defer_foreign_keys = ON");
         for (const table of restoreOrder) {
           const rows = payload.tableRows[table] ?? [];
@@ -5483,14 +5643,60 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           inserted[table] = restored;
           skipped[table] = rows.length - restored;
         }
-        return { inserted, skipped, restoredEventTriggersDisabled, restoredTasksBlockedForHumanIntervention };
+        for (const snapshot of extensionResourceSnapshots) {
+          const bytes = extensionResourceSnapshotBytes.get(snapshot)!;
+          const record = (kind: "restored" | "preserved_current" | "skipped_stale" | "skipped_quota") => {
+            const category = kind === "restored" && previewMode ? "will_restore" : kind;
+            extensionResourceObjects[category]++;
+            extensionResourceObjects[`${category}_bytes` as "will_restore_bytes" | "restored_bytes" | "preserved_current_bytes" | "skipped_stale_bytes" | "skipped_quota_bytes"] += bytes.byteLength;
+          };
+          if (!currentObjectOwnerStillMatches(snapshot)) { record("skipped_stale"); continue; }
+          const existing = queryOne<{ tenant_id: string; space_id: string; project_id: string; instance_id: string; requirement_id: string }>(sql,
+            `SELECT tenant_id,space_id,project_id,instance_id,requirement_id FROM extension_resource_objects
+              WHERE instance_id=? AND requirement_id=? AND object_key=?`, snapshot.installationId, snapshot.requirementId, snapshot.key);
+          if (existing) {
+            if (existing.tenant_id === tenantId && existing.space_id === spaceId && existing.project_id === snapshot.projectId
+              && existing.instance_id === snapshot.installationId && existing.requirement_id === snapshot.requirementId) record("preserved_current");
+            else record("skipped_stale");
+            continue;
+          }
+          let usage = usageByInstallation.get(snapshot.installationId);
+          if (!usage) {
+            usage = queryOne<{ count: number; bytes: number }>(sql,
+              `SELECT COUNT(*) AS count,COALESCE(SUM(size_bytes),0) AS bytes FROM extension_resource_objects
+                WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`, tenantId, spaceId, snapshot.projectId, snapshot.installationId)
+              ?? { count: 0, bytes: 0 };
+            usageByInstallation.set(snapshot.installationId, usage);
+          }
+          if (usage.count >= EXTENSION_OBJECT_MAX_COUNT || usage.bytes + bytes.byteLength > EXTENSION_OBJECT_MAX_TOTAL_BYTES) {
+            record("skipped_quota");
+            continue;
+          }
+          const write = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO extension_resource_objects
+            (tenant_id,space_id,project_id,instance_id,requirement_id,object_key,content_base64,content_type,size_bytes,sha256,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, tenantId, spaceId, snapshot.projectId, snapshot.installationId, snapshot.requirementId,
+            snapshot.key, snapshot.contentBase64, snapshot.contentType, snapshot.size, snapshot.sha256, snapshot.createdAt, snapshot.updatedAt);
+          if (write.rowsWritten === 1) {
+            usage.count++;
+            usage.bytes += bytes.byteLength;
+            record("restored");
+          } else {
+            const raced = queryOne<{ tenant_id: string; space_id: string; project_id: string; requirement_id: string }>(sql,
+              `SELECT tenant_id,space_id,project_id,requirement_id FROM extension_resource_objects
+                WHERE instance_id=? AND requirement_id=? AND object_key=?`, snapshot.installationId, snapshot.requirementId, snapshot.key);
+            if (raced && raced.tenant_id === tenantId && raced.space_id === spaceId && raced.project_id === snapshot.projectId
+              && raced.requirement_id === snapshot.requirementId) record("preserved_current");
+            else record("skipped_stale");
+          }
+        }
+        return { inserted, skipped, restoredEventTriggersDisabled, restoredTasksBlockedForHumanIntervention, extensionResourceObjects };
       };
       if (action === "preview_restore") {
         let mergePreview: ReturnType<typeof mergeArchiveRows>;
         try {
           mergePreview = this.ctx.storage.transactionSync(() => {
             this.ctx.storage.sql.exec("SAVEPOINT archive_restore_preview_probe");
-            try { return mergeArchiveRows(); }
+            try { return mergeArchiveRows(true); }
             finally {
               this.ctx.storage.sql.exec("ROLLBACK TO archive_restore_preview_probe");
               this.ctx.storage.sql.exec("RELEASE archive_restore_preview_probe");
@@ -5520,7 +5726,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             would_insert_active_tasks_blocked_for_human_intervention: mergePreview.restoredTasksBlockedForHumanIntervention,
             archived_terminal_task_count: archivedTerminalTaskCount,
             existing_task_state_will_be_preserved: true,
-            ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) }, expires_at: expiresAt, requires_explicit_apply: true });
+            ...(payload.extensionResourceSnapshotsVersion === 1 ? { extension_resource_objects: mergePreview.extensionResourceObjects } : {}),
+            ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}),
+            ...(Object.keys(ephemeralRowsNotRestored).length ? { ephemeral_runtime_rows_not_restored: ephemeralRowsNotRestored } : {}) }, expires_at: expiresAt, requires_explicit_apply: true });
       }
       const previewId = String(body.preview_id ?? "");
       const preview = queryOne<{ tenant_id: string; space_id: string; archive_id: string; checksum: string; expires_at: string; consumed_at: string | null }>(sql, "SELECT * FROM space_archive_restore_previews WHERE preview_id=?", previewId);
@@ -5754,6 +5962,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const skippedCounts: Record<string, number> = {};
       let restoredEventTriggersDisabled = 0;
       let restoredTasksBlockedForHumanIntervention = 0;
+      let restoredExtensionResourceObjects = emptyExtensionResourceRestoreSummary();
       try {
         this.ctx.storage.transactionSync(() => {
           const merged = mergeArchiveRows();
@@ -5761,13 +5970,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           Object.assign(skippedCounts, merged.skipped);
           restoredEventTriggersDisabled = merged.restoredEventTriggersDisabled;
           restoredTasksBlockedForHumanIntervention = merged.restoredTasksBlockedForHumanIntervention;
+          restoredExtensionResourceObjects = merged.extensionResourceObjects;
           execute(sql, "UPDATE space_archive_restore_previews SET consumed_at=? WHERE preview_id=? AND consumed_at IS NULL", now, previewId);
           const safetyActions = { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
             restored_tasks_blocked_for_human_intervention: restoredTasksBlockedForHumanIntervention,
             ...(projectRuntimeSettings.length ? { project_runtime_settings: restoredProjectRuntimeSettings } : {}),
             ...(restoredKnowledge ? { knowledge: restoredKnowledge } : {}),
             ...(microAppSnapshots.length || Object.values(microAppRestorePreview.omissions).some(count => count > 0) ? { micro_app_data: restoredMicroAppData } : {}),
-            ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) };
+            ...(payload.extensionResourceSnapshotsVersion === 1 ? { extension_resource_objects: restoredExtensionResourceObjects } : {}),
+            ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}),
+            ...(Object.keys(ephemeralRowsNotRestored).length ? { ephemeral_runtime_rows_not_restored: ephemeralRowsNotRestored } : {}) };
           execute(sql, "UPDATE space_archive_restores SET restored_by=?,restored_at=?,row_counts_json=?,skipped_counts_json=?,safety_actions_json=?,status='completed',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", actorId, now, JSON.stringify(restoredCounts), JSON.stringify(skippedCounts), JSON.stringify(safetyActions), verifiedObjectCount, previewId, tenantId, spaceId);
           insertEvent("archive_restored", { archive_id: archiveId, preview_id: previewId, restored_counts: restoredCounts, safety_actions: safetyActions, mode: "idempotent_merge_missing_rows" });
         });
@@ -5782,7 +5994,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           ...(projectRuntimeSettings.length ? { project_runtime_settings: restoredProjectRuntimeSettings } : {}),
           ...(restoredKnowledge ? { knowledge: restoredKnowledge } : {}),
           ...(microAppSnapshots.length || Object.values(microAppRestorePreview.omissions).some(count => count > 0) ? { micro_app_data: restoredMicroAppData } : {}),
-          ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) }, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
+          ...(payload.extensionResourceSnapshotsVersion === 1 ? { extension_resource_objects: restoredExtensionResourceObjects } : {}),
+          ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}),
+          ...(Object.keys(ephemeralRowsNotRestored).length ? { ephemeral_runtime_rows_not_restored: ephemeralRowsNotRestored } : {}) }, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
     }
     return Response.json({ error_code: "unknown_action" }, { status: 400 });
   }

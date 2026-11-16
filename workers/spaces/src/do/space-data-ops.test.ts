@@ -95,11 +95,212 @@ function newArchiveSpace(storage: unknown, env: Record<string, unknown>): SpaceD
     KB_BUCKET: (env.KB_BUCKET ?? env.SCRIPTS_R2) as never } as never);
 }
 
+async function seedExtensionObjectArchiveInstall(storage: ReturnType<typeof createDOStorage>, secret: string) {
+  const extensionId = "ext_archive_objects", version = "1.0.0", artifactSha256 = "a".repeat(64);
+  const manifest = validateExtensionManifest({ id: extensionId, type: "extension", declaredPermissions: [],
+    capabilityRequirements: ["extension.workflow"], gadgets: [], daemons: [], commands: [],
+    resourceRequirements: [{ id: "attachments", kind: "objects", apiVersion: "1.0", scope: "project", operations: [
+      { id: "get", input: { schemaVersion: "1.0", fields: { key: { type: "string", required: true, maxLength: 128 } } },
+        output: { schemaVersion: "1.0", fields: { found: { type: "boolean", required: true }, dataBase64: { type: "string", maxLength: 87384 },
+          contentType: { type: "string", maxLength: 128 }, size: { type: "number", required: true, minimum: 0, maximum: 65536 },
+          sha256: { type: "string", maxLength: 64 } } },
+        idempotency: "none", meteringUnit: "byte" },
+    ], limits: { requestsPerMinute: 40, maxConcurrent: 1, maxBytesPerOperation: 128 * 1024 } }],
+    bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: extensionId, version, primitives: [
+      { schemaVersion: "1.0", kind: "workflow", id: "resource_workflow", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+        executionMode: "headless", entry: "./resource.ts", steps: ["resource"], toolNames: ["extension.resource.objects"] },
+    ], workerRoles: [{ id: "resource_role", principal: "project_member", invocation: "workflow_step", execution: "worker",
+      entry: "./resource.ts", primitiveIds: ["resource_workflow"] }] },
+  });
+  const manifestJson = JSON.stringify(manifest), publisherKeyId = "b".repeat(64), publisherPayloadSha256 = "c".repeat(64);
+  const hostKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", hostKey, new TextEncoder().encode(JSON.stringify([extensionId, version, manifestJson, artifactSha256])));
+  const hostSignature = [...new Uint8Array(signature)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const manifestSha256 = await digestExtensionManifest(manifest);
+  const resourceSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256",
+    new TextEncoder().encode(JSON.stringify(manifest.resourceRequirements![0]))))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES(?,?,?,'active')", "project-a", "space-a", "Project A");
+  storage.sql.exec(`INSERT INTO extension_releases(extension_id,version,manifest_json,artifact_sha256,host_signature,created_by,created_at,
+    publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)`, extensionId, version, manifestJson, artifactSha256, hostSignature, "owner-a", "2026-11-01T00:00:00.000Z",
+    "pub_archive_demo", publisherKeyId, "signed-test-release", publisherPayloadSha256);
+  storage.sql.exec("INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at) VALUES(?,?,?,?,?)",
+    extensionId, manifestJson, "owner-a", "2026-11-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z");
+  storage.sql.exec(`INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,
+    owner_key,installed_by,status,installed_at,removed_at,release_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  "install-object-a", extensionId, "tenant-a", "space-a", "project-a", null, "PROJECT_BOUND", "default", "project:project-a", "owner-a",
+  "active", "2026-11-01T00:00:00.000Z", null, version);
+  return { extensionId, version, artifactSha256, manifestSha256, resourceSha256, requirementId: "attachments", installationId: "install-object-a" };
+}
+
+function archiveAgentsWorker() {
+  return { async fetch(request: Request) {
+    const path = new URL(request.url).pathname;
+    if (path.endsWith("/archive/export") || path.endsWith("/archive/project-settings/export")) return Response.json({ present: false });
+    return Response.json({ error_code: "not_found" }, { status: 404 });
+  } };
+}
+
 function workspaceCoordinator(storage: WorkspaceStorage, r2: ReturnType<typeof mockR2>, secret: string): WorkspaceCoordinatorDO {
   return new WorkspaceCoordinatorDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
 }
 
 describe("SpaceDO owner data operations", () => {
+  it("snapshots bounded Project object resources and restores bytes without restoring owner grants or leases", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
+      AGENTS_WORKER: archiveAgentsWorker() as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers,
+      body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    const install = await seedExtensionObjectArchiveInstall(storage, secret);
+    const value = new TextEncoder().encode("recoverable Project attachment");
+    const contentBase64 = btoa(new TextDecoder().decode(value));
+    const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", value))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    storage.sql.exec(`INSERT INTO extension_resource_objects
+      (tenant_id,space_id,project_id,instance_id,requirement_id,object_key,content_base64,content_type,size_bytes,sha256,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, "tenant-a", "space-a", "project-a", install.installationId, install.requirementId, "attachments/readme.txt",
+      contentBase64, "text/plain", value.byteLength, sha256, "2026-11-02T00:00:00.000Z", "2026-11-03T00:00:00.000Z");
+    storage.sql.exec(`INSERT INTO extension_resource_grants
+      (tenant_id,space_id,project_id,instance_id,extension_id,requirement_id,manifest_sha256,resource_sha256,installation_generation,
+       operations_json,tables_json,status,revision,installed_by,approved_by,approved_at,updated_by,updated_at,revoked_by,revoked_at)
+      VALUES(?,?,?,?,?,?,?,?,?,'["get"]','[]','approved',1,'owner-a','owner-a','2026-11-01T00:00:00.000Z','owner-a','2026-11-01T00:00:00.000Z',NULL,NULL)`,
+    "tenant-a", "space-a", "project-a", install.installationId, install.extensionId, install.requirementId, install.manifestSha256,
+    install.resourceSha256, 1);
+    storage.sql.exec(`INSERT INTO extension_resource_operation_leases
+      (lease_id,tenant_id,space_id,project_id,instance_id,requirement_id,operation_id,table_name,manifest_sha256,resource_sha256,
+       installation_generation,grant_revision,status,created_at,expires_at,released_at,consumed_at)
+      VALUES(?,?,?,?,?,?,'get','objects',?,?,1,1,'active','2026-11-03T00:00:00.000Z','2099-01-01T00:00:00.000Z',NULL,NULL)`,
+    "lease-object-a", "tenant-a", "space-a", "project-a", install.installationId, install.requirementId, install.manifestSha256,
+    install.resourceSha256);
+
+    const exported = await post({ action: "export", request_id: "extension-object-archive" });
+    expect(exported.status, JSON.stringify(await exported.clone().json())).toBe(201);
+    const { archive_id: archiveId, coverage } = await exported.json() as { archive_id: string; coverage: Record<string, unknown> };
+    expect(coverage).toMatchObject({ extensionResourceObjects: 1, extensionResourceObjectBytes: value.byteLength });
+    const archived = await decodeSpaceArchive(r2.objects.get(`space-archives/tenant-a/space-a/${archiveId}.enc`)!.bytes,
+      secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId });
+    expect(archived.extensionResourceSnapshotsVersion).toBe(1);
+    expect(archived.extensionResourceSnapshots).toMatchObject([{ tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a",
+      installationId: install.installationId, extensionId: install.extensionId, releaseVersion: install.version,
+      artifactSha256: install.artifactSha256, installationGeneration: 1, manifestSha256: install.manifestSha256,
+      requirementId: install.requirementId, resourceSha256: install.resourceSha256, key: "attachments/readme.txt",
+      contentBase64, contentType: "text/plain", size: value.byteLength, sha256 }]);
+    expect(archived.tableRows).not.toHaveProperty("extension_resource_objects");
+    expect(archived.tableRows).not.toHaveProperty("extension_resource_grants");
+    expect(archived.tableRows).not.toHaveProperty("extension_resource_operation_leases");
+
+    storage.sql.exec("UPDATE extension_resource_grants SET status='revoked',revision=2,revoked_by='owner-a',revoked_at='2026-11-04T00:00:00.000Z' WHERE instance_id=?", install.installationId);
+    storage.sql.exec("DELETE FROM extension_resource_operation_leases WHERE lease_id=?", "lease-object-a");
+    storage.sql.exec("DELETE FROM extension_resource_objects WHERE instance_id=?", install.installationId);
+    const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
+    expect(previewResponse.status, JSON.stringify(await previewResponse.clone().json())).toBe(200);
+    const preview = await previewResponse.json() as { preview_id: string; safety_actions: { extension_resource_objects: Record<string, number> } };
+    expect(preview.safety_actions.extension_resource_objects).toMatchObject({ snapshot_objects: 1, snapshot_bytes: value.byteLength,
+      will_restore: 1, will_restore_bytes: value.byteLength, restored: 0, skipped_stale: 0 });
+
+    const restored = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
+    expect(restored.status, JSON.stringify(await restored.clone().json())).toBe(200);
+    expect(await restored.json()).toMatchObject({ safety_actions: { extension_resource_objects: {
+      restored: 1, restored_bytes: value.byteLength, preserved_current: 0, skipped_stale: 0, skipped_quota: 0,
+    } } });
+    expect(storage.sql.exec<{ content_base64: string; size_bytes: number; created_at: string }>(
+      "SELECT content_base64,size_bytes,created_at FROM extension_resource_objects WHERE instance_id=? AND object_key=?",
+      install.installationId, "attachments/readme.txt").toArray()).toEqual([{ content_base64: contentBase64, size_bytes: value.byteLength, created_at: "2026-11-02T00:00:00.000Z" }]);
+    expect(storage.sql.exec<{ status: string; revision: number }>("SELECT status,revision FROM extension_resource_grants WHERE instance_id=?", install.installationId).toArray())
+      .toEqual([{ status: "revoked", revision: 2 }]);
+    expect(storage.sql.exec("SELECT lease_id FROM extension_resource_operation_leases WHERE instance_id=?", install.installationId).toArray()).toEqual([]);
+  });
+
+  it("skips object snapshots after install generation changes or the install is absent at restore start", async () => {
+    const make = async (requestId: string) => {
+      const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+      const space = newArchiveSpace({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,
+        AGENTS_WORKER: archiveAgentsWorker() as never } as never);
+      const token = await mintInternalToken(secret, "tenant-a");
+      const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
+      const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers,
+        body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+      await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+      const install = await seedExtensionObjectArchiveInstall(storage, secret);
+      const value = new TextEncoder().encode("old generation data"), contentBase64 = btoa(new TextDecoder().decode(value));
+      const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", value))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+      storage.sql.exec(`INSERT INTO extension_resource_objects
+        (tenant_id,space_id,project_id,instance_id,requirement_id,object_key,content_base64,content_type,size_bytes,sha256,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, "tenant-a", "space-a", "project-a", install.installationId, install.requirementId, "notes/old.txt",
+        contentBase64, "text/plain", value.byteLength, sha256, "2026-11-02T00:00:00.000Z", "2026-11-03T00:00:00.000Z");
+      const exported = await post({ action: "export", request_id: requestId });
+      expect(exported.status, JSON.stringify(await exported.clone().json())).toBe(201);
+      const archiveId = (await exported.json() as { archive_id: string }).archive_id;
+      storage.sql.exec("DELETE FROM extension_resource_objects WHERE instance_id=?", install.installationId);
+      return { storage, post, archiveId, install };
+    };
+
+    const preserved = await make("extension-object-preserved-current");
+    const newerValue = new TextEncoder().encode("newer current Project value"), newerBase64 = btoa(new TextDecoder().decode(newerValue));
+    const newerSha = [...new Uint8Array(await crypto.subtle.digest("SHA-256", newerValue))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    preserved.storage.sql.exec(`INSERT INTO extension_resource_objects
+      (tenant_id,space_id,project_id,instance_id,requirement_id,object_key,content_base64,content_type,size_bytes,sha256,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, "tenant-a", "space-a", "project-a", preserved.install.installationId, preserved.install.requirementId,
+    "notes/old.txt", newerBase64, "text/plain", newerValue.byteLength, newerSha, "2026-11-04T00:00:00.000Z", "2026-11-05T00:00:00.000Z");
+    const preservedPreviewResponse = await preserved.post({ action: "preview_restore", archive_id: preserved.archiveId });
+    const preservedPreview = await preservedPreviewResponse.json() as { preview_id: string; safety_actions: { extension_resource_objects: Record<string, number> } };
+    expect(preservedPreviewResponse.status).toBe(200);
+    expect(preservedPreview.safety_actions.extension_resource_objects).toMatchObject({ will_restore: 0, preserved_current: 1,
+      preserved_current_bytes: new TextEncoder().encode("old generation data").byteLength });
+    const preservedApplied = await preserved.post({ action: "apply_restore", archive_id: preserved.archiveId, preview_id: preservedPreview.preview_id });
+    expect(preservedApplied.status).toBe(200);
+    expect(preserved.storage.sql.exec<{ content_base64: string }>("SELECT content_base64 FROM extension_resource_objects WHERE instance_id=? AND object_key='notes/old.txt'",
+      preserved.install.installationId).toArray()).toEqual([{ content_base64: newerBase64 }]);
+
+    const quota = await make("extension-object-quota-protection");
+    const oneByte = new TextEncoder().encode("x"), oneByteSha = [...new Uint8Array(await crypto.subtle.digest("SHA-256", oneByte))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    for (let index = 0; index < 64; index++) quota.storage.sql.exec(`INSERT INTO extension_resource_objects
+      (tenant_id,space_id,project_id,instance_id,requirement_id,object_key,content_base64,content_type,size_bytes,sha256,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, "tenant-a", "space-a", "project-a", quota.install.installationId, quota.install.requirementId,
+    `quota/item-${index}.txt`, "eA==", "text/plain", 1, oneByteSha, "2026-11-04T00:00:00.000Z", "2026-11-04T00:00:00.000Z");
+    const quotaPreviewResponse = await quota.post({ action: "preview_restore", archive_id: quota.archiveId });
+    const quotaPreview = await quotaPreviewResponse.json() as { preview_id: string; safety_actions: { extension_resource_objects: Record<string, number> } };
+    expect(quotaPreviewResponse.status).toBe(200);
+    expect(quotaPreview.safety_actions.extension_resource_objects).toMatchObject({ will_restore: 0, skipped_quota: 1 });
+    const quotaApplied = await quota.post({ action: "apply_restore", archive_id: quota.archiveId, preview_id: quotaPreview.preview_id });
+    expect(quotaApplied.status).toBe(200);
+    expect(quota.storage.sql.exec("SELECT object_key FROM extension_resource_objects WHERE instance_id=? AND object_key='notes/old.txt'",
+      quota.install.installationId).toArray()).toEqual([]);
+
+    const stale = await make("extension-object-stale-generation");
+    stale.storage.sql.exec("UPDATE extension_instances SET generation=2 WHERE instance_id=?", stale.install.installationId);
+    const stalePreviewResponse = await stale.post({ action: "preview_restore", archive_id: stale.archiveId });
+    expect(stalePreviewResponse.status, JSON.stringify(await stalePreviewResponse.clone().json())).toBe(200);
+    const stalePreview = await stalePreviewResponse.json() as { preview_id: string; safety_actions: { extension_resource_objects: Record<string, number> } };
+    expect(stalePreview.safety_actions.extension_resource_objects).toMatchObject({ will_restore: 0, skipped_stale: 1 });
+    const staleApplied = await stale.post({ action: "apply_restore", archive_id: stale.archiveId, preview_id: stalePreview.preview_id });
+    expect(staleApplied.status).toBe(200);
+    expect(stale.storage.sql.exec("SELECT object_key FROM extension_resource_objects WHERE instance_id=?", stale.install.installationId).toArray()).toEqual([]);
+    expect(stale.storage.sql.exec<{ generation: number }>("SELECT generation FROM extension_instances WHERE instance_id=?", stale.install.installationId).toArray())
+      .toEqual([{ generation: 2 }]);
+
+    const absent = await make("extension-object-absent-install");
+    absent.storage.sql.exec("DELETE FROM extension_instances WHERE instance_id=?", absent.install.installationId);
+    const absentPreviewResponse = await absent.post({ action: "preview_restore", archive_id: absent.archiveId });
+    expect(absentPreviewResponse.status, JSON.stringify(await absentPreviewResponse.clone().json())).toBe(200);
+    const absentPreview = await absentPreviewResponse.json() as { preview_id: string; safety_actions: { extension_resource_objects: Record<string, number> } };
+    expect(absentPreview.safety_actions.extension_resource_objects).toMatchObject({ will_restore: 0, skipped_stale: 1 });
+    const absentApplied = await absent.post({ action: "apply_restore", archive_id: absent.archiveId, preview_id: absentPreview.preview_id });
+    expect(absentApplied.status).toBe(200);
+    expect(absent.storage.sql.exec("SELECT object_key FROM extension_resource_objects WHERE instance_id=?", absent.install.installationId).toArray()).toEqual([]);
+
+    const erased = await make("extension-object-erased-space");
+    erased.storage.sql.exec("INSERT INTO space_erasure_tombstones(tenant_id,space_id,request_id,erased_at) VALUES(?,?,?,?)",
+      "tenant-a", "space-a", "erasure-a", "2026-11-06T00:00:00.000Z");
+    const erasedPreview = await erased.post({ action: "preview_restore", archive_id: erased.archiveId });
+    expect(erasedPreview.status).toBe(410);
+    expect(erased.storage.sql.exec("SELECT object_key FROM extension_resource_objects WHERE instance_id=?", erased.install.installationId).toArray()).toEqual([]);
+  });
+
   it("captures Knowledge rows and R2 objects and routes additive restore through Knowledge", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2(), kb = mockR2();
     const content = "recoverable Knowledge text";
@@ -520,7 +721,9 @@ describe("SpaceDO owner data operations", () => {
     const preview = await previewResponse.json() as { preview_id: string; safety_actions: { archived_active_event_trigger_count: number; missing_event_triggers_will_be_inserted_disabled: boolean; existing_event_trigger_state_will_be_preserved: boolean } };
     expect(previewResponse.status).toBe(200);
     expect(preview.safety_actions).toEqual({ archived_active_event_trigger_count: 1, missing_event_triggers_will_be_inserted_disabled: true, existing_event_trigger_state_will_be_preserved: true,
-      archived_active_task_count: 0, would_insert_active_tasks_blocked_for_human_intervention: 0, archived_terminal_task_count: 0, existing_task_state_will_be_preserved: true });
+      archived_active_task_count: 0, would_insert_active_tasks_blocked_for_human_intervention: 0, archived_terminal_task_count: 0, existing_task_state_will_be_preserved: true,
+      extension_resource_objects: { snapshot_objects: 0, snapshot_bytes: 0, will_restore: 0, will_restore_bytes: 0, restored: 0, restored_bytes: 0,
+        preserved_current: 0, preserved_current_bytes: 0, skipped_stale: 0, skipped_stale_bytes: 0, skipped_quota: 0, skipped_quota_bytes: 0 } });
 
     const applied = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
     expect(applied.status).toBe(200);
@@ -528,6 +731,8 @@ describe("SpaceDO owner data operations", () => {
     expect(storage.sql.exec<{ enabled: number }>("SELECT enabled FROM event_triggers WHERE id=?", "trigger-a").toArray()).toEqual([{ enabled: 0 }]);
     expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>("SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json)).toEqual({
       restored_event_triggers_inserted_disabled: 1, restored_tasks_blocked_for_human_intervention: 0,
+      extension_resource_objects: { snapshot_objects: 0, snapshot_bytes: 0, will_restore: 0, will_restore_bytes: 0, restored: 0, restored_bytes: 0,
+        preserved_current: 0, preserved_current_bytes: 0, skipped_stale: 0, skipped_stale_bytes: 0, skipped_quota: 0, skipped_quota_bytes: 0 },
       knowledge: { restoredDocuments: 0, restoredChunks: 0, preservedCurrentDocuments: 0, blockedByDeletionDocuments: 0, requiresReindexDocuments: 0 },
     });
     const restoreList = await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a&actor_id=owner-a", { headers }));
@@ -578,7 +783,9 @@ describe("SpaceDO owner data operations", () => {
       existing_event_trigger_state_will_be_preserved: true,
       archived_active_task_count: 3,
       would_insert_active_tasks_blocked_for_human_intervention: 2, archived_terminal_task_count: 1,
-      existing_task_state_will_be_preserved: true });
+      existing_task_state_will_be_preserved: true,
+      extension_resource_objects: { snapshot_objects: 0, snapshot_bytes: 0, will_restore: 0, will_restore_bytes: 0, restored: 0, restored_bytes: 0,
+        preserved_current: 0, preserved_current_bytes: 0, skipped_stale: 0, skipped_stale_bytes: 0, skipped_quota: 0, skipped_quota_bytes: 0 } });
 
     const applied = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
     expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
@@ -633,6 +840,8 @@ describe("SpaceDO owner data operations", () => {
       local_grants: [{ id: "local-grant-a", space_id: "space-a", project_id: null, user_id: "user-a", grant_type: "exec", directory: null, commands_json: '["node"]', created_at: "2026-11-14T00:00:00.000Z" }],
       extension_shared_filesystem_grants: [{ instance_id: "extension-a", path: "workspace/reports", access: "READ", approved_by: "owner-a", approved_at: "2026-11-14T00:00:00.000Z" }],
       extension_project_knowledge_grants: [{ tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", instance_id: "extension-a", publication_id: "support_docs", granted_by: "owner-a", granted_at: "2026-11-14T00:00:00.000Z" }],
+      extension_resource_grants: [{ instance_id: "extension-a", requirement_id: "attachments", status: "approved", revision: 1 }],
+      extension_resource_operation_leases: [{ lease_id: "lease-old", instance_id: "extension-a", status: "active" }],
     };
     for (const table of Object.keys(grantRows)) {
       expect(payload.tableRows).not.toHaveProperty(table);
@@ -654,12 +863,16 @@ describe("SpaceDO owner data operations", () => {
     const preview = await previewResponse.json() as { preview_id: string; row_counts: Record<string, number>; safety_actions: { owner_managed_grant_rows_not_restored?: Record<string, number> } };
     expect(preview.row_counts).not.toHaveProperty("extension_project_knowledge_grants");
     expect(preview.safety_actions.owner_managed_grant_rows_not_restored).toEqual({
-      local_grants: 1, extension_shared_filesystem_grants: 1, extension_project_knowledge_grants: 1,
+      local_grants: 1, extension_shared_filesystem_grants: 1, extension_project_knowledge_grants: 1, extension_resource_grants: 1,
     });
+    expect(preview.safety_actions.ephemeral_runtime_rows_not_restored).toEqual({ extension_resource_operation_leases: 1 });
 
     const applied = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
     expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
-    expect(await applied.json()).toMatchObject({ safety_actions: { owner_managed_grant_rows_not_restored: preview.safety_actions.owner_managed_grant_rows_not_restored } });
+    expect(await applied.json()).toMatchObject({ safety_actions: {
+      owner_managed_grant_rows_not_restored: preview.safety_actions.owner_managed_grant_rows_not_restored,
+      ephemeral_runtime_rows_not_restored: { extension_resource_operation_leases: 1 },
+    } });
     for (const table of Object.keys(grantRows)) expect(storage.sql.exec(`SELECT * FROM "${table}"`).toArray()).toHaveLength(0);
     expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>("SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json))
       .toMatchObject({ owner_managed_grant_rows_not_restored: preview.safety_actions.owner_managed_grant_rows_not_restored });
