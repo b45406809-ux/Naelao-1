@@ -80,7 +80,8 @@ test("compares caller-supplied thresholds without turning a local pass into rele
     citedChunkIds: ["catalog-rx0042-v2"], abstained: false, latencyMs: 10, costMicrosUsd: 10,
   };
   const report = evaluateKnowledgeRetrieval({ cases: [cases[0]], results: [result], requiredLanguages: ["en"], thresholds });
-  assert.deepEqual(report.thresholdEvaluation, { configured: true, passed: true, failed: [] });
+  assert.deepEqual(report.thresholdEvaluation, { configured: true, passed: true, failed: [], failedLanguages: [],
+    byLanguage: { en: { passed: true, failed: [] } } });
   assert.equal(report.readiness.acceptanceEligible, false);
   const failing = evaluateKnowledgeRetrieval({ cases: [cases[0]], results: [{ ...result, costMicrosUsd: 11 }],
     requiredLanguages: ["en"], thresholds });
@@ -99,7 +100,11 @@ test("reports quality, safety, latency and cost separately for each query langua
     retrieved: [{ chunkId: "catalog-rx0042-v2", sourceVersion: "v2", score: 1 }],
     citedChunkIds: ["catalog-rx0042-v2"], abstained: false, latencyMs: 10, costMicrosUsd: 5 };
   const report = evaluateKnowledgeRetrieval({ cases: [cases[0], shonaCase], results: [exactResult, shonaResult],
-    requiredLanguages: ["en", "sn"] });
+    requiredLanguages: ["en", "sn"], thresholds: {
+      minPrecisionAtK: 0, minRecallAtK: 0.5, minMrrAtK: 0, minNdcgAtK: 0,
+      minCitationPrecision: 0, minCitationRecall: 0.5, minAbstentionAccuracy: 0,
+      maxP95LatencyMs: 100, maxTotalCostMicrosUsd: 30, maxForbiddenExposureCount: 0, maxStaleCitationCount: 0,
+    } });
 
   assert.equal(report.metrics.recallAtK, 0.5);
   assert.equal(report.languageReview.en.metrics.recallAtK, 1);
@@ -109,5 +114,10 @@ test("reports quality, safety, latency and cost separately for each query langua
   assert.equal(report.languageReview.sn.metrics.p95LatencyMs, 80);
   assert.equal(report.languageReview.sn.metrics.totalCostMicrosUsd, 25);
   assert.equal(report.languageReview.sn.completedCaseCount, 1);
+  assert.equal(report.thresholdEvaluation?.passed, false);
+  assert.deepEqual(report.thresholdEvaluation?.failed, []);
+  assert.deepEqual(report.thresholdEvaluation?.failedLanguages, ["sn"]);
+  assert.equal(report.thresholdEvaluation?.byLanguage?.en?.passed, true);
+  assert.ok(report.thresholdEvaluation?.byLanguage?.sn?.failed.includes("minRecallAtK"));
   assert.equal(report.readiness.acceptanceEligible, false);
 });

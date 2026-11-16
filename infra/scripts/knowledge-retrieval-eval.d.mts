@@ -60,6 +60,12 @@ export function evaluateKnowledgeRetrieval(input: {
     metrics: Record<string, number | null>;
   }>;
   readiness: { acceptanceEligible: false; reasons: string[] };
-  thresholdEvaluation: { configured: true; passed: boolean; failed: string[] } | null;
+  thresholdEvaluation: {
+    configured: true;
+    passed: boolean;
+    failed: string[];
+    failedLanguages: string[];
+    byLanguage: Record<string, { passed: boolean; failed: string[] }>;
+  } | null;
   perCase: Array<Record<string, unknown>>;
 };

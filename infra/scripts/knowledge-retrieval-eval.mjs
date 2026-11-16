@@ -128,6 +128,21 @@ function summarizeMetrics(perCase) {
   };
 }
 
+function compareThresholds(metrics, thresholds) {
+  const thresholdMetricFields = {
+    minPrecisionAtK: "precisionAtK", minRecallAtK: "recallAtK", minMrrAtK: "mrrAtK", minNdcgAtK: "ndcgAtK",
+    minCitationPrecision: "citationPrecision", minCitationRecall: "citationRecall",
+    minAbstentionAccuracy: "abstentionAccuracy", maxP95LatencyMs: "p95LatencyMs",
+    maxTotalCostMicrosUsd: "totalCostMicrosUsd", maxForbiddenExposureCount: "forbiddenExposureCount",
+    maxStaleCitationCount: "staleCitationCount",
+  };
+  const failed = Object.entries(thresholdMetricFields).filter(([threshold, metric]) => {
+    const value = metrics[metric];
+    return typeof value !== "number" || !(threshold.startsWith("min") ? value >= thresholds[threshold] : value <= thresholds[threshold]);
+  }).map(([threshold]) => threshold);
+  return { passed: failed.length === 0, failed };
+}
+
 /** Score content-free retrieval traces against synthetic or reviewed cases. */
 export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, requiredLanguages = ["en", "sn", "nd"], thresholds = null }) {
   if (!Array.isArray(cases) || cases.length === 0 || cases.length > 10_000 || !Array.isArray(results)
@@ -222,23 +237,16 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
   const incompleteRequiredLanguages = requiredLanguages.filter((language) => !byLanguage[language]?.reviewComplete);
   const missingResultCount = perCase.filter((item) => item.missing).length;
   const completedCaseCount = cases.length - missingResultCount;
-  const thresholdMetricFields = {
-    minPrecisionAtK: "precisionAtK", minRecallAtK: "recallAtK", minMrrAtK: "mrrAtK", minNdcgAtK: "ndcgAtK",
-    minCitationPrecision: "citationPrecision", minCitationRecall: "citationRecall",
-    minAbstentionAccuracy: "abstentionAccuracy", maxP95LatencyMs: "p95LatencyMs",
-    maxTotalCostMicrosUsd: "totalCostMicrosUsd", maxForbiddenExposureCount: "forbiddenExposureCount",
-    maxStaleCitationCount: "staleCitationCount",
-  };
+  const globalThresholdEvaluation = thresholds === null ? null : compareThresholds(metrics, thresholds);
+  const languageThresholdEvaluations = thresholds === null ? null : Object.fromEntries(
+    Object.entries(byLanguage).map(([language, report]) => [language, compareThresholds(report.metrics, thresholds)]),
+  );
   const thresholdEvaluation = thresholds === null ? null : {
     configured: true,
-    passed: Object.entries(thresholdMetricFields).every(([threshold, metric]) => {
-      const value = metrics[metric];
-      return typeof value === "number" && (threshold.startsWith("min") ? value >= thresholds[threshold] : value <= thresholds[threshold]);
-    }),
-    failed: Object.entries(thresholdMetricFields).filter(([threshold, metric]) => {
-      const value = metrics[metric];
-      return typeof value !== "number" || !(threshold.startsWith("min") ? value >= thresholds[threshold] : value <= thresholds[threshold]);
-    }).map(([threshold]) => threshold),
+    passed: globalThresholdEvaluation.passed && Object.values(languageThresholdEvaluations).every((evaluation) => evaluation.passed),
+    failed: globalThresholdEvaluation.failed,
+    failedLanguages: Object.entries(languageThresholdEvaluations).filter(([, evaluation]) => !evaluation.passed).map(([language]) => language),
+    byLanguage: languageThresholdEvaluations,
   };
   return {
     version: 1,
@@ -259,6 +267,7 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
         ...(!allCasesReviewed ? ["benchmark contains cases without human review"] : []),
         ...(incompleteRequiredLanguages.length ? [`required language coverage is missing or unreviewed: ${incompleteRequiredLanguages.join(", ")}`] : []),
         ...(thresholds === null ? ["quality, latency, cost, and safety thresholds are not configured"] : []),
+        ...(thresholdEvaluation && !thresholdEvaluation.passed ? ["one or more aggregate or per-language thresholds failed"] : []),
         "human release approval, reviewed language data, and deployed/provider acceptance are outside this local evaluator",
       ],
     },
