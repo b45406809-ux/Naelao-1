@@ -1,5 +1,13 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K05 separate discover/source-read APIs; code `0c93eade` pushed)
+
+Project publication discovery now returns metadata/status/count without document IDs. A separate authenticated source-membership endpoint returns indexed IDs only for the exact active Project publication revision, performs a final revision check and sets `private, no-store`. Shell reads sources only when an authorized user opens Edit and checks the revision again before populating the form. Extension use remains the separate revision-pinned owner grant.
+
+Code `0c93eade2e3c861cd7d5ff254589c7c7ded380fc` is remote-verified. Local evidence: Knowledge **119/119**, Shell API **1/1**, Knowledge/Shell typechecks, diff check and SQLite-backed scope/archive/revision tests. K05 is still partial: archive lifecycle is pushed at `1e76c55c`; ownership transfer, retention policy and admin audit view remain incomplete. Migration 0268 is unapplied; no deployment/browser/live acceptance ran.
+
+Exact next action: add a distinct owner/admin `administer` endpoint and Shell history view for bounded, content-free archive/restore events, scoped to the exact tenant/Space/Project/collection. Test outsider/member denial and collection isolation. Keep retention and ownership semantics unresolved where the current product contract does not decide them; continue K/S/U/P/PW/EP gaps.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (K05 versioned publication archive lifecycle; code `1e76c55c` pushed)
 
 The existing Project publication API and Shell now archive or restore a collection through owner/admin-authorized expected-revision CAS. Both transitions advance the revision and record a content-free audit event; the transition detaches source membership. Archived collections are omitted from current extension-grant resolution and rejected before/during retrieval. Restore creates an empty draft, requiring explicit source republish and new grant approval. Resource descriptors and rollouts remain disabled.

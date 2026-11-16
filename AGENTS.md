@@ -15,7 +15,15 @@ The requirements from `docs/research/planner-worker-isolation-and-conflict-resol
 
 For every coherent source, configuration or documentation change, verify it, commit it, then fetch and push it to `origin/Mcbt5s-Backup-2` before moving to the next change. Record the pushed SHA, evidence, remaining uncoded work, separate live/deployment gates and exact next action in this runbook and the relevant progress ledgers. Fetch immediately before each push; preserve concurrent remote commits and integrate them without force-pushing. Never stage unrelated untracked files such as `infra/scripts/__pycache__/`.
 
-## Latest code checkpoint — 2026-11-16 (K05 versioned publication archive lifecycle; `1e76c55c` pushed)
+## Latest code checkpoint — 2026-11-16 (K05 separate discover/source-read APIs; `0c93eade` pushed)
+
+The Project collection-discovery API now returns only collection metadata, status and source count. A separate authenticated `/external-publications/:publicationId/sources` endpoint returns only the current Project-bound membership after active-state, revision, indexed-document and scope checks, with a final revision recheck and `private, no-store`. The Shell fetches sources only when an owner/admin opens Edit and rejects a changed revision; both list and source calls encode path identifiers and bypass caches. Extension `use` remains separate and tied to the existing owner-approved revision.
+
+Code `0c93eade2e3c861cd7d5ff254589c7c7ded380fc` is pushed and remote-verified. Local evidence: Knowledge suite **119/119**, Shell API caller **1/1**, Knowledge/Shell typechecks, `git diff --check`, and SQLite-backed tests for member read, cross-Project denial, archived collection denial, empty restored drafts and current source revision. K05 remains partial: the Knowledge progress row records current status. Migrations 0268 are unapplied; no browser, deployment, provider or live acceptance ran. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: expose the archive lifecycle receipt as a distinct Project `administer` API and Shell history view. Return only bounded content-free events (actor, action, from/to revision and timestamp), require owner/admin authorization and exact Project scope, and test member/outsider denial plus deleted/foreign collection isolation. Then continue remaining K05 ownership/retention contract gaps and the broader K/S/U/P/PW/EP queue.
+
+## Previous code checkpoint — 2026-11-16 (K05 versioned publication archive lifecycle; `1e76c55c` pushed)
 
 The existing Project collection API now supports owner/admin archive and restore-as-draft with exact expected-revision CAS. Each transition advances the publication revision, records a content-free actor/action/revision event, detaches the current published document membership and invalidates owner-approved installation revisions. Archived collections leave the host's current publication directory and Knowledge retrieval; restoring only creates an empty draft, so source selection and installation approval must be performed again. The Project Shell lists archived state and exposes Archive/Restore draft controls.
 

@@ -1,5 +1,11 @@
 # Unified platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (K05 separate discover/source-read APIs; code `0c93eade` pushed)
+
+Knowledge collection discovery is metadata-only; a separate Project-scoped `/sources` endpoint returns current indexed document IDs after authorization and revision rechecks. The Shell uses that endpoint only for editing and refuses a stale response. Extension retrieval remains governed by its separate revision-pinned `use` grant. Code `0c93eade2e3c861cd7d5ff254589c7c7ded380fc` is remote-verified. Knowledge **119/119**, Shell API **1/1**, typechecks, diff check and SQLite scope/archive/revision checks pass. No deployment or live acceptance ran.
+
+Exact next action: complete the K05 admin surface with an owner/admin-scoped history API and Shell view for content-free archive/restore receipts. Then continue remaining ownership/retention decisions and other K/S/U/P/PW/EP code gaps; no rollout is enabled.
+
 ## Latest cross-plan pointer — 2026-11-16 (K05 versioned publication archive lifecycle; code `1e76c55c` pushed)
 
 The Project Knowledge collection lifecycle now supports owner/admin archive and restore-as-empty-draft under expected-revision CAS. It records content-free actor/action/revision events, removes published document membership, increments the version and keeps archived collections out of extension-grant lookup and retrieval. Restored collections have no published sources and old grants remain stale. Shell controls are reachable. Code `1e76c55cefc32df646cc49c0166cd7ea40e65a58` is remote-verified; Knowledge **119/119**, Knowledge/Shell typechecks and SQLite migration/API checks pass. Migration 0268 remains unapplied; rollouts are off.
