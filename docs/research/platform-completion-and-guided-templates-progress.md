@@ -1,12 +1,20 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K13 shared chunk and citation spans; `90278732` pushed)
+
+Synchronous Knowledge creates, edits and the reachable Project Workflows queue now use the same bounded chunk contract and exact source coordinates. The `KbIngestionWorkflow` 10 KiB splitter is removed; text/Markdown chunks stay under 2,048 characters, structural PDF chunks preserve their bounded table behavior, and overlap coordinates remain correct for Unicode/repeated text/CRLF. Knowledge stores consistent source spans and resolves citations from the hash-checked chunk object. No provider path or rollout was enabled.
+
+Code `9027873242af4243343d9f834f6dce0c40504fdf` is remote-verified. Local evidence: RAG **28/28**, Knowledge **150/150**, Workflow caller **8/8**, three typechecks and diff check. AutoRAG remains hard-disabled pending K15 isolation acceptance. No migration/deployment/live provider or citation acceptance ran; rollouts remain off and the untracked Python cache is preserved.
+
+Exact next action: reconcile K10 third-party ACL synchronization with the supported source identity callers. MCP tool aliases do not establish upstream file ACL. Implement only verified host identity mapping/intersection; if no supported proof source exists, retain K10 as an uncoded contract gap and advance to independent K14/K17 evaluation work. Continue the other active managed, platform, PW, K and EP requirements.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (K09 owner path and robots policy; `fb6edf25` pushed)
 
 Host website grants now persist and expose owner-configured Knowledge path prefixes. Knowledge enforces those paths, approved HTTPS origins and robots rules for requested and redirected pages, failing closed when robots policy cannot be checked. This hardens the single-page preview/refresh adapter; it does not add crawling or scheduling.
 
 Code `fb6edf2595394add136fe474c79fd89f1b83ac02` is remote-verified. Knowledge **146/146**, Spaces connection route **14/14**, three typechecks, release inventory **273**, both manifest validators, Python migration/release tests **39/39**, SQLite default exercise and diff check pass. Full Spaces suite has four failures outside the changed route (**653/657**). Migration is unapplied; no deployed/live acceptance ran. Keep rollouts off and preserve the unstaged Python cache.
 
-Exact next action: reconcile K13 sync/Workflows chunk-size and citation-coordinate behavior; implement a shared bounded chunk contract in the Workflows caller, with repeated-content, Unicode and long-sentence tests. Continue K10–K30 and the managed/platform requirements afterward.
+K13's reachable sync, edit and Workflow chunking/citation paths are aligned and pushed as `90278732`. Continue at K10 as recorded in the latest checkpoint above.
 
 ## Latest cross-plan checkpoint — 2026-11-16 (K08 bounded website refresh; `7732d992` pushed)
 
