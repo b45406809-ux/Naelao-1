@@ -110,6 +110,24 @@ function rankedMetrics(sample, retrieved) {
   };
 }
 
+function summarizeMetrics(perCase) {
+  const completed = perCase.filter((item) => !item.missing);
+  const answerable = completed.filter((item) => item.recallAtK !== null);
+  return {
+    precisionAtK: average(answerable.map((item) => item.precisionAtK)),
+    recallAtK: average(answerable.map((item) => item.recallAtK)),
+    mrrAtK: average(answerable.map((item) => item.reciprocalRank)),
+    ndcgAtK: average(answerable.map((item) => item.ndcgAtK)),
+    citationPrecision: average(completed.map((item) => item.citationPrecision)),
+    citationRecall: average(completed.map((item) => item.citationRecall)),
+    abstentionAccuracy: average(completed.map((item) => Number(item.abstentionCorrect))),
+    p95LatencyMs: percentile95(completed.map((item) => item.latencyMs)),
+    totalCostMicrosUsd: completed.reduce((total, item) => total + item.costMicrosUsd, 0),
+    forbiddenExposureCount: completed.reduce((total, item) => total + item.forbiddenExposureCount, 0),
+    staleCitationCount: completed.reduce((total, item) => total + item.staleCitationCount, 0),
+  };
+}
+
 /** Score content-free retrieval traces against synthetic or reviewed cases. */
 export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, requiredLanguages = ["en", "sn", "nd"], thresholds = null }) {
   if (!Array.isArray(cases) || cases.length === 0 || cases.length > 10_000 || !Array.isArray(results)
@@ -183,34 +201,27 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
       costMicrosUsd: result.costMicrosUsd,
     };
   });
-  const completed = perCase.filter((item) => !item.missing);
-  const answerable = completed.filter((item) => item.recallAtK !== null);
   const byLanguage = Object.fromEntries([...new Set([...requiredLanguages, ...cases.map((sample) => sample.language)])].sort().map((language) => {
     const languageCases = cases.filter((sample) => sample.language === language);
+    const languageCaseIds = new Set(languageCases.map((sample) => sample.caseId));
+    const languageResults = perCase.filter((item) => languageCaseIds.has(item.caseId));
+    const completedCaseCount = languageResults.filter((item) => !item.missing).length;
     return [language, {
       caseCount: languageCases.length,
+      completedCaseCount,
+      missingResultCount: languageCases.length - completedCaseCount,
       reviewedCount: languageCases.filter((sample) => sample.reviewStatus === "human_reviewed").length,
       reviewComplete: languageCases.length > 0 && languageCases.every((sample) => sample.reviewStatus === "human_reviewed"),
+      metrics: summarizeMetrics(languageResults),
     }];
   }));
-  const forbiddenExposureCount = completed.reduce((total, item) => total + item.forbiddenExposureCount, 0);
-  const staleCitationCount = completed.reduce((total, item) => total + item.staleCitationCount, 0);
+  const metrics = summarizeMetrics(perCase);
+  const forbiddenExposureCount = metrics.forbiddenExposureCount;
+  const staleCitationCount = metrics.staleCitationCount;
   const allCasesReviewed = cases.every((sample) => sample.reviewStatus === "human_reviewed");
   const incompleteRequiredLanguages = requiredLanguages.filter((language) => !byLanguage[language]?.reviewComplete);
   const missingResultCount = perCase.filter((item) => item.missing).length;
-  const metrics = {
-    precisionAtK: average(answerable.map((item) => item.precisionAtK)),
-    recallAtK: average(answerable.map((item) => item.recallAtK)),
-    mrrAtK: average(answerable.map((item) => item.reciprocalRank)),
-    ndcgAtK: average(answerable.map((item) => item.ndcgAtK)),
-    citationPrecision: average(completed.map((item) => item.citationPrecision)),
-    citationRecall: average(completed.map((item) => item.citationRecall)),
-    abstentionAccuracy: average(completed.map((item) => Number(item.abstentionCorrect))),
-    p95LatencyMs: percentile95(completed.map((item) => item.latencyMs)),
-    totalCostMicrosUsd: completed.reduce((total, item) => total + item.costMicrosUsd, 0),
-    forbiddenExposureCount,
-    staleCitationCount,
-  };
+  const completedCaseCount = cases.length - missingResultCount;
   const thresholdMetricFields = {
     minPrecisionAtK: "precisionAtK", minRecallAtK: "recallAtK", minMrrAtK: "mrrAtK", minNdcgAtK: "ndcgAtK",
     minCitationPrecision: "citationPrecision", minCitationRecall: "citationRecall",
@@ -233,7 +244,7 @@ export function evaluateKnowledgeRetrieval({ cases, results, topK = 10, required
     version: 1,
     topK,
     caseCount: cases.length,
-    completedCaseCount: completed.length,
+    completedCaseCount,
     missingResultCount,
     metrics,
     thresholdEvaluation,

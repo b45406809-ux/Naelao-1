@@ -51,7 +51,14 @@ export function evaluateKnowledgeRetrieval(input: {
 }): {
   caseCount: number;
   metrics: Record<string, number | null>;
-  languageReview: Record<string, { caseCount: number; reviewedCount: number; reviewComplete: boolean }>;
+  languageReview: Record<string, {
+    caseCount: number;
+    completedCaseCount: number;
+    missingResultCount: number;
+    reviewedCount: number;
+    reviewComplete: boolean;
+    metrics: Record<string, number | null>;
+  }>;
   readiness: { acceptanceEligible: false; reasons: string[] };
   thresholdEvaluation: { configured: true; passed: boolean; failed: string[] } | null;
   perCase: Array<Record<string, unknown>>;

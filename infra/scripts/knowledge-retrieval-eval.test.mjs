@@ -87,3 +87,27 @@ test("compares caller-supplied thresholds without turning a local pass into rele
   assert.deepEqual(failing.thresholdEvaluation?.failed, ["maxTotalCostMicrosUsd"]);
   assert.throws(() => evaluateKnowledgeRetrieval({ cases: [cases[0]], results: [result], thresholds: { maxP95LatencyMs: 5 } }), /thresholds must define/);
 });
+
+test("reports quality, safety, latency and cost separately for each query language", () => {
+  const shonaCase = { ...cases[0], caseId: "synthetic-shona", language: "sn",
+    relevantChunkIds: ["shona-guide-v1"], expectedCitationChunkIds: ["shona-guide-v1"],
+    expectedVersions: { "shona-guide-v1": "v1" }, forbiddenChunkIds: [] };
+  const shonaResult = { caseId: shonaCase.caseId,
+    retrieved: [{ chunkId: "unrelated-guide-v1", sourceVersion: "v1", score: 0.8 }],
+    citedChunkIds: [], abstained: false, latencyMs: 80, costMicrosUsd: 25 };
+  const exactResult = { caseId: cases[0].caseId,
+    retrieved: [{ chunkId: "catalog-rx0042-v2", sourceVersion: "v2", score: 1 }],
+    citedChunkIds: ["catalog-rx0042-v2"], abstained: false, latencyMs: 10, costMicrosUsd: 5 };
+  const report = evaluateKnowledgeRetrieval({ cases: [cases[0], shonaCase], results: [exactResult, shonaResult],
+    requiredLanguages: ["en", "sn"] });
+
+  assert.equal(report.metrics.recallAtK, 0.5);
+  assert.equal(report.languageReview.en.metrics.recallAtK, 1);
+  assert.equal(report.languageReview.en.metrics.p95LatencyMs, 10);
+  assert.equal(report.languageReview.sn.metrics.recallAtK, 0);
+  assert.equal(report.languageReview.sn.metrics.citationRecall, 0);
+  assert.equal(report.languageReview.sn.metrics.p95LatencyMs, 80);
+  assert.equal(report.languageReview.sn.metrics.totalCostMicrosUsd, 25);
+  assert.equal(report.languageReview.sn.completedCaseCount, 1);
+  assert.equal(report.readiness.acceptanceEligible, false);
+});
