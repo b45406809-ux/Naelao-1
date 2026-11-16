@@ -508,6 +508,12 @@ export async function processKnowledgeDocumentDeletion(
     await db.batch([
       // External cleanup can outlast the lease. Every final D1 mutation therefore checks the
       // current token, so an expired worker cannot erase rows after another worker reclaimed it.
+      db.prepare(`UPDATE kb_document_idempotency_requests SET state='deleted',request_sha256=NULL,deleted_at=?
+        WHERE tenant_id=? AND space_id=? AND project_scope=? AND document_id=? AND state='active'
+          AND EXISTS (SELECT 1 FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=? AND status='deleting')
+          AND EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=? AND lease_token=? AND state='pending')`)
+        .bind(completedAt, current.tenant_id, current.space_id, current.project_id ?? "", current.document_id,
+          current.document_id, current.tenant_id, current.space_id, current.document_id, token),
       db
         .prepare(`DELETE FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?
         AND EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=? AND lease_token=? AND state='pending')`)

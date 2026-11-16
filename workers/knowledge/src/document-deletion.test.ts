@@ -41,6 +41,7 @@ function fixture(
     completed_at: null,
   };
   let documentExists = true;
+  let idempotencyTombstone: { state: "deleted"; requestSha256: null; documentId: string } | null = null;
   let mutationLeaseUntil = options.mutationLease ?? null;
   let failFirstDelete = options.failFirstObjectDelete ?? false;
   const deletedVectorIds: string[][] = [];
@@ -178,6 +179,12 @@ function fixture(
     prepare: (sql: string) => new Statement(sql),
     batch: async (statements: Statement[]) => {
       for (const statement of statements) {
+        if (statement.sql.includes("UPDATE kb_document_idempotency_requests SET state='deleted'")) {
+          if (operation.lease_token === statement.args[9] && operation.state === "pending" && documentExists) {
+            idempotencyTombstone = { state: "deleted", requestSha256: null, documentId: String(statement.args[4]) };
+          }
+          continue;
+        }
         if (statement.sql.startsWith("DELETE FROM kb_chunks")) continue;
         if (statement.sql.startsWith("DELETE FROM kb_documents")) {
           if (operation.lease_token === statement.args[4])
@@ -268,6 +275,7 @@ function fixture(
     semanticCacheDeletedIds,
     persistedIdsAtCacheDelete,
     isDocumentPresent: () => documentExists,
+    getIdempotencyTombstone: () => idempotencyTombstone,
     setMutationLease: (value: string | null) => {
       mutationLeaseUntil = value;
     },
@@ -302,6 +310,7 @@ describe("durable Knowledge document deletion", () => {
       "r2_source_deleted_provider_index_unverified"
     );
     expect(f.isDocumentPresent()).toBe(false);
+    expect(f.getIdempotencyTombstone()).toEqual({ state: "deleted", requestSha256: null, documentId: "doc-1" });
   });
 
   it("keeps the document tombstoned and retries an external failure without rotating cache twice", async () => {

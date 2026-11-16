@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { queue } from "./queue-consumer.js";
 
-function message(body: Record<string, unknown>) {
-  return { id: "message-1", body, ack: vi.fn(), retry: vi.fn() };
+function message(body: Record<string, unknown>, id = "message-1") {
+  return { id, body, ack: vi.fn(), retry: vi.fn() };
 }
 
 function activeDb() {
@@ -18,7 +18,7 @@ describe("KB ingestion queue dispatch", () => {
     });
     const create = vi.fn(async () => undefined);
     await queue({ messages: [msg] } as never, { PLATFORM_DB: activeDb(), KB_INGESTION: { create } } as never);
-    expect(create).toHaveBeenCalledWith({ id: "message-1", params: msg.body });
+    expect(create).toHaveBeenCalledWith({ id: "doc-a", params: msg.body });
     expect(msg.ack).toHaveBeenCalledTimes(1);
     expect(msg.retry).not.toHaveBeenCalled();
   });
@@ -44,12 +44,34 @@ describe("KB ingestion queue dispatch", () => {
       r2Key: "staging/tenant-a/space-a/project-a/doc-a/original", title: "Guide", contentType: "text",
     });
     const create = vi.fn(async () => { throw new Error("workflow instance already exists"); });
-    const get = vi.fn(async () => ({ id: msg.id }));
+    const get = vi.fn(async () => ({ id: "doc-a" }));
     await queue({ messages: [msg] } as never, { PLATFORM_DB: activeDb(), KB_INGESTION: { create, get } } as never);
-    expect(create).toHaveBeenCalledWith({ id: "message-1", params: msg.body });
-    expect(get).toHaveBeenCalledWith("message-1");
+    expect(create).toHaveBeenCalledWith({ id: "doc-a", params: msg.body });
+    expect(get).toHaveBeenCalledWith("doc-a");
     expect(msg.ack).toHaveBeenCalledTimes(1);
     expect(msg.retry).not.toHaveBeenCalled();
+  });
+
+  it("maps different queue delivery IDs for one KB document to the same Workflow instance", async () => {
+    const body = {
+      type: "kb.ingest", docId: "doc-a", spaceId: "space-a", tenantId: "tenant-a", projectId: "project-a",
+      r2Key: "staging/tenant-a/space-a/project-a/doc-a/original", title: "Guide", contentType: "text",
+    };
+    const first = message(body, "delivery-1");
+    const duplicate = message(body, "delivery-2");
+    const create = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("workflow instance already exists"));
+    const get = vi.fn(async () => ({ id: "doc-a" }));
+    await queue({ messages: [first, duplicate] } as never, { PLATFORM_DB: activeDb(), KB_INGESTION: { create, get } } as never);
+    expect(create.mock.calls.map(([input]) => input)).toEqual([
+      { id: "doc-a", params: body }, { id: "doc-a", params: body },
+    ]);
+    expect(get).toHaveBeenCalledWith("doc-a");
+    expect(first.ack).toHaveBeenCalledOnce();
+    expect(duplicate.ack).toHaveBeenCalledOnce();
+    expect(first.retry).not.toHaveBeenCalled();
+    expect(duplicate.retry).not.toHaveBeenCalled();
   });
 
   it("retries workflow creation errors when no existing instance can be confirmed", async () => {

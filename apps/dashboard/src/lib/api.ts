@@ -298,7 +298,7 @@ export async function listKbDocs(spaceId: string): Promise<KbDocument[]> {
 
 export async function uploadKbDoc(
   spaceId: string,
-  data: { title: string; content: string; content_type: string; source_file_name?: string;
+  data: { title: string; content: string; content_type: string; idempotency_key: string; source_file_name?: string;
     preview_content?: string; preview_token?: string; preview_extraction_sha256?: string }
 ): Promise<KbDocument> {
   return apiFetch<KbDocument>(`/spaces/${pathSegment(spaceId)}/kb/documents`, {

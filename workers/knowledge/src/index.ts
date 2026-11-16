@@ -414,6 +414,85 @@ function safeKnowledgeSourceFileName(value: unknown): string | null {
   return name;
 }
 
+interface KnowledgeCreateIdempotencyScope {
+  tenantId: string;
+  spaceId: string;
+  projectId: string | null;
+  keySha256: string;
+  requestSha256: string;
+  documentId: string;
+  createdAt: string;
+}
+
+type KnowledgeIngestionDispatchState = "claimed" | "dispatching";
+
+interface IdempotentKnowledgeCreate {
+  document: IdempotentKnowledgeDocument;
+  dispatchState: KnowledgeIngestionDispatchState;
+}
+
+interface IdempotentKnowledgeDocument {
+  id: string;
+  tenant_id: string;
+  space_id: string;
+  project_id: string | null;
+  title: string;
+  source_url: string | null;
+  content_type: string;
+  status: string;
+  chunk_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+async function findKnowledgeCreateByIdempotency(
+  db: D1Database,
+  scope: Pick<KnowledgeCreateIdempotencyScope, "tenantId" | "spaceId" | "projectId" | "keySha256">,
+  requestSha256: string,
+): Promise<IdempotentKnowledgeCreate | null> {
+  const projectScope = scope.projectId ?? "";
+  const claim = await db.prepare(`SELECT request_sha256,document_id,state,dispatch_state FROM kb_document_idempotency_requests
+    WHERE tenant_id=? AND space_id=? AND project_scope=? AND key_sha256=?`)
+    .bind(scope.tenantId, scope.spaceId, projectScope, scope.keySha256)
+    .first<{ request_sha256: string | null; document_id: string; state: "active" | "deleted"; dispatch_state: KnowledgeIngestionDispatchState }>();
+  if (!claim) return null;
+  if (claim.state === "deleted") throw new HttpError(410, "knowledge_create_request_deleted", "This upload request was already deleted");
+  if (claim.request_sha256 !== requestSha256) {
+    throw new HttpError(409, "knowledge_idempotency_key_reused", "This upload request key was already used with different content or access settings");
+  }
+  const document = await db.prepare(`SELECT id,tenant_id,space_id,project_id,title,source_url,content_type,status,
+    chunk_count,created_at,updated_at FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=? AND project_id IS ?`)
+    .bind(claim.document_id, scope.tenantId, scope.spaceId, scope.projectId)
+    .first<IdempotentKnowledgeDocument>();
+  if (!document) throw new HttpError(503, "knowledge_idempotency_document_unavailable", "The saved upload request is being reconciled; retry shortly");
+  return { document, dispatchState: claim.dispatch_state };
+}
+
+async function insertKnowledgeDocumentOnce(
+  db: D1Database,
+  input: { values: unknown[]; idempotency: KnowledgeCreateIdempotencyScope },
+): Promise<{ created: boolean; existing: IdempotentKnowledgeCreate | null }> {
+  const columns = `(id,space_id,tenant_id,project_id,title,source_url,content_type,status,chunk_count,required_role_rank,
+    allowed_user_ids_json,source_sha256,source_file_name,parser_version,parser_output_sha256,approved_content_sha256,created_at,updated_at)`;
+  const projection = `SELECT ?,?,?,?,?,?,?,'processing',0,?,?,?,?,?,?,?,?,?`;
+  const idem = input.idempotency;
+  const projectScope = idem.projectId ?? "";
+  const results = await db.batch([
+    db.prepare(`INSERT INTO kb_document_idempotency_requests
+      (tenant_id,space_id,project_scope,key_sha256,request_sha256,document_id,state,created_at)
+      VALUES(?,?,?,?,?,?,'active',?) ON CONFLICT(tenant_id,space_id,project_scope,key_sha256) DO NOTHING`)
+      .bind(idem.tenantId, idem.spaceId, projectScope, idem.keySha256, idem.requestSha256, idem.documentId, idem.createdAt),
+    db.prepare(`INSERT INTO kb_documents ${columns} ${projection} WHERE EXISTS (
+      SELECT 1 FROM kb_document_idempotency_requests WHERE tenant_id=? AND space_id=? AND project_scope=?
+       AND key_sha256=? AND request_sha256=? AND document_id=? AND state='active')`)
+      .bind(...input.values, idem.tenantId, idem.spaceId, projectScope, idem.keySha256, idem.requestSha256, idem.documentId),
+  ]);
+  if (results[1]?.meta.changes) return { created: true, existing: null };
+  const existing = await findKnowledgeCreateByIdempotency(db, idem, idem.requestSha256);
+  if (!existing) throw new HttpError(409, "knowledge_idempotency_claim_conflict", "Could not claim this upload request key");
+  return { created: false, existing };
+}
+
 // ── Helper: sha256 hex digest (Web Crypto, available in Workers) ──────────────
 
 async function sha256Hex(input: string): Promise<string> {
@@ -864,6 +943,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     preview_token?: string;
     preview_extraction_sha256?: string;
     source_file_name?: string;
+    idempotency_key: string;
     /** WS-4: optional — isolates this document to a single project's own KB, distinct from the
      *  space-wide default (omitted/null). */
     project_id?: string;
@@ -871,6 +951,10 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     /** Explicit sovereign-user allowlist. IDs are indexed, never evaluated after ranking. */
     allowed_user_ids?: string[];
   }>(c.req.raw, 14_000_000);
+  if (typeof body.idempotency_key !== "string" || body.idempotency_key.length < 16 || body.idempotency_key.length > 128
+    || !/^[A-Za-z0-9_-]+$/.test(body.idempotency_key)) {
+    throw badRequest("idempotency_key is required and must contain 16–128 URL-safe characters");
+  }
   if (body.project_id !== undefined && (typeof body.project_id !== "string" || !body.project_id || body.project_id.length > 256)) {
     throw badRequest("project_id must be a nonempty string of at most 256 characters");
   }
@@ -930,13 +1014,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     }
     const sourceSha256 = await sha256BytesHex(originalBytes);
     const extractionSha256 = body.preview_extraction_sha256;
-    if (!/^[a-f0-9]{64}$/.test(extractionSha256) || !await verifyKnowledgePdfPreviewToken({
-      token: body.preview_token ?? "", secret: c.env.PLATFORM_SECRET,
-      scope: { tenantId, spaceId, projectId }, sourceSha256, extractionSha256,
-    })) {
-      throw new HttpError(409, "knowledge_pdf_preview_expired_or_source_changed",
-        "This PDF preview expired or belongs to a different file or scope. Preview it again.");
-    }
+    if (!/^[a-f0-9]{64}$/.test(extractionSha256)) throw badRequest("PDF extraction hash is invalid");
     const previewApproval = sanitizeKbContent(body.preview_content.trim());
     indexContent = previewApproval.sanitized;
     const approvedBytes = new TextEncoder().encode(indexContent);
@@ -945,6 +1023,82 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   }
   if (contentType !== "pdf" && originalBytes.byteLength > contentLimit) {
     throw badRequest(projectId ? "Project Knowledge content exceeds the 5 MiB limit" : "Space-wide Knowledge content exceeds the 1 MiB limit");
+  }
+
+  const requestSha256 = await sha256Hex(JSON.stringify({
+    version: 1, tenantId, spaceId, projectId, title: body.title.trim(), contentType,
+    sourceUrl: body.source_url ?? null, sourceFileName,
+    sourceSha256: await sha256BytesHex(originalBytes),
+    parserVersion: pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null,
+    extractionSha256: pdfLineage?.extractionSha256 ?? null,
+    approvedContentSha256: pdfLineage?.approvedContentSha256 ?? null,
+    requiredRoleRank, allowedUserIds: [...allowedUserIds].sort(),
+  }));
+  const idempotencyKeyHash = await sha256Hex(body.idempotency_key);
+  const idempotencyScope = { tenantId, spaceId, projectId, keySha256: idempotencyKeyHash };
+  const returnExistingKnowledgeDocument = async (claim: IdempotentKnowledgeCreate): Promise<Response> => {
+    const existing = claim.document;
+    if (existing.status === "processing" && existing.project_id && originalBytes.byteLength > MAX_SYNC_CONTENT_BYTES) {
+      const r2Key = `staging/${tenantId}/${spaceId}/${existing.project_id}/${existing.id}/original`;
+      const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: existing.id, tenantId, spaceId });
+      if (!mutationLease) return c.json(existing, 202);
+      let queueSubmissionAttempted = false;
+      try {
+        if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, existing.id, mutationLease)) {
+          throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+        }
+        let staged = !!await c.env.KB_BUCKET.head(r2Key);
+        if (!staged && claim.dispatchState === "claimed") {
+          const stagedBytes = new TextEncoder().encode(indexContent);
+          if (stagedBytes.byteLength > MAX_WORKFLOW_CONTENT_BYTES) throw badRequest("Parsed document exceeds the 5 MiB ingestion limit");
+          if (existing.content_type === "pdf") {
+            const sourceKey = `kb/${spaceId}/${existing.project_id}/${existing.id}/original`;
+            await c.env.KB_BUCKET.put(sourceKey, originalBytes, { httpMetadata: { contentType: "application/pdf" } });
+          }
+          await c.env.KB_BUCKET.put(r2Key, stagedBytes, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
+          staged = true;
+        }
+        // A missing stage after dispatch began means a Workflow may already have consumed it.
+        // Do not recreate it or risk leaving a duplicate staged object after that Workflow ends.
+        if (!staged) return c.json(existing, 202);
+        const stagedBytes = new TextEncoder().encode(indexContent);
+        await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, existing.project_id, existing.id,
+          stagedBytes.byteLength, true, `workflow-stage:${existing.id}`);
+        if (existing.content_type === "pdf") await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, existing.project_id, existing.id,
+          originalBytes.byteLength, true, `workflow-pdf-source:${existing.id}`);
+        const dispatching = await c.env.PLATFORM_DB.prepare(`UPDATE kb_document_idempotency_requests
+          SET dispatch_state='dispatching' WHERE tenant_id=? AND space_id=? AND project_scope=? AND key_sha256=?
+            AND document_id=? AND state='active' AND dispatch_state IN ('claimed','dispatching')
+            AND EXISTS (SELECT 1 FROM kb_documents WHERE id=? AND status='processing'
+              AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?))`)
+          .bind(tenantId, spaceId, existing.project_id, idempotencyKeyHash, existing.id, existing.id, existing.id).run();
+        if (!dispatching.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document is no longer available for ingestion");
+        queueSubmissionAttempted = true;
+        await c.env.EVENTS_QUEUE.send({ type: "kb.ingest", docId: existing.id, spaceId, tenantId,
+          projectId: existing.project_id, r2Key, title: existing.title, contentType: existing.content_type,
+          requiredRoleRank, allowedUserIds });
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 410)
+          return c.json({ error_code: "document_deletion_in_progress", message: error.message }, 410);
+        return c.json({
+          error_code: queueSubmissionAttempted ? "ingestion_dispatch_uncertain" : "ingestion_stage_unavailable",
+          message: queueSubmissionAttempted ? "The upload is staged; retry the same request to resume ingestion" : "The upload could not be staged; retry the same request to resume ingestion",
+        }, 503);
+      } finally {
+        await releaseKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, existing.id, mutationLease);
+      }
+    }
+    return c.json(existing, existing.status === "processing" ? 202 : 200);
+  };
+  const existing = await findKnowledgeCreateByIdempotency(c.env.PLATFORM_DB, idempotencyScope, requestSha256);
+  if (existing) return returnExistingKnowledgeDocument(existing);
+  if (contentType === "pdf" && !await verifyKnowledgePdfPreviewToken({
+    token: body.preview_token ?? "", secret: c.env.PLATFORM_SECRET,
+    scope: { tenantId, spaceId, projectId }, sourceSha256: pdfLineage!.sourceSha256,
+    extractionSha256: pdfLineage!.extractionSha256,
+  })) {
+    throw new HttpError(409, "knowledge_pdf_preview_expired_or_source_changed",
+      "This PDF preview expired or belongs to a different file or scope. Preview it again.");
   }
 
   // G-AA26: Scan document content for prompt injection before indexing
@@ -986,23 +1140,18 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     if (stagedBytes.byteLength > MAX_WORKFLOW_CONTENT_BYTES) throw badRequest("Parsed document exceeds the 5 MiB ingestion limit");
     const r2Key = `staging/${tenantId}/${spaceId}/${projectId}/${docId}/original`;
     const sourceKey = `kb/${spaceId}/${projectId}/${docId}/original`;
-    await c.env.PLATFORM_DB.prepare(
-      `INSERT INTO kb_documents
-       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count,
-        required_role_rank, allowed_user_ids_json, source_sha256, source_file_name, parser_version,
-        parser_output_sha256, approved_content_sha256, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
+    const documentValues = [docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
       requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
       pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
-      pdfLineage?.approvedContentSha256 ?? null, now, now).run();
+      pdfLineage?.approvedContentSha256 ?? null, now, now];
+    const created = await insertKnowledgeDocumentOnce(c.env.PLATFORM_DB, { values: documentValues,
+      idempotency: { ...idempotencyScope, requestSha256, documentId: docId, createdAt: now } });
+    if (!created.created && created.existing) return returnExistingKnowledgeDocument(created.existing);
     const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
     if (!mutationLease) {
-      await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?
-        AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`)
-        .bind(docId, tenantId, spaceId, docId).run().catch(() => undefined);
       return c.json({ error_code: "document_deletion_in_progress" }, 410);
     }
+    let queueSubmissionAttempted = false;
     try {
       if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
         throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
@@ -1011,22 +1160,33 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         await c.env.KB_BUCKET.put(sourceKey, originalBytes, { httpMetadata: { contentType: "application/pdf" } });
       }
       await c.env.KB_BUCKET.put(r2Key, stagedBytes, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
+      await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, stagedBytes.byteLength, true, `workflow-stage:${docId}`);
+      if (contentType === "pdf") await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, originalBytes.byteLength, true, `workflow-pdf-source:${docId}`);
+      const dispatching = await c.env.PLATFORM_DB.prepare(`UPDATE kb_document_idempotency_requests SET dispatch_state='dispatching'
+        WHERE tenant_id=? AND space_id=? AND project_scope=? AND key_sha256=? AND document_id=? AND state='active'
+          AND EXISTS (SELECT 1 FROM kb_documents WHERE id=? AND status='processing'
+            AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?))`)
+        .bind(tenantId, spaceId, projectId ?? "", idempotencyKeyHash, docId, docId, docId).run();
+      if (!dispatching.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+      queueSubmissionAttempted = true;
       await c.env.EVENTS_QUEUE.send({
         type: "kb.ingest", docId, spaceId, tenantId, projectId, r2Key,
         title: body.title.trim(), contentType, requiredRoleRank, allowedUserIds,
       });
-      await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, stagedBytes.byteLength, true, `workflow-stage:${docId}`);
-      if (contentType === "pdf") await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, originalBytes.byteLength, true, `workflow-pdf-source:${docId}`);
       return c.json({ id: docId, space_id: spaceId, project_id: projectId, status: "processing", ingestion: "queued" }, 202);
     } catch (error) {
-      await Promise.allSettled([
-        c.env.KB_BUCKET.delete(r2Key),
-        ...(contentType === "pdf" ? [c.env.KB_BUCKET.delete(sourceKey)] : []),
-        c.env.PLATFORM_DB.prepare(`DELETE FROM kb_documents WHERE id = ? AND tenant_id = ? AND space_id = ?
-          AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`)
-          .bind(docId, tenantId, spaceId, docId).run(),
-      ]);
-      throw new HttpError(503, "ingestion_queue_unavailable", "Could not enqueue large document ingestion");
+      // A send acknowledgement can be lost after acceptance, so preserve the deterministic job.
+      // Before a send is attempted, the claimed key remains resumable and a retry can restage it.
+      if (!queueSubmissionAttempted) {
+        await Promise.allSettled([c.env.KB_BUCKET.delete(r2Key),
+          ...(contentType === "pdf" ? [c.env.KB_BUCKET.delete(sourceKey)] : [])]);
+        if (error instanceof HttpError && error.status === 410)
+          return c.json({ error_code: "document_deletion_in_progress", message: error.message }, 410);
+        return c.json({ error_code: "ingestion_stage_unavailable",
+          message: "The upload could not be staged; retry the same request to resume ingestion" }, 503);
+      }
+      return c.json({ error_code: "ingestion_dispatch_uncertain",
+        message: "The upload is staged; retry the same request to resume ingestion" }, 503);
     } finally {
       await releaseKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease);
     }
@@ -1036,23 +1196,18 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   const now = new Date().toISOString();
 
   // Insert doc record with status=processing
-  await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO kb_documents
-     (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count,
-        required_role_rank, allowed_user_ids_json, source_sha256, source_file_name, parser_version,
-        parser_output_sha256, approved_content_sha256, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
-      requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
-      pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
-      pdfLineage?.approvedContentSha256 ?? null, now, now)
-    .run();
+  const documentValues = [docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType,
+    requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
+    pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
+    pdfLineage?.approvedContentSha256 ?? null, now, now];
+  const created = await insertKnowledgeDocumentOnce(c.env.PLATFORM_DB, { values: documentValues,
+    idempotency: { ...idempotencyScope, requestSha256, documentId: docId, createdAt: now } });
+  if (!created.created && created.existing) return returnExistingKnowledgeDocument(created.existing);
   const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
   if (!mutationLease) {
-    await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?
-      AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`)
-      .bind(docId, tenantId, spaceId, docId).run().catch(() => undefined);
+    await c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET status='failed',updated_at=datetime('now')
+      WHERE id=? AND status='processing' AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`)
+      .bind(docId, docId).run().catch(() => undefined);
     return c.json({ error_code: "document_deletion_in_progress" }, 410);
   }
 

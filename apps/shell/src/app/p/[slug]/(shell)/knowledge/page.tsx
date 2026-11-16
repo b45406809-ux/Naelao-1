@@ -55,6 +55,7 @@ export default function KnowledgePage() {
   const [fileError, setFileError] = React.useState<string | null>(null);
   const [pdfPreview, setPdfPreview] = React.useState<{ base64: string; receipt: Awaited<ReturnType<typeof previewKbPdf>> } | null>(null);
   const [previewingPdf, setPreviewingPdf] = React.useState(false);
+  const createIdempotencyKeyRef = React.useRef<string | null>(null);
 
   const [query, setQuery] = React.useState("");
   const [searching, setSearching] = React.useState(false);
@@ -93,12 +94,20 @@ export default function KnowledgePage() {
     }
     setSaving(true);
     try {
-      await createKbDocument(activeSpaceId, creds, pdfPreview ? {
-        title: title.trim(), content: pdfPreview.base64, content_type: "pdf",
+      const idempotencyKey = createIdempotencyKeyRef.current ?? (createIdempotencyKeyRef.current = crypto.randomUUID());
+      const created = await createKbDocument(activeSpaceId, creds, pdfPreview ? {
+        title: title.trim(), content: pdfPreview.base64, content_type: "pdf", idempotency_key: idempotencyKey,
         ...(pdfPreview.receipt.source_file_name ? { source_file_name: pdfPreview.receipt.source_file_name } : {}),
         preview_content: submittedContent, preview_token: pdfPreview.receipt.preview_token,
         preview_extraction_sha256: pdfPreview.receipt.extraction_sha256,
-      } : { title: title.trim(), content: submittedContent, content_type: "text" });
+      } : { title: title.trim(), content: submittedContent, content_type: "text", idempotency_key: idempotencyKey });
+      if (created.status === "failed") {
+        createIdempotencyKeyRef.current = null;
+        show("This earlier upload attempt failed. Submit again to start a new attempt.");
+        await refresh();
+        return;
+      }
+      createIdempotencyKeyRef.current = null;
       setTitle("");
       setContent("");
       setPdfPreview(null);
@@ -119,6 +128,7 @@ export default function KnowledgePage() {
     const file = e.target.files?.[0];
     e.target.value = ""; // allow re-selecting the same file next time
     if (!file) return;
+    createIdempotencyKeyRef.current = null;
     setPdfPreview(null);
     if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
       if (!creds) return;
@@ -241,12 +251,12 @@ export default function KnowledgePage() {
         <Card style={{ marginBottom: 16 }}>
           <CardTitle>Add a document</CardTitle>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-            <FormInput placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <FormInput placeholder="Title" value={title} onChange={(e) => { createIdempotencyKeyRef.current = null; setTitle(e.target.value); }} />
             <textarea
               className="msg-input"
               placeholder="Paste the content — a policy, a price list, product notes…"
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={(e) => { createIdempotencyKeyRef.current = null; setContent(e.target.value); }}
               rows={8}
               style={{ resize: "vertical" }}
             />

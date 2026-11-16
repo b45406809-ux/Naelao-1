@@ -73,6 +73,7 @@ export default function KbPage() {
   const [pdfPreview, setPdfPreview] = useState<{ base64: string; receipt: KbPdfPreview } | null>(null);
   const [previewingPdf, setPreviewingPdf] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const createIdempotencyKeyRef = useRef<string | null>(null);
 
   // Delete confirmation
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -160,10 +161,12 @@ export default function KbPage() {
 
     setUploading(true);
     try {
+      const idempotencyKey = createIdempotencyKeyRef.current ?? (createIdempotencyKeyRef.current = crypto.randomUUID());
       const doc = await uploadKbDoc(spaceId, pdfPreview ? {
         title: title.trim(),
         content: pdfPreview.base64,
         content_type: "pdf",
+        idempotency_key: idempotencyKey,
         ...(pdfPreview.receipt.source_file_name ? { source_file_name: pdfPreview.receipt.source_file_name } : {}),
         preview_content: approvedContent,
         preview_token: pdfPreview.receipt.preview_token,
@@ -172,7 +175,15 @@ export default function KbPage() {
         title: title.trim(),
         content: approvedContent,
         content_type: contentType,
+        idempotency_key: idempotencyKey,
       });
+      if (doc.status === "failed") {
+        createIdempotencyKeyRef.current = null;
+        setUploadError("This earlier upload attempt failed. Submit again to start a new attempt.");
+        await loadDocs();
+        return;
+      }
+      createIdempotencyKeyRef.current = null;
       setDocs((prev) => [doc, ...prev]);
       setTitle("");
       setContent("");
@@ -193,6 +204,7 @@ export default function KbPage() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    createIdempotencyKeyRef.current = null;
     setPdfPreview(null);
     setUploadError(null);
     setPreviewingPdf(true);
@@ -337,7 +349,7 @@ export default function KbPage() {
                   <input
                     type="text"
                     value={title}
-                    onChange={(e) => setTitle(e.target.value)}
+                    onChange={(e) => { createIdempotencyKeyRef.current = null; setTitle(e.target.value); }}
                     required
                     placeholder="e.g. Product FAQ"
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition text-sm"
@@ -350,7 +362,7 @@ export default function KbPage() {
                   </label>
                   <select
                     value={contentType}
-                    onChange={(e) => { setPdfPreview(null); setContentType(e.target.value); }}
+                    onChange={(e) => { createIdempotencyKeyRef.current = null; setPdfPreview(null); setContentType(e.target.value); }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition text-sm bg-white"
                   >
                     {CONTENT_TYPE_OPTIONS.map((opt) => (
@@ -370,7 +382,7 @@ export default function KbPage() {
                     <input
                       type="url"
                       value={content}
-                      onChange={(e) => setContent(e.target.value)}
+                      onChange={(e) => { createIdempotencyKeyRef.current = null; setContent(e.target.value); }}
                       required
                       placeholder="https://example.com/page"
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition text-sm"

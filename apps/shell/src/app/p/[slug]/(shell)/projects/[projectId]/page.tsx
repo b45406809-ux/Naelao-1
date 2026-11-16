@@ -110,6 +110,7 @@ export default function ProjectDetailPage() {
   const [addingDoc, setAddingDoc] = React.useState(false);
   const [pdfPreview, setPdfPreview] = React.useState<{ base64: string; receipt: Awaited<ReturnType<typeof previewKbPdf>> } | null>(null);
   const [previewingPdf, setPreviewingPdf] = React.useState(false);
+  const createIdempotencyKeyRef = React.useRef<string | null>(null);
   const [externalPublications, setExternalPublications] = React.useState<ExternalKnowledgePublication[]>([]);
   const [publicationId, setPublicationId] = React.useState("course_material");
   const [publicationName, setPublicationName] = React.useState("Course material");
@@ -355,6 +356,7 @@ export default function ProjectDetailPage() {
     const file = e.target.files?.[0];
     e.target.value = ""; // allow re-picking the same file
     if (!file) return;
+    createIdempotencyKeyRef.current = null;
     if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
       if (!creds) return;
       setPdfPreview(null);
@@ -407,10 +409,12 @@ export default function ProjectDetailPage() {
     }
     setAddingDoc(true);
     try {
-      await createKbDocument(activeSpaceId, creds, pdfPreview ? {
+      const idempotencyKey = createIdempotencyKeyRef.current ?? (createIdempotencyKeyRef.current = crypto.randomUUID());
+      const created = await createKbDocument(activeSpaceId, creds, pdfPreview ? {
         title: newDocTitle.trim(),
         content: pdfPreview.base64,
         content_type: "pdf",
+        idempotency_key: idempotencyKey,
         ...(pdfPreview.receipt.source_file_name ? { source_file_name: pdfPreview.receipt.source_file_name } : {}),
         preview_content: submittedContent,
         preview_token: pdfPreview.receipt.preview_token,
@@ -419,8 +423,16 @@ export default function ProjectDetailPage() {
       } : {
         title: newDocTitle.trim(),
         content: submittedContent,
+        idempotency_key: idempotencyKey,
         project_id: params.projectId,
       });
+      if (created.status === "failed") {
+        createIdempotencyKeyRef.current = null;
+        show("This earlier upload attempt failed. Submit again to start a new attempt.");
+        await refreshDocs();
+        return;
+      }
+      createIdempotencyKeyRef.current = null;
       setNewDocTitle("");
       setNewDocContent("");
       setPdfPreview(null);
@@ -898,11 +910,11 @@ export default function ProjectDetailPage() {
       </div>
 
       <form onSubmit={handleAddDoc} className="settings-block" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-        <FormInput placeholder="Document title" value={newDocTitle} onChange={(e) => setNewDocTitle(e.target.value)} required />
+        <FormInput placeholder="Document title" value={newDocTitle} onChange={(e) => { createIdempotencyKeyRef.current = null; setNewDocTitle(e.target.value); }} required />
         <FormTextarea
           placeholder="Paste content to ingest into this project's KB…"
           value={newDocContent}
-          onChange={(e) => setNewDocContent(e.target.value)}
+          onChange={(e) => { createIdempotencyKeyRef.current = null; setNewDocContent(e.target.value); }}
           rows={4}
           required
         />

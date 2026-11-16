@@ -71,7 +71,10 @@ export async function queue(
             message.ack();
             break;
           }
-          await createWorkflowOnce(env.KB_INGESTION, message.id, body);
+          // The same document can be re-dispatched after an ambiguous queue acknowledgement.
+          // A deterministic document ID makes both original and retry messages converge on one
+          // durable Workflow instance instead of starting duplicate indexing and usage work.
+          await createWorkflowOnce(env.KB_INGESTION, String(body.docId), body);
           message.ack();
           break;
 

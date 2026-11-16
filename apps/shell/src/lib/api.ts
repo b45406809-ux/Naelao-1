@@ -3593,7 +3593,7 @@ export async function previewKbPdf(
 export async function createKbDocument(
   spaceId: string,
   session: SessionCredentials,
-  input: { title: string; content: string; content_type?: string; source_url?: string; project_id?: string;
+  input: { title: string; content: string; idempotency_key: string; content_type?: string; source_url?: string; project_id?: string;
     preview_content?: string; preview_token?: string; preview_extraction_sha256?: string; source_file_name?: string }
 ): Promise<KbDocument> {
   if (input.content_type === "pdf") {

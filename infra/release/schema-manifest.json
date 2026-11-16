@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0263_knowledge_pdf_preview_lineage",
+  "requiredSchemaVersion": "0264_knowledge_ingestion_idempotency",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1055,6 +1055,10 @@
     {
       "filename": "0263_knowledge_pdf_preview_lineage.sql",
       "sha256": "8a07745a8e4ddaa38bb936b2dcac3da988634b5ce8c618ebe29ce56cb55b246f"
+    },
+    {
+      "filename": "0264_knowledge_ingestion_idempotency.sql",
+      "sha256": "e7865f785609434de7ae84a49ab174d2d7d0a772107d12f1d814c8e780f8512d"
     }
   ]
 }

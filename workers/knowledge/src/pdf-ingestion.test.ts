@@ -17,13 +17,22 @@ async function sha256(value: string): Promise<string> {
 function fixture(projectAuthorized = true) {
   const calls: Array<{ sql: string; args: unknown[] }> = [];
   const objects = new Map<string, Uint8Array>();
+  const documents = new Map<string, Record<string, unknown>>();
+  const claims = new Map<string, { request_sha256: string | null; document_id: string; state: "active" | "deleted"; dispatch_state: "claimed" | "dispatching" }>();
   const db = {
     prepare(sql: string) {
       return {
         bind(...args: unknown[]) {
           calls.push({ sql, args });
           return {
+            sql,
+            args,
             async first() {
+              if (sql.includes("FROM kb_document_idempotency_requests")) return claims.get(JSON.stringify(args.slice(0, 4))) ?? null;
+              if (sql.startsWith("SELECT id,tenant_id,space_id,project_id,title,source_url,content_type,status"))
+                return documents.get(String(args[0])) ?? null;
+              if (sql.includes("SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status"))
+                return documents.get(String(args[0])) ?? null;
               if (sql.includes("JOIN orgs")) return { id: "space-1" };
               if (sql.includes("SELECT config_json FROM spaces")) return { config_json: "{}" };
               if (sql.includes("FROM project_access")) return projectAuthorized ? { visibility: "private", role_rank: 50 } : null;
@@ -33,12 +42,32 @@ function fixture(projectAuthorized = true) {
               return null;
             },
             async all() { return { results: [] }; },
-            async run() { return { meta: { changes: 1 } }; },
+            async run() {
+              if (sql.includes("SET status = 'indexed'")) {
+                const document = documents.get(String(args[3]));
+                if (document) documents.set(String(args[3]), { ...document, status: "indexed", chunk_count: args[0] });
+              }
+              return { meta: { changes: 1 } };
+            },
           };
         },
       };
     },
-    async batch() { return []; },
+    async batch(statements: Array<{ sql: string; args: unknown[] }>) {
+      if (statements[0]?.sql.includes("INSERT INTO kb_document_idempotency_requests")) {
+        const claimArgs = statements[0].args;
+        const key = JSON.stringify(claimArgs.slice(0, 4));
+        if (claims.has(key)) return [{ meta: { changes: 0 } }, { meta: { changes: 0 } }];
+        const values = statements[1]?.args ?? [];
+        const id = String(values[0]);
+        claims.set(key, { request_sha256: String(claimArgs[4]), document_id: id, state: "active", dispatch_state: "claimed" });
+        documents.set(id, { id, space_id: values[1], tenant_id: values[2], project_id: values[3], title: values[4],
+          source_url: values[5], content_type: values[6], status: "processing", chunk_count: 0,
+          created_at: values[14], updated_at: values[15] });
+        return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
+      }
+      return [];
+    },
   };
   const vectors = {
     getByIds: vi.fn(async () => []),
@@ -49,6 +78,7 @@ function fixture(projectAuthorized = true) {
     ENVIRONMENT: "test", PLATFORM_SECRET: "secret", COHERE_API_KEY: "cohere-test", PLATFORM_DB: db,
     KB_BUCKET: {
       put: vi.fn(async (key: string, value: Uint8Array) => { objects.set(key, new Uint8Array(value)); }),
+      head: vi.fn(async (key: string) => objects.has(key) ? { key } : null),
       delete: vi.fn(async (key: string | string[]) => { for (const item of Array.isArray(key) ? key : [key]) objects.delete(item); }),
       list: vi.fn(async () => ({ objects: [], truncated: false })),
     },
@@ -58,16 +88,20 @@ function fixture(projectAuthorized = true) {
       data: (Array.isArray(input.text) ? input.text : [input.text]).map(() => [0.1, 0.2]),
     })) },
   } as never;
-  return { env, calls, objects, vectors };
+  return { env, calls, objects, vectors, documents, claims };
 }
 
 async function request(path: string, body: unknown): Promise<Request> {
   const token = await mintInternalToken("secret", "tenant-1");
+  const requestBody = path === "/spaces/space-1/kb/documents" && body !== null && typeof body === "object"
+    && !Array.isArray(body) && !("idempotency_key" in body)
+    ? { ...body, idempotency_key: "test-pdf-request-key-0001" }
+    : body;
   return new Request(`https://knowledge${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1",
       "x-naelao-internal-token": token, "x-naelao-user-id": "user-1", "x-naelao-role": "owner" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(requestBody),
   });
 }
 
@@ -144,13 +178,16 @@ describe("Knowledge PDF preview and approved ingestion", () => {
     const { preview } = await previewResponse.json() as { preview: {
       extraction_sha256: string; preview_token: string; source_sha256: string;
     } };
-    const createResponse = await worker.fetch(await request("/spaces/space-1/kb/documents", {
+    const createBody = {
       title: "Reviewed guide", content: base64(pdfBytes), content_type: "pdf", source_file_name: "guide.pdf",
       preview_content: "# Corrected heading\n\nApproved content after human review.",
       preview_token: preview.preview_token, preview_extraction_sha256: preview.extraction_sha256,
-    }), f.env, {} as ExecutionContext);
+      idempotency_key: "reviewed-pdf-request-key-0001",
+    };
+    const createResponse = await worker.fetch(await request("/spaces/space-1/kb/documents", createBody), f.env, {} as ExecutionContext);
 
     expect(createResponse.status).toBe(201);
+    const created = await createResponse.json() as { id: string };
     expect(parse).toHaveBeenCalledTimes(1); // create trusts the short-lived signed preview, never reparses silently.
     expect([...f.objects.entries()].some(([key, bytes]) => key.endsWith("/original") &&
       new TextDecoder().decode(bytes) === new TextDecoder().decode(pdfBytes))).toBe(true);
@@ -161,6 +198,15 @@ describe("Knowledge PDF preview and approved ingestion", () => {
     expect(insert?.args).toContain(await sha256("# Corrected heading\n\nApproved content after human review."));
     const chunkWrites = f.calls.filter(({ sql }) => sql.includes("INSERT INTO kb_chunks"));
     expect(chunkWrites.some(({ args }) => args.some((value) => typeof value === "string" && value.includes("Approved content after human review.")))).toBe(true);
+    const writeCount = f.objects.size;
+    const idempotentRetry = await worker.fetch(await request("/spaces/space-1/kb/documents", {
+      ...createBody, preview_token: "expired-preview-token",
+    }), f.env, {} as ExecutionContext);
+    expect(idempotentRetry.status).toBe(200);
+    expect(await idempotentRetry.json()).toMatchObject({ id: created.id, status: "indexed" });
+    expect(parse).toHaveBeenCalledTimes(1);
+    expect(f.vectors.upsert).toHaveBeenCalledTimes(1);
+    expect(f.objects.size).toBe(writeCount);
   });
 
   it("rejects a preview receipt replayed with different bytes or a different project scope before persistence", async () => {
