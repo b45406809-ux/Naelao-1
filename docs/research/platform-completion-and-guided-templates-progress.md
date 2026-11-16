@@ -1,5 +1,13 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K09 owner path and robots policy; `fb6edf25` pushed)
+
+Host website grants now persist and expose owner-configured Knowledge path prefixes. Knowledge enforces those paths, approved HTTPS origins and robots rules for requested and redirected pages, failing closed when robots policy cannot be checked. This hardens the single-page preview/refresh adapter; it does not add crawling or scheduling.
+
+Code `fb6edf2595394add136fe474c79fd89f1b83ac02` is remote-verified. Knowledge **146/146**, Spaces connection route **14/14**, three typechecks, release inventory **273**, both manifest validators, Python migration/release tests **39/39**, SQLite default exercise and diff check pass. Full Spaces suite has four failures outside the changed route (**653/657**). Migration is unapplied; no deployed/live acceptance ran. Keep rollouts off and preserve the unstaged Python cache.
+
+Exact next action: reconcile K13 sync/Workflows chunk-size and citation-coordinate behavior; implement a shared bounded chunk contract in the Workflows caller, with repeated-content, Unicode and long-sentence tests. Continue K10–K30 and the managed/platform requirements afterward.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (K08 bounded website refresh; `7732d992` pushed)
 
 K08 now has a manual website refresh path through the Project owner preview/review caller, a migration-backed idempotent operation ledger, revision/grant fencing, two-minute abandoned-fetch recovery, bounded retry/backoff, and freshness status in Project Shell. The previous indexed content remains authoritative until its approved replacement is successfully reindexed.
