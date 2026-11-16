@@ -1,6 +1,12 @@
 # Unified platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
+## Latest cross-plan pointer — 2026-11-16 (EP02 Project object grant staging; code `82bbee1e` pushed)
+
+Code `82bbee1ecfb261a727c398978ea5c90135ef4731` carries the exact owner grant ledger forward to Project-scoped object request review. Operations may be reviewed, but no arbitrary path/table is granted, no storage caller exists yet, and activation/capability catalog remain unavailable. Local delta evidence: Spaces **50/50**, Shell grant API **1/1**, Spaces/Shell typechecks and diff check. The prior structured-data caller at `aa290198532b2c7a47878b69d7528c04ce5685e1` passed its broader SDK/Agents/Router/Spaces/Shell suites and typechecks. No deploy or live acceptance ran.
+
+Exact next action: implement and test the host-managed scoped R2 object API plus durable size/quota, revoke, uninstall/project-deletion, and archive/restore behavior before enabling objects. Job resources and remaining EP/K/S/U/P/PW work remain open; all rollout flags stay disabled. Preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan pointer — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
 
 The Project owner grant ledger/status/revoke caller now persists exact signed-manifest and installation-generation approvals, audit revisions, operation leases, and current grant checks for the existing workflow Gadget bridge. WorkflowRunDO retains bounded content-free receipts and declared metering. Code `aa290198532b2c7a47878b69d7528c04ce5685e1` is pushed and remote-verified. Local suites passed: SDK **36/36**, Spaces **50/50**, Agents **21/21**, Router **75/75**, Shell grant API **1/1**; affected typechecks and `git diff --check` pass. Resource descriptors remain unavailable; no migrations/deployments or live acceptance ran. Keep workspace/runtime and other rollouts disabled.
 

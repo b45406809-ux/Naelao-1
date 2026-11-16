@@ -1,6 +1,12 @@
 # Mature knowledge platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
+## Latest cross-plan pointer — 2026-11-16 (EP02 Project object grant staging; code `82bbee1e` pushed)
+
+The Project owner review caller can now record operation-only approvals for staged Project-scoped object requirements without granting bucket paths or activating runtime access. Code `82bbee1ecfb261a727c398978ea5c90135ef4731` is pushed. Latest delta evidence: Spaces **50/50**, Shell API **1/1**, affected Spaces/Shell typechecks and diff check. No Knowledge retrieval, provider, collection authority, D1/SpaceDO migration or live acceptance changed. All resource capabilities remain unavailable.
+
+Exact next action is the separate EP02 scoped R2 object operation/lifecycle adapter and cleanup. K05's broader collection lifecycle and K06–K30 remain code work; AI Search stays unselected. Preserve Naelao's ACL, tombstone, publication and retention authority.
+
+## Previous cross-plan pointer — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
 
 The structured-data resource grant ledger and Project owner review caller are implemented through the existing Gadget/MicroApp route, with current grant/install checks, serialized bounded operation leases and content-free usage receipts. Code `aa290198532b2c7a47878b69d7528c04ce5685e1` is pushed. Local SDK/Spaces/Agents/Router/Shell suites passed **36/36**, **50/50**, **21/21**, **75/75**, **1/1**; affected typechecks and diff check passed. No Knowledge retrieval/provider implementation changed; no D1/SpaceDO migration, deployment, browser, provider or live acceptance ran. All resource capabilities remain unavailable and rollout is disabled.
 

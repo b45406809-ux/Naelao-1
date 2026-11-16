@@ -1,6 +1,12 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 object request review staging; code `82bbee1e` pushed)
+
+Code `82bbee1ecfb261a727c398978ea5c90135ef4731` extends the exact Project owner grant/status/revoke API and Shell review caller to stage Project-scoped object requirements, with operation choices and no fabricated table/path grants. Activation validates the empty object table selection and still rejects the object capability as unavailable. Structured-data broker code remains at pushed `aa290198532b2c7a47878b69d7528c04ce5685e1`. Latest local delta evidence: Spaces **50/50**, Shell resource API **1/1**, Spaces/Shell typechecks and diff check. Migration 150/151, deploy, browser, provider/invoice and live acceptance remain unrun; rollout is off.
+
+Exact next action: implement a separate scoped R2 object service for the already staged `objects` grants: opaque Project/install namespace, fixed bounded get/put/delete contract, current signed install/grant verification, serialized leases and bounded per-object/total storage quotas; then add retryable uninstall/project-deletion cleanup plus archive/restore coverage before enabling any operation. Jobs and the remaining S2–S9/U01–U12/P/PW/K/EP gaps remain active. No provider credentials block this code. Preserve `infra/scripts/__pycache__/` and keep rollouts disabled.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
 
 Code `aa290198532b2c7a47878b69d7528c04ce5685e1` adds the durable exact-manifest/install-generation owner grant ledger, audit/revision history, Project-scoped review/status/revoke API and Shell caller, operation lease concurrency/rate admission, activation-time grant subset validation, and current grant checks through the existing workflow Gadget→MicroApp route. The WorkflowRunDO journal records request/result hashes, bytes, outcome and declared metering. Local evidence: SDK **36/36**, Spaces **50/50**, Agents **21/21**, Router **75/75**, Shell grant API **1/1**; affected package typechecks and `git diff --check` pass. All capabilities remain unavailable; resource installs remain staged. Migrations 150/151 and deployments/browser/provider/live acceptance were not run. No ordinary provider credentials block the remaining code.
 

@@ -1,6 +1,12 @@
 # Platform completion and guided templates progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 Project object grant staging; code `82bbee1e` pushed)
+
+The owner review status/approve/revoke caller now accepts Project-scoped object requirements with operation-only approvals and no table or object-path authority. Shell distinguishes object requests and warns that storage remains unavailable; staged approval cannot activate them. Code `82bbee1ecfb261a727c398978ea5c90135ef4731` is pushed. Latest local delta: Spaces **50/50**, Shell grant API **1/1**, Spaces/Shell typechecks and diff check. The preceding structured-data broker checkpoint `aa290198532b2c7a47878b69d7528c04ce5685e1` passed SDK **36/36**, Agents **21/21**, Router **75/75**, and the same affected typechecks. No migrations/deployment/browser/provider/live acceptance ran; resource descriptors remain unavailable.
+
+EP02 object runtime, durable quotas/usage and install/project deletion cleanup remain code gaps; jobs and EP06 cross-resource admission/settlement also remain uncoded. K05 and K06–K30 plus S/U/P/PW work remain active; Knowledge retrieval is unchanged and AI Search remains unselected. Exact next action: build the bounded host R2 object service for exact Project/install grants with opaque namespace, fixed operations, limits, revoke fencing, deletion recovery and archive coverage; keep its catalog entry unavailable pending applicable acceptance.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
 
 The exact Project/install-bound owner grant ledger and reviewer caller now persist approved structured-data operations/tables, audit revisions and revocation. Workflow resource effects recheck signed install/current grant state, claim a bounded concurrent/rate lease, dispatch through the existing Gadget→MicroAppDO scope checks, and record hash/byte/outcome/metering receipts. Activation fails closed on a grant widened beyond its manifest. Code `aa290198532b2c7a47878b69d7528c04ce5685e1` is pushed. Local evidence: SDK **36/36**, Spaces **50/50**, Agents **21/21**, Router **75/75**, Shell grant API **1/1**; affected typechecks and diff check pass. No migration or deployment was run; capabilities remain unavailable and rollout remains disabled.
 
