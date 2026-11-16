@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { evaluateKnowledgeRetrieval, parseJsonLines } from "./knowledge-retrieval-eval.mjs";
+import { createKnowledgeSearchTrace, evaluateKnowledgeRetrieval, parseJsonLines } from "./knowledge-retrieval-eval.mjs";
 
 const datasetText = await readFile(new URL("../../tests/eval-datasets/knowledge-retrieval-v1.jsonl", import.meta.url), "utf8");
 const cases = parseJsonLines(datasetText, "dataset");
@@ -41,6 +41,21 @@ test("detects a stale cited version without disclosing query text in the report"
   }] });
   assert.equal(result.metrics.staleCitationCount, 1);
   assert.equal(JSON.stringify(result).includes(cases[1].query), false);
+});
+
+test("whitelists a Knowledge search response into a content-free source-version trace", () => {
+  const response = {
+    query: "private query text",
+    data: [{ chunk_id: "doc-1_chunk_0", score: 0.9, content: "private source text", title: "Private title",
+      citation: { chunk_id: "doc-1_chunk_0", source_revision: 4, r2_key: "private/r2/key", content_hash: "secret" } }],
+    citations: [{ r2Key: "private/r2/key", snippet: "private snippet" }],
+  };
+  const trace = createKnowledgeSearchTrace({ caseId: "safe-case", response, abstained: false, latencyMs: 5, costMicrosUsd: 0 });
+  assert.deepEqual(trace, { caseId: "safe-case", retrieved: [{ chunkId: "doc-1_chunk_0", score: 0.9, sourceVersion: "4" }],
+    citedChunkIds: ["doc-1_chunk_0"], abstained: false, latencyMs: 5, costMicrosUsd: 0 });
+  assert.equal(JSON.stringify(trace).includes("private"), false);
+  assert.throws(() => createKnowledgeSearchTrace({ caseId: "bad", response: { data: [{ chunk_id: "doc-1_chunk_0",
+    score: 0.9, citation: { chunk_id: "other_chunk_0" } }] }, abstained: false, latencyMs: 0, costMicrosUsd: 0 }), /citation identity/);
 });
 
 test("reports missing results and rejects out-of-scope citations, malformed cases and JSON lines", () => {

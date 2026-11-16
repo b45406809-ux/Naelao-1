@@ -34,6 +34,14 @@ export interface KnowledgeEvalThresholds {
   maxStaleCitationCount: number;
 }
 
+export function createKnowledgeSearchTrace(input: {
+  caseId: string;
+  response: { data: Array<{ chunk_id: string; score: number; citation?: { chunk_id: string; source_revision?: number } | null }> };
+  abstained: boolean;
+  latencyMs: number;
+  costMicrosUsd: number;
+}): KnowledgeEvalResult;
+
 export function evaluateKnowledgeRetrieval(input: {
   cases: KnowledgeEvalCase[];
   results: KnowledgeEvalResult[];

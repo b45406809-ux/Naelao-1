@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
-import { evaluateKnowledgeRetrieval } from "../../../infra/scripts/knowledge-retrieval-eval.mjs";
+import { createKnowledgeSearchTrace, evaluateKnowledgeRetrieval } from "../../../infra/scripts/knowledge-retrieval-eval.mjs";
 import worker from "./index.js";
 
 function bindings(owned: boolean, pendingDeletion = false, ftsFails = false, searchFixture: {
@@ -118,20 +118,13 @@ describe("content-free retrieval evaluation trace", () => {
       const response = await worker.fetch!(await searchRequest(query), env as never, {} as ExecutionContext);
       expect(response.status).toBe(200);
       const body = await response.json() as {
-        data: Array<{ chunk_id: string; score: number; citation: { source_revision?: number } | null }>;
+        data: Array<{ chunk_id: string; score: number; citation: { chunk_id: string; source_revision?: number } | null }>;
         latency_ms: number;
       };
       return {
         env,
-        result: {
-          caseId,
-          retrieved: body.data.map((item) => ({ chunkId: item.chunk_id, score: item.score,
-            ...(item.citation?.source_revision ? { sourceVersion: String(item.citation.source_revision) } : {}) })),
-          citedChunkIds: body.data.filter((item) => item.citation).map((item) => item.chunk_id),
-          abstained: body.data.length === 0,
-          latencyMs: body.latency_ms,
-          costMicrosUsd: 0,
-        },
+        result: createKnowledgeSearchTrace({ caseId, response: body, abstained: body.data.length === 0,
+          latencyMs: body.latency_ms, costMicrosUsd: 0 }),
       };
     };
     const current = await runRoute("synthetic-exact-code", "Which catalog item uses code RX-0042?", currentId, [row(currentId, 2)]);

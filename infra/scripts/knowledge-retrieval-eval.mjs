@@ -19,6 +19,34 @@ export function parseJsonLines(text, label = "JSONL") {
   });
 }
 
+/** Whitelist a Knowledge search response into a trace without content, query, title, or storage key. */
+export function createKnowledgeSearchTrace({ caseId, response, abstained, latencyMs, costMicrosUsd }) {
+  if (typeof caseId !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(caseId)
+      || !response || typeof response !== "object" || !Array.isArray(response.data)
+      || typeof abstained !== "boolean" || !Number.isFinite(latencyMs) || latencyMs < 0
+      || !Number.isFinite(costMicrosUsd) || costMicrosUsd < 0) {
+    throw new Error("search trace inputs are invalid");
+  }
+  const retrieved = [];
+  const citedChunkIds = [];
+  for (const item of response.data) {
+    if (!item || typeof item.chunk_id !== "string" || !item.chunk_id || item.chunk_id.length > 160
+        || !Number.isFinite(item.score)) {
+      throw new Error("search response contains an invalid candidate");
+    }
+    const citation = item.citation;
+    if (citation !== null && citation !== undefined
+        && (!citation || typeof citation !== "object" || citation.chunk_id !== item.chunk_id)) {
+      throw new Error("search response contains an invalid citation identity");
+    }
+    const sourceRevision = citation?.source_revision;
+    retrieved.push({ chunkId: item.chunk_id, score: item.score,
+      ...(Number.isSafeInteger(sourceRevision) && sourceRevision > 0 ? { sourceVersion: String(sourceRevision) } : {}) });
+    if (citation) citedChunkIds.push(item.chunk_id);
+  }
+  return { caseId, retrieved, citedChunkIds, abstained, latencyMs, costMicrosUsd };
+}
+
 function assertCase(sample, seen) {
   if (!sample || sample.recordType !== "case" || typeof sample.caseId !== "string"
       || !/^[A-Za-z0-9_-]{1,100}$/.test(sample.caseId) || seen.has(sample.caseId)) {
