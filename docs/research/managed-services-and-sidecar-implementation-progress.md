@@ -1,12 +1,22 @@
 # Managed services and sidecar implementation progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (EP01 SDK/resource admission; code 9abf5efa pushed)
+
+EP01's versioned resource requirements, host-grant/client types, exact scope and operation checks, schemas, idempotency, byte/rate/concurrency limits and metering-unit contract are implemented in the Agent SDK. A local simulated harness is labeled as simulated. Spaces exposes an authenticated member catalog and SpaceDO rejects unsupported resource requests before installation. All object, structured-data and job capabilities remain unavailable until EP02 wires a trusted grant issuer and operation broker.
+
+Code `9abf5efa36231a96bf8e337a2fb7b702cf672954` is pushed and remote-verified. Local evidence: Agent SDK **35/35**, SpaceDO extension installation **32/32**, SDK/Spaces typechecks and `git diff --check`. No deployment, provider or live acceptance. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: map the signed Project bundle and workflow Gadget RPC to existing scoped MicroAppDO storage, then implement EP02's first durable structured-data grant/operation ledger with exact owner approval, idempotency, revocation fencing and usage receipts. Keep the capability unavailable until a complete authenticated caller is wired; then continue object/jobs and other S/U/P/PW/K/EP requirements.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (K05 publication revision fencing; code cb0a63fb pushed)
 
 Owner-published Knowledge membership and SpaceDO installation grants are now revision-pinned. The Shell uses optimistic revisions and surfaces stale grants; the Agent host rereads the current grant per external channel use; Knowledge checks the same revision around vector search. Document edit/removal advances affected collection revisions and fails closed until owner approval catches up. This completes a cross-plan K05 slice, not the broader generic collection or EP03 lifecycle.
 
 Code `cb0a63fb3f3fe2f9ad78b962323c4121f60b1496` is pushed and remote-verified. Local checks: Knowledge **117/117**, Spaces **43/43**, Agents grant helper **5/5**, Knowledge/Spaces/Agents/Shell typechecks, release migration tests **20/20**, release/deployment validators and real-SQLite revision/revocation tests. No D1/SpaceDO migration, Worker, browser/provider or live acceptance ran. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: implement EP01's typed, versioned resource and capability contract through the existing Agent SDK and gatekeeper callers; support safe legacy adapters, scoped operation schemas and explicit deny for unsupported runtime capabilities. Then EP02 the object/structured-data/job resource broker and continue S/U/P/PW/K/EP gaps. Do not treat absent provider credentials as a reason to leave independent code unwritten.
+EP01 code checkpoint `9abf5efa36231a96bf8e337a2fb7b702cf672954` is pushed with scoped SDK requirements/grants, an authenticated capability catalog, simulated local harness and fail-closed install admission. All object, structured-data and job operations remain unavailable until the host runtime broker exists. Local evidence: SDK tests 35/35, SpaceDO extension install tests 32/32, SDK/Spaces typechecks and diff check; no live/deployed acceptance.
+
+Exact next action: map the signed Project bundle and workflow Gadget RPC to existing scoped MicroAppDO storage, then implement EP02's first durable structured-data grant/operation ledger with exact owner approval, idempotency, revocation fencing and usage receipts. Do not advertise support until its trusted runtime caller is complete. Continue object/job adapters and open S/U/P/PW/K/EP gaps; missing ordinary code is not a credential blocker.
 
 ## Latest cross-plan checkpoint — 2026-11-16 (K04 durable create idempotency; code 4f390061 pushed)
 

@@ -1,5 +1,13 @@
 # Mature knowledge platform implementation progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (EP01 SDK/resource admission; code 9abf5efa pushed)
+
+EP01's versioned resource requirements, host-grant/client types, scoped schemas, idempotency, quotas, status and metering units are implemented in the Agent SDK. A labeled simulated harness supports local authoring. Spaces exposes an authenticated capability catalog; SpaceDO denies resource-bearing installs while the host broker is absent. The `objects`, `structured_data` and `jobs` kinds remain unavailable, so this adds no Knowledge retrieval provider or authority path.
+
+Code `9abf5efa36231a96bf8e337a2fb7b702cf672954` is pushed and remote-verified. Local evidence: SDK tests **35/35**, SpaceDO extension install tests **32/32**, SDK/Spaces typechecks and `git diff --check`. No deployment or live acceptance. Rollouts stay disabled.
+
+Exact next action: trace Project bundle install and workflow Gadget RPC to existing scoped MicroAppDO storage and implement the first EP02 durable structured-data grant/operation ledger, including exact owner review, idempotent writes, revocation fencing and usage receipts. Keep catalog support unavailable until the trusted runtime caller is complete. K05 lifecycle and K06–K30 plus S/U/P/PW gaps remain active; Cloudflare AI Search stays unselected.
+
 ## Latest checkpoint — 2026-11-16 (K05 revision-pinned collection authority; code cb0a63fb pushed)
 
 Owner-published Project collections now have durable monotonic revisions. Membership rows carry the exact revision; owner edits use expected-revision compare-and-swap and atomically replace membership behind a mutation token. Content reindex and document removal bump each affected collection and update surviving membership under the new revision, invalidating prior extension approvals. SpaceDO grants store/audit the exact publication revision. The reachable Shell displays revision and stale grants and requires owner resave to approve changed membership. Before every external channel search the Agent host rereads the current publication and, for Space-shared installations, the active installation grant; Knowledge checks the expected revision before vector ranking and again before returning chunks. Stale, revoked, replaced or cross-scope publications fail closed.
