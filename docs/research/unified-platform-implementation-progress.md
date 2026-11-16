@@ -1,10 +1,16 @@
 # Unified platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (EP02 versioned object archive recovery; code `326779c1` pushed)
+## Latest cross-plan pointer — 2026-11-16 (EP02 extension effect budget admission and unit metering; code `15f704fe` pushed)
+
+WorkflowRunDO now reserves one canonical workflow-step credit for each in-flight vertical-extension effect and fails closed on missing or exhausted run budgets, including concurrent actions. Billing's existing run reservation retains Project/installation dimensions and tenant monthly quota admission. Resource request/byte/job quantities are persisted idempotently by Project/installation/run; byte quantities are explicitly unpriced pending an approved rate. Code `15f704feee462d75a1f07a70aea36455bf4e3373` is pushed. Agent focused suites **27/27**, Agent and Agent SDK typechecks, and `git diff --check` pass. No migration, Billing D1 integration, deployment or live acceptance ran; unified workspace/dual-read/Agent37 gates and rollout flags remain disabled.
+
+The run budget is not yet an owner-approved per-install ceiling, no byte/storage price policy exists, and EP02 job resource support remains uncoded. Exact next action: persist owner-authorized per-install budgets in SpaceDO resource review and make the workflow host resolve/recheck the approved value; add authorization/replay/concurrency/revocation/uncertainty tests, then implement jobs. Keep resource capabilities and rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan pointer — 2026-11-16 (EP02 versioned object archive recovery; code `326779c1` pushed)
 
 Project object rows now have a separate bounded version-1 archive snapshot/restore path. Restore is fenced by the current exact Project install, signed release/resource digests, and generation; it preserves current rows, enforces quotas, skips missing/newer owners and respects Space erasure. Generic archives do not restore object rows, grants or active operation leases, including legacy grant/lease rows. Code `326779c1bc7fcab9ce7f66a2328ffe670a5b43da` is pushed. Archive/backup suites **30/30**, Spaces typecheck and diff check pass. No migration, deployment or live restore acceptance ran; migrations 152/153 and unified workspace/dual-read/Agent37 gates remain unchanged and disabled.
 
-Exact next action: trace current budget authority from the Agent workflow host and WorkflowRunDO to the SpaceDO resource route, then implement per-install resource request/byte admission and durable settled/unknown receipts with replay, concurrency and revocation tests. Continue job resources and S2–S9/U01–U12/P/PW/K/EP gaps afterward. Preserve `infra/scripts/__pycache__/` and keep all rollouts disabled.
+At this archive checkpoint, budget tracing remained open; the later run-level admission and unit-metering slice is recorded above. Owner-approved per-install budget, byte/storage price policy, jobs, and other S2–S9/U01–U12/P/PW/K/EP gaps remain. Preserve `infra/scripts/__pycache__/` and keep all rollouts disabled.
 
 ## Previous cross-plan pointer — 2026-11-16 (EP02 bounded Project object runtime; code `ee7390e8` pushed)
 

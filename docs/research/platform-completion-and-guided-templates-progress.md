@@ -1,6 +1,14 @@
 # Platform completion and guided templates progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 versioned object archive recovery; code `326779c1` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 run budget admission and resource unit metering; code `15f704fe` pushed)
+
+WorkflowRunDO reserves one canonical workflow-step credit per in-flight vertical-extension effect against the existing run budget, including concurrent holds; it rejects missing/exhausted budgets and settlement above the effect hold. Billing's existing workflow reservation retains tenant monthly quota checks and Project/installation attribution. Resource request/byte/job units are persisted in its idempotent usage ledger by Project/installation/run. Byte units measure serialized request plus response and remain unpriced pending an approved rate.
+
+Code `15f704feee462d75a1f07a70aea36455bf4e3373` is pushed and remote-verified. Local Agent workflow/reporting suites **27/27**, Agent and Agent SDK typechecks, and diff check pass. No migration, Billing D1 integration, deployment, browser, invoice/provider or live acceptance ran; P01–P24/PW01–PW06, K01–K30 and S/U statuses did not change. Resource descriptors/install admission and all rollouts stay disabled.
+
+The supplied run budget is not yet a durable owner-approved per-install ceiling, no approved byte/storage price exists, and EP02 jobs remain uncoded. These are ordinary code/policy gaps, not credential blockers. Exact next action: add owner-authorized per-install budget to the existing resource grant/review path; resolve it from current SpaceDO state and enforce it through Billing, with authorization/replay/concurrency/revocation/unknown-outcome tests. Continue jobs and other open requirements afterward. Preserve untracked `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 versioned object archive recovery; code `326779c1` pushed)
 
 EP02 now has bounded object runtime calls plus version-1 archive snapshot/restore for Project-bound install rows. Export validates exact signed release, manifest/resource digests, install generation and object bytes; coverage reports object count/bytes. Restore is additive only for an already-existing exact active/disabled install generation, preserves current data, respects per-install quotas and erasure tombstones, and skips stale or absent owners. Generic restore never replays object rows, owner grants or operation leases; legacy grant/lease rows are filtered. All resource descriptors and install admission remain unavailable.
 
@@ -14,7 +22,7 @@ The EP02 workflow-to-SpaceDO object caller now implements fixed `get`/`put`/`del
 
 Code `ee7390e861afd66bfcb14e551d8662c4dcb2f1be` is pushed and verified. Local suites: SDK **36/36**, Spaces **47/47**, Agents **14/14**; SDK/Spaces/Agents typechecks and diff check pass. Migrations 152/153 remain unapplied; no Worker deployment, browser, provider/invoice, archive/restore or live acceptance ran. Rollouts are disabled.
 
-EP02 object archive recovery and installation-level monetary admission/settlement remain uncoded, as do job resources and other EP/K/S/U/P/PW requirements. No credentials block the remaining code. Exact next action: add versioned Space archive snapshot/restore for object rows with ownership/generation fencing and byte/count coverage, then test restoration and stale archive non-resurrection. Keep resource capabilities unavailable and Cloudflare AI Search unselected.
+At this archive checkpoint, budget admission and jobs remained open; the later run-level admission/unit-metering slice is recorded above. Owner-approved per-install budget, byte/storage rate policy, jobs, and other EP/K/S/U/P/PW gaps remain. Keep resources unavailable and Cloudflare AI Search unselected.
 
 ## Previous cross-plan checkpoint — 2026-11-16 (EP02 Project object grant staging; code `82bbee1e` pushed)
 

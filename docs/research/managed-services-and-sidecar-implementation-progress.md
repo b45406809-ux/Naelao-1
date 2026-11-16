@@ -1,12 +1,18 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 versioned object archive recovery; code `326779c1` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 run budget admission and resource unit metering; code `15f704fe` pushed)
+
+WorkflowRunDO now gates each vertical-extension external effect on one reserved canonical workflow-step credit. The durable run journal includes concurrent in-flight effect holds, rejects missing/exhausted run budgets and records completed/unknown outcomes without replay. Billing's existing workflow reservation retains tenant monthly quota checks and Project/installation attribution. Request, byte and job units are persisted idempotently in Billing by Project/installation/run; byte units measure serialized request/response bytes but remain unpriced because no approved rate exists.
+
+Code `15f704feee462d75a1f07a70aea36455bf4e3373` is pushed and remote-verified. Local Agent workflow suites **27/27**, Agent and Agent SDK typechecks, and diff check pass. No migrations, Billing D1 integration test, deployment or live acceptance ran. S1–S9/U01–U12 remain unchanged. The run ceiling is not yet an owner-approved per-install budget; byte/storage pricing and the jobs adapter remain open, with no credentials blocking code. Exact next action: persist owner-authorized per-install budget settings in the current grant/review path and make the workflow host read them as authority; test authorization, revocation, replay, concurrency and uncertainty before proceeding to job resources. Keep capabilities unavailable and rollouts disabled; preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 versioned object archive recovery; code `326779c1` pushed)
 
 Full Space archives now capture version-1 Project-install object snapshots separately from generic SQLite rows, with exact signed release/manifest/resource digests, generation, canonical key/type/base64, size/hash and timestamps. Snapshot count/bytes are bounded and included in archive coverage. Restore requires the same pre-existing active/disabled Project-bound installation and generation, preserves current values, applies the per-install object quotas, skips stale/absent owners and respects the Space erasure tombstone. Resource grants and active leases never restore; those tables are excluded from new archives and legacy copies are filtered. Object catalog/install admission remain fail-closed.
 
 Code `326779c1bc7fcab9ce7f66a2328ffe670a5b43da` is pushed and remote-verified. Local archive export/restore and backup suites **30/30**, Spaces typecheck and diff check pass. No migration was added; 152/153 remain unapplied. No deployed Worker, browser, provider, invoice or live recovery test ran; all rollouts remain disabled. No S1–S9/U01–U12 status changes.
 
-EP02 archive recovery is implemented locally. Per-install resource cost admission/settlement, job resources, and remaining S2–S9/U01–U12/P/PW/K/EP code gaps remain; none are credential blockers. Exact next action: trace the authoritative Project/agent budget reservation and settlement from `workers/agents/src/workflow-host.ts`/`WorkflowRunDO` through the SpaceDO resource route, then implement request/byte cost admission and durable settled/unknown receipts using existing billing authority with replay, concurrency, revocation and uncertainty tests. Continue jobs and other plan requirements afterward. Keep object/job catalog and rollout flags disabled; preserve `infra/scripts/__pycache__/`.
+At this archive checkpoint, budget tracing and settlement were still open; the subsequent run-level admission and unit-metering slice is recorded above. Owner-approved per-install budgets, byte/storage price policy, jobs, and remaining S2–S9/U01–U12/P/PW/K/EP gaps remain. No credential block is known; keep resource catalog and rollouts disabled.
 
 ## Previous cross-plan checkpoint — 2026-11-16 (EP02 bounded object operation path; code `ee7390e8` pushed)
 
