@@ -1,5 +1,11 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K06 attachment/channel scope verified; current code `0642ece4`)
+
+K06 caller verification found no implicit attachment promotion or current-grant bypass. Ordinary uploads remain task-scoped and separate from Knowledge publication membership; channel reads are bound to the active task and exact installation/provider connection and only feed transient answer context. Web/WhatsApp/email share the owner-publication/revision-fenced handler. Phone extensions reject Knowledge declarations, so phone Knowledge remains unsupported and fails closed. Local evidence: Agents attachment/store/upload/selection/phone suites **29/29** and Knowledge publication suite **9/9**. No source code changed and no live channel acceptance ran; rollout remains disabled.
+
+Exact next action: implement K07's durable, provider-neutral source record and host-held connector grant using the current `kb_documents` authority; connect manual text/URL ingestion, preserving scope, SSRF checks, idempotency and deletion lineage. Then continue K08 freshness and other K/S/U/P/PW/EP code gaps. K05 transfer/retention semantics remain unresolved product contracts.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (K05 publication lifecycle audit and ID retirement; code `890b2a55` pushed)
 
 The owner/admin `administer` endpoint and Project Shell history view now show content-free published/updated/archive/restore/delete events. Delete writes the final receipt and a scoped tombstone atomically with row removal; the stable collection ID cannot be recreated, preventing a revision reset from reactivating old grants. Source document content is not copied into the audit ledger.

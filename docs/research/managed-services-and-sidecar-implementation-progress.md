@@ -1,5 +1,11 @@
 # Managed services and sidecar implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (K06 attachment/channel scope verified; current code `0642ece4`)
+
+K06's exact-scope trace found no attachment promotion or channel grant bypass. Ordinary attachments stay task-scoped; extension reads bind the active tenant/Space/task/channel/Project/install/provider connection and remain transient. Web/WhatsApp/email use current publication revisions and shared-install grant checks. Phone extension Knowledge is rejected and unavailable. Local evidence: Agents **29/29**, Knowledge publication **9/9**; no live acceptance ran. No S1–S9/U01–U12 status changed.
+
+Exact next cross-plan action: implement K07's provider-neutral versioned source lineage and host-held connector grant on the existing Knowledge document authority, then K08 freshness/checkpoints. After K07/K08 continue S3/U05 candidate reservation and the remaining S4–S9/U01–U12 and platform/Knowledge gaps. Preserve the current worktree and keep rollouts disabled.
+
 ## Latest cross-plan pointer — 2026-11-16 (K05 publication lifecycle audit and ID retirement; code `890b2a55` pushed)
 
 K05 now has an owner/admin lifecycle history API and Shell view for content-free publication changes; delete atomically records a tombstone so a stable collection ID cannot be reused to revive prior extension grants. Code `890b2a55a56be746a1018016e63504f536795bab` is remote-verified. Knowledge **120/120**, Shell API **1/1**, typechecks and SQLite-backed migration/API coverage pass. Migrations 0268–0269 remain unapplied; no rollout or live acceptance ran. No S1–S9/U01–U12 status changed.

@@ -1,5 +1,11 @@
 # Unified platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (K06 attachment/channel scope verified; current code `0642ece4`)
+
+K06 trace confirms ordinary attachments remain task-scoped and are not promoted to Knowledge. Extension list/read calls require the exact active message and installation/provider binding and remain transient. Web, WhatsApp and email share current publication/revision checks; phone extensions reject Knowledge declarations. Agents focused suites **29/29**, Knowledge publication **9/9**. No code changed in this audit; no production/live acceptance ran. Rollouts stay off.
+
+Exact next action: implement K07 versioned source lineage and host-held connector grants over the current Knowledge document authority, wire existing manual text/URL ingestion, and verify scope, retry, idempotency and deletion. Then continue K08 and the remaining K/S/U/P/PW/EP code gaps. K05 generic ownership transfer and retention decisions stay open.
+
 ## Latest cross-plan pointer — 2026-11-16 (K05 publication lifecycle audit and ID retirement; code `890b2a55` pushed)
 
 Collection administration now includes owner/admin history for content-free publish/update/archive/restore/delete receipts. Exact-scope deletion is coupled to a tombstone that permanently retires the stable ID and prevents stale revision grants from becoming current after recreation. Code `890b2a55a56be746a1018016e63504f536795bab` is remote-verified. Knowledge **120/120**, Shell API **1/1**, typechecks, diff check and SQLite migration/API tests pass; migrations 0268–0269 remain unapplied.
