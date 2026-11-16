@@ -47,7 +47,8 @@ export async function resolveApprovedStructuredDataGrant(installation: WorkflowI
   if (!installation || installation.instance.status !== "active" || installation.instance.scope !== "PROJECT_BOUND"
     || !installation.instance.instance_id || !Number.isSafeInteger(installation.instance.generation)) return null;
   const requirement = installation.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "structured_data");
-  if (!requirement || !requirement.binding?.tables.includes(table) || !requirement.operations.some(item => item.id === operationId)) return null;
+  if (!requirement || !requirement.binding || !("tables" in requirement.binding) || !requirement.binding.tables.includes(table)
+    || !requirement.operations.some(item => item.id === operationId)) return null;
   const manifestSha256 = await workflowHash(JSON.stringify(installation.manifest));
   const resourceSha256 = await workflowHash(JSON.stringify(requirement));
   const grant = installation.resource_grants?.find(item => item.requirement_id === requirementId && item.status === "approved"
@@ -61,6 +62,21 @@ export async function resolveApprovedObjectGrant(installation: WorkflowInstallat
     || !installation.instance.project_id || !installation.instance.instance_id || !Number.isSafeInteger(installation.instance.generation)) return null;
   const requirement = installation.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "objects" && item.scope === "project");
   if (!requirement || !["get", "put", "delete"].includes(operationId) || !requirement.operations.some(item => item.id === operationId)) return null;
+  const manifestSha256 = await workflowHash(JSON.stringify(installation.manifest));
+  const resourceSha256 = await workflowHash(JSON.stringify(requirement));
+  const grant = installation.resource_grants?.find(item => item.requirement_id === requirementId && item.status === "approved"
+    && item.manifest_sha256 === manifestSha256 && item.resource_sha256 === resourceSha256
+    && item.installation_generation === installation.instance.generation && item.operations.includes(operationId) && item.tables.length === 0);
+  return grant ?? null;
+}
+export async function resolveApprovedJobsGrant(installation: WorkflowInstallationGrant | undefined,
+  requirementId: string, operationId: string, targetWorkflowId?: string): Promise<NonNullable<WorkflowInstallationGrant["resource_grants"]>[number] | null> {
+  if (!installation || installation.instance.status !== "active" || installation.instance.scope !== "PROJECT_BOUND"
+    || !installation.instance.project_id || !installation.instance.instance_id || !Number.isSafeInteger(installation.instance.generation)) return null;
+  const requirement = installation.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "jobs" && item.scope === "project");
+  if (!requirement || !requirement.operations.some(item => item.id === operationId)) return null;
+  const targets = requirement.binding && "workflowIds" in requirement.binding ? requirement.binding.workflowIds : [];
+  if (operationId === "enqueue" && (!targetWorkflowId || !targets.includes(targetWorkflowId))) return null;
   const manifestSha256 = await workflowHash(JSON.stringify(installation.manifest));
   const resourceSha256 = await workflowHash(JSON.stringify(requirement));
   const grant = installation.resource_grants?.find(item => item.requirement_id === requirementId && item.status === "approved"
@@ -209,6 +225,20 @@ export interface StartDurableWorkflowOptions {
   name: string; params: Record<string, unknown>; startKey: string;
   workflowClass?: WorkflowClass | undefined; budgetKey?: string | undefined; budgetCredits?: number | undefined;
   installationId?: string | undefined; extensionId?: string | undefined; expiresAt?: number;
+  jobAuthorization?: { requirementId: string; targetWorkflowId: string; manifestSha256: string; resourceSha256: string;
+    installationGeneration: number; grantRevision: number; releaseVersion: string; artifactSha256: string };
+}
+
+async function assertJobDispatchAuthorization(installation: WorkflowInstallationGrant | undefined, options: StartDurableWorkflowOptions): Promise<void> {
+  const expected = options.jobAuthorization;
+  if (!expected) return;
+  if (options.workflowClass !== "vertical_extension" || options.name !== expected.targetWorkflowId) throw new Error("workflow_job_grant_revoked");
+  const grant = await resolveApprovedJobsGrant(installation, expected.requirementId, "enqueue", expected.targetWorkflowId);
+  if (!grant || grant.manifest_sha256 !== expected.manifestSha256 || grant.resource_sha256 !== expected.resourceSha256
+    || grant.installation_generation !== expected.installationGeneration || grant.revision !== expected.grantRevision)
+    throw new Error("workflow_job_grant_revoked");
+  if (installation?.release?.signatureValid !== true || installation.release.version !== expected.releaseVersion
+    || installation.release.artifactSha256 !== expected.artifactSha256) throw new Error("workflow_job_release_changed");
 }
 
 export function resolveExtensionResourceBudget(installation: WorkflowInstallationGrant | undefined, requestedCredits: number | undefined) {
@@ -244,6 +274,7 @@ export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options:
     if (prior.inputDigest !== inputDigest || prior.identity.agentId !== options.agentId || prior.identity.installationId !== options.installationId || prior.identity.definitionId !== options.name || prior.identity.workflowClass !== (options.workflowClass ?? "ephemeral_task")) throw new Error("workflow_start_key_conflict");
     if (prior.identity.workflowClass === "vertical_extension") {
       const replayGrant = await readWorkflowGrant(env, { tenantId: options.tenantId, spaceId: options.spaceId, agentId: options.agentId, actorId: options.actorId, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.installationId ? { installationId: options.installationId } : {}) });
+      await assertJobDispatchAuthorization(replayGrant.installation, options);
       assertDeclaredExtensionWorkflow(replayGrant.installation, options.name, options.extensionId);
       const extensionBudget = resolveExtensionResourceBudget(replayGrant.installation, options.budgetCredits);
       const runCredits = extensionBudget?.runCredits ?? options.budgetCredits;
@@ -255,6 +286,7 @@ export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options:
     return { id: runId, queued: prior.status === "queued", durable: true };
   }
   const grant = await readWorkflowGrant(env, { tenantId: options.tenantId, spaceId: options.spaceId, agentId: options.agentId, actorId: options.actorId, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.installationId ? { installationId: options.installationId } : {}) });
+  await assertJobDispatchAuthorization(grant.installation, options);
   if (workflowClass === "company_automation" && (options.projectId || !["owner", "admin"].includes(grant.role))) throw new Error("workflow_owner_required");
   const extensionBudget = workflowClass === "vertical_extension" ? resolveExtensionResourceBudget(grant.installation, options.budgetCredits) : null;
   const runBudgetCredits = extensionBudget?.runCredits ?? options.budgetCredits;

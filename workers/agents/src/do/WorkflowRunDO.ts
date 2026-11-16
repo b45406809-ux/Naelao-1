@@ -1,12 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import { wrapWorkflowBinding } from "@cloudflare/dynamic-workflows";
 import { WORKFLOW_CLASS_POLICIES, isTerminalWorkflow, validateDurableWorkflowIdentity, validateWorkflowPointer,
-  resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, type DurableObjectOperationReceipt,
+  resolveExtensionJobResourceRequest, resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, type DurableJobOperationReceipt, type DurableObjectOperationReceipt,
   type DurableResourceOperationReceipt, type DurableStructuredDataOperationReceipt, type DurableWorkflowIdentity,
   type WorkflowCheckpointPointer, type DurableWorkflowStatus } from "@naelao/agent-sdk";
 import { WorkflowJournal, type WorkflowJournalStorage, type WorkflowJournalRecord } from "../workflows/workflow-state.js";
 import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, resolveApprovedObjectGrant, resolveApprovedStructuredDataGrant,
-  workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+  resolveApprovedJobsGrant, workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowResourceUsage, reportWorkflowStepInfraUsage } from "../workflows/report-infra-usage.js";
 import type { Env } from "../env.js";
 import { readBoundedResponseText } from "../shared/bounded-response-text.js";
@@ -107,7 +107,9 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     let table = typeof params.table === "string" ? params.table : "";
     let approvedResourceGrant: Awaited<ReturnType<typeof resolveApprovedStructuredDataGrant>> = null;
     let approvedObjectGrant: Awaited<ReturnType<typeof resolveApprovedObjectGrant>> = null;
+    let approvedJobsGrant: Awaited<ReturnType<typeof resolveApprovedJobsGrant>> = null;
     let resolvedObject: ReturnType<typeof resolveExtensionObjectResourceRequest> = null;
+    let resolvedJob: ReturnType<typeof resolveExtensionJobResourceRequest> = null;
     let resourceMetering: { unit: "request" | "byte" | "job"; units: number } | null = null;
     if (operation === "extension.resource.structured_data" && identity.workflowClass === "vertical_extension" && identity.definitionId) {
       const grant = await readWorkflowGrant(this.env, identity);
@@ -139,6 +141,21 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       resourceMetering = { unit: resolvedObject.operation.meteringUnit,
         units: new TextEncoder().encode(JSON.stringify(params.input)).byteLength };
     }
+    if (operation === "extension.resource.jobs" && identity.workflowClass === "vertical_extension" && identity.definitionId) {
+      const grant = await readWorkflowGrant(this.env, identity);
+      const requirementId = typeof params.requirement_id === "string" ? params.requirement_id : "";
+      const operationId = typeof params.operation === "string" ? params.operation : "";
+      resolvedJob = resolveExtensionJobResourceRequest({ manifest: grant.installation?.manifest ?? {}, workflowId: identity.definitionId,
+        requirementId, operationId, input: params.input });
+      if (!resolvedJob) throw new Error("workflow_job_resource_request_invalid");
+      approvedJobsGrant = await resolveApprovedJobsGrant(grant.installation, requirementId, operationId, resolvedJob.targetWorkflowId);
+      if (!approvedJobsGrant) throw new Error("workflow_job_resource_owner_grant_required");
+      const declaration = grant.installation?.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "jobs")
+        ?.operations.find(item => item.id === operationId);
+      if (!declaration) throw new Error("workflow_job_resource_operation_not_declared");
+      const inputBytes = new TextEncoder().encode(JSON.stringify(params.input)).byteLength;
+      resourceMetering = { unit: declaration.meteringUnit, units: declaration.meteringUnit === "job" ? 1 : inputBytes };
+    }
     let resourceReceipt: DurableResourceOperationReceipt | undefined;
     if (gadgetOperation
       && identity.workflowClass === "vertical_extension" && identity.projectId && identity.installationId
@@ -157,10 +174,23 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
         manifestSha256: approvedObjectGrant.manifest_sha256, resourceSha256: approvedObjectGrant.resource_sha256,
         installationGeneration: approvedObjectGrant.installation_generation, grantRevision: approvedObjectGrant.revision,
         ...(resourceMetering ? { meteringUnit: resourceMetering.unit, meteredUnits: resourceMetering.units } : {}) };
+    } else if (resolvedJob && approvedJobsGrant && identity.workflowClass === "vertical_extension" && identity.projectId && identity.installationId) {
+      const operationId = String(params.operation) as DurableJobOperationReceipt["operation"];
+      resourceReceipt = { kind: "jobs", installationId: identity.installationId, projectId: identity.projectId, principalId: identity.actorId,
+        requirementId: String(params.requirement_id), operation: operationId,
+        ...(resolvedJob.targetWorkflowId ? { targetWorkflowId: resolvedJob.targetWorkflowId } : {}),
+        ...(resolvedJob.jobId ? { jobIdSha256: await workflowHash(resolvedJob.jobId) } : {}),
+        requestSha256: inputDigest, requestBytes: new TextEncoder().encode(json).byteLength, status: "prepared", preparedAt: Date.now(),
+        manifestSha256: approvedJobsGrant.manifest_sha256, resourceSha256: approvedJobsGrant.resource_sha256,
+        installationGeneration: approvedJobsGrant.installation_generation, grantRevision: approvedJobsGrant.revision,
+        ...(resourceMetering ? { meteringUnit: resourceMetering.unit as "request" | "job", meteredUnits: resourceMetering.units } : {}) };
     }
     const { effect, created } = await this.journal.prepareExternalEffect(key, operation, inputDigest, resourceReceipt);
     if (effect.status === "committed" && effect.result) return readWorkflowArtifact(this.env, identity, effect.result);
-    if (!created) {
+    let activeEffect = effect;
+    if (!created && operation === "extension.resource.jobs" && effect.resourceReceipt?.kind === "jobs") {
+      activeEffect = await this.journal.reopenIdempotentJobEffect(effect);
+    } else if (!created) {
       // A prepared receipt after a crash proves neither failure nor success. Never repeat it.
       throw new Error("workflow_effect_reconciliation_required:" + key);
     }
@@ -191,13 +221,13 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       }
       // Receipt and measured usage must commit together. If the worker dies after the
       // external effect, replay must neither repeat it nor lose its credits at settlement.
-      await this.journal.commitEffect(effect, pointer, credits);
+      await this.journal.commitEffect(activeEffect, pointer, credits);
       await this.authorize(runId);
       return result;
     } catch (error) {
       // Keep any already committed receipt intact even if a later grant check fails.
       const checkpoint = await this.ctx.storage.get<{ status: string }>("effect:" + key);
-      if (checkpoint?.status !== "committed") await this.journal.markIndeterminate(effect);
+      if (checkpoint?.status !== "committed") await this.journal.markIndeterminate(activeEffect);
       if ((await this.journal.read()).cleanupPending) await this.cleanup();
       throw error;
     }

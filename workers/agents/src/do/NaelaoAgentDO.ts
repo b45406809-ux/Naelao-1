@@ -20,7 +20,7 @@ import { resolveExtensionProjectKnowledge, resolveCurrentExtensionKnowledgeRevis
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { createScaleDownProcessor } from "../shared/scaledown.js";
 import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, validateVoiceExtensionStreamEvent, validateVoiceExtensionStreamResponse,
-  resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, validateExtensionResourceValue, type DocumentProcessingGateway } from "@naelao/agent-sdk";
+  resolveExtensionJobResourceRequest, resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, validateExtensionResourceValue, type DocumentProcessingGateway } from "@naelao/agent-sdk";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
 
 type AssistantApprovalPolicySnapshot = {
@@ -54,7 +54,8 @@ type WorkerMergeOutcome = {
 import { DurableObject } from "cloudflare:workers";
 import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
 import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, resolveExtensionGadgetAppId, resolveApprovedObjectGrant,
-  resolveApprovedStructuredDataGrant, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+  resolveApprovedJobsGrant, resolveApprovedStructuredDataGrant, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+import { enqueueExtensionJob, readExtensionJobStatus, type ExtensionJobQueueMessage } from "../workflows/extension-jobs.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { normalizePreferredLanguage } from "@naelao/types";
 import { mintInternalToken, verifyInternalToken, broadcastSpaceEvent, readBoundedRequestText, readBoundedRequestBytes, readBoundedResponseJson, readBoundedResponseText, readResponsePrefixText, RequestBodyTooLargeError } from "@naelao/http";
@@ -1099,6 +1100,8 @@ export interface AgentDOEnv {
   NOTIFICATIONS_WORKER?: Fetcher;
   /** The agents worker's own self-binding for authenticated host operations. */
   AGENTS_WORKER?: Fetcher;
+  /** Existing bounded Agents queue, reused for durable extension job delivery. */
+  AGENT_TICKS?: { send(message: ExtensionJobQueueMessage): Promise<unknown> };
   /** Billing worker — holds Lemon Squeezy creds; the only money-in path (commerce script). */
   BILLING_WORKER?: Fetcher;
   /** MCP hub worker — external-platform connector registry + tool proxy (mcp-connector). */
@@ -1276,6 +1279,38 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       try { validateExtensionResourceValue(resolved.outputSchema, output, "output"); }
       catch { return Response.json({ error_code: "workflow_object_resource_result_exceeded_schema" }, { status: 502 }); }
       return Response.json(output, { headers: { "cache-control": "private, no-store" } });
+    }
+    if (body.operation === "extension.resource.jobs") {
+      if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId
+        || !grant.installation || grant.installation.instance.status !== "active" || grant.installation.instance.scope !== "PROJECT_BOUND")
+        return Response.json({ error_code: "workflow_job_resource_grant_invalid" }, { status: 403 });
+      const requirementId = typeof body.params?.requirement_id === "string" ? body.params.requirement_id : "";
+      const operationId = typeof body.params?.operation === "string" ? body.params.operation : "";
+      const resolved = resolveExtensionJobResourceRequest({ manifest: grant.installation.manifest, workflowId: identity.definitionId,
+        requirementId, operationId, input: body.params?.input });
+      if (!resolved) return Response.json({ error_code: "workflow_job_resource_operation_not_granted" }, { status: 403 });
+      const approvedGrant = await resolveApprovedJobsGrant(grant.installation, requirementId, operationId, resolved.targetWorkflowId);
+      if (!approvedGrant) return Response.json({ error_code: "workflow_job_resource_owner_grant_required" }, { status: 403 });
+      if (operationId === "status") {
+        const output = await readExtensionJobStatus(this.env, { identity, requirementId, jobId: resolved.jobId ?? "" });
+        if (!output) return Response.json({ error_code: "workflow_job_not_found" }, { status: 404 });
+        try { validateExtensionResourceValue(resolved.outputSchema, output, "output"); }
+        catch { return Response.json({ error_code: "workflow_job_status_invalid" }, { status: 502 }); }
+        return Response.json(output, { headers: { "cache-control": "private, no-store" } });
+      }
+      try {
+        const output = await enqueueExtensionJob(this.env, { identity, requirementId, effectKey: body.key,
+          idempotencyKey: body.idempotencyKey, resolved: { targetWorkflowId: resolved.targetWorkflowId!, params: resolved.params!,
+            ...(resolved.deadlineSeconds !== undefined ? { deadlineSeconds: resolved.deadlineSeconds } : {}) },
+          installation: grant.installation, grant: approvedGrant });
+        try { validateExtensionResourceValue(resolved.outputSchema, output, "output"); }
+        catch { return Response.json({ error_code: "workflow_job_enqueue_result_invalid" }, { status: 502 }); }
+        return Response.json(output, { headers: { "cache-control": "private, no-store" } });
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "workflow_job_enqueue_failed";
+        const status = code.includes("admission_limit") ? 429 : code.includes("unavailable") ? 503 : 409;
+        return Response.json({ error_code: code.slice(0, 100) }, { status });
+      }
     }
     if (["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(body.operation)) {
       if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId || !identity.capabilities.includes(body.operation))

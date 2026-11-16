@@ -91,7 +91,15 @@ export interface DurableObjectOperationReceipt {
   installationGeneration?: number; grantRevision?: number; meteringUnit?: "request" | "byte" | "job"; meteredUnits?: number;
   responseSha256?: string; responseBytes?: number; meteredCredits?: number; preparedAt: number; completedAt?: number; uncertainAt?: number;
 }
-export type DurableResourceOperationReceipt = DurableStructuredDataOperationReceipt | DurableObjectOperationReceipt;
+/** Job receipts contain hashes and exact grant identity; queued arguments remain in the scoped R2 payload and child workflow. */
+export interface DurableJobOperationReceipt {
+  kind: "jobs"; installationId: string; projectId: string; principalId: string; requirementId: string;
+  operation: "enqueue" | "status"; targetWorkflowId?: string; jobIdSha256?: string; requestSha256: string; requestBytes: number;
+  status: "prepared" | "completed" | "unknown"; manifestSha256?: string; resourceSha256?: string;
+  installationGeneration?: number; grantRevision?: number; meteringUnit?: "request" | "job"; meteredUnits?: number;
+  responseSha256?: string; responseBytes?: number; meteredCredits?: number; preparedAt: number; completedAt?: number; uncertainAt?: number;
+}
+export type DurableResourceOperationReceipt = DurableStructuredDataOperationReceipt | DurableObjectOperationReceipt | DurableJobOperationReceipt;
 export interface DurableEffectRecord {
   key: string; operation: string; inputDigest: string; status: "prepared" | "committed" | "indeterminate";
   result?: WorkflowCheckpointPointer; providerReceipt?: string; resourceReceipt?: DurableResourceOperationReceipt;

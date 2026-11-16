@@ -70,6 +70,29 @@ describe("WorkflowJournal usage accounting", () => {
     expect((fixture.values.get("run") as { usedCredits: number }).usedCredits).toBe(0);
   });
 
+  it("reopens an uncertain job broker receipt for its D1 idempotency key but never reopens other effects", async () => {
+    const fixture = storageFixture();
+    const journal = new WorkflowJournal(fixture.storage);
+    const { effect } = await journal.prepareExternalEffect("job-step", "extension.resource.jobs", "digest-job", {
+      kind: "jobs", installationId: "install-a", projectId: "project-a", principalId: "actor-a", requirementId: "background",
+      operation: "enqueue", targetWorkflowId: "process_job", requestSha256: "c".repeat(64), requestBytes: 128,
+      status: "prepared", preparedAt: Date.now(),
+    });
+    await journal.markIndeterminate(effect);
+    const reopened = await journal.reopenIdempotentJobEffect(effect);
+    expect(reopened).toMatchObject({ status: "prepared", resourceReceipt: { kind: "jobs", status: "prepared" } });
+    expect((await journal.read()).activeEffects).toEqual(["job-step"]);
+    await journal.commitEffect(reopened, { schema: 1, r2_key: "job-result", sha256: "f".repeat(64), bytes: 2 }, 0.25);
+    expect((await journal.read()).usageUncertain).toBe(false);
+
+    const { effect: objectEffect } = await journal.prepareExternalEffect("object-step", "extension.resource.objects", "digest-object", {
+      kind: "objects", installationId: "install-a", projectId: "project-a", principalId: "actor-a", requirementId: "cache",
+      objectKeySha256: "d".repeat(64), operation: "put", requestSha256: "e".repeat(64), requestBytes: 8,
+      status: "prepared", preparedAt: Date.now(),
+    });
+    await expect(journal.reopenIdempotentJobEffect(objectEffect)).rejects.toThrow("workflow_effect_reconciliation_required");
+  });
+
   it("admits vertical extension effects only against the reserved run budget", async () => {
     const fixture = storageFixture();
     const run = fixture.values.get("run") as WorkflowJournalRecord;

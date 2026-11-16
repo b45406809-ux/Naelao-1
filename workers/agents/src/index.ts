@@ -69,6 +69,7 @@ import { isCronDue } from "@naelao/events";
 import { isWithinScheduledQuietHours } from "@naelao/types";
 import { claimScheduledJobDispatch, releaseScheduledJobDispatch } from "./scheduled-job-dispatch.js";
 import { claimProjectStewardRun, finishProjectStewardRun } from "./project-steward-dispatch.js";
+import { enqueueExtensionJobOutbox, handleExtensionJobTick, type ExtensionJobEnvironment } from "./workflows/extension-jobs.js";
 import { rankProjectStewardReviews } from "../../spaces/src/project-steward.js";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { compileDynamicCode } from "./script-engine/dynamic-code.js";
@@ -553,7 +554,7 @@ export interface AgentsEnv extends Cloudflare.Env {
 // runChannelHeartbeats + runScheduledJobs) that broke the Workers 1000-subrequest limit at a
 // few hundred active spaces. jobId/connectorName are only meaningful for their own kind.
 interface AgentTickMessage {
-  kind: "heartbeat" | "scheduled_job" | "connector_poll" | "daily_digest" | "project_steward_review";
+  kind: "heartbeat" | "scheduled_job" | "connector_poll" | "daily_digest" | "project_steward_review" | "extension_job";
   spaceId: string;
   tenantId: string;
   jobId?: string;
@@ -10399,6 +10400,9 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
       console.error(`[agent-ticks] sendBatch failed (messages ${i}-${i + chunk.length}):`, (err as Error).message);
     }
   }
+  await enqueueExtensionJobOutbox(env as unknown as ExtensionJobEnvironment, 100).catch(error => {
+    console.warn("[agent-ticks] extension job outbox deferred:", (error as Error).message);
+  });
 }
 
 // ── Hourly agent-tick fan-out — consumer phase ────────────────────────────────────────────
@@ -10480,6 +10484,12 @@ async function isProjectRoutineEligible(env: AgentsEnv, row: { space_id: string;
 
 async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<void> {
   if (msg.kind === "scheduled_job" && !msg.jobId) return;
+  if (msg.kind === "extension_job") {
+    if (!msg.jobId) return;
+    await handleExtensionJobTick(env as unknown as ExtensionJobEnvironment, { kind: "extension_job", jobId: msg.jobId,
+      tenantId: msg.tenantId, spaceId: msg.spaceId });
+    return;
+  }
   if (msg.kind === "connector_poll" && !msg.connectorName) return;
   if (!await isActiveTenantSpace(env, msg.spaceId, msg.tenantId)) return;
   if (msg.kind === "project_steward_review") {

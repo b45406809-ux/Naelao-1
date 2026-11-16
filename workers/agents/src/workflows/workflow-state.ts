@@ -20,6 +20,7 @@ export interface WorkflowJournalRecord extends DurableWorkflowRecord {
   effectCount: number;
   activeEffects: string[];
   usageUncertain: boolean;
+  uncertainEffects?: string[];
   launched: boolean;
   cleanupPending: boolean;
 }
@@ -47,7 +48,7 @@ export class WorkflowJournal {
         if (JSON.stringify(oldIdentity) !== JSON.stringify(newIdentity) || existing.inputDigest !== input.sha256) throw new Error("workflow_start_key_conflict");
         return existing;
       }
-      const record: WorkflowJournalRecord = { identity, input, inputDigest: input.sha256, ...budget, usedCredits: 0, artifactKeys: [input.r2_key], artifactBytes: input.bytes, effectCount: 0, activeEffects: [], usageUncertain: false, status: "queued", attempt: 1, updatedAt: Date.now(), launched: false, cleanupPending: false };
+      const record: WorkflowJournalRecord = { identity, input, inputDigest: input.sha256, ...budget, usedCredits: 0, artifactKeys: [input.r2_key], artifactBytes: input.bytes, effectCount: 0, activeEffects: [], uncertainEffects: [], usageUncertain: false, status: "queued", attempt: 1, updatedAt: Date.now(), launched: false, cleanupPending: false };
       await storage.put("run", record);
       return record;
     });
@@ -163,9 +164,12 @@ export class WorkflowJournal {
       if (!Number.isFinite(usedCredits)) throw new Error("workflow_usage_overflow");
       const resourceReceipt = effect.resourceReceipt ? { ...effect.resourceReceipt, status: "completed" as const,
         responseSha256: result.sha256, responseBytes: result.bytes, meteredCredits: credits, completedAt: Date.now() } : undefined;
+      const uncertainEffects = (run.uncertainEffects ?? []).filter((key) => key !== effect.key);
+      const preserveLegacyUncertainty = run.usageUncertain === true && run.uncertainEffects === undefined;
       await storage.put("effect:" + effect.key, { ...effect, status: "committed", result, usageCredits: credits,
         ...(resourceReceipt ? { resourceReceipt } : {}) });
-      await storage.put("run", { ...run, activeEffects, usedCredits, updatedAt: Date.now() });
+      await storage.put("run", { ...run, activeEffects, uncertainEffects,
+        usageUncertain: preserveLegacyUncertainty || uncertainEffects.length > 0, usedCredits, updatedAt: Date.now() });
     });
   }
   async markIndeterminate(effect: DurableEffectRecord): Promise<void> {
@@ -175,7 +179,29 @@ export class WorkflowJournal {
       if (!current || !run || current.status !== "prepared") return;
       await storage.put("effect:" + effect.key, { ...current, status: "indeterminate",
         ...(current.resourceReceipt ? { resourceReceipt: { ...current.resourceReceipt, status: "unknown" as const, uncertainAt: Date.now() } } : {}) });
-      await storage.put("run", { ...run, activeEffects: (run.activeEffects ?? []).filter((key) => key !== effect.key), usageUncertain: true, updatedAt: Date.now() });
+      const uncertainEffects = [...new Set([...(run.uncertainEffects ?? []), effect.key])];
+      await storage.put("run", { ...run, activeEffects: (run.activeEffects ?? []).filter((key) => key !== effect.key),
+        uncertainEffects, usageUncertain: true, updatedAt: Date.now() });
+    });
+  }
+  /** Reopen only brokered jobs, whose host ledger deduplicates the exact run/step idempotency key. */
+  async reopenIdempotentJobEffect(effect: DurableEffectRecord): Promise<DurableEffectRecord> {
+    if (effect.operation !== "extension.resource.jobs" || effect.resourceReceipt?.kind !== "jobs")
+      throw new Error("workflow_effect_reconciliation_required:" + effect.key);
+    return this.storage.transaction(async (storage) => {
+      const current = await storage.get<DurableEffectRecord>("effect:" + effect.key);
+      const run = await storage.get<WorkflowJournalRecord>("run");
+      if (!current || !run || current.operation !== effect.operation || current.inputDigest !== effect.inputDigest
+        || current.resourceReceipt?.kind !== "jobs" || !["prepared", "indeterminate"].includes(current.status)
+        || isTerminalWorkflow(run.status) || run.cleanupPending)
+        throw new Error("workflow_effect_reconciliation_required:" + effect.key);
+      const activeEffects = run.activeEffects ?? [];
+      if (!activeEffects.includes(effect.key) && activeEffects.length >= 128) throw new Error("workflow_effect_concurrency_limit");
+      const reopened: DurableEffectRecord & { startedAt: number } = { ...current, status: "prepared", startedAt: Date.now(),
+        resourceReceipt: { ...current.resourceReceipt, status: "prepared", preparedAt: Date.now() } };
+      await storage.put("effect:" + effect.key, reopened);
+      if (!activeEffects.includes(effect.key)) await storage.put("run", { ...run, activeEffects: [...activeEffects, effect.key], updatedAt: Date.now() });
+      return reopened;
     });
   }
   async expireStaleEffects(before: number): Promise<void> {
@@ -183,16 +209,18 @@ export class WorkflowJournal {
       const run = await storage.get<WorkflowJournalRecord>("run");
       if (!run) throw new Error("workflow_not_found");
       const remaining: string[] = [];
-      let usageUncertain = run.usageUncertain ?? false;
+      const uncertainEffects = [...(run.uncertainEffects ?? [])];
       for (const key of run.activeEffects ?? []) {
         const effect = await storage.get<DurableEffectRecord & { startedAt?: number }>("effect:" + key);
         if (effect?.status === "prepared" && typeof effect.startedAt === "number" && effect.startedAt <= before) {
           await storage.put("effect:" + key, { ...effect, status: "indeterminate",
             ...(effect.resourceReceipt ? { resourceReceipt: { ...effect.resourceReceipt, status: "unknown" as const, uncertainAt: Date.now() } } : {}) });
-          usageUncertain = true;
+          if (!uncertainEffects.includes(key)) uncertainEffects.push(key);
         } else if (effect?.status === "prepared") remaining.push(key);
       }
-      await storage.put("run", { ...run, activeEffects: remaining, usageUncertain, updatedAt: Date.now() });
+      const preserveLegacyUncertainty = run.usageUncertain === true && run.uncertainEffects === undefined;
+      await storage.put("run", { ...run, activeEffects: remaining, uncertainEffects,
+        usageUncertain: preserveLegacyUncertainty || uncertainEffects.length > 0, updatedAt: Date.now() });
     });
   }
   async retry(maxAttempts: number): Promise<WorkflowJournalRecord> {

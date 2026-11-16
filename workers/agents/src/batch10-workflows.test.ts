@@ -13,6 +13,9 @@ describe("Batch 10 workflow primitives", () => {
     expect(compiled.source).toContain("await control.authorize(identity.runId)");
     expect(compiled.source).toContain("resources:Object.freeze({execute:(stepKey,requirementId,operation,input)=>control.effect");
     expect(compiled.source).toContain('"extension.resource.objects"');
+    expect(compiled.source).toContain('"extension.resource.jobs"');
+    expect(compiled.source).toContain("paramsJson:input.params===undefined?undefined:JSON.stringify(input.params)");
+    expect(compiled.source).toContain('status:(stepKey,requirementId,jobId)=>control.effect');
   });
   it("rejects sessionful authored workflows", async () => {
     await expect(compileWorkflowEntrypoint("export async function execute(step: X, ctx: X) { return ctx.threads; }")).rejects.toThrow(/conversational/);

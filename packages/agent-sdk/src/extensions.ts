@@ -106,6 +106,11 @@ export interface ExtensionResourceClient {
 export interface ExtensionWorkflowResources {
   execute<T = unknown>(stepKey: string, requirementId: string, operation: string, input: unknown): Promise<T>;
   objects: { execute<T = unknown>(stepKey: string, requirementId: string, operation: "get" | "put" | "delete", input: unknown): Promise<T> };
+  jobs: {
+    enqueue<T = { jobId: string; status: string }>(stepKey: string, requirementId: string,
+      input: { workflowId: string; params?: Record<string, unknown>; deadlineSeconds?: number }): Promise<T>;
+    status<T = { jobId: string; status: string; attempt: number }>(stepKey: string, requirementId: string, jobId: string): Promise<T>;
+  };
 }
 /** Packages can require owners to publish a validated settings draft before it affects runtime. */
 export type ExtensionSettingsActivation = "owner_publish";
