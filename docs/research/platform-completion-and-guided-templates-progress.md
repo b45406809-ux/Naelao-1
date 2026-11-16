@@ -1,5 +1,9 @@
 # Platform completion and guided templates progress
 
+## Cross-plan code checkpoint — 2026-11-16 (delegated worker runtime isolation; `21de8512` pushed)
+
+`workers/...` delegation branches now get a distinct exact-branch ToolSandbox/DynamicSandbox object, avoiding reuse of another branch's warm process and private container disk. Main and ordinary feature branches remain stable; model-race branches were already isolated. Code `21de85123e85ead3aa1f7c2b107c0aa6ce890973` is remote-verified. Routing/execution-ladder tests **27/27**, Agents typecheck and diff check pass. This does not pin runtime mounts to exact Coordinator revisions or establish deployed cache/credential/network isolation. Exact next action: bind branch runtime to Coordinator base/head revision and fail closed on stale/wrong head; continue remaining PW/TBR/S/U/P/K/EP/AP gaps.
+
 ## Cross-plan code checkpoint — 2026-11-16 (AgentTask recovery status; `fc3318bb` pushed)
 
 Authorized durable task list/detail responses now carry a scope-matched, content-free last-step checkpoint receipt; Shell shows its time/state and warns about work after the checkpoint and unsaved memory. Tests **28/28** across recovery summary, AgentTask checkpoints, WorkflowJournal and WorkflowRunDO; Agents and Shell typechecks and diff check pass. `fc3318bb702d355a21998b22651761edd591d307` is remote-verified. No deployed recovery, browser, process-memory recovery or runtime-isolation acceptance ran. Exact next action: trace/implement PW branch mount and runtime isolation at actual worker launch; continue all other open S/U/P/PW/K/EP/TBR/AP code gaps.

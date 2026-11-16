@@ -1,10 +1,16 @@
 # Resumable workers, durable workflows and branches progress
 
+## Latest code checkpoint — 2026-11-16 (delegated branch runtime isolation; `21de8512` pushed)
+
+The actual code-runner and lifecycle callers both use `sandboxInstanceName`. That router now assigns distinct exact-branch ToolSandbox/DynamicSandbox DO identities for delegated `workers/...` branches, isolating their warm process and private `/workspace` disk. Main and ordinary feature branches retain the existing shared project runtime; `race/...` remains isolated. Code `21de85123e85ead3aa1f7c2b107c0aa6ce890973` is remote-verified. Routing/execution-ladder tests **27/27**, Agents typecheck and diff check pass. This is local implementation evidence; no deployed container test ran. It does not bind the runtime to an immutable WorkspaceCoordinator head/revision, prove provider-level cache/credential/network isolation or restore unsaved process memory.
+
+Exact next action: trace worker branch creation to Coordinator head and bind each worker runtime to the authorized exact base/head revision. Ensure materialization reads only the immutable pinned revision and stale/wrong branch identities fail closed; keep publication behind checked CAS. Add stale-head, wrong-branch, replay and concurrency tests, then continue TBR02 and other S/U/P/PW/K/EP/AP code gaps. Rollouts remain disabled.
+
 ## Latest code checkpoint — 2026-11-16 (authorized AgentTask recovery status; `fc3318bb` pushed)
 
 The existing authorized task list/detail route now enriches each task from its tenant/Space/run-scoped WorkflowRunDO journal after its session/Project access checks. The response is content-free and omits private R2 keys/results; it reports last completed step metadata, digest prefix/size, and whether the workflow journal advanced after the checkpoint. A scope mismatch or unavailable journal produces no checkpoint data. Shell displays this receipt and warns that unsaved process memory is not recoverable. Code `fc3318bb702d355a21998b22651761edd591d307` is remote-verified. Recovery summary + AgentTask checkpoint + WorkflowJournal + WorkflowRunDO tests **28/28**, Agents/Shell typechecks and diff check pass. These are local tests only; no deployed Workflow/DO/R2, browser or runtime-isolation acceptance ran. It neither recovers model/process memory nor proves branch isolation.
 
-Exact next action: trace the actual worker/runtime allocation and launch callers to determine whether exact branch and revision are mounted and isolate process, filesystem, dependencies, caches, ports and credentials. Implement the smallest provable independent isolation fence; fail closed or queue when the runtime contract cannot guarantee it. Continue remaining PW01–PW06 and TBR02/S/U/P/K/EP/AP code gaps. Preserve untracked `infra/scripts/__pycache__/` and keep rollout disabled.
+The previously traced runtime isolation gap is partially implemented above for delegated worker branches. Exact branch/head revision binding, complete provider isolation and deployed acceptance remain open.
 
 ## Latest code checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
 
