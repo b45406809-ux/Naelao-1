@@ -130,7 +130,7 @@ import { isWorkspaceManualValidationCommand, publishWorkspaceManualResolution, r
 import { withWorkerMergeConflicts } from "../workspace/worker-merge-report.js";
 import { runCheckedWorkerIntegration, WORKER_VALIDATION_CONFIG_PATH,
   writeWorkerIntegrationMetric, type WorkerIntegrationHead, type WorkerIntegrationConflict,
-  type WorkerIntegrationValidationReceipt } from "../workspace/worker-integration-validation.js";
+  type WorkerIntegrationPublication, type WorkerIntegrationValidationReceipt } from "../workspace/worker-integration-validation.js";
 import { withWorkspaceManifestRead } from "../script-engine/workspace-r2-compat.js";
 import {
   buildConversationContext,
@@ -1918,6 +1918,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_sub_agents_parent ON sub_agents(parent_run_id)`);
+    // A validated worker publication has one durable linearization point in the parent DO.
+    // Cancellation before this exact attempt is authorized blocks the Coordinator call; after
+    // authorization, cancellation cannot roll back an accepted cross-DO commit, so its outcome
+    // receipt is retained separately from the worker's terminal status.
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS worker_publication_permits (
+      execution_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, worker_attempt INTEGER NOT NULL,
+      target_branch TEXT NOT NULL, target_commit_id TEXT NOT NULL, target_revision INTEGER NOT NULL,
+      target_manifest_hash TEXT NOT NULL, candidate_branch TEXT NOT NULL, candidate_commit_id TEXT NOT NULL,
+      candidate_manifest_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('authorized','published','not_published','uncertain')),
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    )`);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_worker_publication_permits_worker ON worker_publication_permits(worker_id,worker_attempt,updated_at)`);
     // Keep the durable goal state and dispatch intent in SQLite so their transition can be
     // committed in one transaction before any worker-side effect is attempted.
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS goal_dag_journals (
@@ -4018,10 +4031,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           body: JSON.stringify({ branch, metadata }) }));
         if (!response.ok) throw new Error(`worker_integration_reconcile_failed:${response.status}`);
       };
-      const readHead = async (branch: string): Promise<WorkerIntegrationHead | null> => {
-        assertWorkerActive();
+      const readHead = async (branch: string, afterPublicationPermit = false): Promise<WorkerIntegrationHead | null> => {
+        if (!afterPublicationPermit) assertWorkerActive();
         if (!await canWrite()) return null;
-        assertWorkerActive();
+        if (!afterPublicationPermit) assertWorkerActive();
         const reconciledResponse = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/reconcile`, { method: "POST", headers,
           body: JSON.stringify({ branch, metadata }) }));
         if (!reconciledResponse.ok) return null;
@@ -4072,6 +4085,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const rows = await this.ctx.storage.get<WorkerIntegrationValidationReceipt[]>(key) ?? [];
         await this.ctx.storage.put(key, [...rows.filter(item => item.executionId !== receipt.executionId), receipt].slice(-10));
       };
+      const recordPublicationPermitOutcome = (receipt: WorkerIntegrationValidationReceipt) => {
+        const permit = this.ctx.storage.sql.exec<{ worker_id: string; worker_attempt: number; target_branch: string;
+          target_commit_id: string; target_revision: number; target_manifest_hash: string; candidate_branch: string;
+          candidate_commit_id: string; candidate_manifest_hash: string; status: string }>(
+          "SELECT worker_id,worker_attempt,target_branch,target_commit_id,target_revision,target_manifest_hash,candidate_branch,candidate_commit_id,candidate_manifest_hash,status FROM worker_publication_permits WHERE execution_id=?",
+          receipt.executionId).toArray()[0];
+        if (!permit) return;
+        if (permit.worker_id !== subId || permit.worker_attempt !== attempt || receipt.status !== "passed" ||
+            receipt.targetBranch !== permit.target_branch || receipt.targetCommitId !== permit.target_commit_id ||
+            receipt.targetRevision !== permit.target_revision || receipt.targetManifestHash !== permit.target_manifest_hash ||
+            receipt.candidateBranch !== permit.candidate_branch || receipt.candidateCommitId !== permit.candidate_commit_id ||
+            receipt.manifestHash !== permit.candidate_manifest_hash || permit.status !== "authorized" && permit.status !== receipt.publicationStatus) {
+          throw new Error("worker_publication_receipt_scope_mismatch");
+        }
+        if (permit.status === "authorized") {
+          const updated = this.ctx.storage.sql.exec(`UPDATE worker_publication_permits SET status=?,updated_at=? WHERE execution_id=? AND status='authorized'`,
+            receipt.publicationStatus, Date.now(), receipt.executionId);
+          if (updated.rowsWritten !== 1) throw new Error("worker_publication_receipt_race");
+        }
+      };
       const storedReceipts = await this.ctx.storage.get<WorkerIntegrationValidationReceipt[]>(`worker-integration-receipts:${subId}`) ?? [];
       const priorPublished = storedReceipts.find(item => item.sourceBranch === workerBranch && item.sourceCommitId === pinnedSource.commitId &&
         item.targetBranch === targetBranch && item.publicationStatus === "published");
@@ -4081,11 +4114,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (publicationCrash?.candidateCommitId === pinnedTarget.commitId && publicationCrash.manifestHash === pinnedTarget.manifestHash) {
         const confirmed = { ...publicationCrash, publicationStatus: "published" as const };
         await saveIntegrationReceipt(confirmed);
+        recordPublicationPermitOutcome(confirmed);
         return { conflicts: [], validationReceipts: [confirmed], published: true };
       }
       if (publicationCrash && (publicationCrash.targetCommitId !== pinnedTarget.commitId || publicationCrash.targetRevision !== pinnedTarget.revision ||
           publicationCrash.targetManifestHash !== pinnedTarget.manifestHash)) {
-        const uncertain = { ...publicationCrash, status: "uncertain" as const, publicationStatus: "uncertain" as const,
+        const uncertain = { ...publicationCrash, publicationStatus: "uncertain" as const,
           reason: "worker_integration_interrupted_publication_outcome_uncertain" };
         await saveIntegrationReceipt(uncertain);
         return { conflicts: [{ path: WORKER_VALIDATION_CONFIG_PATH, reason: uncertain.reason }], validationReceipts: [uncertain], published: false };
@@ -4101,14 +4135,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           if (currentTarget?.commitId === receipt.candidateCommitId && currentTarget.manifestHash === receipt.manifestHash) {
             receipt = { ...receipt, publicationStatus: "published" };
             await saveIntegrationReceipt(receipt);
+            recordPublicationPermitOutcome(receipt);
             const result: WorkerMergeOutcome = { conflicts: [], validationReceipts: [receipt], published: true };
             await this.ctx.storage.put(resultKey, { state: "complete", result });
             return result;
           }
           if (currentTarget?.commitId !== receipt.targetCommitId || currentTarget.revision !== receipt.targetRevision ||
               currentTarget.manifestHash !== receipt.targetManifestHash) {
-            receipt = { ...receipt, status: "uncertain", publicationStatus: "uncertain", reason: "worker_integration_interrupted_publication_outcome_uncertain" };
+            receipt = { ...receipt, publicationStatus: "uncertain", reason: "worker_integration_interrupted_publication_outcome_uncertain" };
             await saveIntegrationReceipt(receipt);
+            recordPublicationPermitOutcome(receipt);
           }
         }
         return { conflicts: [{ path: WORKER_VALIDATION_CONFIG_PATH, reason: receipt?.reason ?? "worker_integration_interrupted" }],
@@ -4238,19 +4274,74 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               return finish({ status: "uncertain", durationMs: Date.now() - startedAt, reason: "native_execution_outcome_uncertain" });
             }
           },
-          publishCandidate: async ({ targetBranch: target, candidateBranch: candidate, expectedTarget, expectedSourceCommitId }) => {
-            assertWorkerActive();
+          authorizePublication: async (publication: WorkerIntegrationPublication) => {
             if (!await canWrite()) throw new Error("worker_access_revoked");
-            assertWorkerActive();
-            const response = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/merge`, { method: "POST", headers,
-              body: JSON.stringify({ target, source: candidate, expected_head: expectedTarget.commitId, expected_source: expectedSourceCommitId,
-                expected_workspace_revision: expectedTarget.revision, expected_workspace_manifest_hash: expectedTarget.manifestHash, metadata }) }));
-            if (!response.ok) throw new Error(`worker_candidate_publication_failed:${response.status}`);
-            assertWorkerActive();
+            const now = Date.now();
+            let authorized = false;
+            if (typeof this.ctx.storage.transactionSync !== "function") throw new Error("worker_publication_permit_storage_unavailable");
+            this.ctx.storage.transactionSync(() => {
+              // Bound completed receipts. Unresolved permits remain so an interrupted network
+              // response is never replayed as if publication had definitely failed.
+              this.ctx.storage.sql.exec("DELETE FROM worker_publication_permits WHERE status!='authorized' AND updated_at<?", now - 30 * 24 * 60 * 60 * 1000);
+              const worker = this.ctx.storage.sql.exec<{ status: string; attempt: number }>(
+                "SELECT status,attempt FROM sub_agents WHERE id=?", subId).toArray()[0];
+              if (worker?.status !== "running" || worker.attempt !== attempt) return;
+              const existing = this.ctx.storage.sql.exec<{ worker_id: string; worker_attempt: number; target_branch: string;
+                target_commit_id: string; target_revision: number; target_manifest_hash: string; candidate_branch: string;
+                candidate_commit_id: string; candidate_manifest_hash: string; status: string }>(
+                "SELECT worker_id,worker_attempt,target_branch,target_commit_id,target_revision,target_manifest_hash,candidate_branch,candidate_commit_id,candidate_manifest_hash,status FROM worker_publication_permits WHERE execution_id=?",
+                publication.executionId).toArray()[0];
+              if (existing) {
+                authorized = existing.status === "authorized" && existing.worker_id === subId && existing.worker_attempt === attempt &&
+                  existing.target_branch === publication.targetBranch && existing.target_commit_id === publication.expectedTarget.commitId &&
+                  existing.target_revision === publication.expectedTarget.revision && existing.target_manifest_hash === publication.expectedTarget.manifestHash &&
+                  existing.candidate_branch === publication.candidateBranch && existing.candidate_commit_id === publication.expectedSourceCommitId &&
+                  existing.candidate_manifest_hash === publication.candidateManifestHash;
+                return;
+              }
+              const count = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM worker_publication_permits").toArray()[0]?.count ?? 0;
+              if (count >= 512) return;
+              this.ctx.storage.sql.exec(`INSERT INTO worker_publication_permits (
+                execution_id,worker_id,worker_attempt,target_branch,target_commit_id,target_revision,target_manifest_hash,
+                candidate_branch,candidate_commit_id,candidate_manifest_hash,status,created_at,updated_at
+              ) VALUES (?,?,?,?,?,?,?,?,?,?,'authorized',?,?)`, publication.executionId, subId, attempt,
+                publication.targetBranch, publication.expectedTarget.commitId, publication.expectedTarget.revision,
+                publication.expectedTarget.manifestHash, publication.candidateBranch, publication.expectedSourceCommitId,
+                publication.candidateManifestHash, now, now);
+              authorized = true;
+            });
+            if (!authorized) throw new Error("worker_cancelled_or_publication_permit_unavailable");
           },
+          publishCandidate: async (publication: WorkerIntegrationPublication) => {
+            const permit = this.ctx.storage.sql.exec<{ worker_id: string; worker_attempt: number; target_branch: string;
+              target_commit_id: string; target_revision: number; target_manifest_hash: string; candidate_branch: string;
+              candidate_commit_id: string; candidate_manifest_hash: string; status: string }>(
+              "SELECT worker_id,worker_attempt,target_branch,target_commit_id,target_revision,target_manifest_hash,candidate_branch,candidate_commit_id,candidate_manifest_hash,status FROM worker_publication_permits WHERE execution_id=?",
+              publication.executionId).toArray()[0];
+            if (!permit || permit.status !== "authorized" || permit.worker_id !== subId || permit.worker_attempt !== attempt ||
+                permit.target_branch !== publication.targetBranch || permit.target_commit_id !== publication.expectedTarget.commitId ||
+                permit.target_revision !== publication.expectedTarget.revision || permit.target_manifest_hash !== publication.expectedTarget.manifestHash ||
+                permit.candidate_branch !== publication.candidateBranch || permit.candidate_commit_id !== publication.expectedSourceCommitId ||
+                permit.candidate_manifest_hash !== publication.candidateManifestHash) throw new Error("worker_publication_permit_invalid");
+            // The parent DO permit is the cancellation linearization point. Recheck current
+            // Project authorization, but do not reject only because the worker became terminal
+            // after this exact publication attempt was durably authorized.
+            if (!await canWrite()) throw new Error("worker_access_revoked");
+            const response = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/merge`, { method: "POST", headers,
+              body: JSON.stringify({ target: publication.targetBranch, source: publication.candidateBranch,
+                expected_head: publication.expectedTarget.commitId, expected_source: publication.expectedSourceCommitId,
+                expected_workspace_revision: publication.expectedTarget.revision,
+                expected_workspace_manifest_hash: publication.expectedTarget.manifestHash, metadata }) }));
+            if (!response.ok) throw new Error(`worker_candidate_publication_failed:${response.status}`);
+          },
+          readPublicationHead: async branch => readHead(branch, true),
           saveReceipt: async receipt => {
-            assertWorkerActive();
+            const permit = this.ctx.storage.sql.exec<{ execution_id: string }>(
+              "SELECT execution_id FROM worker_publication_permits WHERE execution_id=?",
+              receipt.executionId).toArray()[0];
+            if (!permit) assertWorkerActive();
             await saveIntegrationReceipt(receipt);
+            if (permit) recordPublicationPermitOutcome(receipt);
           },
           recordMetric: metric => writeWorkerIntegrationMetric(this.env.ANALYTICS, metric),
         });
@@ -6079,13 +6170,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }));
   }
 
-  private receiveFromSubAgentImpl(id: string): Promise<unknown> {
+  private async receiveFromSubAgentImpl(id: string): Promise<unknown> {
     const rows = this.ctx.storage.sql.exec(`SELECT * FROM sub_agents WHERE id = ?`, id).toArray() as Array<{
       id: string; status: string; result: string | null; error: string | null; tokens_used: number; progress_note: string | null; checkpoint_json: string | null; workspace_branch: string | null; attempt: number;
     }>;
     const row = rows[0];
-    if (!row) return Promise.resolve({ ok: false, error: "unknown sub-agent id" });
-    return Promise.resolve({
+    if (!row) return { ok: false, error: "unknown sub-agent id" };
+    const validationReceipts = (await this.ctx.storage.get<WorkerIntegrationValidationReceipt[]>(`worker-integration-receipts:${id}`) ?? []).slice(-10);
+    const publicationAttempts = this.ctx.storage.sql.exec<{ worker_attempt: number; target_branch: string; target_revision: number; status: string; updated_at: number }>(
+      "SELECT worker_attempt,target_branch,target_revision,status,updated_at FROM worker_publication_permits WHERE worker_id=? ORDER BY updated_at DESC LIMIT 10", id
+    ).toArray().map(attempt => ({ attempt: attempt.worker_attempt, targetBranch: attempt.target_branch,
+      targetRevision: attempt.target_revision, status: attempt.status === "authorized" ? "outcome_unknown" : attempt.status,
+      updatedAt: new Date(attempt.updated_at).toISOString() }));
+    return {
       ok: row.status === "done",
       status: row.status,
       output: row.result ? safeJsonParse(row.result) : undefined,
@@ -6095,7 +6192,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       checkpoint: row.checkpoint_json ? safeJsonParse(row.checkpoint_json) : undefined,
       workspace_branch: row.workspace_branch ?? undefined,
       attempt: row.attempt,
-    });
+      ...(validationReceipts.length || publicationAttempts.length ? { workspaceIntegration: {
+        validationReceipts,
+        publicationAttempts,
+      } } : {}),
+    };
   }
 
   private terminateSubAgentImpl(id: string): Promise<void> {

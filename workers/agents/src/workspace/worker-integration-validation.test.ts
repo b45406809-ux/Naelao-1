@@ -11,7 +11,7 @@ import {
 const hash = (character: string) => character.repeat(64);
 const commit = (character: string) => character.repeat(40);
 
-function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-advanced" | "validator-changed" | "validation-mutated" | "cancel-during-validation" = "pass", config: string | null = '{"schema_version":1,"command":"pnpm test"}') {
+function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-advanced" | "validator-changed" | "validation-mutated" | "cancel-during-validation" | "cancel-before-publication-permit" | "cancel-after-publication-permit" | "publication-outcome-unknown" = "pass", config: string | null = '{"schema_version":1,"command":"pnpm test"}') {
   const target: WorkerIntegrationHead = run === "target-advanced"
     ? { branch: "main", commitId: commit("c"), revision: 3, manifestHash: hash("c") }
     : { branch: "main", commitId: commit("a"), revision: 2, manifestHash: hash("a") };
@@ -29,10 +29,19 @@ function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-adva
     branchBase: { parentBranch: candidate.branch, revision: candidate.revision, manifestHash: candidate.manifestHash } };
   const heads = new Map<string, WorkerIntegrationHead>([[target.branch, target], [source.branch, source]]);
   const publishCandidate = vi.fn(async () => {
+    if (run === "cancel-after-publication-permit") active = false;
+    if (run === "publication-outcome-unknown") {
+      heads.set(target.branch, { ...target, commitId: commit("d"), revision: target.revision + 1, manifestHash: hash("d") });
+      throw new Error("response outcome unavailable");
+    }
     heads.set(target.branch, { ...candidate, branch: target.branch, revision: target.revision + 1 });
   });
   const saveReceipt = vi.fn(async () => {});
   let active = true;
+  const authorizePublication = vi.fn(async () => {
+    if (run === "cancel-before-publication-permit") active = false;
+    if (!active) throw new Error("worker_cancelled");
+  });
   const mergeCandidate = vi.fn(async () => {
     heads.set(candidate.branch, candidate);
     return {};
@@ -52,14 +61,16 @@ function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-adva
       if (run === "cancel-during-validation") active = false;
       if (run === "stale-target") heads.set(target.branch, { ...target, revision: 3, manifestHash: hash("c") });
       if (run === "validation-mutated") heads.set(validation.branch, { ...validation, commitId: commit("e"), manifestHash: hash("e"), revision: validation.revision + 1 });
-      return run === "pass" || run === "stale-target" || run === "target-advanced"
+      return run === "pass" || run === "stale-target" || run === "target-advanced" || run === "cancel-before-publication-permit" || run === "cancel-after-publication-permit" || run === "publication-outcome-unknown"
         ? { status: "passed", exitCode: 0, durationMs: 12 }
         : { status: "failed", exitCode: 1, durationMs: 12, reason: "api_schema_incompatibility" };
     },
+    authorizePublication,
     publishCandidate,
+    readPublicationHead: async branch => heads.get(branch) ?? null,
     saveReceipt,
   };
-  return { host, publishCandidate, saveReceipt, mergeCandidate, target, source, sourceBase, cancel: () => { active = false; } };
+  return { host, authorizePublication, publishCandidate, saveReceipt, mergeCandidate, target, source, sourceBase, cancel: () => { active = false; } };
 }
 
 const input = {
@@ -111,6 +122,32 @@ describe("checked worker integration", () => {
     await expect(runCheckedWorkerIntegration(pinnedInput(f), f.host)).rejects.toThrow("worker_cancelled");
     expect(f.publishCandidate).not.toHaveBeenCalled();
     expect(f.saveReceipt).not.toHaveBeenCalled();
+  });
+
+  it("fences cancellation before the durable publication permit", async () => {
+    const f = fixture("cancel-before-publication-permit");
+    await expect(runCheckedWorkerIntegration(pinnedInput(f), f.host)).rejects.toThrow("worker_cancelled");
+    expect(f.authorizePublication).toHaveBeenCalledOnce();
+    expect(f.publishCandidate).not.toHaveBeenCalled();
+    expect(f.saveReceipt).toHaveBeenCalledTimes(1); // the passed, not-yet-published validation receipt
+  });
+
+  it("records an accepted publication after cancellation without requiring worker completion", async () => {
+    const f = fixture("cancel-after-publication-permit");
+    const result = await runCheckedWorkerIntegration(pinnedInput(f), f.host);
+    expect(f.authorizePublication).toHaveBeenCalledOnce();
+    expect(f.publishCandidate).toHaveBeenCalledOnce();
+    expect(result.status).toBe("published");
+    expect(result.receipt).toMatchObject({ status: "passed", publicationStatus: "published" });
+    expect(f.saveReceipt).toHaveBeenLastCalledWith(expect.objectContaining({ status: "passed", publicationStatus: "published" }));
+  });
+
+  it("keeps a passed check distinct from an uncertain target publication", async () => {
+    const f = fixture("publication-outcome-unknown");
+    const result = await runCheckedWorkerIntegration(pinnedInput(f), f.host);
+    expect(result.status).toBe("uncertain");
+    expect(result.receipt).toMatchObject({ status: "passed", publicationStatus: "uncertain", reason: "target_publication_outcome_uncertain" });
+    expect(f.saveReceipt).toHaveBeenLastCalledWith(expect.objectContaining({ status: "passed", publicationStatus: "uncertain" }));
   });
 
   it("emits bounded validation metrics with only fixed categories and duration", () => {

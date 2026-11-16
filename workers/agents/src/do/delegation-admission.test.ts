@@ -14,6 +14,8 @@ function fixture() {
     attempt: number; checkpoint_json: string | null; result: string | null; error: string | null; updated_at: number; budget_tokens: number; tokens_used: number };
   const active = new Set<string>(), requests: Record<string, any>[] = [], finishes: Array<(body?: Record<string, any>, status?: number) => void> = [];
   const workers = new Map<string, WorkerRow>();
+  const storageValues = new Map<string, unknown>();
+  const publicationAttempts = new Map<string, Array<{ worker_attempt: number; target_branch: string; target_revision: number; status: string; updated_at: number }>>();
   const concurrency = { idFromName: (name: string) => name, get: (name: string) => ({ fetch: async (request: Request) => {
     const body = await request.json<{ holder_id: string; limit: number }>(), key = `${name}:${body.holder_id}`;
     if (new URL(request.url).pathname === "/release") { active.delete(key); return Response.json({ ok: true }); }
@@ -32,6 +34,13 @@ function fixture() {
       if (normalized.startsWith("SELECT status,attempt FROM sub_agents")) {
         const row = workers.get(String(args[0]));
         return cursor(row ? [{ status: row.status, attempt: row.attempt }] : []);
+      }
+      if (normalized.startsWith("SELECT * FROM sub_agents WHERE id = ?")) {
+        const row = workers.get(String(args[0]));
+        return cursor(row ? [{ ...row }] : []);
+      }
+      if (normalized.startsWith("SELECT worker_attempt,target_branch,target_revision,status,updated_at FROM worker_publication_permits")) {
+        return cursor(publicationAttempts.get(String(args[0])) ?? []);
       }
       if (normalized.startsWith("SELECT configuration_json FROM sub_agents")) {
         const row = workers.get(String(args[0]));
@@ -90,7 +99,8 @@ function fixture() {
       }
       return cursor();
     } };
-    const storage = { sql, put: async () => undefined };
+    const storage = { sql, put: async (key: string, value: unknown) => { storageValues.set(key, value); },
+      get: async (key: string) => storageValues.get(key) };
     return new NaelaoAgentDO({ storage, id: { toString: () => "parent-do" } } as never,
       { PLATFORM_SECRET: "test-signing-key", ...(bound ? { CONCURRENCY_DO: concurrency } : {}) } as never) as unknown as Host;
   };
@@ -100,7 +110,7 @@ function fixture() {
   const spawn = (parent: Host, tasks: Record<string, unknown>[], merge?: Host["spawnSubAgentBatch"] extends (...args: infer A) => unknown ? A[14] : never) => parent.spawnSubAgentBatch(tasks, "space", "parent", "tenant", "", "parent-run", "parent-thread", "project", children,
     "person", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "low", undefined, runtime, merge);
   const terminate = (parent: Host, id: string) => (parent as unknown as { terminateSubAgentImpl(id: string): Promise<void> }).terminateSubAgentImpl(id);
-  return { active, requests, finishes, workers, host, runtime, spawn, terminate };
+  return { active, requests, finishes, workers, storageValues, publicationAttempts, host, runtime, spawn, terminate };
 }
 describe("host delegation admission", () => {
   it("caps active leaves across different subplanners of one root and releases slots after completion", async () => {
@@ -167,6 +177,29 @@ describe("host delegation admission", () => {
     const result = (await run).results[0];
     expect(merge).toHaveBeenCalledWith(id, "workers/cancel-during-merge", 1);
     expect(result).toMatchObject({ ok: false, status: "terminated", error: "worker_cancelled" });
+    expect(f.workers.get(id)?.status).toBe("terminated");
+  });
+
+  it("returns the durable checked-publication outcome with the terminated worker status", async () => {
+    const f = fixture(), parent = f.host();
+    const run = f.spawn(parent, [{ goal: "isolated task", workspace_branch: "workers/publish-race" }]);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    const id = String(f.requests[0]!.context.sub_agent_id);
+    await f.terminate(parent, id);
+    f.finishes[0]!();
+    await run;
+    const receipt = { path: "naelao-worker-validation.json", paths: ["naelao-worker-validation.json"], status: "passed",
+      branch: "race/worker-validation/abc", revision: 2, manifestHash: "a".repeat(64), targetRevision: 1,
+      targetManifestHash: "b".repeat(64), commandHash: "c".repeat(64), executionId: "worker-integration-test", runId: "run-test",
+      durationMs: 10, completedAt: new Date(0).toISOString(), candidateBranch: "race/worker-candidate/abc",
+      candidateCommitId: "d".repeat(40), sourceBranch: "workers/publish-race", sourceCommitId: "e".repeat(40),
+      targetBranch: "main", targetCommitId: "f".repeat(40), publicationStatus: "uncertain" };
+    f.storageValues.set(`worker-integration-receipts:${id}`, [receipt]);
+    f.publicationAttempts.set(id, [{ worker_attempt: 1, target_branch: "main", target_revision: 1, status: "authorized", updated_at: 0 }]);
+    const view = await (parent as unknown as { receiveFromSubAgentImpl(workerId: string): Promise<Record<string, any>> }).receiveFromSubAgentImpl(id);
+    expect(view).toMatchObject({ status: "terminated", workspaceIntegration: {
+      validationReceipts: [receipt], publicationAttempts: [{ attempt: 1, targetBranch: "main", targetRevision: 1, status: "outcome_unknown" }],
+    } });
     expect(f.workers.get(id)?.status).toBe("terminated");
   });
 

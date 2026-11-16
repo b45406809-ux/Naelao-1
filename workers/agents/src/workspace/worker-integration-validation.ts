@@ -80,15 +80,28 @@ export type WorkerIntegrationValidationRun = {
   reason?: string;
 };
 
+export type WorkerIntegrationPublication = {
+  executionId: string;
+  targetBranch: string;
+  candidateBranch: string;
+  expectedTarget: WorkerIntegrationHead;
+  expectedSourceCommitId: string;
+  candidateManifestHash: string;
+};
+
 export type WorkerIntegrationHost = {
   /** Recheck the durable worker attempt before each validation/publication phase. */
   isActive?(): Promise<boolean>;
   readHead(branch: string): Promise<WorkerIntegrationHead | null>;
+  /** Read the target after an authorized publication attempt, even if the worker was cancelled. */
+  readPublicationHead?(branch: string): Promise<WorkerIntegrationHead | null>;
   readProjectValidationConfig(targetBranch: string, targetCommitId: string): Promise<string | null>;
   createBranch(branch: string, sourceBranch: string, sourceCommitId: string): Promise<void>;
   mergeCandidate(input: { targetBranch: string; sourceBranch: string; expectedTargetCommitId: string; expectedSourceCommitId: string }): Promise<{ conflicts?: WorkerIntegrationConflict[] }>;
   runValidation(input: { command: string; commandHash: string; branch: string; revision: number; manifestHash: string }): Promise<WorkerIntegrationValidationRun>;
-  publishCandidate(input: { targetBranch: string; candidateBranch: string; expectedTarget: WorkerIntegrationHead; expectedSourceCommitId: string }): Promise<void>;
+  /** Atomically fence cancellation against the exact, already validated publication attempt. */
+  authorizePublication(input: WorkerIntegrationPublication): Promise<void>;
+  publishCandidate(input: WorkerIntegrationPublication): Promise<void>;
   saveReceipt(receipt: WorkerIntegrationValidationReceipt): Promise<void>;
   recordMetric?(metric: WorkerIntegrationMetric): void;
 };
@@ -174,9 +187,13 @@ export async function runCheckedWorkerIntegration(input: {
     targetCommitId: target.commitId,
     publicationStatus,
   });
+  let publicationAuthorized = false;
   const finish = async (resultStatus: WorkerIntegrationResult["status"], conflicts: WorkerIntegrationConflict[] = []): Promise<WorkerIntegrationResult> => {
     const value = receipt();
-    await ensureActive();
+    // Cancellation wins until the parent DO durably grants the exact publication attempt.
+    // After that linearization point, preserve the external outcome receipt without changing
+    // the worker's terminal status; a checked Coordinator commit cannot be rolled back here.
+    if (!publicationAuthorized) await ensureActive();
     await host.saveReceipt(value);
     try {
       host.recordMetric?.({ outcome: resultStatus, validationStatus: value.status, durationMs: value.durationMs });
@@ -270,12 +287,17 @@ export async function runCheckedWorkerIntegration(input: {
   await host.saveReceipt(receipt());
   try {
     await ensureActive();
-    await host.publishCandidate({ targetBranch: input.targetBranch, candidateBranch: input.candidateBranch,
-      expectedTarget: target, expectedSourceCommitId: candidate.commitId! });
+    const publication = { executionId: input.executionId, targetBranch: input.targetBranch, candidateBranch: input.candidateBranch,
+      expectedTarget: target, expectedSourceCommitId: candidate.commitId!, candidateManifestHash: candidate.manifestHash };
+    await host.authorizePublication(publication);
+    publicationAuthorized = true;
+    await host.publishCandidate(publication);
     publicationStatus = "published";
     return finish("published");
   } catch {
-    const after = await host.readHead(input.targetBranch).catch(() => null);
+    const after = await (publicationAuthorized && host.readPublicationHead
+      ? host.readPublicationHead(input.targetBranch)
+      : host.readHead(input.targetBranch)).catch(() => null);
     if (validHead(after, input.targetBranch) && after.commitId === candidate.commitId && after.manifestHash === candidate.manifestHash) {
       publicationStatus = "published";
       return finish("published");
@@ -285,7 +307,8 @@ export async function runCheckedWorkerIntegration(input: {
       reason = "target_publication_rejected";
       return finish("blocked");
     }
-    status = "uncertain";
+    // Keep validation status separate from the cross-DO publication outcome. The check passed;
+    // only the external commit result is uncertain.
     publicationStatus = "uncertain";
     reason = "target_publication_outcome_uncertain";
     return finish("uncertain");
