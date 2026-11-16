@@ -1,10 +1,16 @@
 # Resumable workers, durable workflows and branches progress
 
+## Latest code checkpoint — 2026-11-16 (authorized AgentTask recovery status; `fc3318bb` pushed)
+
+The existing authorized task list/detail route now enriches each task from its tenant/Space/run-scoped WorkflowRunDO journal after its session/Project access checks. The response is content-free and omits private R2 keys/results; it reports last completed step metadata, digest prefix/size, and whether the workflow journal advanced after the checkpoint. A scope mismatch or unavailable journal produces no checkpoint data. Shell displays this receipt and warns that unsaved process memory is not recoverable. Code `fc3318bb702d355a21998b22651761edd591d307` is remote-verified. Recovery summary + AgentTask checkpoint + WorkflowJournal + WorkflowRunDO tests **28/28**, Agents/Shell typechecks and diff check pass. These are local tests only; no deployed Workflow/DO/R2, browser or runtime-isolation acceptance ran. It neither recovers model/process memory nor proves branch isolation.
+
+Exact next action: trace the actual worker/runtime allocation and launch callers to determine whether exact branch and revision are mounted and isolate process, filesystem, dependencies, caches, ports and credentials. Implement the smallest provable independent isolation fence; fail closed or queue when the runtime contract cannot guarantee it. Continue remaining PW01–PW06 and TBR02/S/U/P/K/EP/AP code gaps. Preserve untracked `infra/scripts/__pycache__/` and keep rollout disabled.
+
 ## Latest code checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
 
 The static AgentTask workflow now records the last completed native durable step in `WorkflowJournal`, with monotonically increasing sequence and bounded 64-entry lineage to registered, scope-validated content-hashed artifacts. The wrapper records only after `step.do` returns; exact step replay returns the existing receipt and a changed pointer conflicts. Local verification: WorkflowJournal/WorkflowRunDO/AgentTask checkpoint tests **26/26**, Agents typecheck and diff check. Code `1dd540579b8af79c5dcbfcc638c0a384d5b3502c` is pushed and remote-verified. No deployed Workflow/DO/R2 or runtime recovery acceptance ran. This records step output metadata; it does not restore unsaved thought, stream tokens, process state, or guarantee branch/runtime isolation.
 
-Exact next action: connect checkpoint sequence/step/time and the durable-vs-unsaved recovery disclaimer to the existing authorized task/worker status API and Shell activity view. Verify per-user/private-Project scope and stale status behavior; then continue actual branch mount/runtime isolation and the other PW/TBR/S/U/P/K/EP code gaps. Keep rollouts disabled.
+The formerly recorded task-status/Shell action is completed in `fc3318bb` above. Continue with actual branch mount/runtime isolation; the earlier local durable-step checkpoint does not imply recovered process state.
 
 ## Source and reconciliation — 2026-11-16
 

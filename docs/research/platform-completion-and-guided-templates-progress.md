@@ -1,8 +1,16 @@
 # Platform completion and guided templates progress
 
+## Cross-plan code checkpoint — 2026-11-16 (AgentTask recovery status; `fc3318bb` pushed)
+
+Authorized durable task list/detail responses now carry a scope-matched, content-free last-step checkpoint receipt; Shell shows its time/state and warns about work after the checkpoint and unsaved memory. Tests **28/28** across recovery summary, AgentTask checkpoints, WorkflowJournal and WorkflowRunDO; Agents and Shell typechecks and diff check pass. `fc3318bb702d355a21998b22651761edd591d307` is remote-verified. No deployed recovery, browser, process-memory recovery or runtime-isolation acceptance ran. Exact next action: trace/implement PW branch mount and runtime isolation at actual worker launch; continue all other open S/U/P/PW/K/EP/TBR/AP code gaps.
+
+## Cross-plan plan checkpoint — 2026-11-16 (AgentPhone evaluation; `9a4450d1` pushed)
+
+The source plan from `plan/microapps-ui-sdk-voice` commit `3ef84165546a781ebcde6867d62e563f022385b9` is copied with SHA-256 `9d457136974d65ac5252123bfc2b67c6aa779c0604a5d845337026e7b63ae83d`, incorporated as AP01–AP06 in platform section 18, and tracked in the dedicated AgentPhone progress ledger. Existing AgentPort proxy/event dispatch, AgentMail routing, Telnyx voice/webhooks and managed billing are only reusable local implementations; AgentPhone contract, pricing, subaccounts, channels, regions and live behavior are unverified provider claims. No registration, provisioning, calls, messages or spend occurred. Exact next code action remains PW runtime isolation; then AP01 capability evidence and TBR02/S/U/P/K/EP gaps in dependency order. Rollout remains disabled.
+
 ## Cross-plan checkpoint — 2026-11-16 (durable AgentTask step checkpoints; `1dd54057` pushed)
 
-`WorkflowJournal` now records bounded ordered completed-step checkpoint pointers for static AgentTask workflows; native step completion precedes checkpoint recording, exact replay is idempotent, and changed-output replay conflicts. Local tests **26/26**, Agents typecheck and diff check pass. No deployed recovery acceptance; this is not process-memory restoration or runtime isolation. Exact next action: expose authorized last-checkpoint/loss-state details through task status and Shell; continue PW runtime isolation and the other plan gaps.
+`WorkflowJournal` now records bounded ordered completed-step checkpoint pointers for static AgentTask workflows; native step completion precedes checkpoint recording, exact replay is idempotent, and changed-output replay conflicts. Local tests **26/26**, Agents typecheck and diff check pass. No deployed recovery acceptance; this is not process-memory restoration or runtime isolation. The task-status/Shell follow-up is complete in the newer checkpoint above; continue PW runtime isolation and the other plan gaps.
 
 ## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
 
