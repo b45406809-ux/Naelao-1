@@ -16,14 +16,18 @@ const connection = {
   project_id: "project-1", origins_json: '["https://docs.example"]', status: "active",
 };
 
-function fixture(options: { connection?: typeof connection | null; projectRank?: number } = {}) {
+function fixture(options: { connection?: typeof connection | null; projectRank?: number; refreshDocument?: Record<string, unknown> | null;
+  refreshOperation?: Record<string, unknown> | null } = {}) {
+  const sqlCalls: string[] = [];
   const db = {
-    prepare: vi.fn((sql: string) => ({
+    prepare: vi.fn((sql: string) => { sqlCalls.push(sql); return ({
       bind: (...args: unknown[]) => ({
         first: async () => {
           if (sql.includes("JOIN orgs")) return { id: "space-1" };
           if (sql === "SELECT config_json FROM spaces WHERE id = ? AND status != 'deleted'") return { config_json: "{}" };
           if (sql.includes("FROM project_access")) return { visibility: "private", role_rank: options.projectRank ?? 50 };
+          if (sql.includes("FROM kb_documents") && sql.includes("source_connection_ref")) return options.refreshDocument ?? null;
+          if (sql.includes("FROM kb_source_refresh_operations")) return options.refreshOperation ?? null;
           if (sql.includes("FROM website_connections")) {
             const grant = options.connection === null ? null : options.connection ?? connection;
             if (!grant || grant.id !== args[0] || grant.tenant_id !== args[1] || grant.space_id !== args[2]
@@ -32,10 +36,14 @@ function fixture(options: { connection?: typeof connection | null; projectRank?:
           }
           return null;
         },
+        run: async () => ({ meta: { changes: 1 } }),
       }),
-    })),
+    }); }),
+    batch: vi.fn(async (statements: unknown[]) => {
+      return statements.map(() => ({ meta: { changes: 1 } }));
+    }),
   };
-  return { env: { ENVIRONMENT: "test", PLATFORM_SECRET: "secret", PLATFORM_DB: db } as unknown as Parameters<NonNullable<typeof worker.fetch>>[1], db };
+  return { env: { ENVIRONMENT: "test", PLATFORM_SECRET: "secret", PLATFORM_DB: db } as unknown as Parameters<NonNullable<typeof worker.fetch>>[1], db, sqlCalls };
 }
 
 async function request(body: unknown, role = "owner") {
@@ -46,6 +54,13 @@ async function request(body: unknown, role = "owner") {
       "x-naelao-role": role, "x-naelao-internal-token": token },
     body: JSON.stringify(body),
   });
+}
+
+async function refreshRequestHash() {
+  const bytes = new TextEncoder().encode(JSON.stringify({ tenantId: "tenant-1", spaceId: "space-1", projectId: "project-1",
+    documentId: "doc-1", connectionId: "connection-1", sourceRevision: 4, requestedUrl: "https://docs.example/guide" }));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return [...digest].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 describe("scoped website Knowledge preview", () => {
@@ -107,6 +122,15 @@ describe("scoped website Knowledge preview", () => {
     expect(outbound).not.toHaveBeenCalled();
   });
 
+  it("rejects query strings and fragments so URL credentials cannot enter the source record", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const f = fixture();
+    const response = await worker.fetch!(await request({ connection_id: "connection-1", url: "https://docs.example/guide?token=secret#section" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(400);
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
   it("revalidates origin allowlists on every redirect before fetching the destination", async () => {
     const outbound = vi.fn().mockResolvedValue(new Response(null, { status: 302, headers: { location: "https://other.example/secret" } }));
     vi.stubGlobal("fetch", outbound);
@@ -115,5 +139,59 @@ describe("scoped website Knowledge preview", () => {
     expect(response.status).toBe(403);
     expect(outbound).toHaveBeenCalledTimes(1);
     expect(checkSsrf).toHaveBeenCalledTimes(1);
+  });
+
+  it("records an idempotent, source-revision-bound refresh before returning an owner review receipt", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("Updated guide", { headers: { "content-type": "text/plain" } })));
+    const f = fixture({ refreshDocument: { id: "doc-1", source_url: "https://docs.example/guide", source_revision: 4,
+      source_connection_ref: "connection-1", source_state: "current", source_adapter: "website" } });
+    const response = await worker.fetch!(await request({ document_id: "doc-1", idempotency_key: "refresh-request-0001",
+      url: "https://docs.example/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { preview: { refresh_operation_id: string; expected_source_revision: number; preview_token: string } };
+    expect(body.preview).toMatchObject({ refresh_operation_id: expect.any(String), expected_source_revision: 4 });
+    expect(f.sqlCalls.some((sql) => sql.includes("INSERT INTO kb_source_refresh_operations"))).toBe(true);
+    expect(f.sqlCalls.some((sql) => sql.includes("source_last_attempt_at"))).toBe(true);
+    expect(f.db.prepare).toHaveBeenCalledWith(expect.stringContaining("SET state='preview_ready'"));
+  });
+
+  it("records refresh failure and retry backoff without replacing the current source", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("temporary network failure"); }));
+    const f = fixture({ refreshDocument: { id: "doc-1", source_url: "https://docs.example/guide", source_revision: 4,
+      source_connection_ref: "connection-1", source_state: "current", source_adapter: "website" } });
+    const response = await worker.fetch!(await request({ document_id: "doc-1", idempotency_key: "refresh-request-0002",
+      url: "https://docs.example/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(502);
+    expect(f.sqlCalls.some((sql) => sql.includes("state='failed'") && sql.includes("next_attempt_at"))).toBe(true);
+    expect(f.sqlCalls.some((sql) => sql.includes("source_refresh_failures=source_refresh_failures+1"))).toBe(true);
+  });
+
+  it("blocks a second refresh while the durable operation is fetching", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const f = fixture({ refreshDocument: { id: "doc-1", source_url: "https://docs.example/guide", source_requested_url: "https://docs.example/guide",
+      source_revision: 4, source_connection_ref: "connection-1", source_state: "current", source_adapter: "website" },
+      refreshOperation: { id: "refresh-op", state: "fetching", request_sha256: "a".repeat(64), attempt_count: 1,
+        next_attempt_at: null, last_attempt_at: new Date().toISOString() } });
+    const response = await worker.fetch!(await request({ document_id: "doc-1", idempotency_key: "refresh-request-0003",
+      url: "https://docs.example/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(409);
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it("recovers an abandoned refresh after the bounded lease and returns a retry time", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const f = fixture({ refreshDocument: { id: "doc-1", source_url: "https://docs.example/guide", source_requested_url: "https://docs.example/guide",
+      source_revision: 4, source_connection_ref: "connection-1", source_state: "current", source_adapter: "website" },
+      refreshOperation: { id: "refresh-op", state: "fetching", request_sha256: await refreshRequestHash(), attempt_count: 1,
+        next_attempt_at: null, last_attempt_at: new Date(Date.now() - 3 * 60_000).toISOString() } });
+    const response = await worker.fetch!(await request({ document_id: "doc-1", idempotency_key: "refresh-request-0003",
+      url: "https://docs.example/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toMatchObject({ error_code: "website_refresh_interrupted", retry_at: expect.any(String) });
+    expect(outbound).not.toHaveBeenCalled();
+    expect(f.sqlCalls.some((sql) => sql.includes("error_code='website_refresh_interrupted'") && sql.includes("state='fetching'"))).toBe(true);
+    expect(f.sqlCalls.some((sql) => sql.includes("source_refresh_failures=source_refresh_failures+1"))).toBe(true);
   });
 });

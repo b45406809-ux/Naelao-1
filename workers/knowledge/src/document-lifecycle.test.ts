@@ -3,7 +3,7 @@ import { mintInternalToken } from "@naelao/http";
 import { createWebsitePreviewToken, sha256TextHex } from "./website-source-preview.js";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; reindexDoc?: boolean; reindexChunks?: Array<{ chunk_index: number; content: string; content_hash: string; deleted_at: string | null }>; queueFails?: boolean; queueAcceptThenThrow?: boolean; failFirstBucketPut?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean; legacyAcl?: boolean; projectAccess?: boolean; websiteConnection?: boolean } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; reindexDoc?: boolean; reindexChunks?: Array<{ chunk_index: number; content: string; content_hash: string; deleted_at: string | null }>; queueFails?: boolean; queueAcceptThenThrow?: boolean; failFirstBucketPut?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean; legacyAcl?: boolean; projectAccess?: boolean; websiteConnection?: boolean; websiteSource?: boolean; websiteRefreshOperation?: Record<string, unknown> } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const idempotencyClaims = new Map<string, { request_sha256: string | null; document_id: string; state: "active" | "deleted"; dispatch_state: "claimed" | "dispatching" }>();
@@ -53,9 +53,14 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
               ? { id: "doc-1", title: "Old title", chunk_count: 1, project_id: options.projectId ?? null,
                   required_role_rank: options.legacyAcl ? 0 : options.requiredRoleRank ?? 0,
                   allowed_user_ids_json: options.legacyAcl ? null : options.allowedUserIds ? JSON.stringify(options.allowedUserIds) : null,
-                  legacy_required_role_rank: options.requiredRoleRank ?? 0, content_type: "text" }
+                  legacy_required_role_rank: options.requiredRoleRank ?? 0, content_type: options.websiteSource ? "url" : "text",
+                  source_adapter: options.websiteSource ? "website" : "manual", source_state: "current", source_revision: 4,
+                  source_connection_ref: options.websiteSource ? "website-1" : null,
+                  source_url: options.websiteSource ? "https://docs.example/guide" : null,
+                  source_content_sha256: options.websiteSource ? "0".repeat(64) : null }
               : null;
             if (sql.includes("FROM project_access")) return options.workflowDoc || options.projectAccess ? { role_rank: 50, visibility: "private" } : null;
+            if (sql.includes("FROM kb_source_refresh_operations")) return options.websiteRefreshOperation ?? null;
             if (sql.includes("FROM website_connections")) return options.websiteConnection
               ? { id: "website-1", tenant_id: "tenant-1", space_id: "space-1", owner_user_id: "user-1", project_id: "project-1",
                   origins_json: '["https://docs.example"]', status: "active" }
@@ -109,7 +114,9 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
           status: "processing", chunk_count: 0, created_at: documentArgs[14], updated_at: documentArgs[15],
           source_adapter: documentArgs[16], source_content_sha256: documentArgs[17], source_state: documentArgs[18], source_revision: 1 });
         const stored = documents.get(documentId);
-        if (stored) documents.set(documentId, { ...stored, source_connection_ref: documentArgs[19] ?? null, source_grant_revision: documentArgs[20] ?? null });
+        if (stored) documents.set(documentId, { ...stored, source_connection_ref: documentArgs[19] ?? null,
+          source_grant_revision: documentArgs[20] ?? null, source_last_attempt_at: documentArgs[21] ?? null,
+          source_last_success_at: documentArgs[22] ?? null, source_requested_url: documentArgs[23] ?? null });
         return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
       }
       if (statements[0]?.sql.includes("UPDATE kb_documents SET status = 'indexed'"))
@@ -413,6 +420,7 @@ describe("Knowledge document lifecycle boundaries", () => {
     expect(document).not.toHaveProperty("source_grant_revision");
     const stored = [...f.documents.values()][0];
     expect(stored).toMatchObject({ source_adapter: "website", source_state: "current", source_connection_ref: "website-1", source_grant_revision: 1 });
+    expect(stored?.source_requested_url).toBe(requestedUrl);
     expect(stored?.source_content_sha256).toBe(await sha256TextHex(approvedContent));
   });
 
@@ -695,6 +703,59 @@ describe("Knowledge document lifecycle boundaries", () => {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("replacement source"));
     const expectedSourceHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     expect(sourceVersionUpdate?.args).toContain(expectedSourceHash);
+  });
+
+  it("requires a signed current-revision preview before changing an indexed website snapshot", async () => {
+    const f = fixture({ existing: true, projectId: "project-1", projectAccess: true, websiteSource: true, websiteConnection: true });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents/doc-1", "PATCH", {
+      content: "unreviewed replacement page",
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(409);
+    expect(f.vectorize.deleteByIds).not.toHaveBeenCalled();
+    expect(f.vectorUpserts).toHaveLength(0);
+  });
+
+  it.each([
+    { name: "stale revision", websiteConnection: true, expectedRevision: 3 },
+    { name: "revoked host grant", websiteConnection: false, expectedRevision: 4 },
+  ])("rejects website refresh after $name", async ({ websiteConnection, expectedRevision }) => {
+    const f = fixture({ existing: true, projectId: "project-1", projectAccess: true, websiteSource: true, websiteConnection });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents/doc-1", "PATCH", {
+      content: "stale refresh must not replace current content",
+      website_refresh: { operation_id: "refresh-op-1", expected_source_revision: expectedRevision,
+        requested_url: "https://docs.example/guide", final_url: "https://docs.example/current",
+        preview_sha256: "a".repeat(64), preview_token: "invalid-after-fence" },
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(409);
+    expect(f.vectorize.deleteByIds).not.toHaveBeenCalled();
+    expect(f.vectorUpserts).toHaveLength(0);
+  });
+
+  it("applies an owner-approved website refresh once and advances the source revision", async () => {
+    const requestedUrl = "https://docs.example/guide";
+    const finalUrl = "https://docs.example/current";
+    const previewContent = "Updated page from upstream";
+    const previewSha256 = await sha256TextHex(previewContent);
+    const refreshOperationId = "refresh-op-1";
+    const sourceRevision = 4;
+    const scope = { tenantId: "tenant-1", spaceId: "space-1", projectId: "project-1", userId: "user-1", connectionId: "website-1" };
+    const previewToken = await createWebsitePreviewToken({ secret: "secret", scope, requestedUrl, finalUrl, previewSha256,
+      operation: "refresh", documentId: "doc-1", sourceRevision, refreshOperationId,
+      nonce: "website-refresh-test-nonce-1" });
+    const f = fixture({ existing: true, projectId: "project-1", projectAccess: true, websiteSource: true, websiteConnection: true,
+      websiteRefreshOperation: { id: refreshOperationId, state: "preview_ready", source_revision: sourceRevision,
+        connection_ref: "website-1", requested_url: requestedUrl, final_url: finalUrl, preview_sha256: previewSha256, attempt_count: 1 } });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents/doc-1", "PATCH", {
+      title: "Guide", content: "Owner-corrected refreshed text",
+      website_refresh: { operation_id: refreshOperationId, expected_source_revision: sourceRevision, requested_url: requestedUrl,
+        final_url: finalUrl, preview_sha256: previewSha256, preview_token: previewToken },
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    const update = f.dbCalls.find(({ sql }) => sql.includes("source_revision=source_revision+1"));
+    expect(update?.sql).toContain("source_revision=?");
+    expect(update?.sql).toContain("website_connections wc");
+    expect(f.dbCalls.some(({ sql, args }) => sql.includes("SET state='completed'") && args.includes(refreshOperationId))).toBe(true);
+    expect(f.storageUsageEvents.some((event) => event.idempotency_key === `knowledge-storage:${refreshOperationId}`)).toBe(true);
   });
 
   it("continues to recover legacy ACLs from Vectorize when the D1 policy is unknown", async () => {

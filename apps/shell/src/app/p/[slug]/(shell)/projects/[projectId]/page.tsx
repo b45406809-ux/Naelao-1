@@ -26,6 +26,7 @@ import {
   associateProjectDepartment,
   createDepartment,
   createKbDocument,
+  applyWebsiteKnowledgeRefresh,
   previewKbPdf,
   previewWebsiteKnowledgeSource,
   createThread,
@@ -123,6 +124,9 @@ export default function ProjectDetailPage() {
   const [websiteSourceUrl, setWebsiteSourceUrl] = React.useState("");
   const [websitePreview, setWebsitePreview] = React.useState<WebsiteKnowledgePreview | null>(null);
   const [previewingWebsite, setPreviewingWebsite] = React.useState(false);
+  const [websiteRefreshDraft, setWebsiteRefreshDraft] = React.useState<{ documentId: string; content: string; preview: WebsiteKnowledgePreview } | null>(null);
+  const [refreshingWebsiteId, setRefreshingWebsiteId] = React.useState<string | null>(null);
+  const websiteRefreshRequestKeysRef = React.useRef(new Map<string, string>());
   const createIdempotencyKeyRef = React.useRef<string | null>(null);
   const [externalPublications, setExternalPublications] = React.useState<ExternalKnowledgePublication[]>([]);
   const [publicationId, setPublicationId] = React.useState("course_material");
@@ -455,6 +459,63 @@ export default function ProjectDetailPage() {
       show(error instanceof Error ? error.message : "Couldn't preview this website page.");
     } finally {
       setPreviewingWebsite(false);
+    }
+  }
+
+  async function handlePreviewWebsiteRefresh(document: KbDocument) {
+    const requestedUrl = document.source_requested_url ?? document.source_url;
+    if (!creds || !requestedUrl || document.source_adapter !== "website" || refreshingWebsiteId) return;
+    if (document.source_next_attempt_at && Date.parse(document.source_next_attempt_at) > Date.now()) {
+      show(`Retry is available after ${new Date(document.source_next_attempt_at).toLocaleString()}.`);
+      return;
+    }
+    const idempotencyKey = websiteRefreshRequestKeysRef.current.get(document.id) ?? crypto.randomUUID();
+    websiteRefreshRequestKeysRef.current.set(document.id, idempotencyKey);
+    setRefreshingWebsiteId(document.id);
+    setWebsiteRefreshDraft(null);
+    try {
+      const preview = await previewWebsiteKnowledgeSource(activeSpaceId, params.projectId, creds, {
+        document_id: document.id,
+        idempotency_key: idempotencyKey,
+        url: requestedUrl,
+      });
+      if (!preview.refresh_operation_id || !Number.isSafeInteger(preview.expected_source_revision)) {
+        throw new Error("The refresh preview did not include a current source version. Reload and try again.");
+      }
+      setWebsiteRefreshDraft({ documentId: document.id, content: preview.content, preview });
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't refresh this website page.");
+    } finally {
+      setRefreshingWebsiteId(null);
+      await refreshDocs();
+    }
+  }
+
+  async function handleSaveWebsiteRefresh(document: KbDocument) {
+    if (!creds || !websiteRefreshDraft || websiteRefreshDraft.documentId !== document.id || addingDoc) return;
+    const { preview, content } = websiteRefreshDraft;
+    if (!preview.refresh_operation_id || preview.expected_source_revision === undefined) return;
+    setAddingDoc(true);
+    try {
+      await applyWebsiteKnowledgeRefresh(activeSpaceId, document.id, params.projectId, creds, {
+        title: document.title,
+        content,
+        requested_url: preview.requested_url,
+        final_url: preview.final_url,
+        preview_sha256: preview.preview_sha256,
+        preview_token: preview.preview_token,
+        refresh_operation_id: preview.refresh_operation_id,
+        expected_source_revision: preview.expected_source_revision,
+      });
+      websiteRefreshRequestKeysRef.current.delete(document.id);
+      setWebsiteRefreshDraft(null);
+      show("Website snapshot refreshed and indexed");
+      await refreshDocs();
+      await refreshExternalKnowledge();
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't save the refreshed website snapshot.");
+    } finally {
+      setAddingDoc(false);
     }
   }
 
@@ -1121,16 +1182,48 @@ export default function ProjectDetailPage() {
       ) : (
         <div className="settings-block">
           {docs.map((d) => (
-            <div className="settings-row" key={d.id}>
-              <div>
-                <div className="settings-row-label">{d.title}</div>
-                <div className="settings-row-sub">
-                  {d.chunk_count} chunk{d.chunk_count === 1 ? "" : "s"} · {d.status}
+            <div key={d.id} style={{ borderBottom: "1px solid var(--border)", padding: "10px 14px" }}>
+              <div className="settings-row" style={{ border: 0, padding: 0 }}>
+                <div>
+                  <div className="settings-row-label">{d.title}</div>
+                  <div className="settings-row-sub">
+                    {d.chunk_count} chunk{d.chunk_count === 1 ? "" : "s"} · {d.status}
+                    {d.source_adapter === "website" && ` · website snapshot v${d.source_revision ?? 1}`}
+                  </div>
+                  {d.source_adapter === "website" && <div className="settings-row-sub" style={{ marginTop: 4 }}>
+                    Last attempted refresh: {d.source_last_attempt_at ? new Date(d.source_last_attempt_at).toLocaleString() : "not recorded"}
+                    {` · last indexed ${d.source_last_success_at ? new Date(d.source_last_success_at).toLocaleString() : "not recorded"}`}
+                    {d.source_refresh_failures ? ` · ${d.source_refresh_failures} failed attempt${d.source_refresh_failures === 1 ? "" : "s"}` : ""}
+                    {d.source_last_error_code ? " · latest attempt failed" : ""}
+                    {d.source_next_attempt_at && ` · retry after ${new Date(d.source_next_attempt_at).toLocaleString()}`}
+                  </div>}
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {d.source_adapter === "website" && <Button size="sm" variant="ghost"
+                    disabled={!d.source_url || d.source_state !== "current" || !["indexed", "failed"].includes(d.status) || refreshingWebsiteId !== null || addingDoc}
+                    onClick={() => void handlePreviewWebsiteRefresh(d)}>
+                    {refreshingWebsiteId === d.id ? "Fetching…" : "Refresh page"}
+                  </Button>}
+                  <Button size="sm" variant="ghost" onClick={() => handleDeleteDoc(d.id)} disabled={d.status === "deleting"}>
+                    {d.status === "deleting" ? "Deleting…" : "Remove"}
+                  </Button>
                 </div>
               </div>
-              <Button size="sm" variant="ghost" onClick={() => handleDeleteDoc(d.id)} disabled={d.status === "deleting"}>
-                {d.status === "deleting" ? "Deleting…" : "Remove"}
-              </Button>
+              {websiteRefreshDraft?.documentId === d.id && <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                <div role="status" className="settings-row-sub">
+                  Review the refreshed page before replacing version {websiteRefreshDraft.preview.expected_source_revision}. Saving updates this snapshot and any published collection revision.
+                </div>
+                <div className="settings-row-sub">Fetched source: <a href={websiteRefreshDraft.preview.final_url} target="_blank" rel="noreferrer">{websiteRefreshDraft.preview.final_url}</a></div>
+                <FormTextarea aria-label={`Review refreshed ${d.title}`} rows={6} value={websiteRefreshDraft.content}
+                  onChange={(event) => setWebsiteRefreshDraft(current => current?.documentId === d.id ? { ...current, content: event.target.value } : current)} />
+                <ul className="settings-row-sub" style={{ margin: 0 }}>{websiteRefreshDraft.preview.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Button size="sm" disabled={addingDoc || !websiteRefreshDraft.content.trim()} onClick={() => void handleSaveWebsiteRefresh(d)}>
+                    {addingDoc ? "Indexing…" : "Approve and update snapshot"}
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={addingDoc} onClick={() => setWebsiteRefreshDraft(null)}>Cancel</Button>
+                </div>
+              </div>}
             </div>
           ))}
         </div>

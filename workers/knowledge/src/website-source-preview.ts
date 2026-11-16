@@ -11,6 +11,10 @@ export interface WebsiteSourceScope {
 
 interface WebsitePreviewClaims extends WebsiteSourceScope {
   version: 1;
+  operation: "create" | "refresh";
+  documentId?: string;
+  sourceRevision?: number;
+  refreshOperationId?: string;
   requestedUrl: string;
   finalUrl: string;
   previewSha256: string;
@@ -49,6 +53,10 @@ export async function createWebsitePreviewToken(input: {
   requestedUrl: string;
   finalUrl: string;
   previewSha256: string;
+  operation?: "create" | "refresh";
+  documentId?: string;
+  sourceRevision?: number;
+  refreshOperationId?: string;
   now?: number;
   nonce?: string;
 }): Promise<string> {
@@ -56,7 +64,11 @@ export async function createWebsitePreviewToken(input: {
   const now = input.now ?? Date.now();
   const claims: WebsitePreviewClaims = {
     version: 1,
+    operation: input.operation ?? "create",
     ...input.scope,
+    ...(input.documentId ? { documentId: input.documentId } : {}),
+    ...(input.sourceRevision !== undefined ? { sourceRevision: input.sourceRevision } : {}),
+    ...(input.refreshOperationId ? { refreshOperationId: input.refreshOperationId } : {}),
     requestedUrl: input.requestedUrl,
     finalUrl: input.finalUrl,
     previewSha256: input.previewSha256,
@@ -76,6 +88,10 @@ export async function verifyWebsitePreviewToken(input: {
   requestedUrl: string;
   finalUrl: string;
   previewSha256: string;
+  operation?: "create" | "refresh";
+  documentId?: string;
+  sourceRevision?: number;
+  refreshOperationId?: string;
   now?: number;
 }): Promise<boolean> {
   if (typeof input.token !== "string" || input.token.length > 4096) return false;
@@ -86,7 +102,10 @@ export async function verifyWebsitePreviewToken(input: {
     if (!validSignature) return false;
     const claims = JSON.parse(new TextDecoder().decode(fromBase64Url(encoded))) as Partial<WebsitePreviewClaims>;
     const now = input.now ?? Date.now();
-    return claims.version === 1 && claims.tenantId === input.scope.tenantId && claims.spaceId === input.scope.spaceId
+    return claims.version === 1 && claims.operation === (input.operation ?? "create")
+      && claims.documentId === input.documentId && claims.sourceRevision === input.sourceRevision
+      && claims.refreshOperationId === input.refreshOperationId
+      && claims.tenantId === input.scope.tenantId && claims.spaceId === input.scope.spaceId
       && claims.projectId === input.scope.projectId && claims.userId === input.scope.userId
       && claims.connectionId === input.scope.connectionId && claims.requestedUrl === input.requestedUrl
       && claims.finalUrl === input.finalUrl && claims.previewSha256 === input.previewSha256

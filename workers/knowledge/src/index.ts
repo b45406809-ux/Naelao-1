@@ -254,6 +254,7 @@ async function requireProjectAccess(c: any, projectId: string, minimumRoleRank =
 
 const EXTERNAL_PUBLICATION_ID = /^[a-z][a-z0-9_-]{2,63}$/;
 const WEBSITE_SOURCE_CONTENT_CAP = 1_048_576;
+const WEBSITE_REFRESH_LEASE_MS = 2 * 60_000;
 
 interface WebsiteConnectionGrant {
   id: string;
@@ -737,8 +738,9 @@ async function insertKnowledgeDocumentOnce(
 ): Promise<{ created: boolean; existing: IdempotentKnowledgeCreate | null }> {
   const columns = `(id,space_id,tenant_id,project_id,title,source_url,content_type,status,chunk_count,required_role_rank,
     allowed_user_ids_json,source_sha256,source_file_name,parser_version,parser_output_sha256,approved_content_sha256,
-    created_at,updated_at,source_adapter,source_content_sha256,source_state,source_connection_ref,source_grant_revision)`;
-  const projection = `SELECT ?,?,?,?,?,?,?,'processing',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?`;
+    created_at,updated_at,source_adapter,source_content_sha256,source_state,source_connection_ref,source_grant_revision,
+    source_last_attempt_at,source_last_success_at,source_requested_url)`;
+  const projection = `SELECT ?,?,?,?,?,?,?,'processing',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?`;
   const idem = input.idempotency;
   const projectScope = idem.projectId ?? "";
   const results = await db.batch([
@@ -917,13 +919,15 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
   const { results } = await c.env.PLATFORM_DB.prepare(
     projectId
       ? `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
-                chunk_count, source_adapter, source_revision, source_state, created_at, updated_at
+                chunk_count, source_adapter, source_revision, source_state, source_requested_url,source_last_attempt_at,source_last_success_at,
+                source_next_attempt_at,source_refresh_failures,source_last_error_code,created_at,updated_at
          FROM kb_documents
          WHERE space_id = ? AND tenant_id = ? AND project_id = ?
          ORDER BY created_at DESC
          LIMIT ? OFFSET ?`
       : `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
-                chunk_count, source_adapter, source_revision, source_state, created_at, updated_at
+                chunk_count, source_adapter, source_revision, source_state, source_requested_url,source_last_attempt_at,source_last_success_at,
+                source_next_attempt_at,source_refresh_failures,source_last_error_code,created_at,updated_at
          FROM kb_documents
          WHERE space_id = ? AND tenant_id = ? AND project_id IS NULL
          ORDER BY created_at DESC
@@ -1150,51 +1154,203 @@ app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/preview", asyn
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
   const access = await requireProjectAccess(c, projectId, 40);
   if (access instanceof Response) return access;
-  const body = await readBoundedJson<{ connection_id?: unknown; url?: unknown }>(c.req.raw, 8 * 1024);
-  if (typeof body.connection_id !== "string" || !body.connection_id || body.connection_id.length > 256
+  const body = await readBoundedJson<{ connection_id?: unknown; url?: unknown; document_id?: unknown; idempotency_key?: unknown }>(c.req.raw, 8 * 1024);
+  if ((body.connection_id !== undefined && (typeof body.connection_id !== "string" || !body.connection_id || body.connection_id.length > 256))
     || typeof body.url !== "string" || !body.url.trim() || body.url.length > WEB_TARGET_URL_MAX_CHARS) {
-    throw badRequest("connection_id and a URL from the approved website connection are required");
+    throw badRequest("A URL from the approved website connection is required");
   }
+  const refreshDocumentId = body.document_id === undefined ? null : typeof body.document_id === "string" && body.document_id.length <= 256 ? body.document_id : null;
+  if (body.document_id !== undefined && (!refreshDocumentId || typeof body.idempotency_key !== "string"
+    || !/^[A-Za-z0-9_-]{16,128}$/.test(body.idempotency_key))) {
+    throw badRequest("Refreshing a saved website source requires a document ID and a 16–128 character idempotency key");
+  }
+  if (!refreshDocumentId && typeof body.connection_id !== "string") throw badRequest("connection_id is required for a new website source");
   let requested: URL;
   try { requested = new URL(body.url); }
   catch { throw badRequest("Website source URL is invalid"); }
-  if (requested.protocol !== "https:" || requested.username || requested.password) {
-    throw badRequest("Website Knowledge sources must use HTTPS without embedded credentials");
+  if (requested.protocol !== "https:" || requested.username || requested.password || requested.search || requested.hash) {
+    throw badRequest("Website Knowledge sources must use HTTPS public page URLs without credentials, query strings, or fragments");
+  }
+  type RefreshDocument = { id: string; source_url: string; source_requested_url: string | null; source_revision: number;
+    source_connection_ref: string; source_state: string; source_adapter: string };
+  let refreshDocument: RefreshDocument | null = null;
+  let connectionId = typeof body.connection_id === "string" ? body.connection_id : "";
+  if (refreshDocumentId) {
+    refreshDocument = await c.env.PLATFORM_DB.prepare(`SELECT id,source_url,source_requested_url,source_revision,source_connection_ref,source_state,source_adapter
+      FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND status IN ('indexed','failed')`)
+      .bind(refreshDocumentId, tenantId, spaceId, projectId).first<RefreshDocument>();
+    if (!refreshDocument || refreshDocument.source_adapter !== "website" || refreshDocument.source_state !== "current"
+      || !refreshDocument.source_url || (connectionId && refreshDocument.source_connection_ref !== connectionId)
+      || (refreshDocument.source_requested_url ?? refreshDocument.source_url) !== requested.href) return c.json({ error_code: "website_source_not_refreshable" }, 404);
+    connectionId = refreshDocument.source_connection_ref;
   }
   const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,status
     FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND project_id=? AND status='active'`)
-    .bind(body.connection_id, tenantId, spaceId, access.userId, projectId).first<WebsiteConnectionGrant>();
+    .bind(connectionId, tenantId, spaceId, access.userId, projectId).first<WebsiteConnectionGrant>();
   if (!connection) return c.json({ error_code: "website_connection_not_found" }, 404);
   const origins = websiteConnectionOrigins(connection);
   if (!origins || !origins.includes(requested.origin)) return c.json({ error_code: "website_origin_not_authorized" }, 403);
 
+  let refreshOperationId: string | null = null;
+  let refreshAttempt = 1;
   try {
+    if (refreshDocument && typeof body.idempotency_key === "string") {
+      const now = new Date().toISOString();
+      const nextAttempt = await c.env.PLATFORM_DB.prepare(`SELECT id,request_sha256,state,attempt_count,next_attempt_at,last_attempt_at FROM kb_source_refresh_operations
+        WHERE tenant_id=? AND space_id=? AND document_id=? AND idempotency_key_hash=?`)
+        .bind(tenantId, spaceId, refreshDocument.id, await sha256Hex(body.idempotency_key))
+        .first<{ id: string; request_sha256: string; state: string; attempt_count: number; next_attempt_at: string | null; last_attempt_at: string }>();
+      const requestSha256 = await sha256Hex(JSON.stringify({ tenantId, spaceId, projectId, documentId: refreshDocument.id,
+        connectionId: connection.id, sourceRevision: refreshDocument.source_revision, requestedUrl: requested.href }));
+      if (nextAttempt && nextAttempt.request_sha256 !== requestSha256) {
+        throw new HttpError(409, "website_refresh_key_reused", "This refresh request key was already used for another source version");
+      }
+      if (nextAttempt?.state === "completed" || nextAttempt?.state === "superseded") {
+        throw new HttpError(409, "website_refresh_request_stale", "This source has already advanced; reload its current version before refreshing again");
+      }
+      if (nextAttempt?.state === "fetching") {
+        const lastAttemptMs = Date.parse(nextAttempt.last_attempt_at);
+        if (!Number.isFinite(lastAttemptMs) || Date.now() - lastAttemptMs < WEBSITE_REFRESH_LEASE_MS) {
+          throw new HttpError(409, "website_refresh_in_progress", "A refresh attempt is already in progress");
+        }
+        const recoveredAt = new Date();
+        const retryAt = new Date(recoveredAt.getTime() + Math.min(360, 2 ** Math.min(nextAttempt.attempt_count - 1, 8)) * 60_000).toISOString();
+        const recovered = await c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='failed',
+          error_code='website_refresh_interrupted',next_attempt_at=?,updated_at=?
+          WHERE id=? AND state='fetching' AND last_attempt_at=?`)
+          .bind(retryAt, recoveredAt.toISOString(), nextAttempt.id, nextAttempt.last_attempt_at).run();
+        if (!recovered.meta.changes) throw new HttpError(409, "website_refresh_in_progress", "A refresh attempt is already being recovered");
+        await c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET source_refresh_failures=source_refresh_failures+1,
+          source_last_error_code='website_refresh_interrupted',source_next_attempt_at=?
+          WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND source_revision=?
+            AND source_connection_ref=? AND source_state='current'`)
+          .bind(retryAt, refreshDocument.id, tenantId, spaceId, projectId, refreshDocument.source_revision, connection.id).run();
+        return c.json({ error_code: "website_refresh_interrupted", retry_at: retryAt }, 429,
+          { "retry-after": String(Math.max(1, Math.ceil((Date.parse(retryAt) - Date.now()) / 1000))) });
+      }
+      if (nextAttempt?.next_attempt_at && Date.parse(nextAttempt.next_attempt_at) > Date.now()) {
+        return c.json({ error_code: "website_refresh_backoff", retry_at: nextAttempt.next_attempt_at }, 429,
+          { "retry-after": String(Math.max(1, Math.ceil((Date.parse(nextAttempt.next_attempt_at) - Date.now()) / 1000))) });
+      }
+      refreshOperationId = nextAttempt?.id ?? crypto.randomUUID();
+      refreshAttempt = nextAttempt ? nextAttempt.attempt_count + 1 : 1;
+      const claim = nextAttempt
+        ? c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='fetching',attempt_count=attempt_count+1,
+            final_url=NULL,preview_sha256=NULL,last_attempt_at=?,next_attempt_at=NULL,error_code=NULL,updated_at=?
+          WHERE id=? AND state IN ('failed','preview_ready') AND request_sha256=?`)
+          .bind(now, now, refreshOperationId, requestSha256)
+        : c.env.PLATFORM_DB.prepare(`INSERT INTO kb_source_refresh_operations
+          (id,tenant_id,space_id,project_id,document_id,connection_ref,source_revision,idempotency_key_hash,request_sha256,
+           state,attempt_count,requested_url,last_attempt_at,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,?,?,?,'fetching',1,?,?,?,?)`)
+          .bind(refreshOperationId, tenantId, spaceId, projectId, refreshDocument.id, connection.id,
+            refreshDocument.source_revision, await sha256Hex(body.idempotency_key), requestSha256, requested.href, now, now, now);
+      try {
+        const statements = [
+          ...(!nextAttempt ? [c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='superseded',
+            error_code='newer_refresh_requested',updated_at=? WHERE tenant_id=? AND space_id=? AND document_id=?
+              AND source_revision=? AND state='preview_ready'`).bind(now, tenantId, spaceId, refreshDocument.id, refreshDocument.source_revision)] : []),
+          claim,
+          c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET source_last_attempt_at=?,source_last_error_code=NULL,source_next_attempt_at=NULL
+            WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND source_revision=? AND source_connection_ref=?
+              AND source_state='current' AND status IN ('indexed','failed') AND EXISTS (
+                SELECT 1 FROM website_connections wc WHERE wc.id=source_connection_ref AND wc.status='active'
+                  AND wc.tenant_id=kb_documents.tenant_id AND wc.space_id=kb_documents.space_id
+                  AND wc.project_id=kb_documents.project_id
+              )`).bind(now, refreshDocument.id, tenantId, spaceId, projectId, refreshDocument.source_revision, connection.id),
+        ];
+        const claimed = await c.env.PLATFORM_DB.batch(statements);
+        const claimIndex = nextAttempt ? 0 : 1;
+        if (!claimed[claimIndex]?.meta.changes) throw new HttpError(409, "website_refresh_in_progress", "A refresh attempt is already active for this source");
+        if (!claimed[claimIndex + 1]?.meta.changes) {
+          await c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='superseded',error_code='source_changed',updated_at=?
+            WHERE id=? AND state='fetching'`).bind(now, refreshOperationId).run();
+          throw new HttpError(409, "website_refresh_superseded", "The source changed or its connection was revoked before refresh started");
+        }
+      } catch (error) {
+        if (error instanceof HttpError) throw error;
+        throw new HttpError(409, "website_refresh_in_progress", "A refresh attempt is already active for this source");
+      }
+    }
+    const failRefresh = async (errorCode: string) => {
+      if (!refreshOperationId || !refreshDocument) return;
+      const backoffMinutes = Math.min(360, 2 ** Math.min(refreshAttempt - 1, 8));
+      const now = new Date();
+      const retryAt = new Date(now.getTime() + backoffMinutes * 60_000).toISOString();
+      await c.env.PLATFORM_DB.batch([
+        c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='failed',error_code=?,next_attempt_at=?,updated_at=?
+          WHERE id=? AND state='fetching'`).bind(errorCode, retryAt, now.toISOString(), refreshOperationId),
+        c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET source_refresh_failures=source_refresh_failures+1,
+          source_last_error_code=?,source_next_attempt_at=? WHERE id=? AND tenant_id=? AND space_id=? AND source_revision=?
+            AND source_connection_ref=? AND source_state='current'`)
+          .bind(errorCode, retryAt, refreshDocument.id, tenantId, spaceId, refreshDocument.source_revision, connection.id),
+      ]).catch(() => undefined);
+    };
     const guarded = await fetchSsrfGuarded(requested.href, {
       headers: { "user-agent": "naelao-knowledge/1.0", accept: "text/markdown, text/plain;q=0.9, text/html;q=0.8, application/xhtml+xml;q=0.7" },
     }, origins);
-    if (!guarded.ok) return c.json({ error_code: guarded.status === 403 ? "forbidden" : "bad_gateway", message: guarded.message }, guarded.status);
-    if (!guarded.response.ok) return c.json({ error_code: "website_upstream_status", upstream_status: guarded.response.status }, 502);
+    if (!guarded.ok) {
+      await failRefresh(guarded.status === 403 ? "website_destination_rejected" : "website_upstream_unavailable");
+      return c.json({ error_code: guarded.status === 403 ? "forbidden" : "bad_gateway", message: guarded.message }, guarded.status);
+    }
+    if (!guarded.response.ok) {
+      await failRefresh("website_upstream_status");
+      return c.json({ error_code: "website_upstream_status", upstream_status: guarded.response.status }, 502);
+    }
     const mime = (guarded.response.headers.get("content-type") ?? "").split(";", 1)[0]!.trim().toLowerCase();
     if (!["text/markdown", "text/plain", "text/html", "application/xhtml+xml"].includes(mime)) {
       await guarded.response.body?.cancel().catch(() => undefined);
+      await failRefresh("website_content_type_unsupported");
       return c.json({ error_code: "website_content_type_unsupported", message: "Only HTML, Markdown, and plain-text pages are supported" }, 415);
     }
     const fetched = await readBoundedText(guarded.response, WEBSITE_SOURCE_CONTENT_CAP);
-    if (fetched.truncated) return c.json({ error_code: "website_source_too_large", limit_bytes: WEBSITE_SOURCE_CONTENT_CAP }, 413);
+    if (fetched.truncated) {
+      await failRefresh("website_source_too_large");
+      return c.json({ error_code: "website_source_too_large", limit_bytes: WEBSITE_SOURCE_CONTENT_CAP }, 413);
+    }
     const { sanitized, injectionDetected } = sanitizeKbContent(fetched.content);
-    if (!sanitized.trim()) return c.json({ error_code: "website_source_empty" }, 422);
+    if (!sanitized.trim()) {
+      await failRefresh("website_source_empty");
+      return c.json({ error_code: "website_source_empty" }, 422);
+    }
     const approvedPreview = sanitized.trim();
     const previewSha256 = await sha256TextHex(approvedPreview);
     const token = await createWebsitePreviewToken({ secret: c.env.PLATFORM_SECRET,
       scope: { tenantId, spaceId, projectId, userId: access.userId, connectionId: connection.id },
-      requestedUrl: requested.href, finalUrl: guarded.url.href, previewSha256 });
+      requestedUrl: requested.href, finalUrl: guarded.url.href, previewSha256,
+      ...(refreshDocument && refreshOperationId ? { operation: "refresh" as const, documentId: refreshDocument.id,
+        sourceRevision: refreshDocument.source_revision, refreshOperationId } : {}) });
+    if (refreshDocument && refreshOperationId) {
+      const now = new Date().toISOString();
+      const ready = await c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='preview_ready',final_url=?,preview_sha256=?,
+        next_attempt_at=NULL,error_code=NULL,updated_at=? WHERE id=? AND state='fetching' AND source_revision=?
+          AND EXISTS (SELECT 1 FROM kb_documents d JOIN website_connections wc ON wc.id=d.source_connection_ref
+            WHERE d.id=? AND d.source_revision=? AND d.status IN ('indexed','failed') AND d.source_state='current'
+              AND wc.status='active' AND wc.id=kb_source_refresh_operations.connection_ref)`)
+        .bind(guarded.url.href, previewSha256, now, refreshOperationId, refreshDocument.source_revision,
+          refreshDocument.id, refreshDocument.source_revision).run();
+      if (!ready.meta.changes) throw new HttpError(409, "website_refresh_superseded", "The source changed or its connection was revoked during refresh");
+    }
     const warnings = ["Review the extracted page text before adding it. HTML markup is stripped; this is a bounded page snapshot and will not refresh automatically."];
     if (mime === "text/html" || mime === "application/xhtml+xml") warnings.push("Page extraction strips markup and may not preserve layout, tables, or client-rendered content.");
     if (injectionDetected) warnings.push("Potential prompt-injection text was detected. Indexed content remains untrusted and is subject to Knowledge safety filtering.");
     return c.json({ preview: { content: approvedPreview, requested_url: requested.href, final_url: guarded.url.href,
-      content_type: mime, preview_sha256: previewSha256, preview_token: token, expires_in_seconds: 900, warnings } }, 200,
+      content_type: mime, preview_sha256: previewSha256, preview_token: token, expires_in_seconds: 900, warnings,
+      ...(refreshOperationId ? { refresh_operation_id: refreshOperationId, expected_source_revision: refreshDocument?.source_revision } : {}) } }, 200,
       { "cache-control": "private, no-store" });
-  } catch {
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (refreshOperationId && refreshDocument) {
+      const now = new Date();
+      const retryAt = new Date(now.getTime() + Math.min(360, 2 ** Math.min(refreshAttempt - 1, 8)) * 60_000).toISOString();
+      await c.env.PLATFORM_DB.batch([
+        c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='failed',error_code='website_preview_failed',
+          next_attempt_at=?,updated_at=? WHERE id=? AND state='fetching'`).bind(retryAt, now.toISOString(), refreshOperationId),
+        c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET source_refresh_failures=source_refresh_failures+1,
+          source_last_error_code='website_preview_failed',source_next_attempt_at=? WHERE id=? AND source_revision=? AND source_state='current'`)
+          .bind(retryAt, refreshDocument.id, refreshDocument.source_revision),
+      ]).catch(() => undefined);
+    }
     return c.json({ error_code: "website_preview_unavailable", message: "The website could not be fetched safely. Retry the preview." }, 502);
   }
 });
@@ -1390,7 +1546,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
 
   const requestSha256 = await sha256Hex(JSON.stringify({
     version: 3, tenantId, spaceId, projectId, title: body.title.trim(), contentType, sourceAdapter, sourceState,
-    sourceUrl: body.source_url ?? null, sourceFileName, sourceConnectionRef, sourceGrantRevision,
+    sourceUrl: body.source_url ?? null, sourceRequestedUrl: creatingWebsiteSource ? body.website_requested_url : null,
+    sourceFileName, sourceConnectionRef, sourceGrantRevision,
     sourceSha256: await sha256BytesHex(originalBytes),
     parserVersion: pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null,
     extractionSha256: pdfLineage?.extractionSha256 ?? null,
@@ -1507,7 +1664,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
       pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
       pdfLineage?.approvedContentSha256 ?? null, now, now, sourceAdapter, sourceContentSha256, sourceState,
-      sourceConnectionRef, sourceGrantRevision];
+      sourceConnectionRef, sourceGrantRevision, creatingWebsiteSource ? now : null, creatingWebsiteSource ? now : null,
+      creatingWebsiteSource ? body.website_requested_url ?? null : null];
     const created = await insertKnowledgeDocumentOnce(c.env.PLATFORM_DB, { values: documentValues,
       idempotency: { ...idempotencyScope, requestSha256, documentId: docId, createdAt: now } });
     if (!created.created && created.existing) return returnExistingKnowledgeDocument(created.existing);
@@ -1564,7 +1722,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     requiredRoleRank, JSON.stringify(allowedUserIds), pdfLineage?.sourceSha256 ?? null, sourceFileName,
     pdfLineage ? KNOWLEDGE_PDF_PARSER_VERSION : null, pdfLineage?.extractionSha256 ?? null,
     pdfLineage?.approvedContentSha256 ?? null, now, now, sourceAdapter, sourceContentSha256, sourceState,
-    sourceConnectionRef, sourceGrantRevision];
+    sourceConnectionRef, sourceGrantRevision, creatingWebsiteSource ? now : null, creatingWebsiteSource ? now : null,
+    creatingWebsiteSource ? body.website_requested_url ?? null : null];
   const created = await insertKnowledgeDocumentOnce(c.env.PLATFORM_DB, { values: documentValues,
     idempotency: { ...idempotencyScope, requestSha256, documentId: docId, createdAt: now } });
   if (!created.created && created.existing) return returnExistingKnowledgeDocument(created.existing);
@@ -1774,6 +1933,14 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   const body = await readBoundedJson<{
     title?: string;
     content?: string;
+    website_refresh?: {
+      operation_id?: string;
+      expected_source_revision?: number;
+      requested_url?: string;
+      final_url?: string;
+      preview_sha256?: string;
+      preview_token?: string;
+    };
   }>(c.req.raw, 6_500_000);
 
   if (body.title !== undefined && (typeof body.title !== "string" || !body.title.trim() || body.title.length > 500)) {
@@ -1793,16 +1960,83 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   // Verify ownership and get current state
   const existing = await c.env.PLATFORM_DB.prepare(
     `SELECT id, title, chunk_count, project_id, required_role_rank, allowed_user_ids_json,
+       source_adapter,source_state,source_revision,source_connection_ref,source_url,source_requested_url,source_content_sha256,
        (SELECT required_role_rank FROM kb_chunks WHERE document_id=kb_documents.id AND chunk_index=0 LIMIT 1) AS legacy_required_role_rank
      FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ?`
   ).bind(docId, spaceId, tenantId).first<{ id: string; title: string; chunk_count: number; project_id: string | null;
-    required_role_rank: number; allowed_user_ids_json: string | null; legacy_required_role_rank: number | null }>();
+    required_role_rank: number; allowed_user_ids_json: string | null; legacy_required_role_rank: number | null;
+    source_adapter: string; source_state: string; source_revision: number; source_connection_ref: string | null; source_url: string | null;
+    source_requested_url: string | null;
+    source_content_sha256: string | null }>();
 
   if (!existing) throw notFound("KbDocument");
   const projectId = existing.project_id;
   if (projectId) {
     const access = await requireProjectAccess(c, projectId);
     if (access instanceof Response) return access;
+  }
+
+  let websiteRefresh: { operationId: string; expectedRevision: number; finalUrl: string; previewSha256: string; attemptCount: number } | null = null;
+  if (existing.source_adapter === "website" && existing.source_state === "current" && body.content !== undefined) {
+    if (!projectId || !body.website_refresh || typeof body.website_refresh.expected_source_revision !== "number"
+      || !Number.isSafeInteger(body.website_refresh.expected_source_revision)
+      || typeof body.website_refresh.operation_id !== "string" || typeof body.website_refresh.requested_url !== "string"
+      || typeof body.website_refresh.final_url !== "string" || typeof body.website_refresh.preview_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(body.website_refresh.preview_sha256) || typeof body.website_refresh.preview_token !== "string") {
+      throw new HttpError(409, "website_refresh_approval_required", "Preview and approve the current website page before replacing this snapshot");
+    }
+    const ownerAccess = await requireProjectAccess(c, projectId, 40);
+    if (ownerAccess instanceof Response) return ownerAccess;
+    let requestedUrl: URL;
+    let finalUrl: URL;
+    try { requestedUrl = new URL(body.website_refresh.requested_url); finalUrl = new URL(body.website_refresh.final_url); }
+    catch { throw badRequest("Website refresh URLs are invalid"); }
+    if (!existing.source_url || requestedUrl.href !== (existing.source_requested_url ?? existing.source_url)
+      || requestedUrl.href !== body.website_refresh.requested_url
+      || finalUrl.href !== body.website_refresh.final_url || requestedUrl.protocol !== "https:" || finalUrl.protocol !== "https:"
+      || requestedUrl.username || requestedUrl.password || requestedUrl.search || requestedUrl.hash
+      || finalUrl.username || finalUrl.password || finalUrl.search || finalUrl.hash) {
+      throw new HttpError(409, "website_refresh_source_changed", "The website source URL changed; preview it again");
+    }
+    const userId = c.req.header("x-naelao-user-id") ?? "";
+    const connection = existing.source_connection_ref ? await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,status
+      FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND project_id=? AND status='active'`)
+      .bind(existing.source_connection_ref, tenantId, spaceId, userId, projectId).first<WebsiteConnectionGrant>() : null;
+    const origins = connection ? websiteConnectionOrigins(connection) : null;
+    if (!connection || !origins?.includes(requestedUrl.origin) || !origins.includes(finalUrl.origin)) {
+      throw new HttpError(409, "website_connection_changed", "The approved website connection is no longer active for this Project and URL");
+    }
+    const operation = await c.env.PLATFORM_DB.prepare(`SELECT id,state,source_revision,connection_ref,requested_url,final_url,preview_sha256,attempt_count
+      FROM kb_source_refresh_operations WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND document_id=?`)
+      .bind(body.website_refresh.operation_id, tenantId, spaceId, projectId, docId)
+      .first<{ id: string; state: string; source_revision: number; connection_ref: string; requested_url: string; final_url: string | null; preview_sha256: string | null; attempt_count: number }>();
+    if (operation?.state === "completed" && body.website_refresh.expected_source_revision + 1 === existing.source_revision
+      && operation.source_revision === body.website_refresh.expected_source_revision && operation.final_url === finalUrl.href
+      && operation.preview_sha256 === body.website_refresh.preview_sha256
+      && existing.source_url === finalUrl.href && existing.source_content_sha256 === await sha256Hex(body.content)) {
+      const replay = publicKnowledgeDocument(await c.env.PLATFORM_DB.prepare(
+        `SELECT id,space_id,tenant_id,project_id,title,source_url,content_type,status,chunk_count,source_adapter,source_revision,
+          source_state,source_content_sha256,created_at,updated_at FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?`
+      ).bind(docId, tenantId, spaceId).first<Record<string, unknown>>());
+      return c.json(replay, 200);
+    }
+    if (body.website_refresh.expected_source_revision !== existing.source_revision) {
+      throw new HttpError(409, "website_source_revision_changed", "This source changed while the refresh was being reviewed");
+    }
+    if (!operation || operation.state !== "preview_ready" || operation.source_revision !== existing.source_revision
+      || operation.connection_ref !== connection.id || operation.requested_url !== requestedUrl.href
+      || operation.final_url !== finalUrl.href || operation.preview_sha256 !== body.website_refresh.preview_sha256) {
+      throw new HttpError(409, "website_refresh_receipt_expired", "The website refresh preview expired or was superseded");
+    }
+    const previewValid = await verifyWebsitePreviewToken({ token: body.website_refresh.preview_token, secret: c.env.PLATFORM_SECRET,
+      scope: { tenantId, spaceId, projectId, userId, connectionId: connection.id }, requestedUrl: requestedUrl.href,
+      finalUrl: finalUrl.href, previewSha256: body.website_refresh.preview_sha256, operation: "refresh", documentId: docId,
+      sourceRevision: existing.source_revision, refreshOperationId: operation.id });
+    if (!previewValid) throw new HttpError(409, "website_refresh_receipt_expired", "Preview this website page again before saving");
+    websiteRefresh = { operationId: operation.id, expectedRevision: existing.source_revision,
+      finalUrl: finalUrl.href, previewSha256: body.website_refresh.preview_sha256, attemptCount: operation.attempt_count };
+  } else if (body.website_refresh !== undefined) {
+    throw badRequest("website_refresh is valid only when updating a current website source");
   }
 
   // If only updating title (no content re-index needed)
@@ -1893,7 +2127,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       .map(([role]) => role);
   const accessMask = allowedRoles.reduce((mask, role) => mask | KNOWLEDGE_ROLE_MASK[role as KnowledgeRole], 0);
 
-  const storageOperationId = crypto.randomUUID();
+  const storageOperationId = websiteRefresh?.operationId ?? crypto.randomUUID();
   let storageBytesWritten = 0;
   let reindexStarted = false;
   let mutationLease: string | null = null;
@@ -2031,18 +2265,46 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       }
     }
 
+    const refreshFlag = websiteRefresh ? 1 : 0;
     const publishReindex = await c.env.PLATFORM_DB.batch([
       c.env.PLATFORM_DB.prepare(
         `UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, required_role_rank=?,
           allowed_user_ids_json=COALESCE(allowed_user_ids_json, ?), source_revision=source_revision+1,
-          source_content_sha256=?, updated_at = datetime('now')
-        WHERE id = ? AND status='processing'
+          source_content_sha256=?, source_url=COALESCE(?,source_url),
+          source_state=CASE WHEN ?=1 THEN 'current' ELSE source_state END,
+          source_last_success_at=CASE WHEN ?=1 THEN datetime('now') ELSE source_last_success_at END,
+          source_refresh_failures=CASE WHEN ?=1 THEN 0 ELSE source_refresh_failures END,
+          source_last_error_code=CASE WHEN ?=1 THEN NULL ELSE source_last_error_code END,
+          source_next_attempt_at=CASE WHEN ?=1 THEN NULL ELSE source_next_attempt_at END,updated_at = datetime('now')
+        WHERE id = ? AND status='processing' AND (? IS NULL OR source_revision=?)
+          AND (? IS NULL OR EXISTS (SELECT 1 FROM website_connections wc WHERE wc.id=source_connection_ref
+            AND wc.tenant_id=kb_documents.tenant_id AND wc.space_id=kb_documents.space_id
+            AND wc.project_id=kb_documents.project_id AND wc.status='active'))
+          AND (? IS NULL OR EXISTS (SELECT 1 FROM kb_source_refresh_operations ro WHERE ro.id=?
+            AND ro.document_id=kb_documents.id AND ro.state='preview_ready' AND ro.source_revision=? AND ro.preview_sha256=?))
           AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
-      ).bind(newTitle, chunks.length, requiredRoleRank, JSON.stringify(allowedUserIds), newSourceContentSha256, docId, docId),
+      ).bind(newTitle, chunks.length, requiredRoleRank, JSON.stringify(allowedUserIds), newSourceContentSha256,
+        websiteRefresh?.finalUrl ?? null, refreshFlag, refreshFlag, refreshFlag, refreshFlag, refreshFlag, refreshFlag,
+        docId, websiteRefresh?.expectedRevision ?? null, websiteRefresh?.expectedRevision ?? null,
+        websiteRefresh?.operationId ?? null, websiteRefresh?.operationId ?? null, websiteRefresh?.expectedRevision ?? null,
+        websiteRefresh?.previewSha256 ?? null, docId),
+      ...(websiteRefresh ? [c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='completed',
+        completed_at=datetime('now'),next_attempt_at=NULL,error_code=NULL,updated_at=datetime('now')
+        WHERE id=? AND state='preview_ready' AND source_revision=? AND preview_sha256=? AND EXISTS (
+          SELECT 1 FROM kb_documents d WHERE d.id=kb_source_refresh_operations.document_id AND d.source_revision=?+1
+            AND d.source_url=kb_source_refresh_operations.final_url AND d.source_content_sha256=? AND d.source_state='current'
+        )`).bind(websiteRefresh.operationId, websiteRefresh.expectedRevision, websiteRefresh.previewSha256,
+        websiteRefresh.expectedRevision, newSourceContentSha256)] : []),
       ...revisionExternalPublicationsForDocument(c.env.PLATFORM_DB,
         { tenantId, spaceId, projectId, documentId: docId, updatedAt: new Date().toISOString() }),
     ]);
-    if (!publishReindex[0]?.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+    if (!publishReindex[0]?.meta.changes) {
+      if (websiteRefresh) throw new HttpError(409, "website_refresh_superseded", "The source or its approved connection changed during refresh");
+      throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+    }
+    if (websiteRefresh && !publishReindex[1]?.meta.changes) {
+      throw new HttpError(409, "website_refresh_receipt_expired", "The refresh receipt could not be completed; reload the source status");
+    }
 
     const updated = publicKnowledgeDocument(await c.env.PLATFORM_DB.prepare(
       `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
@@ -2058,8 +2320,21 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
           AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
       ).bind(docId, docId).run().catch(() => {});
     }
+    if (websiteRefresh) {
+      const now = new Date();
+      const retryAt = new Date(now.getTime() + Math.min(360, 2 ** Math.min(websiteRefresh.attemptCount - 1, 8)) * 60_000).toISOString();
+      await c.env.PLATFORM_DB.batch([
+        c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='failed',error_code='website_reindex_failed',
+          next_attempt_at=?,updated_at=? WHERE id=? AND state='preview_ready'`)
+          .bind(retryAt, now.toISOString(), websiteRefresh.operationId),
+        c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET source_refresh_failures=source_refresh_failures+1,
+          source_last_error_code='website_reindex_failed',source_next_attempt_at=? WHERE id=? AND tenant_id=? AND space_id=?
+            AND source_revision=? AND source_state='current'`)
+          .bind(retryAt, docId, tenantId, spaceId, websiteRefresh.expectedRevision),
+      ]).catch(() => undefined);
+    }
     await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, false, storageOperationId);
-    if (err instanceof HttpError && err.status === 410) preserveHttpStatus(err);
+    if (err instanceof HttpError && (err.status === 409 || err.status === 410)) preserveHttpStatus(err);
     throw internalError(`Document update failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     if (mutationLease) await releaseKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease);
@@ -2869,7 +3144,8 @@ async function fetchSsrfGuarded(rawUrl: string, init: RequestInit, allowedOrigin
   catch { return { ok: false, status: 403, message: "Destination URL is invalid" }; }
   const signal = AbortSignal.timeout(30_000);
   for (let hop = 0; hop <= 5; hop++) {
-    if ((target.protocol !== "http:" && target.protocol !== "https:") || target.username || target.password) {
+    if ((target.protocol !== "http:" && target.protocol !== "https:") || target.username || target.password
+      || (allowedOrigins !== undefined && (target.search || target.hash))) {
       return { ok: false, status: 403, message: "Destination must be an http(s) URL without embedded credentials" };
     }
     if (allowedOrigins && !allowedOrigins.includes(target.origin)) {

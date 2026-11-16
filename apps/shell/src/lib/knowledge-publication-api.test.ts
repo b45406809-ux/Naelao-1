@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createKbDocument, getExternalKnowledgePublicationSources, listExternalKnowledgePublicationEvents, listExternalKnowledgePublications,
+import { applyWebsiteKnowledgeRefresh, createKbDocument, getExternalKnowledgePublicationSources, listExternalKnowledgePublicationEvents, listExternalKnowledgePublications,
   previewWebsiteKnowledgeSource } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -71,4 +71,29 @@ it("previews and saves only a Project-scoped website source receipt", async () =
     website_connection_id: "connection-a", website_preview_token: "signed-preview", content_type: "url",
     project_id: "project b", content: "Corrected owner-approved text",
   });
+});
+
+it("keeps a website refresh receipt bound to its document version through the PATCH caller", async () => {
+  const preview = { content: "Updated page text", requested_url: "https://docs.example/current", final_url: "https://docs.example/current",
+    content_type: "text/html", preview_sha256: "b".repeat(64), preview_token: "signed-refresh", expires_in_seconds: 900, warnings: [],
+    refresh_operation_id: "refresh-op-1", expected_source_revision: 7 };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(String(input).endsWith("/preview")
+    ? JSON.stringify({ preview }) : JSON.stringify({ id: "doc-a", status: "indexed" }),
+    { status: 200, headers: { "content-type": "application/json" } }));
+  vi.stubGlobal("fetch", fetchMock);
+  const session = { sessionToken: "session-token", endUserId: "owner-a" };
+  await expect(previewWebsiteKnowledgeSource("space-a", "project-a", session, {
+    document_id: "doc-a", idempotency_key: "refresh-request-0001", url: preview.requested_url,
+  })).resolves.toMatchObject({ refresh_operation_id: "refresh-op-1", expected_source_revision: 7 });
+  await applyWebsiteKnowledgeRefresh("space-a", "doc-a", "project-a", session, {
+    title: "Docs", content: "Owner-corrected updated text", requested_url: preview.requested_url, final_url: preview.final_url,
+    preview_sha256: preview.preview_sha256, preview_token: preview.preview_token,
+    refresh_operation_id: preview.refresh_operation_id, expected_source_revision: preview.expected_source_revision,
+  });
+  const [url, init] = fetchMock.mock.calls.at(-1) ?? [];
+  expect(url).toBe("http://localhost:8787/v1/spaces/space-a/kb/documents/doc-a");
+  expect(init).toEqual(expect.objectContaining({ method: "PATCH", headers: expect.any(Headers) }));
+  expect(JSON.parse(String(init?.body))).toMatchObject({ website_refresh: {
+    operation_id: "refresh-op-1", expected_source_revision: 7, preview_token: "signed-refresh",
+  }, content: "Owner-corrected updated text" });
 });

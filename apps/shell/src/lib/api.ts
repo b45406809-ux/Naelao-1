@@ -3599,6 +3599,15 @@ export interface KbDocument {
   content_type: "text" | "url" | "code" | "pdf";
   status: "pending" | "processing" | "indexed" | "flagged" | "failed" | "deleting" | "reindex_required";
   chunk_count: number;
+  source_adapter?: "manual" | "website" | "connector";
+  source_revision?: number;
+  source_state?: "current" | "stale" | "revoked" | "unsupported";
+  source_requested_url?: string | null;
+  source_last_attempt_at?: string | null;
+  source_last_success_at?: string | null;
+  source_next_attempt_at?: string | null;
+  source_refresh_failures?: number;
+  source_last_error_code?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -3630,13 +3639,15 @@ export interface WebsiteKnowledgePreview {
   preview_token: string;
   expires_in_seconds: number;
   warnings: string[];
+  refresh_operation_id?: string;
+  expected_source_revision?: number;
 }
 
 export async function previewWebsiteKnowledgeSource(
   spaceId: string,
   projectId: string,
   session: SessionCredentials,
-  input: { connection_id: string; url: string },
+  input: { connection_id?: string; url: string; document_id?: string; idempotency_key?: string },
 ): Promise<WebsiteKnowledgePreview> {
   const response = await apiFetch<{ preview: WebsiteKnowledgePreview }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/sources/website/preview`,
@@ -3644,6 +3655,29 @@ export async function previewWebsiteKnowledgeSource(
   );
   assertKnowledgeContentWithinScope(response.preview.content, projectId);
   return response.preview;
+}
+
+export async function applyWebsiteKnowledgeRefresh(
+  spaceId: string,
+  documentId: string,
+  projectId: string,
+  session: SessionCredentials,
+  input: { title: string; content: string; requested_url: string; final_url: string; preview_sha256: string;
+    preview_token: string; refresh_operation_id: string; expected_source_revision: number },
+): Promise<KbDocument> {
+  assertKnowledgeContentWithinScope(input.content, projectId);
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/kb/documents/${encodeURIComponent(documentId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title: input.title, content: input.content, website_refresh: {
+      operation_id: input.refresh_operation_id,
+      expected_source_revision: input.expected_source_revision,
+      requested_url: input.requested_url,
+      final_url: input.final_url,
+      preview_sha256: input.preview_sha256,
+      preview_token: input.preview_token,
+    } }),
+    session,
+  });
 }
 
 export async function previewKbPdf(

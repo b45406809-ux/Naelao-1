@@ -18,4 +18,18 @@ describe("owner-approved website preview receipt", () => {
     await expect(verifyWebsitePreviewToken({ ...input, now: 910_001 })).resolves.toBe(false);
     await expect(verifyWebsitePreviewToken({ ...input, secret: "other" })).resolves.toBe(false);
   });
+
+  it("binds a refresh receipt to the source document, revision and durable refresh operation", async () => {
+    const previewSha256 = await sha256TextHex("# Updated guide");
+    const token = await createWebsitePreviewToken({ secret: "secret", scope, requestedUrl, finalUrl, previewSha256,
+      operation: "refresh", documentId: "document-1", sourceRevision: 8, refreshOperationId: "refresh-1",
+      now: 10_000, nonce: "website-refresh-nonce-123" });
+    const input = { token, secret: "secret", scope, requestedUrl, finalUrl, previewSha256, operation: "refresh" as const,
+      documentId: "document-1", sourceRevision: 8, refreshOperationId: "refresh-1", now: 10_001 };
+    await expect(verifyWebsitePreviewToken(input)).resolves.toBe(true);
+    await expect(verifyWebsitePreviewToken({ ...input, sourceRevision: 7 })).resolves.toBe(false);
+    await expect(verifyWebsitePreviewToken({ ...input, refreshOperationId: "refresh-2" })).resolves.toBe(false);
+    await expect(verifyWebsitePreviewToken({ ...input, documentId: "document-2" })).resolves.toBe(false);
+    await expect(verifyWebsitePreviewToken({ ...input, operation: "create" })).resolves.toBe(false);
+  });
 });
