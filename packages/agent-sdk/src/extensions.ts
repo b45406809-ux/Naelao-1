@@ -21,6 +21,55 @@ export type { AdjustStockInput, AdjustStockOutput, ListLowStockInput, ListLowSto
   ReceiveStockInput, ReceiveStockOutput };
 
 export interface ExtensionSettingsSchema { schemaVersion: 1 | 2; fields: BlueprintSetupField[] }
+/** Manifest requests are declarations only; the host binds grants to the active caller and scope. */
+export type ExtensionResourceKind = "objects" | "structured_data" | "jobs";
+export type ExtensionResourceScope = "installation" | "project" | "space";
+export type ExtensionResourceValueType = "string" | "number" | "boolean";
+export interface ExtensionResourceFieldSchema { type: ExtensionResourceValueType; required?: boolean; maxLength?: number; minimum?: number; maximum?: number }
+export interface ExtensionResourceObjectSchema { schemaVersion: "1.0"; fields: Readonly<Record<string, ExtensionResourceFieldSchema>> }
+export interface ExtensionResourceOperation {
+  id: string; input: ExtensionResourceObjectSchema; output: ExtensionResourceObjectSchema;
+  idempotency: "required" | "none"; meteringUnit: "request" | "byte" | "job";
+}
+export interface ExtensionResourceRequirement {
+  id: string; kind: ExtensionResourceKind; apiVersion: "1.0"; scope: ExtensionResourceScope;
+  operations: readonly ExtensionResourceOperation[];
+  limits: { requestsPerMinute: number; maxConcurrent: number; maxBytesPerOperation: number };
+}
+export interface ExtensionResourceCapabilityDescriptor {
+  kind: ExtensionResourceKind; apiVersion: "1.0"; status: "unavailable" | "available"; operations: readonly string[];
+}
+/** Unavailable entries are truthful: declarations never advertise runtime support by themselves. */
+export const EXTENSION_RESOURCE_CAPABILITIES = Object.freeze([
+  Object.freeze({ kind: "objects" as const, apiVersion: "1.0" as const, status: "unavailable" as const, operations: Object.freeze([] as string[]) }),
+  Object.freeze({ kind: "structured_data" as const, apiVersion: "1.0" as const, status: "unavailable" as const, operations: Object.freeze([] as string[]) }),
+  Object.freeze({ kind: "jobs" as const, apiVersion: "1.0" as const, status: "unavailable" as const, operations: Object.freeze([] as string[]) }),
+]);
+export function findUnsupportedExtensionResources(requirements: readonly ExtensionResourceRequirement[],
+  capabilities: readonly ExtensionResourceCapabilityDescriptor[] = EXTENSION_RESOURCE_CAPABILITIES): Array<{ requirementId: string; kind: ExtensionResourceKind; operations: string[] }> {
+  return requirements.flatMap(requirement => {
+    const capability = capabilities.find(item => item.kind === requirement.kind && item.apiVersion === requirement.apiVersion && item.status === "available");
+    const missing = requirement.operations.map(operation => operation.id).filter(operation => !capability?.operations.includes(operation));
+    return missing.length ? [{ requirementId: requirement.id, kind: requirement.kind, operations: missing }] : [];
+  });
+}
+export interface ExtensionResourceExecutionScope {
+  tenantId: string; spaceId: string; projectId: string | null; installationId: string; principalId: string;
+}
+export interface HostIssuedExtensionResourceGrant {
+  handle: string; requirementId: string; kind: ExtensionResourceKind; apiVersion: "1.0";
+  scope: ExtensionResourceExecutionScope; operations: readonly string[];
+  status: "active" | "revoked" | "suspended"; expiresAt: string;
+}
+export interface ExtensionResourceOperationRequest {
+  handle: string; requirementId: string; operation: string; scope: ExtensionResourceExecutionScope;
+  input: unknown; idempotencyKey?: string; meteringUnit: ExtensionResourceOperation["meteringUnit"]; inputBytes: number;
+}
+/** Trusted host adapter surface. Provider credentials and provider identifiers stay out of SDK code. */
+export interface ExtensionResourceAdapter { execute<T = unknown>(request: ExtensionResourceOperationRequest): Promise<T> }
+export interface ExtensionResourceClient {
+  execute<T = unknown>(requirementId: string, operation: string, input: unknown, idempotencyKey?: string): Promise<T>;
+}
 /** Packages can require owners to publish a validated settings draft before it affects runtime. */
 export type ExtensionSettingsActivation = "owner_publish";
 /** Exact immutable dependency pin. The manifest digest fences same-version substitution. */
@@ -98,6 +147,8 @@ export interface ExtensionManifest {
   settingsActivation?: ExtensionSettingsActivation;
   /** Exact immutable package dependencies; host admission must verify the complete scoped closure. */
   dependencies?: ExtensionDependency[];
+  /** Declarative resource requests; these never imply approval or current runtime availability. */
+  resourceRequirements?: ExtensionResourceRequirement[];
 }
 
 /** Stable content pin for the canonical modular extension manifest stored by the host. */
@@ -116,6 +167,129 @@ const FORBIDDEN_SCRIPT = /(?:NaelaoAgentDO|WriteGuard|Gatekeeper|system\s*prompt
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`invalid_extension_manifest:${message}`);
+}
+
+function parseResourceSchema(value: unknown): ExtensionResourceObjectSchema {
+  assert(value !== null && typeof value === "object" && !Array.isArray(value), "invalid_resource_schema");
+  const schema = value as Record<string, unknown>;
+  assert(Object.keys(schema).every(key => key === "schemaVersion" || key === "fields")
+    && schema.schemaVersion === "1.0" && schema.fields !== null && typeof schema.fields === "object" && !Array.isArray(schema.fields), "invalid_resource_schema");
+  const fields = schema.fields as Record<string, unknown>;
+  assert(Object.keys(fields).length <= 64, "resource_schema_field_limit");
+  for (const [name, raw] of Object.entries(fields)) {
+    assert(/^[a-z][a-zA-Z0-9_]{0,63}$/.test(name) && raw !== null && typeof raw === "object" && !Array.isArray(raw), "invalid_resource_schema_field");
+    const field = raw as Record<string, unknown>;
+    assert(Object.keys(field).every(key => ["type", "required", "maxLength", "minimum", "maximum"].includes(key))
+      && ["string", "number", "boolean"].includes(String(field.type)), "invalid_resource_schema_field");
+    assert(field.required === undefined || typeof field.required === "boolean", "invalid_resource_schema_field");
+    assert(field.maxLength === undefined || Number.isInteger(field.maxLength) && Number(field.maxLength) >= 0 && Number(field.maxLength) <= 1_048_576, "invalid_resource_schema_field");
+    for (const key of ["minimum", "maximum"] as const)
+      assert(field[key] === undefined || typeof field[key] === "number" && Number.isFinite(field[key]), "invalid_resource_schema_field");
+    assert(field.minimum === undefined || field.maximum === undefined || Number(field.minimum) <= Number(field.maximum), "invalid_resource_schema_field");
+  }
+  return Object.freeze({ schemaVersion: "1.0", fields: Object.freeze(fields as Record<string, ExtensionResourceFieldSchema>) });
+}
+
+function parseResourceRequirements(value: unknown): ExtensionResourceRequirement[] {
+  assert(Array.isArray(value) && value.length <= 32, "invalid_resource_requirements");
+  const ids = new Set<string>();
+  return value.map(rawValue => {
+    assert(rawValue !== null && typeof rawValue === "object" && !Array.isArray(rawValue), "invalid_resource_requirement");
+    const raw = rawValue as Record<string, unknown>;
+    assert(Object.keys(raw).every(key => ["id", "kind", "apiVersion", "scope", "operations", "limits"].includes(key)), "invalid_resource_requirement_field");
+    assert(typeof raw.id === "string" && /^[a-z][a-z0-9._-]{1,63}$/.test(raw.id) && !ids.has(raw.id), "invalid_resource_requirement_id"); ids.add(raw.id);
+    assert((EXTENSION_RESOURCE_CAPABILITIES as readonly { kind: string; apiVersion: string }[]).some(item => item.kind === raw.kind && item.apiVersion === raw.apiVersion), "unsupported_resource_api_version");
+    assert(["installation", "project", "space"].includes(String(raw.scope)), "invalid_resource_scope");
+    assert(Array.isArray(raw.operations) && raw.operations.length > 0 && raw.operations.length <= 32, "invalid_resource_operations");
+    const operationIds = new Set<string>();
+    const operations = raw.operations.map(value => {
+      assert(value !== null && typeof value === "object" && !Array.isArray(value), "invalid_resource_operation");
+      const operation = value as Record<string, unknown>;
+      assert(Object.keys(operation).every(key => ["id", "input", "output", "idempotency", "meteringUnit"].includes(key)), "invalid_resource_operation_field");
+      assert(typeof operation.id === "string" && /^[a-z][a-z0-9._-]{1,63}$/.test(operation.id) && !operationIds.has(operation.id), "invalid_resource_operation_id"); operationIds.add(operation.id);
+      assert(operation.idempotency === "required" || operation.idempotency === "none", "invalid_resource_idempotency");
+      assert(["request", "byte", "job"].includes(String(operation.meteringUnit)), "invalid_resource_metering_unit");
+      return Object.freeze({ id: operation.id, input: parseResourceSchema(operation.input), output: parseResourceSchema(operation.output),
+        idempotency: operation.idempotency, meteringUnit: operation.meteringUnit }) as ExtensionResourceOperation;
+    });
+    assert(raw.limits !== null && typeof raw.limits === "object" && !Array.isArray(raw.limits), "invalid_resource_limits");
+    const limits = raw.limits as Record<string, unknown>;
+    assert(Object.keys(limits).every(key => ["requestsPerMinute", "maxConcurrent", "maxBytesPerOperation"].includes(key)), "invalid_resource_limit_field");
+    assert(Number.isInteger(limits.requestsPerMinute) && Number(limits.requestsPerMinute) >= 1 && Number(limits.requestsPerMinute) <= 1000
+      && Number.isInteger(limits.maxConcurrent) && Number(limits.maxConcurrent) >= 1 && Number(limits.maxConcurrent) <= 64
+      && Number.isInteger(limits.maxBytesPerOperation) && Number(limits.maxBytesPerOperation) >= 1 && Number(limits.maxBytesPerOperation) <= 10 * 1024 * 1024, "invalid_resource_limits");
+    return Object.freeze({ id: raw.id, kind: raw.kind, apiVersion: "1.0", scope: raw.scope,
+      operations: Object.freeze(operations), limits: Object.freeze({ ...limits }) }) as ExtensionResourceRequirement;
+  });
+}
+
+export function validateExtensionResourceValue(schema: ExtensionResourceObjectSchema, value: unknown, label = "value"): Record<string, unknown> {
+  if (!schema || schema.schemaVersion !== "1.0" || !schema.fields || typeof schema.fields !== "object" || Array.isArray(schema.fields)) throw new Error("resource_schema_invalid");
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`resource_${label}_object_required`);
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) if (!Object.hasOwn(schema.fields, key)) throw new Error(`resource_${label}_unknown_field:${key}`);
+  for (const [key, field] of Object.entries(schema.fields)) {
+    const item = record[key];
+    if (item === undefined) { if (field.required) throw new Error(`resource_${label}_required:${key}`); continue; }
+    if (field.type === "string") {
+      if (typeof item !== "string" || field.maxLength !== undefined && new TextEncoder().encode(item).byteLength > field.maxLength) throw new Error(`resource_${label}_invalid:${key}`);
+    } else if (field.type === "number") {
+      if (typeof item !== "number" || !Number.isFinite(item) || field.minimum !== undefined && item < field.minimum || field.maximum !== undefined && item > field.maximum) throw new Error(`resource_${label}_invalid:${key}`);
+    } else if (typeof item !== "boolean") throw new Error(`resource_${label}_invalid:${key}`);
+  }
+  return record;
+}
+
+function sameResourceScope(a: ExtensionResourceExecutionScope, b: ExtensionResourceExecutionScope): boolean {
+  return a.tenantId === b.tenantId && a.spaceId === b.spaceId && a.projectId === b.projectId
+    && a.installationId === b.installationId && a.principalId === b.principalId;
+}
+/** Runtime adapter must receive grants already verified and issued by the host. */
+export function createExtensionResourceClient(requirements: readonly ExtensionResourceRequirement[], grants: readonly HostIssuedExtensionResourceGrant[],
+  scope: ExtensionResourceExecutionScope, adapter: ExtensionResourceAdapter, now: () => number = Date.now): ExtensionResourceClient {
+  const requested = new Map(requirements.map(item => [item.id, item]));
+  const approved = new Map(grants.map(item => [item.requirementId, item]));
+  const requestTimes = new Map<string, number[]>();
+  const concurrent = new Map<string, number>();
+  return Object.freeze({ async execute<T>(requirementId: string, operation: string, input: unknown, idempotencyKey?: string): Promise<T> {
+    const requirement = requested.get(requirementId);
+    if (!requirement) throw new Error("resource_requirement_not_declared");
+    const grant = approved.get(requirementId);
+    if (!grant || grant.status !== "active" || !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= now()) throw new Error("resource_grant_unavailable");
+    if (grant.kind !== requirement.kind || grant.apiVersion !== requirement.apiVersion || !sameResourceScope(grant.scope, scope)) throw new Error("resource_grant_scope_mismatch");
+    if (requirement.scope === "project" && !scope.projectId || requirement.scope === "space" && scope.projectId !== null)
+      throw new Error("resource_grant_scope_mismatch");
+    const declaration = requirement.operations.find(item => item.id === operation);
+    if (!declaration || !grant.operations.includes(operation)) throw new Error("resource_operation_denied");
+    validateExtensionResourceValue(declaration.input, input, "input");
+    if (declaration.idempotency === "required" && !(typeof idempotencyKey === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(idempotencyKey))) throw new Error("resource_idempotency_key_required");
+    const inputBytes = new TextEncoder().encode(JSON.stringify(input)).byteLength;
+    if (inputBytes > requirement.limits.maxBytesPerOperation) throw new Error("resource_operation_size_exceeded");
+    const timestamp = now(), recent = (requestTimes.get(requirementId) ?? []).filter(item => timestamp - item < 60_000);
+    if (recent.length >= requirement.limits.requestsPerMinute) throw new Error("resource_rate_limit_exceeded");
+    const active = concurrent.get(requirementId) ?? 0;
+    if (active >= requirement.limits.maxConcurrent) throw new Error("resource_concurrency_limit_exceeded");
+    recent.push(timestamp); requestTimes.set(requirementId, recent); concurrent.set(requirementId, active + 1);
+    try {
+      const result = await adapter.execute<T>({ handle: grant.handle, requirementId, operation, scope, input, inputBytes,
+        meteringUnit: declaration.meteringUnit, ...(idempotencyKey ? { idempotencyKey } : {}) });
+      const output = validateExtensionResourceValue(declaration.output, result, "output");
+      if (new TextEncoder().encode(JSON.stringify(output)).byteLength > requirement.limits.maxBytesPerOperation) throw new Error("resource_operation_size_exceeded");
+      return result;
+    } finally { concurrent.set(requirementId, Math.max(0, (concurrent.get(requirementId) ?? 1) - 1)); }
+  } });
+}
+/** Local authoring fixture only. Its generated handles/grants are simulated and cannot be used by
+ * the SpaceDO host broker. Tests can inject deterministic provider successes and failures here. */
+export function createLocalExtensionResourceHarness(requirements: readonly ExtensionResourceRequirement[], scope: ExtensionResourceExecutionScope,
+  simulate: (request: ExtensionResourceOperationRequest) => Promise<unknown>, now: () => number = Date.now): {
+    mode: "simulated"; grants: readonly HostIssuedExtensionResourceGrant[]; client: ExtensionResourceClient;
+  } {
+  const grants = requirements.map(requirement => ({ handle: `simulated:${requirement.id}`, requirementId: requirement.id,
+    kind: requirement.kind, apiVersion: requirement.apiVersion, scope, operations: requirement.operations.map(operation => operation.id),
+    status: "active" as const, expiresAt: new Date(now() + 60 * 60_000).toISOString() }));
+  return Object.freeze({ mode: "simulated" as const, grants: Object.freeze(grants),
+    client: createExtensionResourceClient(requirements, grants, scope, { async execute<T>(request: ExtensionResourceOperationRequest) { return await simulate(request) as T; } }, now) });
 }
 
 function validateExtensionMigrations(value: unknown): void {
@@ -163,11 +337,12 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     return validateLegacyManifest(raw);
   }
   rejectKernelOverrides(raw);
-  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem", "widgetSubscriptions", "settingsSchema", "settingsActivation", "dependencies"]);
+  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem", "widgetSubscriptions", "settingsSchema", "settingsActivation", "dependencies", "resourceRequirements"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
   assert(typeof raw.id === "string", "invalid_id");
   try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
   let dependencies: ExtensionDependency[] | undefined;
+  const resourceRequirements = raw.resourceRequirements === undefined ? undefined : parseResourceRequirements(raw.resourceRequirements);
   if (raw.dependencies !== undefined) {
     assert(Array.isArray(raw.dependencies) && raw.dependencies.length <= 32, "invalid_dependencies");
     const seen = new Set<string>();
@@ -326,7 +501,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
       containerIds.add(container.id);
     }
   }
-  return { ...raw, ...(widgetSubscriptions ? { widgetSubscriptions: Object.freeze(widgetSubscriptions) } : {}), ...(canonicalSharedFilesystem ? { shared_filesystem: Object.freeze(canonicalSharedFilesystem) } : {}), ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}), ...(settingsSchema ? { settingsSchema } : {}), ...(dependencies ? { dependencies: Object.freeze(dependencies) as unknown as ExtensionDependency[] } : {}) } as unknown as ExtensionManifest;
+  return { ...raw, ...(widgetSubscriptions ? { widgetSubscriptions: Object.freeze(widgetSubscriptions) } : {}), ...(canonicalSharedFilesystem ? { shared_filesystem: Object.freeze(canonicalSharedFilesystem) } : {}), ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}), ...(settingsSchema ? { settingsSchema } : {}), ...(dependencies ? { dependencies: Object.freeze(dependencies) as unknown as ExtensionDependency[] } : {}), ...(resourceRequirements ? { resourceRequirements: Object.freeze(resourceRequirements) as unknown as ExtensionResourceRequirement[] } : {}) } as unknown as ExtensionManifest;
 }
 
 /** Resolve an exact, same-scope dependency graph against admitted installation pins. The caller

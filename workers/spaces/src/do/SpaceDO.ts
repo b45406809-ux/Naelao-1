@@ -28,7 +28,7 @@ import type {
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, readBoundedResponseJson, RequestBodyTooLargeError } from "@naelao/http";
 import { verifyHmac } from "@naelao/crypto";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, validateSpaceCoordinationSingletonKeys, scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope, type SpaceCoordinationDraftV2 } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, findUnsupportedExtensionResources, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, validateSpaceCoordinationSingletonKeys, scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope, type SpaceCoordinationDraftV2 } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, GadgetScope, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -17636,6 +17636,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
+    // Resource requests are declarations, never grants. Fail closed until the host has an
+    // installed broker for the requested operations; callers cannot self-advertise support.
+    const unsupportedResources = findUnsupportedExtensionResources(manifest.resourceRequirements ?? []);
+    if (unsupportedResources.length) return Response.json({ error_code: "extension_resource_capability_unavailable",
+      unsupported: unsupportedResources }, { status: 409, headers: { "cache-control": "private, no-store" } });
     if (manifest.dependencies?.length) {
       if (!body.tenantId || !body.spaceId || !body.scope || !["SPACE_SHARED", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED"].includes(body.scope)
         || ["PROJECT_BOUND", "PROJECT_SHARED"].includes(body.scope) && !body.projectId

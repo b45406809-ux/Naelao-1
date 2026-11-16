@@ -1,10 +1,68 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { digestExtensionManifest, isSharedFilesystemPathAllowed, parseExtensionBundle, parseExtensionPrimitive, resolveExtensionDependencyClosure,
+import { createExtensionResourceClient, createLocalExtensionResourceHarness, digestExtensionManifest, findUnsupportedExtensionResources, isSharedFilesystemPathAllowed,
+  parseExtensionBundle, parseExtensionPrimitive, resolveExtensionDependencyClosure,
   validateExtensionManifest, validateExtensionSettingsValues } from "./extensions.js";
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
 describe("immutable extension kernel", () => {
+  it("parses versioned resource requirements without treating them as grants", async () => {
+    const requirement = { id: "catalog", kind: "objects", apiVersion: "1.0", scope: "project", operations: [
+      { id: "put", input: { schemaVersion: "1.0", fields: { name: { type: "string", required: true, maxLength: 40 } } },
+        output: { schemaVersion: "1.0", fields: { saved: { type: "boolean", required: true } } }, idempotency: "required", meteringUnit: "byte" },
+    ], limits: { requestsPerMinute: 40, maxConcurrent: 3, maxBytesPerOperation: 1024 } };
+    const parsed = validateExtensionManifest({ ...valid, resourceRequirements: [requirement] });
+    expect(parsed.resourceRequirements?.[0]).toMatchObject({ id: "catalog", apiVersion: "1.0", kind: "objects", scope: "project" });
+    expect(findUnsupportedExtensionResources(parsed.resourceRequirements!)).toEqual([{ requirementId: "catalog", kind: "objects", operations: ["put"] }]);
+    const scope = { tenantId: "tenant_a", spaceId: "space_a", projectId: "project_a", installationId: "install_a", principalId: "user_a" };
+    const harness = createLocalExtensionResourceHarness(parsed.resourceRequirements!, scope, async () => ({ saved: true }), () => Date.parse("2029-01-01T00:00:00.000Z"));
+    expect(harness.mode).toBe("simulated");
+    await expect(harness.client.execute("catalog", "put", { name: "sample" }, "request-0001")).resolves.toEqual({ saved: true });
+    expect(() => validateExtensionManifest({ ...valid, resourceRequirements: [{ ...requirement, version: "latest" }] })).toThrow("invalid_resource_requirement_field");
+    expect(() => validateExtensionManifest({ ...valid, resourceRequirements: [{ ...requirement, operations: [{ ...requirement.operations[0], idempotency: "optional" }] }] }))
+      .toThrow("invalid_resource_idempotency");
+  });
+  it("scopes resource calls to an active host grant, validates input and requires idempotency", async () => {
+    const requirement = validateExtensionManifest({ ...valid, resourceRequirements: [{ id: "catalog", kind: "objects", apiVersion: "1.0", scope: "project",
+      operations: [{ id: "put", input: { schemaVersion: "1.0", fields: { name: { type: "string", required: true, maxLength: 40 } } },
+        output: { schemaVersion: "1.0", fields: { saved: { type: "boolean", required: true } } }, idempotency: "required", meteringUnit: "byte" }],
+      limits: { requestsPerMinute: 40, maxConcurrent: 3, maxBytesPerOperation: 1024 } }] }).resourceRequirements!;
+    const scope = { tenantId: "tenant_a", spaceId: "space_a", projectId: "project_a", installationId: "install_a", principalId: "user_a" };
+    const grant = { handle: "host:opaque", requirementId: "catalog", kind: "objects" as const, apiVersion: "1.0" as const, scope,
+      operations: ["put"], status: "active" as const, expiresAt: "2030-01-01T00:00:00.000Z" };
+    const calls: unknown[] = [];
+    const client = createExtensionResourceClient(requirement, [grant], scope, { async execute(request) { calls.push(request); return { saved: true }; } }, () => Date.parse("2029-01-01T00:00:00.000Z"));
+    await expect(client.execute("catalog", "put", { name: "sample" })).rejects.toThrow("resource_idempotency_key_required");
+    await expect(client.execute("catalog", "put", { name: "sample", providerBucket: "other-tenant" }, "request-0001"))
+      .rejects.toThrow("resource_input_unknown_field:providerBucket");
+    await expect(client.execute("catalog", "put", { name: "sample" }, "request-0001")).resolves.toEqual({ saved: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ handle: "host:opaque", scope, idempotencyKey: "request-0001" });
+    const mismatched = createExtensionResourceClient(requirement, [{ ...grant, scope: { ...scope, installationId: "install_b" } }], scope,
+      { async execute(request) { calls.push(request); return { saved: true }; } }, () => Date.parse("2029-01-01T00:00:00.000Z"));
+    await expect(mismatched.execute("catalog", "put", { name: "sample" }, "request-0002")).rejects.toThrow("resource_grant_scope_mismatch");
+    expect(calls).toHaveLength(1);
+  });
+  it("applies declared byte and request quotas in the SDK adapter contract", async () => {
+    const requirement = validateExtensionManifest({ ...valid, resourceRequirements: [{ id: "queue", kind: "jobs", apiVersion: "1.0", scope: "installation",
+      operations: [{ id: "enqueue", input: { schemaVersion: "1.0", fields: { item: { type: "string", required: true, maxLength: 32 } } },
+        output: { schemaVersion: "1.0", fields: { accepted: { type: "boolean", required: true } } }, idempotency: "required", meteringUnit: "job" }],
+      limits: { requestsPerMinute: 2, maxConcurrent: 1, maxBytesPerOperation: 24 } }] }).resourceRequirements!;
+    const scope = { tenantId: "tenant_a", spaceId: "space_a", projectId: null, installationId: "install_a", principalId: "user_a" };
+    const grant = { handle: "host:opaque", requirementId: "queue", kind: "jobs" as const, apiVersion: "1.0" as const, scope,
+      operations: ["enqueue"], status: "active" as const, expiresAt: "2030-01-01T00:00:00.000Z" };
+    let finish: ((value: { accepted: boolean }) => void) | undefined, firstCall = true;
+    const client = createExtensionResourceClient(requirement, [grant], scope,
+      { execute: () => firstCall ? (firstCall = false, new Promise(resolve => { finish = resolve; })) : Promise.resolve({ accepted: true }) },
+      () => Date.parse("2029-01-01T00:00:00.000Z"));
+    await expect(client.execute("queue", "enqueue", { item: "this payload is much too large" }, "request-0001")).rejects.toThrow("resource_operation_size_exceeded");
+    const first = client.execute("queue", "enqueue", { item: "x" }, "request-0001");
+    await expect(client.execute("queue", "enqueue", { item: "y" }, "request-0002")).rejects.toThrow("resource_concurrency_limit_exceeded");
+    finish?.({ accepted: true });
+    await expect(first).resolves.toEqual({ accepted: true });
+    await expect(client.execute("queue", "enqueue", { item: "y" }, "request-0002")).resolves.toEqual({ accepted: true });
+    await expect(client.execute("queue", "enqueue", { item: "z" }, "request-0003")).rejects.toThrow("resource_rate_limit_exceeded");
+  });
   it("validates and canonicalizes exact dependency pins", () => {
     const manifest = validateExtensionManifest({ ...valid, dependencies: [
       { extensionId: "ext_zeta", version: "2.1.0", manifestSha256: "b".repeat(64) },

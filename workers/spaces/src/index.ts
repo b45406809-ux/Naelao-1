@@ -12,6 +12,7 @@ import { normalizePreferredLanguage, resolveFileContentType, validateScheduledQu
 import { encodeWorkspaceFileContent } from "./workspace-file-response.js";
 import { compileWorkflowPlan } from "@naelao/sdk/workflow";
 import type { ExtensionBusinessAction, SpaceModelPolicy } from "@naelao/agent-sdk";
+import { EXTENSION_RESOURCE_CAPABILITIES } from "@naelao/agent-sdk";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST } from "./workspace-manifest.js";
@@ -5307,6 +5308,11 @@ app.delete("/spaces/:spaceId/extension-publishers/:keyId", async c => {
 
 // Project bundle installation for Canvas + Gadget + external channel + Durable Workflow
 // compositions. Workflow code uses the host's restricted execute(step,ctx) ABI.
+app.use("/spaces/:spaceId/extension-resource-capabilities", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/extension-resource-capabilities", requireSpaceMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/extension-resource-capabilities", c => c.json({ schemaVersion: "1.0", capabilities: EXTENSION_RESOURCE_CAPABILITIES }, 200,
+  { "cache-control": "private, no-store" }));
+
 app.use("/spaces/:spaceId/projects/:projectId/extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/projects/:projectId/extensions", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
