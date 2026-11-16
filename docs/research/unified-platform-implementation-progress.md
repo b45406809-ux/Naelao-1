@@ -1,5 +1,11 @@
 # Unified platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (EP02 signed jobs contract and owner review; code `90088bd7` pushed)
+
+The extension SDK now validates Project-scoped jobs with explicit signed workflow targets and non-recursive target roles; the Project-owner API/Shell can stage/revoke grants for the exact signed installation. SpaceDO rate/concurrency operation leases apply at the call boundary. Code `90088bd79445d4b135f63cb953137fdeaeaf7f4b` is remote-verified. SDK **37/37**, Spaces install/grant **33/33**, SDK/Spaces/Shell typechecks and diff check pass. Jobs queue/persistence/status, active concurrency/deadline/retry, cleanup and outcome reconciliation remain uncoded; runtime resources remain unavailable.
+
+Exact next action: build the durable Project/install jobs ledger and authenticated Agents `AGENT_TICKS` dispatcher, with owner-budget admission, idempotent status receipts and no replay after uncertain starts. Keep resource capabilities disabled and continue the other S/U/P/PW/K/EP gaps afterward.
+
 ## Latest cross-plan pointer — 2026-11-16 (EP02 owner-approved installation budgets; code `50566cd6` pushed)
 
 Owner-approved Project-install run and monthly caps now flow from the Shell's review UI to SpaceDO persistence, WorkflowHost authorization, the durable run journal and Billing's exact-install/tenant quota admission. The budget is generation/revision pinned; changing it invalidates resumed run authorization. Local verification: Spaces **39/39**, Billing **19/19**, Agents **39/39**, Shell API **1/1**, four package typechecks and diff check; code `50566cd661900917682828beea368fb135531c81` is pushed and verified. No production migration, deployment, browser, invoice/provider or live acceptance ran. Unified workspace, dual-read, Agent37 and rollout gates remain disabled. Preserve the pre-existing untracked `infra/scripts/__pycache__/`.

@@ -1,5 +1,11 @@
 # Mature knowledge platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (EP02 signed jobs contract and owner review; code `90088bd7` pushed)
+
+EP02 adds a Project-scoped, signed-workflow jobs requirement plus exact install-generation owner grant review; local SDK **37/37**, Spaces **33/33**, SDK/Spaces/Shell typechecks and diff check pass. Code `90088bd79445d4b135f63cb953137fdeaeaf7f4b` is remote-verified. The host dispatcher, durable job status, bounded active concurrency/deadline/retry and uncertainty cleanup are still uncoded; no K01–K30, retrieval, ACL or AI Search status changed. Resource and retrieval rollouts remain disabled.
+
+Exact next cross-plan action: continue EP02 with durable job persistence/dispatch/status through the existing Agents queue and owner-approved budget, then resume K05 lifecycle and K06–K30. Keep AI Search unselected and distinguish code from deployed/provider acceptance.
+
 ## Latest cross-plan pointer — 2026-11-16 (EP02 owner-approved installation budgets; code `50566cd6` pushed)
 
 EP02 now has owner-authorized per-install run/monthly credit caps wired through SpaceDO resource review, the Shell, WorkflowHost and Billing's tenant/per-install held-plus-settled admission. The owner policy is generation/revision pinned and changes invalidate resumed workflow authorization. Code `50566cd661900917682828beea368fb135531c81` is remote-verified. Local evidence: Spaces **39/39**, Billing **19/19**, Agents **39/39**, Shell API **1/1**, four typechecks and diff check. No K01–K30, Knowledge retrieval/ACL/provider status changed; AI Search remains unselected. No deployed migrations, Worker, browser, provider/invoice or live acceptance ran; resource descriptors remain unavailable.

@@ -1,5 +1,11 @@
 # Managed services and sidecar implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (EP02 signed jobs contract and owner review; code `90088bd7` pushed)
+
+EP02 now has a strict Project/install jobs declaration and Project-owner grant review surface for signed workflow targets. Local SDK **37/37**, Spaces install/grant **33/33**, SDK/Spaces/Shell typechecks and diff check pass. Code `90088bd79445d4b135f63cb953137fdeaeaf7f4b` is pushed and verified. Jobs dispatch, durable job state/status, deadline/retry/active concurrency, cleanup and uncertainty reconciliation remain uncoded; resource capabilities and rollout remain disabled. No S1–S9/U01–U12 status changed.
+
+Exact next cross-plan action: implement the persistent Project/install jobs ledger and authenticated `AGENT_TICKS` dispatcher, preserving signed target/workflow authority and owner-approved Billing caps. Reconcile queue and workflow-start replies by stable identities; do not replay uncertain job effects. Add status, revocation, deadline, concurrency, cleanup and quota coverage. Continue S/U requirements afterward.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (EP02 owner-approved installation budgets; code `50566cd6` pushed)
 
 Project owners can set/revise a per-install run cap and monthly credit cap in the current resource review flow. SpaceDO stores the policy and bounded revisions against the exact installation generation; its worker snapshot carries the current policy to WorkflowHost. Resource-bearing workflows require that current owner approval, use the approved run ceiling by default, cannot widen it, and pin its monthly cap/revision into the durable run and Billing reservation. Billing's conditional reservation checks tenant quota plus this installation's settled and held credits. Budget revisions alter workflow grant identity, so resumed execution fails closed after a change. Uninstall removes the active budget row. Resource capabilities remain unavailable.
