@@ -19,7 +19,8 @@ import { clearChannelExtensionConversationSessions, clearChannelExtensionSession
 import { resolveExtensionProjectKnowledge, resolveCurrentExtensionKnowledgeRevision } from "../channels/extension-knowledge-selection.js";
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { createScaleDownProcessor } from "../shared/scaledown.js";
-import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, validateVoiceExtensionStreamEvent, validateVoiceExtensionStreamResponse, type DocumentProcessingGateway } from "@naelao/agent-sdk";
+import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, validateVoiceExtensionStreamEvent, validateVoiceExtensionStreamResponse,
+  resolveExtensionStructuredDataRequest, validateExtensionResourceValue, type DocumentProcessingGateway } from "@naelao/agent-sdk";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
 
 type AssistantApprovalPolicySnapshot = {
@@ -1217,6 +1218,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (config.requiresApprovalFor?.includes(body.operation)) return Response.json({ error: "workflow_human_approval_required" }, { status: 409 });
     if (body.operation.startsWith("document.") && !this.consumeWorkflowDocumentCall(identity.runId))
       return Response.json({ error_code: "document_workflow_call_limit" }, { status: 429 });
+    if (body.operation === "extension.resource.structured_data") {
+      if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId
+        || !grant.installation || grant.installation.instance.status !== "active" || grant.installation.instance.scope !== "PROJECT_BOUND")
+        return Response.json({ error_code: "workflow_structured_data_grant_invalid" }, { status: 403 });
+      const requirementId = typeof body.params?.requirement_id === "string" ? body.params.requirement_id : "";
+      const operationId = typeof body.params?.operation === "string" ? body.params.operation : "";
+      const resolved = resolveExtensionStructuredDataRequest({ manifest: grant.installation.manifest, workflowId: identity.definitionId,
+        requirementId, operationId, input: body.params?.input });
+      if (!resolved) return Response.json({ error_code: "workflow_structured_data_operation_not_granted" }, { status: 403 });
+      const response = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(identity.spaceId)}/internal/extensions/${encodeURIComponent(identity.installationId)}/gadgets/${encodeURIComponent(resolved.gadgetId)}/${resolved.gadgetOperation.slice("extension.gadget.".length)}`,
+        { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, identity.tenantId) },
+          body: JSON.stringify({ project_id: identity.projectId, workflow_id: identity.definitionId, arguments: resolved.arguments }) },
+      ));
+      if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+      const rpc = await readBoundedResponseJson<{ error?: unknown; result?: { structuredContent?: unknown } }>(response, 4 * 1024 * 1024).catch(() => null);
+      if (!rpc || rpc.error || !rpc.result || !Object.hasOwn(rpc.result, "structuredContent"))
+        return Response.json({ error_code: "workflow_structured_data_result_invalid" }, { status: 502 });
+      const output = { resultJson: JSON.stringify(rpc.result.structuredContent) };
+      try { validateExtensionResourceValue(resolved.outputSchema, output, "output"); }
+      catch { return Response.json({ error_code: "workflow_structured_data_result_exceeded_schema" }, { status: 502 }); }
+      return Response.json(output);
+    }
     if (["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(body.operation)) {
       if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId || !identity.capabilities.includes(body.operation))
         return Response.json({ error: "workflow_gadget_grant_invalid" }, { status: 403 });

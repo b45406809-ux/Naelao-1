@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createExtensionResourceClient, createLocalExtensionResourceHarness, digestExtensionManifest, findUnsupportedExtensionResources, isSharedFilesystemPathAllowed,
-  parseExtensionBundle, parseExtensionPrimitive, resolveExtensionDependencyClosure,
+  parseExtensionBundle, parseExtensionPrimitive, resolveExtensionDependencyClosure, resolveExtensionStructuredDataRequest,
   validateExtensionManifest, validateExtensionSettingsValues } from "./extensions.js";
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
@@ -20,12 +20,17 @@ describe("immutable extension kernel", () => {
         { schemaVersion: "1.0", kind: "gadget", id: "catalog", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
           scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE records (id TEXT PRIMARY KEY, name TEXT NOT NULL)" },
         { schemaVersion: "1.0", kind: "workflow", id: "lookup", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
-          executionMode: "headless", entry: "./lookup.ts", steps: ["lookup"], toolNames: ["extension.gadget.get"] },
+          executionMode: "headless", entry: "./lookup.ts", steps: ["lookup"], toolNames: ["extension.gadget.get", "extension.resource.structured_data"] },
       ], workerRoles: [{ id: "lookup_role", principal: "project_member", invocation: "workflow_step", execution: "worker",
         entry: "./lookup.ts", primitiveIds: ["lookup"], gadgetActions: [{ gadgetId: "catalog", operations: ["extension.gadget.get"], tables: ["records"] }] }],
     } };
     const parsed = validateExtensionManifest(manifest);
     expect(parsed.resourceRequirements?.[0]?.binding).toEqual({ gadgetId: "catalog", tables: ["records"] });
+    expect(resolveExtensionStructuredDataRequest({ manifest: parsed, workflowId: "lookup", requirementId: "records", operationId: "get",
+      input: { table: "records", id: "record-1" } })).toMatchObject({ gadgetId: "catalog", gadgetOperation: "extension.gadget.get", table: "records",
+      arguments: { table: "records", id: "record-1" } });
+    expect(resolveExtensionStructuredDataRequest({ manifest: parsed, workflowId: "lookup", requirementId: "records", operationId: "get",
+      input: { table: "private_records", id: "secret" } })).toBeNull();
     expect(() => validateExtensionManifest({ ...manifest, resourceRequirements: [{ ...structured, binding: { gadgetId: "catalog", tables: ["private_records"] } }] }))
       .toThrow("structured_data_binding_exceeds_installed_workflow_grant");
     expect(() => validateExtensionManifest({ ...manifest, resourceRequirements: [{ ...structured, binding: undefined }] }))

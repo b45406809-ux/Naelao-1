@@ -1,4 +1,5 @@
-import { durableWorkflowRunId, serializeWorkflowCheckpoint, validateDurableWorkflowIdentity, validateWorkflowPointer, workflowArtifactPrefix, type DurableWorkflowIdentity, type WorkflowCheckpointPointer, type WorkflowClass } from "@naelao/agent-sdk";
+import { durableWorkflowRunId, serializeWorkflowCheckpoint, validateDurableWorkflowIdentity, validateWorkflowPointer, workflowArtifactPrefix,
+  type DurableWorkflowIdentity, type ExtensionManifest, type WorkflowCheckpointPointer, type WorkflowClass, type WorkflowContract } from "@naelao/agent-sdk";
 import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import type { WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { SkillLibrary } from "../script-engine/skill-library.js";
@@ -35,7 +36,7 @@ export async function workflowHeaders(env: DurableWorkflowHostEnv, tenantId: str
 export interface WorkflowInstallationGrant {
   instance: { instance_id?: string; tenant_id: string; space_id: string; project_id?: string | null; instance_key?: string | null; user_id?: string | null; scope?: string; status: string };
   approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
-  manifest: { id?: string; daemons?: Array<{ workflowScript?: string }>; shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>; capabilityRequirements?: string[]; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; entry?: string; steps?: string[]; toolNames?: string[] }>; workerRoles?: Array<{ id?: string; principal?: string; invocation?: string; execution?: string; entry?: string; primitiveIds?: string[]; gadgetActions?: Array<{ gadgetId: string; operations: string[]; tables: string[] }> }> } };
+  manifest: Pick<ExtensionManifest, "id" | "daemons" | "resourceRequirements" | "shared_filesystem" | "capabilityRequirements" | "bundle">;
   release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
 }
 export function resolveExtensionGadgetAppId(input: { installation?: WorkflowInstallationGrant; workflowId: string; operation: string; gadgetId: string; table?: string }): string | null {
@@ -45,7 +46,7 @@ export function resolveExtensionGadgetAppId(input: { installation?: WorkflowInst
     || !installation.instance.project_id || !installation.instance.instance_id) return null;
   const bundle = installation.manifest.bundle;
   if (!bundle?.id || installation.manifest.id !== bundle.id || !bundle.version) return null;
-  const workflow = bundle.primitives?.find(part => part.kind === "workflow" && part.id === workflowId);
+  const workflow = bundle.primitives?.find((part): part is WorkflowContract => part.kind === "workflow" && part.id === workflowId);
   if (!workflow?.entry || !workflow.toolNames?.includes(operation)) return null;
   const roles = bundle.workerRoles?.filter(role => role.principal === "project_member" && role.execution === "worker"
     && ["workflow_step", "tool"].includes(role.invocation ?? "") && role.entry === workflow.entry && role.primitiveIds?.includes(workflowId)) ?? [];
@@ -147,7 +148,7 @@ export function workflowWorkspaceExtensionId(identity: Pick<DurableWorkflowIdent
   return identity.workflowClass === "vertical_extension" && !identity.projectId ? identity.installationId : undefined;
 }
 export function assertDeclaredExtensionWorkflow(installation: WorkflowInstallationGrant | undefined, name: string, extensionId: string | undefined): { id: string; entry: string; toolNames: string[] } | undefined {
-  const declared = installation?.manifest.bundle?.primitives?.find((primitive) => primitive.kind === "workflow"
+  const declared = installation?.manifest.bundle?.primitives?.find((primitive): primitive is WorkflowContract => primitive.kind === "workflow"
     && (primitive.id === name || typeof primitive.entry === "string" && extensionWorkflowName(primitive.entry) === name));
   const legacyDeclared = installation?.manifest.daemons?.some((daemon) => typeof daemon.workflowScript === "string" && extensionWorkflowName(daemon.workflowScript) === name);
   if (!declared && !legacyDeclared) throw new Error("workflow_script_not_declared_by_installation");

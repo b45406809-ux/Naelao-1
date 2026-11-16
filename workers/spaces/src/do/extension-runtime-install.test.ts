@@ -31,7 +31,7 @@ describe("runtime extension installation", () => {
         { schemaVersion: "1.0", kind: "gadget", id: "catalog", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
           scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE records (id TEXT PRIMARY KEY, name TEXT NOT NULL)" },
         { schemaVersion: "1.0", kind: "workflow", id: "lookup", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
-          executionMode: "headless", entry: "./lookup.ts", steps: ["lookup"], toolNames: ["extension.gadget.get"] },
+          executionMode: "headless", entry: "./lookup.ts", steps: ["lookup"], toolNames: ["extension.gadget.get", "extension.resource.structured_data"] },
       ], workerRoles: [{ id: "lookup_role", principal: "project_member", invocation: "workflow_step", execution: "worker",
         entry: "./lookup.ts", primitiveIds: ["lookup"], gadgetActions: [{ gadgetId: "catalog", operations: ["extension.gadget.get"], tables: ["records"] }] }] } };
     const response = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },

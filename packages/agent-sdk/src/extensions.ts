@@ -74,6 +74,10 @@ export interface ExtensionResourceAdapter { execute<T = unknown>(request: Extens
 export interface ExtensionResourceClient {
   execute<T = unknown>(requirementId: string, operation: string, input: unknown, idempotencyKey?: string): Promise<T>;
 }
+/** `stepKey` is the durable workflow idempotency key for this resource effect. */
+export interface ExtensionWorkflowResources {
+  execute<T = unknown>(stepKey: string, requirementId: string, operation: string, input: unknown): Promise<T>;
+}
 /** Packages can require owners to publish a validated settings draft before it affects runtime. */
 export type ExtensionSettingsActivation = "owner_publish";
 /** Exact immutable dependency pin. The manifest digest fences same-version substitution. */
@@ -282,6 +286,47 @@ export function validateExtensionResourceValue(schema: ExtensionResourceObjectSc
     } else if (typeof item !== "boolean") throw new Error(`resource_${label}_invalid:${key}`);
   }
   return record;
+}
+
+/** Resolve a runtime request through the signed workflow declaration. Returns only an operation
+ * already authorized by the worker role; callers must still recheck the current installation. */
+export function resolveExtensionStructuredDataRequest(input: {
+  manifest: Pick<ExtensionManifest, "bundle" | "resourceRequirements">;
+  workflowId: string; requirementId: string; operationId: string; input: unknown;
+}): { gadgetId: string; gadgetOperation: string; table: string; arguments: Record<string, unknown>; outputSchema: ExtensionResourceObjectSchema } | null {
+  const requirement = input.manifest.resourceRequirements?.find(item => item.id === input.requirementId && item.kind === "structured_data");
+  const binding = requirement?.binding;
+  const operation = requirement?.operations.find(item => item.id === input.operationId);
+  if (!requirement || requirement.scope !== "project" || !binding || !operation) return null;
+  let value: Record<string, unknown>;
+  try { value = validateExtensionResourceValue(operation.input, input.input, "input"); } catch { return null; }
+  const table = value.table;
+  if (typeof table !== "string" || !binding.tables.includes(table)) return null;
+  const bundle = input.manifest.bundle;
+  const workflow = bundle?.primitives.find((part): part is WorkflowContract => part.kind === "workflow" && part.id === input.workflowId);
+  const gadgetOperation = `extension.gadget.${operation.id}`;
+  const roles = bundle?.workerRoles?.filter(role => role.principal === "project_member" && role.execution === "worker"
+    && ["workflow_step", "tool"].includes(role.invocation) && role.entry === workflow?.entry && role.primitiveIds.includes(input.workflowId)) ?? [];
+  if (!workflow?.toolNames.includes("extension.resource.structured_data") || !workflow.toolNames.includes(gadgetOperation) || roles.length !== 1
+    || !roles[0]?.gadgetActions?.some(grant => grant.gadgetId === binding.gadgetId && grant.operations.includes(gadgetOperation) && grant.tables.includes(table))) return null;
+  const args: Record<string, unknown> = { table };
+  try {
+    if (operation.id === "list") {
+      if (typeof value.filterJson === "string") {
+        const filter: unknown = JSON.parse(value.filterJson);
+        if (!filter || typeof filter !== "object" || Array.isArray(filter)) return null;
+        args.filter = filter;
+      }
+      if (value.limit !== undefined) args.limit = value.limit;
+    } else if (operation.id === "get" || operation.id === "delete") args.id = value.id;
+    if (operation.id === "insert" || operation.id === "update") {
+      if (operation.id === "update") args.id = value.id;
+      const record: unknown = JSON.parse(String(value.recordJson));
+      if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+      args.record = record;
+    }
+  } catch { return null; }
+  return { gadgetId: binding.gadgetId, gadgetOperation, table, arguments: args, outputSchema: operation.output };
 }
 
 function sameResourceScope(a: ExtensionResourceExecutionScope, b: ExtensionResourceExecutionScope): boolean {
@@ -498,6 +543,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     for (const operation of requirement.operations) {
       const toolName = `extension.gadget.${operation.id}`;
       const authorized = workflows.some(workflow => workflow.toolNames.includes(toolName)
+        && workflow.toolNames.includes("extension.resource.structured_data")
         && roles.some(role => role.principal === "project_member" && role.execution === "worker"
           && ["workflow_step", "tool"].includes(role.invocation) && role.entry === workflow.entry
           && role.primitiveIds.includes(workflow.id)
@@ -755,6 +801,7 @@ export interface ExtensionWorkflowGadgets {
 export interface ExtensionWorkflowContext<TParams = Record<string, unknown>> {
   readonly params: TParams;
   readonly gadgets: ExtensionWorkflowGadgets;
+  readonly resources: ExtensionWorkflowResources;
   readonly tools: { call<T = unknown>(stepKey: string, operation: string, params: Record<string, unknown>): Promise<T> };
 }
 export type ExtensionPrimitiveManifest = GadgetContract | CanvasContract | ChannelContract | ContainerContract | LinterContract | WorkflowContract;

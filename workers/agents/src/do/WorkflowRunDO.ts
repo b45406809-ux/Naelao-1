@@ -1,7 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { wrapWorkflowBinding } from "@cloudflare/dynamic-workflows";
 import { WORKFLOW_CLASS_POLICIES, isTerminalWorkflow, validateDurableWorkflowIdentity, validateWorkflowPointer,
-  type DurableStructuredDataOperationReceipt, type DurableWorkflowIdentity, type WorkflowCheckpointPointer, type DurableWorkflowStatus } from "@naelao/agent-sdk";
+  resolveExtensionStructuredDataRequest, type DurableStructuredDataOperationReceipt, type DurableWorkflowIdentity,
+  type WorkflowCheckpointPointer, type DurableWorkflowStatus } from "@naelao/agent-sdk";
 import { WorkflowJournal, type WorkflowJournalStorage, type WorkflowJournalRecord } from "../workflows/workflow-state.js";
 import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowStepInfraUsage } from "../workflows/report-infra-usage.js";
@@ -96,9 +97,19 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     const json = JSON.stringify(params);
     if (!json || new TextEncoder().encode(json).byteLength > 262144) throw new Error("workflow_effect_input_limit");
     const inputDigest = await workflowHash(json);
-    const gadgetOperation = operation.match(/^extension\.gadget\.(list|get|insert|update|delete)$/)?.[1];
-    const gadgetId = typeof params.gadget_id === "string" ? params.gadget_id : "";
-    const table = typeof params.table === "string" ? params.table : "";
+    let gadgetOperation = operation.match(/^extension\.gadget\.(list|get|insert|update|delete)$/)?.[1];
+    let gadgetId = typeof params.gadget_id === "string" ? params.gadget_id : "";
+    let table = typeof params.table === "string" ? params.table : "";
+    if (operation === "extension.resource.structured_data" && identity.workflowClass === "vertical_extension" && identity.definitionId) {
+      const grant = await readWorkflowGrant(this.env, identity);
+      const resolved = resolveExtensionStructuredDataRequest({ manifest: grant.installation?.manifest ?? {}, workflowId: identity.definitionId,
+        requirementId: typeof params.requirement_id === "string" ? params.requirement_id : "",
+        operationId: typeof params.operation === "string" ? params.operation : "", input: params.input });
+      if (!resolved) throw new Error("workflow_structured_data_grant_invalid");
+      gadgetOperation = resolved.gadgetOperation.slice("extension.gadget.".length);
+      gadgetId = resolved.gadgetId;
+      table = resolved.table;
+    }
     const resourceReceipt: DurableStructuredDataOperationReceipt | undefined = gadgetOperation
       && identity.workflowClass === "vertical_extension" && identity.projectId && identity.installationId
       && /^[a-z][a-z0-9_-]{1,63}$/.test(gadgetId) && /^[a-z][a-z0-9_-]{0,62}$/.test(table)
