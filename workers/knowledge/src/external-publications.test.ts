@@ -81,7 +81,7 @@ describe("owner-published external Knowledge collections", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ publication_id: "course_material", project_id: "project-1", revision: 2, document_ids: ["doc-1", "doc-2"] });
     expect(h.batches).toHaveLength(1);
-    expect(h.batches[0]).toHaveLength(4);
+    expect(h.batches[0]).toHaveLength(5);
   });
 
   it("rejects a stale collection edit before it can replace sources", async () => {
