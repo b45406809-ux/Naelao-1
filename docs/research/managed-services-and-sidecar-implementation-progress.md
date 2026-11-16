@@ -1,5 +1,13 @@
 # Managed services and sidecar implementation progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K04 durable create idempotency; code 4f390061 pushed)
+
+Knowledge create callers now require a client idempotency key bound in D1 to tenant/Space/Project and a canonical request hash. Sync duplicates return the same document; large queued creates retain/resume the same staged document after uncertain dispatch; `docId` is the deterministic Workflow ID; deletion tombstones the hashed request key. Extensible resource requirements EP01–EP06 are copied/integrated from `e950f02b` under platform §15 (docs commit `ea97179738bc967338cf23ac607d9721e5cb6dba`).
+
+Code `4f390061c4bea4b032eaf3a205e76293a4f226a0` is pushed and remote-verified. Local evidence: Knowledge **111/111**, queue consumer **12/12**, Knowledge/Workflows/Shell/Dashboard typechecks, release migration **20/20**, manifest tests **5/5**, schema/deployment manifest validators, migration/atomic SQL smoke and diff check. No D1, Worker, Queue, Workflow, billing or provider deployment/live acceptance. All rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: continue K05 collection authority against existing publication and extension-grant callers; add missing explicit collection rights/version checks without weakening scoped publication or tombstone fences. Then progress remaining S/U/P/PW/K/EP gaps.
+
 ## Related-plan reconciliation — extensible resource platform (2026-11-16; source e950f02b)
 
 Fetched and copied `extensible-platform-and-managed-resources-plan.md` from planning commit `e950f02bdf0726f05db456a50ef29699e200d3b3`; no branch switch or merge occurred. EP01–EP06 are incorporated in platform §15 and tracked in the platform ledger. Managed-service operation journals, payer/usage receipts, sidecar gates, extension manifests and the bounded dynamic-page route provide reusable pieces, but they are not a generic resource broker, provider-neutral custom site host or live runtime contract. Reuse S/U/P/PW/K evidence; implement all remaining code independently of live account access. Rollouts remain disabled.

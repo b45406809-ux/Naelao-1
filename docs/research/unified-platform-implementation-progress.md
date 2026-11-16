@@ -2,7 +2,7 @@
 
 ## Active cross-plan mission pointer (2026-11-16)
 
-The active autonomous mission also tracks managed services S1–S9/U01–U12, platform P01–P24/PW01–PW06, Knowledge K01–K30, and extensible resources EP01–EP06. The new extensible-resource plan at planning commit `e950f02bdf0726f05db456a50ef29699e200d3b3` is copied and incorporated in platform §15; no planning branch was merged. Read the current-work branch records in `AGENTS.md` and the dedicated managed/platform/Knowledge ledgers before choosing new code work. Current exact task is K04 idempotent Knowledge ingestion; work is uncommitted until a code checkpoint is recorded. Keep rollouts disabled and the recovery branch push non-force.
+The active autonomous mission also tracks managed services S1–S9/U01–U12, platform P01–P24/PW01–PW06, Knowledge K01–K30, and extensible resources EP01–EP06. The new extensible-resource plan at planning commit `e950f02bdf0726f05db456a50ef29699e200d3b3` is copied and incorporated in platform §15; no planning branch was merged. K04 durable create idempotency is local and pushed as `4f390061c4bea4b032eaf3a205e76293a4f226a0`; the full local evidence and limits are in the dedicated Knowledge/platform/managed ledgers. Exact next task is K05 collection authority using the existing publication and extension-grant tables. Read `AGENTS.md` and all active plan/ledger records after interruption. Keep rollouts disabled and push non-force to `Mcbt5s-Backup-2`.
 
 Branch: `Mcbt5s-Backup-2`
 Plan: [Naelao unified platform plan](naelao-unified-platform-deep-plan.md)

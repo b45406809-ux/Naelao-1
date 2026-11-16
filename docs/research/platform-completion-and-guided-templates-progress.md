@@ -1,5 +1,13 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (K04 create idempotency; code 4f390061 pushed)
+
+K04 is implemented locally with a required scope-bound request key, atomic request/document claim, canonical content+ACL conflict detection, retry-safe synchronous response, resumable large-upload staging and deterministic doc Workflow dispatch. Deletion fences now leave a minimal key tombstone. The extensible managed-resource plan was copied from planning commit `e950f02b` in docs commit `ea97179738bc967338cf23ac607d9721e5cb6dba`; its EP01–EP06 requirements remain active in §15. K04 code `4f390061c4bea4b032eaf3a205e76293a4f226a0` is pushed and remote-verified.
+
+Local evidence: Knowledge **111/111**, Workflow queue **12/12**, Knowledge/Workflows/Shell/Dashboard typechecks, release migration **20/20** and release manifest **5/5** tests, migration and deployment manifest validators, SQLite migration/atomic insert smoke, and `git diff --check`. No migration/deploy, real billing, browser, provider or live acceptance. Rollouts stay disabled; preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: implement K05 collection authority using the existing external-publication and Project grant records; add versioned source membership and explicit rights at actual callers. Keep the Naelao owner-publication boundary, avoid a second collection store, and verify stale revision/revocation and cross-scope denial. EP01–EP06 and remaining K/S/U/P/PW gaps remain code work; AI Search is unselected.
+
 ## Extensible platform reconciliation — 2026-11-16 (source e950f02b copied)
 
 Fetched `docs/research/extensible-platform-and-managed-resources-plan.md` from `plan/microapps-ui-sdk-voice` at `e950f02bdf0726f05db456a50ef29699e200d3b3`, copied it verbatim, and incorporated EP01–EP06 in platform plan §15. No planning branch switch or merge occurred. Reconciliation uses current source around `packages/agent-sdk/src/extensions.ts`, `workers/spaces/src/routes/dynamic-pages.ts`, Knowledge publication/search and workspace checked publication; a declaration or mock alone is not runtime capability proof.
