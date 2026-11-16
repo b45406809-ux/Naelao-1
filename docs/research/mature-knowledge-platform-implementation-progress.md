@@ -1,5 +1,11 @@
 # Mature knowledge platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
+
+The structured-data resource grant ledger and Project owner review caller are implemented through the existing Gadget/MicroApp route, with current grant/install checks, serialized bounded operation leases and content-free usage receipts. Code `aa290198532b2c7a47878b69d7528c04ce5685e1` is pushed. Local SDK/Spaces/Agents/Router/Shell suites passed **36/36**, **50/50**, **21/21**, **75/75**, **1/1**; affected typechecks and diff check passed. No Knowledge retrieval/provider implementation changed; no D1/SpaceDO migration, deployment, browser, provider or live acceptance ran. All resource capabilities remain unavailable and rollout is disabled.
+
+Exact next action remains the independent EP02 object-resource adapter against scoped R2 ownership and lifecycle. K05's broader collection lifecycle and K06–K30 remain code work; AI Search stays unselected. Preserve the current ACL, tombstone, publication and retention authority.
+
 ## Cross-plan pointer — 2026-11-16 (EP02 structured-data workflow bridge; code `66fdbd2e` pushed)
 
 The latent structured-data workflow call now resolves the signed manifest and worker-role grant, uses the durable WorkflowRunDO effect journal and dispatches through the existing scoped Gadget route. Local SDK/Agents/Spaces suites passed **36/36**, **31/31**, **35/35**, with all three typechecks and diff check. Commit `66fdbd2e3e8ebf295fcb8892de0c7338a86ab9a3` is remote-verified. No resource grant issuer/owner lifecycle is complete; all resource kinds remain unavailable and no Knowledge retrieval/provider path changed. Exact next task: owner grant persistence/revoke fencing and reachable approval callers, then return to K05 lifecycle and K06–K30. Keep AI Search unselected and rollouts disabled.

@@ -1,6 +1,12 @@
 # Unified platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (EP02 structured-data workflow bridge; code `66fdbd2e` pushed)
+## Latest cross-plan pointer — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
+
+The Project owner grant ledger/status/revoke caller now persists exact signed-manifest and installation-generation approvals, audit revisions, operation leases, and current grant checks for the existing workflow Gadget bridge. WorkflowRunDO retains bounded content-free receipts and declared metering. Code `aa290198532b2c7a47878b69d7528c04ce5685e1` is pushed and remote-verified. Local suites passed: SDK **36/36**, Spaces **50/50**, Agents **21/21**, Router **75/75**, Shell grant API **1/1**; affected typechecks and `git diff --check` pass. Resource descriptors remain unavailable; no migrations/deployments or live acceptance ran. Keep workspace/runtime and other rollouts disabled.
+
+Exact next action: map scoped R2 object lifecycle and signed extension artifact ownership, then implement EP02 opaque installation-bound object grants/operations with bounded reads/writes/deletes, quotas, revocation fences and cleanup tests. Job resources, other EP/K/S/U/P/PW gaps, and deployed/provider acceptance remain open. Preserve the pre-existing untracked `infra/scripts/__pycache__/`.
+
+## Previous cross-plan pointer — 2026-11-16 (EP02 structured-data workflow bridge; code `66fdbd2e` pushed)
 
 `ctx.resources.execute` now resolves against the signed workflow resource binding and durable effect journal, then calls the existing authenticated scope-checked Gadget path. SDK/Agents/Spaces suites **36/36**, **31/31**, and **35/35** passed; all three typechecks and diff check passed. Code `66fdbd2e3e8ebf295fcb8892de0c7338a86ab9a3` is pushed and remote-verified. The bridge is latent: SpaceDO continues denying resource-bearing installs, and no owner grant registry/approval caller or resource capability is active. No migration, deployment or live acceptance ran. Exact next action: persist exact-manifest/installation-generation owner grants, add authorized approve/status/revoke callers and per-effect revocation fencing; test replay, changed-payload conflicts, races and cross-install denial. Continue open S/U/P/PW/K/EP work; keep rollouts disabled.
 

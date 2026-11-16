@@ -1,6 +1,12 @@
 # Platform completion and guided templates progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 structured-data workflow bridge; code `66fdbd2e` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
+
+The exact Project/install-bound owner grant ledger and reviewer caller now persist approved structured-data operations/tables, audit revisions and revocation. Workflow resource effects recheck signed install/current grant state, claim a bounded concurrent/rate lease, dispatch through the existing Gadget→MicroAppDO scope checks, and record hash/byte/outcome/metering receipts. Activation fails closed on a grant widened beyond its manifest. Code `aa290198532b2c7a47878b69d7528c04ce5685e1` is pushed. Local evidence: SDK **36/36**, Spaces **50/50**, Agents **21/21**, Router **75/75**, Shell grant API **1/1**; affected typechecks and diff check pass. No migration or deployment was run; capabilities remain unavailable and rollout remains disabled.
+
+EP02 structured-data caller/grant code is implemented locally; object and job adapters and EP06 cross-resource admission/settlement remain uncoded. K05 and K06–K30 plus remaining S/U/P/PW work remain active; this checkpoint changes no Knowledge retrieval path, and Cloudflare AI Search remains unselected. No provider credentials block ordinary implementation. Exact next action: trace scoped R2 object lifecycle/retention and signed extension artifact paths, then implement opaque install-bound object grants and bounded read/write/delete with quota, revocation and cleanup tests; keep object capability unavailable until the applicable acceptance gates pass.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 structured-data workflow bridge; code `66fdbd2e` pushed)
 
 The typed workflow `ctx.resources.execute` now uses the durable effect journal and resolves each request against the signed manifest's structured-data declaration and exact worker-role Gadget/table/action grant. Agent dispatch reuses the authenticated scope-checked Gadget→MicroAppDO route and validates the bounded response schema. Local evidence: Agent SDK **36/36**, Agents workflow/scope/journal **31/31**, Spaces install/Gadget route **35/35**; all three typechecks and `git diff --check` pass. Commit `66fdbd2e3e8ebf295fcb8892de0c7338a86ab9a3` is pushed and remote-verified.
 

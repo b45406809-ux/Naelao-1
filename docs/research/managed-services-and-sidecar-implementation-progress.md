@@ -1,5 +1,11 @@
 # Managed services and sidecar implementation progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 owner-reviewed structured-data grants; code `aa290198` pushed)
+
+Code `aa290198532b2c7a47878b69d7528c04ce5685e1` adds the durable exact-manifest/install-generation owner grant ledger, audit/revision history, Project-scoped review/status/revoke API and Shell caller, operation lease concurrency/rate admission, activation-time grant subset validation, and current grant checks through the existing workflow Gadget→MicroApp route. The WorkflowRunDO journal records request/result hashes, bytes, outcome and declared metering. Local evidence: SDK **36/36**, Spaces **50/50**, Agents **21/21**, Router **75/75**, Shell grant API **1/1**; affected package typechecks and `git diff --check` pass. All capabilities remain unavailable; resource installs remain staged. Migrations 150/151 and deployments/browser/provider/live acceptance were not run. No ordinary provider credentials block the remaining code.
+
+Exact next action: trace the existing scoped R2 object lifecycle and extension artifact routes; implement EP02 opaque installation-bound object grants and bounded object operations with size/type limits, revision/revocation fences and cleanup. Keep object capability unavailable pending local security/concurrency coverage and applicable deployed acceptance. Then continue job resources and the remaining S2–S9/U01–U12/P/PW/K/EP requirements without repeating completed audits. Preserve untracked `infra/scripts/__pycache__/` and keep rollouts disabled.
+
 ## Cross-plan checkpoint pointer — 2026-11-16 (EP02 structured-data workflow bridge; code `66fdbd2e` pushed)
 
 The Agent SDK resource call now resolves through the signed Project workflow declaration and durable effect journal into the existing authenticated scoped Gadget route. Local evidence: SDK **36/36**, Agents workflow/scope/journal **31/31**, Spaces install/Gadget route **35/35**, three typechecks and diff check. Code `66fdbd2e3e8ebf295fcb8892de0c7338a86ab9a3` is pushed and verified. This does not activate resources: install admission and catalog remain fail-closed; no durable owner grant registry or approval caller exists. No migration/deployment/live acceptance ran; preserve untracked `infra/scripts/__pycache__/` and keep rollouts disabled.
