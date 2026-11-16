@@ -1,6 +1,12 @@
 # Unified platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (EP02 extension effect budget admission and unit metering; code `15f704fe` pushed)
+## Latest cross-plan pointer — 2026-11-16 (EP02 owner-approved installation budgets; code `50566cd6` pushed)
+
+Owner-approved Project-install run and monthly caps now flow from the Shell's review UI to SpaceDO persistence, WorkflowHost authorization, the durable run journal and Billing's exact-install/tenant quota admission. The budget is generation/revision pinned; changing it invalidates resumed run authorization. Local verification: Spaces **39/39**, Billing **19/19**, Agents **39/39**, Shell API **1/1**, four package typechecks and diff check; code `50566cd661900917682828beea368fb135531c81` is pushed and verified. No production migration, deployment, browser, invoice/provider or live acceptance ran. Unified workspace, dual-read, Agent37 and rollout gates remain disabled. Preserve the pre-existing untracked `infra/scripts/__pycache__/`.
+
+Exact next action: trace and implement EP02's owner-granted Project/install jobs resource through a durable host queue/receipt path, with bounded payload, retry/deadline/concurrency, idempotency, uncertainty, cleanup and tenant/per-install billing tests. Keep resource capabilities disabled. Continue all other uncoded S/U/P/PW/K/EP requirements afterward.
+
+## Previous cross-plan pointer — 2026-11-16 (EP02 extension effect budget admission and unit metering; code `15f704fe` pushed)
 
 WorkflowRunDO now reserves one canonical workflow-step credit for each in-flight vertical-extension effect and fails closed on missing or exhausted run budgets, including concurrent actions. Billing's existing run reservation retains Project/installation dimensions and tenant monthly quota admission. Resource request/byte/job quantities are persisted idempotently by Project/installation/run; byte quantities are explicitly unpriced pending an approved rate. Code `15f704feee462d75a1f07a70aea36455bf4e3373` is pushed. Agent focused suites **27/27**, Agent and Agent SDK typechecks, and `git diff --check` pass. No migration, Billing D1 integration, deployment or live acceptance ran; unified workspace/dual-read/Agent37 gates and rollout flags remain disabled.
 

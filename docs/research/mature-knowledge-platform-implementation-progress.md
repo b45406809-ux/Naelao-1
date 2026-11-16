@@ -1,6 +1,12 @@
 # Mature knowledge platform implementation progress
 
-## Latest cross-plan pointer — 2026-11-16 (EP02 run budget admission and resource unit metering; code `15f704fe` pushed)
+## Latest cross-plan pointer — 2026-11-16 (EP02 owner-approved installation budgets; code `50566cd6` pushed)
+
+EP02 now has owner-authorized per-install run/monthly credit caps wired through SpaceDO resource review, the Shell, WorkflowHost and Billing's tenant/per-install held-plus-settled admission. The owner policy is generation/revision pinned and changes invalidate resumed workflow authorization. Code `50566cd661900917682828beea368fb135531c81` is remote-verified. Local evidence: Spaces **39/39**, Billing **19/19**, Agents **39/39**, Shell API **1/1**, four typechecks and diff check. No K01–K30, Knowledge retrieval/ACL/provider status changed; AI Search remains unselected. No deployed migrations, Worker, browser, provider/invoice or live acceptance ran; resource descriptors remain unavailable.
+
+Exact next cross-plan action: implement the scoped EP02 jobs adapter and durable receipts using the new owner-approved budget path. Continue K05 lifecycle and K06–K30 after that; byte/storage pricing remains an unresolved product decision, not a credential blocker. Keep retrieval and resource rollouts disabled.
+
+## Previous cross-plan pointer — 2026-11-16 (EP02 run budget admission and resource unit metering; code `15f704fe` pushed)
 
 Vertical-extension external effects now reserve one canonical workflow-step credit per in-flight action against the existing workflow run budget. The journal rejects missing/exhausted budgets, accounts for concurrency and preserves completed/unknown receipts; Billing's workflow reservation remains the tenant quota authority with Project/installation attribution. Request/byte/job quantities are persisted idempotently. Byte usage is explicitly unpriced because no approved byte/storage rate exists. Code `15f704feee462d75a1f07a70aea36455bf4e3373` is pushed; local Agent suites **27/27**, Agent/SDK typechecks and diff check pass. No migration, Billing integration, deployment or live acceptance ran. No K01–K30 or Knowledge retrieval/ACL/provider requirement changed; AI Search remains unselected.
 

@@ -1,6 +1,12 @@
 # Platform completion and guided templates progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 run budget admission and resource unit metering; code `15f704fe` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 owner-approved installation budgets; code `50566cd6` pushed)
+
+The existing Project owner resource-review flow now configures an installation's per-run and monthly Naelao-credit limits. SpaceDO persists bounded revision history for the exact installation generation and returns only the current-generation budget in workflow snapshots. WorkflowHost treats it as authority, defaults and caps each run, pins the budget revision, and thereby revokes resumed execution when policy changes. Billing includes held and settled usage for that install in monthly conditional admission, alongside the tenant quota. The Shell offers owner controls. Code `50566cd661900917682828beea368fb135531c81` is pushed and verified. Local evidence: Spaces **39/39**, Billing **19/19**, Agents **39/39**, Shell API **1/1**, four typechecks and diff check. Migrations were exercised locally in SQLite but not deployed; no browser, invoice/provider or live acceptance ran.
+
+EP02 remains partial: byte/storage units are unpriced by explicit product decision; the jobs adapter and other EP/K/S/U/P/PW code remain open. No P/PW or K requirement status changed. All resource descriptors and rollouts stay disabled. Exact next action: trace and implement a scoped host-managed jobs adapter with signed requirement and owner-grant checks, durable idempotency/unknown receipts, bounded enqueue/retry/deadline/concurrency, tenant/per-install Billing admission and replay/revocation/cleanup/quota tests. Keep jobs unavailable until applicable deployed acceptance.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 run budget admission and resource unit metering; code `15f704fe` pushed)
 
 WorkflowRunDO reserves one canonical workflow-step credit per in-flight vertical-extension effect against the existing run budget, including concurrent holds; it rejects missing/exhausted budgets and settlement above the effect hold. Billing's existing workflow reservation retains tenant monthly quota checks and Project/installation attribution. Resource request/byte/job units are persisted in its idempotent usage ledger by Project/installation/run. Byte units measure serialized request plus response and remain unpriced pending an approved rate.
 

@@ -1,6 +1,14 @@
 # Managed services and sidecar implementation progress
 
-## Latest cross-plan checkpoint — 2026-11-16 (EP02 run budget admission and resource unit metering; code `15f704fe` pushed)
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 owner-approved installation budgets; code `50566cd6` pushed)
+
+Project owners can set/revise a per-install run cap and monthly credit cap in the current resource review flow. SpaceDO stores the policy and bounded revisions against the exact installation generation; its worker snapshot carries the current policy to WorkflowHost. Resource-bearing workflows require that current owner approval, use the approved run ceiling by default, cannot widen it, and pin its monthly cap/revision into the durable run and Billing reservation. Billing's conditional reservation checks tenant quota plus this installation's settled and held credits. Budget revisions alter workflow grant identity, so resumed execution fails closed after a change. Uninstall removes the active budget row. Resource capabilities remain unavailable.
+
+Code `50566cd661900917682828beea368fb135531c81` is pushed and remote-verified. Local evidence: Spaces **39/39**, Billing **19/19**, Agents **39/39**, Shell API **1/1**; all four package typechecks and `git diff --check` pass. Billing exercised migrations 0110/0266 with real SQLite; Spaces exercised migration 154, exact Project-owner authorization, persistence/replay/revision, and worker snapshot. No deployed migration, Worker, browser, invoice/provider or live acceptance ran. S1–S9/U01–U12 statuses did not change. Byte/storage price is an unresolved product decision, jobs adapter is uncoded; neither is a credential blocker. Preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: trace existing scheduled-job enqueue and receipt handling, then implement EP02's Project/install-scoped host `jobs` operation through the signed requirement and owner grant. Use a durable idempotency/unknown-outcome receipt, bounded payload/deadline/retry/concurrency controls and existing tenant/per-install Billing admission; test replay, revocation, cleanup and exhaustion. Keep jobs unavailable and rollout disabled, then continue open S/U/P/PW/K/EP requirements.
+
+## Previous cross-plan checkpoint — 2026-11-16 (EP02 run budget admission and resource unit metering; code `15f704fe` pushed)
 
 WorkflowRunDO now gates each vertical-extension external effect on one reserved canonical workflow-step credit. The durable run journal includes concurrent in-flight effect holds, rejects missing/exhausted run budgets and records completed/unknown outcomes without replay. Billing's existing workflow reservation retains tenant monthly quota checks and Project/installation attribution. Request, byte and job units are persisted idempotently in Billing by Project/installation/run; byte units measure serialized request/response bytes but remain unpriced because no approved rate exists.
 
