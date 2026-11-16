@@ -1,5 +1,11 @@
 # Managed services and sidecar implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (EP02 durable Project jobs broker; code `248d3838` pushed)
+
+The EP02 Project/install jobs broker is now implemented locally and pushed: signed caller, current owner grant and release fence, bounded D1/R2 job ledger, owner-approved Billing admission, Agents `AGENT_TICKS` dispatcher, stable child start, status, retries/leases, deadline/revocation cleanup and uncertainty reconciliation. Code `248d3838fbfa9314eae0ae9f854f655328c8cc06` is remote-verified. Local evidence: Agents **47/47**, SDK **44/44**, typechecks, `git diff --check` and SQLite migration/admission. Migration and queue are source-only; no deployment/provider/live acceptance ran. No S1–S9/U01–U12 status changed; rollout remains disabled and `infra/scripts/__pycache__/` remains untracked.
+
+Exact next cross-plan action is the K05 Project-collection archive lifecycle recorded in the platform, Knowledge and unified ledgers. After that slice, resume the open managed-services queue at S3/U05 product-side candidate reservation and continue S4–S9/U01–U12; U05 trusted observations and U06 writer/drain/flush contracts remain specific external/runtime gates, not blockers for independent code gaps.
+
 ## Latest cross-plan pointer — 2026-11-16 (EP02 signed jobs contract and owner review; code `90088bd7` pushed)
 
 EP02 now has a strict Project/install jobs declaration and Project-owner grant review surface for signed workflow targets. Local SDK **37/37**, Spaces install/grant **33/33**, SDK/Spaces/Shell typechecks and diff check pass. Code `90088bd79445d4b135f63cb953137fdeaeaf7f4b` is pushed and verified. Jobs dispatch, durable job state/status, deadline/retry/active concurrency, cleanup and uncertainty reconciliation remain uncoded; resource capabilities and rollout remain disabled. No S1–S9/U01–U12 status changed.

@@ -1,5 +1,11 @@
 # Unified platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (EP02 durable Project jobs broker; code `248d3838` pushed)
+
+The signed Project/install jobs caller now persists bounded work in D1/R2, reserves against the existing owner-approved tenant/install Billing policy, dispatches through Agents `AGENT_TICKS`, and reports status through the authenticated WorkflowRunDO path. The ledger pins owner grant and signed release revisions, enforces scoped idempotency/rate/concurrency/deadline, reconciles lost child-start replies with a stable identity, and cleans terminal payloads. Code `248d3838fbfa9314eae0ae9f854f655328c8cc06` is remote-verified. Local evidence: Agents **47/47**, SDK **44/44**, Agents/SDK typechecks, diff check and SQLite migration/admission check. Migration 0267 and queue wiring are not deployed or live-accepted; resource catalogs and rollout flags remain disabled.
+
+Exact next action: continue K05 with a revisioned archive/unarchive lifecycle for Project publication collections, wired to owner API/Shell. Archived content must leave discovery/retrieval and active use grants; exposure returns only after explicit republication and grant approval. Test CAS, authorization, stale grants and retrieval exclusion. Generic collection ownership transfer and retention policy remain unresolved product semantics; continue the other S/U/P/PW/K/EP code gaps afterward.
+
 ## Latest cross-plan pointer — 2026-11-16 (EP02 signed jobs contract and owner review; code `90088bd7` pushed)
 
 The extension SDK now validates Project-scoped jobs with explicit signed workflow targets and non-recursive target roles; the Project-owner API/Shell can stage/revoke grants for the exact signed installation. SpaceDO rate/concurrency operation leases apply at the call boundary. Code `90088bd79445d4b135f63cb953137fdeaeaf7f4b` is remote-verified. SDK **37/37**, Spaces install/grant **33/33**, SDK/Spaces/Shell typechecks and diff check pass. Jobs queue/persistence/status, active concurrency/deadline/retry, cleanup and outcome reconciliation remain uncoded; runtime resources remain unavailable.

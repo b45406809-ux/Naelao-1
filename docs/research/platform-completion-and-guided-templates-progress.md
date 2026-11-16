@@ -1,5 +1,13 @@
 # Platform completion and guided templates progress
 
+## Latest cross-plan checkpoint — 2026-11-16 (EP02 durable Project jobs broker; code `248d3838` pushed)
+
+EP02 now has a reachable Project/install jobs broker: the signed SDK caller and WorkflowRunDO effect receipt reach owner-grant/release validation, a D1 job ledger, scoped R2 input, owner-approved Billing reservation, and the existing Agents `AGENT_TICKS` queue. Rows pin exact tenant/Space/Project/install, requirement, manifest/resource and release digests, generation, grant revision, actor, idempotency and stable child identity. Active concurrency/rate/deadline, bounded payload, retry lease, status, revocation, unknown-start reconciliation and cleanup are implemented. A duplicate tick cannot dead-letter the final start while its lease is live. Resource descriptors remain unavailable.
+
+Code `248d3838fbfa9314eae0ae9f854f655328c8cc06` is pushed and remote-verified. Local evidence: Agents **47/47**, SDK resource tests **44/44**, Agents/SDK typechecks, `git diff --check`, and SQLite migration/admission exercise. Migration 0267 is not deployed; no live queue, Worker, browser, provider, invoice or deployed acceptance ran. No P/PW/K/S/U requirement is thereby live-accepted; all rollouts remain off.
+
+Exact next action: continue K05 by adding a CAS-protected archive/unarchive state to the existing Project publication collection, suppress discovery while archived, invalidate active use grants, and require an explicit new publication/approval before exposure returns. Reach it through the current owner API/Shell and test authorization, stale revision/grant, retrieval exclusion and republish. Keep generic ownership-transfer and retention-period decisions explicit. Then continue uncoded K/S/U/P/PW/EP items.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (EP02 signed jobs contract and owner review; code `90088bd7` pushed)
 
 The Agent SDK now accepts only Project-scoped `jobs` requirements with bounded `enqueue`/`status` schemas, exact signed workflow targets and a non-recursive target workflow role. The Project-owner grant API/Shell show requested targets and stage/revoke operation approvals against the exact manifest and installation generation. SpaceDO applies the existing rate/concurrency operation lease. Code `90088bd79445d4b135f63cb953137fdeaeaf7f4b` is pushed and remote-verified. Local evidence: SDK **37/37**, Spaces install/grant **33/33**, SDK/Spaces/Shell typechecks and `git diff --check`; these are local SQLite/Worker stubs.

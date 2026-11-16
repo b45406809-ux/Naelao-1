@@ -1,5 +1,11 @@
 # Mature knowledge platform implementation progress
 
+## Latest cross-plan pointer — 2026-11-16 (EP02 durable Project jobs broker; code `248d3838` pushed)
+
+EP02's signed Project/install `jobs` requirement now reaches the WorkflowRunDO journal, exact owner grant/release fence, durable D1 ledger, scoped R2 payload, owner-approved Billing reservation and Agents `AGENT_TICKS` dispatcher. Stable idempotency and child identity, bounded payload/deadline/retries, active concurrency/rate, grant revision, status, lost-start reconciliation and cleanup are locally implemented. Code `248d3838fbfa9314eae0ae9f854f655328c8cc06` is remote-verified. Agents **47/47**, SDK **44/44**, both typechecks and diff check pass; migration/conditional admission was exercised in SQLite. Migration remains unapplied, no live/deployed acceptance ran, and job/resources/retrieval rollouts stay disabled.
+
+K05 remains `IN_PROGRESS`; this EP02 code does not change any K01–K30 status. Exact next action: add versioned archive/unarchive to the current Project collection publication authority, suppress archived collections from discovery/retrieval, invalidate use grants, and require explicit republish/reapproval before exposing content again. Add reachable owner caller and CAS/authorization/stale-grant/retrieval tests. Generic ownership transfer, retention policy, K06–K30 and remaining S/U/P/PW/EP work remain open; Cloudflare AI Search is unselected.
+
 ## Latest cross-plan pointer — 2026-11-16 (EP02 signed jobs contract and owner review; code `90088bd7` pushed)
 
 EP02 adds a Project-scoped, signed-workflow jobs requirement plus exact install-generation owner grant review; local SDK **37/37**, Spaces **33/33**, SDK/Spaces/Shell typechecks and diff check pass. Code `90088bd79445d4b135f63cb953137fdeaeaf7f4b` is remote-verified. The host dispatcher, durable job status, bounded active concurrency/deadline/retry and uncertainty cleanup are still uncoded; no K01–K30, retrieval, ACL or AI Search status changed. Resource and retrieval rollouts remain disabled.
