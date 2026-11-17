@@ -5876,6 +5876,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sourceEntries))))]
     .map(x => x.toString(16).padStart(2, "0")).join("");
   let expectedUpgradePin: { generation: number; version: string; manifestSha256: string } | null = null;
+  let projectUpdateReviewClaims: ReturnType<typeof projectBoundExtensionUpdateClaims> | undefined;
+  let projectUpdateReviewSignature: string | undefined;
   if (body.upgrade === true) {
     if (typeof body.updateReviewToken !== "string" || body.updateReviewToken.length > 16_384)
       return c.json({ error_code: "extension_update_review_token_required" }, 409);
@@ -5914,6 +5916,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
         artifactSha256: digest, publisherId: trustedPublisher.publisher_id, publisherKeyId })
       || expectedUpgradePin.manifestSha256 !== currentManifestSha256 || !isVersionOnlyManifestChange(trustedCurrentManifest, manifest))
       return c.json({ error_code: "extension_update_review_token_stale" }, 409);
+    projectUpdateReviewClaims = updateClaims;
+    projectUpdateReviewSignature = decodedReview.signature;
     if (currentInstall) {
       const expansion = extensionReleaseAccessExpansion(currentInstall, { permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements });
       if ((expansion.permissions.length || expansion.capabilities.length) && body.permissionExpansionApproved !== true) {
@@ -5937,7 +5941,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       publisherId: trustedPublisher.publisher_id, publisherKeyId, publisherSignature, publisherPayloadSha256,
       ...(mustRemainStaged ? { deferActivation: true } : {}), ...(body.upgrade ? { upgrade: true,
         expectedCurrentGeneration: expectedUpgradePin?.generation, expectedCurrentVersion: expectedUpgradePin?.version,
-        expectedCurrentManifestSha256: expectedUpgradePin?.manifestSha256 } : {}) }) }));
+        expectedCurrentManifestSha256: expectedUpgradePin?.manifestSha256,
+        projectUpdateReview: { claims: projectUpdateReviewClaims, signature: projectUpdateReviewSignature } } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
   const installedResult = await readBoundedResponseJson<{ installationId?: string; installationGeneration?: number;
     release?: { version?: string; artifactSha256?: string; hostSignature?: string; publisher?: { keyId?: string } } }>(installed.clone(), 64 * 1024);
@@ -5946,7 +5951,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     await stub.fetch(new Request("http://space-do/extension-installation/abort", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
         "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
-      body: JSON.stringify({ installationId: installedResult.installationId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND" }),
+      body: JSON.stringify({ installationId: installedResult.installationId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND",
+        ...(projectUpdateReviewClaims ? { projectUpdateRequestId: projectUpdateReviewClaims.requestId } : {}) }),
     })).catch(() => undefined);
   };
   const stagedFailure = async (errorCode: string, status: 400 | 409 | 500 | 503, message: string) => {
@@ -6004,7 +6010,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
         "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
       body: JSON.stringify({ installationId: (await readBoundedResponseJson<{ installationId?: string }>(installed.clone(), 64 * 1024)).installationId,
-        extensionId: bundle.id, version: bundle.version, artifactSha256: digest, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND" }),
+        extensionId: bundle.id, version: bundle.version, artifactSha256: digest, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND",
+        ...(projectUpdateReviewClaims ? { projectUpdateRequestId: projectUpdateReviewClaims.requestId } : {}) }),
     }));
     if (!activation.ok) return stagedFailure("extension_runtime_activation_failed", 503, await readBoundedResponseText(activation, 8 * 1024).catch(() => ""));
   }

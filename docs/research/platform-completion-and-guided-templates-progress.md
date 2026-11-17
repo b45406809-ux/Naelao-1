@@ -1,8 +1,8 @@
-## Current cross-plan checkpoint — 2026-11-17 (Project update review token and upload fencing; `a17ba936` pushed)
+## Local checkpoint — 2026-11-17 (Project update receipt through activation)
 
-`a17ba936` is remote-verified. Review issues a five-minute signed token only when the Project installation is disabled and drained, publisher identity is unchanged, and the candidate changes only release versions. The signed upload route requires that token for Project upgrades and checks actor, tenant/Space/Project, install/generation, source/candidate manifest and artifact pins, publisher key and expiry before storing files; its SpaceDO upgrade CAS remains in force. Canvas/Gadget and workflow Shell callers now obtain and pass the token before upgrade. Space tests **77/77**, Spaces/Shell typechecks and diff hygiene pass; local/mock only.
+SpaceDO now verifies project-review claims again at the installation transaction boundary and uses migration 156 to persist exact reviewed update pins with source/applied generation and status. Installation writes `staged`; activation marks `active`; abort marks `aborted`. Tampered signatures do not create receipts. Focused SpaceDO install/runtime, migration and review tests **49/49**, Spaces typecheck and diff hygiene pass. Local mocks only.
 
-Remaining code gaps: the token is not persisted or single-use; Project-bound additive migrations are not routed through the new actor receipt contract; durable apply receipt and activation-failure recovery remain uncoded. No live/deployed acceptance. Exact next action: implement durable update receipt and wire the reviewed Project migration through stage/activation with safe retry/recovery, then continue other active plans. Rollout stays disabled.
+The five-minute token is not single-use, receipts are not exposed to a recovery caller, a staged apply cannot resume after interruption, and additive Project Gadget migrations are not yet supported by the version-only update token. No live/deployed acceptance. Exact next action: implement idempotent apply recovery from a persisted request receipt, then wire append-only Project Gadget migration apply and activation retry through the Project-bound actor receipt. Rollout stays disabled.
 
 ## Current cross-plan checkpoint — 2026-11-17 (Project Gadget migration recovery; `51a70c34` pushed)
 

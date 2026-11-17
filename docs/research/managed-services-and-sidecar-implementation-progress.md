@@ -1,8 +1,8 @@
-## Cross-plan checkpoint — 2026-11-17 (Project owner update token; `a17ba936` pushed)
+## Cross-plan local checkpoint — 2026-11-17 (Project update receipt through activation)
 
-`a17ba936` is remote-verified. Project release review now issues a short HMAC token only for disabled/drained, same-publisher, version-only changes. The Project bundle uploader validates it against exact actor and tenant/Space/Project/install generation, current/candidate manifest and artifact hashes, publisher key and expiry before artifact writes; current SpaceDO install CAS remains enforced. Shell Canvas/Gadget and workflow callers request and pass the review token. Space focused review/install/runtime suites **77/77**, Spaces/Shell typechecks pass. Local/mock evidence only.
+SpaceDO migration 156 persists project update receipts with exact source/candidate pins, actor, publisher and installation generations inside the update transaction; activation and abort update receipt state. The review token is reverified by SpaceDO, and tampered signatures leave no receipt. Focused install/runtime, migration and review suites **49/49**, Spaces typecheck and diff check pass. Local/mock evidence only.
 
-Remaining Project update code: token persistence/single-use, migration apply through Project-bound receipt, and failure recovery after staging/activation. Exact next action: implement the durable receipt and migration apply/recovery, with interruption/replay/revocation tests. No live/deployed acceptance; rollout stays off.
+Remaining Project update code: the short review token is reusable rather than persisted/single-use; there is no recovery caller for a staged receipt; and Project-bound additive migration is not yet within the update contract. Exact next action: use the durable request receipt for idempotent apply recovery after interruption, then add Project Gadget migration apply/retry with revocation and activation-failure tests. No live/deployed acceptance; rollout stays off.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (jobs-only resource approval UI; `ce7e01c5` pushed)
 

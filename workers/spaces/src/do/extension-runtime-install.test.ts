@@ -5,6 +5,7 @@ import { mintInternalToken } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import { digestExtensionManifest, PERSONAL_ASSISTANT_SPACE_TEMPLATE, RECEIVE_STOCK_INPUT_SCHEMA, RECEIVE_STOCK_OUTPUT_SCHEMA, validateExtensionManifest } from "@naelao/agent-sdk";
 import { spaceSharedDependencyExpansion } from "../extension-update-contract.js";
+import { projectBoundExtensionUpdateClaims } from "../project-extension-update-review.js";
 
 const planDb = { prepare: () => ({ bind: () => ({ first: async () => ({ plan_tier: "free" }) }) }) };
 
@@ -1016,6 +1017,63 @@ describe("runtime extension installation", () => {
     expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false, dependenciesResolved: false });
     expect(await (await space.fetch(new Request("http://space/project-extension-runtime?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", app_id: "not_a_canvas" })))).json())
       .toEqual({ managed: false, active: false, releaseValid: false, dependenciesResolved: false });
+  });
+
+  it("persists a reviewed Project update receipt in the install CAS and marks it active after activation", async () => {
+    const storage = createDOStorage(), secret = "project-update-receipt-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
+    const makeManifest = (version: string) => validateExtensionManifest({ id: "ext_project_receipt", type: "extension", declaredPermissions: [],
+      capabilityRequirements: ["extension.project_canvas"], gadgets: [], daemons: [], commands: [],
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_project_receipt", version, primitives: [
+        { schemaVersion: "1.0", kind: "canvas", id: "dashboard", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+          layout: "CanvasMount", component: "./index.html", dynamicPage: false },
+      ] },
+    }, { gatekeeperCapabilities: ["extension.project_canvas"] });
+    const current = makeManifest("1.0.0"), candidate = makeManifest("2.0.0");
+    const publisher = { publisherId: "pub_project", publisherKeyId: "a".repeat(64), publisherSignature: "signed-release",
+      publisherPayloadSha256: "b".repeat(64) };
+    const currentArtifact = "c".repeat(64), candidateArtifact = "d".repeat(64);
+    const install = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: current, installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a",
+        scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: currentArtifact, ...publisher }) }));
+    expect(install.status, await install.clone().text()).toBe(201);
+    const { installationId } = await install.json() as { installationId: string };
+    const sourceGeneration = storage.sql.exec<{ generation: number }>("SELECT generation FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]!.generation;
+    const sourceManifestSha256 = await digestExtensionManifest(current);
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", installationId);
+    const claims = projectBoundExtensionUpdateClaims({ tenantId: "tenant", spaceId: "space", projectId: "project-a", actorId: "owner",
+      installationId, extensionId: "ext_project_receipt", installationGeneration: sourceGeneration, fromVersion: "1.0.0", toVersion: "2.0.0",
+      sourceManifestSha256, candidateManifestSha256: await digestExtensionManifest(candidate), sourceArtifactSha256: currentArtifact,
+      artifactSha256: candidateArtifact, publisherId: publisher.publisherId, publisherKeyId: publisher.publisherKeyId,
+      expiresAt: Date.now() + 60_000, requestId: "123e4567-e89b-12d3-a456-426614174000" });
+    const signature = await signHmac(JSON.stringify(claims), secret);
+    const updateBody = { manifest: candidate, installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a",
+        scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: candidateArtifact, ...publisher,
+        upgrade: true, deferActivation: true, expectedCurrentGeneration: sourceGeneration, expectedCurrentVersion: "1.0.0",
+        expectedCurrentManifestSha256: sourceManifestSha256, projectUpdateReview: { claims, signature } };
+    const tampered = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...updateBody, projectUpdateReview: { claims, signature: "0".repeat(64) } }) }));
+    expect(tampered.status).toBe(409);
+    expect(storage.sql.exec("SELECT request_id FROM project_extension_update_receipts").toArray()).toHaveLength(0);
+    const update = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(updateBody) }));
+    expect(update.status, await update.clone().text()).toBe(201);
+    const receipt = storage.sql.exec<{ status: string; project_id: string; source_generation: number; applied_generation: number;
+      source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string }>(
+      "SELECT status,project_id,source_generation,applied_generation,source_artifact_sha256,artifact_sha256,publisher_key_id FROM project_extension_update_receipts WHERE request_id=?",
+      claims.requestId).toArray()[0];
+    expect(receipt).toEqual({ status: "staged", project_id: "project-a", source_generation: sourceGeneration, applied_generation: sourceGeneration + 1,
+      source_artifact_sha256: currentArtifact, artifact_sha256: candidateArtifact, publisher_key_id: publisher.publisherKeyId });
+
+    const activated = await space.fetch(new Request("http://space/extension-installation/activate", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": await mintInternalToken(secret, "tenant") },
+      body: JSON.stringify({ installationId, extensionId: "ext_project_receipt", version: "2.0.0", artifactSha256: candidateArtifact,
+        tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", projectUpdateRequestId: claims.requestId }) }));
+    expect(activated.status, await activated.clone().text()).toBe(200);
+    expect(storage.sql.exec("SELECT status FROM project_extension_update_receipts WHERE request_id=?", claims.requestId).toArray())
+      .toEqual([{ status: "active" }]);
   });
 
   it("keeps a composed Canvas bundle unavailable until its host initialization is confirmed", async () => {

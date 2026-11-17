@@ -16,7 +16,7 @@ export function projectBoundExtensionUpdateClaims(input: { tenantId: string; spa
   actorId: string; installationId: string; extensionId: string; installationGeneration: number;
   fromVersion: string; toVersion: string; sourceManifestSha256: string; candidateManifestSha256: string;
   sourceArtifactSha256: string; artifactSha256: string; publisherId: string; publisherKeyId: string;
-  expiresAt: number; requestId: string }) {
+  expiresAt: number; requestId: string }): ProjectBoundExtensionUpdateClaims {
   return { version: 1, purpose: "project_bound_extension_update", ...input };
 }
 
