@@ -122,6 +122,12 @@ Exact next action: continue TBR06 by tracing every current Space/Project/extensi
 
 ## Active mission and checkpoint
 
+## Latest cross-plan checkpoint — 2026-11-17 (EP04 install resource and provenance review; `83d81107` pushed)
+
+`c04361e916bb72d5de9331cf9b44a001e5203fe8` and `83d811072110b0f19dbb7f319419abb60bff11a4` are pushed and verified on `origin/Mcbt5s-Backup-2`. The signed Canvas/Gadget install preview now shows validated resource kind/scope, operations, binding targets and bounded request limits before install, explicitly marking them as declarations (not grants/runtime availability) and limits (not prices). It also displays a SHA-256 fingerprint, file count and UTF-8 bytes for the exact canonical manifest/source signing payload; this is not the host-built runtime artifact digest, which is created after server validation. Local verification: Shell focused suites **9/9**, Shell typecheck and `git diff --check` pass. No browser, deployment, provider call, paid provisioning or rollout occurred. Preserve untracked `infra/scripts/__pycache__/`.
+
+EP04 remains partial: signed install and preinstall declaration/provenance review are improved, but installer-state recovery, full immutable build/provenance receipt review, explainable known/unknown cost estimates, and upgrade migration/recovery review remain. EP03 still has no installed-extension-bound persistent parser/index runtime invocation. Other K/P/PW/S/U/AP/TBR items remain governed by their ledgers; do not treat live/deployment gates as code completion. Exact next action: inspect and implement the closest independent EP04 install/upgrade review gap by tracing the current signed release and staged-install API through the owner caller; surface exact server-validated publisher/artifact/dependency pins and unsupported/unknown price before confirmation, without inventing a quote. Then continue the next uncoded requirement across the other active plans. Rollouts remain disabled.
+
 The following plan sources are active and jointly govern this mission:
 
 - [Managed services and sidecar runtime plan](docs/research/managed-services-and-sidecar-runtime-plan.md), including S1–S9 and inherited U01–U12.
