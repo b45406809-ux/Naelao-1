@@ -1,5 +1,23 @@
 # Shared compute scheduling and budget progress
 
+## SC04/SC05 reconciliation — 2026-11-17 (Project reservation status already reachable; `3477bc8c` pushed)
+
+The Agents owner/admin Project endpoint already returns exact Billing reservation IDs, runtime kind,
+status (including expiry), reserved internal credits and exact settled usage for the Project main runtime
+and active Project-bound/shared sidecars. Sidecar IDs are resolved from current active SpaceDO installs;
+Project-user installations and sibling projects are excluded. No provider invoice/USD claim is made.
+Source: `workers/agents/src/index.ts` `/runtime-budget-reservations`, Shell owner display, and focused
+route tests in `runtime-budget-reservations-route.test.ts`. This owner-status requirement is implemented
+locally. However SC04's universal quota intersection remains partial: there is no configured
+Space/Project infra-credit cap or owner policy in source, so no missing ceiling can be safely added.
+Managed-service USD budgets are not a substitute. No code or product decision was fabricated.
+
+The same checkpoint closed stale/revoked Knowledge source reads across dense/FTS, citations and
+publication paths; Knowledge tests **22/22** and typecheck pass, code `3477bc8c036b41d1a964dc94a995a2cbd4608f58`
+is pushed. Exact next action: return to SC03 only if an explicit durable native invocation authority,
+alarm-safe grant revalidator and pre-dispatch reservation can be implemented from existing host records;
+otherwise proceed with the next independent active-plan code gap. Keep replay disabled and rollout off.
+
 ## Resume checkpoint — 2026-11-17 (SC03 dispatcher boundary rechecked; `81791a69` pushed)
 
 TBR07 remains complete; do not repeat its SpaceDO/Knowledge/extension authority comparison. The separate

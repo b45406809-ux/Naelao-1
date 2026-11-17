@@ -455,3 +455,16 @@ K03 remains partial for visual PDF/table geometry and parser-confidence/quality 
 action: continue independent SC03 compute-admission work; disconnected native-container dispatch remains
 uncoded without durable explicit consent, current alarm-safe authority revalidation and a pre-dispatch
 Billing reservation. Then proceed through the remaining K01–K30 and all other active-plan code gaps.
+## Current K07/K10/K20 checkpoint — 2026-11-17 (canonical source-state access fence; `3477bc8c` pushed)
+
+All Knowledge search lanes (Vectorize candidates plus independent FTS), canonical citation resolution,
+owner publication discovery/source reads/edit validation and signed extension external search now require
+`kb_documents.source_state='current'` before returning or publishing documents. This covers stale/revoked
+connector lineage as well as the existing website-specific active-connection check; inaccessible sources
+fail closed. Local search, route and external-publication suites **22/22**, Knowledge typecheck and
+`git diff --check` pass. Code `3477bc8c036b41d1a964dc94a995a2cbd4608f58` is pushed. No deployed acceptance.
+
+K10 remains uncoded because no verified upstream file-ACL identity adapter exists; do not map MCP tool
+aliases to provider file identity. Exact next action: continue K08/K09's remaining crawl queue and owner
+freshness/troubleshooting callers against the current refresh receipt; add only a supported bounded path,
+then continue remaining K01–K30 and all other active plans. AI Search remains unselected; rollout off.

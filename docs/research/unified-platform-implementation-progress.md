@@ -606,3 +606,17 @@ are not an equivalent caller and cannot be repurposed without an explicit native
 revocable current authority API. Exact next action: continue the supported runtime budget status/reservation
 reconciliation, then move immediately to the next independent S/U/P/PW/K/EP/AP/TBR requirement. TBR07 is
 already compared. Rollout remains disabled.
+## Current cross-plan checkpoint — 2026-11-17 (source revocation fence; `3477bc8c` pushed)
+
+Knowledge candidate fusion, exact citation reads, owner collection discovery/source membership/edit
+validation and signed extension retrieval now filter all canonical non-current source states before
+access. This closes the stale connector leak beyond the website-only checks. Local focused suites **22/22**,
+Knowledge typecheck and diff hygiene pass. Code `3477bc8c036b41d1a964dc94a995a2cbd4608f58` is pushed;
+no deployed/live acceptance. The existing Project owner budget route was checked against reservation
+settlement IDs and current sidecar installation scope; no additional status code was needed, while the
+missing Space/Project infra-cap remains an uncoded policy/config gap without an authoritative configured
+ceiling.
+
+Exact next action: continue K08/K09 source refresh lifecycle, then proceed through remaining active plans.
+SC03 disconnected native execution remains fail-closed without a durable consented request and alarm-safe
+authority/Billing revalidation. TBR07 is already compared; keep all rollouts disabled.

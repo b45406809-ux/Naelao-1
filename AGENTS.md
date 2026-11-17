@@ -11,9 +11,12 @@ past work and do not override the current progress records or require repeating 
   replay stays disabled. K03 now carries persisted Markdown table/page/section paths through permissioned
   search, exact citations, Agent metadata and Shell source display; signed extension Knowledge reads are
   bound to the current owner publication, installation grants and lease. Their results now include
-  source revision/hash and parser coordinates, and stale source lineage is filtered (`81791a69`). Next
-  continue SC03's durable-dispatch gap only where an existing authority contract allows it, then proceed
-  through every independent active-plan requirement.
+  source revision/hash and parser coordinates (`81791a69`). Dense/FTS retrieval, exact citations,
+  collection discovery/source reads and owner publication edits now all require `source_state='current'`
+  (`3477bc8c`). The existing owner/admin Project budget API reports exact reservation IDs/status/internal
+  credits for main and active Project sidecar runtimes; no authoritative Space/Project cap exists. Next
+  continue the next independent K/EP/P/PW/S/U/TBR gap, while SC03 disconnected native dispatch remains
+  fail-closed pending a durable invocation authority contract.
   After
   the K02 reviewed PNG/JPEG OCR caller (`8a6d5026`), after
   K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
@@ -48,9 +51,25 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Resume checkpoint — 2026-11-17 (signed extension Knowledge lineage; `81791a69` pushed)
+## Resume checkpoint — 2026-11-17 (stale-source Knowledge access fenced; `3477bc8c` pushed)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
+
+All Knowledge dense and independent FTS candidates, exact citation resolution, publication listing/source
+reads/edit validation and signed extension external search now exclude documents whose canonical
+`source_state` is stale, revoked or unsupported. The preexisting website connection check remains in
+place. Focused Knowledge tests **22/22**, Knowledge typecheck and `git diff --check` pass locally. Code
+`3477bc8c036b41d1a964dc94a995a2cbd4608f58` is pushed to `origin/Mcbt5s-Backup-2`; no deployed/live
+acceptance. SC04/SC05 were reconciled: existing owner/admin reads show exact Project main and current
+Project-bound/shared sidecar reservation IDs, status, internal-credit holds and exact settled usage.
+There is no supported Space/Project infra-credit cap to intersect; do not substitute managed-service USD
+budgets or invent a new quota. TBR07 remains complete.
+
+Exact next action: continue the next independent active-plan code gap (K08/K09 crawler lifecycle or an
+EP/P/PW/S/U requirement after reconciling current callers). Keep rollout disabled, preserve the Python
+cache and continue after every subsequent checkpoint.
+
+## Previous checkpoint — 2026-11-17 (signed extension Knowledge lineage; `81791a69` pushed)
 
 The signed vertical-extension Knowledge caller already resolves the current installation manifest and
 owner grant, pins the owner-published collection revision, claims the operation lease and invokes the
