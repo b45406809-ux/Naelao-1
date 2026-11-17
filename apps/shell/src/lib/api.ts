@@ -2229,6 +2229,24 @@ export function callSpaceSharedExtensionApi(spaceId: string, appId: string, sess
     method: request.method, session, ...(request.body !== undefined ? { body: JSON.stringify(request.body) } : {}), cache: "no-store",
   });
 }
+export interface PublicDynamicPageDraft { slug: string; html: string; actions: Record<string, { key: string; fields: string[] }> }
+export interface PublicDynamicPageReview { review_id: string; artifact_sha256: string; expires_at: number; draft: PublicDynamicPageDraft }
+export function reviewSpaceSharedDynamicPage(spaceId: string, appId: string, session: SessionCredentials, draft: PublicDynamicPageDraft) {
+  return apiFetch<PublicDynamicPageReview>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}/pages`, {
+    method: "POST", session, cache: "no-store", body: JSON.stringify(draft),
+  });
+}
+export function publishReviewedSpaceSharedDynamicPage(spaceId: string, appId: string, session: SessionCredentials,
+  reviewId: string, draft: PublicDynamicPageDraft) {
+  return apiFetch<{ published: boolean; slug: string; artifact_sha256: string }>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}/pages/publish`, {
+    method: "POST", session, cache: "no-store", body: JSON.stringify({ review_id: reviewId, draft }),
+  });
+}
+export function unpublishSpaceSharedDynamicPage(spaceId: string, appId: string, session: SessionCredentials, slug: string) {
+  return apiFetch<{ unpublished: boolean; removed: boolean; slug: string }>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}/pages/${encodeURIComponent(slug)}`, {
+    method: "DELETE", session, cache: "no-store",
+  });
+}
 export function callProjectExtensionStorageUsage(spaceId: string, projectId: string, appId: string, installationId: string, session: SessionCredentials) {
   const path = "/v1/spaces/" + encodeURIComponent(spaceId) + "/projects/" + encodeURIComponent(projectId)
     + "/apps/" + encodeURIComponent(appId) + "/api/storage?installation_id=" + encodeURIComponent(installationId);

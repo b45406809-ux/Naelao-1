@@ -36,20 +36,19 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 immutable publication proof; pushed as `c6bf77b1`)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 owner publication caller; locally verified, pending push)
 
-Owner/admin page submission now returns a 10-minute review receipt pinned to canonical artifact SHA-256,
-actor and slug; apply publishes only the same draft and atomically consumes the receipt. An immutable
-publication row retains review ID, actor, slug, artifact digest and publication time. Public render
-verifies current page bytes against the newest publication record; mismatched or legacy unreviewed
-rows fail closed. Existing owner takedown, action nonce and privacy-safe page/client rate limit remain.
-Route/DO tests **13/13**, Spaces typecheck and `git diff --check` pass (local fakes only). No owner UI,
-browser, deployed edge/domain or provider acceptance; site rollout remains disabled. Previous API
-slice is pushed at `a35237d5`; this proof hardening checkpoint is pushed as `c6bf77b1`.
+The Shell Space Extensions view now provides an owner-facing dynamic-page editor for installed Gadget apps.
+Owners can request the bounded exact-digest review, see the artifact in a sandboxed preview, explicitly
+confirm the same draft and publish it, or take down its exact slug. Authenticated Shell API wrappers
+bind all calls to the signed Product session. API path/auth test **1/1**, Shell typecheck, Spaces
+route/DO tests **13/13**, Spaces typecheck and diff hygiene pass. These are local tests only; no browser,
+deployed domain/edge or live acceptance. Public host rollout stays disabled. Publication proof/backend
+checkpoint `c6bf77b1` and its pointer docs `e46a3240` are pushed; this owner UI checkpoint is pending.
 
 **Reminder to myself:** Keep implementing the full mission. Do not stop after a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops or a real blocker prevents all progress.
 
-Exact next action after push: verify whether any established owner-facing surface can call the exact-digest preview/apply API; current source search found none. Preserve this as an owner UI code gap and continue the next independent uncoded active-plan requirement. Keep SC03 replay fail-closed until durable invocation authority revalidation and pre-dispatch Billing admission are implemented. Preserve the untracked Python cache and disabled rollouts.
+Exact next action after push: resume SC03 durable compute admission/dispatch from the already completed TBR07 authority comparison. Implement only with a durable invocation identity, current exact authority revalidation and Billing admission before launch; keep replay denied if those checks cannot be reached. Then continue the next independent uncoded active-plan gap, preserving `infra/scripts/__pycache__/` and every rollout gate.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
 
