@@ -122,6 +122,12 @@ Exact next action: continue TBR06 by tracing every current Space/Project/extensi
 
 ## Active mission and checkpoint
 
+## Latest cross-plan checkpoint — 2026-11-17 (EP04 verified staged-release provenance; `d7ae34f4` pushed)
+
+`d7ae34f459e9aa2625613f17f82613151c5efe8d` is pushed and remote-verified. The owner-authorized staged-install listing now projects the DO's exact manifest, host-built artifact, and publisher signing-payload SHA-256 values, release version, and publisher key fingerprint only when the host release attestation validates. Current key trust is separate from signature validity, so a revoked key remains visibly revoked. The raw publisher signature is not rendered. Local checks: four focused Shell suites **11/11**, Shell typecheck, and `git diff --check`; no browser/deployment/live acceptance or rollout. Preserve untracked `infra/scripts/__pycache__/`.
+
+EP04 now has preinstall declaration/source fingerprint review and post-stage host receipt visibility. Upgrade migration/rollback review, durable interrupted-setup recovery UX, and approved cost quote/unknown-cost presentation remain partial. Exact next action: trace `ExtensionReleaseControls` and the project-bound install API against the existing signed release/rollback routes; add a current-version-pinned owner review for a candidate update only if the server has a safe project-bound review contract. If absent, implement a fail-closed review API by reusing release attestation/dependency resolution, keeping migration approval non-mutating until commit. Then continue other independent requirements. Rollouts remain disabled.
+
 ## Latest cross-plan checkpoint — 2026-11-17 (EP04 install resource and provenance review; `83d81107` pushed)
 
 `c04361e916bb72d5de9331cf9b44a001e5203fe8` and `83d811072110b0f19dbb7f319419abb60bff11a4` are pushed and verified on `origin/Mcbt5s-Backup-2`. The signed Canvas/Gadget install preview now shows validated resource kind/scope, operations, binding targets and bounded request limits before install, explicitly marking them as declarations (not grants/runtime availability) and limits (not prices). It also displays a SHA-256 fingerprint, file count and UTF-8 bytes for the exact canonical manifest/source signing payload; this is not the host-built runtime artifact digest, which is created after server validation. Local verification: Shell focused suites **9/9**, Shell typecheck and `git diff --check` pass. No browser, deployment, provider call, paid provisioning or rollout occurred. Preserve untracked `infra/scripts/__pycache__/`.
