@@ -9,9 +9,11 @@ past work and do not override the current progress records or require repeating 
   per-attempt internal-credit reads are pushed at `c1372b54`. SC03's encrypted receipt (`d3a0f194`)
   persists and expires intent but has no alarm-safe authority revalidation/Billing linkage; disconnected
   replay stays disabled. K03 now carries persisted Markdown table/page/section paths through permissioned
-  search, exact citations, Agent metadata and Shell source display; code is pushed at `0cb5358e`. Next
-  reconcile the signed MicroApp Knowledge caller against host grants/publications, then continue every
-  active plan.
+  search, exact citations, Agent metadata and Shell source display; signed extension Knowledge reads are
+  bound to the current owner publication, installation grants and lease. Their results now include
+  source revision/hash and parser coordinates, and stale source lineage is filtered (`81791a69`). Next
+  continue SC03's durable-dispatch gap only where an existing authority contract allows it, then proceed
+  through every independent active-plan requirement.
   After
   the K02 reviewed PNG/JPEG OCR caller (`8a6d5026`), after
   K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
@@ -46,7 +48,25 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (K03 citation provenance; `0cb5358e` pushed)
+## Resume checkpoint — 2026-11-17 (signed extension Knowledge lineage; `81791a69` pushed)
+
+**Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
+
+The signed vertical-extension Knowledge caller already resolves the current installation manifest and
+owner grant, pins the owner-published collection revision, claims the operation lease and invokes the
+service-only search route. The route now excludes stale/revoked source records and returns exact source
+adapter/revision/hash/grant revision plus chunk byte/line/heading provenance to the caller. Local external
+publication tests **10/10**, Knowledge typecheck and `git diff --check` pass. Code
+`81791a69d8753bddb752fc080e6ba80e510c8ea7` is pushed to `origin/Mcbt5s-Backup-2`. This is local/mock
+evidence; no deployed/live provider acceptance. TBR07 is already compared and must not be repeated.
+
+Exact next action: continue SC03 durable compute admission/dispatch only through an existing host authority
+contract; the synchronous native Container retry cannot be resumed by an alarm-safe caller after
+disconnect and lacks durable consent/Billing linkage. Preserve fail-closed replay, record this contract
+gap in the shared-compute ledger, then immediately continue other independent uncoded plan requirements.
+Keep rollout disabled and preserve `infra/scripts/__pycache__/`.
+
+## Previous checkpoint — 2026-11-17 (K03 citation provenance; `0cb5358e` pushed)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
 

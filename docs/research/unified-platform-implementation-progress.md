@@ -592,3 +592,17 @@ Code `688f69e4c9cae6c29986efb17d65a507779134e9` is remote-verified. Approval che
 ### 2026-11-17 cross-plan checkpoint — SC03 expired admission visibility
 
 ConcurrencyDO persists content-free expired queue receipts for up to 24 hours (2,000 globally) and returns them separately through the owner-scoped Project queue status API. Shell labels expiry without offering replay. Local checks: ConcurrencyDO **27/27**, Spaces route **4/4**, Shell API **2/2**, Agents/Shell typechecks and diff hygiene. No deployed or live acceptance. This does not solve disconnect-safe dispatch: the request body remains unpersisted, no reusable encrypted invocation store exists, and durable reauthorization requires a host grant revision plus current billing check. Exact next action: implement that host-owned job boundary only where existing authority can be revalidated; otherwise continue another independent S/U/P/PW/K/EP/AP/TBR code gap and keep rollout disabled.
+## Current cross-plan checkpoint — 2026-11-17 (signed Knowledge caller provenance; `81791a69` pushed)
+
+Reconciled the signed extension Knowledge caller against current source: workflow effects already enforce
+the exact installed manifest, owner-approved grant, current published collection revision and a
+single-use operation lease. The Knowledge Worker now rejects stale/revoked source lineage before
+retrieval and returns content/source hashes, adapter and revision, grant revision, chunk coordinates and
+validated heading path. Local external-publication suite **10/10**, Knowledge typecheck and diff hygiene
+pass. Code `81791a69d8753bddb752fc080e6ba80e510c8ea7` is pushed; no deployment/live provider acceptance.
+
+SC03 native-container disconnected dispatch remains a code contract gap; current extension workflow jobs
+are not an equivalent caller and cannot be repurposed without an explicit native execution consent and
+revocable current authority API. Exact next action: continue the supported runtime budget status/reservation
+reconciliation, then move immediately to the next independent S/U/P/PW/K/EP/AP/TBR requirement. TBR07 is
+already compared. Rollout remains disabled.

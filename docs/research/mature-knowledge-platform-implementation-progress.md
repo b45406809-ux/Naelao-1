@@ -440,3 +440,18 @@ and page headings are not a typed geometric coordinate, confidence score or accu
 warning and live provider acceptance gate. Exact next action: proceed with PW05 per-run compute/currency
 reservation for delegated workers where existing receipt identities support a safe host-side boundary;
 continue K03 and other requirements after that independent slice.
+## Current K03/EP03 checkpoint — 2026-11-17 (signed extension Knowledge lineage; `81791a69` pushed)
+
+The signed vertical-extension Knowledge caller is already reachable through durable workflow effects.
+It resolves the exact active installation and owner grant, pins the published collection revision,
+claims a single-use resource lease and calls the service-only publication search. That search now filters
+stale/revoked source lineage before vector retrieval and returns source adapter/revision/content hash,
+grant revision, byte/line coordinates and a validated heading path with each hit. This preserves the
+owner publication and deletion fences while making citations auditable to the extension caller. Focused
+external-publication tests **10/10**, Knowledge typecheck and `git diff --check` pass locally. No deployed
+or live provider acceptance. Code `81791a69d8753bddb752fc080e6ba80e510c8ea7` is pushed.
+
+K03 remains partial for visual PDF/table geometry and parser-confidence/quality evidence. Exact next
+action: continue independent SC03 compute-admission work; disconnected native-container dispatch remains
+uncoded without durable explicit consent, current alarm-safe authority revalidation and a pre-dispatch
+Billing reservation. Then proceed through the remaining K01–K30 and all other active-plan code gaps.

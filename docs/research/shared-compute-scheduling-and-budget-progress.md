@@ -1,5 +1,22 @@
 # Shared compute scheduling and budget progress
 
+## Resume checkpoint — 2026-11-17 (SC03 dispatcher boundary rechecked; `81791a69` pushed)
+
+TBR07 remains complete; do not repeat its SpaceDO/Knowledge/extension authority comparison. The separate
+signed vertical-extension job path already has a durable scoped job row, exact manifest/grant revision,
+current-grant revalidation, fenced queue dispatch, deterministic child run and fresh Billing reservation.
+It is valid only for the signed workflow `jobs` capability and is not a caller for native Bash/Container
+execution. The latter still has a synchronous same-request retry receipt: no durable invocation consent,
+alarm-safe current role/Bash-surface revalidation, owner-visible async job lifecycle or pre-dispatch
+Billing hold. Therefore disconnected native execution remains fail-closed. This is an uncoded host job
+contract, not a credential gate. Code `81791a69d8753bddb752fc080e6ba80e510c8ea7` also closes the adjacent
+published-Knowledge source-lineage leak; focused Knowledge tests **10/10**, typecheck and diff check pass.
+
+Exact next action: inspect whether an existing owner-configured runtime budget has a safe status caller
+and exact reservation identity that can be exposed without inventing new quota policy. Implement only
+that supported slice; if no such authority exists, record it and continue the next independent plan gap.
+Keep disconnected dispatch disabled and rollout off.
+
 ## SC03 resume update — 2026-11-17 (TBR07 already compared; dispatcher still fail-closed)
 
 The requested TBR07 authority comparison is complete and remains recorded below; same-Space owner/admin
