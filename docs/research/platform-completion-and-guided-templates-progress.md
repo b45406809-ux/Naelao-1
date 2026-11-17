@@ -1,3 +1,20 @@
+## Resume pointer — 2026-11-17 (Attachment OCR controls match scanned-PDF behavior; locally verified, push pending)
+
+The existing task-scoped OCR caller already renders at most five pages from a <=1 MiB scanned PDF,
+then OCRs each bounded <=1 MiB/20-megapixel page through the Space-enabled Workers AI path. Settings
+previously said scanned PDFs were unsupported. The confirmation and owner copy now describe the actual
+PDF/page limits, per-page model calls, shared rolling 20-call quota, untrusted output, air-gap denial
+and variable usage cost. Agents OCR/attachment route suites **20/20**, Agents typecheck, Shell typecheck
+and `git diff --check` pass. These are local mocks; no browser, deployment, live model or billing
+acceptance. This attachment tool path does not persist OCR into Knowledge ingestion or close K02's
+Knowledge OCR/lineage gap.
+
+**Reminder to myself:** Keep implementing the complete mission after tests and each checkpoint; do not stop at this UI correction or its push.
+
+Exact next action: fetch and push this truthful caller/configuration update, then continue the uncoded
+Knowledge ingestion caller work without treating attachment OCR as Knowledge indexing. Preserve all
+rollout-off and provider-acceptance gates.
+
 ## Resume pointer — 2026-11-17 (P04 personal MicroApp restore caller; pushed as `946e1881`)
 
 Settings now imports the signed-in user's version 3 product export, selects only snapshots for the
