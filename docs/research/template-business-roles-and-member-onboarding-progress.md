@@ -106,6 +106,14 @@ TBR05 remains partial for onboarding UI and delivery; TBR06 remains partial beca
 
 # Template-defined business roles and member onboarding progress
 
+## TBR07 authority comparison — 2026-11-17 (read-only reconciliation)
+
+Current callers and stores remain separate. SpaceDO `getProjectAssistantRole` reads the owning Project's `project_members` row and its `assistant_mode`; absent a row, the pushed `5de8d73d` path grants its existing owner/admin exception only when the user owns/administers that Project's actual Space. The Spaces assistant-access route applies internal HMAC plus Space membership before forwarding. Knowledge's `projectRoleRank` and retrieval callers query the D1 `project_access` ACL directly and fail closed when no row exists. In this checkout, `project_access` is created in migration 0074 and maintained by migration 0277 triggers, but no product-code insert/update/delete writer or SpaceDO synchronization caller was found. Extension grants are a third authority, persisted per installation and bound to exact requirement, manifest, generation and release revision; no symbolic business-role-to-grant issuer exists.
+
+Therefore no unified effective-access response or role-composition rule can safely be inferred from these stores. SpaceDO's same-Space owner/admin private-Project exception versus Knowledge's explicit D1 ACL remains `PRODUCT_DECISION_OPEN`; this comparison changes no grants and does not widen Knowledge access. Concrete code gap: identify/implement a host-owned, auditable Project ACL synchronization or shared authority contract before claiming cross-service effective access. TBR07 remains **PARTIAL**. TBR08 remains partial for non-Project resources/delegation/cache, and TBR10 remains the policy gate. Evidence is source inspection only; no live D1 state, deployed behavior or migration execution was checked.
+
+Exact next action: continue SC03 from the retryable capacity receipt now implemented locally in `ToolSandboxDO`/`code-runner`; add wake-on-release, persisted fenced lease and authorized owner queue/cancel callers before claiming a durable dispatcher. Preserve authority and budget rechecks; do not wait synchronously inside `ensureMeter`. Then continue other implementation gaps.
+
 ## Previous code checkpoint — 2026-11-17 (TBR05 verified Product-member invitation API; `743c2284` pushed)
 
 Migration 0278 and the Spaces API now provide owner/admin-created, seven-day, copy-only Product-user invitations with keyed token/email hashes, duplicate and 100-pending caps, revoke/list status, owner-only admin invitations, and same-Product verified-email redemption. Redemption rechecks the inviter's active Space role and atomically records acceptance plus the generic D1 Space membership. The SpaceDO platform-collaborator table is untouched, and delivery is always `not_sent`.

@@ -375,6 +375,28 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(1);
     expect(r.records.get("container_meter").creditsPerHour).toBe(dynamicCreditsPerHour("lite"));
   });
+  it("persists a capacity-wait receipt and dispatches only on an exact invocation retry", async () => {
+    const r = runtime();
+    const held = r.capacity.held.get("tenant:tenant") ?? new Map<string, number>();
+    held.set("other-invocation", Date.now() + 60_000);
+    r.capacity.held.set("tenant:tenant", held);
+    const executionId = "capacity-wait-1";
+    const deadline = Date.now() + 55_000;
+    const waiting = await r.invoke("/prewarm", { executionId, deadline });
+    expect(waiting.status).toBe(429);
+    expect(await waiting.json()).toMatchObject({ status: "waiting_for_capacity", admission_id: executionId,
+      retry_same_invocation: true, execution_started: false });
+    expect(r.records.get("execution:" + executionId)?.status).toBe("waiting_capacity");
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect(r.billing.filter(item => item.path.endsWith("/reserve"))).toHaveLength(0);
+
+    held.delete("other-invocation");
+    const admitted = await r.invoke("/prewarm", { executionId, deadline });
+    expect(admitted.status, await admitted.clone().text()).toBe(200);
+    expect(r.records.get("execution:" + executionId)?.status).toBe("committed");
+    expect(r.transport.start).toHaveBeenCalledOnce();
+    expect(r.billing.filter(item => item.path.endsWith("/reserve"))).toHaveLength(1);
+  });
   it("fails closed on disabled rollout, unapproved images, or subscription limits before allocation", async () => {
     for (const r of [runtime({ enabled: false }), runtime({ cpu: 1, memory: 6144 })]) {
       expect((await r.invoke()).status).toBe(409); expect(r.transport.start).not.toHaveBeenCalled();

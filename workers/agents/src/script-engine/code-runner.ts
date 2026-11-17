@@ -369,25 +369,39 @@ async function runContainerRequest(
     const computerEndpoint = localTunnel ? "/exec" : params.name === "container.prewarm" ? "/prewarm" : params.name === "container.rehydrate" ? "/workspace/rehydrate" : params.name === "computer-use.screenshot"
       ? "/computer/screenshot"
       : params.name === "computer-use.action" ? "/computer/action" : "/exec";
-    const resp = await stub.fetch(
-      new Request(`http://sandbox${computerEndpoint}`, {
+    const requestBody = JSON.stringify(localTunnel ? { op: "exec", params: { command: params.code, args: params.args }, scope } : {
+      ...(params.name === "container.rehydrate" ? { lockfiles: params.args["lockfiles"] } : {}),
+      name: params.name,
+      code: params.code,
+      args: params.args,
+      spaceId: params.spaceId,
+      ...(params.projectId ? { projectId: params.projectId } : {}),
+      ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}),
+    });
+    let resp: Response;
+    for (let attempt = 0; ; attempt++) {
+      resp = await stub.fetch(new Request(`http://sandbox${computerEndpoint}`, {
         method: "POST",
         headers: {
           ...headers,
           ...(opts.activeTask && !localTunnel ? { "x-avos-task-active": "1" } : {}),
         },
-        body: JSON.stringify(localTunnel ? { op: "exec", params: { command: params.code, args: params.args }, scope } : {
-          ...(params.name === "container.rehydrate" ? { lockfiles: params.args["lockfiles"] } : {}),
-          name: params.name,
-          code: params.code,
-          args: params.args,
-          spaceId: params.spaceId,
-          ...(params.projectId ? { projectId: params.projectId } : {}),
-          ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}),
-        }),
+        body: requestBody,
         signal: controller.signal,
-      })
-    );
+      }));
+      if (resp.status !== 429 || attempt >= 5 || controller.signal.aborted) break;
+      const admission: { status?: unknown } = await resp.clone().json<{ status?: unknown }>().catch((): { status?: unknown } => ({}));
+      if (admission.status !== "waiting_for_capacity") break;
+      // Retry the same immutable scope, execution ID and payload. The host receipt has not
+      // started guest execution; it can dispatch only after current auth/budget checks pass.
+      const retryAfterSeconds = Number(resp.headers.get("retry-after"));
+      const delayMs = Number.isFinite(retryAfterSeconds) ? Math.max(0, Math.min(5_000, retryAfterSeconds * 1000)) : 5_000;
+      if (delayMs > 0) await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, delayMs);
+        controller.signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
+      if (controller.signal.aborted) break;
+    }
     if (computerEndpoint === "/computer/screenshot") {
       if (!resp.ok) return { ok: false, error: `display capture failed (${resp.status})`, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
       const bytes = new Uint8Array(await resp.arrayBuffer());
