@@ -1,4 +1,4 @@
-export const KNOWLEDGE_PDF_PARSER_VERSION = "cohere:parse-v5.0";
+export const KNOWLEDGE_PDF_PARSER_VERSION = "cohere:parse-v5.0-page-markers-v2";
 export const KNOWLEDGE_PDF_PREVIEW_TTL_MS = 15 * 60 * 1000;
 
 export interface KnowledgePdfPreviewScope {

@@ -258,7 +258,7 @@ describe("Knowledge PDF preview and approved ingestion", () => {
     expect(response.status).toBe(200);
     const { preview } = await response.json() as { preview: Record<string, unknown> };
     expect(preview).toMatchObject({ content: "# Parsed guide\n\nOriginal extracted content.",
-      parser_version: "cohere:parse-v5.0", source_file_name: "guide.pdf", source_bytes: pdfBytes.byteLength,
+      parser_version: "cohere:parse-v5.0-page-markers-v2", source_file_name: "guide.pdf", source_bytes: pdfBytes.byteLength,
       extraction_warnings: [expect.stringContaining("Review reading order")] });
     expect(preview.source_sha256).toBe("aaff39a141bf4fa571f219eebfda53cff4454b4b3433e78307d48dd004f4fb96");
     expect(parse).toHaveBeenCalledTimes(1);
@@ -328,7 +328,7 @@ describe("Knowledge PDF preview and approved ingestion", () => {
     const insert = f.calls.find(({ sql }) => sql.includes("INSERT INTO kb_documents"));
     expect(insert?.args).toContain(preview.source_sha256);
     expect(insert?.args).toContain(preview.extraction_sha256);
-    expect(insert?.args).toContain("cohere:parse-v5.0");
+    expect(insert?.args).toContain("cohere:parse-v5.0-page-markers-v2");
     expect(insert?.args).toContain(await sha256("# Corrected heading\n\nApproved content after human review."));
     const chunkWrites = f.calls.filter(({ sql }) => sql.includes("INSERT INTO kb_chunks"));
     expect(chunkWrites.some(({ args }) => args.some((value) => typeof value === "string" && value.includes("Approved content after human review.")))).toBe(true);

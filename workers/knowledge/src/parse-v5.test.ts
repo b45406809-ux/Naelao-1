@@ -13,6 +13,20 @@ describe("createParseV5Request", () => {
     expect((init.body as FormData).get("output_format")).toBe("markdown");
   });
 
+  it("preserves only explicit, ordered, bounded provider page numbers", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ pages: [
+      { page_number: 1, markdown: "First page text" }, { page_number: 2, markdown: "Second page table\n\n| A | B |" },
+    ], markdown: "flattened output" }), { status: 200 }));
+    await expect(createParseV5Request(new Uint8Array([1]), "application/pdf", { COHERE_API_KEY: "secret" }, fetcher))
+      .resolves.toBe("## Page 1\n\nFirst page text\n\n## Page 2\n\nSecond page table\n\n| A | B |");
+
+    const malformed = vi.fn().mockResolvedValue(new Response(JSON.stringify({ pages: [
+      { page_number: 2, markdown: "Later" }, { page_number: 1, markdown: "Out of order" },
+    ], markdown: "safe flat fallback" }), { status: 200 }));
+    await expect(createParseV5Request(new Uint8Array([1]), "application/pdf", { COHERE_API_KEY: "secret" }, malformed))
+      .resolves.toBe("safe flat fallback");
+  });
+
   it("rejects a provider response that exceeds the extraction result budget", async () => {
     const response = new Response("{}");
     response.headers.set("content-length", String(16 * 1024 * 1024 + 1));

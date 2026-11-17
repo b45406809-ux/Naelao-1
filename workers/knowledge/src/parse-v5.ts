@@ -9,9 +9,27 @@ const PARSE_TIMEOUT_MS = 30_000;
 type ParseResponse = {
   markdown?: string;
   text?: string;
-  document?: { markdown?: string; text?: string };
-  results?: Array<{ markdown?: string; text?: string }>;
+  document?: { markdown?: string; text?: string; pages?: ParsePage[] };
+  pages?: ParsePage[];
+  results?: Array<ParsePage>;
 };
+
+type ParsePage = { page_number?: number; markdown?: string; text?: string };
+
+function pageMarkdown(pages: ParsePage[] | undefined): string | null {
+  if (!pages?.length || pages.length > 10_000) return null;
+  const rendered: string[] = [];
+  let priorPage = 0;
+  for (const page of pages) {
+    const pageNumber = page?.page_number;
+    const content = typeof page?.markdown === "string" ? page.markdown : typeof page?.text === "string" ? page.text : "";
+    if (!Number.isSafeInteger(pageNumber) || pageNumber! < 1 || pageNumber! > 10_000 || pageNumber! <= priorPage
+      || !content.trim() || content.length > MAX_PARSE_MARKDOWN_CHARS) return null;
+    priorPage = pageNumber!;
+    rendered.push(`## Page ${pageNumber}\n\n${content.trim()}`);
+  }
+  return rendered.join("\n\n");
+}
 
 /** Send the original bytes to Cohere's layout-aware parser and return its Markdown verbatim. */
 export async function createParseV5Request(
@@ -51,15 +69,14 @@ export async function createParseV5Request(
     throw Object.assign(new Error("Cohere Parse returned an invalid response shape"), { status: 502 });
   }
   const document = parsed.document && typeof parsed.document === "object" ? parsed.document : undefined;
+  const pageContent = pageMarkdown(parsed.pages) ?? pageMarkdown(document?.pages) ?? pageMarkdown(parsed.results);
   const direct = [parsed.markdown, document?.markdown, parsed.text, document?.text]
     .find((value): value is string => typeof value === "string");
   const resultMarkdown = Array.isArray(parsed.results)
-    ? parsed.results.map((result) => {
-        if (!result || typeof result !== "object") return "";
-        return typeof result.markdown === "string" ? result.markdown : typeof result.text === "string" ? result.text : "";
-      }).filter(Boolean).join("\n\n")
+    ? parsed.results.map((result) => typeof result?.markdown === "string" ? result.markdown
+      : typeof result?.text === "string" ? result.text : "").filter(Boolean).join("\n\n")
     : "";
-  const markdown = direct ?? resultMarkdown;
+  const markdown = pageContent ?? direct ?? resultMarkdown;
   if (!markdown.trim()) throw Object.assign(new Error("Cohere Parse returned no Markdown"), { status: 502 });
   if (markdown.length > MAX_PARSE_MARKDOWN_CHARS) {
     throw Object.assign(new Error("Cohere Parse Markdown exceeds the document limit"), { status: 413 });

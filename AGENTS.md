@@ -6,7 +6,8 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is the K02 reviewed PNG/JPEG OCR caller (pushed as `8a6d5026`), after
+  checkpoint is the K03 optional PDF page-marker preservation (local verification; push pending), after
+  the K02 reviewed PNG/JPEG OCR caller (`8a6d5026`), after
   K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
   bounded PPTX tables (`34800a4a`), task OCR settings (`7aee2ef1`) and P04 restore (`946e1881`,
   pointer `084e4f94`) were pushed. Current EP04 review/apply/recovery has exact pin/trust/dependency/
@@ -39,9 +40,21 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (K02 PNG/JPEG reviewed OCR caller; pushed as `8a6d5026`)
+## Current checkpoint — 2026-11-17 (K03 optional PDF page markers; local verification)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
+
+Knowledge PDF parser preserves optional explicit, bounded, increasing page numbers as `Page N` headings;
+otherwise it retains the flat Markdown path and never invents coordinates. The behavior has a new parser
+version to stale old preview receipts. Focused local checks: parser/ingestion/archive/workflow **26/26**,
+Knowledge typecheck and `git diff --check`. Provider page metadata is not live-verified; no deployment or
+provider call occurred. K03 still lacks typed geometry, confidence and parser-quality evidence.
+
+Exact next action: trace PW05 delegated worker runtime execution into per-run Billing reservation and
+settlement; implement only a run-scoped host receipt that fits current authorization/budget identities.
+Then continue every active plan. Keep all rollouts disabled.
+
+## Previous checkpoint — 2026-11-17 (K02 PNG/JPEG reviewed OCR caller; pushed as `8a6d5026`)
 
 Knowledge Space and Project upload callers now support a versioned, signed, editable PNG/JPEG OCR preview
 and approval path with validated image signatures/dimensions, 1 MiB/20 MP bounds, source lineage, original

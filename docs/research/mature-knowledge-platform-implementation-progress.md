@@ -407,3 +407,18 @@ K02 remains partial for scanned-PDF OCR, PDF/page and richer visual coordinates,
 extraction. K03 remains partial for PDF coordinates, extraction confidence and parser-quality evidence.
 Exact next action: continue K03 PDF/page provenance through the existing signed preview contract, and
 continue the full active mission after that checkpoint. Keep image parsing and rollouts disabled.
+## K03 PDF provenance checkpoint — 2026-11-17 (optional page markers; live contract unverified)
+
+The Cohere Parse response adapter now preserves explicit page numbers when `pages` or `results` contain
+bounded, strictly increasing `page_number` values with text. It emits `Page N` Markdown headings so the
+existing structure-aware chunker can keep the page path. Malformed, duplicated, unordered or absent page
+metadata never invents coordinates; the adapter falls back to the provider's flat Markdown. Parser
+version `cohere:parse-v5.0-page-markers-v2` invalidates old preview receipts. Focused parser, ingestion,
+archive and workflow tests **26/26**, Knowledge typecheck and diff hygiene pass locally. No provider call
+or deployment occurred.
+
+K03 remains partial: current live Cohere response contract has not been verified to include page metadata,
+and page headings are not a typed geometric coordinate, confidence score or accuracy result. Keep the
+warning and live provider acceptance gate. Exact next action: proceed with PW05 per-run compute/currency
+reservation for delegated workers where existing receipt identities support a safe host-side boundary;
+continue K03 and other requirements after that independent slice.

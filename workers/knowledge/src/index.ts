@@ -1977,7 +1977,7 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
   const extractionWarnings = fileFormat === "image"
     ? ["OCR output can omit or misread text, layout, handwriting, tables, units, and symbols. Review and correct the extracted text before saving; image content is untrusted input."]
     : fileFormat === "pdf"
-    ? ["Review reading order, tables, and scanned pages before saving; automated PDF extraction can omit or misread them."]
+    ? ["Review reading order, tables, and scanned pages before saving. Explicit page numbers are preserved when the parser returns bounded page metadata; otherwise page coordinates are unavailable. Automated extraction can omit or misread content."]
       : fileFormat === "docx"
       ? ["DOCX preview extracts the main body in document order. Headers, footers, images, page layout, comments, and tracked changes are not included; review table text before saving."]
       : fileFormat === "xlsx"
