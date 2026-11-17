@@ -695,6 +695,7 @@ function ExtensionReleaseControls({ spaceId, projectId, session, installation }:
       Signed release {review.version} · artifact SHA-256 <code>{review.artifactSha256}</code> · publisher {review.publisherId ?? "unknown"} · key {review.publisherKeyId ?? "unknown"}{review.publisherRevoked ? " · publisher key revoked; rollback unavailable" : ""}
       {(addedPermissions.length > 0 || addedCapabilities.length > 0) && <div>Additional authority: {[...(addedPermissions.length ? [`permissions ${addedPermissions.join(", ")}`] : []), ...(addedCapabilities.length ? [`capabilities ${addedCapabilities.join(", ")}`] : [])].join("; ")}</div>}
     </div>}
+    {selected && !review && <div role="alert" style={{ marginTop: 5, color: "var(--warning, #b54708)", fontSize: 10.5 }}>This release is missing a complete verified publisher identity or artifact pin; rollback is unavailable.</div>}
     {selected && expandsAccess && <div role="status" style={{ marginTop: 5, color: "var(--warning, #b54708)" }}>
       This release adds authority: {[...(addedPermissions.length ? [`permissions: ${addedPermissions.join(", ")}`] : []), ...(addedCapabilities.length ? [`capabilities: ${addedCapabilities.join(", ")}`] : [])].join("; ")}.
       Review and explicitly approve this change in the confirmation before rollback.

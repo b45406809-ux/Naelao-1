@@ -12,5 +12,7 @@ describe("extension release rollback review", () => {
   it("does not render unverified or malformed artifact candidates", () => {
     expect(projectExtensionRollbackReview({ version: "1.0.0", artifactSha256: "bad", hostSignature: "", signatureValid: true, createdAt: "" }, {})).toBeNull();
     expect(projectExtensionRollbackReview({ version: "1.0.0", artifactSha256: "a".repeat(64), hostSignature: "", signatureValid: false, createdAt: "" }, {})).toBeNull();
+    expect(projectExtensionRollbackReview({ version: "1.0.0", artifactSha256: "a".repeat(64), hostSignature: "", signatureValid: true,
+      createdAt: "", publisher: { id: "pub_demo" } }, {})).toBeNull();
   });
 });

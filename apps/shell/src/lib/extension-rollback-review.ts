@@ -5,7 +5,9 @@ export function projectExtensionRollbackReview(release: ExtensionRelease | undef
     version: string; artifactSha256: string; publisherId: string | null; publisherKeyId: string | null;
     publisherRevoked: boolean; addedPermissions: string[]; addedCapabilities: string[];
   } | null {
-  if (!release?.signatureValid || !/^[a-f0-9]{64}$/.test(release.artifactSha256)) return null;
+  if (!release?.signatureValid || !/^[a-f0-9]{64}$/.test(release.artifactSha256)
+    || typeof release.publisher?.id !== "string" || !release.publisher.id
+    || typeof release.publisher.keyId !== "string" || !/^[a-f0-9]{64}$/.test(release.publisher.keyId)) return null;
   return { version: release.version, artifactSha256: release.artifactSha256, publisherId: release.publisher?.id ?? null,
     publisherKeyId: release.publisher?.keyId ?? null, publisherRevoked: release.publisher?.revoked === true,
     addedPermissions: (release.permissions ?? []).filter(item => !(current.permissions ?? []).includes(item)).sort(),
