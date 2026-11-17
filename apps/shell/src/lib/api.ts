@@ -3088,7 +3088,8 @@ export interface SubAgentSummary {
 
 export interface SubAgentUsageSummary {
   space_id: string;
-  project_id: string;
+  project_id: string | null;
+  scope: "space" | "project";
   currency: "internal_credits";
   provider_invoice: false;
   workers: Array<{ worker_id: string; event_count: number; cost_credits: number;
@@ -3096,10 +3097,13 @@ export interface SubAgentUsageSummary {
 }
 
 /** Owner/admin-only internal-credit totals for exact delegated worker attempt run IDs. */
-export function getSubAgentUsage(spaceId: string, projectId: string, workerIds: string[], session: SessionCredentials) {
+export function getSubAgentUsage(spaceId: string, projectId: string | undefined, workerIds: string[], session: SessionCredentials) {
   const query = new URLSearchParams();
   for (const id of workerIds.slice(0, 50)) query.append("worker_id", id);
-  return apiFetch<SubAgentUsageSummary>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/assistant/worker-usage?${query}`, {
+  const path = projectId
+    ? `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/assistant/worker-usage`
+    : `/v1/spaces/${encodeURIComponent(spaceId)}/assistant/worker-usage`;
+  return apiFetch<SubAgentUsageSummary>(`${path}?${query}`, {
     session, cache: "no-store",
   });
 }

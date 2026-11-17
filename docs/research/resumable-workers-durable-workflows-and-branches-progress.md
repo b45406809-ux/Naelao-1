@@ -63,18 +63,19 @@ The prior action to trace WorkflowRunDO checkpoint/recovery was completed in `1d
 Code `688f69e4c9cae6c29986efb17d65a507779134e9` is remote-verified. Durable suspended-run rows now preserve the scheduled job service context; resume rechecks the signed internal heartbeat session and exact current enabled job revision, and a missing/stale identity cannot be resumed as an ordinary user run. Older rows may recover only from the authenticated session; transient session lookup failure remains retryable. Focused tests **28/28**, Agents typecheck and diff hygiene pass. This is not unsaved process-memory recovery, in-flight provider cancellation, runtime isolation acceptance or a per-job compute-cost reservation. Continue PW cost/cancellation requirements alongside other plans.
 ## Current PW05 checkpoint — 2026-11-17 (owner-scoped worker usage receipts; local verification)
 
-An owner/admin-only `GET /spaces/:spaceId/projects/:projectId/assistant/worker-usage` now forwards
-bounded worker IDs through project authorization to a HMAC-protected Billing aggregate. Billing matches
-only `<worker-id>` and `<worker-id>:attempt:n` run IDs within the exact tenant/Space/Project and returns
+Owner/admin-only Space and Project routes now forward bounded worker IDs to a HMAC-protected Billing
+aggregate. Billing matches only `<worker-id>` and `<worker-id>:attempt:n` run IDs within the exact
+tenant/Space and either the exact Project or Space-level (`project_id IS NULL`) scope, returning
 internal credits, event count and unpriced-event count. The Shell owner view labels missing receipts as
 pending/unavailable and explicitly says provider invoices may differ. It does not expose receipt detail
 through the ordinary Space conversation list endpoint.
 
 Local evidence: Billing route suite **24/24**, Billing/Agents/Shell typechecks and `git diff --check`.
 No browser, deployed worker, provider invoice or live acceptance. Run-level reservation/settlement was
-already present and is now accurately recorded. Exact next action: reconcile SC03's newest encrypted
-invocation receipt (`d3a0f194`) against alarm-safe dispatch and current authority/Billing admission;
-implement only an independently safe host dispatcher piece, then continue the active plans.
+already present and is now accurately recorded. SC03 comparison confirms `d3a0f194` persists and expires
+encrypted intent but supplies neither alarm-safe authority revalidation nor durable Billing linkage;
+keep disconnected replay disabled. Exact next action: continue the next uncoded Knowledge/platform
+requirement without repeating TBR07.
 
 ## Cross-plan update — 2026-11-17 (PW05 per-attempt accounting trace)
 

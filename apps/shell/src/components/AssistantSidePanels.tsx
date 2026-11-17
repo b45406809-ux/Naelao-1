@@ -1650,9 +1650,9 @@ function WorkersPanel({
   }, [spaceId, session, lastRunId, sessionId, agentId]);
 
   React.useEffect(() => {
-    if (!projectId || !subAgents?.length) { setWorkerUsage(null); return; }
+    if (!subAgents?.length) { setWorkerUsage(null); return; }
     let cancelled = false;
-    getSubAgentUsage(spaceId, projectId, subAgents.map((worker) => worker.id), session)
+    getSubAgentUsage(spaceId, projectId ?? undefined, subAgents.map((worker) => worker.id), session)
       .then((result) => {
         if (!cancelled) setWorkerUsage(new Map(result.workers.map((worker) => [worker.worker_id,
           { cost_credits: worker.cost_credits, unpriced_event_count: worker.unpriced_event_count }])));

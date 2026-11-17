@@ -6,10 +6,11 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. K03 optional PDF
-  page-marker preservation is pushed as `acc85dd8`. PW05 per-attempt internal-credit receipts now have
-  an owner/admin Project-scoped Billing route and Shell caller; local Billing **24/24** and Billing,
-  Agents and Shell typechecks pass. Next reconcile SC03's pushed encrypted invocation receipt with
-  alarm-safe dispatch, current authority and Billing admission; continue all active requirements.
+  page-marker preservation is pushed as `acc85dd8`. PW05 owner/admin per-attempt internal-credit reads
+  now cover both Space-level and exact Project scope; local Billing **24/24** and Billing, Agents and
+  Shell typechecks pass. The pushed SC03 encrypted receipt still lacks alarm-safe authority
+  revalidation/Billing linkage, so disconnected replay stays disabled. Continue uncoded
+  Knowledge/platform requirements and all active plans.
   After
   the K02 reviewed PNG/JPEG OCR caller (`8a6d5026`), after
   K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
@@ -50,14 +51,14 @@ past work and do not override the current progress records or require repeating 
 
 K03 was pushed as `acc85dd8` after parser/ingestion/archive/workflow **26/26**, Knowledge typecheck and
 `git diff --check`. Provider page metadata remains unverified. PW05 review found deterministic attempt
-run IDs and existing settlement; the new owner/admin Project-scoped route now joins only those attempt
+run IDs and existing settlement; the new owner/admin Space/Project-scoped routes join only those attempt
 IDs to Billing usage events and Shell shows internal credits plus missing/unpriced state. Local Billing
 route tests **24/24**, Billing/Agents/Shell typechecks and diff check pass. No browser, deployed Worker,
 or provider invoice acceptance. The feature labels provider invoices separately.
 
-Exact next action: reconcile SC03's encrypted invocation receipt (`d3a0f194`) with an alarm-safe host
-dispatcher that can recheck the current authority revision and fresh Billing admission. Implement only
-the independently safe host contract, then continue all other active-plan requirements. Keep rollouts
+Exact next action: continue the next uncoded Knowledge/platform requirement. SC03's encrypted invocation
+receipt (`d3a0f194`) provides bounded persistence/cleanup only, not a valid disconnected dispatcher; do
+not replay until a host caller can recheck current authority and fresh Billing admission. Keep rollouts
 disabled.
 
 ## Previous checkpoint — 2026-11-17 (K02 PNG/JPEG reviewed OCR caller; pushed as `8a6d5026`)

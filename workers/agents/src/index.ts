@@ -9562,6 +9562,21 @@ app.get("/spaces/:spaceId/projects/:projectId/assistant/worker-usage", async (c)
   }));
 });
 
+app.get("/spaces/:spaceId/assistant/worker-usage", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_unavailable" }, 503);
+  const workerIds = c.req.queries("worker_id") ?? [];
+  if (!workerIds.length || workerIds.length > 50 || workerIds.some((id) => !/^[A-Za-z0-9_-]{1,128}$/.test(id)))
+    return c.json({ error_code: "bad_request" }, 400);
+  const query = new URLSearchParams({ space_id: spaceId });
+  for (const id of [...new Set(workerIds)]) query.append("worker_id", id);
+  return c.env.BILLING_WORKER.fetch(new Request(`http://billing-worker/internal/usage/worker-summary?${query}`, {
+    headers: { "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+  }));
+});
+
 app.post("/spaces/:spaceId/assistant/sub-agents/:workerId/workspace-conflicts/resolve", async c => {
   const spaceId = c.req.param("spaceId");
   const workerId = c.req.param("workerId");

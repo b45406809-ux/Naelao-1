@@ -155,7 +155,7 @@ describe("unpriced scheduled Knowledge refresh usage receipts", () => {
 describe("owner-scoped delegated worker usage summary", () => {
   it("aggregates exact worker attempt IDs within one tenant, Space and Project", async () => {
     const h = harness();
-    const insert = (id: string, space: string, project: string, run: string, credits: number | null) =>
+    const insert = (id: string, space: string, project: string | null, run: string, credits: number | null) =>
       h.db.db.prepare(`INSERT INTO usage_events(id,org_id,space_id,event_type,quantity,project_id,run_id,cost_credits)
         VALUES(?, 'org-a', ?, 'infra_credits', 1, ?, ?, ?)`).run(id, space, project, run, credits);
     insert("w1-a", "space-a", "project-a", "worker-1", 4);
@@ -164,6 +164,7 @@ describe("owner-scoped delegated worker usage summary", () => {
     insert("w2-a", "space-a", "project-b", "worker-1", 99);
     insert("w3-a", "space-b", "project-a", "worker-1", 99);
     insert("prefix", "space-a", "project-a", "worker-10", 100);
+    insert("space-run", "space-a", null, "worker-space", 3);
     const token = await mintInternalToken(secret, "org-a");
     const response = await worker.fetch(new Request("https://billing.test/internal/usage/worker-summary?space_id=space-a&project_id=project-a&worker_id=worker-1", {
       headers: { "x-naelao-tenant-id": "org-a", "x-naelao-internal-token": token },
@@ -171,6 +172,11 @@ describe("owner-scoped delegated worker usage summary", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ currency: "internal_credits", provider_invoice: false,
       workers: [{ worker_id: "worker-1", event_count: 3, cost_credits: 10, unpriced_event_count: 1, status: "partially_unpriced" }] });
+    const spaceResponse = await worker.fetch(new Request("https://billing.test/internal/usage/worker-summary?space_id=space-a&worker_id=worker-space", {
+      headers: { "x-naelao-tenant-id": "org-a", "x-naelao-internal-token": token },
+    }), h.env as never, {} as never);
+    await expect(spaceResponse.json()).resolves.toMatchObject({ scope: "space", project_id: null,
+      workers: [{ worker_id: "worker-space", event_count: 1, cost_credits: 3 }] });
   });
 
   it("rejects unbounded or unsafe worker selectors", async () => {

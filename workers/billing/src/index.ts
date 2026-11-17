@@ -1666,7 +1666,7 @@ app.get("/internal/usage/worker-summary", async (c) => {
   const spaceId = c.req.query("space_id") ?? "";
   const projectId = c.req.query("project_id") ?? "";
   const workerIds = c.req.queries("worker_id") ?? [];
-  if (!orgId || !spaceId || spaceId.length > 128 || !projectId || projectId.length > 128
+  if (!orgId || !spaceId || spaceId.length > 128 || projectId.length > 128
     || workerIds.length < 1 || workerIds.length > 50
     || workerIds.some((id) => !/^[A-Za-z0-9_-]{1,128}$/.test(id))) return c.json({ error_code: "bad_request" }, 400);
   const uniqueWorkerIds = [...new Set(workerIds)];
@@ -1680,15 +1680,17 @@ app.get("/internal/usage/worker-summary", async (c) => {
     labels.push("WHEN run_id=? THEN ? WHEN run_id LIKE ? THEN ?");
     caseBindings.push(id, id, `${id}:attempt:%`, id);
   }
+  const projectFilter = projectId ? "project_id=?" : "project_id IS NULL";
   const rows = await c.env.PLATFORM_DB.prepare(`SELECT CASE ${labels.join(" ")} END AS worker_id,
       COUNT(*) AS event_count,COALESCE(SUM(cost_credits),0) AS cost_credits,
       SUM(CASE WHEN cost_credits IS NULL THEN 1 ELSE 0 END) AS unpriced_event_count
-    FROM usage_events WHERE org_id=? AND space_id=? AND project_id=? AND (${clauses.join(" OR ")})
+    FROM usage_events WHERE org_id=? AND space_id=? AND ${projectFilter} AND (${clauses.join(" OR ")})
     GROUP BY worker_id`)
-    .bind(...caseBindings, orgId, spaceId, projectId, ...filterBindings).all<{
+    .bind(...caseBindings, orgId, spaceId, ...(projectId ? [projectId] : []), ...filterBindings).all<{
       worker_id: string; event_count: number; cost_credits: number; unpriced_event_count: number;
     }>();
-  return c.json({ space_id: spaceId, project_id: projectId, currency: "internal_credits", provider_invoice: false,
+  return c.json({ space_id: spaceId, project_id: projectId || null, scope: projectId ? "project" : "space",
+    currency: "internal_credits", provider_invoice: false,
     workers: rows.results.map((row) => ({ worker_id: row.worker_id, event_count: row.event_count,
       cost_credits: row.cost_credits, unpriced_event_count: row.unpriced_event_count,
       status: row.unpriced_event_count > 0 ? "partially_unpriced" : "reported" })) });
