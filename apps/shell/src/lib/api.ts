@@ -1932,6 +1932,10 @@ export interface ProjectExtensionResourceRequirement {
   binding?: { gadgetId: string; tables: string[] } | { workflowIds: string[] };
   operations: Array<{ id: string; input?: unknown; output?: unknown; idempotency?: string; meteringUnit?: string }>;
 }
+/** Requirements with an owner grant-review flow. A declaration alone never enables a host adapter. */
+export function hasReviewableProjectExtensionResources(requirements: ProjectExtensionResourceRequirement[] | undefined): boolean {
+  return (requirements ?? []).some(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs");
+}
 export interface ProjectExtensionResourceGrant {
   requirement_id: string; manifest_sha256: string; resource_sha256: string; installation_generation: number;
   operations: string[]; tables: string[]; status: "approved" | "revoked"; revision: number;

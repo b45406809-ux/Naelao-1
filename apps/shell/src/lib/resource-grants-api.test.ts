@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { approveProjectExtensionResourceGrant, getProjectExtensionResourceGrants, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget } from "./api";
+import { approveProjectExtensionResourceGrant, getProjectExtensionResourceGrants, hasReviewableProjectExtensionResources, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget } from "./api";
 
 describe("Project extension resource grant caller", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it("exposes jobs alongside object and structured-data requirements in the owner inventory", () => {
+    expect(hasReviewableProjectExtensionResources([{ id: "queue", kind: "jobs", scope: "project", operations: [] }])).toBe(true);
+    expect(hasReviewableProjectExtensionResources([{ id: "db", kind: "structured_data", scope: "project", operations: [] }])).toBe(true);
+    expect(hasReviewableProjectExtensionResources([{ id: "files", kind: "objects", scope: "project", operations: [] }])).toBe(true);
+    expect(hasReviewableProjectExtensionResources([])).toBe(false);
+    expect(hasReviewableProjectExtensionResources(undefined)).toBe(false);
+  });
 
   it("reads, approves and revokes through the authenticated exact-install route", async () => {
     const fetch = vi.fn(async () => Response.json({ ok: true }));
