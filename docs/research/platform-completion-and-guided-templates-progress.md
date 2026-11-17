@@ -1,8 +1,8 @@
-## Cross-plan checkpoint — 2026-11-17 (`65dd32d5` pushed)
+## Cross-plan checkpoint — 2026-11-17 (`8e6cb6ea` pushed)
 
-The member self-role endpoint is remotely verified at `65dd32d58fef5af85c6038a01965b3ffe0cfa124`, with exact membership-epoch and signed-artifact checks, onboarding steps and proposal-only disclosure. Tests: Spaces **6/6**, Router **86/86**, Spaces/Router/Shell typechecks and diff check pass. This is local mock evidence only.
+TBR self-service and existing-member assignment are wired through their Shell surfaces at `2c37eaa6` and `8e6cb6ea`. Owner proposals use the existing server-side current-member/signed-artifact checks; member UI displays only the member's own membership-epoch-bound role and instructions. No role creates effective grants. Shell UI tests **3/3**, Spaces **6/6**, Router **86/86**, affected typechecks and diff hygiene pass; mock evidence only.
 
-EP04's current release review and Project Gadget apply/recovery are locally implemented through `4901cd7f`; no deployed route-to-actor acceptance or rollout. Exact next action: connect the member role API to a member-facing Shell surface, then continue uncoded requirements across P01–P24, K01–K30, PW01–PW06, EP01–EP06, TBR01–TBR12, AP01–AP06 and S2–S9/U01–U12. Preserve `infra/scripts/__pycache__/`.
+EP02 host-managed jobs broker code is already implemented and pushed at `248d3838`; its former uncoded next action is stale. Project update apply/recovery through `4901cd7f` is local implementation evidence; deployed route-to-actor acceptance remains open. Exact next action: trace and implement scheduled-service identity/revision fields through Billing reservations and settlements, then continue open P01–P24, K01–K30, PW01–PW06, EP01–EP06, TBR01–TBR12, AP01–AP06 and S2–S9/U01–U12 requirements. Preserve `infra/scripts/__pycache__/`.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (Project update receipt through activation; `53d07a16` pushed)
 

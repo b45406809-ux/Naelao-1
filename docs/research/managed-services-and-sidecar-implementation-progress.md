@@ -1,8 +1,8 @@
-## Cross-plan checkpoint — 2026-11-17 (`65dd32d5` pushed)
+## Cross-plan checkpoint — 2026-11-17 (`8e6cb6ea` pushed)
 
-`65dd32d58fef5af85c6038a01965b3ffe0cfa124` is pushed and remote-verified. TBR member self-read checks current verified Product identity, active membership epoch and exact active signed artifact, returning only that member's role/onboarding details; stale/revoked rows disclose no role/resource details. `grants_applied` remains false. Tests: Spaces **6/6**, Router identity routes **86/86**, Spaces/Router/Shell typechecks and diff check pass. Local-only; rollouts remain disabled.
+`65dd32d5` adds the member self-role endpoint, `2c37eaa6` its member-facing Shell view, and `8e6cb6ea` the owner/admin Shell caller for assigning a proposal to an existing current member. Exact signed artifact and membership epoch are checked; all role results remain non-granting. Tests: Shell onboarding UI **3/3**, Spaces **6/6**, Router **86/86**, related typechecks and diff check pass. Local mocks only; no D1 deployment or browser/live acceptance.
 
-Project Gadget migration recovery is implemented through `4901cd7f` for the reviewed local contract, route replay, migration receipt and activation retry; deployed route-to-actor acceptance remains open. Exact next action: wire a member-facing Shell caller to the self-scoped role API, then continue remaining S2–S9/U01–U12 and all incorporated-plan code gaps. Preserve `infra/scripts/__pycache__/`.
+Project Gadget update recovery is implemented locally through `4901cd7f`; deployed route-to-actor acceptance remains open. Exact next action: bind scheduled-service identity and authorization revision to durable Billing reservation/settlement receipts for goal and direct-script runs, with retry, stale-revision and revocation tests; then continue remaining S2–S9/U01–U12 and incorporated-plan code gaps. Preserve `infra/scripts/__pycache__/`.
 
 ## Cross-plan local checkpoint — 2026-11-17 (Project update receipt through activation)
 

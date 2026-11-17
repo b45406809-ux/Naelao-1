@@ -1,8 +1,8 @@
-## TBR member self-service checkpoint — 2026-11-17 (`65dd32d5` pushed)
+## TBR onboarding checkpoint — 2026-11-17 (`8e6cb6ea` pushed)
 
-Members can now read only their own active proposal for the current membership epoch. The endpoint verifies Product identity, active membership and exact signed blueprint artifact, then returns localized role metadata, assistant proposal and onboarding steps; stale/revoked assignments disclose no resource detail. It does not grant access (`grants_applied=false`). Spaces tests **6/6**, Router route tests **86/86**, related typechecks and diff check pass. Local mocks only; no deployed D1/browser acceptance.
+`65dd32d5` added authenticated self-role reads and `2c37eaa6` the member Shell view. `8e6cb6ea` adds owner/admin assignment of a proposal to an existing current member using the existing signed-blueprint/membership-epoch server checks. All responses and UI say no grants are applied. Shell UI **3/3**, Spaces **6/6**, Router **86/86**, affected typechecks/diff checks pass. Local mocks only.
 
-TBR06 remains uncoded for applying role grants because no approved mapping/outbox spans separate host authorities. TBR07+ effective authorization and assistant/resource inheritance remain partial. Exact next action: add the member-facing Shell caller for this endpoint, then continue independent TBR07–TBR12 and other active-plan code gaps. Rollout stays disabled.
+TBR06 host-grant outbox remains a code/policy gap because no approved mapping spans independent Project, Knowledge, extension and provider authorities; private-Project semantics also remain unresolved. Exact next action: continue TBR07 effective-authority and assistant/resource inheritance audit, applying no role grants without explicit mapping; meanwhile add scheduled-service identity/revision attribution to durable Billing reservations and settlements, then continue the other plans. Rollout stays disabled.
 
 ## TBR04 contract reconciliation — 2026-11-17 (`dc73af2e` cross-plan checkpoint)
 
