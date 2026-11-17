@@ -1,4 +1,10 @@
-## Current cross-plan checkpoint — 2026-11-17 (jobs-only resource approval UI; `ce7e01c5` pushed)
+## Cross-plan local checkpoint — 2026-11-17 (Project Gadget migration identity contract)
+
+The MicroAppDO migration handler now supports a distinct signed Project-bound contract with exact tenant/Space/Project/install/generation validation and a durable receipt that records Project, generation and scope. `SPACE_SHARED` remains a separate unchanged authorization purpose. Local focused tests **7/7**, Spaces typecheck and diff hygiene pass. The Project review route still cannot apply: it issues no review token and no apply caller consumes one. This is an uncoded integration gap, not a credential gate.
+
+Exact next action: create the Project-bound signed review/apply flow and wire it to this contract only after rechecking current trusted release, active publisher key, exact install generation/version/manifest and drained runtime; persist and recover the install receipt. Rollout remains disabled.
+
+## Previous cross-plan checkpoint — 2026-11-17 (jobs-only resource approval UI; `ce7e01c5` pushed)
 
 `ce7e01c54bdef5660f1bfbd6113a02f14d328011` is remote-verified on `origin/Mcbt5s-Backup-2`. Shell now labels a staged installation with only a `jobs` resource declaration as “resource approval required,” matching the existing jobs grant-review flow; previously this branch checked only objects and structured data. Shell focused resource API tests **4/4**, Shell typecheck and diff check pass.
 

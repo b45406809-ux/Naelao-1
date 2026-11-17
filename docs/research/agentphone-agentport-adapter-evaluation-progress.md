@@ -1,8 +1,8 @@
-## Cross-plan checkpoint — 2026-11-17 (`b4a06736` pushed)
+## Cross-plan checkpoint — 2026-11-17 (reconciled synthetic lifecycle; `b4a06736` pushed)
 
 EP03's RAG package now has a host-authorized custom retriever wrapper: pre-ranking current chunk allowlist, explicit query-egress admission, lineage/budget checks, and post-call revoke/source/deletion fencing. Synthetic tests **7/7**, RAG/Knowledge typechecks pass. No custom runtime caller or AgentPhone adapter was added. AP06 owner UI guidance uses only current operator-verified capability scopes (`41e01624`); AgentPhone API, pricing, events and live behavior remain unverified.
 
-Exact next cross-plan action: inspect whether current signed extension runtime offers a reachable, host-mediated Knowledge invocation; only wire it to existing persistent grant/publication/source authority if supported. Otherwise retain the runtime gap and proceed to EP04/other independent plan requirements. Rollouts remain disabled.
+The synthetic custom Knowledge lifecycle action below was already implemented in `b4a06736` (`packages/rag/src/knowledge-extension-contract.test.ts`: grant, publish, revoke and deletion-generation fences); this ledger's former exact action was stale. Persistent extension invocation/runtime wiring remains an actual code gap. Exact next cross-plan action: continue the Project-bound Gadget update/apply flow recorded in AGENTS and platform progress, then resume the next independent requirement across plans. AgentPhone API/auth/events/pricing and live behavior remain unverified provider claims; do not provision, call, message or incur cost. Rollouts remain disabled.
 
 ## Cross-plan checkpoint — 2026-11-17 (custom Knowledge contract; `d99f40cb` pushed)
 

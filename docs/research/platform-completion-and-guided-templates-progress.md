@@ -1,4 +1,10 @@
-## Current cross-plan checkpoint — 2026-11-17 (Project Gadget actor install identity; `bf00d57f` pushed)
+## Local checkpoint — 2026-11-17 (Project-bound Gadget migration receipt contract)
+
+`workers/spaces/src/do/MicroAppDO.ts` now has a separate signed Project-bound migration purpose, requires exact persisted tenant/Space/Project/install identity and installation generation, rechecks generation in the schema transaction, and stores scope/Project/generation in the durable receipt. The existing Space-shared purpose and tier-3 behavior remain separate. Focused tests **7/7**, Spaces typecheck and diff hygiene pass. This is local shim evidence only.
+
+The Project update-review caller is still read-only and emits no apply token; the signed-upload upgrade route has install CAS but does not consume that review. No migration can be reached through an owner-reviewed apply flow yet. Exact next action: add a Project-bound signed review/apply token and owner apply route that rechecks candidate trust, publisher-key status, generation/version/manifest, pause/drain and token before applying the actor migration. Then implement durable installation update receipt/recovery. Rollout stays disabled.
+
+## Previous cross-plan checkpoint — 2026-11-17 (Project Gadget actor install identity; `bf00d57f` pushed)
 
 `bf00d57f2862946b32c7a91033c8253a26c7d394` is remote-verified on `origin/Mcbt5s-Backup-2`. Project Canvas/Gadget initialization now persists tenant/Space/Project, exact install ID and monotonically checked installation generation in MicroAppDO. Cross-Project reuse and stale generations are rejected. This lays identity groundwork only; the existing schema migration endpoint and receipt remain Space-shared-only. Focused Spaces tests **74/74**, Spaces typecheck and diff hygiene pass; no deployment/live acceptance.
 

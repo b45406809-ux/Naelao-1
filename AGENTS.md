@@ -1,4 +1,10 @@
-## Current cross-plan checkpoint — 2026-11-17 (Project Gadget actor install identity; `bf00d57f` pushed)
+## Current cross-plan checkpoint — 2026-11-17 (Project-bound Gadget migration receipt contract; local verification)
+
+`workers/spaces/src/do/MicroAppDO.ts` now accepts a distinct signed Project-bound migration purpose. It requires the actor's persisted tenant/Space/Project/install identity and exact installation generation, rechecks Project and generation inside the schema transaction, and records scope, Project ID and generation in the durable migration receipt. The prior `SPACE_SHARED` purpose remains separate and retains its existing tier-3 check. Focused `extension-schema-update.test.ts` **7/7**, Spaces typecheck and `git diff --check` pass. Local Durable Object shim only; no migration was executed against a deployed actor.
+
+This contract has no reachable owner apply caller yet. The Project update-review route is currently read-only and does not issue a signed apply token; the existing upload upgrade route uses current install CAS but does not consume that review. Exact next action: add a Project-bound owner review/apply token and apply route that revalidates the trusted candidate, publisher key, current generation/version/manifest, paused/drained installation and token before calling this actor contract; then persist/recover the installation update receipt and cover interruption/replay. Keep rollout disabled. Preserve untracked `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-17 (Project Gadget actor install identity; `bf00d57f` pushed)
 
 `bf00d57f2862946b32c7a91033c8253a26c7d394` is remote-verified on `origin/Mcbt5s-Backup-2`, after PROJECT_BOUND upgrade CAS `67b9f4c5`. Staged project installs now return their generation; project Canvas/Gadget initialization binds tenant, Space, Project, exact extension installation and generation into MicroAppDO metadata. The actor refuses cross-Project reinitialization and generation rollback. This is identity persistence only; it does not yet authorize a Project-bound schema migration or provide end-to-end update recovery. Focused Spaces suites **74/74**, Spaces typecheck and diff hygiene pass. No deployment or rollout.
 

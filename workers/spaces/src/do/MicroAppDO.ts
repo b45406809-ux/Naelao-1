@@ -23,7 +23,7 @@ interface CanvasReleaseProof {
 
 interface ExtensionSchemaUpdateClaims {
   version: 1;
-  purpose: "space_shared_gadget_schema_update";
+  purpose: "space_shared_gadget_schema_update" | "project_bound_gadget_schema_update";
   tenantId: string;
   spaceId: string;
   installationId: string;
@@ -38,6 +38,8 @@ interface ExtensionSchemaUpdateClaims {
   publisherKeyId: string;
   migrationsSha256: string;
   operationKey: string;
+  projectId?: string;
+  installationGeneration?: number;
 }
 
 export const TIER_ONE_STORAGE_LIMIT_BYTES = 25 * 1024 * 1024;
@@ -184,6 +186,13 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       artifact_sha256 TEXT NOT NULL CHECK(length(artifact_sha256)=64), publisher_key_id TEXT NOT NULL CHECK(length(publisher_key_id)=64),
       migrations_sha256 TEXT NOT NULL CHECK(length(migrations_sha256)=64), applied_at TEXT NOT NULL
     )`);
+    const updateReceiptColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(gadget_extension_schema_update_receipts)").toArray();
+    if (!updateReceiptColumns.some(column => column.name === "project_id"))
+      this.ctx.storage.sql.exec("ALTER TABLE gadget_extension_schema_update_receipts ADD COLUMN project_id TEXT NOT NULL DEFAULT ''");
+    if (!updateReceiptColumns.some(column => column.name === "installation_generation"))
+      this.ctx.storage.sql.exec("ALTER TABLE gadget_extension_schema_update_receipts ADD COLUMN installation_generation INTEGER NOT NULL DEFAULT 0");
+    if (!updateReceiptColumns.some(column => column.name === "scope"))
+      this.ctx.storage.sql.exec("ALTER TABLE gadget_extension_schema_update_receipts ADD COLUMN scope TEXT NOT NULL DEFAULT 'SPACE_SHARED'");
     this.initialized = true;
   }
 
@@ -1062,7 +1071,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       migrations?: Array<{ version: number; description: string; up: string }> }>()
       .catch((): { claims?: ExtensionSchemaUpdateClaims; signature?: string; migrations?: Array<{ version: number; description: string; up: string }> } => ({}));
     const claims = body.claims;
-    if (!claims || claims.version !== 1 || claims.purpose !== "space_shared_gadget_schema_update"
+    const projectBound = claims?.purpose === "project_bound_gadget_schema_update";
+    if (!claims || claims.version !== 1 || !(claims.purpose === "space_shared_gadget_schema_update" || projectBound)
       || typeof claims.tenantId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(claims.tenantId)
       || typeof claims.spaceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(claims.spaceId)
       || typeof claims.installationId !== "string" || !/^[A-Za-z0-9._:-]{1,768}$/.test(claims.installationId)
@@ -1075,6 +1085,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       || !/^[a-f0-9]{64}$/.test(claims.sourceArtifactSha256)
       || !/^[a-f0-9]{64}$/.test(claims.artifactSha256) || !/^[a-f0-9]{64}$/.test(claims.publisherKeyId)
       || !/^[a-f0-9]{64}$/.test(claims.migrationsSha256) || !/^[a-f0-9]{64}$/.test(claims.operationKey)
+      || projectBound && (typeof claims.projectId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(claims.projectId)
+        || !Number.isSafeInteger(claims.installationGeneration) || (claims.installationGeneration ?? 0) < 1)
+      || !projectBound && (claims.projectId !== undefined || claims.installationGeneration !== undefined)
       || typeof body.signature !== "string" || !/^[a-f0-9]{64}$/.test(body.signature)
       || !Array.isArray(body.migrations) || body.migrations.length < 1 || body.migrations.length > 128)
       return Response.json({ error_code: "gadget_schema_update_request_invalid" }, { status: 400 });
@@ -1100,7 +1113,11 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       || await sha256(migrationPayload) !== claims.migrationsSha256
       || await sha256(JSON.stringify(identity)) !== operationKey)
       return Response.json({ error_code: "gadget_schema_update_authorization_invalid" }, { status: 403 });
-    if (this.metadata("app_id") !== claims.appId || this.metadata("scope") !== "SPACE_SHARED" || this.gadgetTier() !== 3)
+    if (this.metadata("app_id") !== claims.appId || this.metadata("scope") !== (projectBound ? "PROJECT_BOUND" : "SPACE_SHARED")
+      || projectBound && (this.metadata("project_id") !== claims.projectId
+        || this.metadata("installation_generation") !== String(claims.installationGeneration)
+        || this.metadata("tenant_id") !== claims.tenantId || this.metadata("space_id") !== claims.spaceId)
+      || !projectBound && this.gadgetTier() !== 3)
       return Response.json({ error_code: "gadget_schema_update_actor_mismatch" }, { status: 409 });
 
     const proofJson = this.metadata("release_proof"), html = this.metadata("html");
@@ -1116,12 +1133,14 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
 
     const prior = [...this.ctx.storage.sql.exec<{ operationKey: string; tenantId: string; spaceId: string; installationId: string;
       extensionId: string; appId: string; fromVersion: string; toVersion: string; sourceManifestSha256: string;
-      candidateManifestSha256: string; sourceArtifactSha256: string; artifactSha256: string; publisherKeyId: string; migrationsSha256: string }>(
+      candidateManifestSha256: string; sourceArtifactSha256: string; artifactSha256: string; publisherKeyId: string; migrationsSha256: string;
+      projectId: string; installationGeneration: number; scope: string }>(
       `SELECT operation_key AS operationKey,tenant_id AS tenantId,space_id AS spaceId,installation_id AS installationId,
        extension_id AS extensionId,app_id AS appId,from_version AS fromVersion,to_version AS toVersion,
        source_manifest_sha256 AS sourceManifestSha256,candidate_manifest_sha256 AS candidateManifestSha256,
        source_artifact_sha256 AS sourceArtifactSha256,artifact_sha256 AS artifactSha256,
-       publisher_key_id AS publisherKeyId,migrations_sha256 AS migrationsSha256
+       publisher_key_id AS publisherKeyId,migrations_sha256 AS migrationsSha256,project_id AS projectId,
+       installation_generation AS installationGeneration,scope
        FROM gadget_extension_schema_update_receipts WHERE operation_key=?`, operationKey)][0];
     if (prior) {
       if (prior.tenantId !== claims.tenantId || prior.spaceId !== claims.spaceId || prior.installationId !== claims.installationId
@@ -1129,7 +1148,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         || prior.toVersion !== claims.toVersion || prior.sourceManifestSha256 !== claims.sourceManifestSha256
         || prior.candidateManifestSha256 !== claims.candidateManifestSha256 || prior.sourceArtifactSha256 !== claims.sourceArtifactSha256
         || prior.artifactSha256 !== claims.artifactSha256
-        || prior.publisherKeyId !== claims.publisherKeyId || prior.migrationsSha256 !== claims.migrationsSha256)
+        || prior.publisherKeyId !== claims.publisherKeyId || prior.migrationsSha256 !== claims.migrationsSha256
+        || prior.projectId !== (claims.projectId ?? "") || prior.installationGeneration !== (claims.installationGeneration ?? 0)
+        || prior.scope !== (projectBound ? "PROJECT_BOUND" : "SPACE_SHARED"))
         return Response.json({ error_code: "gadget_schema_update_operation_conflict" }, { status: 409 });
       return Response.json({ applied: true, replayed: true, operation_key: operationKey }, { headers: { "cache-control": "private, no-store" } });
     }
@@ -1153,6 +1174,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         if (raced) { replayed = true; return; }
         const installationOwner = this.metadata("extension_installation_id");
         if (installationOwner && installationOwner !== claims.installationId) throw new Error("gadget_schema_update_installation_mismatch");
+        if (projectBound && (this.metadata("scope") !== "PROJECT_BOUND" || this.metadata("project_id") !== claims.projectId
+          || this.metadata("installation_generation") !== String(claims.installationGeneration)))
+          throw new Error("gadget_schema_update_installation_generation_mismatch");
         for (const migration of migrations) {
           const migrationSha256 = migrationHashes.get(migration.version)!;
           const existing = [...this.ctx.storage.sql.exec<{ migration_sha256: string }>(
@@ -1168,18 +1192,21 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         }
         this.ctx.storage.sql.exec(`INSERT INTO gadget_extension_schema_update_receipts
           (operation_key,tenant_id,space_id,installation_id,extension_id,app_id,from_version,to_version,source_manifest_sha256,
-           candidate_manifest_sha256,source_artifact_sha256,artifact_sha256,publisher_key_id,migrations_sha256,applied_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationKey, claims.tenantId, claims.spaceId, claims.installationId,
+           candidate_manifest_sha256,source_artifact_sha256,artifact_sha256,publisher_key_id,migrations_sha256,applied_at,
+           project_id,installation_generation,scope)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationKey, claims.tenantId, claims.spaceId, claims.installationId,
           claims.extensionId, claims.appId, claims.fromVersion, claims.toVersion, claims.sourceManifestSha256,
           claims.candidateManifestSha256, claims.sourceArtifactSha256, claims.artifactSha256, claims.publisherKeyId,
-          claims.migrationsSha256, new Date().toISOString());
+          claims.migrationsSha256, new Date().toISOString(), claims.projectId ?? "", claims.installationGeneration ?? 0,
+          projectBound ? "PROJECT_BOUND" : "SPACE_SHARED");
         this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('schema_release_version',?),('schema_manifest_sha256',?)",
           claims.toVersion, claims.candidateManifestSha256);
         this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('schema_artifact_sha256',?)", claims.artifactSha256);
         this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('extension_installation_id',?)", claims.installationId);
       });
     } catch (error) {
-      const conflictCode = error instanceof Error && ["gadget_schema_migration_version_conflict", "gadget_schema_update_installation_mismatch"]
+      const conflictCode = error instanceof Error && ["gadget_schema_migration_version_conflict", "gadget_schema_update_installation_mismatch",
+        "gadget_schema_update_installation_generation_mismatch"]
         .includes(error.message) ? error.message : null;
       return Response.json({ error_code: conflictCode ?? "gadget_schema_update_apply_failed", retryable: conflictCode === null },
         { status: conflictCode ? 409 : 503 });

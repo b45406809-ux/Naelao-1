@@ -192,4 +192,57 @@ describe("signed Space-shared Gadget schema update", () => {
     expect(await rejected.json()).toMatchObject({ error_code: "gadget_schema_update_installation_mismatch" });
     expect(h.sql.exec("SELECT installation_id FROM gadget_extension_schema_update_receipts").toArray()).toEqual([{ installation_id: "install-a" }]);
   });
+
+  it("applies Project-bound migrations with durable project and generation identity", async () => {
+    const storage = createDOStorage();
+    const sql = { exec<T = unknown>(query: string, ...args: unknown[]) {
+      const result = storage.sql.exec<T>(query, ...args);
+      return { ...result, [Symbol.iterator]: () => result.toArray()[Symbol.iterator]() };
+    } };
+    const gadget = new MicroAppDO({ storage: { ...storage, sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never,
+      { PLATFORM_SECRET: secret } as never);
+    const manifest = { id: extensionId, bundle: { id: extensionId, version: "1.0.0", primitives: [{ kind: "canvas", component: "./dashboard.html" }] } };
+    const manifestJson = JSON.stringify(manifest), sourceManifestSha256 = await sha256(manifestJson), canvasSha256 = await sha256(html);
+    const hostSignature = await signHmac(JSON.stringify([extensionId, "1.0.0", manifestJson, artifactSha256]), secret);
+    const bindingSignature = await signHmac(JSON.stringify([extensionId, "1.0.0", manifestJson, artifactSha256,
+      hostSignature, "./dashboard.html", canvasSha256]), secret);
+    const releaseProof = { extensionId, version: "1.0.0", manifestJson, artifactSha256, hostSignature,
+      canvasPath: "./dashboard.html", canvasSha256, bindingSignature };
+    const initialized = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 2,
+        tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", extensionInstallationId: "install-project-a",
+        installationGeneration: 4, defaultSchemaSql: "CREATE TABLE records(id TEXT PRIMARY KEY);", html, releaseProof }) }));
+    expect(initialized.status, await initialized.clone().text()).toBe(201);
+    const migrations = [{ version: 2, description: "add Project status", up: "ALTER TABLE records ADD COLUMN status TEXT DEFAULT 'open';" }];
+    const migrationsSha256 = await sha256(JSON.stringify(migrations));
+    const unsigned = { version: 1 as const, purpose: "project_bound_gadget_schema_update" as const, tenantId: "tenant-a", spaceId: "space-a",
+      projectId: "project-a", installationId: "install-project-a", installationGeneration: 4, extensionId, appId,
+      fromVersion: "1.0.0", toVersion: "1.2.0", sourceManifestSha256, candidateManifestSha256: "b".repeat(64),
+      sourceArtifactSha256: artifactSha256, artifactSha256: "c".repeat(64), publisherKeyId: "d".repeat(64), migrationsSha256 };
+    const operationKey = await sha256(JSON.stringify(unsigned)), claims = { ...unsigned, operationKey };
+    const signature = await signHmac(JSON.stringify(claims), secret);
+    const apply = (nextClaims = claims, nextMigrations = migrations, nextSignature = signature) => gadget.fetch(
+      new Request("http://gadget/extension-schema-update", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ claims: nextClaims, migrations: nextMigrations, signature: nextSignature }) }));
+
+    const applied = await apply();
+    expect(applied.status, await applied.clone().text()).toBe(200);
+    expect(await applied.json()).toMatchObject({ applied: true, replayed: false, operation_key: operationKey });
+    expect(storage.sql.exec("SELECT project_id,installation_generation,scope FROM gadget_extension_schema_update_receipts").toArray())
+      .toEqual([{ project_id: "project-a", installation_generation: 4, scope: "PROJECT_BOUND" }]);
+    const replay = await apply();
+    expect(await replay.json()).toMatchObject({ applied: true, replayed: true });
+
+    for (const [override, expected] of [[{ projectId: "project-b" }, "gadget_schema_update_actor_mismatch"],
+      [{ installationGeneration: 3 }, "gadget_schema_update_actor_mismatch"]] as const) {
+      const altered = { ...claims, ...override };
+      const { operationKey: _prior, ...identity } = altered;
+      const alteredClaims = { ...altered, operationKey: await sha256(JSON.stringify(identity)) };
+      const alteredSignature = await signHmac(JSON.stringify(alteredClaims), secret);
+      const response = await apply(alteredClaims, migrations, alteredSignature);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error_code: expected });
+    }
+    expect(storage.sql.exec("SELECT operation_key FROM gadget_extension_schema_update_receipts").toArray()).toHaveLength(1);
+  });
 });
