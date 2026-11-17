@@ -18,7 +18,7 @@ describe("Batch 05 phase 2", () => {
     expect(chunks.some((chunk) => chunk.content.includes(table))).toBe(true);
     expect(
       chunks.find((chunk) => chunk.content.includes(table))?.headingPath
-    ).toEqual(["Lease"]);
+    ).toEqual(["Lease", "Table 1"]);
   });
 
   it("tracks heading levels without sparse paths or stale same-level ancestors", () => {
@@ -40,10 +40,18 @@ describe("Batch 05 phase 2", () => {
     expect(tableChunks.length).toBeGreaterThan(1);
     expect(chunks.every((chunk) => chunk.content.length <= 100)).toBe(true);
     expect(tableChunks.every((chunk) => chunk.content.startsWith("| Name | Value |\n| --- | --- |"))).toBe(true);
-    expect(tableChunks.every((chunk) => JSON.stringify(chunk.headingPath) === JSON.stringify(["Records"]))).toBe(true);
+    expect(tableChunks.every((chunk) => JSON.stringify(chunk.headingPath) === JSON.stringify(["Records", "Table 1"]))).toBe(true);
     for (const chunk of tableChunks) {
       expect(document.slice(chunk.charOffset, chunk.charEnd)).toContain("| row ");
     }
+  });
+
+  it("records stable table labels under explicit page headings without inventing visual coordinates", () => {
+    const markdown = "## Page 2\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n## Page 3\n\n| C | D |\n| --- | --- |\n| 3 | 4 |";
+    const chunks = chunkStructuredMarkdown(markdown);
+    expect(chunks.filter((chunk) => chunk.content.startsWith("| A | B |"))[0]?.headingPath).toEqual(["Page 2", "Table 1"]);
+    expect(chunks.filter((chunk) => chunk.content.startsWith("| C | D |"))[0]?.headingPath).toEqual(["Page 3", "Table 2"]);
+    expect(chunks.every((chunk) => chunk.charOffset >= 0 && chunk.charEnd <= markdown.length)).toBe(true);
   });
 
   it("rejects invalid structured chunk limits and preserves emoji at split points", () => {

@@ -1,3 +1,16 @@
+## Current K03 checkpoint — 2026-11-17 (explicit Markdown table provenance; local verification)
+
+The shared bounded Markdown chunker now appends stable per-document `Table N` labels to stored
+`heading_path` for explicit Markdown table blocks, while retaining enclosing page/section headings and
+source byte/line spans. This preserves parser-reported structure in Knowledge's existing chunk records;
+it does not claim visual coordinates or validate table extraction accuracy. Local checks: RAG chunking
+suite **8/8**, workflow chunking **1/1**, RAG/Workflows/Knowledge typechecks and `git diff --check`.
+No browser, deployed retrieval or provider acceptance.
+
+Exact next action: carry persisted `heading_path` through permissioned retrieval and exact citation
+responses, then show it in the authorized Shell citation UI. Continue parser-quality and live acceptance
+gates separately, and proceed through remaining active-plan gaps.
+
 ## Current K02/K03 checkpoint — 2026-11-17 (bounded PPTX table extraction; pushed as `34800a4a`)
 
 The PPTX parser now emits bounded table cells as explicit slide/table/row/cell entries instead of

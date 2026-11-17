@@ -84,8 +84,9 @@ export function chunkStructuredMarkdown(markdown: string, maxChars = 2_048): Str
   const result: StructuralChunk[] = [];
   const headings: string[] = [];
   const headingLevels: number[] = [];
-  const emit = (content: string, charOffset: number, charEnd: number) => {
-    if (content.trim()) result.push({ content, charOffset, charEnd, headingPath: [...headings] });
+  let tableIndex = 0;
+  const emit = (content: string, charOffset: number, charEnd: number, localHeadingPath = headings) => {
+    if (content.trim()) result.push({ content, charOffset, charEnd, headingPath: [...localHeadingPath] });
   };
 
   for (const block of paragraphBlocks(markdown)) {
@@ -101,13 +102,16 @@ export function chunkStructuredMarkdown(markdown: string, maxChars = 2_048): Str
     }
 
     if (isTable(block.content)) {
+      // The parser's Markdown table boundary is explicit structure, not a visual page coordinate.
+      // Persist a stable per-document table label alongside any page/section headings.
+      const tableHeadingPath = [...headings, `Table ${++tableIndex}`];
       const lines = sourceLines(block.content);
       const headerLines = lines.slice(0, 2);
       const header = headerLines.map((line) => line.text).join("\n");
       const rows = lines.slice(2);
       if (rows.length === 0) {
         for (const part of splitAtLimit(header, maxChars)) {
-          emit(part.text, block.start + (headerLines[0]?.start ?? 0) + part.start, block.start + (headerLines[0]?.start ?? 0) + part.end);
+          emit(part.text, block.start + (headerLines[0]?.start ?? 0) + part.start, block.start + (headerLines[0]?.start ?? 0) + part.end, tableHeadingPath);
         }
         continue;
       }
@@ -118,7 +122,7 @@ export function chunkStructuredMarkdown(markdown: string, maxChars = 2_048): Str
         const from = group[0]!.start;
         const to = group[group.length - 1]!.end;
         const rowText = group.map((part) => part.line).join("\n");
-        emit(`${header}\n${rowText}`, block.start + from, block.start + to);
+        emit(`${header}\n${rowText}`, block.start + from, block.start + to, tableHeadingPath);
         group = [];
         groupLength = header.length;
       };
@@ -137,7 +141,7 @@ export function chunkStructuredMarkdown(markdown: string, maxChars = 2_048): Str
             // If the table header itself exceeds the budget, keep row fragments
             // bounded while preserving their source coordinate spans.
             flush();
-            emit(part.text, block.start + partStart, block.start + partEnd);
+            emit(part.text, block.start + partStart, block.start + partEnd, tableHeadingPath);
           } else {
             group.push({ line: part.text, start: partStart, end: partEnd });
             groupLength += 1 + part.text.length;
