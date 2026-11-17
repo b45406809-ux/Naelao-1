@@ -44,4 +44,13 @@ describe("heartbeat separation", () => {
       )
     ).rejects.toThrow();
   });
+  it("binds a scheduled wake to its persisted service identity and job revision", async () => {
+    const identity = { id: "scheduled_job:job-1", authorizationRevision: "2026-11-17T12:00:00.000Z" };
+    await expect(verifyHeartbeatSession(worker({ session_kind: "heartbeat", project_id: "project",
+      service_identity_id: identity.id, authorization_revision: identity.authorizationRevision }),
+      "secret", "tenant", "space", "session", "project", identity)).resolves.toBeUndefined();
+    await expect(verifyHeartbeatSession(worker({ session_kind: "heartbeat", project_id: "project",
+      service_identity_id: "scheduled_job:other", authorization_revision: identity.authorizationRevision }),
+      "secret", "tenant", "space", "session", "project", identity)).rejects.toThrow();
+  });
 });

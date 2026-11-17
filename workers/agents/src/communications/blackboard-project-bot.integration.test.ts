@@ -114,7 +114,7 @@ describe("blackboard event to Project Bot dispatch integration", () => {
     const agentStub = {
       async fetch(input: RequestInfo) {
         const request = input as Request;
-        const path = new URL(request.url).pathname;
+        const path = new URL(typeof input === "string" ? input : request.url).pathname;
         if (path === "/active-run") return Response.json({ active: false });
         const body = (await request.json()) as Record<string, unknown>;
         agentCalls.push({ path, body });
@@ -166,7 +166,7 @@ describe("blackboard event to Project Bot dispatch integration", () => {
         tenantId: "tenant-1",
         userId: "owner-1",
         sessionId: "session-heartbeat-1",
-        context: { trigger: "scheduled_job", decoupled_context: true },
+        context: { trigger: "blackboard_wake", decoupled_context: true },
       },
     });
     expect(String(agentCalls[0]?.body?.goal)).toContain(

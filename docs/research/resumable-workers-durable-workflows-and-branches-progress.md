@@ -1,3 +1,7 @@
+## Cross-plan update — 2026-11-17 (scheduled identity enforced at AgentDO ingress; local pending)
+
+The scheduled service ID and exact job revision are persisted in its dedicated session and verified against that session by AgentDO before execution. The authorization row is rechecked after prep; busy-status uncertainty fails closed. Blackboard wake semantics are separated from scheduled work. Tests **22/22**, Agents typecheck and diff check pass. No deployment acceptance. Effect-level grant/revoke/budget and in-flight cancellation are still code gaps. Exact next action: propagate the service identity/revision into durable per-effect authorization and recovery receipts, then continue PW work.
+
 ## Cross-plan update — 2026-11-17 (scheduled run identity/revision correlation; local pending)
 
 Scheduled goal and direct-script paths now share stable `scheduled_job:<id>` identity, exact configuration revision and deterministic sweep run ID. Goal execution stores identity/revision in session metadata and context; direct-script run ID feeds existing receipt/billing path. Together with stale-row reauthorization and fail-closed active-run status, this improves replay and conflict handling. Local tests **13/13**, Agents typecheck and diff check pass; no deployed acceptance. It does not cancel already-running effects or implement grant authority. Exact next action: enforce and persist the identity/revision at the downstream effect boundary, then continue other PW and cross-plan gaps.

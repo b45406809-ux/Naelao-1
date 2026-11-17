@@ -1,3 +1,7 @@
+## Latest cross-plan update — 2026-11-17 (scheduled actor/session revision enforced; local pending)
+
+The scheduled job identity and exact authorization revision are now persisted in session metadata and required to match at AgentDO ingress; stale rows and unavailable busy status are denied before dispatch. Blackboard wakes have a distinct trigger and remain user-authorized. Tests **22/22**, Agents typecheck and diff check pass. Full host grant storage/revocation, per-job budget enforcement and in-flight effect cancellation remain gaps. Exact next action: enforce a durable owner-approved scheduled service grant at action/Billing mutation boundaries, then continue S/U/P/PW/K/EP/AP/TBR.
+
 ## Latest cross-plan update — 2026-11-17 (scheduled job execution identity; local pending)
 
 Goal and direct-script scheduled execution now carry deterministic service actor IDs and exact job revision/run ID context; they do not use owner or creator identity. Revalidation and fail-closed overlap handling run before dispatch. Tests **13/13**, Agents typecheck and diff check pass. This is not a completed service principal: the host still lacks a durable per-job grant/budget record and universal effect-level identity checks. Exact next action: enforce this actor/revision at AgentDO mutations and existing Billing gates, with an auditable revoke path; continue all remaining plans.

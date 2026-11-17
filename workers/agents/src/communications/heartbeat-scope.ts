@@ -5,7 +5,8 @@ export async function verifyHeartbeatSession(
   tenantId: string,
   spaceId: string,
   sessionId: string,
-  projectId?: string
+  projectId?: string,
+  serviceIdentity?: { id: string; authorizationRevision: string }
 ): Promise<void> {
   const response = await worker.fetch(
     new Request(
@@ -30,7 +31,9 @@ export async function verifyHeartbeatSession(
   if (
     session.id !== sessionId ||
     metadata?.session_kind !== "heartbeat" ||
-    (metadata.project_id ?? null) !== (projectId ?? null)
+    (metadata.project_id ?? null) !== (projectId ?? null) ||
+    serviceIdentity && (metadata.service_identity_id !== serviceIdentity.id
+      || metadata.authorization_revision !== serviceIdentity.authorizationRevision)
   )
     throw new Error("heartbeat_session_scope_mismatch");
 }

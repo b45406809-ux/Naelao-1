@@ -2977,7 +2977,7 @@ async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSes
 async function wakeAgentGoal(
   env: AgentsEnv,
   params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; userId?: string; runId?: string; goal: string; airGappedOnly?: boolean;
-    serviceIdentity?: { id: string; authorizationRevision: string } },
+    serviceIdentity?: { id: string; authorizationRevision: string }; trigger?: "scheduled_job" | "blackboard_wake" },
   reqId?: string
 ): Promise<Response> {
   const agentId = params.agentId ?? "naelao-agent";
@@ -3050,7 +3050,8 @@ async function wakeAgentGoal(
         ...(params.runId ? { runId: params.runId } : {}),
         sessionId: heartbeatSessionId,
         ...(params.projectId ? { projectId: params.projectId } : {}),
-        context: { trigger: "scheduled_job", decoupled_context: true, max_context_tokens: 2_000, worker_token_budget: workerTokenBudget,
+        context: { trigger: params.trigger ?? (params.serviceIdentity ? "scheduled_job" : "blackboard_wake"),
+          decoupled_context: true, max_context_tokens: 2_000, worker_token_budget: workerTokenBudget,
           ...(params.serviceIdentity ? { service_identity_id: params.serviceIdentity.id,
             authorization_revision: params.serviceIdentity.authorizationRevision } : {}) },
         apiKey: env.ANTHROPIC_API_KEY ?? "",
@@ -10789,10 +10790,13 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const dispatchStarted = Date.now();
       let claimStatus: "completed" | "failed" | "skipped" = "failed";
       try {
-        // A pause, revoke, or owner edit may race the first row read and queue claim. Revalidate
-        // the exact current authorization snapshot after the lease and immediately before any
-        // planner/script dispatch. The scheduled job itself is the only current owner-approved
-        // unattended intent; do not silently execute a stale target or params snapshot.
+        // Goal-based scheduled wakes get the compact diagnostics context used by connector polls.
+        // This stays outside the persisted job goal, and lookup failure degrades to the standing
+        // advance directive instead of suppressing the scheduled work.
+        const wakeBrief = row.goal ? await buildWakeUpBrief(env, row.space_id, row.tenant_id) : null;
+        // Recheck after preparation so a pause, revoke, or owner edit racing the row read or claim
+        // cannot authorize the old target. The persisted run/session carries this exact revision;
+        // effect scope is still enforced by the Project and agent's current host policies.
         const stillAuthorized = await scheduledJobDispatchSnapshotCurrent(env.PLATFORM_DB, {
           jobId: row.id, spaceId: row.space_id, tenantId: row.tenant_id, updatedAt: row.updated_at,
           projectId: row.project_id, cronExpression: row.cron_expression, scriptName: row.script_name,
@@ -10804,10 +10808,6 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
           claimStatus = "skipped";
           return;
         }
-        // Goal-based scheduled wakes get the compact diagnostics context used by connector polls.
-        // This stays outside the persisted job goal, and lookup failure degrades to the standing
-        // advance directive instead of suppressing the scheduled work.
-        const wakeBrief = row.goal ? await buildWakeUpBrief(env, row.space_id, row.tenant_id) : null;
         // A goal-based row (migration 0043) wakes the full reasoning loop against the named
         // agent's own DO; everything else keeps the pre-existing direct-script-fire behavior.
         const doResp = row.goal

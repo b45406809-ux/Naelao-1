@@ -1,3 +1,7 @@
+## Cross-plan update — 2026-11-17 (scheduled service identity session check; local pending)
+
+Scheduled service identity/revision now reaches and is validated against its persisted AgentDO heartbeat session; stale job rows are rechecked after preparation and unknown busy state is denied. Blackboard wake is separately typed. Tests **22/22**, Agents typecheck and diff check pass. No managed provider behavior or live acceptance changed. Exact next action: enforce durable per-effect service grant and budget/revocation receipts, then continue S/U/P/PW/K/EP/AP. Rollout remains off.
+
 ## Cross-plan update — 2026-11-17 (scheduled identity and receipt correlation; local pending)
 
 Scheduled goal/direct-script wakes now carry deterministic job identity, exact authorization revision and per-sweep run ID. This is correlation/attribution only, not new AgentPort/provider support or a service-grant ledger. Tests **13/13**, Agents typecheck and diff check pass. Exact next action: enforce the actor/revision at AgentDO action and Billing boundaries, with revocation and budget receipts; continue S/U/PW/K/EP/AP code gaps. No live provider action; rollouts disabled.

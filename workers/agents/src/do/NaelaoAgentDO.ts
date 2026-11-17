@@ -7222,7 +7222,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return this.finishScriptFailure(runId, "goal and spaceId are required", 400, "bad_request");
     }
     if(body.context?.["trigger"]==="scheduled_job"||body.context?.["trigger"]==="space_trigger"){
-      try{await (await import("../communications/heartbeat-scope.js")).verifyHeartbeatSession(this.env.SPACES_WORKER,this.env.PLATFORM_SECRET,tenantId,spaceId,sessionId,projectId);}catch{return this.finishScriptFailure(runId,"Scheduled work requires its own persisted heartbeat session",403,"heartbeat_scope_mismatch");}
+      const serviceIdentity = body.context?.["trigger"] === "scheduled_job"
+        ? { id: body.context["service_identity_id"], authorizationRevision: body.context["authorization_revision"] }
+        : undefined;
+      if (body.context?.["trigger"] === "scheduled_job"
+        && (typeof serviceIdentity?.id !== "string" || !/^scheduled_job:[A-Za-z0-9_-]{1,128}$/.test(serviceIdentity.id)
+          || typeof serviceIdentity.authorizationRevision !== "string" || !serviceIdentity.authorizationRevision
+          || serviceIdentity.authorizationRevision.length > 128)) {
+        return this.finishScriptFailure(runId,"Scheduled work requires a named service identity and authorization revision",403,"service_identity_required");
+      }
+      try{await (await import("../communications/heartbeat-scope.js")).verifyHeartbeatSession(this.env.SPACES_WORKER,this.env.PLATFORM_SECRET,tenantId,spaceId,sessionId,projectId,
+        serviceIdentity as { id: string; authorizationRevision: string } | undefined);}catch{return this.finishScriptFailure(runId,"Scheduled work requires its own persisted heartbeat session and service identity",403,"heartbeat_scope_mismatch");}
     }
     const requestedModel = body.model ?? DEFAULT_WORKING_MODEL;
     let modelPolicy = body.modelPolicy;
@@ -7723,7 +7733,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ]);
       // The thread's own history — without it the agent has no memory of the conversation it is
       // replying in. Best-effort: undefined simply means "no history", the prior behaviour.
-      const isDecoupledScheduledRun = body.context?.["trigger"] === "scheduled_job"
+      const isDecoupledScheduledRun = (body.context?.["trigger"] === "scheduled_job" || body.context?.["trigger"] === "blackboard_wake")
         && body.context?.["decoupled_context"] === true;
       let attachmentContext = "";
       if (!isDecoupledScheduledRun && this.env.AGENTS_WORKER && engineEnv.taskId && engineEnv.fastDecision) {
