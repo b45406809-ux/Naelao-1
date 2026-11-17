@@ -65,7 +65,7 @@ import { createNamedTunnelGateway } from "../tunnels/host.js";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import { validPhoneExtensionEvent } from "../communications/phone-extension-event.js";
 import { verifyHeartbeatSession } from "../communications/heartbeat-scope.js";
-import { reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalIsCurrent } from "../scheduled-direct-authorization.js";
+import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalIsCurrent } from "../scheduled-direct-authorization.js";
 import { renderExtensionVoiceResponse } from "../communications/voice-response.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
@@ -7275,6 +7275,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (!current) return this.finishScriptFailure(runId,"Scheduled job was changed or revoked before this action resumed",409,"scheduled_job_authorization_changed");
       }
     }
+    const connectorPollRun = body.context?.["trigger"] === "connector_poll";
+    const connectorPollServiceContext = connectorPollRun ? {
+      trigger: "connector_poll",
+      connector_id: body.context?.["connector_id"],
+      connector_name: body.context?.["connector_name"] ?? body.context?.["platform"],
+      authorization_revision: body.context?.["authorization_revision"],
+    } : undefined;
+    if (connectorPollRun) {
+      if (!this.env.PLATFORM_DB || typeof connectorPollServiceContext?.connector_id !== "string"
+        || typeof connectorPollServiceContext.connector_name !== "string"
+        || typeof connectorPollServiceContext.authorization_revision !== "string")
+        return this.finishScriptFailure(runId,"Connector poll authority is unavailable",403,"connector_poll_identity_required");
+      let current = false;
+      try { current = await connectorPollIsCurrent(this.env.PLATFORM_DB, { tenantId, spaceId,
+        connectorId: connectorPollServiceContext.connector_id, connectorName: connectorPollServiceContext.connector_name,
+        authorizationRevision: connectorPollServiceContext.authorization_revision }); }
+      catch { return this.finishScriptFailure(runId,"Connector poll authority is unavailable",503,"connector_poll_authority_unavailable"); }
+      if (!current) return this.finishScriptFailure(runId,"Connector poll configuration changed before dispatch",409,"connector_poll_authorization_changed");
+    }
     const requestedModel = body.model ?? DEFAULT_WORKING_MODEL;
     let modelPolicy = body.modelPolicy;
     if (modelPolicy === undefined && this.env.SPACES_WORKER && tenantId) {
@@ -7500,6 +7519,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       service_identity_id: body.context?.["service_identity_id"],
       authorization_revision: body.context?.["authorization_revision"],
     } : undefined;
+    const runServiceContext = scheduledServiceContext ?? connectorPollServiceContext;
     const scheduledReadSafeActions = assembled.manifest.capabilities.enabledPrebuilts.flatMap(name => {
       const script = PREBUILT_SCRIPTS[name];
       return script ? Object.keys(script.operations) : [];
@@ -7890,11 +7910,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         runId,
         sessionId,
         ...(config.pipelines ? { pipeline: config.pipelines } : {}),
-        // Check stop state per step for interactive runs, and revalidate the scheduled job
-        // revision before every autonomous step. This blocks later actions after an owner pauses,
-        // edits, or deletes a job; it cannot cancel an external effect already in flight.
+        // Check stop state per step for interactive runs, and revalidate the scheduled job or
+        // connector revision before every autonomous service step. This blocks later actions
+        // after an owner pauses, edits, or deletes the source; it cannot cancel an in-flight effect.
         shouldCancel: async () => {
           if (await this.isCancelRequested(runId)) return true;
+          if (connectorPollRun) {
+            if (!this.env.PLATFORM_DB || typeof connectorPollServiceContext?.connector_id !== "string"
+              || typeof connectorPollServiceContext.connector_name !== "string"
+              || typeof connectorPollServiceContext.authorization_revision !== "string") return true;
+            try { return !await connectorPollIsCurrent(this.env.PLATFORM_DB, { tenantId, spaceId,
+              connectorId: connectorPollServiceContext.connector_id, connectorName: connectorPollServiceContext.connector_name,
+              authorizationRevision: connectorPollServiceContext.authorization_revision }); }
+            catch { return true; }
+          }
           if (!scheduledServiceRun) return false;
           if (!this.env.PLATFORM_DB || typeof scheduledServiceContext?.service_identity_id !== "string"
             || typeof scheduledServiceContext.authorization_revision !== "string" || !projectId) return true;
@@ -7948,7 +7977,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
           approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
-          ...(scheduledServiceContext ? { serviceContext: scheduledServiceContext } : {}),
+          ...(runServiceContext ? { serviceContext: runServiceContext } : {}),
           ...(delegation ? { delegation } : {}),
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
@@ -7963,7 +7992,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
           approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
-          ...(scheduledServiceContext ? { serviceContext: scheduledServiceContext } : {}),
+          ...(runServiceContext ? { serviceContext: runServiceContext } : {}),
           ...(delegation ? { delegation } : {}),
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
@@ -7987,7 +8016,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
           approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
-          ...(scheduledServiceContext ? { serviceContext: scheduledServiceContext } : {}),
+          ...(runServiceContext ? { serviceContext: runServiceContext } : {}),
           ...(delegation ? { delegation } : {}),
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
@@ -9486,13 +9515,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     let serviceResumeContext: Record<string, unknown> | undefined;
     try {
-      const fromCheckpoint = reconcileScheduledServiceResumeContext(row["context_json"]);
-      if (row["session_id"]) {
-        const sessionReceipt = await verifyHeartbeatSession(this.env.SPACES_WORKER, this.env.PLATFORM_SECRET,
-          row["tenant_id"] ?? "", row["space_id"] ?? "", row["session_id"] ?? "", row["project_id"] ?? undefined,
-          fromCheckpoint ? { id: fromCheckpoint.service_identity_id, authorizationRevision: fromCheckpoint.authorization_revision } : undefined);
-        serviceResumeContext = reconcileScheduledServiceResumeContext(row["context_json"], sessionReceipt.serviceIdentity);
-      } else serviceResumeContext = fromCheckpoint;
+      const savedContext = row["context_json"] ? JSON.parse(row["context_json"]) as Record<string, unknown> : undefined;
+      if (savedContext?.trigger === "connector_poll") {
+        if (typeof savedContext.connector_id !== "string" || typeof savedContext.connector_name !== "string"
+          || typeof savedContext.authorization_revision !== "string" || !this.env.PLATFORM_DB) {
+          this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status='suspended' WHERE approval_id=?`, approvalId);
+          return Response.json({ resumed: false, reason: "connector poll authority is unavailable" }, { status: 503 });
+        }
+        let current = false;
+        try { current = await connectorPollIsCurrent(this.env.PLATFORM_DB, { tenantId: row["tenant_id"] ?? "",
+          spaceId: row["space_id"] ?? "", connectorId: savedContext.connector_id, connectorName: savedContext.connector_name,
+          authorizationRevision: savedContext.authorization_revision }); }
+        catch {
+          this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status='suspended' WHERE approval_id=?`, approvalId);
+          return Response.json({ resumed: false, reason: "connector poll authority is unavailable" }, { status: 503 });
+        }
+        if (!current) {
+          this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status='stale' WHERE approval_id=?`, approvalId);
+          return Response.json({ resumed: false, reason: "connector configuration changed; review the action again" }, { status: 409 });
+        }
+        serviceResumeContext = savedContext;
+      } else {
+        const fromCheckpoint = reconcileScheduledServiceResumeContext(row["context_json"]);
+        if (row["session_id"]) {
+          const sessionReceipt = await verifyHeartbeatSession(this.env.SPACES_WORKER, this.env.PLATFORM_SECRET,
+            row["tenant_id"] ?? "", row["space_id"] ?? "", row["session_id"] ?? "", row["project_id"] ?? undefined,
+            fromCheckpoint ? { id: fromCheckpoint.service_identity_id, authorizationRevision: fromCheckpoint.authorization_revision } : undefined);
+          serviceResumeContext = reconcileScheduledServiceResumeContext(row["context_json"], sessionReceipt.serviceIdentity);
+        } else serviceResumeContext = fromCheckpoint;
+      }
     } catch (error) {
       if (error instanceof Error && error.message === "heartbeat_session_unavailable") {
         this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status='suspended' WHERE approval_id=?`, approvalId);

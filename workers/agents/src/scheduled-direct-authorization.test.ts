@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalIsCurrent } from "./scheduled-direct-authorization.js";
+import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalIsCurrent } from "./scheduled-direct-authorization.js";
 
 function database(result: { current: number } | null) {
   const first = vi.fn(async () => result);
@@ -45,5 +45,25 @@ describe("scheduled direct-script authorization fence", () => {
     expect(() => reconcileScheduledServiceResumeContext(JSON.stringify({ trigger: "scheduled_job",
       service_identity_id: "scheduled_job:other", authorization_revision: identity.authorizationRevision }), identity)).toThrow("scheduled_resume_identity_mismatch");
     expect(() => reconcileScheduledServiceResumeContext("{bad-json", identity)).toThrow();
+  });
+});
+
+describe("connector-poll authorization fence", () => {
+  it("admits only the exact enabled connector configuration revision", async () => {
+    const fixture = database({ current: 1 });
+    await expect(connectorPollIsCurrent(fixture.db, { tenantId: "tenant-a", spaceId: "space-a", connectorId: "connector-a",
+      connectorName: "shopify", authorizationRevision: "2026-11-17T12:00:00.000Z" })).resolves.toBe(true);
+    expect(fixture.prepare.mock.calls[0]?.[0]).toContain("enabled=1 AND updated_at=?");
+    expect(fixture.bind).toHaveBeenCalledWith("connector-a", "tenant-a", "space-a", "shopify", "2026-11-17T12:00:00.000Z");
+  });
+
+  it("denies stale or malformed connector identity without falling back to the current row", async () => {
+    const stale = database(null);
+    await expect(connectorPollIsCurrent(stale.db, { tenantId: "tenant-a", spaceId: "space-a", connectorId: "connector-a",
+      connectorName: "shopify", authorizationRevision: "old-revision" })).resolves.toBe(false);
+    const malformed = database({ current: 1 });
+    await expect(connectorPollIsCurrent(malformed.db, { tenantId: "tenant-a", spaceId: "space-a", connectorId: "bad/id",
+      connectorName: "shopify", authorizationRevision: "revision" })).resolves.toBe(false);
+    expect(malformed.prepare).not.toHaveBeenCalled();
   });
 });

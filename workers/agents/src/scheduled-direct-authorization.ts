@@ -62,3 +62,18 @@ export async function scheduledGoalIsCurrent(
     .first<{ current: number }>();
   return row?.current === 1;
 }
+
+/** Revalidate an autonomous connector poll against the exact enabled MCP connector revision
+ * captured when AGENT_TICKS enumerated it. */
+export async function connectorPollIsCurrent(
+  db: D1Database,
+  input: { tenantId: string; spaceId: string; connectorId: string; connectorName: string; authorizationRevision: string },
+): Promise<boolean> {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.connectorId) || !input.connectorName
+    || input.connectorName.length > 128 || !input.authorizationRevision || input.authorizationRevision.length > 128) return false;
+  const row = await db.prepare(`SELECT 1 AS current FROM mcp_servers
+    WHERE id=? AND tenant_id=? AND space_id=? AND name=? AND enabled=1 AND updated_at=? LIMIT 1`)
+    .bind(input.connectorId, input.tenantId, input.spaceId, input.connectorName, input.authorizationRevision)
+    .first<{ current: number }>();
+  return row?.current === 1;
+}
