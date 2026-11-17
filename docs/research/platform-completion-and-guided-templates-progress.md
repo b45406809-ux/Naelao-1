@@ -3118,6 +3118,13 @@ legacy JSON reads, explicit truncation, and malformed-envelope denial. Focused w
 checkpoint history, real interruption recovery and unsaved-memory restoration remain incomplete.
 Exact next action: continue SC03 durable compute admission/dispatch, then PW exact revision and
 recovery-state work, plus other independent active-plan code requirements.
+
+## Cross-plan checkpoint — 2026-11-17 (PW03 malformed checkpoint denial; pushed `53d53ee1`)
+
+A focused receive-path regression now proves malformed persisted worker checkpoint data is surfaced
+as invalid rather than missing; checkpoint/delegation tests **15/15**, Agents typecheck and diff check
+pass. This adds no runtime interruption or deployed recovery evidence. Exact next action: continue
+SC03 durable compute dispatch, then PW03 workspace-head/recovery states and the remaining plans.
 ## Cross-plan checkpoint — 2026-11-17 (K02 reviewed image OCR caller)
 
 Space and Project Knowledge forms now accept bounded PNG/JPEG files through the signed editable preview

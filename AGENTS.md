@@ -70,20 +70,19 @@ cursors and verified pricing remain unsupported contract gaps; K09 applicable si
 live acceptance remain open. Reconcile active callers before choosing the next K/EP/P/PW/S/U/TBR item.
 Keep rollout disabled, preserve the cache, and continue after checkpoints.
 
-## Current checkpoint — 2026-11-17 (versioned worker checkpoints; `b7b2d163` pushed)
+## Current checkpoint — 2026-11-17 (malformed worker checkpoint handling; `53d53ee1` pushed)
 
 **Reminder to myself:** Never stop after a status update, implementation slice, test pass, checkpoint, commit, push or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
 
-Worker checkpoints now persist in a bounded versioned envelope with attempt/time metadata; raw JSON
-legacy checkpoints remain readable and malformed versioned checkpoints fail explicitly. Focused
-worker/delegation tests **14/14**, Agents typecheck and diff hygiene pass. Code `b7b2d163` is pushed.
-This does not prove workspace-head recovery or restore unsaved process memory. SC03 queue-full owner
-status is pushed in `3ab863de`; host dispatch still lacks safe replay consent, live authority
-revalidation and Billing admission. TBR05's pinned proposal-only invite-role flow is already wired
-and tested; TBR04 symbolic-to-host resource mappings and the private-Project visibility contract
-remain unresolved. Exact next task: continue SC03 durable compute admission/dispatch, then TBR11
-run reservation; keep moving across independent active plans. Keep rollout disabled, preserve
-`infra/scripts/__pycache__/`, and never stop after a checkpoint.
+Versioned worker checkpoint envelopes are pushed in `b7b2d163`. Follow-up test `53d53ee1` proves a
+malformed persisted checkpoint is reported as invalid rather than absent. Focused worker/delegation
+tests **15/15**, Agents typecheck and diff hygiene pass. This does not prove workspace-head recovery
+or restore unsaved process memory. SC03 queue-full owner status is pushed in `3ab863de`; host dispatch
+still lacks safe replay consent, live authority revalidation and Billing admission. TBR05's pinned
+proposal-only invite-role flow is already wired and tested; TBR04 symbolic-to-host resource mappings
+and the private-Project visibility contract remain unresolved. Exact next task: continue SC03 durable
+compute admission/dispatch, then TBR11 run reservation; keep moving across independent active plans.
+Keep rollout disabled, preserve `infra/scripts/__pycache__/`, and never stop after a checkpoint.
 
 ## Previous checkpoint — 2026-11-17 (scheduled direct-script ceiling; `7af7ce5e` pushed)
 

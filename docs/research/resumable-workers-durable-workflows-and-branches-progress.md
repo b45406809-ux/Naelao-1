@@ -147,3 +147,11 @@ timestamp/loss disclaimer is in `856fb145`; owner attempt usage receipts are in 
 action: continue SC03 durable compute admission/dispatch, then return to PW exact workspace revision,
 missing/corrupt checkpoint status and runtime interruption evidence. Do not claim unsaved process
 memory recovery.
+
+## PW03 malformed checkpoint regression — 2026-11-17 (`53d53ee1` pushed)
+
+The receive path now has a regression test showing malformed persisted checkpoint data yields
+`worker_session_checkpoint_invalid` rather than a successful response with no checkpoint. Focused
+checkpoint/delegation tests **15/15**, Agents typecheck and diff check pass. Test checkpoint
+`53d53ee1` is pushed. Exact next action remains SC03 durable admission/dispatch; continue this PW03
+recovery-state work afterward. Runtime interruption and workspace-head recovery remain unaccepted.
