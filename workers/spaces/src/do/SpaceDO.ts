@@ -18818,7 +18818,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       "SELECT host_signature FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, manifest.bundle.version)?.host_signature : undefined;
     const publisher = manifest.bundle ? queryOne<{ publisher_id: string | null; publisher_key_id: string | null; publisher_signature: string | null; publisher_payload_sha256: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
       "SELECT publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, manifest.bundle.version) : null;
-    return Response.json({ installed: true, manifest, installedAt: now, ...(signature ? { release: { version: manifest.bundle!.version, artifactSha256, hostSignature: signature, signer: "naelao-host", manifestJson,
+    const installationGeneration = instanceId ? queryOne<{ generation: number }>(this.ctx.storage.sql as never,
+      "SELECT generation FROM extension_instances WHERE instance_id=?", instanceId)?.generation : undefined;
+    return Response.json({ installed: true, manifest, installedAt: now, ...(installationGeneration !== undefined ? { installationGeneration } : {}), ...(signature ? { release: { version: manifest.bundle!.version, artifactSha256, hostSignature: signature, signer: "naelao-host", manifestJson,
       ...(publisher?.publisher_key_id ? { publisher: { id: publisher.publisher_id, keyId: publisher.publisher_key_id, signature: publisher.publisher_signature,
         payloadSha256: publisher.publisher_payload_sha256, revoked: Boolean(publisher.publisher_revoked_at) } } : {}) } } : {}), ...(instanceId ? { installationId: instanceId } : {}) }, { status: 201 });
   }

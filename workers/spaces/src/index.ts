@@ -5917,7 +5917,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
         expectedCurrentGeneration: expectedUpgradePin?.generation, expectedCurrentVersion: expectedUpgradePin?.version,
         expectedCurrentManifestSha256: expectedUpgradePin?.manifestSha256 } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
-  const installedResult = await readBoundedResponseJson<{ installationId?: string; release?: { version?: string; artifactSha256?: string; hostSignature?: string; publisher?: { keyId?: string } } }>(installed.clone(), 64 * 1024);
+  const installedResult = await readBoundedResponseJson<{ installationId?: string; installationGeneration?: number;
+    release?: { version?: string; artifactSha256?: string; hostSignature?: string; publisher?: { keyId?: string } } }>(installed.clone(), 64 * 1024);
   const abortStagedInstall = async () => {
     if (!mustRemainStaged || typeof installedResult.installationId !== "string") return;
     await stub.fetch(new Request("http://space-do/extension-installation/abort", {
@@ -5931,7 +5932,9 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     return c.json({ error_code: errorCode, installation: installedResult, message: message.slice(0, 300) }, status);
   };
   if (mustRemainStaged && (installedResult.release?.version !== bundle.version || installedResult.release.artifactSha256 !== digest
-    || !/^[a-f0-9]{64}$/.test(installedResult.release.hostSignature ?? ""))) return stagedFailure("extension_runtime_release_attestation_unavailable", 503, "Host release attestation was unavailable.");
+    || !/^[a-f0-9]{64}$/.test(installedResult.release.hostSignature ?? "")
+    || !Number.isSafeInteger(installedResult.installationGeneration) || (installedResult.installationGeneration ?? 0) < 1))
+    return stagedFailure("extension_runtime_release_attestation_unavailable", 503, "Host release or installation generation attestation was unavailable.");
   const runtimeAppId = (primitiveId: string) => {
     const appId = instanceKey === "default" ? primitiveId : `${instanceKey}_${primitiveId}`;
     if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) throw new Error("extension_runtime_app_id_invalid");
@@ -5947,7 +5950,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       hostSignature, canvasPath: canvas.component, canvasSha256, bindingSignature: await signHmac(bindingPayload, c.env.PLATFORM_SECRET) };
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 3, html: canvasHtml, releaseProof }) }));
+      body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 3, tenantId: identity.tenantId, spaceId, projectId,
+        extensionInstallationId: installedResult.installationId, installationGeneration: installedResult.installationGeneration, html: canvasHtml, releaseProof }) }));
     if (!init.ok) return stagedFailure("extension_canvas_initialize_failed", 500, await readBoundedResponseText(init, 8 * 1024).catch(() => ""));
   }
   for (const gadget of gadgets) {
@@ -5962,6 +5966,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [],
+        tenantId: identity.tenantId, spaceId, projectId, installationGeneration: installedResult.installationGeneration,
         extensionInstallationId: installedResult.installationId, sourceGadgetId: gadget.id, businessActions: gadget.businessActions ?? [], html, releaseProof }) }));
     if (!init.ok) return stagedFailure("extension_gadget_initialize_failed", 500, await readBoundedResponseText(init, 8 * 1024).catch(() => ""));
   }

@@ -62,6 +62,38 @@ async function harness() {
 }
 
 describe("signed Space-shared Gadget schema update", () => {
+  it("pins signed Project Gadget actor identity and rejects cross-project or stale generations", async () => {
+    const storage = createDOStorage();
+    const sql = { exec<T = unknown>(query: string, ...args: unknown[]) {
+      const result = storage.sql.exec<T>(query, ...args);
+      return { ...result, [Symbol.iterator]: () => result.toArray()[Symbol.iterator]() };
+    } };
+    const gadget = new MicroAppDO({ storage: { ...storage, sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never,
+      { PLATFORM_SECRET: secret } as never);
+    const manifest = { id: extensionId, bundle: { id: extensionId, version: "1.0.0", primitives: [{ kind: "canvas", component: "./dashboard.html" }] } };
+    const manifestJson = JSON.stringify(manifest), canvasSha256 = await sha256(html);
+    const hostSignature = await signHmac(JSON.stringify([extensionId, "1.0.0", manifestJson, artifactSha256]), secret);
+    const bindingSignature = await signHmac(JSON.stringify([extensionId, "1.0.0", manifestJson, artifactSha256,
+      hostSignature, "./dashboard.html", canvasSha256]), secret);
+    const releaseProof = { extensionId, version: "1.0.0", manifestJson, artifactSha256, hostSignature,
+      canvasPath: "./dashboard.html", canvasSha256, bindingSignature };
+    const projectBody = { appId, scope: "PROJECT_BOUND", gadgetTier: 2, extensionInstallationId: "install-project-a",
+      tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", installationGeneration: 4,
+      defaultSchemaSql: "CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY);", html, releaseProof };
+    const initialized = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify(projectBody) }));
+    expect(initialized.status, await initialized.clone().text()).toBe(201);
+    const otherProject = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ ...projectBody, projectId: "project-b", installationGeneration: 5 }) }));
+    expect(otherProject.status).toBe(409);
+    const staleGeneration = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ ...projectBody, installationGeneration: 3 }) }));
+    expect(staleGeneration.status).toBe(409);
+    const advancedGeneration = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ ...projectBody, installationGeneration: 5 }) }));
+    expect(advancedGeneration.status, await advancedGeneration.clone().text()).toBe(201);
+  });
+
   it("applies an authorized additive migration atomically and replays its durable receipt", async () => {
     const h = await harness();
     h.interruptNextMigration();

@@ -901,7 +901,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   private async initialize(request: Request): Promise<Response> {
     const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string;
       migrations?: Array<{ version: number; description: string; up: string }>; html?: string; releaseProof?: CanvasReleaseProof;
-      extensionInstallationId?: string; sourceGadgetId?: string; userId?: string; tenantId?: string; spaceId?: string; businessActions?: unknown }>();
+      extensionInstallationId?: string; sourceGadgetId?: string; userId?: string; tenantId?: string; spaceId?: string; projectId?: string;
+      installationGeneration?: number; businessActions?: unknown }>();
     if (!body.appId || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.appId) || !body.scope || !body.gadgetTier) return Response.json({ error: "valid appId, scope and gadgetTier are required" }, { status: 400 });
     if ((body.gadgetTier === 1 && !["USER_PRIVATE", "PROJECT_USER", "SPACE_USER"].includes(body.scope)) ||
       (body.gadgetTier === 2 && !["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope)) ||
@@ -924,9 +925,18 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       || body.spaceId !== undefined && (typeof body.spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.spaceId))
       || (body.tenantId === undefined) !== (body.spaceId === undefined))
       return Response.json({ error: "gadget_storage_identity_invalid" }, { status: 400 });
+    if (body.projectId !== undefined && (body.scope !== "PROJECT_BOUND" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.projectId))
+      || body.installationGeneration !== undefined && (!Number.isSafeInteger(body.installationGeneration) || body.installationGeneration < 1)
+      || (body.projectId === undefined) !== (body.installationGeneration === undefined))
+      return Response.json({ error: "gadget_project_installation_identity_invalid" }, { status: 400 });
     const existingTenantId = this.metadata("tenant_id"), existingSpaceId = this.metadata("space_id");
     if (existingTenantId !== undefined && existingTenantId !== body.tenantId || existingSpaceId !== undefined && existingSpaceId !== body.spaceId)
       return Response.json({ error: "gadget_storage_identity_immutable" }, { status: 409 });
+    const existingProjectId = this.metadata("project_id"), existingInstallationGeneration = Number(this.metadata("installation_generation") ?? "0");
+    if (existingProjectId !== undefined && existingProjectId !== body.projectId)
+      return Response.json({ error: "gadget_project_identity_immutable" }, { status: 409 });
+    if (body.projectId && body.installationGeneration !== undefined && existingInstallationGeneration > body.installationGeneration)
+      return Response.json({ error: "gadget_project_installation_generation_stale" }, { status: 409 });
     const existingExtensionInstallationId = this.metadata("extension_installation_id");
     if (body.extensionInstallationId !== undefined && (!/^[A-Za-z0-9._:-]{1,768}$/.test(body.extensionInstallationId)
       || !body.releaseProof || existingExtensionInstallationId && existingExtensionInstallationId !== body.extensionInstallationId))
@@ -996,6 +1006,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?),('html_sha256',?)", body.appId, body.scope, String(body.gadgetTier), html, htmlSha256);
     if (body.userId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('user_id',?)", body.userId);
       if (body.tenantId && body.spaceId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('tenant_id',?),('space_id',?)", body.tenantId, body.spaceId);
+      if (body.projectId && body.installationGeneration !== undefined) this.ctx.storage.sql.exec(
+        "INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('project_id',?),('installation_generation',?)", body.projectId, String(body.installationGeneration));
       this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('business_actions_json',?)", JSON.stringify(businessActions));
       if (body.extensionInstallationId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('extension_installation_id',?)", body.extensionInstallationId);
       if (body.sourceGadgetId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('source_gadget_id',?)", body.sourceGadgetId);
