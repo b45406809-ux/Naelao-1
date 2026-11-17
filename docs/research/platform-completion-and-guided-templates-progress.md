@@ -1,4 +1,4 @@
-## Resume pointer — 2026-11-17 (EP05 owner preview/apply UI; locally verified, push pending)
+## Resume pointer — 2026-11-17 (EP05 owner preview/apply UI; locally verified, pushed as `f80e1577`)
 
 The Shell Space Extensions page now calls the owner review API, shows the returned exact-digest page in
 an isolated preview, requires explicit confirmation and publishes the exact same draft. It also exposes
@@ -6,7 +6,7 @@ takedown for the editor's exact slug. All calls use the signed Product session; 
 remain authoritative. Shell typecheck and API caller test **1/1**, Spaces route/DO tests **13/13**,
 Spaces typecheck and `git diff --check` pass. No browser/deployed edge/domain acceptance; rollout stays
 disabled. The immutable publication proof is pushed at `c6bf77b1` (docs at `e46a3240`); this UI
-checkpoint awaits push.
+checkpoint is pushed as `f80e1577`.
 
 **Reminder to myself:** Continue all active plans after this checkpoint. Tests, docs, commit and push are
 not stopping points.

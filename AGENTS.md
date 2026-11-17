@@ -36,7 +36,7 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 owner publication caller; locally verified, pending push)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 owner publication caller; pushed as `f80e1577`)
 
 The Shell Space Extensions view now provides an owner-facing dynamic-page editor for installed Gadget apps.
 Owners can request the bounded exact-digest review, see the artifact in a sandboxed preview, explicitly
