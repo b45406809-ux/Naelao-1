@@ -1,4 +1,4 @@
-## Local checkpoint — 2026-11-17 (Project-bound Gadget migration receipt contract)
+## Current cross-plan checkpoint — 2026-11-17 (Project Gadget migration recovery; `51a70c34` pushed)
 
 `workers/spaces/src/do/MicroAppDO.ts` now has a separate signed Project-bound migration purpose, requires exact persisted tenant/Space/Project/install identity and installation generation, rechecks generation in the schema transaction, and stores scope/Project/generation in the durable receipt. Exact receipt replay still recovers after the actor generation advances; new stale-generation migrations fail. The existing Space-shared purpose and tier-3 behavior remain separate. Focused tests **7/7**, Spaces typecheck and diff hygiene pass. This is local shim evidence only.
 
