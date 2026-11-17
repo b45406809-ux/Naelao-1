@@ -7,7 +7,7 @@ export function recordPdfPreviewParseMetric(dataset: AnalyticsEngineDataset | un
   recordKnowledgeFilePreviewParseMetric(dataset, "pdf", outcome, durationMs);
 }
 
-export function recordKnowledgeFilePreviewParseMetric(dataset: AnalyticsEngineDataset | undefined, format: "pdf" | "docx" | "xlsx",
+export function recordKnowledgeFilePreviewParseMetric(dataset: AnalyticsEngineDataset | undefined, format: "pdf" | "docx" | "xlsx" | "pptx",
   outcome: "succeeded" | "failed", durationMs: number): void {
   try {
     const latency = Number.isFinite(durationMs) ? Math.max(0, Math.min(120_000, Math.round(durationMs))) : 0;

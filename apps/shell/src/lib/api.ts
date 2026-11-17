@@ -3868,7 +3868,7 @@ export interface KbDocument {
   project_id: string | null;
   title: string;
   source_url: string | null;
-  content_type: "text" | "url" | "code" | "pdf" | "docx" | "xlsx";
+  content_type: "text" | "url" | "code" | "pdf" | "docx" | "xlsx" | "pptx";
   status: "pending" | "processing" | "indexed" | "flagged" | "failed" | "deleting" | "reindex_required";
   chunk_count: number;
   source_adapter?: "manual" | "website" | "connector";
@@ -4025,7 +4025,7 @@ export async function createKbDocument(
     preview_content?: string; preview_token?: string; preview_extraction_sha256?: string; source_file_name?: string;
     website_connection_id?: string; website_requested_url?: string; website_preview_sha256?: string; website_preview_token?: string }
 ): Promise<KbDocument> {
-  if (input.content_type === "pdf" || input.content_type === "docx" || input.content_type === "xlsx") {
+  if (input.content_type === "pdf" || input.content_type === "docx" || input.content_type === "xlsx" || input.content_type === "pptx") {
     if (!input.preview_content) throw new Error("Preview and approve the document extraction before saving.");
     assertKnowledgeContentWithinScope(input.preview_content, input.project_id);
   } else {

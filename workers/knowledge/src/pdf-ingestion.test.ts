@@ -10,6 +10,10 @@ const xlsxBytes = zipSync({
   "xl/_rels/workbook.xml.rels": strToU8('<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'),
   "xl/worksheets/sheet1.xml": strToU8('<worksheet><sheetData><row><c r="A1" t="inlineStr"><is><t>SKU</t></is></c><c r="B1" t="inlineStr"><is><t>Qty</t></is></c></row><row><c r="A2"><v>001</v></c><c r="B2"><f>SUM(B3:B4)</f><v>7</v></c></row></sheetData></worksheet>'),
 });
+const pptxBytes = zipSync({
+  "ppt/presentation.xml": strToU8("<p:presentation/>"),
+  "ppt/slides/slide1.xml": strToU8("<p:sld><a:p><a:r><a:t>Quarterly results</a:t></a:r></a:p><a:p><a:r><a:t>Revenue up 12%</a:t></a:r></a:p></p:sld>"),
+});
 function base64(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -175,6 +179,35 @@ describe("Knowledge PDF preview and approved ingestion", () => {
     expect(record?.args).toContain("naelao:xlsx-first-sheet-v1");
     expect(record?.args).toContain(preview.source_sha256);
     expect([...f.objects.entries()].some(([key, bytes]) => key.endsWith("/original") && bytes.length === xlsxBytes.length)).toBe(true);
+  });
+
+  it("previews and ingests PPTX slide text through signed source lineage", async () => {
+    const f = fixture();
+    const network = vi.fn();
+    vi.stubGlobal("fetch", network);
+    const previewResponse = await worker.fetch(await request("/spaces/space-1/kb/documents/preview", {
+      content: base64(pptxBytes), source_file_name: "quarterly.pptx", project_id: "project-1",
+    }), f.env, {} as ExecutionContext);
+    expect(previewResponse.status).toBe(200);
+    const { preview } = await previewResponse.json() as { preview: {
+      content: string; extraction_sha256: string; preview_token: string; source_sha256: string; parser_version: string; extraction_warnings: string[];
+    } };
+    expect(preview).toMatchObject({ content: "## Slide 1\nQuarterly results\nRevenue up 12%", parser_version: "naelao:pptx-slide-text-v1" });
+    expect(preview.extraction_warnings[0]).toContain("PPTX preview extracts text");
+    expect(network).not.toHaveBeenCalled();
+
+    const saved = await worker.fetch(await request("/spaces/space-1/kb/documents", {
+      title: "Quarterly results", content: base64(pptxBytes), content_type: "pptx", source_file_name: "quarterly.pptx",
+      preview_content: preview.content, preview_token: preview.preview_token,
+      preview_extraction_sha256: preview.extraction_sha256, project_id: "project-1",
+      idempotency_key: "pptx-approved-request-key-001",
+    }), f.env, {} as ExecutionContext);
+    expect(saved.status).toBe(201);
+    const record = f.calls.find(({ sql }) => sql.includes("INSERT INTO kb_documents"));
+    expect(record?.args).toContain("pptx");
+    expect(record?.args).toContain("naelao:pptx-slide-text-v1");
+    expect(record?.args).toContain(preview.source_sha256);
+    expect([...f.objects.entries()].some(([key, bytes]) => key.endsWith("/original") && bytes.length === pptxBytes.length)).toBe(true);
   });
 
   it("previews under the requested project ACL and binds the selected bytes and scope", async () => {

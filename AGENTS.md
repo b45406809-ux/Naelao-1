@@ -6,9 +6,9 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  exact action is SC03's host-owned durable dispatcher and owner lifecycle, following the encrypted
-  invocation receipt checkpoint below; membership revisions are pushed, TBR07 was already compared,
-  and K02 DOCX/XLSX are pushed.
+  exact action is K02 bounded PPTX Knowledge preview/approval/lineage, locally verified and pending
+  push; then continue SC03's host-owned durable dispatcher and owner lifecycle. Membership revisions
+  are pushed, TBR07 was already compared, and K02 DOCX/XLSX are pushed.
   Then continue the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
   incorporated plan ledgers. Follow dependencies, preserve completed work and recheck current
   authorization, security and billing boundaries.
@@ -35,7 +35,22 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (SC03 encrypted invocation receipt; `d3a0f194` pushed)
+## Latest cross-plan checkpoint — 2026-11-17 (K02 bounded PPTX Knowledge preview; pending push)
+
+The Knowledge Worker now parses text from numbered PPTX slides in order with bounds for the 5 MiB
+archive, 512 entries, 100 slides, 1 MiB per slide and total extracted text, and 4 MiB selected XML.
+It rejects unsafe XML/entities and returns explicit omissions for images, notes, charts, animations
+and layout. The signed preview and editable Space/Project approval path bind source/extraction/
+approved hashes and parser version; original PPTX bytes and lineage flow through storage usage and
+archive restore. Local Knowledge tests **28/28**, Knowledge typecheck, Shell typecheck and upload
+helper tests **5/5** pass. No browser/deployed/provider acceptance. K02 remains partial for scanned
+image/OCR; K03 still lacks richer page/section/table coordinates and parser confidence evidence.
+
+**Reminder to myself:** Keep implementing the full authorized mission after every checkpoint. Do not stop at a status update, slice, test pass, documentation edit, commit or push; immediately move to the next independent unfinished requirement unless the user stops the mission or a real blocker prevents all progress.
+
+Exact next action: commit and push this verified K02 slice, then continue SC03's durable host-owned job/dispatcher design using existing authority and Billing hooks. No alarm-safe callable native authorization currently exists outside the live AgentDO invocation; implement another boundary only when it preserves current authority, otherwise move immediately to the next independent plan code gap. TBR07 was already compared; do not repeat it. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-17 (SC03 encrypted invocation receipt; `d3a0f194` pushed)
 
 Commit `d3a0f1944fb279a24d8f9d10ca8ea870a9cfd252` is pushed to `origin/Mcbt5s-Backup-2`. ToolSandbox stores only an authenticated encrypted request envelope in R2 for a
 capacity-waiting native execution with a host-supplied monotonic membership revision. AAD binds the

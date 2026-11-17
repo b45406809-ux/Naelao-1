@@ -26,10 +26,12 @@ describe("privacy-safe Knowledge retrieval telemetry", () => {
     expect(() => recordPdfPreviewParseMetric({ writeDataPoint: () => { throw new Error("offline"); } } as never, "succeeded", 2)).not.toThrow();
   });
 
-  it("labels DOCX and XLSX parse outcomes with fixed non-content identifiers", () => {
+  it("labels DOCX, XLSX and PPTX parse outcomes with fixed non-content identifiers", () => {
     const writeDataPoint = vi.fn();
     recordKnowledgeFilePreviewParseMetric({ writeDataPoint } as never, "xlsx", "succeeded", 12.4);
     expect(writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_parse", "xlsx", "preview", "succeeded"], doubles: [12], indexes: [] });
+    recordKnowledgeFilePreviewParseMetric({ writeDataPoint } as never, "pptx", "failed", 6);
+    expect(writeDataPoint).toHaveBeenLastCalledWith({ blobs: ["knowledge_parse", "pptx", "preview", "failed"], doubles: [6], indexes: [] });
   });
 
   it("records fixed authorization denial categories without caller or resource identifiers", () => {
