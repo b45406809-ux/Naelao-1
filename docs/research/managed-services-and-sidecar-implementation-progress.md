@@ -1,4 +1,4 @@
-## Resume pointer — 2026-11-17 (EP05 owner publication inventory; locally verified, push pending)
+## Resume pointer — 2026-11-17 (EP05 owner publication inventory; pushed as `61161067`)
 
 See the platform completion ledger for the bounded authenticated publication list, integrity status and
 exact-slug owner takedown caller. Spaces **14/14**, Shell API **1/1**, both typechecks and diff check pass.

@@ -36,7 +36,7 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 owner publication inventory; locally verified, pending push)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 owner publication inventory; pushed as `61161067`)
 
 The owner/admin-only Shell page control now lists the 100 most recent publication receipts, shows exact
 slug/digest/time and integrity state (`published`, `integrity_error`, `removed`), refreshes after publish
@@ -44,7 +44,7 @@ or takedown, and lets an owner take down the selected exact slug. The route is t
 MicroAppDO verifies current page bytes against the newest immutable receipt. Spaces route/DO tests **14/14**,
 Shell API test **1/1**, Spaces/Shell typechecks and diff hygiene pass. Local mocks only; no browser,
 deployed domain/edge or live acceptance. Public delivery remains disabled. Previous EP05 review/backend
-and owner caller are pushed (`f80e1577`, docs `19ef37a5`); this inventory checkpoint is pending push.
+and owner caller are pushed (`f80e1577`, docs `19ef37a5`); this inventory checkpoint is pushed as `61161067`.
 SC03 waiter cleanup is pushed (`d99720f0`, docs `8f203d51`).
 
 **Reminder to myself:** Keep implementing the full mission. Do not stop after a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops or a real blocker prevents all progress.
