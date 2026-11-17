@@ -307,7 +307,7 @@ Statuses describe local code, not deployment or live acceptance. `IN_PROGRESS` m
 
 ### Backend option assessment (official-source snapshot: 2026-11-15)
 
-## K05 checkpoint — local, 2026-11-17 (extension grant history)
+## K05 checkpoint — `986a27a5` pushed, 2026-11-17 (extension grant history)
 
 The existing owner/admin extension Knowledge grant list now includes a bounded, content-free history projection (up to 20 events) with selection IDs, publication revisions, actor and timestamp. The Project Shell renders it in a disclosure control beside the current grant, clearly separating history from active access. It reads the existing SpaceDO event ledger and adds no new grant path, migration or retrieval authority. Uninstalled installations are omitted by the active-installation listing, so their history is not currently owner-visible.
 

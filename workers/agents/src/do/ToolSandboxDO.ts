@@ -300,6 +300,8 @@ export class ToolSandboxDO extends DurableObject {
   protected workspaceRuntimeKind(): "tool_sandbox" | "dynamic_sandbox" | "document_sandbox" | "media_sandbox" { return "tool_sandbox"; }
   protected async reserveCapacity(_scope: ContainerInvocationScope, _holder: string, _expiresAt: number): Promise<void> {}
   protected async releaseCapacity(): Promise<void> {}
+
+  protected async cancelPendingCapacity(_scope: ContainerInvocationScope): Promise<void> {}
   protected async beforeIdleStop(_container: ContainerRuntime): Promise<void> {}
   protected async discardCheckpoint(): Promise<void> {}
   protected allocationCreditsPerHour(): number | undefined { return undefined; }
@@ -720,6 +722,7 @@ export class ToolSandboxDO extends DurableObject {
     const record = await this.ctx.storage.get<ExecutionRecord>("execution:" + scope.executionId);
     if (!record || record.scope.runId !== scope.runId || record.scope.actorId !== scope.actorId || record.scope.installationId !== scope.installationId) return Response.json({ ok: false, error: "container_execution_not_found" }, { status: 404 });
     if (record.status === "committed") return Response.json({ ok: true, already_completed: true });
+    if (record.status === "waiting_capacity") await this.cancelPendingCapacity(record.scope);
     await this.ctx.storage.put("cancelled:" + scope.executionId, true);
     if (this.activeExecution?.id === scope.executionId) {
       this.activeExecution.controller.abort();

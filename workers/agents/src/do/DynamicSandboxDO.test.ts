@@ -10,17 +10,46 @@ async function sha256(value: string): Promise<string> {
 }
 function capacityService() {
   const held = new Map<string, Map<string, number>>();
+  const admissions = new Map<string, { tenant: string; state: "waiting" | "active"; globalLimit: number; tenantLimit: number; expiresAt: number; enqueuedAt: number; token?: number }>();
   const calls: string[] = [];
   return { held, calls, namespace: { idFromName: (v: string) => v, get: () => ({ fetch: async (request: Request) => {
     const path = new URL(request.url).pathname;
-    const { key, holder_id: holder, limit, ttl_ms: ttl } = await request.json() as any;
+    const { tenant_id: tenant, holder_id: holder, global_limit: globalLimit, tenant_limit: tenantLimit, ttl_ms: ttl, fencing_token: token } = await request.json() as any;
     calls.push(path);
-    const slots = held.get(key) ?? new Map(); held.set(key, slots);
-    for (const [id, until] of slots) if (until <= Date.now()) slots.delete(id);
-    if (path === "/release") { slots.delete(holder); return Response.json({ released: true }); }
-    if (!slots.has(holder) && slots.size >= limit) return Response.json({ granted: false });
-    slots.set(holder, Date.now() + ttl); return Response.json({ granted: true });
-  } }) } };
+    for (const slots of held.values()) for (const [id, until] of slots) if (until <= Date.now()) slots.delete(id);
+    const global = held.get("global") ?? new Map<string, number>(); held.set("global", global);
+    const tenantSlots = held.get("tenant:" + tenant) ?? new Map<string, number>(); held.set("tenant:" + tenant, tenantSlots);
+    const promote = () => {
+      const waiting = [...admissions.entries()].filter(([, item]) => item.state === "waiting").sort((a, b) => a[1].enqueuedAt - b[1].enqueuedAt);
+      for (const [id, item] of waiting) {
+        const tenantActive = held.get("tenant:" + item.tenant) ?? new Map<string, number>();
+        if (global.size >= item.globalLimit || tenantActive.size >= item.tenantLimit) continue;
+        item.state = "active"; item.token = (item.token ?? 0) + 1;
+        global.set(id, item.expiresAt); tenantActive.set(id, item.expiresAt); held.set("tenant:" + item.tenant, tenantActive);
+      }
+    };
+    if (path.endsWith("/request")) {
+      let item = admissions.get(holder);
+      if (item && item.tenant !== tenant) return Response.json({ error_code: "admission_scope_conflict" }, { status: 409 });
+      if (!item) { item = { tenant, state: "waiting", globalLimit, tenantLimit, expiresAt: Date.now() + ttl, enqueuedAt: Date.now() }; admissions.set(holder, item); }
+      item.globalLimit = Math.min(item.globalLimit, globalLimit); item.tenantLimit = Math.min(item.tenantLimit, tenantLimit); item.expiresAt = Date.now() + ttl;
+      if (item.state === "active") { global.set(holder, item.expiresAt); tenantSlots.set(holder, item.expiresAt); }
+      promote();
+      return item.state === "active" ? Response.json({ status: "admitted", fencing_token: item.token })
+        : Response.json({ status: "waiting", position: 1 });
+    }
+    const item = admissions.get(holder);
+    if (path.endsWith("/cancel")) {
+      if (item?.state === "active") return Response.json({ cancelled: false, active: true }, { status: 409 });
+      admissions.delete(holder); global.delete(holder); tenantSlots.delete(holder); promote(); return Response.json({ cancelled: Boolean(item) });
+    }
+    if (path.endsWith("/release")) {
+      const released = Boolean(item?.state === "active" && item.token === token);
+      if (released) { admissions.delete(holder); global.delete(holder); tenantSlots.delete(holder); promote(); }
+      return Response.json({ released });
+    }
+    return Response.json({ error_code: "not_found" }, { status: 404 });
+  } }) }, admissions };
 }
 function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean;
   snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean; omitBudgetReservationReceipt?: boolean;
@@ -371,7 +400,7 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.transport.start).toHaveBeenCalledWith(expect.objectContaining({ image, instance: "lite", enableInternet: false }));
     expect((await r.invoke()).status).toBe(200);
     expect(r.transport.start).toHaveBeenCalledOnce();
-    expect(r.capacity.calls.filter(v => v === "/acquire")).toHaveLength(2);
+    expect(r.capacity.calls.filter(v => v === "/compute-admission/request")).toHaveLength(1);
     expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(1);
     expect(r.records.get("container_meter").creditsPerHour).toBe(dynamicCreditsPerHour("lite"));
   });
@@ -397,6 +426,22 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.transport.start).toHaveBeenCalledOnce();
     expect(r.billing.filter(item => item.path.endsWith("/reserve"))).toHaveLength(1);
   });
+  it("cancels the scoped durable capacity waiter without dispatching it", async () => {
+    const r = runtime();
+    const held = r.capacity.held.get("tenant:tenant") ?? new Map<string, number>();
+    held.set("other-invocation", Date.now() + 60_000);
+    r.capacity.held.set("tenant:tenant", held);
+    const executionId = "capacity-cancel-1", deadline = Date.now() + 55_000;
+    const waiting = await r.invoke("/prewarm", { executionId, deadline });
+    expect(waiting.status).toBe(429);
+    const capacity = r.records.get("dynamic_capacity");
+    expect(r.capacity.admissions.get(capacity.holder)?.state).toBe("waiting");
+    const cancelled = await r.invoke("/cancel", { executionId, deadline });
+    expect(cancelled.status).toBe(200);
+    expect(r.capacity.admissions.has(capacity.holder)).toBe(false);
+    expect(r.records.get("dynamic_capacity")).toBeUndefined();
+    expect(r.transport.start).not.toHaveBeenCalled();
+  });
   it("fails closed on disabled rollout, unapproved images, or subscription limits before allocation", async () => {
     for (const r of [runtime({ enabled: false }), runtime({ cpu: 1, memory: 6144 })]) {
       expect((await r.invoke()).status).toBe(409); expect(r.transport.start).not.toHaveBeenCalled();
@@ -416,8 +461,11 @@ describe("Cloudflare dynamic execution", () => {
     expect(capacity.held.get("global")?.size).toBe(1);
     now += 5001; winner.restart(); await winner.alarm();
     expect(winner.transport.destroy).toHaveBeenCalledOnce();
-    expect(capacity.held.get("global")?.size).toBe(0);
-    expect((await runtimes[0]!.invoke()).ok).toBe(true);
+    // Releasing the winner immediately promotes the next durable waiter, so capacity stays occupied.
+    expect(capacity.held.get("global")?.size).toBe(1);
+    const retried = await runtimes[0]!.invoke();
+    expect([200, 429]).toContain(retried.status);
+    if (retried.status === 429) expect(await retried.json()).toMatchObject({ status: "waiting_for_capacity", execution_started: false });
   });
   it("restores a same-owner, same-image snapshot after idle and validates provider labels with the empty restored image", async () => {
     let now = 2000000; vi.spyOn(Date, "now").mockImplementation(() => now);

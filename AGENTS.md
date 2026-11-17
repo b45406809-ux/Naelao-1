@@ -39,11 +39,15 @@ past work and do not override the current progress records or require repeating 
 
 Latest action: completed the read-only TBR07 source comparison and recorded its evidence in `docs/research/template-business-roles-and-member-onboarding-progress.md`. SpaceDO Project members/assistant clamp, Knowledge D1 `project_access`, and installation-bound extension grants remain separate; no product-code ACL writer/synchronization was found. Same-Space owner/admin private-Project behavior remains an explicit policy decision; no access was widened.
 
-## Latest cross-plan checkpoint — 2026-11-17 (K05 extension Knowledge grant history; local)
+## Latest cross-plan checkpoint — 2026-11-17 (SC03 tenant-fair durable admission; local)
+
+DynamicSandbox now uses an authenticated atomic ConcurrencyDO ledger for global+tenant capacity. It persists only tenant/holder identifiers, limits, expiry, state and fencing token; it promotes the oldest eligible waiter on release/expiry and skips full tenants. ToolSandbox retains the exact execution scope/payload receipt in `waiting_capacity`; the code runner retries the same request and rechecks current authorization/budget before guest start. The signed `/cancel` path cancels a waiting admission. No command body/secret enters the queue. Local evidence: ConcurrencyDO, DynamicSandboxDO and code-runner capacity suites **61/61**, Agents typecheck, and `git diff --check`. No deployment/live acceptance.
+
+This is retry-driven dispatch, not an out-of-band wake. After five retries a caller may still receive a wait receipt. Owner-visible queue/ETA/status, tenant→Space→Project/member fairness and priority aging remain uncoded. Exact next action: implement owner/admin queue status and cancellation through a current authenticated Product route/Project Shell, returning only scoped receipt metadata; then continue Space/Project fairness, SC04/SC05 and all independent active-plan gaps. Keep rollout disabled and preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-17 (K05 extension Knowledge grant history; `986a27a5` pushed)
 
 The owner/admin Project Shell now shows up to 20 content-free extension Knowledge grant events from the existing SpaceDO ledger: selection IDs/revisions, actor and timestamp. This is a read-only history projection; it does not affect grants or retrieval. SpaceDO extension-runtime + Spaces grant-route suites **38/38**, Spaces and Shell typechecks, and `git diff --check` pass. No browser, deployed migration/Worker or live acceptance. Uninstalled extension history is still omitted. Generic ownership transfer, retention/legal-hold semantics and post-uninstall audit availability remain unresolved product/lifecycle decisions.
-
-Exact next action: continue SC03 wake-on-release dispatcher using a persisted waiter/fenced lease, current authorization/budget rechecks and an authorized status/cancel caller; keep arbitrary guest payloads/secrets out of queued state. If the unresolved host-owner API contract prevents the full dispatcher, complete independent K25 budget/pause implementation and other active-plan code gaps. Keep all rollouts disabled and preserve untracked `infra/scripts/__pycache__/`.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (SC03 retryable capacity receipt; `fa17d910` pushed)
 

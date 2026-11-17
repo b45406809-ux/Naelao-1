@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { mintInternalToken } from "@naelao/http";
 import { ConcurrencyDO } from "./ConcurrencyDO.js";
 import { containerRuntimeResourceKey, containerWorkerConcurrency, resolveContainerCapabilities, type InstalledContainer } from "../script-engine/container-policy.js";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
@@ -415,6 +416,31 @@ describe("ConcurrencyDO node leases", () => {
 });
 
 describe("ConcurrencyDO slot admission bounds", () => {
+  it("queues scoped container admissions, skips full tenants and fences release", async () => {
+    const storage = Object.assign(createDOStorage(), { getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} });
+    const secret = "compute-admission-test-secret";
+    const object = new ConcurrencyDO({ storage } as never, { PLATFORM_SECRET: secret });
+    const send = async (action: "request" | "release", tenant: string, holder: string, token?: number) => {
+      const body = { tenant_id: tenant, holder_id: holder, ...(action === "request" ? { global_limit: 2, tenant_limit: 1, ttl_ms: 60_000 } : { fencing_token: token }) };
+      return object.fetch(new Request("http://do/compute-admission/" + action, { method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(secret, tenant) },
+        body: JSON.stringify(body) }));
+    };
+    const first = await (await send("request", "tenant-a", "a1")).json() as { status: string; fencing_token: number };
+    expect(first.status).toBe("admitted");
+    const sameTenantWaiter = await (await send("request", "tenant-a", "a2")).json() as { status: string; position: number };
+    expect(sameTenantWaiter).toMatchObject({ status: "waiting", position: 1 });
+    const otherTenant = await (await send("request", "tenant-b", "b1")).json() as { status: string; fencing_token: number };
+    expect(otherTenant.status).toBe("admitted");
+    expect((await send("release", "tenant-a", "a1", first.fencing_token + 1)).status).toBe(200);
+    expect(await (await send("release", "tenant-a", "a1", first.fencing_token + 1)).json()).toMatchObject({ released: false });
+    expect(await (await send("release", "tenant-a", "a1", first.fencing_token)).json()).toMatchObject({ released: true });
+    const promoted = await (await send("request", "tenant-a", "a2")).json() as { status: string; fencing_token: number };
+    expect(promoted.status).toBe("admitted");
+    expect(promoted.fencing_token).toBeGreaterThan(first.fencing_token);
+    expect(await (await send("release", "tenant-b", "b1", otherTenant.fencing_token)).json()).toMatchObject({ released: true });
+  });
+
   it("caps caller supplied slot capacity and cannot turn a malformed request into unlimited admission", async () => {
     const storage = Object.assign(createDOStorage(), {
       getAlarm: async () => null,
