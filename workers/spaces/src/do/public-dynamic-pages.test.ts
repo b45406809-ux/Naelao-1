@@ -36,6 +36,50 @@ describe("isolated public dynamic pages", () => {
     expect((await instance.fetch(new Request("https://do/page/render?spaceId=s&slug=spring-signup"))).status).toBe(404);
   });
 
+  it("limits public actions per client and page using only the HMAC client key", async () => {
+    const metadata = new Map<string, string>();
+    const pages = new Map<string, { html: string; actions_json: string }>();
+    const rateCounts = new Map<string, number>();
+    const consumed = new Set<string>();
+    const sql = { exec(query: string, ...args: unknown[]) {
+      if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata") && args.length === 5) {
+        ["app_id", "scope", "gadget_tier", "html", "html_sha256"].forEach((key, index) => metadata.set(key, String(args[index])));
+      }
+      if (query.includes("SELECT value FROM gadget_metadata WHERE key = 'app_id'")) return cursor(metadata.has("app_id") ? [{ value: metadata.get("app_id")! }] : []);
+      if (query.includes("SELECT value FROM gadget_metadata WHERE key = ?")) return cursor(metadata.has(String(args[0])) ? [{ value: metadata.get(String(args[0]))! }] : []);
+      if (query.startsWith("INSERT INTO gadget_public_pages")) pages.set(String(args[0]), { html: String(args[1]), actions_json: String(args[2]) });
+      if (query.includes("SELECT html,actions_json FROM gadget_public_pages")) {
+        const page = pages.get(String(args[0])); return cursor(page ? [page] : []);
+      }
+      if (query.includes("SELECT actions_json FROM gadget_public_pages")) {
+        const page = pages.get(String(args[0])); return cursor(page ? [{ actions_json: page.actions_json }] : []);
+      }
+      if (query.startsWith("SELECT request_count FROM public_page_action_rate_buckets")) {
+        const key = `${String(args[0])}:${String(args[1])}`; return cursor(rateCounts.has(key) ? [{ request_count: rateCounts.get(key)! }] : []);
+      }
+      if (query.startsWith("INSERT INTO public_page_action_rate_buckets")) {
+        const key = `${String(args[0])}:${String(args[1])}`; rateCounts.set(key, (rateCounts.get(key) ?? 0) + 1);
+      }
+      if (query.startsWith("INSERT INTO consumed_public_action_nonces")) {
+        const nonce = String(args[0]); if (consumed.has(nonce)) throw new Error("unique constraint"); consumed.add(nonce);
+      }
+      return cursor();
+    } };
+    const instance = new MicroAppDO({ storage: { sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never, { PLATFORM_SECRET: "test-secret" });
+    expect((await instance.fetch(new Request("https://do/initialize", { method: "POST", body: JSON.stringify({ appId: "rate_limit", scope: "SPACE_SHARED", gadgetTier: 3 }) }))).status).toBe(201);
+    expect((await instance.fetch(new Request("https://do/page/publish", { method: "POST", body: JSON.stringify({
+      slug: "signup", html: "<form><input name='email'><input type='hidden' value='{{NAELAO_ACTION_TOKEN:submit}}'></form>", actions: { submit: { key: "signup", fields: ["email"] } },
+    }) }))).status).toBe(201);
+    for (let i = 0; i < 31; i++) {
+      const page = await instance.fetch(new Request("https://do/page/render?spaceId=s&slug=signup"));
+      const token = (await page.text()).match(/value='([^']+)'/)?.[1];
+      const response = await instance.fetch(new Request("https://do/page/action?spaceId=s&slug=signup&action=submit", {
+        method: "POST", headers: { "x-naelao-page-client": "b".repeat(64) }, body: JSON.stringify({ token, payload: { email: `person${i}@example.test` } }),
+      }));
+      expect(response.status).toBe(i < 30 ? 202 : 429);
+    }
+  });
+
   it("verifies the stored Canvas artifact before serving it", async () => {
     const metadata = new Map<string, string>();
     const sql = { exec(query: string, ...args: unknown[]) {
@@ -96,7 +140,7 @@ describe("isolated public dynamic pages", () => {
       if (query.includes("SELECT value FROM gadget_metadata WHERE key = ?")) {
         const value = metadata.get(String(args[0])); return cursor(value ? [{ value }] : []);
       }
-      if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata")) {
+      if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata") && args.length === 5) {
         metadata.set("app_id", String(args[0])); metadata.set("scope", String(args[1])); metadata.set("gadget_tier", String(args[2])); metadata.set("html", String(args[3])); metadata.set("html_sha256", String(args[4]));
       }
       if (query.startsWith("INSERT INTO gadget_public_pages")) pages.set(String(args[0]), { html: String(args[1]), actions_json: String(args[2]) });
@@ -131,7 +175,7 @@ describe("isolated public dynamic pages", () => {
     expect(token).toBeTruthy();
     expect(page.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     const post = (payload: Record<string, unknown>) => instance.fetch(new Request("https://do/page/action?spaceId=s&slug=sign&action=submit", {
-      method: "POST", body: JSON.stringify({ token, payload }),
+      method: "POST", headers: { "x-naelao-page-client": "a".repeat(64) }, body: JSON.stringify({ token, payload }),
     }));
     expect((await post({ email: "ok@example.test", admin: true })).status).toBe(400);
     expect((await post({ email: "ok@example.test" })).status).toBe(202);

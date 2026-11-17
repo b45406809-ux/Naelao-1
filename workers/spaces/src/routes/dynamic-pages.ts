@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import type { Env } from "../index.js";
 import { gadgetActorId } from "../do/MicroAppDO.js";
+import { signHmac } from "@naelao/crypto";
 import { readBoundedRequestBytes, requireInternalHmac } from "@naelao/http";
 import { extensionRuntimeWork, releaseRuntimeWorkAfterResponse, sharedExtensionRuntimeError } from "./gadget-mcp.js";
 
@@ -117,6 +118,9 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
     let body: Uint8Array;
     try { body = await readBoundedRequestBytes(c.req.raw, 1024 * 1024); }
     catch { return c.json({ error_code: "payload_too_large" }, 413); }
+    const clientAddress = c.req.header("cf-connecting-ip")?.trim();
+    if (!clientAddress || clientAddress.length > 128) return c.json({ error_code: "action_rate_limit_identity_unavailable" }, 503);
+    const clientKey = await signHmac(JSON.stringify(["public-page-action-client-v1", clientAddress]), c.env.PLATFORM_SECRET);
     const lease = await acquirePageRuntime(c.env, tenant, spaceId, appId);
     if (lease.error) return c.notFound();
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
@@ -124,7 +128,7 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
     const release = () => releasePageRuntime(c.env, tenant, spaceId, lease);
     try {
       return await releaseRuntimeWorkAfterResponse(await c.env.MICRO_APP_DO.get(actor).fetch(new Request(`http://micro-app/page/action?${query}`, {
-        method: "POST", body, headers: { "content-type": "application/json" },
+        method: "POST", body, headers: { "content-type": "application/json", "x-naelao-page-client": clientKey },
       })), release);
     } catch (error) { await release(); throw error; }
   });

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { errorResponse, mintInternalToken } from "@naelao/http";
+import { signHmac } from "@naelao/crypto";
 import { registerDynamicPageRoutes } from "./dynamic-pages.js";
 
 function harness(suffix = "preview.test", applicationSuffix = "app.test", tenantActive = true) {
@@ -73,8 +74,13 @@ describe("dynamic page isolation boundary", () => {
     const path = "https://tenant-a.preview.test/p/s/app/sign/actions/submit";
     const denied = await h.app.request(path, { method: "POST", headers: { origin: "https://attacker.test" }, body: "{}" }, h.env);
     expect(denied.status).toBe(403);
-    const allowed = await h.app.request(path, { method: "POST", headers: { origin: "https://tenant-a.preview.test" }, body: "{}" }, h.env);
+    const allowed = await h.app.request(path, { method: "POST", headers: { origin: "https://tenant-a.preview.test", "cf-connecting-ip": "203.0.113.4" }, body: "{}" }, h.env);
     expect(await allowed.json()).toEqual({ path: "/page/action", method: "POST" });
+    const forwarded = h.fetch.mock.calls[0]?.[0];
+    expect(forwarded?.headers.get("x-naelao-page-client")).toBe(await signHmac(JSON.stringify(["public-page-action-client-v1", "203.0.113.4"]), "test-secret"));
+    const missingIdentity = await h.app.request(path, { method: "POST", headers: { origin: "https://tenant-a.preview.test" }, body: "{}" }, h.env);
+    expect(missingIdentity.status).toBe(503);
+    expect(h.fetch).toHaveBeenCalledOnce();
   });
 
   it("keeps pages disabled without a dedicated origin configuration", async () => {

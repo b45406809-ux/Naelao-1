@@ -53,6 +53,8 @@ export const GADGET_STORAGE_LIMIT_BYTES: Record<GadgetTier, number> = {
 };
 export const TIER_ONE_IDLE_TTL_MS = 14 * 86_400 * 1000;
 const PUBLIC_ACTION_TTL_MS = 15 * 60 * 1000;
+const PUBLIC_ACTION_RATE_WINDOW_MS = 60_000;
+const PUBLIC_ACTIONS_PER_CLIENT_WINDOW = 30;
 const MAX_BUSINESS_ACTION_RECEIPTS = 10_000;
 const MAX_ARCHIVE_RESTORE_RECEIPTS = 10_000;
 const GADGET_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -142,6 +144,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       CREATE TABLE IF NOT EXISTS gadget_schema_migrations (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
       CREATE TABLE IF NOT EXISTS gadget_public_pages (slug TEXT PRIMARY KEY, html TEXT NOT NULL, actions_json TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS consumed_public_action_nonces (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS public_page_action_rate_buckets (bucket_key TEXT NOT NULL, window_start INTEGER NOT NULL, request_count INTEGER NOT NULL,
+        PRIMARY KEY(bucket_key, window_start));
       CREATE TABLE IF NOT EXISTS canvas_collaboration_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL
       );
@@ -1341,14 +1345,26 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (fields.length === 0 || fields.length > claims.fields.length || fields.some(field => !claims.fields.includes(field)) || new TextEncoder().encode(JSON.stringify(submitted)).byteLength > 16_384) {
       return Response.json({ error: "public_action_payload_rejected" }, { status: 400 });
     }
+    const clientKey = request.headers.get("x-naelao-page-client") ?? "";
+    if (!/^[a-f0-9]{64}$/.test(clientKey)) return Response.json({ error: "action_rate_limit_identity_unavailable" }, { status: 503 });
+    const nowMs = Date.now(), windowStart = Math.floor(nowMs / PUBLIC_ACTION_RATE_WINDOW_MS) * PUBLIC_ACTION_RATE_WINDOW_MS;
+    const bucketKey = `${slug}:${clientKey}`;
+    const bucket = [...this.ctx.storage.sql.exec<{ request_count: number }>(
+      "SELECT request_count FROM public_page_action_rate_buckets WHERE bucket_key = ? AND window_start = ?", bucketKey, windowStart)][0];
+    if ((bucket?.request_count ?? 0) >= PUBLIC_ACTIONS_PER_CLIENT_WINDOW) return Response.json({ error: "public_action_rate_limited" }, { status: 429 });
     const storageError = this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(submitted)).byteLength + 512);
     if (storageError) return Response.json({ error: "storage_limit_exceeded", ...storageError }, { status: 413 });
     try {
+      this.ctx.storage.sql.exec(`INSERT INTO public_page_action_rate_buckets(bucket_key,window_start,request_count) VALUES (?,?,1)
+        ON CONFLICT(bucket_key,window_start) DO UPDATE SET request_count=request_count+1`, bucketKey, windowStart);
       this.ctx.storage.sql.exec("INSERT INTO consumed_public_action_nonces(nonce,expires_at) VALUES (?,?)", claims.nonce, claims.exp);
     } catch { return Response.json({ error: "public_action_token_replayed" }, { status: 409 }); }
     const now = new Date().toISOString();
     this.ctx.storage.sql.exec("INSERT INTO gadget_data(key,value_json,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at", claims.key, JSON.stringify(submitted), now);
     this.ctx.storage.sql.exec("DELETE FROM consumed_public_action_nonces WHERE expires_at <= ?", Date.now());
+    this.ctx.storage.sql.exec("DELETE FROM public_page_action_rate_buckets WHERE window_start < ?", windowStart - PUBLIC_ACTION_RATE_WINDOW_MS);
+    this.ctx.storage.sql.exec(`DELETE FROM public_page_action_rate_buckets WHERE rowid IN (
+      SELECT rowid FROM public_page_action_rate_buckets ORDER BY window_start DESC, request_count DESC LIMIT -1 OFFSET 5000)`);
     return Response.json({ accepted: true }, { status: 202 });
   }
 
