@@ -4299,7 +4299,7 @@ app.get("/spaces/:spaceId/my-business-roles", async c => {
       onboarding_steps: definition.onboardingSteps ?? [], assistant_policy: definition.assistant ?? null,
       reviewed_at: row.reviewed_at };
   }));
-  return c.json({ data: roles, grants_applied: false }, { headers: { "cache-control": "private, no-store" } });
+  return c.json({ space_role: scope.membership.role, data: roles, grants_applied: false }, { headers: { "cache-control": "private, no-store" } });
 });
 
 app.use("/spaces/:spaceId/member-role-reviews", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));

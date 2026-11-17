@@ -3665,10 +3665,10 @@ export interface MySpaceBusinessRole {
   reviewed_at?: string;
 }
 
-export async function listMySpaceBusinessRoles(spaceId: string, session: SessionCredentials): Promise<MySpaceBusinessRole[]> {
-  const result = await apiFetch<{ data: MySpaceBusinessRole[]; grants_applied: false }>(
+export async function listMySpaceBusinessRoles(spaceId: string, session: SessionCredentials): Promise<{ space_role: "owner" | "admin" | "moderator" | "member" | "viewer"; roles: MySpaceBusinessRole[] }> {
+  const result = await apiFetch<{ space_role: "owner" | "admin" | "moderator" | "member" | "viewer"; data: MySpaceBusinessRole[]; grants_applied: false }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/my-business-roles`, { session, cache: "no-store" });
-  return result.data ?? [];
+  return { space_role: result.space_role, roles: result.data ?? [] };
 }
 
 export function listSpaceBusinessRoleOptions(spaceId: string, session: SessionCredentials) {

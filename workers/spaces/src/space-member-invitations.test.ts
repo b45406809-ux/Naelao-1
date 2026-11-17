@@ -130,7 +130,7 @@ describe("Space Product-user invitations", () => {
     expect(db.prepare("SELECT role FROM space_members WHERE end_user_id='member-a'").get()).toEqual({ role: "member" });
     const selfRoles = await inviteRequest(env, "member-a", "/spaces/space-a/my-business-roles", "GET");
     expect(selfRoles.status).toBe(200);
-    expect(await selfRoles.json()).toMatchObject({ grants_applied: false, data: [{
+    expect(await selfRoles.json()).toMatchObject({ space_role: "member", grants_applied: false, data: [{
       status: "proposal_only", grants_applied: false, blueprint_id: artifact.id, artifact_sha256: artifactSha256,
       business_role_id: "stock_lead", name: { en: "Stock lead" },
       onboarding_steps: [{ id: "first_day", title: { en: "First day" }, required: true }],

@@ -24,6 +24,8 @@ describe("SpaceMemberOnboardingPanel", () => {
     const markup = renderToStaticMarkup(<SpaceMemberOnboardingPanel spaceId="space-a" session={session}
       productSlug="product-a" canManage={false} canInviteAdmin={false} members={[]} />);
     expect(markup).toContain("Your template roles");
+    expect(markup).toContain("Your current Space role:");
+    expect(markup).toContain("Project and resource access, plus assistant limits, are checked by their own current policies.");
     expect(markup).toContain("do not grant Project, app, Knowledge, channel, or spending access");
     expect(markup).not.toContain("member-invite-email");
     expect(markup).not.toContain("Invitation status");

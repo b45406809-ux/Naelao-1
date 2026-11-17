@@ -43,6 +43,7 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [myRoles, setMyRoles] = React.useState<MySpaceBusinessRole[]>([]);
+  const [mySpaceRole, setMySpaceRole] = React.useState<string | null>(null);
   const [myRolesLoading, setMyRolesLoading] = React.useState(true);
   const [myRolesError, setMyRolesError] = React.useState(false);
 
@@ -75,7 +76,7 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
     if (canManage || !session) { setMyRolesLoading(false); return; }
     setMyRolesLoading(true); setMyRolesError(false);
     void listMySpaceBusinessRoles(spaceId, session).then(result => {
-      if (!cancelled) setMyRoles(result);
+      if (!cancelled) { setMySpaceRole(result.space_role); setMyRoles(result.roles); }
     }).catch(() => {
       if (!cancelled) setMyRolesError(true);
     }).finally(() => {
@@ -167,7 +168,8 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
   if (!canManage) return (
     <section aria-labelledby="my-business-roles-heading">
       <div className="settings-section-title" id="my-business-roles-heading">Your template roles</div>
-      <p className="settings-section-sub">Role instructions help with onboarding. They do not grant Project, app, Knowledge, channel, or spending access.</p>
+      <p className="settings-section-sub">Your current Space role: <strong>{mySpaceRole ?? (myRolesLoading ? "loading" : "unavailable")}</strong>. Project and resource access, plus assistant limits, are checked by their own current policies.</p>
+      <p className="settings-section-sub">Template role instructions help with onboarding. They do not grant Project, app, Knowledge, channel, or spending access.</p>
       {myRolesLoading ? <p className="settings-row-sub" role="status">Loading your current role details…</p>
         : myRolesError ? <p className="settings-row-sub" role="alert">Your current role details could not be loaded. Refresh to check again.</p>
           : myRoles.length === 0 ? <p className="settings-row-sub">No active template role proposals are recorded for your current Space membership.</p>
