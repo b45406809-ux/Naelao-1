@@ -33,6 +33,12 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
+## Current cross-plan checkpoint — 2026-11-17 (Project extension staged-update recovery; local pending)
+
+Implemented a reachable recovery journey: owner/admin Shell controls can discover staged receipts and resume one through the API. Recovery requires the original receipt actor, verifies current staged install generation/version/manifest, source and candidate release pins, exact compiled artifact digest, retained publisher-signed source, deterministic workflow compilation and a currently active publisher key; it issues a short token for the same request ID. New extension uploads retain signed source separately from host-compiled runtime artifacts. Verification so far: Spaces and Shell typechecks, focused Project review/receipt-route tests **5/5**, and `git diff --check`; the route test covers owner receipt discovery and denies a member, but the full recovery artifact/signature path still needs direct interruption/revocation coverage. Local mock evidence only; no deployed migration or live acceptance. Rollout remains disabled; `infra/scripts/__pycache__/` is preserved.
+
+Exact next action: add direct recovery-path tests for exact staged replay, changed candidate/artifact rejection and publisher revocation, then continue TBR11's durable owner-approved scheduled-principal effect scope/budget enforcement with unsupported effects denied; proceed through every remaining uncoded requirement in all active plan ledgers. After push, replace “local pending” with the verified recovery SHA.
+
 ## Current cross-plan checkpoint — 2026-11-17 (viewer capability disclosure and egress; `5fb3cfb4` pushed)
 
 The implementation commits `9bdf06eb1d7483ad5f76dfb5a86cce315e509649` and `5fb3cfb422f11fc6bc5665f0ea019818806d025f` are pushed to `origin/Mcbt5s-Backup-2`; ledger reconciliation is pushed at `e64f0686869529a1a39162f6d5f56501a3284e08`. `9bdf06eb` hides non-read-safe operation names/details from viewer discovery; `5fb3cfb4` removes provider-backed document summarize/extract/compress from the viewer read-safe allowlist. Focused Agents tests **28/28**, Agents typecheck and diff hygiene pass. Fetch and push initially had a transient invalid-token failure, then succeeded on retry. `infra/scripts/__pycache__/` remains untracked and preserved.

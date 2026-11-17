@@ -6189,6 +6189,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/space-shared-extension-update" && method === "POST") return this.applySpaceSharedExtensionUpdate(request);
       if (url.pathname === "/space-shared-extension-update-receipt" && method === "GET") return await this.getSpaceSharedExtensionUpdateReceipt(request, url.searchParams);
       if (url.pathname === "/project-extension-update-receipt" && method === "GET") return this.getProjectExtensionUpdateReceipt(request, url.searchParams);
+      if (url.pathname === "/project-extension-update-receipts" && method === "GET") return this.listProjectExtensionUpdateReceipts(request, url.searchParams);
       if (url.pathname === "/space-shared-extension-updates" && method === "GET") return await this.listSpaceSharedExtensionUpdates(request, url.searchParams);
       if (url.pathname === "/project-extension-lifecycle" && method === "PATCH") return this.updateProjectExtensionLifecycle(request);
       if (url.pathname === "/project-steward-facts" && method === "GET") return this.projectStewardFacts(url.searchParams);
@@ -17696,6 +17697,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       requestId, tenantId, spaceId, projectId, instanceId);
     return receipt ? Response.json({ receipt }, { headers: { "cache-control": "private, no-store" } })
       : Response.json({ error_code: "project_extension_update_receipt_not_found" }, { status: 404 });
+  }
+
+  private async listProjectExtensionUpdateReceipts(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    const projectId = params.get("project_id") ?? "", instanceId = params.get("instance_id") ?? "";
+    if (!tenantId || !spaceId || !projectId || !instanceId
+      || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const receipts = queryAll<Record<string, unknown>>(this.ctx.storage.sql as never, `SELECT request_id,tenant_id,space_id,project_id,instance_id,
+      extension_id,actor_id,source_generation,applied_generation,from_version,to_version,source_manifest_sha256,
+      candidate_manifest_sha256,source_artifact_sha256,artifact_sha256,publisher_id,publisher_key_id,status,created_at,updated_at
+      FROM project_extension_update_receipts WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?
+        AND status='staged' ORDER BY updated_at DESC LIMIT 20`, tenantId, spaceId, projectId, instanceId);
+    return Response.json({ receipts }, { headers: { "cache-control": "private, no-store" } });
   }
 
   private async updateSpaceSharedExtensionLifecycle(request: Request): Promise<Response> {

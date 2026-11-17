@@ -54,6 +54,7 @@ function harness(options: { generation?: number; activeKey?: boolean; status?: "
     if (url.pathname === "/extension-releases") return Response.json({ releases: [{ version: "2.0.0", manifest: options.candidate ?? candidateManifest,
       artifactSha256: "c".repeat(64), signatureValid: true, publisher: { id: "publisher-a", keyId: publisherKeyId } }] });
     if (url.pathname === "/extension-runtime-work") return Response.json({ active_work_count: 0 });
+    if (url.pathname === "/project-extension-update-receipts") return Response.json({ receipts: [{ request_id: "request-a", status: "staged" }] });
     return Response.json({ error_code: "unexpected_route" }, { status: 404 });
   }) };
   const env = { PLATFORM_SECRET: secret,
@@ -73,10 +74,29 @@ async function post(env: unknown, body: unknown, role = "admin") {
   }), env as never);
 }
 
+async function getReceipts(env: unknown, role = "admin") {
+  return spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/projects/project-a/extension-installations/instance-a/update-receipts", {
+    headers: { "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"), "x-naelao-tenant-id": "tenant-a",
+      "x-naelao-user-id": "owner-a", "x-naelao-role": role },
+  }), env as never);
+}
+
 const body = (generation = 4) => ({ candidate_version: "2.0.0", expected_generation: generation,
   expected_current_version: "1.0.0", expected_manifest_sha256: "pending" });
 
 describe("PROJECT_BOUND extension update review route", () => {
+  it("exposes staged recovery receipts only to a Project manager", async () => {
+    const h = harness();
+    const response = await getReceipts(h.env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ receipts: [{ request_id: "request-a", status: "staged" }] });
+    const listCall = h.requests.find(request => new URL(request.url).pathname === "/project-extension-update-receipts");
+    expect([...new URL(listCall!.url).searchParams.entries()].sort()).toEqual([
+      ["instance_id", "instance-a"], ["project_id", "project-a"], ["space_id", "space-a"], ["tenant_id", "tenant-a"],
+    ]);
+    expect((await getReceipts(h.env, "member")).status).toBe(403);
+  });
+
   it("returns exact signed candidate and change deltas without mutating the install", async () => {
     const h = harness();
     const requestBody = body();

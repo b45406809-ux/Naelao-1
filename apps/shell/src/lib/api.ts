@@ -2724,6 +2724,22 @@ export async function getProjectExtensionUpdateReceipt(spaceId: string, projectI
   return result.receipt;
 }
 
+/** Resume the newest durable staged Project update for the same owner and installation. */
+export async function recoverStagedProjectExtensionUpdate(spaceId: string, projectId: string, installationId: string,
+  session: SessionCredentials): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string;
+    projectUpdateReceipt?: { requestId: string; status: "staged" | "active"; installationGeneration?: number } }> {
+  const base = `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(installationId)}/update-receipts`;
+  const { receipts } = await apiFetch<{ receipts: ProjectExtensionUpdateReceipt[] }>(base, { session, cache: "no-store" });
+  const receipt = receipts?.find(item => item.status === "staged");
+  if (!receipt) throw new Error("No staged update receipt is available for this installation.");
+  const { recovery } = await apiFetch<{ recovery: { manifest: unknown; artifacts: Record<string, string>;
+    publisherSignature: { key_id: string; signature: string }; instanceKey: string; updateReviewToken: string; requestId: string } }>(
+    `${base}/${encodeURIComponent(receipt.request_id)}/recover`, { method: "POST", session, body: "{}", cache: "no-store" });
+  if (recovery.requestId !== receipt.request_id) throw new Error("The staged update recovery request changed.");
+  return installProjectCanvasExtension(spaceId, projectId, session, recovery.manifest, recovery.artifacts, true, recovery.instanceKey,
+    recovery.publisherSignature, true, true, recovery.updateReviewToken);
+}
+
 export async function rollbackProjectExtension(spaceId: string, projectId: string, extensionId: string, installationId: string, expectedCurrentVersion: string | null, version: string, permissionExpansionApproved: boolean, session: SessionCredentials): Promise<void> {
   await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-releases/rollback`, { method: "POST", body: JSON.stringify({ project_id: projectId, extension_id: extensionId, installation_id: installationId,
     expected_current_version: expectedCurrentVersion, version, permission_expansion_approved: permissionExpansionApproved }), session });

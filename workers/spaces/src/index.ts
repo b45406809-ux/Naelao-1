@@ -6053,6 +6053,17 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
         path, bytes: new TextEncoder().encode(source).byteLength });
     }
   }
+  // Keep the publisher-signed input separately from any host-compiled runtime artifact. A later
+  // owner recovery must be able to verify the original signature and prove compilation is stable.
+  for (const [path, source] of Object.entries(publisherArtifacts)) {
+    const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/.publisher-source/${path.slice(2)}`;
+    const existing = await c.env.SCRIPTS_R2.get(key);
+    if (existing) {
+      const bytes = await existing.arrayBuffer();
+      if (bytes.byteLength !== existing.size || new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes) !== source)
+        return c.json({ error_code: "extension_release_publisher_source_immutable" }, 409);
+    } else await c.env.SCRIPTS_R2.put(key, source, { httpMetadata: { contentType: path.endsWith(".html") ? "text/html; charset=utf-8" : "text/plain; charset=utf-8" } });
+  }
   const requiresRuntimeActivation = canvases.length > 0 || gadgets.length > 0;
   const mustRemainStaged = requiresRuntimeActivation || requiresResourceApproval;
   const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
@@ -6452,12 +6463,172 @@ app.get(projectExtensionUpdateReceiptPath, async c => {
     return c.json({ error_code: "project_extension_update_receipt_scope_invalid" }, 400);
   const identity = getCallerIdentity(c);
   if (!identity.tenantId) return c.json({ error_code: "unauthorized" }, 401);
+  const callerRole = identity.role === "product_end_user" && identity.userId
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId) : identity.role;
+  if (callerRole !== "owner" && callerRole !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
   const query = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId,
     instance_id: instanceId, request_id: requestId });
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   return stub.fetch(new Request(`http://space-do/project-extension-update-receipt?${query}`, { headers: {
     "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId),
   } }));
+});
+
+const projectExtensionUpdateReceiptsPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/update-receipts";
+app.use(projectExtensionUpdateReceiptsPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(projectExtensionUpdateReceiptsPath, requireSpaceMembership({ GET: "admin" }));
+app.get(projectExtensionUpdateReceiptsPath, async c => {
+  const { spaceId, projectId, instanceId } = c.req.param();
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  if (!/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "project_extension_update_receipt_scope_invalid" }, 400);
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId) return c.json({ error_code: "unauthorized" }, 401);
+  const callerRole = identity.role === "product_end_user" && identity.userId
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId) : identity.role;
+  if (callerRole !== "owner" && callerRole !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  const query = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId, instance_id: instanceId });
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  return stub.fetch(new Request(`http://space-do/project-extension-update-receipts?${query}`, { headers: {
+    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId),
+  } }));
+});
+
+const projectExtensionUpdateRecoveryPath = `${projectExtensionUpdateReceiptPath}/recover`;
+app.use(projectExtensionUpdateRecoveryPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(projectExtensionUpdateRecoveryPath, requireSpaceMembership({ POST: "admin" }));
+app.post(projectExtensionUpdateRecoveryPath, async c => {
+  const { spaceId, projectId, instanceId, requestId } = c.req.param();
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+    || !/^[0-9a-f-]{36}$/i.test(requestId)) return c.json({ error_code: "project_extension_update_recovery_scope_invalid" }, 400);
+  const callerRole = identity.role === "product_end_user"
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId) : identity.role;
+  if (callerRole !== "owner" && callerRole !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const query = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId,
+    instance_id: instanceId, request_id: requestId });
+  const receiptResponse = await stub.fetch(new Request(`http://space-do/project-extension-update-receipt?${query}`, {
+    headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+  }));
+  if (receiptResponse.status === 404) return c.json({ error_code: "project_extension_update_receipt_not_found" }, 404);
+  if (!receiptResponse.ok) return c.json({ error_code: "project_extension_update_receipt_lookup_unavailable" }, 503);
+  const { receipt } = await readBoundedResponseJson<{ receipt?: Record<string, unknown> }>(receiptResponse, 32 * 1024);
+  if (!receipt || receipt.status !== "staged" || receipt.actor_id !== identity.userId || receipt.tenant_id !== identity.tenantId
+    || receipt.space_id !== spaceId || receipt.project_id !== projectId || receipt.instance_id !== instanceId
+    || typeof receipt.extension_id !== "string" || typeof receipt.to_version !== "string"
+    || typeof receipt.publisher_id !== "string" || typeof receipt.publisher_key_id !== "string")
+    return c.json({ error_code: "project_extension_update_recovery_not_available" }, 409);
+  const installationsResponse = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({
+    tenant_id: identity.tenantId, space_id: spaceId, extension_id: receipt.extension_id, include_manifest: "1",
+  })}`));
+  if (!installationsResponse.ok) return c.json({ error_code: "extension_installation_lookup_unavailable" }, 503);
+  const installations = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; project_id: string | null;
+    scope: string; status: string; generation: number; release_version: string | null; instance_key?: string; manifest_sha256: string | null;
+    manifest?: unknown }> }>(installationsResponse, 2 * 1024 * 1024);
+  const current = installations.installations?.find(item => item.instance_id === instanceId);
+  let manifest: ReturnType<typeof validateExtensionManifest>;
+  try { manifest = validateExtensionManifest(current?.manifest); }
+  catch { return c.json({ error_code: "project_extension_update_staged_candidate_changed" }, 409); }
+  if (!current || current.project_id !== projectId || current.scope !== "PROJECT_BOUND" || current.status !== "staging"
+    || current.generation !== receipt.applied_generation || current.release_version !== receipt.to_version
+    || manifest.id !== receipt.extension_id || manifest.bundle?.version !== receipt.to_version
+    || await digestExtensionManifest(manifest) !== receipt.candidate_manifest_sha256 || current.manifest_sha256 !== receipt.candidate_manifest_sha256)
+    return c.json({ error_code: "project_extension_update_staged_candidate_changed" }, 409);
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "extension_artifact_storage_unavailable" }, 503);
+  const bundle = manifest.bundle;
+  const primitives = bundle?.primitives ?? [];
+  const canvases = primitives.filter((item): item is Extract<typeof primitives[number], { kind: "canvas" }> => item.kind === "canvas");
+  const channels = primitives.filter((item): item is Extract<typeof primitives[number], { kind: "channel" }> => item.kind === "channel");
+  const workflows = primitives.filter((item): item is Extract<typeof primitives[number], { kind: "workflow" }> => item.kind === "workflow");
+  const widgetPaths = new Set((manifest.widgetSubscriptions ?? []).map(item => item.component));
+  const workflowPaths = new Set(workflows.map(item => item.entry));
+  const paths = [...new Set([...canvases.map(item => item.component), ...channels.map(item => item.handlerScript), ...workflowPaths, ...widgetPaths])].sort();
+  if (!paths.length || paths.length > 128) return c.json({ error_code: "project_extension_update_recovery_artifacts_invalid" }, 409);
+  const compiledArtifacts: Record<string, string> = {}, publisherArtifacts: Record<string, string> = {};
+  let totalBytes = 0;
+  try {
+    for (const path of paths) {
+      if (!/^\.\/[A-Za-z0-9._-]{1,128}\.(?:html|ts|js)$/.test(path)) throw new Error("artifact_path_invalid");
+      const original = await c.env.SCRIPTS_R2.get(`spaces/${spaceId}/extensions/${receipt.extension_id}/${receipt.to_version}/.publisher-source/${path.slice(2)}`);
+      const compiled = await c.env.SCRIPTS_R2.get(`spaces/${spaceId}/extensions/${receipt.extension_id}/${receipt.to_version}/${path.slice(2)}`);
+      if (!original || !compiled || original.size < 1 || compiled.size < 1 || original.size > 512_000 || compiled.size > 512_000) throw new Error("artifact_missing_or_invalid");
+      const [originalBytes, compiledBytes] = await Promise.all([original.arrayBuffer(), compiled.arrayBuffer()]);
+      if (originalBytes.byteLength !== original.size || compiledBytes.byteLength !== compiled.size) throw new Error("artifact_size_mismatch");
+      totalBytes += original.size + compiled.size;
+      if (totalBytes > 4_000_000) throw new Error("artifact_size_limit");
+      const originalSource = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(originalBytes);
+      let compiledSource = originalSource;
+      if (workflowPaths.has(path)) {
+        if (!c.env.AGENTS_WORKER) throw new Error("workflow_compiler_unavailable");
+        const validation = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workflow-extensions/compile", {
+          method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+            "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) }, body: JSON.stringify({ source: originalSource }),
+        }));
+        const result = await validation.json<{ source?: string }>().catch((): { source?: string } => ({}));
+        if (!validation.ok || typeof result.source !== "string") throw new Error("workflow_compiler_revalidation_failed");
+        compiledSource = result.source;
+      }
+      const storedSource = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(compiledBytes);
+      if (storedSource !== compiledSource) throw new Error("compiled_artifact_changed");
+      publisherArtifacts[path] = originalSource;
+      compiledArtifacts[path] = storedSource;
+    }
+  } catch (error) {
+    return c.json({ error_code: "project_extension_update_recovery_artifacts_untrusted",
+      reason: (error instanceof Error ? error.message : "invalid").slice(0, 100) }, 409);
+  }
+  const entries = Object.entries(compiledArtifacts).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  if (await spacePackageReviewDigest(JSON.stringify(entries)) !== receipt.artifact_sha256)
+    return c.json({ error_code: "project_extension_update_recovery_artifact_pin_conflict" }, 409);
+  const releaseResponse = await stub.fetch(new Request(`http://space-do/extension-package-release?${new URLSearchParams({
+    extension_id: String(receipt.extension_id), version: String(receipt.to_version),
+  })}`));
+  if (!releaseResponse.ok) return c.json({ error_code: "project_extension_update_recovery_release_unavailable" }, 409);
+  const releaseData = await readBoundedResponseJson<{ release?: { manifest_json?: string; artifact_sha256?: string;
+    publisher?: { id?: string; key_id?: string; signature?: string; payload_sha256?: string } } }>(releaseResponse, 2 * 1024 * 1024);
+  const release = releaseData.release, publisherKeyId = String(receipt.publisher_key_id);
+  if (!release || release.artifact_sha256 !== receipt.artifact_sha256 || release.manifest_json !== JSON.stringify(manifest)
+    || release.publisher?.id !== receipt.publisher_id || release.publisher.key_id !== publisherKeyId
+    || release.publisher.payload_sha256 !== await spacePackageReviewDigest(extensionPublisherSigningPayload(release.manifest_json, publisherArtifacts)))
+    return c.json({ error_code: "project_extension_update_recovery_release_pin_conflict" }, 409);
+  const sourceReleaseResponse = await stub.fetch(new Request(`http://space-do/extension-package-release?${new URLSearchParams({
+    extension_id: String(receipt.extension_id), version: String(receipt.from_version),
+  })}`));
+  if (!sourceReleaseResponse.ok) return c.json({ error_code: "project_extension_update_recovery_source_unavailable" }, 409);
+  const sourceReleaseData = await readBoundedResponseJson<{ release?: { manifest_json?: string; artifact_sha256?: string;
+    publisher?: { id?: string; key_id?: string } } }>(sourceReleaseResponse, 2 * 1024 * 1024);
+  let sourceManifest: ReturnType<typeof validateExtensionManifest> | undefined;
+  try { sourceManifest = sourceReleaseData.release?.manifest_json
+    ? validateExtensionManifest(JSON.parse(sourceReleaseData.release.manifest_json)) : undefined; } catch { sourceManifest = undefined; }
+  if (!sourceReleaseData.release || !sourceManifest || sourceReleaseData.release.artifact_sha256 !== receipt.source_artifact_sha256
+    || sourceReleaseData.release.publisher?.id !== receipt.publisher_id || sourceReleaseData.release.publisher.key_id !== publisherKeyId
+    || await digestExtensionManifest(sourceManifest) !== receipt.source_manifest_sha256)
+    return c.json({ error_code: "project_extension_update_recovery_source_pin_conflict" }, 409);
+  const publisher = await c.env.PLATFORM_DB.prepare(`SELECT publisher_id,public_key_b64url FROM extension_publisher_keys
+    WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(identity.tenantId, spaceId, publisherKeyId)
+    .first<{ publisher_id: string; public_key_b64url: string }>();
+  if (!publisher || publisher.publisher_id !== receipt.publisher_id || !release.publisher.signature)
+    return c.json({ error_code: "extension_publisher_key_untrusted_or_revoked" }, 403);
+  try {
+    const publicKey = decodeExtensionPublisherPublicKey(publisher.public_key_b64url);
+    if (await extensionPublisherKeyId(publicKey) !== publisherKeyId || !await verifyExtensionPublisherRelease({
+      publicKeyRaw: publicKey, signature: release.publisher.signature, manifestJson: release.manifest_json!, artifacts: publisherArtifacts,
+    })) return c.json({ error_code: "extension_publisher_signature_invalid" }, 403);
+  } catch { return c.json({ error_code: "extension_publisher_signature_invalid" }, 403); }
+  const expiresAt = Date.now() + 5 * 60_000;
+  const claims = projectBoundExtensionUpdateClaims({ tenantId: identity.tenantId, spaceId, projectId, actorId: identity.userId,
+    installationId: instanceId, extensionId: String(receipt.extension_id), installationGeneration: Number(receipt.source_generation),
+    fromVersion: String(receipt.from_version), toVersion: String(receipt.to_version),
+    sourceManifestSha256: String(receipt.source_manifest_sha256), candidateManifestSha256: String(receipt.candidate_manifest_sha256),
+    sourceArtifactSha256: String(receipt.source_artifact_sha256), artifactSha256: String(receipt.artifact_sha256),
+    publisherId: String(receipt.publisher_id), publisherKeyId, expiresAt, requestId });
+  const payload = JSON.stringify(claims);
+  const updateReviewToken = encodeSpacePackageReviewToken(payload, await signHmac(payload, c.env.PLATFORM_SECRET));
+  return c.json({ recovery: { manifest, artifacts: compiledArtifacts, publisherSignature: { key_id: publisherKeyId, signature: release.publisher.signature },
+    instanceKey: current.instance_key ?? "default", updateReviewToken, requestId } }, 200, { "cache-control": "private, no-store" });
 });
 
 const projectExtensionResourceGrantsPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/resource-grants";

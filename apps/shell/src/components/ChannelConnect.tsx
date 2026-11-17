@@ -23,7 +23,7 @@ import { previewExtensionResourceRequirements } from "@/lib/extension-resource-p
 import { previewExtensionPublisherProvenance } from "@/lib/extension-publisher-provenance";
 import { projectInstalledExtensionReleaseProvenance } from "@/lib/extension-release-provenance";
 import { projectExtensionRollbackReview } from "@/lib/extension-rollback-review";
-import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type ProjectExtensionUpdateReview, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, getProjectExtensionUpdateReceipt, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, reviewProjectExtensionUpdate, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type ProjectExtensionUpdateReview, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, getProjectExtensionUpdateReceipt, recoverStagedProjectExtensionUpdate, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, reviewProjectExtensionUpdate, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -756,6 +756,7 @@ export function ChannelConnect({
   const [newPublisherId, setNewPublisherId] = React.useState("pub_my_team");
   const [newPublisherPublicKey, setNewPublisherPublicKey] = React.useState("");
   const [otherProjectInstallations, setOtherProjectInstallations] = React.useState<ContainerInstallation[]>([]);
+  const [recoveringProjectUpdate, setRecoveringProjectUpdate] = React.useState<string | null>(null);
   const [settingsOnlyInstallations, setSettingsOnlyInstallations] = React.useState<ContainerInstallation[]>([]);
   const [runtimeCatalogue, setRuntimeCatalogue] = React.useState<RuntimeCatalogueEntry[]>([]);
   const [runtimeSlotLimit, setRuntimeSlotLimit] = React.useState<number | null>(null);
@@ -1184,6 +1185,22 @@ export function ChannelConnect({
     finally { setChangingExtension(null); }
   }
 
+  async function recoverProjectExtensionUpdate(instanceId: string) {
+    if (!projectId || recoveringProjectUpdate) return;
+    setRecoveringProjectUpdate(instanceId); setError(null);
+    try {
+      const result = await recoverStagedProjectExtensionUpdate(spaceId, projectId, instanceId, session);
+      if (!result.installed) throw new Error(result.message ?? result.error_code ?? "The staged update could not be resumed.");
+      const [channels, all] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true)]);
+      setExtensionInstallations(channels);
+      const channelInstances = new Set(channels.map(item => item.instance_id));
+      setOtherProjectInstallations(all.installations.filter(item => item.instance.project_id === projectId && ["active", "disabled", "staging"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+      setExtensionNotice("The same staged Project update resumed. Its request ID and publisher signature were revalidated.");
+      onChanged();
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't recover this staged Project update."); }
+    finally { setRecoveringProjectUpdate(null); }
+  }
+
   async function installProjectRuntime(imageId: string) {
     if (!projectId || installingRuntime) return;
     const image = runtimeCatalogue.find(item => item.id === imageId);
@@ -1394,7 +1411,11 @@ export function ChannelConnect({
             {projectId && hasReviewableProjectExtensionResources(item.manifest.resourceRequirements) && <ExtensionResourceGrantReview
               spaceId={spaceId} projectId={projectId} instanceId={instanceId}
               requirements={(item.manifest.resourceRequirements ?? []).filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs")} session={session} />}
-            {item.instance.status === "staging" && <div style={{ color: "var(--text3)", fontSize: 11 }}>Setup did not finish. This extension is not available to workers or channels; uninstall it or retry installation.</div>}
+            {item.instance.status === "staging" && <div style={{ color: "var(--text3)", fontSize: 11 }}>Setup did not finish. This extension is not available to workers or channels. If this was a reviewed Project update, resume its exact durable request here.
+              <button type="button" className="btn-ghost" style={{ display: "block", marginTop: 5, fontSize: 11 }} disabled={!!recoveringProjectUpdate || !!removingExtension} onClick={() => void recoverProjectExtensionUpdate(instanceId)}>
+                {recoveringProjectUpdate === instanceId ? "Revalidating and resuming…" : "Resume staged update"}
+              </button>
+            </div>}
             {releaseProvenance && <div style={{ marginTop: 4, color: "var(--text3)", fontSize: 10.5 }}>
               Verified release {releaseProvenance.version} · manifest <code>{releaseProvenance.manifestSha256}</code> · host-built artifact <code>{releaseProvenance.hostArtifactSha256}</code> · publisher key <code>{releaseProvenance.publisherKeyId}</code> · signature {item.instance.publisher_trusted === false ? "valid but publisher key revoked" : "valid"}
               {releaseProvenance.publisherPayloadSha256 && <> · signed source payload <code>{releaseProvenance.publisherPayloadSha256}</code></>}
