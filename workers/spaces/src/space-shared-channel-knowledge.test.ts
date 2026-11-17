@@ -29,7 +29,7 @@ function harness(options: { knowledgeAvailable?: boolean; publicationIds?: strin
     agentRequests.push(request);
     if (request.method === "POST") {
       const body = await request.clone().json() as { action?: string };
-      return Response.json(body.action === "cancel" ? { cancelled: true, execution_id: "execution-a" } : { admissions: [] });
+      return Response.json(body.action === "cancel" ? { cancelled: true, execution_id: "execution-a" } : { admissions: [], expired: [] });
     }
     return Response.json({ error_code: "not_found" }, { status: 404 });
   }) };
@@ -103,7 +103,7 @@ describe("Space-shared channel Project Knowledge routes", () => {
     const path = "/spaces/space-a/projects/project-a/runtime/compute-admissions";
     const listed = await call(h, "product_end_user", path, "GET", undefined, "product-owner");
     expect(listed.status).toBe(200);
-    expect(await listed.json()).toEqual({ admissions: [] });
+    expect(await listed.json()).toEqual({ admissions: [], expired: [] });
     expect(h.agentRequests).toHaveLength(1);
     expect(await h.agentRequests[0]!.clone().json()).toEqual({ action: "list", spaceId: "space-a", projectId: "project-a" });
     const cancelled = await call(h, "product_end_user", path, "POST", { execution_id: "execution-a" }, "product-owner");

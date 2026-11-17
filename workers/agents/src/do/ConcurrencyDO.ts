@@ -84,6 +84,11 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL, execution_id TEXT NOT NULL,
       expires_at INTEGER NOT NULL, PRIMARY KEY(tenant_id,space_id,project_id,execution_id)
     )`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS compute_admission_expirations (
+      tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL, execution_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL, requested_at INTEGER NOT NULL, expired_at INTEGER NOT NULL, retain_until INTEGER NOT NULL,
+      PRIMARY KEY(tenant_id,space_id,project_id,execution_id)
+    )`);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS locks (
       key TEXT PRIMARY KEY, holder_id TEXT NOT NULL, acquired_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
     )`);
@@ -671,8 +676,9 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     if (!this.env.PLATFORM_SECRET || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const now = Date.now();
-    this.ctx.storage.sql.exec("DELETE FROM compute_admissions WHERE expires_at<=?", now);
+    this.expireComputeAdmissions(now);
     this.ctx.storage.sql.exec("DELETE FROM compute_admission_cancellations WHERE expires_at<=?", now);
+    this.ctx.storage.sql.exec("DELETE FROM compute_admission_expirations WHERE retain_until<=?", now);
     if (action === "list") return this.listComputeAdmissions(tenantId, String(body.space_id), String(body.project_id));
     if (action === "cancel-execution") return this.cancelComputeAdmission(tenantId, String(body.space_id), String(body.project_id), String(body.execution_id));
     if (action === "request") {
@@ -707,6 +713,8 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       const globalWaiting = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM compute_admissions WHERE state='waiting'").toArray()[0] as { count: number };
       const tenantWaiting = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM compute_admissions WHERE state='waiting' AND tenant_id=?", tenantId).toArray()[0] as { count: number };
       if (globalWaiting.count >= 1000 || tenantWaiting.count >= 200) return Response.json({ status: "full", retry_after_ms: 5_000 });
+      this.ctx.storage.sql.exec("DELETE FROM compute_admission_expirations WHERE tenant_id=? AND space_id=? AND project_id=? AND execution_id=?",
+        tenantId, String(body.space_id), String(body.project_id), String(body.execution_id));
       this.ctx.storage.sql.exec("INSERT INTO compute_admissions(holder_id,tenant_id,state,global_limit,tenant_limit,requested_at,expires_at,fencing_token,space_id,project_id,actor_id,execution_id) VALUES(?,?,'waiting',?,?,?,?,0,?,?,?,?)",
         holderId, tenantId, globalLimit, tenantLimit, now, now + Number(body.ttl_ms), body.space_id, body.project_id, body.actor_id, body.execution_id);
     } else {
@@ -727,10 +735,29 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       tenantId, spaceId, projectId).toArray() as Array<{ execution_id: string; actor_id: string; state: string; requested_at: number; expires_at: number }>;
     const waiters = this.ctx.storage.sql.exec("SELECT execution_id,actor_id,state,requested_at,expires_at FROM compute_admissions WHERE tenant_id=? AND space_id=? AND project_id=? AND state='waiting' ORDER BY requested_at LIMIT 200",
       tenantId, spaceId, projectId).toArray() as Array<{ execution_id: string; actor_id: string; state: string; requested_at: number; expires_at: number }>;
+    const expired = this.ctx.storage.sql.exec("SELECT execution_id,actor_id,requested_at,expired_at AS expires_at FROM compute_admission_expirations WHERE tenant_id=? AND space_id=? AND project_id=? AND retain_until>? ORDER BY expired_at DESC LIMIT 100",
+      tenantId, spaceId, projectId, Date.now()).toArray() as Array<{ execution_id: string; actor_id: string; requested_at: number; expires_at: number }>;
     const positions = new Map(waiters.map((row, index) => [row.execution_id, index + 1]));
     return Response.json({ admissions: [...active, ...waiters].map(row => ({ execution_id: row.execution_id, actor_id: row.actor_id,
       status: row.state === "active" ? "capacity_reserved" : "waiting_for_capacity", requested_at: row.requested_at,
-      expires_at: row.expires_at, ...(positions.has(row.execution_id) ? { queue_position: positions.get(row.execution_id) } : {}) })) });
+      expires_at: row.expires_at, ...(positions.has(row.execution_id) ? { queue_position: positions.get(row.execution_id) } : {}) })),
+      expired: expired.map(row => ({ execution_id: row.execution_id, actor_id: row.actor_id, status: "admission_expired",
+        requested_at: row.requested_at, expired_at: row.expires_at })) });
+  }
+
+  private expireComputeAdmissions(now: number): void {
+    // A bounded status receipt lets an owner distinguish a timed-out waiter from a live one.
+    // It contains no invocation payload and never authorizes a retry or dispatch.
+    this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO compute_admission_expirations
+      (tenant_id,space_id,project_id,execution_id,actor_id,requested_at,expired_at,retain_until)
+      SELECT tenant_id,space_id,project_id,execution_id,actor_id,requested_at,?,? FROM compute_admissions
+      WHERE state='waiting' AND expires_at<=?`, now, now + 24 * 60 * 60 * 1000, now);
+    this.ctx.storage.sql.exec("DELETE FROM compute_admissions WHERE expires_at<=?", now);
+    this.ctx.storage.sql.exec("DELETE FROM compute_admission_expirations WHERE retain_until<=?", now);
+    // Bound retained receipts globally even during a burst of queue expiry.
+    this.ctx.storage.sql.exec(`DELETE FROM compute_admission_expirations WHERE rowid IN (
+      SELECT rowid FROM compute_admission_expirations ORDER BY expired_at DESC LIMIT -1 OFFSET 2000
+    )`);
   }
 
   private cancelComputeAdmission(tenantId: string, spaceId: string, projectId: string, executionId: string): Response {
@@ -815,7 +842,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     this.ctx.storage.sql.exec(`DELETE FROM locks WHERE expires_at <= ?`, Date.now());
     this.ctx.storage.sql.exec(`DELETE FROM appointment_slot_holds WHERE confirmed=0 AND expires_at <= ?`, Date.now());
     this.ctx.storage.sql.exec(`DELETE FROM node_leases WHERE expires_at <= ?`, Date.now());
-    this.ctx.storage.sql.exec("DELETE FROM compute_admissions WHERE expires_at<=?", Date.now());
+    this.expireComputeAdmissions(Date.now());
     this.promoteComputeAdmissions(Date.now());
     await this.scheduleNextAlarm();
   }

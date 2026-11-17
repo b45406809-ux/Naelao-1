@@ -1827,11 +1827,18 @@ export interface ProjectComputeAdmission {
   expires_at: number;
   queue_position?: number;
 }
+export interface ExpiredProjectComputeAdmission {
+  execution_id: string;
+  actor_id: string;
+  status: "admission_expired";
+  requested_at: number;
+  expired_at: number;
+}
 function projectComputeAdmissionsPath(spaceId: string, projectId: string) {
   return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/runtime/compute-admissions`;
 }
 export function listProjectComputeAdmissions(spaceId: string, projectId: string, session: SessionCredentials) {
-  return apiFetch<{ admissions: ProjectComputeAdmission[] }>(projectComputeAdmissionsPath(spaceId, projectId), { session, cache: "no-store" });
+  return apiFetch<{ admissions: ProjectComputeAdmission[]; expired: ExpiredProjectComputeAdmission[] }>(projectComputeAdmissionsPath(spaceId, projectId), { session, cache: "no-store" });
 }
 export function cancelProjectComputeAdmission(spaceId: string, projectId: string, executionId: string, session: SessionCredentials) {
   return apiFetch<{ cancelled: boolean; execution_id?: string; already_finished?: boolean }>(projectComputeAdmissionsPath(spaceId, projectId), {

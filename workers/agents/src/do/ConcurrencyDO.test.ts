@@ -463,6 +463,24 @@ describe("ConcurrencyDO slot admission bounds", () => {
     expect(await list.json()).toMatchObject({ admissions: [{ execution_id: "exec-active", status: "capacity_reserved" }] });
   });
 
+  it("retains an owner-scoped expiry receipt without turning it into a dispatch", async () => {
+    const storage = Object.assign(createDOStorage(), { getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} });
+    const secret = "compute-admission-expiry-secret";
+    const object = new ConcurrencyDO({ storage } as never, { PLATFORM_SECRET: secret });
+    const scope = { tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a" };
+    const send = async (path: string, body: Record<string, unknown>) => object.fetch(new Request(`http://do/compute-admission/${path}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+      body: JSON.stringify({ ...scope, ...body }),
+    }));
+    await send("request", { holder_id: "holder-active", actor_id: "owner-a", execution_id: "exec-active", global_limit: 1, tenant_limit: 1, ttl_ms: 60_000 });
+    await send("request", { holder_id: "holder-waiting", actor_id: "member-a", execution_id: "exec-waiting", global_limit: 1, tenant_limit: 1, ttl_ms: 60_000 });
+    storage.sql.exec("UPDATE compute_admissions SET expires_at=0 WHERE execution_id='exec-waiting'");
+    const list = await (await send("list", {})).json() as { admissions: unknown[]; expired: unknown[] };
+    expect(list.admissions).toHaveLength(1);
+    expect(list.expired).toMatchObject([{ execution_id: "exec-waiting", actor_id: "member-a", status: "admission_expired" }]);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM compute_admission_expirations").toArray()).toMatchObject([{ count: 1 }]);
+  });
+
   it("round-robins eligible tenants before serving another waiting Project", async () => {
     const storage = Object.assign(createDOStorage(), { getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} });
     const secret = "compute-admission-fairness-secret";

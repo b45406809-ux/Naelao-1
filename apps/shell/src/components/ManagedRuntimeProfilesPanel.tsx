@@ -28,6 +28,7 @@ import {
   type SidecarRuntimeExecutionProfile,
   type SidecarArtifactTransferReceipt,
   type ProjectComputeAdmission,
+  type ExpiredProjectComputeAdmission,
   type ProjectRuntimeBudgetReservation,
   type SessionCredentials,
   type WorkspaceRetentionPolicy,
@@ -72,6 +73,7 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
   const [branchDraft, setBranchDraft] = React.useState("");
   const [branchScope, setBranchScope] = React.useState("");
   const [computeAdmissions, setComputeAdmissions] = React.useState<ProjectComputeAdmission[]>([]);
+  const [expiredComputeAdmissions, setExpiredComputeAdmissions] = React.useState<ExpiredProjectComputeAdmission[]>([]);
   const [computeAdmissionsError, setComputeAdmissionsError] = React.useState("");
   const [runtimeBudgetReservations, setRuntimeBudgetReservations] = React.useState<ProjectRuntimeBudgetReservation[]>([]);
   const [runtimeBudgetError, setRuntimeBudgetError] = React.useState("");
@@ -222,6 +224,7 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     try {
       const current = await listProjectComputeAdmissions(spaceId, projectId, stableSession);
       setComputeAdmissions(current.admissions);
+      setExpiredComputeAdmissions(current.expired);
       setComputeAdmissionsError("");
     } catch (error) {
       setComputeAdmissionsError(error instanceof ApiError && error.status === 403
@@ -521,6 +524,14 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
               </div>
             ))}
           </div>}
+      {!computeAdmissionsError && expiredComputeAdmissions.length > 0 && <div className="settings-block" aria-label="Expired Project compute admissions">
+        {expiredComputeAdmissions.map(admission => <div className="settings-row" key={`expired:${admission.execution_id}`}>
+          <div>
+            <div className="settings-row-label">Admission expired</div>
+            <div className="settings-row-sub">Execution {admission.execution_id} · actor {admission.actor_id} · expired {new Date(admission.expired_at).toLocaleString()}</div>
+          </div>
+        </div>)}
+      </div>}
     </div>
     <div style={{ margin: "8px 0 18px" }}>
       <div className="section-label">Main runtime budget reservations</div>

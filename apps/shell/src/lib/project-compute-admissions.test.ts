@@ -7,13 +7,15 @@ it("uses authenticated no-store Project queue reads and sends cancellation by op
   const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => new Response(
     init?.method === "POST" ? JSON.stringify({ cancelled: true, execution_id: "exec-a" })
       : JSON.stringify({ admissions: [{ execution_id: "exec-a", actor_id: "owner-a", status: "waiting_for_capacity",
-        requested_at: 1, expires_at: 2, queue_position: 1 }] }),
+        requested_at: 1, expires_at: 2, queue_position: 1 }], expired: [{ execution_id: "exec-old", actor_id: "member-a",
+        status: "admission_expired", requested_at: 0, expired_at: 1 }] }),
     { status: 200, headers: { "content-type": "application/json" } },
   ));
   vi.stubGlobal("fetch", fetchMock);
   const session = { sessionToken: "product-session", endUserId: "owner-a" };
   await expect(listProjectComputeAdmissions("space/a", "project b", session)).resolves.toMatchObject({
     admissions: [{ execution_id: "exec-a", status: "waiting_for_capacity", queue_position: 1 }],
+    expired: [{ execution_id: "exec-old", status: "admission_expired" }],
   });
   expect(fetchMock).toHaveBeenLastCalledWith("http://localhost:8787/v1/spaces/space%2Fa/projects/project%20b/runtime/compute-admissions",
     expect.objectContaining({ cache: "no-store", headers: expect.any(Headers) }));
