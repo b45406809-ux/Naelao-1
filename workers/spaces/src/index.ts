@@ -2708,6 +2708,53 @@ app.put(`${spaceSharedProjectKnowledgePath}/:instanceId/knowledge-grants`, async
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
 });
 
+const projectComputeAdmissionsPath = "/spaces/:spaceId/projects/:projectId/runtime/compute-admissions";
+app.use(projectComputeAdmissionsPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(projectComputeAdmissionsPath, requireSpaceMembership({ GET: "admin", POST: "admin" }));
+app.get(projectComputeAdmissionsPath, async c => {
+  const { spaceId, projectId } = c.req.param(), identity = getCallerIdentity(c);
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  if (!identity.userId || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)) return c.json({ error_code: "project_id_invalid" }, 400);
+  const role = identity.role === "product_end_user"
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, owned.tenantId) : identity.role;
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  if (!c.env.AGENTS_WORKER) return c.json({ error_code: "compute_admission_unavailable" }, 503);
+  const access = await forwardToSpaceDO(await spaceDoStub(c.env, spaceId, owned.tenantId),
+    `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/runtime/compute-admissions", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": owned.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) },
+    body: JSON.stringify({ action: "list", spaceId, projectId }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+app.post(projectComputeAdmissionsPath, async c => {
+  const { spaceId, projectId } = c.req.param(), identity = getCallerIdentity(c);
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  if (!identity.userId || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)) return c.json({ error_code: "project_id_invalid" }, 400);
+  const role = identity.role === "product_end_user"
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, owned.tenantId) : identity.role;
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  let body: { execution_id?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_compute_admission_request" }, 400); }
+  if (typeof body.execution_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.execution_id))
+    return c.json({ error_code: "invalid_compute_admission_request" }, 400);
+  if (!c.env.AGENTS_WORKER) return c.json({ error_code: "compute_admission_unavailable" }, 503);
+  const access = await forwardToSpaceDO(await spaceDoStub(c.env, spaceId, owned.tenantId),
+    `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/runtime/compute-admissions", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": owned.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) },
+    body: JSON.stringify({ action: "cancel", spaceId, projectId, executionId: body.execution_id }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+
 const internalSpaceSharedProjectKnowledgePath = "/internal/spaces/:spaceId/projects/:projectId/space-shared-channel-knowledge/:instanceId";
 app.use(internalSpaceSharedProjectKnowledgePath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.get(internalSpaceSharedProjectKnowledgePath, async c => {

@@ -43,7 +43,7 @@ interface SavedSnapshot {
   createdAt: number;
   expiresAt?: number;
 }
-interface Capacity { holder: string; tenant: string; expiresAt: number; executionId?: string; fencingToken?: number }
+interface Capacity { holder: string; tenant: string; spaceId: string; projectId: string; actorId: string; expiresAt: number; executionId?: string; fencingToken?: number }
 interface PendingSnapshotRetention { snapshot: SavedSnapshot; record: RuntimeSnapshotRetentionRecord }
 const SNAPSHOT_RECOVERY_TTL_MS = 29 * 24 * 60 * 60 * 1000;
 const PRIVATE_STATE_HARNESS_PORT = 8080;
@@ -314,11 +314,13 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     const response = await stub.fetch(new Request("http://concurrency/compute-admission/" + action, { method: "POST", headers: {
       "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, capacity.tenant),
     }, body: JSON.stringify({ tenant_id: capacity.tenant, holder_id: capacity.holder,
-      ...(action === "request" ? { global_limit: globalLimit, tenant_limit: tenantLimit, ttl_ms: Math.max(1000, capacity.expiresAt - Date.now()) } : {}),
+      ...(action === "request" ? { global_limit: globalLimit, tenant_limit: tenantLimit, ttl_ms: Math.max(1000, capacity.expiresAt - Date.now()),
+        space_id: capacity.spaceId, project_id: capacity.projectId, actor_id: capacity.actorId, execution_id: capacity.executionId } : {}),
       ...(action === "release" && capacity.fencingToken ? { fencing_token: capacity.fencingToken } : {}) }), signal: AbortSignal.timeout(5000) }));
     if (!response.ok) throw new Error("container_capacity_service_unavailable");
     const body = await readBoundedResponseJson<{ status?: string; fencing_token?: number; released?: boolean; cancelled?: boolean; active?: boolean }>(response, 8192);
     if (action === "request") {
+      if (body.status === "cancelled") throw new Error("container_execution_cancelled_by_owner");
       if (body.status !== "admitted" || !Number.isSafeInteger(body.fencing_token)) throw new Error("container_concurrency_limit");
       return body.fencing_token;
     }
@@ -330,13 +332,19 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("container_global_limit_invalid");
     const previous = await this.ctx.storage.get<Capacity>("dynamic_capacity");
     if (previous && previous.holder !== holder) await this.releaseCapacity();
-    const capacity = { holder, tenant: scope.tenantId, expiresAt: expiresAt + 60000, executionId: scope.executionId };
+    const capacity = { holder, tenant: scope.tenantId, spaceId: scope.spaceId, projectId: scope.projectId ?? "",
+      actorId: scope.actorId, expiresAt: expiresAt + 60000, executionId: scope.executionId };
     // Persist intent first: a lost acquire response is reclaimed by cleanup or the lease TTL.
     await this.ctx.storage.put("dynamic_capacity", capacity);
     try {
       const fencingToken = await this.capacityRequest("request", capacity, limit, dynamicPlanLimits(this.selected?.tier ?? "free").concurrency);
       await this.ctx.storage.put("dynamic_capacity", { ...capacity, fencingToken });
-    } catch (error) { await this.releaseCapacity().catch(() => undefined); throw error; }
+    } catch (error) {
+      if (error instanceof Error && error.message === "container_execution_cancelled_by_owner")
+        await this.ctx.storage.delete("dynamic_capacity");
+      else await this.releaseCapacity().catch(() => undefined);
+      throw error;
+    }
   }
 
   protected override async releaseCapacity(): Promise<void> {

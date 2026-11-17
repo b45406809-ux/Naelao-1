@@ -597,6 +597,25 @@ const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 app.get("/health", c => c.json({ status: "ok", service: "agents", env: c.env.ENVIRONMENT }));
+app.post("/internal/runtime/compute-admissions", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "forbidden" }, 403);
+  let body: { action?: unknown; spaceId?: unknown; projectId?: unknown; executionId?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_compute_admission_request" }, 400); }
+  if ((body.action !== "list" && body.action !== "cancel") || typeof body.spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.spaceId)
+    || typeof body.projectId !== "string" || body.projectId !== "" && !/^[A-Za-z0-9._:-]{1,160}$/.test(body.projectId)
+    || body.action === "cancel" && (typeof body.executionId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.executionId)))
+    return c.json({ error_code: "invalid_compute_admission_request" }, 400);
+  if (!c.env.CONCURRENCY_DO) return c.json({ error_code: "compute_admission_unavailable" }, 503);
+  const stub = c.env.CONCURRENCY_DO.get(c.env.CONCURRENCY_DO.idFromName("dynamic-container-capacity"));
+  const action = body.action === "list" ? "list" : "cancel-execution";
+  const response = await stub.fetch(new Request("http://concurrency/compute-admission/" + action, { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ tenant_id: tenantId, space_id: body.spaceId, project_id: body.projectId, ...(body.executionId ? { execution_id: body.executionId } : {}) }) }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
 app.post("/internal/workspaces/live-capability/search-and-verify", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);

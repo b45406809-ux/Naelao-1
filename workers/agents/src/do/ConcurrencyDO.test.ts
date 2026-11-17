@@ -421,7 +421,9 @@ describe("ConcurrencyDO slot admission bounds", () => {
     const secret = "compute-admission-test-secret";
     const object = new ConcurrencyDO({ storage } as never, { PLATFORM_SECRET: secret });
     const send = async (action: "request" | "release", tenant: string, holder: string, token?: number) => {
-      const body = { tenant_id: tenant, holder_id: holder, ...(action === "request" ? { global_limit: 2, tenant_limit: 1, ttl_ms: 60_000 } : { fencing_token: token }) };
+      const body = { tenant_id: tenant, holder_id: holder, space_id: tenant + "-space", project_id: "project-a",
+        actor_id: "owner-" + tenant, execution_id: "exec-" + holder,
+        ...(action === "request" ? { global_limit: 2, tenant_limit: 1, ttl_ms: 60_000 } : { fencing_token: token }) };
       return object.fetch(new Request("http://do/compute-admission/" + action, { method: "POST",
         headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(secret, tenant) },
         body: JSON.stringify(body) }));
@@ -439,6 +441,26 @@ describe("ConcurrencyDO slot admission bounds", () => {
     expect(promoted.status).toBe("admitted");
     expect(promoted.fencing_token).toBeGreaterThan(first.fencing_token);
     expect(await (await send("release", "tenant-b", "b1", otherTenant.fencing_token)).json()).toMatchObject({ released: true });
+  });
+
+  it("keeps owner-cancelled execution IDs from re-entering admission on retry", async () => {
+    const storage = Object.assign(createDOStorage(), { getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} });
+    const secret = "compute-admission-cancel-secret";
+    const object = new ConcurrencyDO({ storage } as never, { PLATFORM_SECRET: secret });
+    const scope = { tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a" };
+    const send = async (path: string, body: Record<string, unknown>) => object.fetch(new Request("http://do/compute-admission/" + path, {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+      body: JSON.stringify({ ...scope, ...body }),
+    }));
+    const active = await send("request", { holder_id: "holder-active", actor_id: "owner-a", execution_id: "exec-active", global_limit: 1, tenant_limit: 1, ttl_ms: 60_000 });
+    expect((await active.json()).status).toBe("admitted");
+    const waiting = await send("request", { holder_id: "holder-waiting", actor_id: "member-a", execution_id: "exec-waiting", global_limit: 1, tenant_limit: 1, ttl_ms: 60_000 });
+    expect((await waiting.json()).status).toBe("waiting");
+    expect(await (await send("cancel-execution", { execution_id: "exec-waiting" })).json()).toMatchObject({ cancelled: true });
+    const retry = await send("request", { holder_id: "holder-waiting", actor_id: "member-a", execution_id: "exec-waiting", global_limit: 1, tenant_limit: 1, ttl_ms: 60_000 });
+    expect(await retry.json()).toMatchObject({ status: "cancelled" });
+    const list = await send("list", {});
+    expect(await list.json()).toMatchObject({ admissions: [{ execution_id: "exec-active", status: "capacity_reserved" }] });
   });
 
   it("caps caller supplied slot capacity and cannot turn a malformed request into unlimited admission", async () => {

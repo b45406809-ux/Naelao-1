@@ -1819,6 +1819,25 @@ export interface ModalSandboxOperationStatus {
   createdAt: string;
   updatedAt: string;
 }
+export interface ProjectComputeAdmission {
+  execution_id: string;
+  actor_id: string;
+  status: "waiting_for_capacity" | "capacity_reserved";
+  requested_at: number;
+  expires_at: number;
+  queue_position?: number;
+}
+function projectComputeAdmissionsPath(spaceId: string, projectId: string) {
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/runtime/compute-admissions`;
+}
+export function listProjectComputeAdmissions(spaceId: string, projectId: string, session: SessionCredentials) {
+  return apiFetch<{ admissions: ProjectComputeAdmission[] }>(projectComputeAdmissionsPath(spaceId, projectId), { session, cache: "no-store" });
+}
+export function cancelProjectComputeAdmission(spaceId: string, projectId: string, executionId: string, session: SessionCredentials) {
+  return apiFetch<{ cancelled: boolean; execution_id?: string; already_finished?: boolean }>(projectComputeAdmissionsPath(spaceId, projectId), {
+    method: "POST", session, cache: "no-store", body: JSON.stringify({ execution_id: executionId }),
+  });
+}
 export function getModalSandboxOperationStatus(spaceId: string, projectId: string, session: SessionCredentials) {
   return apiFetch<{ operations: ModalSandboxOperationStatus[]; source: "saved_operation_journal"; providerContacted: false }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/modal-operations`, { session, cache: "no-store" });

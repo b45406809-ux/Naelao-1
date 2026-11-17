@@ -18,12 +18,15 @@ import {
   saveProjectMainRuntimeProfile,
   saveWorkspaceRetentionPolicy,
   saveSidecarRuntimeExecutionProfile,
+  listProjectComputeAdmissions,
+  cancelProjectComputeAdmission,
   type ManagedRuntimeProfile,
   type ModalSandboxOperationStatus,
   type ProjectMainRuntimeProfile,
   type ProjectMainPrivateState,
   type SidecarRuntimeExecutionProfile,
   type SidecarArtifactTransferReceipt,
+  type ProjectComputeAdmission,
   type SessionCredentials,
   type WorkspaceRetentionPolicy,
 } from "@/lib/api";
@@ -66,6 +69,8 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
   const [retentionError, setRetentionError] = React.useState("");
   const [branchDraft, setBranchDraft] = React.useState("");
   const [branchScope, setBranchScope] = React.useState("");
+  const [computeAdmissions, setComputeAdmissions] = React.useState<ProjectComputeAdmission[]>([]);
+  const [computeAdmissionsError, setComputeAdmissionsError] = React.useState("");
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
@@ -75,6 +80,8 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     setMainProfileError("");
     setModalOperations(null);
     setModalOperationsError("");
+    setComputeAdmissions([]);
+    setComputeAdmissionsError("");
     setPrivateState(null);
     setPrivateStateDraft("");
     setPrivateStateError("");
@@ -85,7 +92,7 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     setRetentionReasonDraft("");
     setRetentionError("");
     try {
-      const [inventory, savedMainProfile, savedRetentionPolicy, savedPrivateState, savedModalOperations] = await Promise.all([
+      const [inventory, savedMainProfile, savedRetentionPolicy, savedPrivateState, savedModalOperations, savedComputeAdmissions] = await Promise.all([
         listContainerInstallations(spaceId, stableSession, projectId),
         getProjectMainRuntimeProfile(spaceId, projectId, stableSession).catch((failure) => {
           setMainProfileError(failure instanceof Error ? failure.message : "Main computer profile unavailable");
@@ -105,6 +112,12 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
             : "Saved Modal operation history is unavailable.");
           return null;
         }),
+        listProjectComputeAdmissions(spaceId, projectId, stableSession).catch((failure) => {
+          setComputeAdmissionsError(failure instanceof ApiError && failure.status === 403
+            ? "Compute admission status is available to Space owners and administrators."
+            : "Compute admission status is unavailable.");
+          return null;
+        }),
       ]);
       const { installations } = inventory;
       if (savedMainProfile) {
@@ -120,6 +133,10 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
       if (savedModalOperations) {
         setModalOperations(savedModalOperations.operations);
         setModalOperationsError("");
+      }
+      if (savedComputeAdmissions) {
+        setComputeAdmissions(savedComputeAdmissions.admissions);
+        setComputeAdmissionsError("");
       }
       if (savedRetentionPolicy) {
         setRetentionPolicy(savedRetentionPolicy);
@@ -170,6 +187,33 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
       await refresh();
     } catch (error) { setNotice(error instanceof Error ? error.message : "Runtime reset failed"); }
     finally { setBusy(null); }
+  }
+
+  async function cancelComputeAdmission(admission: ProjectComputeAdmission) {
+    if (busy || admission.status !== "waiting_for_capacity"
+      || !window.confirm("Cancel this waiting execution? Its guest command has not started.")) return;
+    setBusy(`compute-admission:${admission.execution_id}`);
+    setNotice("");
+    try {
+      await cancelProjectComputeAdmission(spaceId, projectId, admission.execution_id, stableSession);
+      setNotice("Waiting execution cancelled.");
+      await refresh();
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not cancel waiting execution"); }
+    finally { setBusy(null); }
+  }
+
+  async function reloadComputeAdmissions() {
+    if (busy) return;
+    setBusy("compute-admissions-refresh");
+    try {
+      const current = await listProjectComputeAdmissions(spaceId, projectId, stableSession);
+      setComputeAdmissions(current.admissions);
+      setComputeAdmissionsError("");
+    } catch (error) {
+      setComputeAdmissionsError(error instanceof ApiError && error.status === 403
+        ? "Compute admission status is available to Space owners and administrators."
+        : "Compute admission status is unavailable.");
+    } finally { setBusy(null); }
   }
 
   async function saveMainProfile() {
@@ -423,6 +467,36 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     </label>
     <button type="button" className="btn btn-ghost btn-sm" style={{ margin: "0 0 10px 8px" }} disabled={busy !== null || loading}
       onClick={() => setBranchScope(branchDraft.trim())}>Load branch status</button>
+    <div style={{ margin: "8px 0 18px" }}>
+      <div className="section-label">Project compute admissions</div>
+      <button type="button" className="btn btn-ghost btn-sm" style={{ marginBottom: 8 }} disabled={busy !== null || loading}
+        onClick={() => void reloadComputeAdmissions()}>
+        {busy === "compute-admissions-refresh" ? "Refreshing…" : "Refresh queue"}
+      </button>
+      <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 8px" }}>
+        Waiting entries contain no command text. A capacity reservation means a slot was assigned; it does not verify provider health or execution completion.
+      </p>
+      {computeAdmissionsError ? <p role="status" style={{ color: "var(--text3)", fontSize: 13 }}>{computeAdmissionsError}</p>
+        : computeAdmissions.length === 0 ? <p style={{ color: "var(--text3)", fontSize: 13 }}>No current Project compute admissions.</p>
+          : <div className="settings-block" aria-label="Project compute admissions">
+            {computeAdmissions.map(admission => (
+              <div className="settings-row" key={admission.execution_id}>
+                <div>
+                  <div className="settings-row-label">{admission.status === "waiting_for_capacity" ? "Waiting for capacity" : "Capacity reserved"}</div>
+                  <div className="settings-row-sub">
+                    Execution {admission.execution_id} · actor {admission.actor_id}
+                    {admission.queue_position !== undefined ? ` · Project queue position ${admission.queue_position}` : ""}
+                    · requested {new Date(admission.requested_at).toLocaleString()}
+                  </div>
+                </div>
+                {admission.status === "waiting_for_capacity" && <button type="button" className="btn btn-secondary btn-sm"
+                  disabled={busy !== null} onClick={() => void cancelComputeAdmission(admission)}>
+                  {busy === `compute-admission:${admission.execution_id}` ? "Cancelling…" : "Cancel"}
+                </button>}
+              </div>
+            ))}
+          </div>}
+    </div>
     {loading ? <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading runtime state…</p>
       : loadError ? <p style={{ color: "var(--text3)", fontSize: 13 }}>Runtime inventory is unavailable. Check the deployed container configuration.</p>
       : rows.length === 0 ? <p style={{ color: "var(--text3)", fontSize: 13 }}>No active project containers are installed.</p>

@@ -66,11 +66,20 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS compute_admissions (
       holder_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('waiting','active')),
       global_limit INTEGER NOT NULL, tenant_limit INTEGER NOT NULL, requested_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL, fencing_token INTEGER NOT NULL DEFAULT 0
+      expires_at INTEGER NOT NULL, fencing_token INTEGER NOT NULL DEFAULT 0,
+      space_id TEXT NOT NULL DEFAULT '', project_id TEXT NOT NULL DEFAULT '', actor_id TEXT NOT NULL DEFAULT '', execution_id TEXT NOT NULL DEFAULT ''
     )`);
+    for (const column of [
+      "space_id TEXT NOT NULL DEFAULT ''", "project_id TEXT NOT NULL DEFAULT ''",
+      "actor_id TEXT NOT NULL DEFAULT ''", "execution_id TEXT NOT NULL DEFAULT ''",
+    ]) try { this.ctx.storage.sql.exec(`ALTER TABLE compute_admissions ADD COLUMN ${column}`); } catch { /* already present */ }
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_compute_admissions_state ON compute_admissions(state,requested_at)`);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS compute_admission_fence (id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL)`);
     this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO compute_admission_fence(id,value) VALUES(1,0)`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS compute_admission_cancellations (
+      tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL, execution_id TEXT NOT NULL,
+      expires_at INTEGER NOT NULL, PRIMARY KEY(tenant_id,space_id,project_id,execution_id)
+    )`);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS locks (
       key TEXT PRIMARY KEY, holder_id TEXT NOT NULL, acquired_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
     )`);
@@ -116,7 +125,8 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       if (request.method === "POST" && url.pathname === "/release") {
         return this.handleRelease(request);
       }
-      if (request.method === "POST" && ["/compute-admission/request", "/compute-admission/release", "/compute-admission/cancel"].includes(url.pathname))
+      if (request.method === "POST" && ["/compute-admission/request", "/compute-admission/release", "/compute-admission/cancel",
+        "/compute-admission/list", "/compute-admission/cancel-execution"].includes(url.pathname))
         return this.computeAdmission(request, url.pathname.split("/").at(-1)!);
       if (request.method === "GET" && url.pathname === "/status") {
         const key = url.searchParams.get("key") ?? "";
@@ -639,22 +649,39 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   /** Atomic global and tenant capacity admission. The queue stores no request payload or secret. */
   private async computeAdmission(request: Request, action: string): Promise<Response> {
     const body = await request.json().catch(() => undefined) as { tenant_id?: unknown; holder_id?: unknown; global_limit?: unknown;
-      tenant_limit?: unknown; ttl_ms?: unknown; fencing_token?: unknown } | undefined;
+      tenant_limit?: unknown; ttl_ms?: unknown; fencing_token?: unknown; space_id?: unknown; project_id?: unknown; actor_id?: unknown;
+      execution_id?: unknown } | undefined;
     if (!body || typeof body.tenant_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.tenant_id)
-      || typeof body.holder_id !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(body.holder_id)
+      || ["request", "release", "cancel"].includes(action) && (typeof body.holder_id !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(body.holder_id))
+      || ["request", "list", "cancel-execution"].includes(action) && (typeof body.space_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.space_id)
+        || typeof body.project_id !== "string" || body.project_id !== "" && !/^[A-Za-z0-9._:-]{1,160}$/.test(body.project_id))
+      || action === "request" && (typeof body.actor_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.actor_id)
+        || typeof body.execution_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.execution_id))
+      || action === "cancel-execution" && (typeof body.execution_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.execution_id))
       || action === "request" && (![body.global_limit, body.tenant_limit, body.ttl_ms].every(Number.isSafeInteger)
         || Number(body.global_limit) < 1 || Number(body.global_limit) > 100 || Number(body.tenant_limit) < 1 || Number(body.tenant_limit) > 100
         || Number(body.ttl_ms) < 1_000 || Number(body.ttl_ms) > 10 * 60_000)
       || action === "release" && (!Number.isSafeInteger(body.fencing_token) || Number(body.fencing_token) < 1))
       return Response.json({ error_code: "bad_request" }, { status: 400 });
-    const tenantId = body.tenant_id as string, holderId = body.holder_id as string;
+    const tenantId = body.tenant_id as string, holderId = typeof body.holder_id === "string" ? body.holder_id : "";
     if (!this.env.PLATFORM_SECRET || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const now = Date.now();
     this.ctx.storage.sql.exec("DELETE FROM compute_admissions WHERE expires_at<=?", now);
-    const existing = this.ctx.storage.sql.exec("SELECT tenant_id,state,fencing_token FROM compute_admissions WHERE holder_id=?", holderId)
-      .toArray()[0] as { tenant_id: string; state: string; fencing_token: number } | undefined;
+    this.ctx.storage.sql.exec("DELETE FROM compute_admission_cancellations WHERE expires_at<=?", now);
+    if (action === "list") return this.listComputeAdmissions(tenantId, String(body.space_id), String(body.project_id));
+    if (action === "cancel-execution") return this.cancelComputeAdmission(tenantId, String(body.space_id), String(body.project_id), String(body.execution_id));
+    if (action === "request") {
+      const cancelled = this.ctx.storage.sql.exec("SELECT 1 FROM compute_admission_cancellations WHERE tenant_id=? AND space_id=? AND project_id=? AND execution_id=? AND expires_at>?",
+        tenantId, String(body.space_id), String(body.project_id), String(body.execution_id), now).toArray().length > 0;
+      if (cancelled) return Response.json({ status: "cancelled" });
+    }
+    const existing = this.ctx.storage.sql.exec("SELECT tenant_id,state,fencing_token,space_id,project_id,actor_id,execution_id FROM compute_admissions WHERE holder_id=?", holderId)
+      .toArray()[0] as { tenant_id: string; state: string; fencing_token: number; space_id: string; project_id: string; actor_id: string; execution_id: string } | undefined;
     if (existing && existing.tenant_id !== tenantId) return Response.json({ error_code: "admission_scope_conflict" }, { status: 409 });
+    if (existing && action === "request" && (existing.space_id !== body.space_id || existing.project_id !== body.project_id
+      || existing.actor_id !== body.actor_id || existing.execution_id !== body.execution_id))
+      return Response.json({ error_code: "admission_scope_conflict" }, { status: 409 });
     if (action === "cancel") {
       if (existing?.state === "active") return Response.json({ cancelled: false, active: true }, { status: 409 });
       const removed = this.ctx.storage.sql.exec("DELETE FROM compute_admissions WHERE holder_id=? AND tenant_id=? AND state='waiting'",
@@ -673,8 +700,11 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       this.ctx.storage.sql.exec("UPDATE compute_admissions SET global_limit=MIN(global_limit,?),tenant_limit=MIN(tenant_limit,?),expires_at=? WHERE holder_id=? AND tenant_id=?",
         globalLimit, tenantLimit, now + Number(body.ttl_ms), holderId, tenantId);
     } else if (!existing) {
-      this.ctx.storage.sql.exec("INSERT INTO compute_admissions(holder_id,tenant_id,state,global_limit,tenant_limit,requested_at,expires_at,fencing_token) VALUES(?,?,'waiting',?,?,?,?,0)",
-        holderId, tenantId, globalLimit, tenantLimit, now, now + Number(body.ttl_ms));
+      const globalWaiting = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM compute_admissions WHERE state='waiting'").toArray()[0] as { count: number };
+      const tenantWaiting = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM compute_admissions WHERE state='waiting' AND tenant_id=?", tenantId).toArray()[0] as { count: number };
+      if (globalWaiting.count >= 1000 || tenantWaiting.count >= 200) return Response.json({ status: "full", retry_after_ms: 5_000 });
+      this.ctx.storage.sql.exec("INSERT INTO compute_admissions(holder_id,tenant_id,state,global_limit,tenant_limit,requested_at,expires_at,fencing_token,space_id,project_id,actor_id,execution_id) VALUES(?,?,'waiting',?,?,?,?,0,?,?,?,?)",
+        holderId, tenantId, globalLimit, tenantLimit, now, now + Number(body.ttl_ms), body.space_id, body.project_id, body.actor_id, body.execution_id);
     } else {
       this.ctx.storage.sql.exec("UPDATE compute_admissions SET global_limit=MIN(global_limit,?),tenant_limit=MIN(tenant_limit,?),expires_at=? WHERE holder_id=? AND tenant_id=? AND state='waiting'",
         globalLimit, tenantLimit, now + Number(body.ttl_ms), holderId, tenantId);
@@ -686,6 +716,31 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     const waiters = this.ctx.storage.sql.exec("SELECT holder_id FROM compute_admissions WHERE state='waiting' ORDER BY requested_at,holder_id")
       .toArray() as Array<{ holder_id: string }>;
     return Response.json({ status: "waiting", position: waiters.findIndex(row => row.holder_id === holderId) + 1 });
+  }
+
+  private listComputeAdmissions(tenantId: string, spaceId: string, projectId: string): Response {
+    const active = this.ctx.storage.sql.exec("SELECT execution_id,actor_id,state,requested_at,expires_at FROM compute_admissions WHERE tenant_id=? AND space_id=? AND project_id=? AND state='active' ORDER BY requested_at DESC LIMIT 100",
+      tenantId, spaceId, projectId).toArray() as Array<{ execution_id: string; actor_id: string; state: string; requested_at: number; expires_at: number }>;
+    const waiters = this.ctx.storage.sql.exec("SELECT execution_id,actor_id,state,requested_at,expires_at FROM compute_admissions WHERE tenant_id=? AND space_id=? AND project_id=? AND state='waiting' ORDER BY requested_at LIMIT 200",
+      tenantId, spaceId, projectId).toArray() as Array<{ execution_id: string; actor_id: string; state: string; requested_at: number; expires_at: number }>;
+    const positions = new Map(waiters.map((row, index) => [row.execution_id, index + 1]));
+    return Response.json({ admissions: [...active, ...waiters].map(row => ({ execution_id: row.execution_id, actor_id: row.actor_id,
+      status: row.state === "active" ? "capacity_reserved" : "waiting_for_capacity", requested_at: row.requested_at,
+      expires_at: row.expires_at, ...(positions.has(row.execution_id) ? { queue_position: positions.get(row.execution_id) } : {}) })) });
+  }
+
+  private cancelComputeAdmission(tenantId: string, spaceId: string, projectId: string, executionId: string): Response {
+    const row = this.ctx.storage.sql.exec("SELECT holder_id,state FROM compute_admissions WHERE tenant_id=? AND space_id=? AND project_id=? AND execution_id=?",
+      tenantId, spaceId, projectId, executionId).toArray()[0] as { holder_id: string; state: string } | undefined;
+    if (!row) return Response.json({ cancelled: false, already_finished: true });
+    if (row.state !== "waiting") return Response.json({ error_code: "admission_already_dispatched" }, { status: 409 });
+    this.ctx.storage.sql.exec("DELETE FROM compute_admissions WHERE holder_id=? AND tenant_id=? AND space_id=? AND project_id=? AND state='waiting'",
+      row.holder_id, tenantId, spaceId, projectId);
+    this.ctx.storage.sql.exec(`INSERT INTO compute_admission_cancellations(tenant_id,space_id,project_id,execution_id,expires_at)
+      VALUES(?,?,?,?,?) ON CONFLICT(tenant_id,space_id,project_id,execution_id) DO UPDATE SET expires_at=excluded.expires_at`,
+      tenantId, spaceId, projectId, executionId, Date.now() + 24 * 60 * 60 * 1000);
+    this.promoteComputeAdmissions(Date.now());
+    return Response.json({ cancelled: true, execution_id: executionId });
   }
 
   /** Oldest eligible tenant is promoted first; a full tenant does not head-of-line block others. */
