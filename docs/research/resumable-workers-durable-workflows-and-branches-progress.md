@@ -57,6 +57,23 @@ The new plan extends, and does not replace, PW01–PW06. Current code/ledger evi
 
 No rollout, deployment, provider call or migration occurred for this plan. These are mostly ordinary code and runtime-contract gaps, not credential blockers. Distinguish logical branches, actual runtime isolation, durable checkpoint recovery and unsaved process memory. Never claim the latter is recovered.
 
+## Worker checkpoint receipt — 2026-11-17 (`856fb145` pushed)
+
+The worker list API now returns a timestamp when durable checkpoint JSON exists, without returning
+checkpoint payloads. The Shell worker panel shows that timestamp and explicitly says resume uses
+saved progress plus the currently authorized workspace; unsaved process memory is not restored.
+Agents focused delegation test **10/10**, Agents/Shell typechecks and `git diff --check` pass.
+This is a UI receipt and loss-boundary disclosure, not complete versioned checkpoint lineage,
+workspace-head verification, lost-state detection or recovery after real DO/runtime interruption.
+No deployment or runtime isolation acceptance. Code `856fb145` is pushed to
+`origin/Mcbt5s-Backup-2`; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: continue the independent scheduled direct-script budget gap (TBR11) by tracing
+the existing session-spend guard and exact direct-script dispatch boundary. Implement a durable,
+per-run reservation only if the same run can reliably settle/release it on completion, failure and
+unknown outcome; otherwise record the concrete missing boundary and move to another code gap.
+Continue the full mission after that checkpoint.
+
 The prior action to trace WorkflowRunDO checkpoint/recovery was completed in `1dd54057`/`fc3318bb`; delegated branch runtime separation is completed locally in `21de8512`, and exact Coordinator head binding is completed locally in `c17b6e01`. Continue from the top checkpoint: TBR05 invitation and identity boundaries, then remaining independent PW and cross-plan code gaps. Keep rollout disabled.
 ## Cross-plan update — 2026-11-17 (scheduled HITL resume authorization recovery; `688f69e4` pushed)
 

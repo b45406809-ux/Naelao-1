@@ -214,3 +214,20 @@ Exact next action: continue SC04's runtime budget-reservation review, then other
 The durable promotion algorithm uses a persisted hierarchical cursor and round-robins eligible tenants, then Spaces, Projects, and actors. Each partition is FIFO within its turn. Existing per-tenant and global caps remain the only configured concurrency limits; this change does not invent Space/Project/member quota values or priority weights. Agents ConcurrencyDO/DynamicSandbox/code-runner suites **65/65**, Agents typecheck and diff check pass. No live/deployed acceptance.
 
 Exact next action: trace SC04's existing runtime plan/Project budget holds into owner-visible reservation state and verify runtime admission and billing settlement use the same exact reservation identity. Document any absent configurable windows/policy as a product/configuration gap and proceed to independent plan requirements.
+
+## TBR11 scheduled direct-script budget reinspection — 2026-11-17
+
+Goal-based scheduled wakes already pass `max_run_credits` as a session ceiling and reload the
+current service identity, job revision, actions and budget before execution/resume. The legacy
+direct-script path creates its own scheduled heartbeat identity but does not pass the configured
+ceiling into `/triggers/fire`; the agent-side tally guard is therefore absent for that path. The
+existing session-spend tally is a read-then-check plus best-effort post-run increment, not an atomic
+reservation, so passing the ceiling alone would not create a hard run cap under concurrent calls.
+
+Code gap remains: add a durable idempotent reservation keyed by service run ID and atomically
+account for held credits, then replace the hold with measured actual usage (or safely release only
+when no billable action began) across direct-script outcomes. First inspect the direct trigger's
+actual result/billing receipt contract and unknown-outcome behavior. Do not call the existing tally
+a run-level reservation. No provider gate applies. Exact next action: trace `/triggers/fire` through
+all completion/error paths and determine whether there is an authoritative actual-credit receipt
+that can settle a reservation without double-counting existing session-spend increments.

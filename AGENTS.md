@@ -70,7 +70,21 @@ cursors and verified pricing remain unsupported contract gaps; K09 applicable si
 live acceptance remain open. Reconcile active callers before choosing the next K/EP/P/PW/S/U/TBR item.
 Keep rollout disabled, preserve the cache, and continue after checkpoints.
 
-## Current checkpoint — 2026-11-17 (session-budget status fail-closed; `3f7f6da4` pushed)
+## Current checkpoint — 2026-11-17 (worker checkpoint receipt; `856fb145` pushed)
+
+**Reminder to myself:** Never stop after a status update, implementation slice, test pass, checkpoint, commit, push or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
+
+Sub-agent list responses now include a persisted checkpoint timestamp without the checkpoint
+payload. The Shell states that resume uses saved progress/current authorized workspace and cannot
+restore unsaved process memory. Focused delegation tests **10/10**, Agents/Shell typechecks and
+`git diff --check` pass. Code `856fb145` is pushed; no real runtime interruption test or rollout.
+PW recovery remains partial. TBR07 comparison remains recorded below; SC03 disconnected dispatch
+remains disabled. Exact next task: trace `/triggers/fire` and direct scheduled-script completion,
+failure and uncertain-outcome billing receipts, then implement an idempotent run reservation only
+if it can be settled/released against authoritative actual usage without double-counting. Continue
+to independent active-plan gaps after that work. Keep rollouts disabled and preserve the cache.
+
+## Previous checkpoint — 2026-11-17 (session-budget status fail-closed; `3f7f6da4` pushed)
 
 **Reminder to myself:** Never stop after an implementation slice, test pass, checkpoint, commit or push. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap.
 

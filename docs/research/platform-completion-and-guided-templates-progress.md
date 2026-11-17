@@ -3078,6 +3078,16 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
 Keep rollout disabled. Do not deploy, create resources, purchase services, or claim deployed/live
 acceptance. Commit and push each coherent checkpoint to `origin/Mcbt5s-Backup-2` after fetching and
 safely integrating any remote advances.
+
+## Cross-plan checkpoint — 2026-11-17 (worker recovery disclosure; pushed `856fb145`)
+
+Sub-agent polling now includes a persisted checkpoint timestamp while keeping checkpoint payloads
+private. The owner-visible panel states the resume boundary: saved progress/current authorized
+workspace can be reused, but unsaved process memory is not restored. Focused delegation tests
+10/10 and Agents/Shell typechecks pass. This only improves the recovery receipt; full PW recovery,
+verified workspace revision, lost-state accounting and deployed interruption tests remain open.
+Exact next action: implement or concretely bound TBR11 scheduled direct-script run-budget
+reservation/settlement, then continue the next independent active-plan code gap.
 ## Cross-plan checkpoint — 2026-11-17 (K02 reviewed image OCR caller)
 
 Space and Project Knowledge forms now accept bounded PNG/JPEG files through the signed editable preview
