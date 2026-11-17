@@ -1,6 +1,6 @@
-## Cross-plan update — 2026-11-17 (Project Steward capability revocation fence; local pending)
+## Cross-plan update — 2026-11-17 (Project Steward capability revocation fence; `cc2ab164` pushed)
 
-The narrow Project Steward read service now verifies the exact active installation generation and host capability at the SpaceDO fact-read boundary; disabled/removed installs stay revoked and are not reactivated by the scheduler. Reports preserve service identity/generation. Tests **40/40**, affected typechecks and diff check pass. This does not alter AgentPhone/AgentPort provider claims or support. Exact next action: owner-granted scheduled-service scopes/budgets and downstream billing/effect receipts; continue S/U/P/PW/K/EP/AP independent work. No rollout/deployment/provider use.
+Code `cc2ab16402e87ddc7e4f0eceb8f3b0e3dd4f8168` is pushed and remote-verified. The narrow Project Steward read service now verifies the exact active installation generation and host capability at the SpaceDO fact-read boundary; disabled/removed installs stay revoked and are not reactivated by the scheduler. Reports preserve service identity/generation. Tests **40/40**, affected typechecks and diff check pass. This does not alter AgentPhone/AgentPort provider claims or support. Exact next action: owner-granted scheduled-service scopes/budgets and downstream billing/effect receipts; continue S/U/P/PW/K/EP/AP independent work. No rollout/deployment/provider use.
 
 ## Cross-plan update — 2026-11-17 (scheduled service identity session check; local pending)
 

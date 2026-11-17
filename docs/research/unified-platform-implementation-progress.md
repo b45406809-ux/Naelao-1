@@ -1,6 +1,6 @@
-## Latest cross-plan update — 2026-11-17 (Project Steward service grant is now revocable)
+## Latest cross-plan update — 2026-11-17 (Project Steward service grant is now revocable; `cc2ab164` pushed)
 
-The platform-managed Project Steward's summary scope is bound to an exact active install generation and read-summary capability, checked at the SpaceDO fact-read itself. Disable/removal prevents future reads and scheduler bootstrap no longer reactivates it; advisory reports record the identity. Tests **40/40**, Spaces/Agents typechecks and diff check pass. Remaining TBR11 is still code/policy: explicit owner opt-in, job-specific effect grants/budgets, channel/provider principal scopes, and in-flight cancellation. Exact next action: add durable owner-approved scheduled principal scope/budget enforcement, preserving denials where effect grants are unspecified.
+Code `cc2ab16402e87ddc7e4f0eceb8f3b0e3dd4f8168` is pushed and remote-verified. The platform-managed Project Steward's summary scope is bound to an exact active install generation and read-summary capability, checked at the SpaceDO fact-read itself. Disable/removal prevents future reads and scheduler bootstrap no longer reactivates it; advisory reports record the identity. Tests **40/40**, Spaces/Agents typechecks and diff check pass. Remaining TBR11 is still code/policy: explicit owner opt-in, job-specific effect grants/budgets, channel/provider principal scopes, and in-flight cancellation. Exact next action: add durable owner-approved scheduled principal scope/budget enforcement, preserving denials where effect grants are unspecified.
 
 ## Latest cross-plan update — 2026-11-17 (scheduled actor/session revision enforced; local pending)
 
