@@ -185,6 +185,14 @@ Exact next action: TBR06 grant lifecycle trace and smallest specified durable gr
 
 # Platform completion and guided templates progress
 
+## EP04 provenance/cost preview reconciliation — 2026-11-17
+
+The earlier action to trace verified release pins and unknown costs before confirmation was stale in part: `83d81107` already exposes signed resource declarations and the exact publisher-source payload fingerprint before install; `d7ae34f4` exposes server-validated manifest/host-artifact/publisher pins after staging; the update-review route validates the exact current installation generation/version/manifest and candidate signature/dependency/migration/authority deltas; and `d83bc20c`/`ff8a94c0` already provide owner recovery for a staged update after the in-memory review token is lost. These remain local owner/API paths, not deployed acceptance.
+
+This continuation closes two reachable preview omissions. Shell's manual package resource preview now labels provider cost and customer charge `unknown` before confirmation, because resource declarations carry limits/units but no approved price. The generated-workflow composer now shows the exact publisher signing-payload SHA-256, source-file count/UTF-8 bytes, and explicitly distinguishes those source pins from the host-built artifact digest assigned after server validation. It also labels runtime/provider/storage/customer cost as unknown; the offline mock is not a cost estimate and installation does not grant runtime operations. Local evidence: resource preview **5/5**, publisher provenance + resource preview **7/7**, Shell typecheck, `git diff --check`; local UI helper tests only. Code commits `5eb1ea1a` and `445e3635` await this ledger push.
+
+EP04 remains partial for unapproved byte/storage/provider rates and deployed/browser/security acceptance. Exact next action: continue the next uncoded requirement in the active platform plan, while returning to SC03's safe host-owned durable invocation contract; do not repeat the source/provenance or staged-update recovery audit unless new code changes that path. Keep rollouts disabled.
+
 ## Cross-plan code checkpoint — 2026-11-17 (EP04 Gadget/schema preview; `88f3c34d` pushed)
 
 Code `88f3c34deb8ea4cbc49681a65c7527bc18eaa19e` is remote-verified. The signed install preview now projects bundled and legacy Gadget scope, whether schema is declared, bounded migration version/description summaries, business-action IDs and workflow tool names. Raw SQL is not echoed, and these declarations are not grants. Focused Shell suites **13/13**, Shell typecheck and diff check pass; no browser/deployment/rollout.
