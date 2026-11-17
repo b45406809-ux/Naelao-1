@@ -36,15 +36,14 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (SC03 abandoned waiter cleanup; locally verified, push pending)
+## Latest cross-plan checkpoint — 2026-11-17 (SC03 abandoned waiter cleanup; pushed as `d99720f0`)
 
 The Tier-6 caller now cancels its exact persisted capacity waiter when six bounded same-invocation
 retries are exhausted, and its cancellation dispatch is idempotent across retry exhaustion, caller abort
 and deadline. The caller still checks live authority before every retry; ToolSandbox still performs
 current admission/Billing before paid work. Focused CodeRunner capacity tests **4/4**, Agents typecheck
 and diff check pass. This closes stale queue occupancy for abandoned live callers only; there is still
-no disconnected dispatcher or durable current-grant/Billing job authority. SC03 code checkpoint is
-verified locally and pending push. TBR07 authority comparison is already complete; do not repeat it.
+no disconnected dispatcher or durable current-grant/Billing job authority. SC03 code checkpoint is pushed as `d99720f0`. TBR07 authority comparison is already complete; do not repeat it.
 EP05 reviewed publication/UI code is pushed (`f80e1577`, docs `19ef37a5`) and public rollout is off.
 
 **Reminder to myself:** Keep implementing the full mission. Do not stop after a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops or a real blocker prevents all progress.
@@ -152,7 +151,7 @@ Pushed code `d1eb47f915a71fec72482fc0045e2c71c0e13b52` and lease checkpoint `b32
 
 `8dce285a7e3c50d70951fe602e9904d30be04da9` is pushed and remote-verified on `origin/Mcbt5s-Backup-2`; it adds fixed-label, privacy-safe metrics for owner-approved website preview failures, including first-time previews, and isolates Analytics failure from results. Focused Knowledge telemetry + website source ingestion suites pass **28/28**, Knowledge typecheck and `git diff --check` pass. No deployed/live telemetry acceptance; scheduled Knowledge crawl/refresh flags remain disabled. Also verified the stale PW06 cancellation pointer is already closed by pushed `79d671a329b056c3cd2e861aeabb3996e488de9d`; focused delegation suite **9/9**, Agents typecheck and diff hygiene pass. Preserve the pre-existing untracked `infra/scripts/__pycache__/`.
 
-## Latest cross-plan checkpoint — 2026-11-17 (SC03 expiry status; pending push)
+## Latest cross-plan checkpoint — 2026-11-17 (SC03 expiry status; pushed as `d99720f0`)
 
 The ConcurrencyDO capacity ledger retains content-free expired-waiter receipts for up to 24 hours, globally capped at 2,000. Owner Project queue status exposes these separately from active reservations and waiters; Shell labels expiry and provides no replay action. This does not dispatch or authorize expired work. The encrypted-store inspection found no reusable encrypted invocation artifact store or disconnected host dispatcher. Local checks: ConcurrencyDO **27/27**, Shell queue API **2/2**, Spaces route **4/4**, Agents/Shell typechecks, `git diff --check`; local fakes only. Exact next action after push: design SC03's host-owned job receipt and dispatch only if an exact current authority revision and current Billing reservation can be revalidated by a durable caller. Otherwise preserve fail-closed dispatch and move to the next independent S/U/P/PW/K/EP/AP/TBR gap. TBR07 comparison is already recorded and must not be repeated. Preserve `infra/scripts/__pycache__/`; keep rollout disabled.
 

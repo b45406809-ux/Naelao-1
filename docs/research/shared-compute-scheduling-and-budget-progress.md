@@ -1,6 +1,6 @@
 # Shared compute scheduling and budget progress
 
-## Resume pointer — 2026-11-17 (SC03 abandoned waiter cleanup; locally verified, push pending)
+## Resume pointer — 2026-11-17 (SC03 abandoned waiter cleanup; pushed as `d99720f0`)
 
 When a synchronous caller exhausts six bounded retries against the exact persisted `waiting_for_capacity`
 execution, CodeRunner now calls the signed `/cancel` route for that same scope/execution ID. The

@@ -1,4 +1,4 @@
-## Resume pointer — 2026-11-17 (SC03 abandoned waiter cleanup; locally verified, push pending)
+## Resume pointer — 2026-11-17 (SC03 abandoned waiter cleanup; pushed as `d99720f0`)
 
 After a Tier-6 live caller exhausts six bounded retries, it cancels its exact waiting execution instead
 of holding queue capacity until expiry. Cancellation is idempotent for retry exhaustion, abort and
