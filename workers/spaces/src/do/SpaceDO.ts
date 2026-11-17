@@ -17893,12 +17893,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const objectUsage = queryOne<{ object_count: number; bytes: number }>(this.ctx.storage.sql as never,
       `SELECT COUNT(*) AS object_count,COALESCE(SUM(size_bytes),0) AS bytes FROM extension_resource_objects
        WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`, tenantId, spaceId, projectId, instanceId);
+    const dependencyClosure = await this.extensionDependencyClosureSnapshotActive(tenantId, spaceId, target.manifest, "PROJECT_BOUND", projectId);
     return Response.json({ installation: { instance_id: target.row.instance_id, extension_id: target.row.extension_id,
       tenant_id: target.row.tenant_id, space_id: target.row.space_id, project_id: target.row.project_id, scope: target.row.scope,
       status: target.row.status, generation: target.row.generation, installed_by: target.row.installed_by,
       manifest_sha256: target.manifestSha256, release_version: target.row.release_version }, requirements,
       budget: this.getCurrentExtensionInstallationBudget(tenantId, spaceId, projectId, instanceId, target.row.generation),
       grants: this.listExtensionResourceGrantRows(instanceId), operation_usage,
+      dependency_inventory: { declared: target.manifest.dependencies ?? [], resolved: dependencyClosure.resolved,
+        active: dependencyClosure.resolved ? dependencyClosure.dependencies : [] },
       object_usage: { object_count: objectUsage?.object_count ?? 0, bytes: objectUsage?.bytes ?? 0 } },
     { headers: { "cache-control": "private, no-store" } });
   }

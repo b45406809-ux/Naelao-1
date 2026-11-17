@@ -137,6 +137,22 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
       </button>
     </div>
     <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
+      <strong>Signed package dependencies</strong>
+      <p style={{ margin: "4px 0 6px", color: "var(--text3)", fontSize: 10.5 }}>
+        These are extension package pins declared by this signed release. They do not list external provider services or imply additional access.
+      </p>
+      {usageError ? <div role="status" style={{ color: "var(--text3)" }}>Dependency status unavailable.</div>
+        : usage ? usage.dependency_inventory.resolved
+          ? usage.dependency_inventory.declared.length === 0 ? <div style={{ color: "var(--text3)" }}>No package dependencies declared.</div>
+            : <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text3)" }}>{usage.dependency_inventory.declared.map(dependency => {
+              const active = usage.dependency_inventory.active.some(item => item.extensionId === dependency.extensionId
+                && item.version === dependency.version && item.manifestSha256 === dependency.manifestSha256);
+              return <li key={`${dependency.extensionId}@${dependency.version}`}>{dependency.extensionId}@{dependency.version} · {active ? "active signed pin resolved" : "declared pin not resolved"}</li>;
+            })}</ul>
+          : <div role="status" style={{ color: "var(--warning, #8a5a00)" }}>One or more declared package dependencies do not resolve to the current active signed installations.</div>
+        : <div role="status" style={{ color: "var(--text3)" }}>Loading dependency status…</div>}
+    </div>
+    <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
       <strong>Recent host job receipts</strong>
       <p style={{ margin: "4px 0 6px", color: "var(--text3)", fontSize: 10.5 }}>Latest 50 operation leases and job receipts for this exact signed installation generation. Payloads and provider charges are not shown; payload bytes are recorded usage only, not a price. A released lease records access, not the operation's result.</p>
       {usageError && <div role="status" style={{ color: "var(--text3)" }}>Receipt activity unavailable.</div>}

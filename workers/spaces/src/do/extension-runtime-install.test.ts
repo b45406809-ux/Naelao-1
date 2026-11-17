@@ -116,7 +116,8 @@ describe("runtime extension installation", () => {
       requirements: expect.arrayContaining([expect.objectContaining({ requirement_id: "records", kind: "structured_data", requested_tables: ["records"] }),
         expect.objectContaining({ requirement_id: "attachments", kind: "objects", requested_tables: [] }),
         expect.objectContaining({ requirement_id: "background", kind: "jobs", requested_tables: [], requested_workflows: ["process_job"] })]),
-      budget: null, grants: [], object_usage: { object_count: 0, bytes: 0 }, operation_usage: [] });
+      budget: null, grants: [], object_usage: { object_count: 0, bytes: 0 }, operation_usage: [],
+      dependency_inventory: { declared: [], resolved: true, active: [] } });
     const setBudget = (expectedRevision: number, maxRunCredits = 25, monthlyCredits = 250) => space.fetch(new Request("http://space/extension-resource-budget", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
         actorId: "owner", expectedRevision, maxRunCredits, monthlyCredits }) }));

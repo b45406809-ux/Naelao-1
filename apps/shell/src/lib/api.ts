@@ -1955,6 +1955,8 @@ export interface ProjectExtensionResourceGrantSnapshot {
 }
 export interface ProjectExtensionResourceUsageSnapshot {
   installation_id: string; generation: number;
+  dependency_inventory: { declared: Array<{ extensionId: string; version: string; manifestSha256: string }>; resolved: boolean;
+    active: Array<{ extensionId: string; version: string; manifestSha256: string }> };
   operations: Array<{ lease_id: string; requirement_id: string; operation_id: string; table_name: string; grant_revision: number;
     status: string; created_at: string; updated_at: string }>;
   receipts: Array<{ job_id: string; requirement_id: string; status: string; dispatch_attempts: number; payload_bytes: number;
