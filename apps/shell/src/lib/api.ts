@@ -1952,11 +1952,19 @@ export interface ProjectExtensionResourceGrantSnapshot {
     approved_by: string; approved_at: string; updated_by: string; updated_at: string } | null;
   grants: ProjectExtensionResourceGrant[];
 }
+export interface ProjectExtensionResourceUsageSnapshot {
+  installation_id: string; generation: number;
+  receipts: Array<{ job_id: string; requirement_id: string; status: string; dispatch_attempts: number; payload_bytes: number;
+    deadline_at: number; created_at: number; updated_at: number; started_at: number | null; completed_at: number | null }>;
+}
 function projectExtensionResourceGrantsPath(spaceId: string, projectId: string, instanceId: string) {
   return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(instanceId)}/resource-grants`;
 }
 export function getProjectExtensionResourceGrants(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials) {
   return apiFetch<ProjectExtensionResourceGrantSnapshot>(projectExtensionResourceGrantsPath(spaceId, projectId, instanceId), { session, cache: "no-store" });
+}
+export function getProjectExtensionResourceUsage(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials) {
+  return apiFetch<ProjectExtensionResourceUsageSnapshot>(`${projectExtensionResourceGrantsPath(spaceId, projectId, instanceId)}/usage`, { session, cache: "no-store" });
 }
 export function approveProjectExtensionResourceGrant(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials,
   input: { requirement_id: string; expected_revision: number; operations: string[]; tables: string[] }) {

@@ -6164,6 +6164,46 @@ app.get(projectExtensionResourceGrantsPath, forwardProjectExtensionResourceGrant
 app.put(projectExtensionResourceGrantsPath, forwardProjectExtensionResourceGrants);
 app.delete(projectExtensionResourceGrantsPath, forwardProjectExtensionResourceGrants);
 
+const projectExtensionResourceUsagePath = `${projectExtensionResourceGrantsPath}/usage`;
+app.use(projectExtensionResourceUsagePath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.get(projectExtensionResourceUsagePath, async c => {
+  const identity = getCallerIdentity(c), { spaceId, projectId, instanceId } = c.req.param();
+  if (!identity.tenantId || !identity.userId || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
+    || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_resource_usage_scope_required" }, 400);
+  const denied = await requireProjectOwnerForExtensionDelegation(c, spaceId, projectId);
+  if (denied) return denied;
+
+  // Reuse the authoritative SpaceDO check so historical job rows are shown only for the exact
+  // currently trusted signed installation and generation. Never expose payloads or provider cost.
+  const grantResponse = await forwardProjectExtensionResourceGrants(c);
+  if (!grantResponse.ok) return grantResponse;
+  const snapshot = await grantResponse.clone().json().catch(() => null) as {
+    installation?: { instance_id?: string; extension_id?: string; tenant_id?: string; space_id?: string; project_id?: string;
+      generation?: number; manifest_sha256?: string };
+  } | null;
+  const install = snapshot?.installation;
+  if (!install || install.instance_id !== instanceId || install.tenant_id !== identity.tenantId || install.space_id !== spaceId
+    || install.project_id !== projectId || !install.extension_id || !Number.isSafeInteger(install.generation)
+    || typeof install.manifest_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(install.manifest_sha256))
+    return c.json({ error_code: "extension_resource_installation_untrusted" }, 404);
+  try {
+    const { results } = await c.env.PLATFORM_DB.prepare(`SELECT job_id,requirement_id,status,dispatch_attempts,payload_bytes,
+      deadline_at,created_at,updated_at,started_at,completed_at FROM extension_resource_jobs
+      WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND extension_id=?
+        AND manifest_sha256=? AND installation_generation=? ORDER BY created_at DESC,job_id DESC LIMIT 50`)
+      .bind(identity.tenantId, spaceId, projectId, instanceId, install.extension_id, install.manifest_sha256, install.generation)
+      .all<{ job_id: string; requirement_id: string; status: string; dispatch_attempts: number; payload_bytes: number;
+        deadline_at: number; created_at: number; updated_at: number; started_at: number | null; completed_at: number | null }>();
+    return c.json({ installation_id: instanceId, generation: install.generation, receipts: results.map(row => ({
+      job_id: row.job_id, requirement_id: row.requirement_id, status: row.status, dispatch_attempts: row.dispatch_attempts,
+      payload_bytes: row.payload_bytes, deadline_at: row.deadline_at, created_at: row.created_at, updated_at: row.updated_at,
+      started_at: row.started_at, completed_at: row.completed_at,
+    })) }, { headers: { "cache-control": "private, no-store" } });
+  } catch {
+    return c.json({ error_code: "extension_resource_usage_unavailable" }, 503);
+  }
+});
+
 const projectExtensionResourceBudgetPath = `${projectExtensionResourceGrantsPath}/budget`;
 app.use(projectExtensionResourceBudgetPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.put(projectExtensionResourceBudgetPath, async c => {

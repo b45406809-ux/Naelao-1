@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { approveProjectExtensionResourceGrant, getProjectExtensionResourceGrants, hasReviewableProjectExtensionResources, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget } from "./api";
+import { approveProjectExtensionResourceGrant, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, hasReviewableProjectExtensionResources, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget } from "./api";
 
 describe("Project extension resource grant caller", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -10,6 +10,17 @@ describe("Project extension resource grant caller", () => {
     expect(hasReviewableProjectExtensionResources([{ id: "files", kind: "objects", scope: "project", operations: [] }])).toBe(true);
     expect(hasReviewableProjectExtensionResources([])).toBe(false);
     expect(hasReviewableProjectExtensionResources(undefined)).toBe(false);
+  });
+
+  it("reads bounded job receipts through the authenticated exact-install usage route", async () => {
+    const fetch = vi.fn(async () => Response.json({ installation_id: "install:1", generation: 3, receipts: [] }));
+    vi.stubGlobal("fetch", fetch);
+    const result = await getProjectExtensionResourceUsage("space one", "project/1", "install:1", { sessionToken: "session-token", endUserId: "project-owner" });
+    expect(result).toMatchObject({ installation_id: "install:1", generation: 3, receipts: [] });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(new URL(url).pathname).toBe("/v1/spaces/space%20one/projects/project%2F1/extension-installations/install%3A1/resource-grants/usage");
+    expect(init.cache).toBe("no-store");
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer session-token");
   });
 
   it("reads, approves and revokes through the authenticated exact-install route", async () => {

@@ -8,8 +8,9 @@ const proposalPath = "/spaces/space-a/projects/project-a/extension-installations
 const resourceGrantPath = "/spaces/space-a/projects/project-a/extension-installations/instance-a/resource-grants";
 const resourceBudgetPath = `${resourceGrantPath}/budget`;
 
-function setup(options: { projectOwner?: string; readable?: boolean; publisherActive?: boolean; trusted?: boolean } = {}) {
+function setup(options: { projectOwner?: string; readable?: boolean; publisherActive?: boolean; trusted?: boolean; usageRows?: unknown[] } = {}) {
   const forwarded: Request[] = [];
+  const usageQueries: unknown[][] = [];
   const installation = {
     instance: { instance_id: "instance-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", scope: "PROJECT_BOUND", status: "active" },
     manifest: { id: "ext_project_voice", bundle: { id: "ext_project_voice", version: "1.0.0" }, settingsActivation: "owner_publish",
@@ -26,6 +27,8 @@ function setup(options: { projectOwner?: string; readable?: boolean; publisherAc
       if (url.pathname === "/projects/project-a/members") return Response.json({ data: options.projectOwner ? [{ user_id: options.projectOwner, role: "owner" }] : [] });
       if (url.pathname === "/projects/project-a/automation-access") return options.readable === false
         ? Response.json({ error_code: "forbidden" }, { status: 403 }) : Response.json({ project_id: "project-a", can_read: true });
+      if (url.pathname === "/extension-resource-grants") return Response.json({ installation: { instance_id: "instance-a", extension_id: "ext_project_voice",
+        tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", generation: 4, manifest_sha256: "a".repeat(64) }, requirements: [], grants: [] });
       if (url.pathname === "/workflow-installation") return options.trusted === false
         ? Response.json({ error_code: "not_found" }, { status: 404 }) : Response.json(installation);
       return Response.json({ forwarded: true, method: request.method, path: url.pathname });
@@ -33,10 +36,11 @@ function setup(options: { projectOwner?: string; readable?: boolean; publisherAc
   };
   const env = {
     PLATFORM_SECRET: secret,
-    PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => options.publisherActive === false ? null : { active: 1 } }) }) },
+    PLATFORM_DB: { prepare: (sql: string) => ({ bind: (...values: unknown[]) => ({ first: async () => options.publisherActive === false ? null : { active: 1 },
+      all: async () => { usageQueries.push(values); return { results: sql.includes("extension_resource_jobs") ? options.usageRows ?? [] : [] }; } }) }) },
     SPACE_DO: { idFromName: (name: string) => name, get: () => stub },
   } as never;
-  return { env, forwarded, stub };
+  return { env, forwarded, stub, usageQueries };
 }
 
 async function call(env: unknown, path: string, options: { method?: string; role?: string; userId?: string; agentId?: string; body?: unknown } = {}) {
@@ -119,6 +123,20 @@ describe("Project extension agent maintenance routes", () => {
     expect((await call(denied.env, resourceGrantPath, { userId: "editor-a", role: "editor", method: "PUT",
       body: { requirement_id: "records", expected_revision: 0, operations: ["get"], tables: ["records"] } })).status).toBe(403);
     expect(denied.forwarded.some(request => new URL(request.url).pathname === "/extension-resource-grants")).toBe(false);
+  });
+
+  it("lists only exact current-install job receipts to the Project owner", async () => {
+    const row = { job_id: "job-a", requirement_id: "queue", status: "succeeded", dispatch_attempts: 1, payload_bytes: 128,
+      deadline_at: 200, created_at: 100, updated_at: 150, started_at: 110, completed_at: 150 };
+    const owner = setup({ projectOwner: "project-owner", usageRows: [row] });
+    const response = await call(owner.env, `${resourceGrantPath}/usage`, { userId: "project-owner", role: "editor" });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ installation_id: "instance-a", generation: 4, receipts: [row] });
+    expect(owner.usageQueries[0]).toEqual(["tenant-a", "space-a", "project-a", "instance-a", "ext_project_voice", "a".repeat(64), 4]);
+
+    const denied = setup({ projectOwner: "different-owner", usageRows: [row] });
+    expect((await call(denied.env, `${resourceGrantPath}/usage`, { userId: "editor-a", role: "editor" })).status).toBe(403);
+    expect(denied.usageQueries).toHaveLength(0);
   });
 
   it("allows only the exact Project owner to set an installation resource budget", async () => {

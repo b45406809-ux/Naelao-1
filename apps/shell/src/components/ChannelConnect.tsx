@@ -19,8 +19,8 @@ import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { ExtensionAgentMaintenanceDelegation } from "@/components/ExtensionAgentMaintenanceDelegation";
 import { MicroAppStorageStatus, projectGadgetStorageApps } from "@/components/MicroAppStorageStatus";
-import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionProviderRevocationOutcome, ExtensionPublisherKey, ExtensionPublisherRevocationReceipt, ExtensionRelease, ProjectExtensionResourceGrantSnapshot, ProjectExtensionResourceRequirement, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
-import { hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionProviderRevocationOutcome, ExtensionPublisherKey, ExtensionPublisherRevocationReceipt, ExtensionRelease, ProjectExtensionResourceGrantSnapshot, ProjectExtensionResourceRequirement, ProjectExtensionResourceUsageSnapshot, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
+import { hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -29,6 +29,8 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
   spaceId: string; projectId: string; instanceId: string; requirements: ProjectExtensionResourceRequirement[]; session: SessionCredentials;
 }) {
   const [snapshot, setSnapshot] = React.useState<ProjectExtensionResourceGrantSnapshot | null>(null);
+  const [usage, setUsage] = React.useState<ProjectExtensionResourceUsageSnapshot | null>(null);
+  const [usageError, setUsageError] = React.useState<string | null>(null);
   const [operations, setOperations] = React.useState<Record<string, string[]>>({});
   const [tables, setTables] = React.useState<Record<string, string[]>>({});
   const [maxRunCredits, setMaxRunCredits] = React.useState("");
@@ -58,6 +60,13 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [refresh]);
+  React.useEffect(() => {
+    let live = true;
+    void getProjectExtensionResourceUsage(spaceId, projectId, instanceId, session)
+      .then(value => { if (live) { setUsage(value); setUsageError(null); } })
+      .catch(err => { if (live) setUsageError(err instanceof Error ? err.message : "Resource activity is unavailable."); });
+    return () => { live = false; };
+  }, [spaceId, projectId, instanceId, session]);
   const toggle = (current: string[], value: string, checked: boolean) => checked ? [...current, value] : current.filter(item => item !== value);
   async function saveBudget() {
     if (!snapshot) return;
@@ -123,6 +132,14 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
       <button type="button" className="btn-ghost" disabled={budgetBusy || !maxRunCredits || !monthlyCredits} onClick={() => void saveBudget()} style={{ marginTop: 7 }}>
         {budgetBusy ? "Saving budget…" : snapshot.budget ? "Update installation budget" : "Approve installation budget"}
       </button>
+    </div>
+    <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
+      <strong>Recent host job receipts</strong>
+      <p style={{ margin: "4px 0 6px", color: "var(--text3)", fontSize: 10.5 }}>Latest 50 receipts for this exact signed installation generation. Payloads and provider charges are not shown; payload bytes are recorded usage only, not a price.</p>
+      {usageError && <div role="status" style={{ color: "var(--text3)" }}>Receipt activity unavailable.</div>}
+      {!usageError && usage && usage.receipts.length === 0 && <div style={{ color: "var(--text3)" }}>No host job receipts for generation {usage.generation}.</div>}
+      {!usageError && usage && usage.receipts.length > 0 && <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text3)" }}>{usage.receipts.map(receipt =>
+        <li key={receipt.job_id}>{receipt.requirement_id} · {receipt.status} · {receipt.dispatch_attempts} dispatch attempts · {receipt.payload_bytes} payload bytes · {new Date(receipt.created_at).toLocaleString()}</li>)}</ul>}
     </div>
     {requirements.filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs").map(requirement => {
       const grant = snapshot.grants.find(item => item.requirement_id === requirement.id);
