@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleAgentTick } from "./index.js";
 
-function harness(runResponse: Response) {
+function harness(runResponse: Response, connectorCurrent = true) {
   const statements: Array<{ sql: string; values: unknown[] }> = [];
   const db = {
     prepare(sql: string) {
@@ -10,6 +10,7 @@ function harness(runResponse: Response) {
         bind(...args: unknown[]) { values.push(...args); return statement; },
         async first() {
           statements.push({ sql, values: [...values] });
+          if (sql.includes("SELECT 1 AS current FROM mcp_servers")) return connectorCurrent ? { current: 1 } : null;
           if (sql.includes("SELECT s.id FROM spaces s")) return { id: "space-a" };
           if (sql.includes("SELECT name, config_json FROM spaces")) return { name: "Space A", config_json: null };
           return null;
@@ -34,11 +35,22 @@ function harness(runResponse: Response) {
 const tick = {
   kind: "connector_poll" as const,
   connectorName: "shopify",
+  connectorId: "connector-a",
+  connectorAuthorizationRevision: "2026-11-17T12:00:00.000Z",
   spaceId: "space-a",
   tenantId: "tenant-a",
 };
 
 describe("connector poll cursor advancement", () => {
+  it("does not dispatch a stale or disabled connector snapshot", async () => {
+    const h = harness(Response.json({ result: { ok: true } }), false);
+    await handleAgentTick(h.env, tick);
+    expect(h.statements.find(row => row.sql.includes("SELECT 1 AS current FROM mcp_servers"))?.values)
+      .toEqual([tick.connectorId, tick.tenantId, tick.spaceId, tick.connectorName, tick.connectorAuthorizationRevision]);
+    expect(h.get).not.toHaveBeenCalled();
+    expect(h.put).not.toHaveBeenCalled();
+  });
+
   it("does not advance the cursor when the agent run is unsuccessful", async () => {
     const h = harness(Response.json({ result: { ok: false, error: "tenant_suspended" } }));
 
