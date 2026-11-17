@@ -6,10 +6,11 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. K03 optional PDF
-  page-marker preservation is pushed as `acc85dd8`. The latest source reconciliation corrected stale
-  PW05 accounting claims: delegated attempts already reserve/settle per deterministic child `runId`,
-  while owner-visible per-worker credits remain uncoded. Next action is the scoped owner/admin usage
-  read and Shell receipt, then continue all active requirements. After
+  page-marker preservation is pushed as `acc85dd8`. PW05 per-attempt internal-credit receipts now have
+  an owner/admin Project-scoped Billing route and Shell caller; local Billing **24/24** and Billing,
+  Agents and Shell typechecks pass. Next reconcile SC03's pushed encrypted invocation receipt with
+  alarm-safe dispatch, current authority and Billing admission; continue all active requirements.
+  After
   the K02 reviewed PNG/JPEG OCR caller (`8a6d5026`), after
   K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
   bounded PPTX tables (`34800a4a`), task OCR settings (`7aee2ef1`) and P04 restore (`946e1881`,
@@ -43,18 +44,21 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (PW05 accounting trace; source reconciliation)
+## Current checkpoint — 2026-11-17 (PW05 owner-scoped worker usage; local verification)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
 
 K03 was pushed as `acc85dd8` after parser/ingestion/archive/workflow **26/26**, Knowledge typecheck and
-`git diff --check`. Provider page metadata remains unverified. PW05 code review found deterministic
-per-attempt run IDs and existing model/project reservation and model/runtime settlement in the normal
-child script-run path; Shell currently shows tokens but no exact worker attempt credits. The ledgers now
-distinguish implemented accounting from the remaining owner-visible receipt.
+`git diff --check`. Provider page metadata remains unverified. PW05 review found deterministic attempt
+run IDs and existing settlement; the new owner/admin Project-scoped route now joins only those attempt
+IDs to Billing usage events and Shell shows internal credits plus missing/unpriced state. Local Billing
+route tests **24/24**, Billing/Agents/Shell typechecks and diff check pass. No browser, deployed Worker,
+or provider invoice acceptance. The feature labels provider invoices separately.
 
-Exact next action: implement owner/admin-authorized, exact Project-scoped worker-attempt usage receipts
-with pending/unpriced states; then continue every other active-plan requirement. Keep rollouts disabled.
+Exact next action: reconcile SC03's encrypted invocation receipt (`d3a0f194`) with an alarm-safe host
+dispatcher that can recheck the current authority revision and fresh Billing admission. Implement only
+the independently safe host contract, then continue all other active-plan requirements. Keep rollouts
+disabled.
 
 ## Previous checkpoint — 2026-11-17 (K02 PNG/JPEG reviewed OCR caller; pushed as `8a6d5026`)
 

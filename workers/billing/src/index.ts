@@ -1658,6 +1658,42 @@ app.get("/internal/usage/project-summary", async (c) => {
   });
 });
 
+// Owner-facing delegated-worker usage detail. Callers must first authorize the exact Project;
+// this HMAC-only endpoint returns internal credits by worker ID and never claims provider USD.
+app.use("/internal/usage/worker-summary", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.get("/internal/usage/worker-summary", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const spaceId = c.req.query("space_id") ?? "";
+  const projectId = c.req.query("project_id") ?? "";
+  const workerIds = c.req.queries("worker_id") ?? [];
+  if (!orgId || !spaceId || spaceId.length > 128 || !projectId || projectId.length > 128
+    || workerIds.length < 1 || workerIds.length > 50
+    || workerIds.some((id) => !/^[A-Za-z0-9_-]{1,128}$/.test(id))) return c.json({ error_code: "bad_request" }, 400);
+  const uniqueWorkerIds = [...new Set(workerIds)];
+  const clauses: string[] = [];
+  const filterBindings: unknown[] = [];
+  const caseBindings: unknown[] = [];
+  const labels: string[] = [];
+  for (const id of uniqueWorkerIds) {
+    clauses.push("(run_id=? OR run_id LIKE ?)");
+    filterBindings.push(id, `${id}:attempt:%`);
+    labels.push("WHEN run_id=? THEN ? WHEN run_id LIKE ? THEN ?");
+    caseBindings.push(id, id, `${id}:attempt:%`, id);
+  }
+  const rows = await c.env.PLATFORM_DB.prepare(`SELECT CASE ${labels.join(" ")} END AS worker_id,
+      COUNT(*) AS event_count,COALESCE(SUM(cost_credits),0) AS cost_credits,
+      SUM(CASE WHEN cost_credits IS NULL THEN 1 ELSE 0 END) AS unpriced_event_count
+    FROM usage_events WHERE org_id=? AND space_id=? AND project_id=? AND (${clauses.join(" OR ")})
+    GROUP BY worker_id`)
+    .bind(...caseBindings, orgId, spaceId, projectId, ...filterBindings).all<{
+      worker_id: string; event_count: number; cost_credits: number; unpriced_event_count: number;
+    }>();
+  return c.json({ space_id: spaceId, project_id: projectId, currency: "internal_credits", provider_invoice: false,
+    workers: rows.results.map((row) => ({ worker_id: row.worker_id, event_count: row.event_count,
+      cost_credits: row.cost_credits, unpriced_event_count: row.unpriced_event_count,
+      status: row.unpriced_event_count > 0 ? "partially_unpriced" : "reported" })) });
+});
+
 // ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────
 // Primary billing provider (spec Appendix H). Unauthenticated — LS calls this directly.
 // On payment/subscription events, wakes the Space Assistant agent via NaelaoAgentDO.

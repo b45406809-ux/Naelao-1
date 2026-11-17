@@ -38,6 +38,7 @@ import {
   listAssistantChannels,
   assistantMailApi,
   listSubAgents,
+  getSubAgentUsage,
   readWorkerWorkspaceConflictPreview,
   resolveWorkerWorkspaceConflict,
   listGoalActivity,
@@ -1618,6 +1619,7 @@ function WorkersPanel({
 }) {
   const product = useProduct();
   const [subAgents, setSubAgents] = React.useState<SubAgentSummary[] | null>(null);
+  const [workerUsage, setWorkerUsage] = React.useState<Map<string, { cost_credits: number; unpriced_event_count: number }> | null>(null);
   const [goals, setGoals] = React.useState<GoalActivity[]>([]);
   const [failed, setFailed] = React.useState(false);
   const [definitions, setDefinitions] = React.useState<AgentDefinitionSummary[] | null>(null);
@@ -1646,6 +1648,18 @@ function WorkersPanel({
     const interval = window.setInterval(refresh, 5000);
     return () => { cancelled = true; window.clearInterval(interval); };
   }, [spaceId, session, lastRunId, sessionId, agentId]);
+
+  React.useEffect(() => {
+    if (!projectId || !subAgents?.length) { setWorkerUsage(null); return; }
+    let cancelled = false;
+    getSubAgentUsage(spaceId, projectId, subAgents.map((worker) => worker.id), session)
+      .then((result) => {
+        if (!cancelled) setWorkerUsage(new Map(result.workers.map((worker) => [worker.worker_id,
+          { cost_credits: worker.cost_credits, unpriced_event_count: worker.unpriced_event_count }])));
+      })
+      .catch(() => { if (!cancelled) setWorkerUsage(null); });
+    return () => { cancelled = true; };
+  }, [spaceId, projectId, session, subAgents]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1708,6 +1722,11 @@ function WorkersPanel({
                 {(sa.tokens_used !== undefined || sa.budget_tokens !== undefined) && <div data-technical-detail="model_routing" style={{ marginTop: 3 }}>
                   {sa.tokens_used?.toLocaleString() ?? "0"} model tokens{sa.budget_tokens !== undefined ? ` of ${sa.budget_tokens.toLocaleString()} allocated` : ""}
                 </div>}
+                {workerUsage && <div data-technical-detail="billing" style={{ marginTop: 3 }}>
+                  {workerUsage.has(sa.id)
+                    ? `${workerUsage.get(sa.id)!.cost_credits.toLocaleString()} internal credits${workerUsage.get(sa.id)!.unpriced_event_count ? ` · ${workerUsage.get(sa.id)!.unpriced_event_count} unpriced events` : ""}`
+                    : "Usage receipt pending or unavailable"}
+                </div>}
                 {sa.workspace_branch && <div data-technical-detail="identifiers" style={{ marginTop: 3, fontFamily: "var(--font-mono, monospace)", fontSize: 10 }}>
                   Workspace branch: {sa.workspace_branch} (logical branch; runtime isolation is not implied)
                 </div>}
@@ -1716,6 +1735,7 @@ function WorkersPanel({
               </div>
             </details>
           ))}
+          {workerUsage && <div style={{ margin: "4px 4px 0 26px", fontSize: 10, color: "var(--text3)" }}>Internal credits only; provider invoices may differ.</div>}
         </div>
       )}
       {goals.map(goal => (

@@ -152,6 +152,37 @@ describe("unpriced scheduled Knowledge refresh usage receipts", () => {
   });
 });
 
+describe("owner-scoped delegated worker usage summary", () => {
+  it("aggregates exact worker attempt IDs within one tenant, Space and Project", async () => {
+    const h = harness();
+    const insert = (id: string, space: string, project: string, run: string, credits: number | null) =>
+      h.db.db.prepare(`INSERT INTO usage_events(id,org_id,space_id,event_type,quantity,project_id,run_id,cost_credits)
+        VALUES(?, 'org-a', ?, 'infra_credits', 1, ?, ?, ?)`).run(id, space, project, run, credits);
+    insert("w1-a", "space-a", "project-a", "worker-1", 4);
+    insert("w1-b", "space-a", "project-a", "worker-1:attempt:2", 6);
+    insert("w1-c", "space-a", "project-a", "worker-1:attempt:3", null);
+    insert("w2-a", "space-a", "project-b", "worker-1", 99);
+    insert("w3-a", "space-b", "project-a", "worker-1", 99);
+    insert("prefix", "space-a", "project-a", "worker-10", 100);
+    const token = await mintInternalToken(secret, "org-a");
+    const response = await worker.fetch(new Request("https://billing.test/internal/usage/worker-summary?space_id=space-a&project_id=project-a&worker_id=worker-1", {
+      headers: { "x-naelao-tenant-id": "org-a", "x-naelao-internal-token": token },
+    }), h.env as never, {} as never);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ currency: "internal_credits", provider_invoice: false,
+      workers: [{ worker_id: "worker-1", event_count: 3, cost_credits: 10, unpriced_event_count: 1, status: "partially_unpriced" }] });
+  });
+
+  it("rejects unbounded or unsafe worker selectors", async () => {
+    const h = harness();
+    const token = await mintInternalToken(secret, "org-a");
+    const response = await worker.fetch(new Request("https://billing.test/internal/usage/worker-summary?space_id=space-a&project_id=project-a&worker_id=worker%25", {
+      headers: { "x-naelao-tenant-id": "org-a", "x-naelao-internal-token": token },
+    }), h.env as never, {} as never);
+    expect(response.status).toBe(400);
+  });
+});
+
 function createOperation(db: ReturnType<typeof createFakeD1>["db"], input: typeof reservation, region = "us") {
   const quoteId=`msq_${createHash("sha256").update(input.operation_id).digest("hex").slice(0,32)}`;
   (input as typeof reservation & {quote_id?:string;requester_user_id?:string}).quote_id=quoteId;

@@ -3086,6 +3086,24 @@ export interface SubAgentSummary {
   updated_at: string;
 }
 
+export interface SubAgentUsageSummary {
+  space_id: string;
+  project_id: string;
+  currency: "internal_credits";
+  provider_invoice: false;
+  workers: Array<{ worker_id: string; event_count: number; cost_credits: number;
+    unpriced_event_count: number; status: "reported" | "partially_unpriced" }>;
+}
+
+/** Owner/admin-only internal-credit totals for exact delegated worker attempt run IDs. */
+export function getSubAgentUsage(spaceId: string, projectId: string, workerIds: string[], session: SessionCredentials) {
+  const query = new URLSearchParams();
+  for (const id of workerIds.slice(0, 50)) query.append("worker_id", id);
+  return apiFetch<SubAgentUsageSummary>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/assistant/worker-usage?${query}`, {
+    session, cache: "no-store",
+  });
+}
+
 export interface WorkerWorkspaceConflictResolution {
   path: string;
   paths: string[];
