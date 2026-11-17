@@ -1,3 +1,9 @@
+## Cross-plan checkpoint — 2026-11-17 (Knowledge telemetry progress; `0ed5adeb` pushed)
+
+K26 has privacy-safe retrieval, PDF parse, scheduled refresh outcome/lag and authorization denial metrics (`67719e1a`, `370b99f5`, `9476fc1d`, `3c4242b7`, `0ed5adeb`); relevant suites **10/10**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance. EP06 remains partial after owner-only exact-generation job/operation receipts (`39b284bc`). TBR06 remains non-granting because current host issuers have no authoritative reviewed-role mapping/outbox.
+
+Exact next action: add fixed-label Knowledge deletion/recovery outcome metrics at the durable cleanup boundary with telemetry failure isolation; continue S4–S9/U01–U12 and remaining plan code. Rollouts disabled; preserve `infra/scripts/__pycache__/`.
+
 ## Cross-plan checkpoint — 2026-11-17 (current active-work resumption; `9476fc1d` pushed)
 
 Current cross-plan work has moved beyond the prior stale EP06 next action: `39b284bc` adds owner-only, exact signed-install generation job and operation receipts. EP06 inventory remains partial for broader provider resources, dependency graph, invoice-backed costs and lifecycle receipts. Latest independent K26 code `9476fc1d` adds bounded parse metrics, after retrieval privacy `67719e1a` and scheduled refresh metrics `370b99f5`; Knowledge telemetry/scheduler tests **9/9**, typecheck and diff check pass. No live/deployed telemetry acceptance. TBR06 review remains proposal-only because no supported role-to-effective-grant mapping/outbox exists.

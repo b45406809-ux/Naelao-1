@@ -1,3 +1,9 @@
+## Current cross-plan checkpoint — 2026-11-17 (Knowledge authorization and refresh-lag telemetry; `0ed5adeb` pushed)
+
+`0ed5adeb` is pushed and remote-verified following `3c4242b7` (fixed-label Project-access denial metrics), `9476fc1d` (PDF preview parse outcomes), `370b99f5` (scheduled refresh outcomes), and `67719e1a` (retrieval telemetry privacy). Scheduled Knowledge refresh now reports bounded maximum due lag along with counts/duration. Authorization denials use fixed categories and no caller/resource identifiers. Tests across the relevant Knowledge telemetry/scheduler suites **10/10**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance; rollout disabled. Preserve `infra/scripts/__pycache__/`.
+
+EP06 remains partial after `39b284bc`; TBR06 remains proposal-only because there is no supported current role-to-host-grant mapping/outbox. Exact next action: continue K26 by adding fixed-label deletion/recovery status metrics at the durable Knowledge cleanup boundary, ensuring telemetry errors never affect cleanup; then continue other uncoded S/U/P/PW/K/EP/AP/TBR requirements. Do not stop after a checkpoint.
+
 ## Current cross-plan checkpoint — 2026-11-17 (bounded Knowledge parse/sync telemetry; `9476fc1d` pushed)
 
 `9476fc1d` is pushed and remote-verified, following retrieval privacy cleanup `67719e1a` and scheduled refresh metrics `370b99f5`. Retrieval logs/Analytics now omit tenant, Space, Project and query data; scheduled website refreshes emit fixed-label selected/claimed/completed/failed/paused counts and duration; PDF preview parsing emits fixed-label success/failure and duration. Metric values are bounded and Analytics failures do not change refresh/parse behavior. Knowledge telemetry + scheduler suites **9/9**, Knowledge typecheck and `git diff --check` pass. No deployed/live analytics acceptance; rollout remains disabled. Preserve `infra/scripts/__pycache__/`.

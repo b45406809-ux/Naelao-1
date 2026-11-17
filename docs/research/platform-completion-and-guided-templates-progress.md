@@ -1,3 +1,9 @@
+## Current checkpoint — 2026-11-17 (Knowledge authorization and refresh-lag telemetry; `0ed5adeb` pushed)
+
+K26 now includes privacy-safe retrieval metrics, PDF preview parse outcomes, scheduled website refresh counts/duration/maximum due lag, and fixed-label Project-access denial categories. Values are bounded, raw tenant/Space/Project IDs and query content are omitted, and telemetry exceptions do not alter work. Code `0ed5adeb`, `3c4242b7`, `9476fc1d`, `370b99f5`, and `67719e1a` are pushed. Focused suites **10/10**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance.
+
+EP06 remains partial for broader provider dependencies/cost/lifecycle; TBR06 has no current safe role-to-host-grant mapping. Exact next action: implement fixed-label Knowledge deletion/recovery status metrics at cleanup boundaries with failure isolation, then proceed across remaining plans.
+
 ## Current checkpoint — 2026-11-17 (bounded Knowledge parse/sync telemetry; `9476fc1d` pushed)
 
 Retrieval telemetry omits raw tenant/Space/Project IDs and query data; scheduled website refreshes emit fixed-label counters/duration, and PDF preview parsing emits success/failure/duration. Metrics are bounded and failure-isolated. Code `9476fc1d` and prerequisite `370b99f5` are pushed; Knowledge telemetry/scheduler tests **9/9**, typecheck and diff check pass. No deployed/live analytics acceptance.

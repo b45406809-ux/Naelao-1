@@ -1,3 +1,9 @@
+## Current K26 checkpoint — 2026-11-17 (denial and refresh-lag metrics; `0ed5adeb` pushed)
+
+Knowledge now records privacy-safe retrieval aggregates, PDF preview parse outcomes, scheduled website refresh selected/claimed/completed/failed/paused counts and maximum due lag, and Project-access denial categories. Metrics use fixed labels and bounded numbers; raw identities/query are omitted and telemetry failures are isolated. Latest code `0ed5adeb` is pushed; relevant tests **10/10**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance.
+
+K26 remains partial for deletion/recovery, other denial/citation/provider-cost metrics. Exact next action: add fixed-label deletion/recovery status metrics at the durable cleanup boundary with failure isolation, then continue K10–K30 and other active plans; AI Search remains unselected.
+
 ## Current K26 checkpoint — 2026-11-17 (bounded parse/sync metrics; `9476fc1d` pushed)
 
 Retrieval telemetry omits raw tenant/Space/Project IDs and query data; scheduled website refreshes emit fixed-label counters/duration; PDF preview parsing emits fixed-label success/failure/duration. Values are bounded and Analytics failures do not alter operation results. `9476fc1d` and prerequisite `370b99f5` are pushed; tests **9/9**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance.
