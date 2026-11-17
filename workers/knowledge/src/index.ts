@@ -719,7 +719,7 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
      JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id
        AND p.project_id=x.project_id AND p.revision=x.publication_revision AND p.archived_at IS NULL
      WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND x.publication_revision=? AND d.tenant_id=x.tenant_id
-       AND d.space_id=x.space_id AND d.project_id=x.project_id AND d.status='indexed'
+       AND d.space_id=x.space_id AND d.project_id=x.project_id AND d.status='indexed' AND d.source_state='current'
        AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
          SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
            AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
@@ -736,24 +736,37 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
   if (!ids.length) return c.json({ data: [], context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
   const placeholders = ids.map(() => "?").join(",");
   const rows = await c.env.PLATFORM_DB.prepare(
-    `SELECT k.id,k.document_id,k.content,k.content_hash,d.title FROM kb_chunks k
+    `SELECT k.id,k.document_id,k.content,k.content_hash,k.byte_start,k.byte_end,k.line_start,k.line_end,k.heading_path,
+       d.title,d.source_adapter,d.source_revision,d.source_content_sha256,d.source_grant_revision FROM kb_chunks k
      JOIN kb_documents d ON d.id=k.document_id
      JOIN kb_external_publication_documents x ON x.document_id=k.document_id AND x.tenant_id=k.tenant_id AND x.space_id=k.space_id AND x.project_id=k.project_id
      JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id AND p.project_id=x.project_id
      WHERE k.id IN (${placeholders}) AND x.publication_id=? AND x.publication_revision=? AND p.revision=? AND p.archived_at IS NULL
        AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
-       AND d.status='indexed' AND k.deleted_at IS NULL
+       AND d.status='indexed' AND d.source_state='current' AND k.deleted_at IS NULL
        AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
          SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
            AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
        )))`
-  ).bind(...ids, body.publication_id, body.publication_revision, body.publication_revision, tenantId, spaceId, projectId).all<{ id: string; document_id: string; content: string; content_hash: string; title: string }>();
+  ).bind(...ids, body.publication_id, body.publication_revision, body.publication_revision, tenantId, spaceId, projectId).all<{
+    id: string; document_id: string; content: string; content_hash: string; byte_start: number; byte_end: number;
+    line_start: number; line_end: number; heading_path: string; title: string; source_adapter: string;
+    source_revision: number; source_content_sha256: string | null; source_grant_revision: number | null;
+  }>();
   const byId = new Map(rows.results.map(row => [row.id, row]));
   const scoreById = new Map((matches.matches ?? []).map(match => [match.id, match.score ?? 0]));
   const data = (await Promise.all(ids.map(async id => {
     const row = byId.get(id);
-    return row ? { chunk_id: row.id, document_id: row.document_id, title: row.title, score: scoreById.get(id) ?? 0,
-      content: await wrapContextChunk({ content: row.content }), content_hash: row.content_hash } : null;
+    if (!row) return null;
+    const headingPath = safeHeadingPath(row.heading_path);
+    return { chunk_id: row.id, document_id: row.document_id, title: row.title, score: scoreById.get(id) ?? 0,
+      content: await wrapContextChunk({ content: row.content }), content_hash: row.content_hash,
+      provenance: { source_adapter: row.source_adapter, source_revision: Number(row.source_revision),
+        ...(row.source_content_sha256 ? { source_content_sha256: row.source_content_sha256 } : {}),
+        ...(Number.isSafeInteger(row.source_grant_revision) && Number(row.source_grant_revision) > 0
+          ? { source_grant_revision: Number(row.source_grant_revision) } : {}),
+        byte_start: Number(row.byte_start), byte_end: Number(row.byte_end), line_start: Number(row.line_start), line_end: Number(row.line_end),
+        ...(headingPath ? { heading_path: headingPath } : {}) } };
   }))).filter((item): item is NonNullable<typeof item> => item !== null).slice(0, topK);
   return c.json({ data, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
 });
