@@ -10,8 +10,8 @@ type Host = { spawnSubAgentBatch(tasks: Record<string, unknown>[], space: string
   effort: string, signal: undefined, runtime: ScriptEngineEnv,
   merge?: (subId: string, branch: string, attempt: number) => Promise<MergeOutcome>): Promise<{ results: Array<{ id?: string; ok: boolean; status?: string; error?: string }> }> };
 function fixture() {
-  type WorkerRow = { id: string; status: string; goal: string; workspace_branch: string | null; configuration_json: string | null;
-    attempt: number; checkpoint_json: string | null; result: string | null; error: string | null; updated_at: number; budget_tokens: number; tokens_used: number };
+  type WorkerRow = { id: string; parent_run_id: string; status: string; goal: string; workspace_branch: string | null; configuration_json: string | null;
+    attempt: number; checkpoint_json: string | null; checkpoint_updated_at: number | null; result: string | null; error: string | null; updated_at: number; budget_tokens: number; tokens_used: number };
   const active = new Set<string>(), requests: Record<string, any>[] = [], finishes: Array<(body?: Record<string, any>, status?: number) => void> = [];
   const workers = new Map<string, WorkerRow>();
   const storageValues = new Map<string, unknown>();
@@ -35,6 +35,15 @@ function fixture() {
         const row = workers.get(String(args[0]));
         return cursor(row ? [{ status: row.status, attempt: row.attempt }] : []);
       }
+      if (normalized.startsWith("SELECT id, parent_run_id, goal, status, budget_tokens")) {
+        const parentRunId = String(args[0]);
+        return cursor([...workers.values()].filter(row => !parentRunId || row.parent_run_id === parentRunId).map(row => ({
+          id: row.id, parent_run_id: row.parent_run_id, goal: row.goal, status: row.status, budget_tokens: row.budget_tokens,
+          tokens_used: row.tokens_used, progress_note: null, workspace_branch: row.workspace_branch, attempt: row.attempt,
+          result: row.result, error: row.error, created_at: 1, updated_at: row.updated_at,
+          checkpoint_updated_at: row.checkpoint_json ? row.checkpoint_updated_at : null,
+        })));
+      }
       if (normalized.startsWith("SELECT * FROM sub_agents WHERE id = ?")) {
         const row = workers.get(String(args[0]));
         return cursor(row ? [{ ...row }] : []);
@@ -51,16 +60,16 @@ function fixture() {
         return cursor(row ? [{ ...row }] : []);
       }
       if (normalized.startsWith("INSERT INTO sub_agents")) {
-        const [id, , goal, budget, branch, , updated] = args as [string, string, string, number, string | null, number, number];
-        workers.set(id, { id, status: "running", goal, workspace_branch: branch, configuration_json: null,
-          attempt: 1, checkpoint_json: null, result: null, error: null, updated_at: updated, budget_tokens: budget, tokens_used: 0 });
+        const [id, parentRunId, goal, budget, branch, , , updated] = args as [string, string, string, number, string | null, number, number, number];
+        workers.set(id, { id, parent_run_id: parentRunId, status: "running", goal, workspace_branch: branch, configuration_json: null,
+          attempt: 1, checkpoint_json: null, checkpoint_updated_at: null, result: null, error: null, updated_at: updated, budget_tokens: budget, tokens_used: 0 });
         return cursor([], 1);
       }
       const rowId = normalized.startsWith("UPDATE sub_agents SET status = 'terminated'") ? args[1]
         : normalized.startsWith("UPDATE sub_agents SET status='running'") ? args[2]
         : normalized.startsWith("UPDATE sub_agents SET workspace_branch=?") ? args[3]
         : normalized.startsWith("UPDATE sub_agents SET tokens_used=tokens_used+?") || normalized.startsWith("UPDATE sub_agents SET status='failed'") ? args[2]
-        : normalized.startsWith("UPDATE sub_agents SET status = ?, tokens_used") ? args[6]
+        : normalized.startsWith("UPDATE sub_agents SET status = ?, tokens_used") ? args[7]
         : args[args.length - 1];
       const row = workers.get(String(rowId));
       if (!row) return cursor();
@@ -86,10 +95,20 @@ function fixture() {
         return cursor([], 1);
       }
       if (normalized.startsWith("UPDATE sub_agents SET status = ?, tokens_used")) {
-        const [status, tokens, result, checkpoint, error, updated, , attempt] = args;
+        const [status, tokens, result, checkpoint, checkpointUpdatedAt, error, updated, , attempt] = args;
         if (row.status !== "running" || row.attempt !== Number(attempt)) return cursor();
         row.status = String(status); row.tokens_used += Number(tokens); row.result = result as string | null;
-        row.checkpoint_json = checkpoint as string | null; row.error = error as string | null; row.updated_at = Number(updated);
+        row.checkpoint_json = checkpoint as string | null; row.checkpoint_updated_at = Number(checkpointUpdatedAt);
+        row.error = error as string | null; row.updated_at = Number(updated);
+        return cursor([], 1);
+      }
+      if (normalized.startsWith("UPDATE sub_agents SET status=?, result=?, checkpoint_json=?")) {
+        const hasAttempt = normalized.endsWith("AND attempt=?");
+        const [status, result, checkpoint, checkpointUpdatedAt, error, tokens, updated, , attempt] = args;
+        if (row.status !== "running" || (hasAttempt && row.attempt !== Number(attempt))) return cursor();
+        row.status = String(status); row.result = result as string | null; row.checkpoint_json = checkpoint as string | null;
+        row.checkpoint_updated_at = Number(checkpointUpdatedAt); row.error = error as string | null;
+        row.tokens_used += Number(tokens); row.updated_at = Number(updated);
         return cursor([], 1);
       }
       if (normalized.startsWith("UPDATE sub_agents SET status='failed'")) {
@@ -137,6 +156,24 @@ describe("host delegation admission", () => {
       model: body.model, role: "custom-reviewer", callerRole: "product_end_user", workspaceBranch: "task/isolated",
       maxTier: 6, localOnly: true, localModelMachine: "authorized-machine" }, body.context.delegation_token, "test-signing-key");
     f.finishes.forEach(finish => finish()); await run;
+  });
+  it("lists a saved progress checkpoint timestamp without exposing checkpoint payload", async () => {
+    const f = fixture(), parent = f.host();
+    const run = f.spawn(parent, [{ goal: "persist progress" }]);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    const id = String(f.requests[0]!.context.sub_agent_id);
+    f.finishes[0]!({ result: { ok: true, output: { checkpoint: "durable progress" }, tokens_used: 4 } });
+    await run;
+
+    const response = await (parent as unknown as { fetch(request: Request): Promise<Response> }).fetch(
+      new Request("http://agent-do/sub-agents?parent_run_id=parent-run"),
+    );
+    expect(response.status).toBe(200);
+    const listed = await response.json() as { data: Array<Record<string, unknown>> };
+    expect(listed.data).toHaveLength(1);
+    expect(listed.data[0]).toMatchObject({ id, checkpoint_updated_at: expect.any(Number) });
+    expect(listed.data[0]).not.toHaveProperty("checkpoint_json");
+    expect(listed.data[0]).not.toHaveProperty("checkpoint");
   });
   it("denies missing concurrency admission and leaf recursion before dispatch", async () => {
     const f = fixture();

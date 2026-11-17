@@ -3082,6 +3082,7 @@ export interface SubAgentSummary {
   budget_tokens?: number;
   workspace_branch?: string | null;
   attempt?: number;
+  checkpoint_updated_at?: number | null;
   created_at: string;
   updated_at: string;
 }

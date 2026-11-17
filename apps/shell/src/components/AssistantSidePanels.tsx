@@ -1731,6 +1731,12 @@ function WorkersPanel({
                   Workspace branch: {sa.workspace_branch} (logical branch; runtime isolation is not implied)
                 </div>}
                 {sa.attempt !== undefined && <div data-technical-detail="identifiers" style={{ marginTop: 3 }}>Attempt {sa.attempt}</div>}
+                <div data-technical-detail="recovery" style={{ marginTop: 5 }}>
+                  {sa.checkpoint_updated_at
+                    ? `Saved worker progress checkpoint · ${new Date(sa.checkpoint_updated_at).toLocaleString()}`
+                    : "No saved worker progress checkpoint yet"}
+                  <div>Resume uses saved progress and the current authorized workspace; unsaved process memory is not restored.</div>
+                </div>
                 <div data-technical-detail="identifiers" style={{ marginTop: 3, fontFamily: "var(--font-mono, monospace)", fontSize: 10 }}>Run {sa.id.slice(0, 8)}</div>
               </div>
             </details>

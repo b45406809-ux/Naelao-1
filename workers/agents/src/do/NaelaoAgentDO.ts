@@ -1976,6 +1976,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         configuration_json TEXT,
         attempt       INTEGER NOT NULL DEFAULT 1,
         checkpoint_json TEXT,
+        checkpoint_updated_at INTEGER,
         created_at    INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
         updated_at    INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
@@ -2045,6 +2046,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ["configuration_json", "ALTER TABLE sub_agents ADD COLUMN configuration_json TEXT"],
       ["attempt", "ALTER TABLE sub_agents ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1"],
       ["checkpoint_json", "ALTER TABLE sub_agents ADD COLUMN checkpoint_json TEXT"],
+      ["checkpoint_updated_at", "ALTER TABLE sub_agents ADD COLUMN checkpoint_updated_at INTEGER"],
     ] as const) {
       try { this.ctx.storage.sql.exec(ddl); } catch { /* already migrated */ }
     }
@@ -5583,11 +5585,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const modifiedFiles = output && typeof output === "object" && Array.isArray((output as Record<string, unknown>)["modifiedFiles"])
             ? ((output as Record<string, unknown>)["modifiedFiles"] as unknown[]).filter((path): path is string => typeof path === "string")
             : [];
+          const checkpointUpdatedAt = Date.now();
           const completed = this.ctx.storage.sql.exec(
-            `UPDATE sub_agents SET status = ?, tokens_used = tokens_used + ?, result = ?, checkpoint_json = ?, error = ?, updated_at = ? WHERE id = ? AND status='running' AND attempt=?`,
+            `UPDATE sub_agents SET status = ?, tokens_used = tokens_used + ?, result = ?, checkpoint_json = ?, checkpoint_updated_at = ?, error = ?, updated_at = ? WHERE id = ? AND status='running' AND attempt=?`,
             ok ? "done" : awaitingPlanner ? "awaiting_planner_input" : awaitingHuman ? "awaiting_human_input" : "failed", tokensUsed, ok ? JSON.stringify(output) : null,
             boundedCheckpointJson(body.pending_worker_question ?? body.pending_question ?? body.result ?? { error: body.error ?? body.message ?? `HTTP ${resp.status}` }),
-            ok || awaitingPlanner || awaitingHuman ? null : (body.result?.error ?? body.error ?? body.message ?? `HTTP ${resp.status}`), Date.now(), subId, attempt,
+            checkpointUpdatedAt, ok || awaitingPlanner || awaitingHuman ? null : (body.result?.error ?? body.error ?? body.message ?? `HTTP ${resp.status}`), checkpointUpdatedAt, subId, attempt,
           );
           if (completed.rowsWritten !== 1) return { ...cancelledResult(readWorkerAttempt()?.status), model_used: modelResolution.model };
           await recordWorkerWidgetEvent(ok ? "worker.completed" : awaitingPlanner || awaitingHuman ? "worker.waiting" : "worker.failed",
@@ -6242,11 +6245,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const checkpoint = boundedCheckpointJson(body.checkpoint ?? body.output ?? { error: body.error ?? null });
     const tokens = Number.isSafeInteger(body.tokensUsed) && Number(body.tokensUsed) > 0 ? Math.min(Number(body.tokensUsed), 2_000_000) : 0;
     if (body.attempt !== undefined && (!Number.isSafeInteger(body.attempt) || body.attempt < 1)) return Response.json({ error: "invalid_worker_attempt" }, { status: 400 });
+    const checkpointUpdatedAt = Date.now();
     const updated = body.attempt === undefined
-      ? this.ctx.storage.sql.exec(`UPDATE sub_agents SET status=?, result=?, checkpoint_json=?, error=?, tokens_used=tokens_used+?, updated_at=? WHERE id=? AND status='running'`,
-        status, output === undefined ? null : JSON.stringify(output), checkpoint, status === "failed" ? String(body.error ?? "worker_resume_failed").slice(0, 2000) : null, tokens, Date.now(), id)
-      : this.ctx.storage.sql.exec(`UPDATE sub_agents SET status=?, result=?, checkpoint_json=?, error=?, tokens_used=tokens_used+?, updated_at=? WHERE id=? AND status='running' AND attempt=?`,
-        status, output === undefined ? null : JSON.stringify(output), checkpoint, status === "failed" ? String(body.error ?? "worker_resume_failed").slice(0, 2000) : null, tokens, Date.now(), id, body.attempt);
+      ? this.ctx.storage.sql.exec(`UPDATE sub_agents SET status=?, result=?, checkpoint_json=?, checkpoint_updated_at=?, error=?, tokens_used=tokens_used+?, updated_at=? WHERE id=? AND status='running'`,
+        status, output === undefined ? null : JSON.stringify(output), checkpoint, checkpointUpdatedAt, status === "failed" ? String(body.error ?? "worker_resume_failed").slice(0, 2000) : null, tokens, checkpointUpdatedAt, id)
+      : this.ctx.storage.sql.exec(`UPDATE sub_agents SET status=?, result=?, checkpoint_json=?, checkpoint_updated_at=?, error=?, tokens_used=tokens_used+?, updated_at=? WHERE id=? AND status='running' AND attempt=?`,
+        status, output === undefined ? null : JSON.stringify(output), checkpoint, checkpointUpdatedAt, status === "failed" ? String(body.error ?? "worker_resume_failed").slice(0, 2000) : null, tokens, checkpointUpdatedAt, id, body.attempt);
     if (updated.rowsWritten !== 1) return Response.json({ error_code: "worker_session_inactive" }, { status: 409 });
     return Response.json({ ok: true });
   }
@@ -6942,7 +6946,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * really run. Newest first, bounded, since this is a panel and not an export.
    */
   private handleListSubAgents(parentRunId: string): Response {
-    const cols = `id, parent_run_id, goal, status, budget_tokens, tokens_used, progress_note, workspace_branch, attempt, result, error, created_at, updated_at`;
+    const cols = `id, parent_run_id, goal, status, budget_tokens, tokens_used, progress_note, workspace_branch, attempt, result, error, created_at, updated_at,
+      CASE WHEN checkpoint_json IS NOT NULL THEN checkpoint_updated_at ELSE NULL END AS checkpoint_updated_at`;
     const rows = parentRunId
       ? this.ctx.storage.sql
           .exec(`SELECT ${cols} FROM sub_agents WHERE parent_run_id = ? ORDER BY created_at ASC`, parentRunId)
