@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { approveProjectExtensionResourceGrant, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, hasReviewableProjectExtensionResources, projectExtensionSetupStatusLabel, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget } from "./api";
+import { approveProjectExtensionResourceGrant, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, hasReviewableProjectExtensionResources, projectExtensionSetupStatusLabel, reviewProjectExtensionUpdate, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget } from "./api";
 
 describe("Project extension resource grant caller", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -29,6 +29,21 @@ describe("Project extension resource grant caller", () => {
     expect(new URL(url).pathname).toBe("/v1/spaces/space%20one/projects/project%2F1/extension-installations/install%3A1/resource-grants/usage");
     expect(init.cache).toBe("no-store");
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer session-token");
+  });
+
+  it("submits the exact install generation and current manifest pin for a read-only candidate review", async () => {
+    const fetch = vi.fn(async () => Response.json({ installation_id: "install-1", installation_generation: 7,
+      candidate: { version: "2.0.0", signature_verified: true }, apply_supported: false, mutates_installation: false }));
+    vi.stubGlobal("fetch", fetch);
+    await reviewProjectExtensionUpdate("space", "project", "install-1", { candidateVersion: "2.0.0", expectedGeneration: 7,
+      expectedCurrentVersion: "1.0.0", expectedManifestSha256: "a".repeat(64) },
+    { sessionToken: "session-token", endUserId: "project-owner" });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(new URL(url).pathname).toBe("/v1/spaces/space/projects/project/extension-installations/install-1/update-review");
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer session-token");
+    expect(JSON.parse(String(init.body))).toEqual({ candidate_version: "2.0.0", expected_generation: 7,
+      expected_current_version: "1.0.0", expected_manifest_sha256: "a".repeat(64) });
   });
 
   it("reads, approves and revokes through the authenticated exact-install route", async () => {

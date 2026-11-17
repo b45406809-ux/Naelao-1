@@ -78,6 +78,7 @@ import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, spaceSha
 import { attachBlueprintAssistantChannelDefaults, attachBlueprintBusinessRoles, attachBlueprintCoordinationDefaults, attachBlueprintExpectedUsage, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 import { buildProviderDependencyInventory, type ProviderConnectionStatusRow, type ProviderDependencyDeclaration } from "./extension-provider-inventory.js";
 import { buildProviderCleanupInventory, type ProviderCleanupReceiptRow } from "./extension-provider-cleanup-inventory.js";
+import { buildProjectExtensionUpdateReview } from "./project-extension-update-review.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -6036,6 +6037,68 @@ app.get("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases",
   if (!response.ok) return response;
   const releases = await readBoundedResponseJson<{ releases?: Array<PublisherTaggedRelease & { version?: string }> }>(response, 256 * 1024);
   return c.json({ releases: await currentPublisherReleases(c.env, identity.tenantId, spaceId, releases.releases ?? []) });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/update-review", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/update-review", requireSpaceMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/update-review", async c => {
+  const { spaceId, projectId, instanceId } = c.req.param(), identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  const body: { candidate_version?: unknown; expected_generation?: unknown;
+    expected_current_version?: unknown; expected_manifest_sha256?: unknown } = await c.req.json().catch(() => ({}));
+  if (typeof body.candidate_version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(body.candidate_version)
+    || !Number.isSafeInteger(body.expected_generation) || (body.expected_generation as number) < 1
+    || typeof body.expected_current_version !== "string" || typeof body.expected_manifest_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(body.expected_manifest_sha256)) return c.json({ error_code: "extension_update_review_request_invalid" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const installedResponse = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({
+    tenant_id: identity.tenantId, space_id: spaceId, extension_id: "__all__", include_manifest: "1",
+  })}`));
+  if (!installedResponse.ok) return c.json({ error_code: "extension_installation_lookup_unavailable" }, 503);
+  const installedData = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; extension_id: string; project_id: string | null;
+    scope: string; status: string; generation: number; release_version: string | null; manifest_sha256: string | null;
+    pinned_artifact_sha256: string | null; publisher_key_id?: string | null; publisher_attestation_valid?: boolean; publisher_trusted?: boolean;
+    manifest?: unknown }> }>(installedResponse, 2 * 1024 * 1024).catch(() => null);
+  const rawInstall = installedData?.installations?.find(item => item.instance_id === instanceId && item.project_id === projectId);
+  if (!rawInstall || rawInstall.scope !== "PROJECT_BOUND") return c.json({ error_code: "project_bound_extension_not_found" }, 404);
+  const [trustedInstall] = await trustedExtensionInstallations(c.env, identity.tenantId, spaceId, [rawInstall]);
+  if (rawInstall.status !== "active" || !trustedInstall || !rawInstall.publisher_key_id || rawInstall.publisher_attestation_valid !== true)
+    return c.json({ error_code: "installed_extension_release_untrusted_or_inactive" }, 409);
+  let currentManifest: ReturnType<typeof validateExtensionManifest>;
+  try { currentManifest = validateExtensionManifest(rawInstall.manifest); }
+  catch { return c.json({ error_code: "installed_extension_manifest_invalid" }, 409); }
+  if (rawInstall.release_version !== body.expected_current_version || rawInstall.generation !== body.expected_generation
+    || rawInstall.manifest_sha256 !== body.expected_manifest_sha256 || currentManifest.id !== rawInstall.extension_id
+    || currentManifest.bundle?.version !== rawInstall.release_version)
+    return c.json({ error_code: "extension_installation_pin_changed", current_version: rawInstall.release_version,
+      current_generation: rawInstall.generation, current_manifest_sha256: rawInstall.manifest_sha256 }, 409);
+  const releasesResponse = await stub.fetch(new Request(`http://space-do/extension-releases?extension_id=${encodeURIComponent(rawInstall.extension_id)}`));
+  if (!releasesResponse.ok) return c.json({ error_code: "extension_release_lookup_unavailable" }, 503);
+  const releaseData = await readBoundedResponseJson<{ releases?: Array<PublisherTaggedRelease & { version?: string; manifest?: unknown;
+    artifactSha256?: string; publisher?: { id?: string; keyId?: string; revoked?: boolean } }> }>(releasesResponse, 2 * 1024 * 1024).catch(() => null);
+  const release = releaseData?.releases?.find(item => item.version === body.candidate_version);
+  if (!release) return c.json({ error_code: "extension_candidate_release_not_found" }, 404);
+  const [trustedRelease] = await currentPublisherReleases(c.env, identity.tenantId, spaceId, [release]);
+  if (!trustedRelease || trustedRelease.signatureValid !== true || trustedRelease.publisher?.revoked === true
+    || typeof trustedRelease.artifactSha256 !== "string" || !/^[a-f0-9]{64}$/.test(trustedRelease.artifactSha256)
+    || typeof trustedRelease.publisher?.id !== "string" || typeof trustedRelease.publisher.keyId !== "string")
+    return c.json({ error_code: "extension_candidate_release_untrusted" }, 409);
+  let candidateManifest: ReturnType<typeof validateExtensionManifest>;
+  try { candidateManifest = validateExtensionManifest(trustedRelease.manifest); }
+  catch { return c.json({ error_code: "extension_candidate_manifest_invalid" }, 409); }
+  if (candidateManifest.id !== rawInstall.extension_id || candidateManifest.bundle?.version !== body.candidate_version
+    || candidateManifest.bundle?.version === currentManifest.bundle?.version)
+    return c.json({ error_code: "extension_candidate_manifest_pin_invalid" }, 409);
+  if (!rawInstall.manifest_sha256 || !rawInstall.generation || typeof trustedRelease.publisher.id !== "string" || typeof trustedRelease.publisher.keyId !== "string")
+    return c.json({ error_code: "extension_installation_pin_incomplete" }, 409);
+  return c.json(buildProjectExtensionUpdateReview({ installationId: instanceId, installationGeneration: rawInstall.generation,
+    currentManifestSha256: rawInstall.manifest_sha256, currentArtifactSha256: rawInstall.pinned_artifact_sha256,
+    current: currentManifest, candidateManifestSha256: await digestExtensionManifest(candidateManifest),
+    candidateArtifactSha256: trustedRelease.artifactSha256, candidate: candidateManifest,
+    publisherId: trustedRelease.publisher.id, publisherKeyId: trustedRelease.publisher.keyId }), 200,
+    { "cache-control": "private, no-store" });
 });
 
 app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));

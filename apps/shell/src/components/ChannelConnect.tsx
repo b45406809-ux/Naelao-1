@@ -23,7 +23,7 @@ import { previewExtensionResourceRequirements } from "@/lib/extension-resource-p
 import { previewExtensionPublisherProvenance } from "@/lib/extension-publisher-provenance";
 import { projectInstalledExtensionReleaseProvenance } from "@/lib/extension-release-provenance";
 import { projectExtensionRollbackReview } from "@/lib/extension-rollback-review";
-import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type ProjectExtensionUpdateReview, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, reviewProjectExtensionUpdate, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -656,9 +656,10 @@ function confirmExtensionAuthorityExpansion(
   ].join("\n\n"));
 }
 
-function ExtensionReleaseControls({ spaceId, projectId, session, installation }: { spaceId: string; projectId: string; session: SessionCredentials; installation: { instance_id: string; extension_id: string; version?: string; release_version?: string | null; permissions?: string[]; capabilities?: string[] } }) {
+function ExtensionReleaseControls({ spaceId, projectId, session, installation }: { spaceId: string; projectId: string; session: SessionCredentials; installation: { instance_id: string; extension_id: string; version?: string; release_version?: string | null; generation?: number; manifest_sha256?: string | null; permissions?: string[]; capabilities?: string[] } }) {
   const [releases, setReleases] = React.useState<ExtensionRelease[]>([]);
   const [selected, setSelected] = React.useState("");
+  const [updateReview, setUpdateReview] = React.useState<ProjectExtensionUpdateReview | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const refresh = React.useCallback(() => listProjectExtensionReleases(spaceId, projectId, installation.extension_id, session).then(setReleases), [spaceId, projectId, installation.extension_id, session]);
@@ -668,6 +669,16 @@ function ExtensionReleaseControls({ spaceId, projectId, session, installation }:
   const addedPermissions = review?.addedPermissions ?? [];
   const addedCapabilities = review?.addedCapabilities ?? [];
   const expandsAccess = addedPermissions.length > 0 || addedCapabilities.length > 0;
+  async function reviewUpdate() {
+    if (!selected || !installation.generation || !installation.manifest_sha256 || !installation.release_version) return;
+    setBusy(true); setError(null); setUpdateReview(null);
+    try { setUpdateReview(await reviewProjectExtensionUpdate(spaceId, projectId, installation.instance_id, {
+      candidateVersion: selected, expectedGeneration: installation.generation,
+      expectedCurrentVersion: installation.release_version, expectedManifestSha256: installation.manifest_sha256,
+    }, session)); }
+    catch (err) { setError(err instanceof Error ? err.message : "Update review failed."); }
+    finally { setBusy(false); }
+  }
   async function rollback() {
     if (!selected) return;
     const authority = [
@@ -690,12 +701,19 @@ function ExtensionReleaseControls({ spaceId, projectId, session, installation }:
       <option value="">Choose verified release…</option>
       {releases.filter(release => release.signatureValid && release.version !== installation.version).map(release => <option key={release.version} value={release.version}>{release.version}</option>)}
     </select>
+    <button type="button" className="btn-ghost" disabled={busy || !selected || !installation.generation || !installation.manifest_sha256 || !installation.release_version} onClick={() => void reviewUpdate()}>Review update</button>
     <button type="button" className="btn-ghost" disabled={busy || !selected || !review || review.publisherRevoked} onClick={() => void rollback()}>{busy ? "Rolling back…" : "Rollback"}</button>
     {selected && review && <div style={{ marginTop: 5, color: "var(--text3)", fontSize: 10.5 }}>
       Signed release {review.version} · artifact SHA-256 <code>{review.artifactSha256}</code> · publisher {review.publisherId ?? "unknown"} · key {review.publisherKeyId ?? "unknown"}{review.publisherRevoked ? " · publisher key revoked; rollback unavailable" : ""}
       {(addedPermissions.length > 0 || addedCapabilities.length > 0) && <div>Additional authority: {[...(addedPermissions.length ? [`permissions ${addedPermissions.join(", ")}`] : []), ...(addedCapabilities.length ? [`capabilities ${addedCapabilities.join(", ")}`] : [])].join("; ")}</div>}
     </div>}
     {selected && !review && <div role="alert" style={{ marginTop: 5, color: "var(--warning, #b54708)", fontSize: 10.5 }}>This release is missing a complete verified publisher identity or artifact pin; rollback is unavailable.</div>}
+    {updateReview && <div role="status" style={{ marginTop: 6, padding: 7, border: "1px solid var(--border)", borderRadius: 6 }}>
+      <div>Verified candidate {updateReview.candidate.version} · publisher {updateReview.candidate.publisher_id} · key <code>{updateReview.candidate.publisher_key_id}</code></div>
+      <div>Authority changes: permissions +{updateReview.permissions.added.length}/−{updateReview.permissions.removed.length}; capabilities +{updateReview.capabilities.added.length}/−{updateReview.capabilities.removed.length}.</div>
+      <div>Resource declarations: {updateReview.resources.added.length} added, {updateReview.resources.changed.length} changed, {updateReview.resources.removed.length} removed. Dependencies: {updateReview.dependencies.added.length} added, {updateReview.dependencies.changed.length} changed, {updateReview.dependencies.removed.length} removed.</div>
+      <div>Price terms are unknown. {updateReview.apply_block_reason}; this review does not change the installation.</div>
+    </div>}
     {selected && expandsAccess && <div role="status" style={{ marginTop: 5, color: "var(--warning, #b54708)" }}>
       This release adds authority: {[...(addedPermissions.length ? [`permissions: ${addedPermissions.join(", ")}`] : []), ...(addedCapabilities.length ? [`capabilities: ${addedCapabilities.join(", ")}`] : [])].join("; ")}.
       Review and explicitly approve this change in the confirmation before rollback.
@@ -1357,6 +1375,8 @@ export function ChannelConnect({
             {item.instance.publisher_trusted === false && <div role="alert" style={{ color: "var(--text2)", fontSize: 11 }}>The publisher key for this installed release is no longer trusted{item.instance.publisher_revoked_at ? ` (revoked ${new Date(item.instance.publisher_revoked_at).toLocaleString()})` : "."} The host blocks new work and resume attempts. Review a release signed by a currently trusted key before reinstalling.</div>}
             {item.instance.status !== "staging" && item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ instance_id: instanceId, extension_id: extensionId,
               version: item.manifest.bundle.version, release_version: item.instance.release_version ?? null,
+              ...(item.instance.generation !== undefined ? { generation: item.instance.generation } : {}),
+              ...(item.instance.manifest_sha256 !== undefined ? { manifest_sha256: item.instance.manifest_sha256 } : {}),
               permissions: item.manifest.declaredPermissions ?? [], capabilities: item.manifest.capabilityRequirements ?? [] }} />}
           </div>;
         })}

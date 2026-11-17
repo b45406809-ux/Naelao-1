@@ -2678,6 +2678,32 @@ export async function listProjectExtensionReleases(spaceId: string, projectId: s
   return result.releases;
 }
 
+export interface ProjectExtensionUpdateReview {
+  installation_id: string;
+  installation_generation: number;
+  current: { version: string | null; manifest_sha256: string; artifact_sha256: string | null };
+  candidate: { version: string; manifest_sha256: string; artifact_sha256: string; publisher_id: string; publisher_key_id: string; signature_verified: true };
+  permissions: { added: string[]; removed: string[] };
+  capabilities: { added: string[]; removed: string[] };
+  resources: { added: string[]; removed: string[]; changed: string[] };
+  dependencies: { added: string[]; removed: string[]; changed: string[] };
+  primitives: { added: string[]; removed: string[]; changed: string[] };
+  cost_terms: { status: "unknown"; reason: string };
+  apply_supported: false;
+  apply_block_reason: string;
+  mutates_installation: false;
+}
+
+export async function reviewProjectExtensionUpdate(spaceId: string, projectId: string, installationId: string,
+  input: { candidateVersion: string; expectedGeneration: number; expectedCurrentVersion: string; expectedManifestSha256: string },
+  session: SessionCredentials): Promise<ProjectExtensionUpdateReview> {
+  return apiFetch<ProjectExtensionUpdateReview>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(installationId)}/update-review`, {
+    method: "POST", session, body: JSON.stringify({ candidate_version: input.candidateVersion,
+      expected_generation: input.expectedGeneration, expected_current_version: input.expectedCurrentVersion,
+      expected_manifest_sha256: input.expectedManifestSha256 }),
+  });
+}
+
 export async function rollbackProjectExtension(spaceId: string, projectId: string, extensionId: string, installationId: string, expectedCurrentVersion: string | null, version: string, permissionExpansionApproved: boolean, session: SessionCredentials): Promise<void> {
   await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-releases/rollback`, { method: "POST", body: JSON.stringify({ project_id: projectId, extension_id: extensionId, installation_id: installationId,
     expected_current_version: expectedCurrentVersion, version, permission_expansion_approved: permissionExpansionApproved }), session });
