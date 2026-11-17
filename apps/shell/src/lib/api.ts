@@ -393,6 +393,38 @@ export async function exportMyProductData(spaceId: string, session: SessionCrede
   });
 }
 
+export interface ProductUserMicroAppArchiveSnapshot extends Record<string, unknown> {
+  scope: { spaceId: string; userId: string; installationId: string; projectId: string | null; appId: string };
+}
+export interface ProductUserMicroAppArchivePreview {
+  preview_id: string;
+  expires_at: string;
+  restore_mode: "idempotent_merge_missing_rows";
+  results: Array<{ installation_id: string; project_id: string | null; app_id: string; would_insert_rows: number; would_preserve_rows: number }>;
+}
+export interface ProductUserMicroAppArchiveRestore {
+  preview_id: string;
+  status: "applied";
+  replayed: boolean;
+  results: Array<{ installation_id: string; project_id: string | null; app_id: string; inserted_rows: number; preserved_rows: number; replayed: boolean }>;
+}
+
+/** Preview personal app data against the current exact user and active installation in one Space. */
+export async function previewMyProductMicroAppArchives(spaceId: string, session: SessionCredentials,
+  snapshots: ProductUserMicroAppArchiveSnapshot[]): Promise<ProductUserMicroAppArchivePreview> {
+  return apiFetch<ProductUserMicroAppArchivePreview>(`/v1/spaces/${encodeURIComponent(spaceId)}/product-users/me/micro-app-archives/preview`, {
+    method: "POST", session, cache: "no-store", body: JSON.stringify({ snapshots }),
+  });
+}
+
+/** Apply only the exact snapshot set represented by an unexpired owner-independent preview receipt. */
+export async function restoreMyProductMicroAppArchives(spaceId: string, session: SessionCredentials,
+  previewId: string, snapshots: ProductUserMicroAppArchiveSnapshot[]): Promise<ProductUserMicroAppArchiveRestore> {
+  return apiFetch<ProductUserMicroAppArchiveRestore>(`/v1/spaces/${encodeURIComponent(spaceId)}/product-users/me/micro-app-archives/restore`, {
+    method: "POST", session, cache: "no-store", body: JSON.stringify({ preview_id: previewId, snapshots }),
+  });
+}
+
 export interface ProductUserBillingStatus {
   subscription: { plan_tier: string | null; status: string; current_period_end: string | null } | null;
   dispatches: Array<{

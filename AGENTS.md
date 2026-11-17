@@ -6,15 +6,14 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is EP05 isolated owner preview (`d7db0499`, pointer docs `1a3f0145`) pushed. The immutable
-  review/apply path, publication proof, exact preview/confirmation/takedown, bounded publication
-  inventory and restrictive preview CSP are implemented locally; host/domain rollout remains disabled.
-  Continue SC03 from its current ledger pointer: durable dispatch still needs explicit consent, exact
-  current authority revalidation and fresh Billing admission. TBR07 is already compared and must not be
-  repeated. Then continue every independent unfinished S/U/P/PW/K/EP/AP/TBR and incorporated-plan item.
-  Then continue the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
-  incorporated plan ledgers. Follow dependencies, preserve completed work and recheck current
-  authorization, security and billing boundaries.
+  checkpoint is EP05 audited owner takedown (`024c7dfc`, docs `e2037dd6`) pushed. The current local
+  checkpoint adds P04 personal MicroApp archive preview/apply in Settings: version 3 export identity
+  and active-Space filtering, exact preview receipt and explicit apply, with existing backend
+  same-user/same-install/replay checks. Shell API tests 4/4, Space export/restore tests 37/37, Shell
+  typecheck and diff hygiene pass; push is pending. No browser/deployment/recovery acceptance. Keep
+  public rollout disabled. TBR07 is compared and must not be repeated. SC03 still lacks an alarm-safe
+  host job caller that can reconstruct the live Bash role clamp and link fresh Billing admission after
+  disconnect; keep automatic replay disabled and continue other independent S/U/P/PW/K/EP/AP/TBR work.
 - A milestone, local test pass, documentation refresh, status update, user status request, plan
   incorporation, compaction, commit or push is **not mission completion**. After each coherent
   verified checkpoint, update the relevant durable ledger and this runbook's current pointer, commit
@@ -38,7 +37,25 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 audited owner takedown; pushed as `024c7dfc`)
+## Current checkpoint — 2026-11-17 (P04 personal MicroApp restore caller; verification complete, push pending)
+
+Settings can import a version 3 export, retain only snapshots belonging to the signed-in user and
+currently active Space, request the backend preview receipt, show exact row counts per current install,
+and apply only after an explicit click. Current backend validation rejects stale/removed installations,
+other users/Spaces and mismatched/replayed snapshot sets; restore is additive and does not restore code,
+grants or running processes. Shell API tests **4/4**, existing Spaces export/preview/restore tests
+**37/37**, Shell typecheck and `git diff --check` pass. Tests are local mocks; no browser/deployed/recovery
+acceptance. The package manager preflight aborted before scripts because its no-TTY install guard
+refused module reconciliation; already-installed local binaries ran verification.
+
+**Reminder to myself:** Never stop after a requirement, tests, a checkpoint, commit or push; keep implementing the full authorized mission and continue with the next independent gap after each recovery checkpoint.
+
+Exact next action: fetch and push this verified checkpoint, then continue the next uncoded active-plan
+requirement without repeating closed audits. SC03's current code has no alarm-safe caller for the live
+Bash authorization/role clamp and no durable Billing reservation link, so automatic replay stays off;
+return to its host-owned job boundary only when explicit consent and current authority can be checked.
+
+## Previous cross-plan checkpoint — 2026-11-17 (EP05 audited owner takedown; pushed as `024c7dfc`)
 
 Owner/admin takedown now forwards the authenticated actor to MicroAppDO and atomically removes the exact
 slug while writing an immutable receipt with actor, accepted artifact digest and timestamp. Takedown

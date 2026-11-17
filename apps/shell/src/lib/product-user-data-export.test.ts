@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { exportMyProductData, listMyProductInbox, markMyProductInboxNotificationRead } from "./api.js";
+import { exportMyProductData, listMyProductInbox, markMyProductInboxNotificationRead,
+  previewMyProductMicroAppArchives, restoreMyProductMicroAppArchives } from "./api.js";
 
 describe("Product-user portability export client", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -51,5 +52,25 @@ describe("Product-user portability export client", () => {
     expect(writeUrl).toBe("http://localhost:8787/v1/spaces/product%2Fa/product-users/me/inbox");
     expect(writeInit.method).toBe("POST");
     expect(JSON.parse(String(writeInit.body))).toEqual({ action: "mark_read", notification_id: inbox[0]!.id });
+  });
+
+  it("previews and applies only the selected personal MicroApp snapshots through authenticated no-store routes", async () => {
+    const snapshots = [{ scope: { spaceId: "space-a", userId: "user-a", installationId: "install-a", projectId: null, appId: "notes" } }];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ preview_id: "preview-a", expires_at: "2026-11-17T01:00:00.000Z",
+        restore_mode: "idempotent_merge_missing_rows", results: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ preview_id: "preview-a", status: "applied", replayed: false, results: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const session = { sessionToken: "nps-secret", endUserId: "user-a" };
+
+    await expect(previewMyProductMicroAppArchives("space/a", session, snapshots)).resolves.toMatchObject({ preview_id: "preview-a" });
+    await expect(restoreMyProductMicroAppArchives("space/a", session, "preview-a", snapshots)).resolves.toMatchObject({ status: "applied" });
+
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([url, init]) => [url, init.method, init.cache, JSON.parse(String(init.body))])).toEqual([
+      ["http://localhost:8787/v1/spaces/space%2Fa/product-users/me/micro-app-archives/preview", "POST", "no-store", { snapshots }],
+      ["http://localhost:8787/v1/spaces/space%2Fa/product-users/me/micro-app-archives/restore", "POST", "no-store", { preview_id: "preview-a", snapshots }],
+    ]);
+    for (const [, init] of calls) expect(new Headers(init.headers).get("x-naelao-end-user-id")).toBe("user-a");
   });
 });

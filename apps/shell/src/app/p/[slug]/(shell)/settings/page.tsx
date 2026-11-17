@@ -53,9 +53,13 @@ import {
   getProductUserBillingStatus,
   listMyProductInbox,
   markMyProductInboxNotificationRead,
+  previewMyProductMicroAppArchives,
+  restoreMyProductMicroAppArchives,
   type ProductUserMe,
   type ProductUserBillingStatus,
   type ProductUserInboxNotification,
+  type ProductUserMicroAppArchiveSnapshot,
+  type ProductUserMicroAppArchivePreview,
   type SpaceSummary,
   type ShellManifest,
   type SpaceMember,
@@ -232,6 +236,7 @@ export default function SettingsPage() {
             session={session}
             productSlug={product.slug}
             productSpaceId={product.space_id}
+            restoreSpaceId={activeSpaceId}
             signOut={signOut}
             router={router}
           />
@@ -812,6 +817,7 @@ function PersonalTab({
   session,
   productSlug,
   productSpaceId,
+  restoreSpaceId,
   signOut,
   router,
 }: {
@@ -821,6 +827,7 @@ function PersonalTab({
   session: { end_user_id: string } | null;
   productSlug: string;
   productSpaceId: string;
+  restoreSpaceId: string;
   signOut: () => Promise<void>;
   router: ReturnType<typeof useRouter>;
 }) {
@@ -835,6 +842,12 @@ function PersonalTab({
   const [languageMessage, setLanguageMessage] = React.useState<string | null>(null);
   const [exportingData, setExportingData] = React.useState(false);
   const [exportMessage, setExportMessage] = React.useState<string | null>(null);
+  const [restoreSnapshots, setRestoreSnapshots] = React.useState<ProductUserMicroAppArchiveSnapshot[]>([]);
+  const [restoreFileName, setRestoreFileName] = React.useState<string | null>(null);
+  const [restoreIgnoredCount, setRestoreIgnoredCount] = React.useState(0);
+  const [restorePreview, setRestorePreview] = React.useState<ProductUserMicroAppArchivePreview | null>(null);
+  const [restoreBusy, setRestoreBusy] = React.useState(false);
+  const [restoreMessage, setRestoreMessage] = React.useState<string | null>(null);
   const [productInbox, setProductInbox] = React.useState<ProductUserInboxNotification[]>([]);
   const [productInboxLoading, setProductInboxLoading] = React.useState(true);
   const [productInboxLoadingMore, setProductInboxLoadingMore] = React.useState(false);
@@ -842,6 +855,14 @@ function PersonalTab({
   const [productInboxError, setProductInboxError] = React.useState<string | null>(null);
   const [markingInboxId, setMarkingInboxId] = React.useState<string | null>(null);
   const creds = useSessionCredentials();
+
+  React.useEffect(() => {
+    setRestoreSnapshots([]);
+    setRestorePreview(null);
+    setRestoreFileName(null);
+    setRestoreIgnoredCount(0);
+    setRestoreMessage(null);
+  }, [restoreSpaceId, creds?.endUserId]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -898,6 +919,69 @@ function PersonalTab({
     } finally {
       setExportingData(false);
     }
+  }
+
+  async function readMyDataArchive(file: File | undefined) {
+    setRestorePreview(null);
+    setRestoreSnapshots([]);
+    setRestoreFileName(null);
+    setRestoreMessage(null);
+    setRestoreIgnoredCount(0);
+    if (!file || !creds) return;
+    if (file.size > 10 * 1024 * 1024) {
+      setRestoreMessage("This file exceeds the 10 MiB import limit.");
+      return;
+    }
+    try {
+      const value: unknown = JSON.parse(await file.text());
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The file is not a supported export.");
+      const archive = value as Record<string, unknown>;
+      const profile = archive.profile && typeof archive.profile === "object" ? archive.profile as Record<string, unknown> : null;
+      if (archive.export_version !== "3" || profile?.end_user_id !== creds.endUserId || !Array.isArray(archive.micro_app_archives))
+        throw new Error("Choose a version 3 data export for the signed-in account.");
+      const candidates = archive.micro_app_archives.filter((item): item is ProductUserMicroAppArchiveSnapshot => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+        const scope = (item as { scope?: unknown }).scope;
+        return Boolean(scope && typeof scope === "object" && !Array.isArray(scope)
+          && (scope as Record<string, unknown>).userId === creds.endUserId
+          && (scope as Record<string, unknown>).spaceId === restoreSpaceId);
+      });
+      const ignored = archive.micro_app_archives.length - candidates.length;
+      setRestoreSnapshots(candidates);
+      setRestoreIgnoredCount(ignored);
+      setRestoreFileName(file.name);
+      setRestoreMessage(candidates.length
+        ? `Found ${candidates.length} personal app snapshot${candidates.length === 1 ? "" : "s"} for this Space. Preview them before restoring.`
+        : "This export has no personal app snapshots for this Space. Other Spaces were left untouched.");
+    } catch (err) {
+      setRestoreMessage(err instanceof Error ? err.message : "Could not read this export.");
+    }
+  }
+
+  async function previewMyDataRestore() {
+    if (!creds || restoreSnapshots.length === 0) return;
+    setRestoreBusy(true); setRestoreMessage(null); setRestorePreview(null);
+    try {
+      const preview = await previewMyProductMicroAppArchives(restoreSpaceId, creds, restoreSnapshots);
+      setRestorePreview(preview);
+      setRestoreMessage("Preview is ready. Existing rows will be preserved; only missing rows can be added.");
+    } catch (err) {
+      setRestoreMessage(err instanceof Error ? err.message : "Could not preview this restore.");
+    } finally { setRestoreBusy(false); }
+  }
+
+  async function applyMyDataRestore() {
+    if (!creds || !restorePreview) return;
+    setRestoreBusy(true); setRestoreMessage(null);
+    try {
+      const result = await restoreMyProductMicroAppArchives(restoreSpaceId, creds, restorePreview.preview_id, restoreSnapshots);
+      const inserted = result.results.reduce((sum, item) => sum + item.inserted_rows, 0);
+      const preserved = result.results.reduce((sum, item) => sum + item.preserved_rows, 0);
+      setRestoreMessage(`Restore ${result.replayed ? "replayed" : "completed"}: ${inserted} rows added, ${preserved} existing rows preserved. No app code or access grants were restored.`);
+      setRestorePreview(null);
+    } catch (err) {
+      setRestoreMessage(err instanceof Error ? err.message : "Could not apply this restore. Preview again before retrying.");
+    } finally { setRestoreBusy(false); }
   }
 
   async function markProductInboxRead(notificationId: string) {
@@ -1051,6 +1135,26 @@ function PersonalTab({
             {exportingData ? "Preparing export…" : "Download my data"}
           </button>
           {exportMessage && <div className="settings-row-sub" role="status" aria-live="polite">{exportMessage}</div>}
+        </div>
+        <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
+          <div>
+            <div className="settings-row-label">Restore personal app data</div>
+            <div className="settings-row-sub">Choose a version 3 export for this signed-in account. Preview checks the same Space, user and currently active installation. Restore adds missing rows and preserves existing data; it does not reinstall apps or restore code, grants or access.</div>
+          </div>
+          <input type="file" accept="application/json,.json" disabled={!creds || restoreBusy}
+            onChange={event => void readMyDataArchive(event.currentTarget.files?.[0])} aria-label="Choose a personal data export" />
+          {restoreFileName && <div className="settings-row-sub">Selected: {restoreFileName}{restoreIgnoredCount > 0 ? ` · ${restoreIgnoredCount} snapshot(s) for other Spaces or identities will be ignored` : ""}</div>}
+          {restoreSnapshots.length > 0 && <button className="btn btn-secondary btn-sm" type="button" disabled={!creds || restoreBusy}
+            onClick={() => void previewMyDataRestore()}>{restoreBusy ? "Working…" : "Preview restore"}</button>}
+          {restorePreview && <div style={{ display: "grid", gap: 6, width: "100%" }}>
+            <div className="settings-row-sub">Preview expires {new Date(restorePreview.expires_at).toLocaleString()}. Existing rows are preserved.</div>
+            {restorePreview.results.map(item => <div className="settings-row-sub" key={`${item.installation_id}:${item.app_id}`}>
+              {item.app_id} · installation {item.installation_id}: {item.would_insert_rows} rows to add, {item.would_preserve_rows} rows already present
+            </div>)}
+            <button className="btn btn-secondary btn-sm" type="button" disabled={!creds || restoreBusy}
+              onClick={() => void applyMyDataRestore()}>{restoreBusy ? "Restoring…" : "Restore these rows"}</button>
+          </div>}
+          {restoreMessage && <div className="settings-row-sub" role="status" aria-live="polite">{restoreMessage}</div>}
         </div>
         <div className="settings-row">
           <div><div className="settings-row-label">Session</div></div>

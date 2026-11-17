@@ -1,5 +1,24 @@
 # Shared compute scheduling and budget progress
 
+## SC03 dispatch trace — 2026-11-17 (TBR07 complete; no safe disconnected dispatcher found)
+
+The current DynamicSandbox → ToolSandbox path is still synchronous. Capacity retry carries the
+original request and reruns `authorizeContainer`, which depends on the live Bash tool surface and
+caller role clamp; ToolSandbox makes Billing admission only after capacity is acquired. The encrypted
+R2 envelope is not reachable by an alarm-safe host caller and is not bound to a durable Billing hold.
+No current installation-grant revision or consented async job receipt can be revalidated at dispatch.
+Therefore disconnected replay remains disabled. This is an ordinary design/code gap, not a credential
+gate, and the TBR07 SpaceDO/Knowledge/extension authority comparison must not be repeated.
+
+**Reminder to myself:** Continue the complete mission after recording this trace; do not stop at an audit, test, progress update, commit or push.
+
+Exact next action: keep SC03 on the active backlog for a host-owned durable job contract that stores a
+bounded encrypted request reference, explicit invocation consent, exact revocable authority revision,
+fenced dispatch lease and fresh Billing reservation before launch. The current code has no compatible
+caller/authority API, so proceed with independent uncoded plan requirements in dependency order and
+return to SC03 when that boundary can be implemented without widening grants or replaying stale work.
+Keep rollout disabled.
+
 ## Resume pointer — 2026-11-17 (SC03 abandoned waiter cleanup; pushed as `d99720f0`)
 
 When a synchronous caller exhausts six bounded retries against the exact persisted `waiting_for_capacity`

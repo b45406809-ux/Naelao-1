@@ -1,3 +1,22 @@
+## Resume pointer — 2026-11-17 (P04 personal MicroApp restore caller; locally verified, push pending)
+
+Settings now imports the signed-in user's version 3 product export, selects only snapshots for the
+current authenticated user and active Space, previews the exact snapshot set through the existing
+SpaceDO receipt, and requires an explicit apply click. The UI reports per-installation/app rows to add
+and preserve; backend checks still require the same active installation and reject stale, cross-user,
+cross-Space, removed or replay-mismatched snapshots. Other Spaces are left untouched. This does not
+restore apps, grants or runtime processes and does not solve reinstall-to-new-install identity.
+Shell API tests **4/4**, existing Space export/preview/restore suites **37/37**, Shell typecheck and
+`git diff --check` pass. Local mocks only; no browser, deployed SpaceDO, or recovery acceptance.
+
+**Reminder to myself:** Never stop at one requirement, tests, a checkpoint, commit or push; keep implementing the complete authorized mission and move to the next independent gap after each recovery checkpoint.
+
+Exact next action: fetch and push this verified P04 caller checkpoint, then continue active requirements
+without repeating closed audits. SC03 remains an ordinary code gap: no alarm-safe caller can reconstruct
+the live Bash authorization/role clamp or link current Billing admission after disconnect; keep
+automatic replay disabled. Preserve exact same-install restore policy, rollout-off state and
+`infra/scripts/__pycache__/`.
+
 ## Resume pointer — 2026-11-17 (EP05 audited owner takedown; locally verified, push pending)
 
 Exact-slug page removal now forwards the authenticated owner/admin ID and, in one DO transaction, deletes
