@@ -1,3 +1,9 @@
+## Cross-plan checkpoint — 2026-11-17 (custom Knowledge contract; `d99f40cb` pushed)
+
+The RAG package exports a first host-validated custom Knowledge extension contract with exact scope/source/parser/chunker/index/retrieval lineage, bounded chunk hashes/coordinates and candidate allowlisting. Tests **3/3**, package typecheck and diff hygiene pass. No live extension or AgentPhone integration is implied. The owner UI provider-neutral verified-scope guidance is at `41e01624`; AgentPhone still has no verified API, events, pricing or rollout record.
+
+Exact next action: connect the contract to a host-owned synthetic parser/search lifecycle example and test grant/publish/revoke/delete boundaries; then continue the remaining EP/K/AP and other independent requirements. AgentPhone remains unavailable pending evidence. Rollout disabled.
+
 ## Cross-plan checkpoint — 2026-11-17 (`41e01624` pushed)
 
 The owner Managed Services panel now gives provider-neutral setup scope only for the newest currently operator-verified capability record: declared operations, account modes, regions and expiry. This narrows AP06's generic UI gap; no AgentPhone capability, pricing, adapter, SDK or live support was added. Local managed-capability dashboard tests **3/3**, Agents/Shell typechecks and diff check pass. AgentPhone APIs, terms, regions, event/signature behavior, pricing and live performance remain provider gates; no registration, number provisioning, calls, messages or charges occurred.
