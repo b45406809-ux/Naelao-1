@@ -6,10 +6,12 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is public-page action abuse control (`c6f7837f`) pushed; next continue EP05 immutable
-  publication review and then the next independent platform requirement while SC03 remains fail-closed pending a
-  callable durable authority/consent contract. TBR07's authority comparison is already recorded and
-  must not be repeated. Membership revisions and K02 PPTX/DOCX/XLSX code are pushed.
+  checkpoint is EP05 owner publication inventory (`61161067`, pointer docs `16b276ca`) pushed. The
+  immutable review/apply path, publication proof, owner preview/confirmation/takedown and bounded
+  integrity/status listing are implemented locally; host/domain rollout remains disabled. Continue
+  SC03 from its current ledger pointer: durable dispatch still needs explicit consent, exact current
+  authority revalidation and fresh Billing admission. TBR07 is already compared and must not be repeated.
+  Then continue every independent unfinished S/U/P/PW/K/EP/AP/TBR and incorporated-plan requirement.
   Then continue the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
   incorporated plan ledgers. Follow dependencies, preserve completed work and recheck current
   authorization, security and billing boundaries.
