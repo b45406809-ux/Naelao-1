@@ -67,6 +67,7 @@ import { validPhoneExtensionEvent } from "../communications/phone-extension-even
 import { verifyHeartbeatSession } from "../communications/heartbeat-scope.js";
 import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalIsCurrent,
   scheduledGoalGrantConfig } from "../scheduled-direct-authorization.js";
+import { parseSessionSpendStatus } from "../session-spend-status.js";
 import type { ScheduledJobGrantConfig } from "@naelao/security";
 import { renderExtensionVoiceResponse } from "../communications/voice-response.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
@@ -10482,9 +10483,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       `http://spaces-worker/internal/spaces/${spaceId}/session-spend/${sessionId}`,
       { headers: await this.internalHeaders(tenantId) }
     ));
-    const spend = spendRes.ok
-      ? await readBoundedResponseJson<{ credits_used: number; warned_80: boolean }>(spendRes, 2 * 1024 * 1024)
-      : { credits_used: 0, warned_80: false };
+    if (!spendRes.ok) return { ok: false, response: Response.json({ error_code: "session_budget_status_unavailable" }, { status: 503 }) };
+    const spend = parseSessionSpendStatus(await readBoundedResponseJson<unknown>(spendRes, 2 * 1024 * 1024));
+    if (!spend)
+      return { ok: false, response: Response.json({ error_code: "session_budget_status_unavailable" }, { status: 503 }) };
 
     if (spend.credits_used < ceiling) {
       // Under ceiling — fire the 80% warning at most once per spending cycle.
