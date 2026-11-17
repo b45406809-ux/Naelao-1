@@ -1,3 +1,15 @@
+## Resume pointer — 2026-11-17 (EP05 audited owner takedown; locally verified, push pending)
+
+Owner/admin removal now records the authentic actor, exact slug, last accepted publication digest and
+time in an immutable receipt in the same transaction as content deletion. The bounded status list retains
+removed entries. Spaces route/DO tests **15/15**, typecheck and diff hygiene pass; local mocks only.
+
+**Reminder to myself:** Continue all active plans after this recovery checkpoint.
+
+Exact next action after push: return to SC03's explicit-consent, exact-authority and current-Billing
+revalidation contract; preserve fail-closed dispatch and advance to independent gaps if its current
+run-only callback cannot be called by a durable host worker.
+
 ## Resume pointer — 2026-11-17 (EP05 bounded JSON errors; locally verified, pushed as `703f5c2b`)
 
 Malformed page JSON now returns HTTP 400 `invalid_json`; only bounded-body overflow returns HTTP 413

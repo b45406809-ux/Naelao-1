@@ -146,6 +146,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       CREATE TABLE IF NOT EXISTS gadget_public_pages (slug TEXT PRIMARY KEY, html TEXT NOT NULL, actions_json TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS public_page_review_receipts (review_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, slug TEXT NOT NULL, artifact_sha256 TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS public_page_publications (review_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, slug TEXT NOT NULL, artifact_sha256 TEXT NOT NULL, published_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS public_page_takedowns (takedown_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, slug TEXT NOT NULL, artifact_sha256 TEXT, removed_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS consumed_public_action_nonces (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS public_page_action_rate_buckets (bucket_key TEXT NOT NULL, window_start INTEGER NOT NULL, request_count INTEGER NOT NULL,
         PRIMARY KEY(bucket_key, window_start));
@@ -226,7 +227,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "POST" && url.pathname === "/page/review") return await this.reviewPage(request);
       if (request.method === "POST" && url.pathname === "/page/publish-reviewed") return await this.publishReviewedPage(request);
       if (request.method === "GET" && url.pathname === "/page/list") return await this.listPublicPages();
-      if (request.method === "DELETE" && url.pathname === "/page/unpublish") return this.unpublishPage(url);
+      if (request.method === "DELETE" && url.pathname === "/page/unpublish") return await this.unpublishPage(request, url);
       if (request.method === "GET" && url.pathname === "/page/render") return await this.renderPublicPage(url);
       if (request.method === "POST" && url.pathname === "/page/action") return await this.submitPublicAction(request, url);
       if (request.method === "GET" && url.pathname === "/api/storage") return this.readStorageUsage(request);
@@ -1331,10 +1332,24 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     return Response.json({ pages: items, truncated: rows.length >= 1000 || latest.size > 100 });
   }
 
-  private unpublishPage(url: URL): Response {
+  private async unpublishPage(request: Request, url: URL): Promise<Response> {
     const slug = url.searchParams.get("slug") ?? "";
     if (!pagePathPart(slug)) return Response.json({ error: "invalid_public_page_slug" }, { status: 400 });
-    const removed = this.ctx.storage.sql.exec("DELETE FROM gadget_public_pages WHERE slug = ?", slug).rowsWritten > 0;
+    const body = await request.json<{ actor_id?: unknown }>();
+    if (typeof body.actor_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.actor_id))
+      return Response.json({ error: "public_page_reviewer_required" }, { status: 400 });
+    const page = [...this.ctx.storage.sql.exec<{ slug: string }>("SELECT slug FROM gadget_public_pages WHERE slug = ?", slug)][0];
+    const publication = [...this.ctx.storage.sql.exec<{ artifact_sha256: string }>(
+      "SELECT artifact_sha256 FROM public_page_publications WHERE slug=? ORDER BY rowid DESC LIMIT 1", slug)][0];
+    const takedownId = crypto.randomUUID(), removedAt = new Date().toISOString();
+    let removed = false;
+    const apply = () => {
+      removed = this.ctx.storage.sql.exec("DELETE FROM gadget_public_pages WHERE slug = ?", slug).rowsWritten > 0;
+      if (removed) this.ctx.storage.sql.exec("INSERT INTO public_page_takedowns(takedown_id,actor_id,slug,artifact_sha256,removed_at) VALUES(?,?,?,?,?)",
+        takedownId, body.actor_id, slug, publication?.artifact_sha256 ?? null, removedAt);
+    };
+    if (page && typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(apply);
+    else if (page) apply();
     return Response.json({ unpublished: true, removed, slug });
   }
 

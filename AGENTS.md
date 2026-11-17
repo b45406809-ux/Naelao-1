@@ -38,20 +38,21 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 bounded JSON error handling; pushed as `703f5c2b`)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 audited owner takedown; locally verified, pending push)
 
-The owner page review/apply routes now distinguish malformed JSON (`400 invalid_json`) from requests
-exceeding the 1 MiB body ceiling (`413 payload_too_large`) and reject both before invoking MicroAppDO.
-Focused Spaces route/DO tests **15/15**, Spaces typecheck and diff hygiene pass. Prior page inventory is
-pushed at `61161067` (docs `16b276ca`); preview isolation is pushed at `d7db0499` (docs `1a3f0145`).
-This correction is pushed as `703f5c2b`. Public rollout remains disabled.
+Owner/admin takedown now forwards the authenticated actor to MicroAppDO and atomically removes the exact
+slug while writing an immutable receipt with actor, accepted artifact digest and timestamp. Takedown
+receipts remain after page bytes are removed; listing reports the slug as removed. Focused Spaces route/DO
+tests **15/15**, Spaces typecheck and diff hygiene pass. This is local mock evidence; public/domain
+rollout remains disabled. EP05 owner preview and JSON-boundary checkpoints are pushed through
+`703f5c2b` (JSON pointer docs pending SHA update).
 
-**Reminder to myself:** Keep implementing the entire mission after every checkpoint. A test pass, docs update, commit or push is not a stop; continue with the next independent uncoded requirement unless the user stops or a real blocker prevents progress.
+**Reminder to myself:** Continue the full mission after each verified checkpoint. Do not stop at tests, docs, commit or push; continue with the next independent requirement unless the user stops or a genuine blocker prevents progress.
 
-Exact next action after push: continue SC03's durable job contract only where explicit invocation
-consent, exact current authority revalidation and fresh Billing admission can be made callable before
-dispatch. The live `authorizeContainer` closure cannot be replayed after disconnect; keep that path denied
-and proceed to another S2–S9/U01–U12/EP/K/P/PW/AP/TBR gap.
+Exact next action after push: resume SC03 only with a durable invocation contract that can validate
+explicit consent, exact current authority and fresh Billing before launch. The live authorization closure
+cannot run after disconnect; keep automatic replay denied and continue another independent active-plan
+code gap.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
 

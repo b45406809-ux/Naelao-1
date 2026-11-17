@@ -76,12 +76,13 @@ describe("dynamic page isolation boundary", () => {
     const h = harness();
     const path = "/spaces/s/apps/app/pages/spring-signup";
     const token = await mintInternalToken("test-secret", "tenant-a");
-    const headers = { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
+    const headers = { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-internal-token": token };
     const denied = await h.app.request(path, { method: "DELETE", headers: { ...headers, "x-naelao-role": "member" } }, h.env);
     expect(denied.status).toBe(403);
     const allowed = await h.app.request(path, { method: "DELETE", headers: { ...headers, "x-naelao-role": "admin" } }, h.env);
     expect(await allowed.json()).toEqual({ path: "/page/unpublish", method: "DELETE" });
     expect(new URL(h.fetch.mock.calls[0]![0].url).searchParams.get("slug")).toBe("spring-signup");
+    expect(await h.fetch.mock.calls[0]![0].clone().json()).toEqual({ actor_id: "owner-a" });
     expect(h.idFromName).toHaveBeenCalledWith("gadget:app:space:s");
   });
 
