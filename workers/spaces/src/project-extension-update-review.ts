@@ -1,7 +1,6 @@
 function sorted(values: readonly string[] | undefined): string[] {
   return [...new Set(values ?? [])].sort();
 }
-
 function rows<T extends { id: string }>(before: T[], after: T[]) {
   const left = new Map(before.map(row => [row.id, JSON.stringify(row)]));
   const right = new Map(after.map(row => [row.id, JSON.stringify(row)]));
@@ -63,6 +62,13 @@ export function buildProjectExtensionUpdateReview(input: {
 }) {
   const current = input.current as any;
   const candidate = input.candidate as any;
+  type ResourceReviewDeclaration = { id: string; kind: string; apiVersion: string; scope: string;
+    operations: readonly unknown[]; limits: { requestsPerMinute: number; maxConcurrent: number; maxBytesPerOperation: number }; binding?: unknown };
+  const currentResources = (current.resourceRequirements ?? []) as ResourceReviewDeclaration[];
+  const candidateResources = (candidate.resourceRequirements ?? []) as ResourceReviewDeclaration[];
+  const resourceChanges = rows(currentResources, candidateResources);
+  const currentResourcesById = new Map(currentResources.map(item => [item.id, item]));
+  const candidateResourcesById = new Map(candidateResources.map(item => [item.id, item]));
   const currentVersion = current.bundle?.version ?? null;
   const candidateVersion = candidate.bundle?.version ?? null;
   const additions = (before: string[] | undefined, after: string[] | undefined) =>
@@ -86,7 +92,13 @@ export function buildProjectExtensionUpdateReview(input: {
       removed: removals(current.declaredPermissions, candidate.declaredPermissions) },
     capabilities: { added: additions(current.capabilityRequirements, candidate.capabilityRequirements),
       removed: removals(current.capabilityRequirements, candidate.capabilityRequirements) },
-    resources: rows(current.resourceRequirements ?? [], candidate.resourceRequirements ?? []),
+    resources: resourceChanges,
+    resource_requirements: {
+      added: resourceChanges.added.flatMap(id => candidateResourcesById.has(id) ? [candidateResourcesById.get(id)!] : []),
+      removed: resourceChanges.removed.flatMap(id => currentResourcesById.has(id) ? [currentResourcesById.get(id)!] : []),
+      changed: resourceChanges.changed.flatMap(id => currentResourcesById.has(id) && candidateResourcesById.has(id)
+        ? [{ id, before: currentResourcesById.get(id)!, after: candidateResourcesById.get(id)! }] : []),
+    },
     dependencies: rows(currentDependencies, candidateDependencies),
     primitives: rows((current.bundle?.primitives ?? []).filter((row: any): row is { id: string } => typeof row.id === "string"),
       (candidate.bundle?.primitives ?? []).filter((row: any): row is { id: string } => typeof row.id === "string")),

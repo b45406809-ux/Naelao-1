@@ -20,6 +20,11 @@ describe("project extension update review", () => {
       current: { version: "1.0.0" }, candidate: { version: "1.1.0", signature_verified: true },
       permissions: { added: ["write"], removed: [] }, capabilities: { added: ["jobs.run"], removed: [] },
       resources: { added: ["uploads"], removed: [], changed: ["records"] },
+      resource_requirements: {
+        added: [{ id: "uploads", kind: "objects" }],
+        changed: [{ id: "records", before: { id: "records", kind: "structured_data", schema: "v1" },
+          after: { id: "records", kind: "structured_data", schema: "v2" } }],
+      },
       dependencies: { removed: ["ext_dep"] }, primitives: { added: ["sync"] },
       cost_terms: { status: "unknown" }, apply_supported: false, mutates_installation: false });
   });

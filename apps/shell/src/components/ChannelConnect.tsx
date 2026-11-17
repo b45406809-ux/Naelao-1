@@ -715,9 +715,13 @@ function ExtensionReleaseControls({ spaceId, projectId, session, installation }:
       <div>Verified candidate {updateReview.candidate.version} · publisher {updateReview.candidate.publisher_id} · key <code>{updateReview.candidate.publisher_key_id}</code></div>
       <div>Authority changes: permissions +{updateReview.permissions.added.length}/−{updateReview.permissions.removed.length}; capabilities +{updateReview.capabilities.added.length}/−{updateReview.capabilities.removed.length}.</div>
       <div><strong>Host-managed resource declaration changes</strong>
-        <div>Added: {updateReview.resources.added.join(", ") || "none"}</div>
-        <div>Changed: {updateReview.resources.changed.join(", ") || "none"}</div>
-        <div>Removed: {updateReview.resources.removed.join(", ") || "none"}</div>
+        {(["added", "changed", "removed"] as const).map(kind => <div key={kind}>
+          <div>{kind[0]!.toUpperCase() + kind.slice(1)}: {updateReview.resource_requirements[kind].length || "none"}</div>
+          {updateReview.resource_requirements[kind].map((requirement, index) => <pre key={`${requirement.id}:${index}`}
+            style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "3px 0", maxHeight: 180, overflow: "auto" }}>
+            {JSON.stringify("before" in requirement ? { id: requirement.id, before: requirement.before, after: requirement.after } : requirement, null, 2)}
+          </pre>)}
+        </div>)}
         <div>Declarations request access; this update review does not grant resources. Each grant still requires separate owner approval and current host authorization.</div>
       </div>
       <div>Dependencies: {updateReview.dependencies.added.length} added, {updateReview.dependencies.changed.length} changed, {updateReview.dependencies.removed.length} removed.</div>

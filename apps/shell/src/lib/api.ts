@@ -2734,6 +2734,11 @@ export interface ProjectExtensionUpdateReview {
   permissions: { added: string[]; removed: string[] };
   capabilities: { added: string[]; removed: string[] };
   resources: { added: string[]; removed: string[]; changed: string[] };
+  resource_requirements: {
+    added: ProjectExtensionResourceReviewDeclaration[];
+    removed: ProjectExtensionResourceReviewDeclaration[];
+    changed: Array<{ id: string; before: ProjectExtensionResourceReviewDeclaration; after: ProjectExtensionResourceReviewDeclaration }>;
+  };
   dependencies: { added: string[]; removed: string[]; changed: string[] };
   primitives: { added: string[]; removed: string[]; changed: string[] };
   gadget_migrations?: Array<{ id: string; migrations: Array<{ version: number; description: string; up: string }> }>;
@@ -2744,6 +2749,11 @@ export interface ProjectExtensionUpdateReview {
   update_review_token?: string;
   update_review_expires_at?: number;
   update_review_request_id?: string;
+}
+
+export interface ProjectExtensionResourceReviewDeclaration {
+  id: string; kind: string; apiVersion: string; scope: string; operations: readonly unknown[];
+  limits: { requestsPerMinute: number; maxConcurrent: number; maxBytesPerOperation: number }; binding?: unknown;
 }
 
 export async function reviewProjectExtensionUpdate(spaceId: string, projectId: string, installationId: string,
