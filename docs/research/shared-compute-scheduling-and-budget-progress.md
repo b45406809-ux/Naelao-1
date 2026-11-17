@@ -231,3 +231,23 @@ actual result/billing receipt contract and unknown-outcome behavior. Do not call
 a run-level reservation. No provider gate applies. Exact next action: trace `/triggers/fire` through
 all completion/error paths and determine whether there is an authoritative actual-credit receipt
 that can settle a reservation without double-counting existing session-spend increments.
+
+## TBR11 direct-script caller integration — 2026-11-17 (`7af7ce5e` pushed)
+
+Direct scheduled scripts now load the approved-action/budget grant from the exact currently enabled
+job revision. When `max_run_credits > 0`, the DO checks the scheduled heartbeat session spend before
+dispatch and passes actual `ScriptRunResult` token/tier usage into the existing settlement method,
+which increments the same session tally. A zero ceiling preserves the legacy unbounded behavior;
+stale identity/config and unavailable budget status fail closed. Focused scheduled identity,
+dispatch, tenant-scope and delegation tests **26/26**, Agents typecheck and diff hygiene pass.
+
+This closes the uncoded direct-caller connection and captures measured usage through the existing
+tally. It remains `IN_PROGRESS`: tally read/check and post-run increment are not an atomic durable
+per-run reservation, there is no admission-time hold for the configured maximum, and ambiguous
+exceptions before a measured result do not have a durable reconciliation receipt. No credential or
+provider blocker. Code `7af7ce5e` is pushed to `origin/Mcbt5s-Backup-2`.
+
+Exact next action: implement a bounded, idempotent run reservation/settlement contract only if it
+can safely distinguish measured completion from uncertain execution and avoid double-counting the
+existing project/session settlement; otherwise keep the ceiling categorized as best-effort and
+continue other independent SC03/SC04 and active-plan requirements.

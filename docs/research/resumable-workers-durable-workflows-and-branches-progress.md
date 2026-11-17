@@ -74,6 +74,17 @@ per-run reservation only if the same run can reliably settle/release it on compl
 unknown outcome; otherwise record the concrete missing boundary and move to another code gap.
 Continue the full mission after that checkpoint.
 
+## Cross-plan continuation correction — 2026-11-17 (`7af7ce5e` pushed)
+
+The former TBR11 direct-script caller gap is now partially implemented: exact current grants feed
+the session tally guard and settlement (`7af7ce5e`, evidence in the shared-compute ledger). The
+missing atomic durable hold/uncertain-outcome receipt remains code work, not a provider blocker.
+PW checkpoint timestamp and loss-boundary UI are pushed in `856fb145`; versioned lineage, exact
+workspace-head proof, lost-state UI, runtime isolation and real interruption acceptance remain
+partial. Do not return to the stale TBR05 action above without new source evidence. Exact next action:
+review the run actual-usage/uncertainty boundary for safe idempotent reservation, then move directly
+to the next independent SC03/SC04 or active-plan code gap and keep the full mission active.
+
 The prior action to trace WorkflowRunDO checkpoint/recovery was completed in `1dd54057`/`fc3318bb`; delegated branch runtime separation is completed locally in `21de8512`, and exact Coordinator head binding is completed locally in `c17b6e01`. Continue from the top checkpoint: TBR05 invitation and identity boundaries, then remaining independent PW and cross-plan code gaps. Keep rollout disabled.
 ## Cross-plan update — 2026-11-17 (scheduled HITL resume authorization recovery; `688f69e4` pushed)
 

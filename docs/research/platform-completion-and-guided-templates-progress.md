@@ -3088,6 +3088,15 @@ workspace can be reused, but unsaved process memory is not restored. Focused del
 verified workspace revision, lost-state accounting and deployed interruption tests remain open.
 Exact next action: implement or concretely bound TBR11 scheduled direct-script run-budget
 reservation/settlement, then continue the next independent active-plan code gap.
+
+## Cross-plan checkpoint — 2026-11-17 (TBR11 direct-script ceiling caller; pushed `7af7ce5e`)
+
+The direct scheduled-script caller now loads the exact current grant and checks/settles measured
+usage against its service heartbeat session when a positive `max_run_credits` is configured.
+Focused scheduled/tenant/delegation suites pass **26/26** and Agents typecheck passes. This closes
+ordinary caller wiring but not atomic reservation or uncertain-outcome recovery; no live/provider
+acceptance is claimed. Exact next action: finish the safe per-run reservation contract or keep its
+precise code gap explicit and continue independent SC03/SC04 and remaining platform requirements.
 ## Cross-plan checkpoint — 2026-11-17 (K02 reviewed image OCR caller)
 
 Space and Project Knowledge forms now accept bounded PNG/JPEG files through the signed editable preview

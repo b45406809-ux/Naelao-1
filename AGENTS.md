@@ -70,7 +70,21 @@ cursors and verified pricing remain unsupported contract gaps; K09 applicable si
 live acceptance remain open. Reconcile active callers before choosing the next K/EP/P/PW/S/U/TBR item.
 Keep rollout disabled, preserve the cache, and continue after checkpoints.
 
-## Current checkpoint — 2026-11-17 (worker checkpoint receipt; `856fb145` pushed)
+## Current checkpoint — 2026-11-17 (scheduled direct-script ceiling; `7af7ce5e` pushed)
+
+**Reminder to myself:** Never stop after a status update, implementation slice, test pass, checkpoint, commit, push or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
+
+Direct scheduled scripts now read the exact current job's grant/budget, check the service
+heartbeat-session tally before execution, and settle measured ScriptToolSurface usage into that
+tally. Focused scheduled identity/dispatch/tenant-scope/delegation suites **26/26**, Agents
+typecheck and `git diff --check` pass. Code `7af7ce5e` is pushed. This is still not a hard run
+reservation: admission and settlement are not atomic, there is no durable held maximum, and
+uncertain exceptions lack a reconciliation receipt. Exact next task: determine whether the actual
+result/billing boundary supports a durable idempotent per-run hold without double-counting; if not,
+keep that contract gap explicit and proceed to independent SC03/SC04 and other plan requirements.
+Continue after every checkpoint. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+## Previous checkpoint — 2026-11-17 (worker checkpoint receipt; `856fb145` pushed)
 
 **Reminder to myself:** Never stop after a status update, implementation slice, test pass, checkpoint, commit, push or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
 
