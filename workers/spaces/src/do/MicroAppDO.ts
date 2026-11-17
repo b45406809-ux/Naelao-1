@@ -217,6 +217,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "POST" && url.pathname === "/extension-schema-update") return await this.applyExtensionSchemaUpdate(request);
       if (request.method === "GET" && url.pathname === "/app") return await this.renderApp();
       if (request.method === "POST" && url.pathname === "/page/publish") return await this.publishPage(request);
+      if (request.method === "DELETE" && url.pathname === "/page/unpublish") return this.unpublishPage(url);
       if (request.method === "GET" && url.pathname === "/page/render") return await this.renderPublicPage(url);
       if (request.method === "POST" && url.pathname === "/page/action") return await this.submitPublicAction(request, url);
       if (request.method === "GET" && url.pathname === "/api/storage") return this.readStorageUsage(request);
@@ -1285,6 +1286,13 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     for (const name of Object.keys(actions)) if (!body.html.includes(`{{NAELAO_ACTION_TOKEN:${name}}}`)) return Response.json({ error: "action_token_placeholder_missing" }, { status: 400 });
     this.ctx.storage.sql.exec("INSERT INTO gadget_public_pages(slug,html,actions_json,updated_at) VALUES (?,?,?,?) ON CONFLICT(slug) DO UPDATE SET html=excluded.html,actions_json=excluded.actions_json,updated_at=excluded.updated_at", body.slug, body.html, JSON.stringify(actions), new Date().toISOString());
     return Response.json({ published: true, slug: body.slug }, { status: 201 });
+  }
+
+  private unpublishPage(url: URL): Response {
+    const slug = url.searchParams.get("slug") ?? "";
+    if (!pagePathPart(slug)) return Response.json({ error: "invalid_public_page_slug" }, { status: 400 });
+    const removed = this.ctx.storage.sql.exec("DELETE FROM gadget_public_pages WHERE slug = ?", slug).rowsWritten > 0;
+    return Response.json({ unpublished: true, removed, slug });
   }
 
   private async renderPublicPage(url: URL): Promise<Response> {

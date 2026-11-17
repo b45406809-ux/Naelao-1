@@ -10,6 +10,32 @@ const cursor = <T>(rows: T[] = []) => ({
 });
 
 describe("isolated public dynamic pages", () => {
+  it("unpublishes the exact page and makes public rendering return not found", async () => {
+    const pages = new Map<string, { html: string; actions_json: string }>();
+    const sql = { exec(query: string, ...args: unknown[]) {
+      if (query.startsWith("INSERT INTO gadget_public_pages")) {
+        pages.set(String(args[0]), { html: String(args[1]), actions_json: String(args[2]) });
+        return { ...cursor(), rowsWritten: 1 };
+      }
+      if (query.startsWith("DELETE FROM gadget_public_pages")) {
+        const removed = pages.delete(String(args[0]));
+        return { ...cursor(), rowsWritten: removed ? 1 : 0 };
+      }
+      if (query.includes("SELECT html,actions_json FROM gadget_public_pages")) {
+        const page = pages.get(String(args[0])); return cursor(page ? [page] : []);
+      }
+      return cursor();
+    } };
+    const instance = new MicroAppDO({ storage: { sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never, { PLATFORM_SECRET: "test-secret" });
+    const published = await instance.fetch(new Request("https://do/page/publish", { method: "POST", body: JSON.stringify({
+      slug: "spring-signup", html: "<form>{{NAELAO_ACTION_TOKEN:submit}}</form>", actions: { submit: { key: "signup", fields: ["email"] } },
+    }) }));
+    expect(published.status).toBe(201);
+    const takenDown = await instance.fetch(new Request("https://do/page/unpublish?slug=spring-signup", { method: "DELETE" }));
+    expect(await takenDown.json()).toEqual({ unpublished: true, removed: true, slug: "spring-signup" });
+    expect((await instance.fetch(new Request("https://do/page/render?spaceId=s&slug=spring-signup"))).status).toBe(404);
+  });
+
   it("verifies the stored Canvas artifact before serving it", async () => {
     const metadata = new Map<string, string>();
     const sql = { exec(query: string, ...args: unknown[]) {

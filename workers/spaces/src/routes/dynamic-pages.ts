@@ -80,6 +80,19 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
     } catch (error) { await release(); throw error; }
   });
 
+  app.delete("/spaces/:spaceId/apps/:appId/pages/:slug", async c => {
+    const { tenantId, role } = identity(c);
+    const { spaceId, appId, slug } = c.req.param();
+    if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
+    if (!validIdentity(spaceId, appId, slug)) return c.json({ error_code: "bad_request" }, 400);
+    if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Space administrator required" }, 403);
+    const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active' AND o.status = 'active'`).bind(spaceId, tenantId).first();
+    if (!owned) return c.notFound();
+    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
+    return c.env.MICRO_APP_DO.get(actor).fetch(new Request(`http://micro-app/page/unpublish?${new URLSearchParams({ slug })}`, { method: "DELETE" }));
+  });
+
   app.get("/p/:spaceId/:appId/:slug", async c => {
     const { spaceId, appId, slug } = c.req.param();
     if (!validIdentity(spaceId, appId, slug)) return c.notFound();
