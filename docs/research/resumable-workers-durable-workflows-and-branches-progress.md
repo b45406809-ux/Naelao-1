@@ -12,6 +12,10 @@ Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO a
 
 # Resumable workers, durable workflows and branches progress
 
+## Cross-plan update — 2026-11-17 (scheduled direct-script stale authorization fence; `93568569` pushed)
+
+The direct scheduled-script path now has a durable session identity/revision receipt and a final exact current-job revision/script/Project check. Code `93568569878ca356132a105ba206b4a77d35ff93` is remote-verified; local focused suites **14/14**, Agents typecheck and diff check pass. This blocks not-yet-started stale direct scripts; it does not cancel already-running effects or settle per-run effects/costs. No deployed Workflow/DO or runtime isolation acceptance. Exact next action: continue PW's effect cancellation and currency/compute settlement audit alongside the remaining cross-plan code requirements.
+
 ## Latest code checkpoint — 2026-11-16 (exact Coordinator worker branch pin; `c17b6e01` pushed)
 
 For unified-workspace delegated worker executions, the host now supplies the exact current Coordinator branch revision and manifest hash through the authenticated Container invocation scope. Script execution reads the head for each launch; ToolSandbox validates the pin before replaying pending durable writes and rechecks it after recovery. Coordinator `/v1/branch` accepts an expected source head and atomically rejects a raced/stale source; runtime hydration verifies the exact worker branch base and its materialized run head. Tests: ToolSandbox, WorkspaceCoordinatorDO, container policy and execution ladder **155/155**, Agents typecheck and diff check. Code `c17b6e01709d16cfa8ea01eaf57f37abc52dc0ce` is remote-verified.
