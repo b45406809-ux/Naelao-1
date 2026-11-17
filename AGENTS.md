@@ -35,9 +35,9 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (SC03 encrypted invocation receipt; pending push)
+## Latest cross-plan checkpoint — 2026-11-17 (SC03 encrypted invocation receipt; `d3a0f194` pushed)
 
-The local ToolSandbox change stores only an authenticated encrypted request envelope in R2 for a
+Commit `d3a0f1944fb279a24d8f9d10ca8ea870a9cfd252` is pushed to `origin/Mcbt5s-Backup-2`. ToolSandbox stores only an authenticated encrypted request envelope in R2 for a
 capacity-waiting native execution with a host-supplied monotonic membership revision. AAD binds the
 request path/hash, tenant, Space/Project, actor, agent, run, execution, revision and short expiry;
 installed sidecars and revision-less scopes remain caller-retry-only. Exact cancel deletes the
