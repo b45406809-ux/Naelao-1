@@ -1,5 +1,13 @@
 # Template-defined business roles and member onboarding progress
 
+## Latest code checkpoint — 2026-11-17 (TBR05 verified Product-member invitation API; `743c2284` pushed)
+
+Migration 0278 and the Spaces API now provide owner/admin-created, seven-day, copy-only Product-user invitations with keyed token/email hashes, duplicate and 100-pending caps, revoke/list status, owner-only admin invitations, and same-Product verified-email redemption. Redemption rechecks the inviter's active Space role and atomically records acceptance plus the generic D1 Space membership. The SpaceDO platform-collaborator table is untouched, and delivery is always `not_sent`.
+
+Code `743c22844bd194499a61da00ca76d45ce19ba313` is remote-verified on `origin/Mcbt5s-Backup-2`. Evidence: Spaces invitation routes **3/3**, Router Product-session patterns **79/79**, Spaces/Router typechecks, migration manifest tests **5/5**, inventory **278**, SQLite migration/deletion-trigger exercise, diff check. Local checks only; migration 0278 is unapplied. No browser, email/SMS, deployed D1 or live multi-user acceptance ran. No role grants are applied by invitation.
+
+TBR05 is partial: signed business-role assignment and onboarding UX are not in the invite contract. TBR06 is partial: there is no durable host resource-grant outbox, cross-service recovery or role-to-effective-permission application. TBR12 remains API-only. Exact next action: trace the signed blueprint activation artifact and current Space/member revision, then add a durable reviewed business-role assignment intent bound to the declared role and membership with `grants_applied=false`; test revocation, replay and stale artifacts. If no durable active-blueprint identity exists, record that precise contract gap and keep the intent proposal-only. Then continue TBR07–TBR12 and independent S/U/P/PW/K/EP/AP code gaps. No invitations were delivered; rollout remains disabled.
+
 ## Latest cross-plan checkpoint — 2026-11-16 (PW exact worker branch revision pin; `c17b6e01` pushed)
 
 PW delegated runtime launches now pass the host-read Coordinator head and validate it before/after durable checkpoint replay, then atomically create/reuse the runtime run branch against that exact revision/hash. Tests Agents **155/155**, typecheck, and diff check pass; code `c17b6e01709d16cfa8ea01eaf57f37abc52dc0ce` is remote-verified. No deployed Container isolation acceptance. Exact next action: continue TBR05 identity-bound invitation work; keep invites simulated and rollouts off.
@@ -41,14 +49,14 @@ Code `9ccd739538f4e0a8751ff9d289385adc5df4661b` is pushed and remote-verified on
 | TBR02 Builder authoring SDK/UI | IMPLEMENTED_LOCAL | Foundry Template Studio role-proposal JSON editor has durable draft save/restore and v1 signed export round-trip through the shared SDK canonicalizer. Proposal preview states no grants applied. Browser/marketplace acceptance not run. |
 | TBR03 Role declaration validation | PARTIAL | Bounded strict SDK validation and security scanning are implemented. Resolution of microapp/shared-data symbols against installed manifests, full role-combination conflict policy and product-defined action catalog remain open. |
 | TBR04 Owner review and effective-access preview | PARTIAL | Owner/admin-only activation preview surfaces proposals and applies nothing. It does not resolve availability, current grants, role composition, costs or effective access against installed resources. |
-| TBR05 Invitation and identity binding | NOT_STARTED | No general Space invite/redemption route; implement authenticated, one-time, expiring, audience/Space-bound redemption and identity separation. |
-| TBR06 Durable membership/grant application | PARTIAL | Generic Space/Project membership exists; no reviewed role assignment/grant transaction, outbox or partial-failure recovery exists. |
+| TBR05 Invitation and identity binding | PARTIAL | Copy-only authenticated Product identity invite/redeem API is implemented. Signed business-role selection/assignment, onboarding UI and delivery remain. |
+| TBR06 Durable membership/grant application | PARTIAL | Membership acceptance and insert are atomic. Reviewed resource-grant application, durable outbox and partial-failure recovery remain uncoded. |
 | TBR07 Effective authorization and role composition | PARTIAL | Host authorities remain separate; no role composition/deny/exception resolver or unified introspection exists. |
 | TBR08 Assistant inheritance | PARTIAL | Project acting-user `inherit`/`read_only`/`none` clamp exists, but universal resource/channel/cache/delegation checks are not established. |
 | TBR09 Shared data permissions | PARTIAL | The role contract can request symbolic shared-data collections and actions. Host-enforced per-record/action grants, shared-record ACLs and consistent UI/SDK/assistant callers remain uncoded. |
 | TBR10 Private-Project owner/admin policy | PRODUCT_DECISION_OPEN | SpaceDO grants implicit owner/admin access while Knowledge requires explicit Project membership. Resolve and enforce consistently; do not silently widen either policy. |
 | TBR11 Autonomous service identities | IN_PROGRESS | Scheduled `AGENT_TICKS` has no acting user; some extension jobs persist actors, but separately scoped named principal, budget, revocation and run attribution are not universal. Never borrow owner grants. |
-| TBR12 Onboarding UX, audit and acceptance | NOT_STARTED | No reviewed invitation journey or member effective-access dashboard exists. Local checks do not satisfy deployed multi-user/revocation acceptance. |
+| TBR12 Onboarding UX, audit and acceptance | NOT_STARTED | Invitation status/redeem is API-only; no owner/member dashboard, accessible onboarding journey or deployed multi-user/revocation acceptance. |
 
 The copied plan source and original reconciliation remain below for provenance. The source came from `origin/plan/microapps-ui-sdk-voice` commit `28d7c4601a2cba50fef092040dfe351aa76a3`, supplemented by clarification `cdeb7deff22f23b65e91df0086523313550e640a`. The copied plan SHA-256 is `4cbfe5c7d3d523661ddef1a77df716a37624b350b7ef83bec86d2042ba9c7607`; no planning branch was checked out or merged.
 
