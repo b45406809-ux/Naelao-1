@@ -1,5 +1,20 @@
 # Shared compute scheduling and budget progress
 
+## Resume pointer — 2026-11-17
+
+TBR07's SpaceDO/Knowledge/extension authority comparison is already recorded below and in the
+template-business-roles ledger; no shared ACL writer was found, and private same-Space Project access
+remains an unresolved policy. Do not repeat the audit or widen access. Current mission action is
+SC03: trace the durable capacity waiter through current host authority and Billing admission, and
+implement a dispatcher only if it can revalidate both at dispatch. No disconnected dispatcher or
+Billing reservation link is currently verified. PPTX workflow provenance code checkpoint
+`f2266e64666bc3c375427031074a5ed2622ade5e` is pushed; no rollout or live acceptance. Preserve the
+pre-existing untracked pycache.
+
+**Reminder to myself:** Keep implementing the whole mission after this checkpoint. A test pass, ledger update, commit or push is not a stopping point; continue with the next independent authorized requirement unless the user stops or a real blocker prevents all progress.
+
+Exact next action: map current AgentDO/SpaceDO authorization readers and Billing reservation interfaces to determine whether an alarm-safe durable dispatcher can revalidate exact authority and budget; implement a bounded host receipt/caller if supported. If not, document the precise missing host contract and immediately proceed to the next uncoded plan requirement.
+
 ## Current checkpoint — 2026-11-17 (SC03 encrypted invocation receipt; `d3a0f194` pushed)
 
 Commit `d3a0f1944fb279a24d8f9d10ca8ea870a9cfd252` is pushed to `origin/Mcbt5s-Backup-2`. ToolSandbox now stores a short-lived, size-bounded AES-GCM envelope in R2 when a native capacity waiter has a monotonic membership revision and the configured R2/key bindings exist. Authenticated data binds request path/hash, tenant, Space/Project, actor, agent, run, execution ID, revision and expiry. Sidecars and revision-less scopes do not persist a replay payload. Exact cancellation deletes the envelope; alarms erase expired payloads, mark waiting receipts expired, and retry cleanup after deletion failure. The execution record and ConcurrencyDO still hold metadata only. Focused DynamicSandboxDO tests **40/40**, Agents typecheck and `git diff --check` pass. The pnpm preflight stopped before package scripts because its no-TTY dependency reconciliation guard refused module removal; installed local binaries performed verification. No deployed, live or provider acceptance.

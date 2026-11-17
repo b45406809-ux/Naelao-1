@@ -6,9 +6,9 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  exact action is K02 bounded PPTX Knowledge preview/approval/lineage, locally verified and pending
-  push; then continue SC03's host-owned durable dispatcher and owner lifecycle. Membership revisions
-  are pushed, TBR07 was already compared, and K02 DOCX/XLSX are pushed.
+  checkpoint is PPTX durable-workflow provenance (`f2266e64`) pushed; next continue SC03's host-owned
+  durable dispatcher and owner lifecycle. TBR07's authority comparison is already recorded and must
+  not be repeated. Membership revisions and K02 PPTX/DOCX/XLSX code are pushed.
   Then continue the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
   incorporated plan ledgers. Follow dependencies, preserve completed work and recheck current
   authorization, security and billing boundaries.
@@ -35,7 +35,21 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (K02 bounded PPTX Knowledge preview; `41904a10` pushed)
+## Latest cross-plan checkpoint — 2026-11-17 (PPTX durable-workflow provenance; `f2266e64` pushed)
+
+`f2266e64666bc3c375427031074a5ed2622ade5e` is pushed to `origin/Mcbt5s-Backup-2`. The durable
+Knowledge workflow now uses structured Markdown chunking for PPTX and preserves slide heading paths
+and source coordinates. The shared chunker now tracks heading levels without sparse entries or stale
+same-level headings. Focused workflow test **1/1**, RAG batch test **6/6**, and Knowledge parser /
+ingestion tests **11/11** pass; Workflows, RAG and Knowledge typechecks plus `git diff --check` pass.
+No deployed or browser acceptance. PPTX remains text-only; OCR and richer presentation extraction
+are still code gaps.
+
+**Reminder to myself:** Keep implementing the full authorized mission after this checkpoint. Do not stop at a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops the mission or a real blocker prevents all progress.
+
+Exact next action: continue SC03's durable compute admission/dispatch mapping from the recorded TBR07 authority comparison. Trace whether a durable caller can revalidate exact Project/installation authority and reserve current Billing before dispatch; implement only with existing host authorities, otherwise keep replay fail-closed and move to the next independent active-plan code gap. Preserve `infra/scripts/__pycache__/` and keep rollout disabled.
+
+## Previous cross-plan checkpoint — 2026-11-17 (K02 bounded PPTX Knowledge preview; `41904a10` pushed)
 
 Commit `41904a1077ec88d3c9b5ab38c0aa5d4841e61f08` is pushed to
 `origin/Mcbt5s-Backup-2`. The Knowledge Worker parses text from numbered PPTX slides in order with bounds for the 5 MiB

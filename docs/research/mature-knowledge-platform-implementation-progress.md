@@ -76,6 +76,22 @@ K26 remains partial for parse, sync lag, freshness, denials, deletion, cost attr
 
 # Mature knowledge platform implementation progress
 
+## Resume pointer — 2026-11-17 (PPTX durable workflow provenance; `f2266e64` pushed)
+
+`f2266e64666bc3c375427031074a5ed2622ade5e` is pushed to `origin/Mcbt5s-Backup-2`. Durable
+workflow ingestion now applies structured chunking to PPTX and retains slide headings and source
+coordinates; shared heading tracking handles skipped heading levels without sparse paths or stale
+same-level headings. Local evidence: workflow provenance **1/1**, RAG **6/6**, Knowledge parser /
+ingestion **11/11**, relevant package typechecks and diff hygiene pass. No deployed/browser acceptance.
+K02 still lacks OCR and richer presentation parsing; K03 still lacks richer PDF coordinates,
+confidence and quality evidence.
+
+**Reminder to myself:** Keep implementing the full mission after each checkpoint. Do not stop after tests, documentation, commit or push; continue with SC03 and then the next independent unfinished plan requirement unless the user stops the mission or a real blocker prevents progress.
+
+Exact next action: continue the shared-compute SC03 authority/Billing mapping recorded in
+`shared-compute-scheduling-and-budget-progress.md`; do not repeat the TBR07 audit. Then continue
+independent Knowledge gaps and the other active plans. Preserve rollout-disabled decisions.
+
 ## EP03 checkpoint — 2026-11-17 (Project workflow Knowledge caller + lease; `b3276000` pushed)
 
 Implementation `d1eb47f915a71fec72482fc0045e2c71c0e13b52` plus lease checkpoint `b3276000a8515b5660ca70e10560df8399459640` is remote-verified on `origin/Mcbt5s-Backup-2`. The signed Project workflow can declare `knowledge.search` against explicit owner-published publication IDs; SDK validation requires one current project-member worker role and bounded query/topK/output. WorkflowRunDO pins the durable effect digest and receipt to the current publication revision. AgentDO rechecks the current PROJECT_BOUND installation, exact owner resource grant and publication/revision, then claims SpaceDO's per-resource rate/concurrency lease and releases it on every search outcome. SpaceDO and Shell include Knowledge in staged resource review; staged activation still rejects unsupported Knowledge capability, which remains `unavailable`.
