@@ -138,6 +138,14 @@ Implementation `2daeb0378b39d5243b3383fda325c1639fe58cbe` and replay/constraint 
 
 # Managed services and sidecar implementation progress
 
+## U11/U12 continuation — 2026-11-17
+
+Code `6f8422bbc19a9bc0cfaf5aa237a106f3390b1455` suppresses pending/running browser-push cost-alert deliveries when the owner removes their threshold, matching the existing email-outbox behavior. This closes a reachable owner-control gap; it does not retract notifications already accepted by the Notifications Worker. Managed cost alert tests **15/15** and Agents typecheck pass; local D1 and fake notification adapter only. Provider invoice reconciliation, billed-idle/CPU/size feeds, and live delivery remain evidence/source gaps.
+
+SC03 owner queue expiry status is separately implemented in `e767adb84872daac931519c2f4807b85db468222`; it is observation only. A disconnected dispatcher still lacks a reusable encrypted request store and a durable host callback that can revalidate an exact authorization revision and current budget. Do not mark SC03 complete.
+
+Exact next action: complete U12's declared toolchain/release verification against the current checkout: verify the pinned Node/pnpm versions, migration checksum manifest/runner checks and affected workspace typechecks from a clean command invocation; fix any actual diagnostics, then continue S4–S9 and remaining incorporated plan gaps. Do not apply migrations or deploy. Preserve the existing untracked `infra/scripts/__pycache__/` and rollout=false settings.
+
 ## Previous cross-plan checkpoint — 2026-11-17 (TBR05 verified Product-member invitations; `743c2284` pushed)
 
 No managed-provider capability or status changed. TBR05 now has a local, copy-only, verified-Product-email invitation API with keyed token/recipient hashes, expiry, scoped redemption, current inviter-role check, revoke/list, and atomic generic membership insertion. Tests: Spaces **3/3**, Router **79/79**, affected typechecks, migration manifest/inventory **278**, and diff check pass. Migration is unapplied; no email/SMS/provider activity occurred. AgentPhone/AgentPort provider claims remain unverified and no number, call, message or charge action occurred. Exact next action: TBR06 proposal-only business-role assignment bound to the signed blueprint/member authority; then resume S/U/S2–S9 and remaining platform, Knowledge, PW, EP and AP code gaps. Rollouts remain disabled.
