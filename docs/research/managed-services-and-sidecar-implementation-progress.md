@@ -1,9 +1,9 @@
-## Current resume pointer — 2026-11-17 (budget status fail-closed; `c64aba7b` local)
+## Current resume pointer — 2026-11-17 (budget status fail-closed; `2e8f34d2` pushed)
 
 `checkSessionBudget` now rejects unavailable or malformed session-spend status with 503 instead of
 interpreting it as zero and admitting work. Local focused session/authorization tests **16/16**, Agents
-typecheck and `git diff --check` pass. Code `c64aba7b07bddcd78e0bf789c64ceb667a908f38` is committed
-locally; no deployment/live acceptance. TBR07 remains already compared. SC03 disconnected invocation
+typecheck and `git diff --check` pass. Code `c64aba7b07bddcd78e0bf789c64ceb667a908f38` and ledger
+checkpoint `2e8f34d24265c8e027167fba0b40c9dc4e7f55f9` are pushed; no deployment/live acceptance. TBR07 remains already compared. SC03 disconnected invocation
 replay still lacks an alarm-safe validator for the original native `Bash` role clamp and durable consent;
 keep dispatch disabled. Direct scheduled-script `max_run_credits` also needs an atomic run-level
 reservation that every relevant effect consumes; do not substitute a preflight tally.

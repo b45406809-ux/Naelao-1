@@ -70,7 +70,7 @@ cursors and verified pricing remain unsupported contract gaps; K09 applicable si
 live acceptance remain open. Reconcile active callers before choosing the next K/EP/P/PW/S/U/TBR item.
 Keep rollout disabled, preserve the cache, and continue after checkpoints.
 
-## Current checkpoint — 2026-11-17 (session-budget status fail-closed; `c64aba7b` local)
+## Current checkpoint — 2026-11-17 (session-budget status fail-closed; `2e8f34d2` pushed)
 
 **Reminder to myself:** Never stop after an implementation slice, test pass, checkpoint, commit or push. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap.
 
@@ -82,8 +82,8 @@ scheduled goal jobs already load current action/budget grants, but direct script
 budget reservation. This checkpoint instead closes a concrete shared guard defect: `checkSessionBudget`
 now returns 503 for unavailable or malformed spend status instead of admitting work as zero-spend.
 Session spend status tests **7/7**, scheduled identity tests **9/9** (16 total), Agents typecheck and
-`git diff --check` pass locally. Code `c64aba7b07bddcd78e0bf789c64ceb667a908f38` is committed locally;
-remote push and durable ledgers are pending. `pnpm exec` attempted a workspace install and exited because
+`git diff --check` pass locally. Code `c64aba7b07bddcd78e0bf789c64ceb667a908f38` and ledger checkpoint
+`2e8f34d24265c8e027167fba0b40c9dc4e7f55f9` are pushed to `origin/Mcbt5s-Backup-2`. `pnpm exec` attempted a workspace install and exited because
 its non-TTY safeguard refused to remove modules; direct local Vitest/TypeScript binaries passed. No
 deployment or live acceptance. Preserve `infra/scripts/__pycache__/`.
 
