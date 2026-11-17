@@ -321,6 +321,7 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     const body = await readBoundedResponseJson<{ status?: string; fencing_token?: number; released?: boolean; cancelled?: boolean; active?: boolean }>(response, 8192);
     if (action === "request") {
       if (body.status === "cancelled") throw new Error("container_execution_cancelled_by_owner");
+      if (body.status === "full") throw new Error("container_admission_queue_full");
       if (body.status !== "admitted" || !Number.isSafeInteger(body.fencing_token)) throw new Error("container_concurrency_limit");
       return body.fencing_token;
     }
@@ -340,7 +341,7 @@ export class DynamicSandboxDO extends ToolSandboxDO {
       const fencingToken = await this.capacityRequest("request", capacity, limit, dynamicPlanLimits(this.selected?.tier ?? "free").concurrency);
       await this.ctx.storage.put("dynamic_capacity", { ...capacity, fencingToken });
     } catch (error) {
-      if (error instanceof Error && error.message === "container_execution_cancelled_by_owner")
+      if (error instanceof Error && ["container_execution_cancelled_by_owner", "container_admission_queue_full"].includes(error.message))
         await this.ctx.storage.delete("dynamic_capacity");
       else await this.releaseCapacity().catch(() => undefined);
       throw error;

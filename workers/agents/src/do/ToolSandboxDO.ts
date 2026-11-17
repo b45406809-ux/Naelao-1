@@ -154,7 +154,7 @@ interface ExecutionWorkspaceMetrics {
   bytesRead: number; bytesWriteAttempted: number; bytesHydrated: number; bytesCaptured: number; bytesStaged: number;
   checkpoints: number; checkpointMs: number; failedCheckpoints: number; failedCheckpointMs: number; stagingAgeMs: number;
 }
-interface ExecutionRecord { scope: ContainerInvocationScope; payloadHash: string; status: "prepared" | "waiting_capacity" | "committed" | "indeterminate"; response?: { status: number; body: string } }
+interface ExecutionRecord { scope: ContainerInvocationScope; payloadHash: string; status: "prepared" | "waiting_capacity" | "capacity_rejected" | "committed" | "indeterminate"; response?: { status: number; body: string } }
 type ContainerEgressProfile = "disabled" | "trusted-package-hosts";
 
 interface StoredShellState {
@@ -755,12 +755,13 @@ export class ToolSandboxDO extends DurableObject {
     if (previous) {
       if (previous.payloadHash !== payloadHash || JSON.stringify(previous.scope) !== JSON.stringify(scope)) return Response.json({ ok: false, error: "container_execution_conflict" }, { status: 409 });
       if (previous.status === "committed" && previous.response) return new Response(previous.response.body, { status: previous.response.status, headers: { "content-type": "application/json" } });
-      if (previous.status !== "waiting_capacity") return Response.json({ ok: false, error: "container_execution_reconciliation_required" }, { status: 409 });
+      if (previous.status !== "waiting_capacity" && previous.status !== "capacity_rejected") return Response.json({ ok: false, error: "container_execution_reconciliation_required" }, { status: 409 });
       // Capacity refusal happens before container work or budget reservation. Claim the exact
       // persisted execution receipt atomically so concurrent retries cannot both dispatch it.
       const claimed = await this.ctx.storage.transaction(async tx => {
         const current = await tx.get<ExecutionRecord>(key);
-        if (!current || current.status !== "waiting_capacity" || current.payloadHash !== payloadHash || JSON.stringify(current.scope) !== JSON.stringify(scope)) return false;
+        if (!current || !["waiting_capacity", "capacity_rejected"].includes(current.status)
+          || current.payloadHash !== payloadHash || JSON.stringify(current.scope) !== JSON.stringify(scope)) return false;
         await tx.put(key, { ...current, status: "prepared" });
         return true;
       });
@@ -841,8 +842,9 @@ export class ToolSandboxDO extends DurableObject {
       // Once erasure is durable, do not recreate an execution record that the erasure barrier
       // removed. For an unavailable check, keep the indeterminate receipt for reconciliation.
       const capacityWait = error instanceof Error && error.message === "container_concurrency_limit";
+      const capacityQueueFull = error instanceof Error && error.message === "container_admission_queue_full";
       if (await this.projectErasureState(scope) !== "erased")
-        await this.ctx.storage.put(key, { scope, payloadHash, status: capacityWait ? "waiting_capacity" : "indeterminate" } satisfies ExecutionRecord);
+        await this.ctx.storage.put(key, { scope, payloadHash, status: capacityWait ? "waiting_capacity" : capacityQueueFull ? "capacity_rejected" : "indeterminate" } satisfies ExecutionRecord);
       if (metered) {
         await this.updateRuntimeMetrics({ executionMs: Math.max(0, Date.now() - startedAt) }, Boolean(scope.installationId));
         await this.flushExecutionWorkspaceMetrics(scope);
@@ -850,6 +852,8 @@ export class ToolSandboxDO extends DurableObject {
       }
       await this.stopContainer().catch(() => this.ctx.storage.setAlarm(Date.now() + 1000));
       if (capacityWait) return Response.json({ ok: false, status: "waiting_for_capacity", admission_id: scope.executionId,
+        retry_same_invocation: true, execution_started: false }, { status: 429, headers: { "retry-after": "5" } });
+      if (capacityQueueFull) return Response.json({ ok: false, status: "capacity_queue_full", error: "container_admission_queue_full",
         retry_same_invocation: true, execution_started: false }, { status: 429, headers: { "retry-after": "5" } });
       const message = executionLimitExceeded
         ? `container_execution_time_limit_exceeded: maximum ${scope.timeoutMs}ms; move waits and schedules to a Durable Workflow and keep each container step bounded`

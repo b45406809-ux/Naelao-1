@@ -12,6 +12,7 @@ function capacityService() {
   const held = new Map<string, Map<string, number>>();
   const admissions = new Map<string, { tenant: string; state: "waiting" | "active"; globalLimit: number; tenantLimit: number; expiresAt: number; enqueuedAt: number; token?: number }>();
   const calls: string[] = [];
+  let fullNextRequest = false;
   return { held, calls, namespace: { idFromName: (v: string) => v, get: () => ({ fetch: async (request: Request) => {
     const path = new URL(request.url).pathname;
     const { tenant_id: tenant, holder_id: holder, global_limit: globalLimit, tenant_limit: tenantLimit, ttl_ms: ttl, fencing_token: token } = await request.json() as any;
@@ -29,6 +30,7 @@ function capacityService() {
       }
     };
     if (path.endsWith("/request")) {
+      if (fullNextRequest) { fullNextRequest = false; return Response.json({ status: "full", retry_after_ms: 5_000 }); }
       let item = admissions.get(holder);
       if (item && item.tenant !== tenant) return Response.json({ error_code: "admission_scope_conflict" }, { status: 409 });
       if (!item) { item = { tenant, state: "waiting", globalLimit, tenantLimit, expiresAt: Date.now() + ttl, enqueuedAt: Date.now() }; admissions.set(holder, item); }
@@ -49,7 +51,7 @@ function capacityService() {
       return Response.json({ released });
     }
     return Response.json({ error_code: "not_found" }, { status: 404 });
-  } }) }, admissions };
+  } }) }, admissions, markQueueFull: () => { fullNextRequest = true; } };
 }
 function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean;
   snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean; omitBudgetReservationReceipt?: boolean;
@@ -425,6 +427,24 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.records.get("execution:" + executionId)?.status).toBe("committed");
     expect(r.transport.start).toHaveBeenCalledOnce();
     expect(r.billing.filter(item => item.path.endsWith("/reserve"))).toHaveLength(1);
+  });
+  it("does not claim a hard-cap rejection is queued and permits an exact same-ID retry", async () => {
+    const r = runtime();
+    r.capacity.markQueueFull();
+    const executionId = "capacity-full-1", deadline = Date.now() + 55_000;
+    const full = await r.invoke("/prewarm", { executionId, deadline });
+    expect(full.status).toBe(429);
+    expect(await full.json()).toMatchObject({ status: "capacity_queue_full", error: "container_admission_queue_full",
+      retry_same_invocation: true, execution_started: false });
+    expect(r.records.get("execution:" + executionId)?.status).toBe("capacity_rejected");
+    expect(r.capacity.admissions.size).toBe(0);
+    expect(r.records.has("dynamic_capacity")).toBe(false);
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect(r.billing.filter(item => item.path.endsWith("/reserve"))).toHaveLength(0);
+
+    const retried = await r.invoke("/prewarm", { executionId, deadline });
+    expect(retried.status, await retried.clone().text()).toBe(200);
+    expect(r.records.get("execution:" + executionId)?.status).toBe("committed");
   });
   it("cancels the scoped durable capacity waiter without dispatching it", async () => {
     const r = runtime();
