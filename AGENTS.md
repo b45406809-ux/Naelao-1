@@ -38,14 +38,14 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 audited owner takedown; locally verified, pending push)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 audited owner takedown; pushed as `024c7dfc`)
 
 Owner/admin takedown now forwards the authenticated actor to MicroAppDO and atomically removes the exact
 slug while writing an immutable receipt with actor, accepted artifact digest and timestamp. Takedown
 receipts remain after page bytes are removed; listing reports the slug as removed. Focused Spaces route/DO
 tests **15/15**, Spaces typecheck and diff hygiene pass. This is local mock evidence; public/domain
 rollout remains disabled. EP05 owner preview and JSON-boundary checkpoints are pushed through
-`703f5c2b` (JSON pointer docs pending SHA update).
+`703f5c2b` (JSON pointer docs with JSON pointer `2222e73b`).
 
 **Reminder to myself:** Continue the full mission after each verified checkpoint. Do not stop at tests, docs, commit or push; continue with the next independent requirement unless the user stops or a genuine blocker prevents progress.
 
