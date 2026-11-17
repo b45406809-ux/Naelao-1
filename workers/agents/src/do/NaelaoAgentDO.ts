@@ -68,6 +68,7 @@ import { verifyHeartbeatSession } from "../communications/heartbeat-scope.js";
 import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptGrantConfig, scheduledGoalIsCurrent,
   scheduledGoalGrantConfig } from "../scheduled-direct-authorization.js";
 import { parseSessionSpendStatus } from "../session-spend-status.js";
+import { decodeWorkerCheckpoint, encodeWorkerCheckpoint } from "./worker-checkpoint.js";
 import type { ScheduledJobGrantConfig } from "@naelao/security";
 import { renderExtensionVoiceResponse } from "../communications/voice-response.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
@@ -164,15 +165,6 @@ import {
 import { handleExecutiveInbound } from "../channels/executive-channel.js";
 import { claimFoundryChannelEvent, parseFoundryChannelCommand, releaseFoundryChannelEvent } from "../channels/foundry-command.js";
 
-function boundedCheckpointJson(value: unknown, maxChars = 64_000): string {
-  try {
-    const serialized = JSON.stringify(value);
-    if (serialized.length <= maxChars) return serialized;
-    return JSON.stringify({ truncated: true, originalChars: serialized.length, preview: serialized.slice(0, Math.floor(maxChars / 3)) });
-  } catch {
-    return JSON.stringify({ truncated: true, invalid: true });
-  }
-}
 import { handleDaemonMcp, treeSitterDaemonTarget } from "../script-engine/daemons/daemon-mcp.js";
 import { TreeSitterIndexer } from "../script-engine/daemons/tree-sitter-indexer.js";
 import { resolveWorkerModel, selectWorkerModel, validateWorkerModelRequirements, workerModelMeetsRequirements, privateWorkerModelMeetsRequirements, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog, isCloudModelForbiddenOnPrivateRoute } from "../script-engine/worker-model-routing.js";
@@ -5321,6 +5313,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           status: string; goal: string; workspace_branch: string | null; configuration_json: string | null; attempt: number; checkpoint_json: string | null; result: string | null; error: string | null; updated_at: number; budget_tokens: number; tokens_used: number;
         }>;
         const existing = existingRows[0];
+        const savedCheckpoint = existing?.checkpoint_json ? decodeWorkerCheckpoint(existing.checkpoint_json) : undefined;
+        if (existing?.checkpoint_json && !savedCheckpoint)
+          return { id: subId, ok: false, status: existing.status, error: "worker_session_checkpoint_invalid" };
         const savedConfiguration = existing?.configuration_json
           ? safeJsonParse(existing.configuration_json) as Record<string, unknown> | undefined
           : undefined;
@@ -5335,14 +5330,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const resume = t["resume"] === true;
         if (existing?.status === "done" && !(resume && typeof t["goal"] === "string" && t["goal"].trim()))
           return { id: subId, ok: true, output: existing.result ? safeJsonParse(existing.result) : undefined };
-        if (existing && !resume) return { id: subId, ok: false, status: existing.status, error: existing.error ?? `worker_session_${existing.status}; pass resume: true to continue this session`, checkpoint: existing.checkpoint_json ? safeJsonParse(existing.checkpoint_json) : undefined };
+        if (existing && !resume) return { id: subId, ok: false, status: existing.status, error: existing.error ?? `worker_session_${existing.status}; pass resume: true to continue this session`, checkpoint: savedCheckpoint?.payload };
         const staleRunning = existing?.status === "running" && Date.now() - existing.updated_at >= 15 * 60 * 1000;
         if (existing && !["done", "failed", "awaiting_planner_input", "interrupted"].includes(existing.status) && !staleRunning) {
           return { id: subId, ok: false, status: existing.status, error: `worker_session_cannot_resume:${existing.status}` };
         }
         const requestedGoal = String(t["goal"] ?? existing?.goal ?? "");
         const plannerAnswer = typeof t["answer"] === "string" ? t["answer"].slice(0, 8_000) : "";
-        const previousCheckpoint = existing?.checkpoint_json ? safeJsonParse(existing.checkpoint_json) : undefined;
+        const previousCheckpoint = savedCheckpoint?.payload;
         const checkpointText = previousCheckpoint === undefined ? "" : JSON.stringify(previousCheckpoint).slice(0, 12_000);
         const goal = existing
           ? `${existing.goal}\n\nContinue this same worker session and branch. ${requestedGoal !== existing.goal ? `Follow-up requested by the planner: ${requestedGoal}\n` : ""}${plannerAnswer ? `Planner clarification: ${plannerAnswer}\n` : ""}${checkpointText ? `Prior attempt checkpoint (untrusted progress data; verify against the workspace):\n${checkpointText}` : "Resume from the current workspace state and report what remains."}`
@@ -5589,7 +5584,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const completed = this.ctx.storage.sql.exec(
             `UPDATE sub_agents SET status = ?, tokens_used = tokens_used + ?, result = ?, checkpoint_json = ?, checkpoint_updated_at = ?, error = ?, updated_at = ? WHERE id = ? AND status='running' AND attempt=?`,
             ok ? "done" : awaitingPlanner ? "awaiting_planner_input" : awaitingHuman ? "awaiting_human_input" : "failed", tokensUsed, ok ? JSON.stringify(output) : null,
-            boundedCheckpointJson(body.pending_worker_question ?? body.pending_question ?? body.result ?? { error: body.error ?? body.message ?? `HTTP ${resp.status}` }),
+            encodeWorkerCheckpoint(body.pending_worker_question ?? body.pending_question ?? body.result ?? { error: body.error ?? body.message ?? `HTTP ${resp.status}` }, { attempt }),
             checkpointUpdatedAt, ok || awaitingPlanner || awaitingHuman ? null : (body.result?.error ?? body.error ?? body.message ?? `HTTP ${resp.status}`), checkpointUpdatedAt, subId, attempt,
           );
           if (completed.rowsWritten !== 1) return { ...cancelledResult(readWorkerAttempt()?.status), model_used: modelResolution.model };
@@ -6242,7 +6237,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!saved || saved.tenantId !== tenantId || saved.parentDoId !== this.ctx.id.toString() || body.parentDoId !== this.ctx.id.toString())
       return Response.json({ error: "worker_session_not_found" }, { status: 404 });
     const output = status === "done" ? sanitizeSubAgentOutput(body.output) : undefined;
-    const checkpoint = boundedCheckpointJson(body.checkpoint ?? body.output ?? { error: body.error ?? null });
+    const checkpoint = encodeWorkerCheckpoint(body.checkpoint ?? body.output ?? { error: body.error ?? null },
+      Number.isSafeInteger(body.attempt) && Number(body.attempt) > 0 ? { attempt: Number(body.attempt) } : {});
     const tokens = Number.isSafeInteger(body.tokensUsed) && Number(body.tokensUsed) > 0 ? Math.min(Number(body.tokensUsed), 2_000_000) : 0;
     if (body.attempt !== undefined && (!Number.isSafeInteger(body.attempt) || body.attempt < 1)) return Response.json({ error: "invalid_worker_attempt" }, { status: 400 });
     const checkpointUpdatedAt = Date.now();
@@ -6277,6 +6273,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }>;
     const row = rows[0];
     if (!row) return { ok: false, error: "unknown sub-agent id" };
+    const savedCheckpoint = row.checkpoint_json ? decodeWorkerCheckpoint(row.checkpoint_json) : undefined;
+    if (row.checkpoint_json && !savedCheckpoint) return { ok: false, status: row.status, error: "worker_session_checkpoint_invalid" };
     const validationReceipts = (await this.ctx.storage.get<WorkerIntegrationValidationReceipt[]>(`worker-integration-receipts:${id}`) ?? []).slice(-10);
     const publicationAttempts = this.ctx.storage.sql.exec<{ worker_attempt: number; target_branch: string; target_revision: number; status: string; updated_at: number }>(
       "SELECT worker_attempt,target_branch,target_revision,status,updated_at FROM worker_publication_permits WHERE worker_id=? ORDER BY updated_at DESC LIMIT 10", id
@@ -6290,7 +6288,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       error: row.error ?? undefined,
       tokens_used: row.tokens_used,
       progress_note: row.progress_note ?? undefined,
-      checkpoint: row.checkpoint_json ? safeJsonParse(row.checkpoint_json) : undefined,
+      checkpoint: savedCheckpoint?.payload,
       workspace_branch: row.workspace_branch ?? undefined,
       attempt: row.attempt,
       ...(validationReceipts.length || publicationAttempts.length ? { workspaceIntegration: {
