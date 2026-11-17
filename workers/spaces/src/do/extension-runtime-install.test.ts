@@ -206,6 +206,13 @@ describe("runtime extension installation", () => {
     const { lease_id: jobStatusLeaseId } = await jobStatusClaim.json() as { lease_id: string };
     expect(await (await releaseLease(jobStatusLeaseId)).json()).toMatchObject({ released: true, status: "released" });
     expect((await claimJob("status")).status).toBe(429);
+    const ownerUsage = await space.fetch(new Request(grantsUrl, { headers }));
+    expect(await ownerUsage.json()).toMatchObject({ operation_usage: expect.arrayContaining([
+      expect.objectContaining({ lease_id: jobLeaseId, requirement_id: "background", operation_id: "enqueue", table_name: "jobs",
+        grant_revision: 1, status: "released" }),
+      expect.objectContaining({ lease_id: jobStatusLeaseId, requirement_id: "background", operation_id: "status", table_name: "jobs",
+        grant_revision: 1, status: "released" }),
+    ]) });
     const putClaim = await claimObject("put");
     expect(putClaim.status, await putClaim.clone().text()).toBe(200);
     const { lease_id: putLeaseId } = await putClaim.json() as { lease_id: string };

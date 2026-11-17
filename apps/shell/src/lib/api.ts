@@ -1954,6 +1954,8 @@ export interface ProjectExtensionResourceGrantSnapshot {
 }
 export interface ProjectExtensionResourceUsageSnapshot {
   installation_id: string; generation: number;
+  operations: Array<{ lease_id: string; requirement_id: string; operation_id: string; table_name: string; grant_revision: number;
+    status: string; created_at: string; updated_at: string }>;
   receipts: Array<{ job_id: string; requirement_id: string; status: string; dispatch_attempts: number; payload_bytes: number;
     deadline_at: number; created_at: number; updated_at: number; started_at: number | null; completed_at: number | null }>;
 }

@@ -135,11 +135,13 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
     </div>
     <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
       <strong>Recent host job receipts</strong>
-      <p style={{ margin: "4px 0 6px", color: "var(--text3)", fontSize: 10.5 }}>Latest 50 receipts for this exact signed installation generation. Payloads and provider charges are not shown; payload bytes are recorded usage only, not a price.</p>
+      <p style={{ margin: "4px 0 6px", color: "var(--text3)", fontSize: 10.5 }}>Latest 50 operation leases and job receipts for this exact signed installation generation. Payloads and provider charges are not shown; payload bytes are recorded usage only, not a price. A released lease records access, not the operation's result.</p>
       {usageError && <div role="status" style={{ color: "var(--text3)" }}>Receipt activity unavailable.</div>}
       {!usageError && usage && usage.receipts.length === 0 && <div style={{ color: "var(--text3)" }}>No host job receipts for generation {usage.generation}.</div>}
       {!usageError && usage && usage.receipts.length > 0 && <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text3)" }}>{usage.receipts.map(receipt =>
         <li key={receipt.job_id}>{receipt.requirement_id} · {receipt.status} · {receipt.dispatch_attempts} dispatch attempts · {receipt.payload_bytes} payload bytes · {new Date(receipt.created_at).toLocaleString()}</li>)}</ul>}
+      {!usageError && usage && usage.operations.length > 0 && <ul style={{ margin: "6px 0 0", paddingLeft: 18, color: "var(--text3)" }}>{usage.operations.map(operation =>
+        <li key={operation.lease_id}>{operation.requirement_id} · {operation.operation_id} {operation.table_name} · lease {operation.status} · grant revision {operation.grant_revision} · {new Date(operation.created_at).toLocaleString()}</li>)}</ul>}
     </div>
     {requirements.filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs").map(requirement => {
       const grant = snapshot.grants.find(item => item.requirement_id === requirement.id);

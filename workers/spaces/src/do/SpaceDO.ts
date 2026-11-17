@@ -3420,6 +3420,19 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_extension_installation_budget_events_instance
         ON extension_installation_budget_events(tenant_id,space_id,instance_id,revision);`,
   },
+  {
+    version: 155,
+    description: "retain bounded exact-install extension resource operation usage receipts",
+    up: `CREATE TABLE extension_resource_operation_usage (
+        lease_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        instance_id TEXT NOT NULL, requirement_id TEXT NOT NULL, operation_id TEXT NOT NULL, table_name TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL, resource_sha256 TEXT NOT NULL, installation_generation INTEGER NOT NULL,
+        grant_revision INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('active','released','expired')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_extension_resource_operation_usage_installation
+        ON extension_resource_operation_usage(tenant_id,space_id,project_id,instance_id,installation_generation,created_at);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -17871,12 +17884,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         })),
       };
     });
+    const operation_usage = this.ctx.storage.sql.exec<{ lease_id: string; requirement_id: string; operation_id: string; table_name: string;
+      grant_revision: number; status: string; created_at: string; updated_at: string }>(
+      `SELECT lease_id,requirement_id,operation_id,table_name,grant_revision,status,created_at,updated_at
+       FROM extension_resource_operation_usage WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?
+         AND installation_generation=? ORDER BY created_at DESC,lease_id DESC LIMIT 50`,
+      tenantId, spaceId, projectId, instanceId, target.row.generation).toArray();
     return Response.json({ installation: { instance_id: target.row.instance_id, extension_id: target.row.extension_id,
       tenant_id: target.row.tenant_id, space_id: target.row.space_id, project_id: target.row.project_id, scope: target.row.scope,
       status: target.row.status, generation: target.row.generation, installed_by: target.row.installed_by,
       manifest_sha256: target.manifestSha256, release_version: target.row.release_version }, requirements,
       budget: this.getCurrentExtensionInstallationBudget(tenantId, spaceId, projectId, instanceId, target.row.generation),
-      grants: this.listExtensionResourceGrantRows(instanceId) }, { headers: { "cache-control": "private, no-store" } });
+      grants: this.listExtensionResourceGrantRows(instanceId), operation_usage }, { headers: { "cache-control": "private, no-store" } });
   }
 
   private async setExtensionInstallationBudget(request: Request): Promise<Response> {
@@ -18118,6 +18137,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     this.ctx.storage.transactionSync(() => {
       execute(this.ctx.storage.sql as never, `UPDATE extension_resource_operation_leases SET status='expired'
         WHERE tenant_id=? AND space_id=? AND instance_id=? AND status='active' AND expires_at<=?`, tenantId, spaceId, instanceId, now);
+      execute(this.ctx.storage.sql as never, `UPDATE extension_resource_operation_usage SET status='expired',updated_at=?
+        WHERE tenant_id=? AND space_id=? AND instance_id=? AND status='active' AND lease_id IN (
+          SELECT lease_id FROM extension_resource_operation_leases WHERE tenant_id=? AND space_id=? AND instance_id=? AND status='expired')`,
+        now, tenantId, spaceId, instanceId, tenantId, spaceId, instanceId);
       execute(this.ctx.storage.sql as never, `DELETE FROM extension_resource_operation_leases WHERE rowid IN (
         SELECT rowid FROM extension_resource_operation_leases WHERE tenant_id=? AND space_id=? AND instance_id=? AND status!='active'
         ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET 1000)`, tenantId, spaceId, instanceId);
@@ -18139,6 +18162,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
          installation_generation,grant_revision,status,created_at,expires_at,released_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'active',?,?,NULL)`, leaseId, tenantId, spaceId, projectId, instanceId, requirementId,
         operationId, table, manifestSha256, resourceSha256, generation, revision, now, expiresAt);
+      execute(this.ctx.storage.sql as never, `INSERT INTO extension_resource_operation_usage
+        (lease_id,tenant_id,space_id,project_id,instance_id,requirement_id,operation_id,table_name,manifest_sha256,resource_sha256,
+         installation_generation,grant_revision,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'active',?,?)`,
+        leaseId, tenantId, spaceId, projectId, instanceId, requirementId, operationId, table, manifestSha256, resourceSha256,
+        generation, revision, now, now);
+      execute(this.ctx.storage.sql as never, `DELETE FROM extension_resource_operation_usage WHERE rowid IN (
+        SELECT rowid FROM extension_resource_operation_usage WHERE tenant_id=? AND space_id=? AND instance_id=?
+        ORDER BY created_at DESC,lease_id DESC LIMIT -1 OFFSET 500)`, tenantId, spaceId, instanceId);
       outcome.value = "claimed";
     });
     if (outcome.value === "rate_limit") return Response.json({ error_code: "extension_resource_rate_limit" }, { status: 429, headers: { "retry-after": "2" } });
@@ -18329,6 +18360,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const now = new Date().toISOString();
     const changed = this.ctx.storage.sql.exec(`UPDATE extension_resource_operation_leases SET status='released',released_at=?
+      WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND status='active'`,
+      now, leaseId, tenantId, spaceId, projectId, instanceId);
+    execute(this.ctx.storage.sql as never, `UPDATE extension_resource_operation_usage SET status='released',updated_at=?
       WHERE lease_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=? AND status='active'`,
       now, leaseId, tenantId, spaceId, projectId, instanceId);
     const status = queryOne<{ status: string }>(this.ctx.storage.sql as never,

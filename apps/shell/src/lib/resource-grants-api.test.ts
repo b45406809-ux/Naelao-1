@@ -13,10 +13,10 @@ describe("Project extension resource grant caller", () => {
   });
 
   it("reads bounded job receipts through the authenticated exact-install usage route", async () => {
-    const fetch = vi.fn(async () => Response.json({ installation_id: "install:1", generation: 3, receipts: [] }));
+    const fetch = vi.fn(async () => Response.json({ installation_id: "install:1", generation: 3, operations: [], receipts: [] }));
     vi.stubGlobal("fetch", fetch);
     const result = await getProjectExtensionResourceUsage("space one", "project/1", "install:1", { sessionToken: "session-token", endUserId: "project-owner" });
-    expect(result).toMatchObject({ installation_id: "install:1", generation: 3, receipts: [] });
+    expect(result).toMatchObject({ installation_id: "install:1", generation: 3, operations: [], receipts: [] });
     const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(new URL(url).pathname).toBe("/v1/spaces/space%20one/projects/project%2F1/extension-installations/install%3A1/resource-grants/usage");
     expect(init.cache).toBe("no-store");

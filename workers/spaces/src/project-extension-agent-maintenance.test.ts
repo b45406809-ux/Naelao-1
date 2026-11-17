@@ -28,7 +28,7 @@ function setup(options: { projectOwner?: string; readable?: boolean; publisherAc
       if (url.pathname === "/projects/project-a/automation-access") return options.readable === false
         ? Response.json({ error_code: "forbidden" }, { status: 403 }) : Response.json({ project_id: "project-a", can_read: true });
       if (url.pathname === "/extension-resource-grants") return Response.json({ installation: { instance_id: "instance-a", extension_id: "ext_project_voice",
-        tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", generation: 4, manifest_sha256: "a".repeat(64) }, requirements: [], grants: [] });
+        tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", generation: 4, manifest_sha256: "a".repeat(64) }, requirements: [], grants: [], operation_usage: [] });
       if (url.pathname === "/workflow-installation") return options.trusted === false
         ? Response.json({ error_code: "not_found" }, { status: 404 }) : Response.json(installation);
       return Response.json({ forwarded: true, method: request.method, path: url.pathname });
@@ -131,7 +131,7 @@ describe("Project extension agent maintenance routes", () => {
     const owner = setup({ projectOwner: "project-owner", usageRows: [row] });
     const response = await call(owner.env, `${resourceGrantPath}/usage`, { userId: "project-owner", role: "editor" });
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ installation_id: "instance-a", generation: 4, receipts: [row] });
+    await expect(response.json()).resolves.toEqual({ installation_id: "instance-a", generation: 4, operations: [], receipts: [row] });
     expect(owner.usageQueries[0]).toEqual(["tenant-a", "space-a", "project-a", "instance-a", "ext_project_voice", "a".repeat(64), 4]);
 
     const denied = setup({ projectOwner: "different-owner", usageRows: [row] });

@@ -6180,6 +6180,8 @@ app.get(projectExtensionResourceUsagePath, async c => {
   const snapshot = await grantResponse.clone().json().catch(() => null) as {
     installation?: { instance_id?: string; extension_id?: string; tenant_id?: string; space_id?: string; project_id?: string;
       generation?: number; manifest_sha256?: string };
+    operation_usage?: Array<{ lease_id: string; requirement_id: string; operation_id: string; table_name: string; grant_revision: number;
+      status: string; created_at: string; updated_at: string }>;
   } | null;
   const install = snapshot?.installation;
   if (!install || install.instance_id !== instanceId || install.tenant_id !== identity.tenantId || install.space_id !== spaceId
@@ -6194,7 +6196,7 @@ app.get(projectExtensionResourceUsagePath, async c => {
       .bind(identity.tenantId, spaceId, projectId, instanceId, install.extension_id, install.manifest_sha256, install.generation)
       .all<{ job_id: string; requirement_id: string; status: string; dispatch_attempts: number; payload_bytes: number;
         deadline_at: number; created_at: number; updated_at: number; started_at: number | null; completed_at: number | null }>();
-    return c.json({ installation_id: instanceId, generation: install.generation, receipts: results.map(row => ({
+    return c.json({ installation_id: instanceId, generation: install.generation, operations: snapshot.operation_usage ?? [], receipts: results.map(row => ({
       job_id: row.job_id, requirement_id: row.requirement_id, status: row.status, dispatch_attempts: row.dispatch_attempts,
       payload_bytes: row.payload_bytes, deadline_at: row.deadline_at, created_at: row.created_at, updated_at: row.updated_at,
       started_at: row.started_at, completed_at: row.completed_at,
