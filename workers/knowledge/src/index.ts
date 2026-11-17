@@ -23,6 +23,7 @@ import { revisionExternalPublicationsForDocument } from "./external-publication-
 import { createWebsitePreviewToken, sha256TextHex, verifyWebsitePreviewToken } from "./website-source-preview.js";
 import { boundedWebsiteCrawlFrontier, extractWebsiteCrawlLinks, WEBSITE_CRAWL_LIMITS, type WebsiteCrawlPageRef } from "./website-crawl.js";
 import { runScheduledWebsiteRefreshes } from "./website-refresh-scheduler.js";
+import { buildPrivacySafeRetrievalTelemetry } from "./retrieval-telemetry.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -3260,8 +3261,10 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
         content: item.content ?? "", r2Key: "", byteStart: 0, byteEnd: 0, title: item.title ?? "", url: item.url ?? "" }));
     }),
     emitTelemetry: (event) => {
-      const payload = { ...event, ...telemetry, retrieval_mode: mode, lexical_search: lexicalSearchAvailable ? "available" : "unavailable", result_count: 0 };
-      c.env.KNOWLEDGE_ANALYTICS?.writeDataPoint({ blobs: [tenantId, spaceId, scope.projectId, JSON.stringify(payload)], doubles: [event.latencyMs, event.confidence] });
+      const payload = buildPrivacySafeRetrievalTelemetry({ event, timings: telemetry, retrievalMode: mode,
+        lexicalSearch: lexicalSearchAvailable ? "available" : "unavailable", resultCount: 0 });
+      c.env.KNOWLEDGE_ANALYTICS?.writeDataPoint({ blobs: [policyVersion, payload.retrieval_mode, payload.lexical_search],
+        doubles: [payload.latency_ms, payload.confidence] });
       console.log(JSON.stringify({ event: "knowledge.retrieval", ...payload }));
     },
   }, { confidenceThreshold: Number(c.env.RETRIEVAL_CONFIDENCE_THRESHOLD ?? "0.85"), limit: topK });
