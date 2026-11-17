@@ -3453,6 +3453,14 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_project_extension_update_receipts_instance
         ON project_extension_update_receipts(tenant_id,space_id,project_id,instance_id,created_at);`,
   },
+  {
+    version: 157,
+    description: "bind scheduled authorization revisions to Project spend holds and settlements",
+    up: `ALTER TABLE project_spend_reservations ADD COLUMN service_identity_id TEXT;
+      ALTER TABLE project_spend_reservations ADD COLUMN service_authorization_revision TEXT;
+      ALTER TABLE project_spend_run_settlements ADD COLUMN service_identity_id TEXT;
+      ALTER TABLE project_spend_run_settlements ADD COLUMN service_authorization_revision TEXT;`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -11435,8 +11443,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { error_code: "not_found", message: "Project not found" },
         { status: 404 }
       );
-    const body = await request.json<{ credits?: number; action?: string; reservation_id?: string; run_id?: string }>()
-      .catch(() => ({} as { credits?: number; action?: string; reservation_id?: string; run_id?: string }));
+    const body = await request.json<{ credits?: number; action?: string; reservation_id?: string; run_id?: string;
+      service_identity_id?: string; service_authorization_revision?: string }>()
+      .catch(() => ({} as { credits?: number; action?: string; reservation_id?: string; run_id?: string;
+        service_identity_id?: string; service_authorization_revision?: string }));
+    const attribution = this.projectSpendServiceAttribution(body.service_identity_id, body.service_authorization_revision);
+    if (attribution === null) return Response.json({ error_code: "service_attribution_invalid" }, { status: 400 });
+    const serviceIdentityId = attribution?.service_identity_id ?? null;
+    const serviceAuthorizationRevision = attribution?.service_authorization_revision ?? null;
     const credits =
       typeof body.credits === "number" && body.credits > 0 ? body.credits : 0;
     const day = todaySpendKey();
@@ -11447,14 +11461,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const now = new Date().toISOString(), expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
       const result = this.ctx.storage.transactionSync(() => {
         execute(sql, "UPDATE project_spend_reservations SET status='expired',updated_at=? WHERE project_id=? AND status='held' AND expires_at<=?", now, projectId, now);
-        const existing = queryOne<{ run_id: string; day: string; credits: number; status: string }>(sql, "SELECT run_id,day,credits,status FROM project_spend_reservations WHERE reservation_id=?", reservationId);
-        if (existing) return existing.run_id === runId && existing.day === day && existing.credits === credits && existing.status === "held"
+        const existing = queryOne<{ run_id: string; day: string; credits: number; status: string; service_identity_id: string | null; service_authorization_revision: string | null }>(sql, "SELECT run_id,day,credits,status,service_identity_id,service_authorization_revision FROM project_spend_reservations WHERE reservation_id=?", reservationId);
+        if (existing) return existing.run_id === runId && existing.day === day && existing.credits === credits && ["held", "uncertain"].includes(existing.status)
+          && existing.service_identity_id === serviceIdentityId && existing.service_authorization_revision === serviceAuthorizationRevision
           ? { reserved: true, deduplicated: true, spentToday: 0, reservedToday: 0 }
           : { reserved: false, conflict: true, spentToday: 0, reservedToday: 0 };
         const spent = queryOne<{ credits: number }>(sql, "SELECT COALESCE(credits,0) AS credits FROM project_spend WHERE project_id=? AND day=?", projectId, day)?.credits ?? 0;
         const reserved = queryOne<{ credits: number }>(sql, "SELECT COALESCE(SUM(credits),0) AS credits FROM project_spend_reservations WHERE project_id=? AND day=? AND status IN ('held','uncertain') AND (status='uncertain' OR expires_at>?)", projectId, day, now)?.credits ?? 0;
         if (project.daily_spend_cap_credits > 0 && spent + reserved + credits > project.daily_spend_cap_credits) return { reserved: false, capped: true, spentToday: spent, reservedToday: reserved };
-        execute(sql, "INSERT INTO project_spend_reservations (reservation_id,project_id,run_id,day,credits,status,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,'held',?,?,?)", reservationId, projectId, runId, day, credits, expiresAt, now, now);
+        execute(sql, "INSERT INTO project_spend_reservations (reservation_id,project_id,run_id,day,credits,status,expires_at,created_at,updated_at,service_identity_id,service_authorization_revision) VALUES (?,?,?,?,?,'held',?,?,?,?,?)", reservationId, projectId, runId, day, credits, expiresAt, now, now, serviceIdentityId, serviceAuthorizationRevision);
         return { reserved: true, deduplicated: false, spentToday: spent, reservedToday: reserved + credits };
       });
       if (result.conflict) return Response.json({ error_code: "reservation_id_conflict" }, { status: 409 });
@@ -11466,8 +11481,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (!reservationId || reservationId.length > 200 || !Number.isSafeInteger(body.credits) || (body.credits ?? -1) < 0) return Response.json({ error_code: "reservation_settlement_invalid" }, { status: 400 });
       const now = new Date().toISOString();
       const settled = this.ctx.storage.transactionSync(() => {
-        const existing = queryOne<{ run_id: string; day: string; credits: number; status: string }>(sql, "SELECT run_id,day,credits,status FROM project_spend_reservations WHERE reservation_id=? AND project_id=?", reservationId, projectId);
+        const existing = queryOne<{ run_id: string; day: string; credits: number; status: string; service_identity_id: string | null; service_authorization_revision: string | null }>(sql, "SELECT run_id,day,credits,status,service_identity_id,service_authorization_revision FROM project_spend_reservations WHERE reservation_id=? AND project_id=?", reservationId, projectId);
         if (!existing) return { missing: true as const };
+        if (existing.service_identity_id !== serviceIdentityId || existing.service_authorization_revision !== serviceAuthorizationRevision) return { conflict: true as const };
         if (existing.status === "settled") return { deduplicated: true, day: existing.day, runId: existing.run_id };
         if (!['held', 'uncertain'].includes(existing.status) || (body.credits ?? 0) > existing.credits) return { conflict: true as const };
         execute(sql, "UPDATE project_spend_reservations SET status='settled',updated_at=? WHERE reservation_id=? AND project_id=? AND status IN ('held','uncertain')", now, reservationId, projectId);
@@ -11513,13 +11529,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return Response.json({ released, project_id: projectId, run_id: runId });
       }
       const settled = this.ctx.storage.transactionSync(() => {
-        const existing = queryOne<{ actual_credits: number; day: string }>(sql, "SELECT actual_credits,day FROM project_spend_run_settlements WHERE project_id=? AND run_id=?", projectId, runId);
-        if (existing) return { deduplicated: true, actualCredits: existing.actual_credits, day: existing.day };
+        const existing = queryOne<{ actual_credits: number; day: string; service_identity_id: string | null; service_authorization_revision: string | null }>(sql, "SELECT actual_credits,day,service_identity_id,service_authorization_revision FROM project_spend_run_settlements WHERE project_id=? AND run_id=?", projectId, runId);
+        if (existing) return existing.service_identity_id === serviceIdentityId && existing.service_authorization_revision === serviceAuthorizationRevision
+          ? { deduplicated: true, actualCredits: existing.actual_credits, day: existing.day }
+          : { conflict: true as const };
+        const reservationAttribution = queryOne<{ mismatch: number }>(sql,
+          "SELECT 1 AS mismatch FROM project_spend_reservations WHERE project_id=? AND run_id=? AND status IN ('held','uncertain') AND (service_identity_id IS NOT ? OR service_authorization_revision IS NOT ?) LIMIT 1",
+          projectId, runId, serviceIdentityId, serviceAuthorizationRevision);
+        if (reservationAttribution) return { conflict: true as const };
         execute(sql, "UPDATE project_spend_reservations SET status='settled',updated_at=? WHERE project_id=? AND run_id=? AND status='held'", now, projectId, runId);
-        execute(sql, "INSERT INTO project_spend_run_settlements (project_id,run_id,day,actual_credits,settled_at) VALUES (?,?,?,?,?)", projectId, runId, day, body.credits, now);
+        execute(sql, "INSERT INTO project_spend_run_settlements (project_id,run_id,day,actual_credits,settled_at,service_identity_id,service_authorization_revision) VALUES (?,?,?,?,?,?,?)", projectId, runId, day, body.credits, now, serviceIdentityId, serviceAuthorizationRevision);
         if ((body.credits ?? 0) > 0) execute(sql, "INSERT INTO project_spend (project_id,day,credits) VALUES (?,?,?) ON CONFLICT(project_id,day) DO UPDATE SET credits=credits+excluded.credits", projectId, day, body.credits);
         return { deduplicated: false, actualCredits: body.credits ?? 0, day };
       });
+      if ("conflict" in settled) return Response.json({ error_code: "settlement_attribution_conflict" }, { status: 409 });
       const spent = queryOne<{ credits: number }>(sql, "SELECT credits FROM project_spend WHERE project_id=? AND day=?", projectId, settled.day)?.credits ?? 0;
       return Response.json({ ...settled, project_id: projectId, run_id: runId, spent_today: spent, cap: project.daily_spend_cap_credits, capped: project.daily_spend_cap_credits > 0 && spent >= project.daily_spend_cap_credits });
     }
@@ -11549,6 +11572,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       cap,
       capped: cap > 0 && spentToday >= cap,
     });
+  }
+
+  private projectSpendServiceAttribution(identity: unknown, revision: unknown): { service_identity_id: string; service_authorization_revision: string } | undefined | null {
+    if (identity === undefined && revision === undefined) return undefined;
+    if (typeof identity !== "string" || !/^scheduled_job:[A-Za-z0-9_-]{1,128}$/.test(identity)
+      || typeof revision !== "string" || revision.length < 1 || revision.length > 128) return null;
+    return { service_identity_id: identity, service_authorization_revision: revision };
   }
 
   private async recordProjectExternalMessage(projectId: string, params: URLSearchParams, request: Request): Promise<Response> {

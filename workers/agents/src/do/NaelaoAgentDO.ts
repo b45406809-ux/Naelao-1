@@ -2415,7 +2415,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // The authoritative script-first agent model (spec appendix ~6672k). Loads the agent's
   // 4-file config from R2, then runs OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL.
 
-  private async buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string, commitContext?: { goal: string; taskId: string; threadId: string }, airGappedOnly = false, templateMode?: TemplateMode, workspaceBranch?: string, callerRole?: string): Promise<ScriptEngineEnv | null> {
+  private async buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string, commitContext?: { goal: string; taskId: string; threadId: string }, airGappedOnly = false, templateMode?: TemplateMode, workspaceBranch?: string, callerRole?: string, scheduledServiceIdentity?: { id: string; authorizationRevision: string }): Promise<ScriptEngineEnv | null> {
     if (!this.env.SCRIPTS_R2) return null;
     const env: ScriptEngineEnv = {
       scriptsBucket: this.env.SCRIPTS_R2,
@@ -2628,7 +2628,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             if (projectId && this.env.SPACES_WORKER) {
               const projectReservation = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/spend`, {
                 method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-                body: JSON.stringify({ action: "reserve", reservation_id: reservationId, run_id: runId, credits: maxCredits }),
+                body: JSON.stringify({ action: "reserve", reservation_id: reservationId, run_id: runId, credits: maxCredits,
+                  ...(scheduledServiceIdentity ? { service_identity_id: scheduledServiceIdentity.id,
+                    service_authorization_revision: scheduledServiceIdentity.authorizationRevision } : {}) }),
               }));
               if (!projectReservation.ok) throw new Error("system_one_project_budget_exhausted");
             } else if (projectId) throw new Error("system_one_project_budget_unavailable");
@@ -2645,13 +2647,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               }
               throw new Error("system_one_decision_budget_exhausted");
             }
-            await this.ctx.storage.put(reservationKey, { status: "reserved", model, inputPrice, outputPrice, priceSnapshotAt: priceTimestamp, reservationId, runId, spaceId, projectId: projectId ?? null, tenantId, maxCredits, maxTokens: estimate, reservedAt: Date.now(), reconcileAttempts: 0 });
+            await this.ctx.storage.put(reservationKey, { status: "reserved", model, inputPrice, outputPrice, priceSnapshotAt: priceTimestamp, reservationId, runId, spaceId, projectId: projectId ?? null, tenantId, maxCredits, maxTokens: estimate, reservedAt: Date.now(), reconcileAttempts: 0,
+              ...(scheduledServiceIdentity ? { serviceIdentityId: scheduledServiceIdentity.id,
+                serviceAuthorizationRevision: scheduledServiceIdentity.authorizationRevision } : {}) });
             await this.rescheduleAgentAlarm();
             return reservationId;
           },
           settle: async (reservationId, outcome) => {
             const key = `decision-reservation:${reservationId}`;
-            const row = await this.ctx.storage.get<{ status: string; model: string; inputPrice: number; outputPrice: number; priceSnapshotAt: string; runId: string; spaceId: string; projectId: string | null; tenantId: string; maxCredits: number; maxTokens: number; reservedAt: number; providerGenerationId?: string; reconcileAttempts?: number }>(key);
+            const row = await this.ctx.storage.get<{ status: string; model: string; inputPrice: number; outputPrice: number; priceSnapshotAt: string; runId: string; spaceId: string; projectId: string | null; tenantId: string; maxCredits: number; maxTokens: number; reservedAt: number; providerGenerationId?: string; reconcileAttempts?: number; serviceIdentityId?: string; serviceAuthorizationRevision?: string }>(key);
             if (!row) throw new Error("system_one_reservation_missing");
             if (row.status === "settled") return;
             if (outcome.status === "uncertain") {
@@ -2687,7 +2691,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               const credits = settledBilling.cost_credits;
               if (!Number.isSafeInteger(credits) || credits! < 0 || credits! > row.maxCredits) throw new Error("system_one_settlement_receipt_invalid");
               if (row.projectId && this.env.SPACES_WORKER) {
-                const projectSettlement = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "settle_reservation", reservation_id: reservationId, credits }) }));
+                const projectSettlement = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "settle_reservation", reservation_id: reservationId, credits,
+                  ...(row.serviceIdentityId && row.serviceAuthorizationRevision ? { service_identity_id: row.serviceIdentityId,
+                    service_authorization_revision: row.serviceAuthorizationRevision } : {}) }) }));
                 if (!projectSettlement.ok) throw new Error("system_one_project_settlement_unavailable");
               }
               await this.ctx.storage.put(key, { ...reconcilingRow, status: "settled", credits, settledAt: Date.now(), nextReconcileAt: undefined });
@@ -7019,7 +7025,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const reserve = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/spaces/${encodeURIComponent(body.spaceId)}/projects/${encodeURIComponent(body.projectId)}/spend`,
         { method: "POST", headers: await this.internalHeaders(body.tenantId ?? "", { "content-type": "application/json" }),
-          body: JSON.stringify({ action: "reserve", reservation_id: `${runId}:execution`, run_id: runId, credits: 1 }) }
+          body: JSON.stringify({ action: "reserve", reservation_id: `${runId}:execution`, run_id: runId, credits: 1,
+            ...(body.context?.trigger === "scheduled_job" && typeof body.context.service_identity_id === "string"
+              && typeof body.context.authorization_revision === "string" ? { service_identity_id: body.context.service_identity_id,
+                service_authorization_revision: body.context.authorization_revision } : {}) }) }
       ));
       if (reserve.status === 402) return Response.json({ error_code: "spend_capped" }, { status: 429 });
       if (!reserve.ok) return Response.json({ error_code: "project_spend_reservation_unavailable" }, { status: 503 });
@@ -7031,7 +7040,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try {
       result = await tools.run(body.scriptName, body.params ?? {});
     } catch (error) {
-      if (projectSpendReserved && body.projectId) await this.settleProjectSpendReservation(body.spaceId, body.tenantId ?? "", body.projectId, runId, 0);
+      if (projectSpendReserved && body.projectId) await this.settleProjectSpendReservation(body.spaceId, body.tenantId ?? "", body.projectId, runId, 0,
+        body.context?.trigger === "scheduled_job" && typeof body.context.service_identity_id === "string"
+          && typeof body.context.authorization_revision === "string" ? { serviceIdentityId: body.context.service_identity_id,
+            serviceAuthorizationRevision: body.context.authorization_revision } : undefined);
       throw error;
     }
     await this.settleRunBilling({ spaceId: body.spaceId, tenantId: body.tenantId ?? "", projectId: body.projectId,
@@ -7386,7 +7398,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // access, so a business on a pricingConfig.model === "subscription" product could run its
     // agent indefinitely whether or not it ever actually subscribed. Fails CLOSED (deny) on any
     // lookup error — a network hiccup must not silently unblock a gated subscription run.
-    const engineEnv = await this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId, { goal: body.goal, taskId: runId, threadId: sessionId }, body.airGappedOnly === true, templateMode, body.workspaceBranch, callerRole);
+    const engineEnv = await this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId, { goal: body.goal, taskId: runId, threadId: sessionId }, body.airGappedOnly === true, templateMode, body.workspaceBranch, callerRole,
+      body.context?.trigger === "scheduled_job" && typeof body.context.service_identity_id === "string"
+        && typeof body.context.authorization_revision === "string" ? { id: body.context.service_identity_id,
+          authorizationRevision: body.context.authorization_revision } : undefined);
     if (!engineEnv) {
       return this.finishScriptFailure(runId, "script engine unavailable: SCRIPTS_R2 not bound", 503, "script_engine_unavailable");
     }
@@ -7517,10 +7532,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const autonomousServiceRun = body.context?.["trigger"] === "scheduled_job"
       || body.context?.["trigger"] === "connector_poll";
     const scheduledServiceRun = body.context?.["trigger"] === "scheduled_job";
-    const scheduledServiceContext = scheduledServiceRun ? {
+    const scheduledServiceContext = scheduledServiceRun && typeof body.context?.["service_identity_id"] === "string"
+      && typeof body.context?.["authorization_revision"] === "string" ? {
       trigger: "scheduled_job",
-      service_identity_id: body.context?.["service_identity_id"],
-      authorization_revision: body.context?.["authorization_revision"],
+      service_identity_id: body.context["service_identity_id"],
+      authorization_revision: body.context["authorization_revision"],
     } : undefined;
     const runServiceContext = scheduledServiceContext ?? connectorPollServiceContext;
     const scheduledReadSafeActions = assembled.manifest.capabilities.enabledPrebuilts.flatMap(name => {
@@ -7706,12 +7722,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           if (contextLength && request.requestBytes + request.maxOutputTokens > contextLength) throw new Error("document_processing_context_limit");
           const allowed = await this.reserveRunInferenceCost({ spaceId, tenantId, projectId, userId, callerRole, hasSpendCap,
             runId: processingRunId, model, serializedRequestBytes: request.requestBytes, maxOutputTokens: request.maxOutputTokens,
-            sequence: 1, modelPricing: pricing, onReserved: () => { reserved = true; } });
+            sequence: 1, modelPricing: pricing,
+            ...(scheduledServiceContext ? { serviceIdentityId: scheduledServiceContext.service_identity_id,
+              serviceAuthorizationRevision: scheduledServiceContext.authorization_revision } : {}),
+            onReserved: () => { reserved = true; } });
           if (!allowed) throw new Error("document_processing_budget_exhausted");
         }, recordUsage: async usage => {
           await this.settleRunBilling({ spaceId, tenantId, projectId, userId, callerRole, hasSpendCap,
             runId: processingRunId, model, modelPricing: pricing, tokensUsed: usage.inputTokens + (usage.outputTokens ?? 0),
             inputTokens: usage.inputTokens, outputTokens: usage.outputTokens ?? 0, notes: [],
+            ...(scheduledServiceContext ? { serviceIdentityId: scheduledServiceContext.service_identity_id,
+              serviceAuthorizationRevision: scheduledServiceContext.authorization_revision } : {}),
             projectSpendReserved: Boolean(projectId && hasSpendCap && reserved),
             llmQuotaReserved: Boolean(!projectId && BUILDER_CALLER_ROLES.has(callerRole ?? "") && reserved) });
         } });
@@ -7777,7 +7798,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const response = await this.env.SPACES_WORKER.fetch(new Request(
           `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId!)}/spend`,
           { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-            body: JSON.stringify({ action: "reserve", reservation_id: `${runId}:${++reservationSequence}`, run_id: runId, credits: estimate.estimatedCredits }) }
+            body: JSON.stringify({ action: "reserve", reservation_id: `${runId}:${++reservationSequence}`, run_id: runId, credits: estimate.estimatedCredits,
+              ...(scheduledServiceContext ? { service_identity_id: scheduledServiceContext.service_identity_id,
+                service_authorization_revision: scheduledServiceContext.authorization_revision } : {}) }) }
         ));
         if (response.status === 402) return false;
         if (!response.ok) throw new Error("project_spend_reservation_unavailable");
@@ -10548,7 +10571,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     if (!tokensUsed && !infraCredits) {
-      if (projectSpendReserved && projectId && this.env.SPACES_WORKER) await this.settleProjectSpendReservation(spaceId, tenantId, projectId, runId, 0);
+      if (projectSpendReserved && projectId && this.env.SPACES_WORKER) await this.settleProjectSpendReservation(spaceId, tenantId, projectId, runId, 0,
+        { serviceIdentityId, serviceAuthorizationRevision });
       if (llmQuotaReserved) await this.settleLlmTokenReservation(tenantId, runId, 0, notes);
       return;
     }
@@ -10590,7 +10614,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // F9: SpaceDO is now the authoritative tally (single writer across every thread on
       // this project); the local table is kept only as this DO's own telemetry/cache.
       this.addProjectSpend(projectId, projectCredits);
-      if (projectSpendReserved && hasSpendCap) await this.settleProjectSpendReservation(spaceId, tenantId, projectId, runId, projectCredits);
+      if (projectSpendReserved && hasSpendCap) await this.settleProjectSpendReservation(spaceId, tenantId, projectId, runId, projectCredits,
+        { serviceIdentityId, serviceAuthorizationRevision });
       else if (hasSpendCap) await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, projectCredits);
       // Project planner inference shares the same versioned usage ledger as restricted external
       // answers. Project spend caps remain authoritative; a project-scoped event must not also
@@ -10648,12 +10673,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
-  private async settleProjectSpendReservation(spaceId: string, tenantId: string, projectId: string, runId: string, credits: number): Promise<void> {
+  private async settleProjectSpendReservation(spaceId: string, tenantId: string, projectId: string, runId: string, credits: number,
+    attribution?: { serviceIdentityId?: string | undefined; serviceAuthorizationRevision?: string | undefined }): Promise<void> {
     try {
       await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/spend`,
         { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-          body: JSON.stringify({ action: "settle_run", run_id: runId, credits }) }
+          body: JSON.stringify({ action: "settle_run", run_id: runId, credits,
+            ...(attribution?.serviceIdentityId && attribution.serviceAuthorizationRevision ? {
+              service_identity_id: attribution.serviceIdentityId,
+              service_authorization_revision: attribution.serviceAuthorizationRevision,
+            } : {}) }) }
       ));
     } catch { /* holds expire after 15 minutes; settlement accounting remains best effort */ }
   }
@@ -10677,7 +10707,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private async reconcileDecisionReservations(): Promise<void> {
     if (!this.env.BILLING_WORKER || typeof this.ctx.storage.list !== "function") return;
     const openRouterApiKey = this.env.OPENROUTER_API_KEY;
-    const rows = await this.ctx.storage.list<{ status: string; model: string; inputPrice: number; outputPrice: number; priceSnapshotAt: string; reservationId: string; runId: string; spaceId: string; projectId: string | null; tenantId: string; maxCredits?: number; maxTokens?: number; reservedAt?: number; providerGenerationId?: string; reconcileAttempts?: number; nextReconcileAt?: number; manualReviewAt?: number }>({ prefix: "decision-reservation:", limit: 1000 });
+    const rows = await this.ctx.storage.list<{ status: string; model: string; inputPrice: number; outputPrice: number; priceSnapshotAt: string; reservationId: string; runId: string; spaceId: string; projectId: string | null; tenantId: string; maxCredits?: number; maxTokens?: number; reservedAt?: number; providerGenerationId?: string; reconcileAttempts?: number; nextReconcileAt?: number; manualReviewAt?: number; serviceIdentityId?: string; serviceAuthorizationRevision?: string }>({ prefix: "decision-reservation:", limit: 1000 });
     for (const [key, row] of rows) {
       if (!row || row.status === "settled") continue;
       try {
@@ -10696,7 +10726,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const remote = await readBoundedResponseJson<{ status?: string; generation_id?: string; model_id?: string; cost_credits?: number; cost_usd?: number; actual_tokens?: number; max_tokens?: number; max_credits?: number; created_at?: string }>(response, 16 * 1024);
         const settleProjectSpend = async (credits: number) => {
           if (!row.projectId || !this.env.SPACES_WORKER) return true;
-          const projectSettlement = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "settle_reservation", reservation_id: row.reservationId, credits }) }));
+          const projectSettlement = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "settle_reservation", reservation_id: row.reservationId, credits,
+            ...(row.serviceIdentityId && row.serviceAuthorizationRevision ? { service_identity_id: row.serviceIdentityId,
+              service_authorization_revision: row.serviceAuthorizationRevision } : {}) }) }));
           return projectSettlement.ok;
         };
         if (remote.status === "settled") {
@@ -10816,6 +10848,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     spaceId: string; tenantId: string; projectId: string | undefined; userId: string | undefined; callerRole: string | undefined; hasSpendCap: boolean;
     runId: string; model: string; serializedRequestBytes: number; maxOutputTokens: number; sequence: number;
     modelPricing: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
+    serviceIdentityId?: string | undefined; serviceAuthorizationRevision?: string | undefined;
     onReserved: () => void;
   }): Promise<boolean> {
     if (args.projectId && args.hasSpendCap) {
@@ -10824,7 +10857,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const response = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/spaces/${encodeURIComponent(args.spaceId)}/projects/${encodeURIComponent(args.projectId)}/spend`,
         { method: "POST", headers: await this.internalHeaders(args.tenantId, { "content-type": "application/json" }),
-          body: JSON.stringify({ action: "reserve", reservation_id: `${args.runId}:${args.sequence}`, run_id: args.runId, credits: estimate.estimatedCredits }) }
+          body: JSON.stringify({ action: "reserve", reservation_id: `${args.runId}:${args.sequence}`, run_id: args.runId, credits: estimate.estimatedCredits,
+            ...(args.serviceIdentityId && args.serviceAuthorizationRevision ? { service_identity_id: args.serviceIdentityId,
+              service_authorization_revision: args.serviceAuthorizationRevision } : {}) }) }
       ));
       if (response.status === 402) return false;
       if (!response.ok) throw new Error("project_spend_reservation_unavailable");
