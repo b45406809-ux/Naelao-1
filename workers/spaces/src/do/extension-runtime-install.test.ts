@@ -738,6 +738,11 @@ describe("runtime extension installation", () => {
       .toEqual([{ publication_revision: 5 }]);
     expect(storage.sql.exec("SELECT publication_revisions_json FROM extension_project_knowledge_events WHERE instance_id=? ORDER BY revision DESC LIMIT 1", installationId).toArray())
       .toEqual([{ publication_revisions_json: '{"course_material":5}' }]);
+    expect(await (await list()).json()).toMatchObject({ installations: [{ grant_history: [
+      { revision: 3, publication_ids: ["course_material"], publication_revisions: { course_material: 5 }, actor_id: "owner" },
+      { revision: 2, publication_ids: [], publication_revisions: {}, actor_id: "owner" },
+      { revision: 1, publication_ids: ["course_material"], publication_revisions: { course_material: 4 }, actor_id: "owner" },
+    ] }] });
     const removal = await space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({
       instance_id: installationId, tenant_id: "tenant", space_id: "space",
     }), { method: "DELETE" }));

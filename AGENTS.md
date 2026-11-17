@@ -39,7 +39,13 @@ past work and do not override the current progress records or require repeating 
 
 Latest action: completed the read-only TBR07 source comparison and recorded its evidence in `docs/research/template-business-roles-and-member-onboarding-progress.md`. SpaceDO Project members/assistant clamp, Knowledge D1 `project_access`, and installation-bound extension grants remain separate; no product-code ACL writer/synchronization was found. Same-Space owner/admin private-Project behavior remains an explicit policy decision; no access was widened.
 
-## Current cross-plan checkpoint — 2026-11-17 (SC03 retryable capacity receipt; local)
+## Latest cross-plan checkpoint — 2026-11-17 (K05 extension Knowledge grant history; local)
+
+The owner/admin Project Shell now shows up to 20 content-free extension Knowledge grant events from the existing SpaceDO ledger: selection IDs/revisions, actor and timestamp. This is a read-only history projection; it does not affect grants or retrieval. SpaceDO extension-runtime + Spaces grant-route suites **38/38**, Spaces and Shell typechecks, and `git diff --check` pass. No browser, deployed migration/Worker or live acceptance. Uninstalled extension history is still omitted. Generic ownership transfer, retention/legal-hold semantics and post-uninstall audit availability remain unresolved product/lifecycle decisions.
+
+Exact next action: continue SC03 wake-on-release dispatcher using a persisted waiter/fenced lease, current authorization/budget rechecks and an authorized status/cancel caller; keep arbitrary guest payloads/secrets out of queued state. If the unresolved host-owner API contract prevents the full dispatcher, complete independent K25 budget/pause implementation and other active-plan code gaps. Keep all rollouts disabled and preserve untracked `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-17 (SC03 retryable capacity receipt; `fa17d910` pushed)
 
 DynamicSandbox capacity denial now persists an exact scope/payload-bound `waiting_capacity` receipt instead of poisoning the execution as indeterminate. A matching retry atomically claims it once; the code runner retries only the structured capacity 429 with the same immutable request. Current authorization and budget are rechecked before any start; no guest execution or hold occurs while waiting. Local checks: DynamicSandbox **36/36** plus code-runner capacity test, Agents typecheck and `git diff --check`. `pnpm` attempted a workspace install and aborted because it could not remove modules without a TTY; equivalent local Vitest/tsc binaries passed. No deployment/live acceptance.
 

@@ -4061,6 +4061,7 @@ export interface SpaceSharedChannelKnowledgeInstallation {
   updated_by?: string;
   updated_at?: string;
   activation_selected_publication_ids?: string[];
+  grant_history?: Array<{ revision: number; publication_ids: string[]; publication_revisions: Record<string, number>; actor_id: string; created_at: string }>;
 }
 
 export async function listSpaceSharedChannelKnowledge(

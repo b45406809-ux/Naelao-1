@@ -1465,6 +1465,19 @@ export default function ProjectDetailPage() {
                   <div className="settings-row-sub" style={{ marginTop: 6 }}>
                     Signed package collection IDs: {installation.declared_publication_ids.join(", ")}
                   </div>
+                  {(installation.grant_history?.length ?? 0) > 0 && (
+                    <details style={{ marginTop: 8 }}>
+                      <summary style={{ cursor: "pointer", fontSize: 13 }}>Project Knowledge grant history ({installation.grant_history!.length})</summary>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                        {installation.grant_history!.map(event => (
+                          <div className="settings-row-sub" key={event.revision}>
+                            Revision {event.revision} · {event.publication_ids.length ? event.publication_ids.map(id => `${id} @${event.publication_revisions[id] ?? "legacy"}`).join(", ") : "no collections (revoked)"}
+                            · {event.actor_id} · <time dateTime={event.created_at}>{event.created_at}</time>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
                   {activationSelectionsPending.length > 0 && <div role="status" className="settings-row-sub" style={{ marginTop: 8 }}>
                     Space Template review selected {activationSelectionsPending.join(", ")} for this Project. This is a pending setup choice, not access: publish each exact collection above, then explicitly save Project access to commit it. Current publication and signed package declaration are checked again when you save.
                   </div>}

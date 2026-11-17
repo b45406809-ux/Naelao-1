@@ -18505,11 +18505,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         `SELECT publication_id,publication_revision FROM extension_project_knowledge_grants
          WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? ORDER BY publication_id`,
         tenantId, spaceId, projectId, installation.instance_id);
+      const grantHistory = queryAll<{ revision: number; publication_ids_json: string; publication_revisions_json: string; actor_id: string; created_at: string }>(this.ctx.storage.sql as never,
+        `SELECT revision,publication_ids_json,publication_revisions_json,actor_id,created_at FROM extension_project_knowledge_events
+         WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? ORDER BY revision DESC LIMIT 20`,
+        tenantId, spaceId, projectId, installation.instance_id).map(event => {
+          let publicationIds: string[] = [];
+          let publicationRevisions: Record<string, number> = {};
+          try { const parsed: unknown = JSON.parse(event.publication_ids_json); if (Array.isArray(parsed)) publicationIds = parsed.filter((id): id is string => typeof id === "string").slice(0, 16); } catch { /* corrupt legacy history stays empty */ }
+          try {
+            const parsed: unknown = JSON.parse(event.publication_revisions_json);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) publicationRevisions = Object.fromEntries(Object.entries(parsed)
+              .filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isSafeInteger(entry[1]) && entry[1] >= 1).slice(0, 16));
+          } catch { /* pre-revision history stays empty */ }
+          return { revision: event.revision, publication_ids: publicationIds, publication_revisions: publicationRevisions,
+            actor_id: event.actor_id, created_at: event.created_at };
+        });
       const granted = grantedRows.map(row => row.publication_id);
       result.push({ instance_id: installation.instance_id, extension_id: installation.extension_id,
         name: manifest.bundle?.id ?? manifest.id, declared_publication_ids: declared,
         configured: Boolean(policy), granted_publication_ids: granted,
         granted_publications: grantedRows.map(row => ({ id: row.publication_id, revision: row.publication_revision })),
+        grant_history: grantHistory,
         revision: policy?.revision ?? 0, ...(policy ? { updated_by: policy.updated_by, updated_at: policy.updated_at } : {}) });
     }
     return Response.json({ installations: result }, { headers: { "cache-control": "private, no-store" } });

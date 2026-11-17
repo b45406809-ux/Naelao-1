@@ -31,7 +31,7 @@ SC03 remains **PARTIAL_LOCAL / CODE_GAP**. Existing `ConcurrencyDO` has two dist
 
 Exact next action: add durable wake-on-release dispatch using a persisted waiter and fenced capacity lease, with current authorization/budget rechecks and an authorized owner status/cancel caller. Do not serialize secrets or arbitrary guest bodies in the queue. Then implement hierarchical fairness and SC05 queue controls, and continue other active-plan gaps.
 
-## SC03 code checkpoint — local, 2026-11-17 (retryable capacity admission)
+## SC03 code checkpoint — `fa17d910` pushed, 2026-11-17 (retryable capacity admission)
 
 DynamicSandbox capacity refusal is now distinct from an indeterminate execution. ToolSandboxDO persists `waiting_capacity` only for the exact pre-execution `container_concurrency_limit` error; a matching execution ID, signed scope and payload can atomically claim that receipt once. The response is HTTP 429 with `waiting_for_capacity`, `admission_id`, `execution_started:false` and `Retry-After`; the code runner retries only this structured response, preserving the immutable scope and request body. Existing authorization and budget checks run again on every retry, and no guest command starts or billing hold is created until capacity is acquired.
 
