@@ -1,3 +1,19 @@
+## Current TBR11 checkpoint — 2026-11-17 (`c64aba7b` local; push pending)
+
+The shared session-budget gate now fails closed when its status read is non-OK or returns malformed
+credits/warning fields. It no longer treats an unavailable tally as zero. Local session-spend validation
+and scheduled identity suites pass **16/16**; Agents typecheck and `git diff --check` pass. Code
+`c64aba7b07bddcd78e0bf789c64ceb667a908f38` is committed locally; no deployed acceptance.
+
+This is a general admission-safety fix, not completion of TBR11's direct scheduled-script cap. Scheduled
+goal jobs already use the current job's approved actions and session ceiling. Direct scripts still need
+an enforceable run-level reservation/consumption path; checking a fresh session tally and settling after
+the script would not cap the script's mid-run spending. TBR07 remains already compared: SpaceDO,
+Knowledge and extension authorities do not share a safe role-composition/deny resolver, and the
+same-Space owner/admin private-Project mismatch is still a product/security decision. Exact next action:
+inspect the available per-effect budget gates for direct scripts and implement only an atomic, consumed
+run reservation; otherwise preserve this gap and move to another independent active-plan requirement.
+
 ## Current TBR11 reconciliation — 2026-11-17 (scheduled job action/budget grant exists)
 
 The prior exact-next-action paragraphs asking to add scheduled goal-job scopes and a per-run ceiling are superseded by pushed code `15b48e039716b96d82dc86dab13ef2cb066810bb` and migration 0282. Owner routes/UI persist up to 64 exact action names plus a bounded per-run credit ceiling; malformed grants fail closed. AgentDO reloads the current enabled goal and exact `updated_at` revision against the selected agent/Project, intersects approved actions with currently enabled operations, restricts autonomous approval to read-safe plus the exact owner-approved list, and rechecks the job revision between steps. The ceiling clamps the run session budget; scheduled service identity/revision is also attributed through LLM/Project holds and internal usage receipts in migrations 0281/157. Focused validation: scheduled identity/config/approval suites **21/21** passed locally. Migration/deployed and live acceptance remain unverified.

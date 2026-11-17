@@ -70,6 +70,28 @@ cursors and verified pricing remain unsupported contract gaps; K09 applicable si
 live acceptance remain open. Reconcile active callers before choosing the next K/EP/P/PW/S/U/TBR item.
 Keep rollout disabled, preserve the cache, and continue after checkpoints.
 
+## Current checkpoint — 2026-11-17 (session-budget status fail-closed; `c64aba7b` local)
+
+**Reminder to myself:** Never stop after an implementation slice, test pass, checkpoint, commit or push. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap.
+
+TBR07's read-only authority comparison is already recorded and was not repeated. SC03 reinspection found
+the encrypted recovery object contains the exact request path/body and its membership revision, but the
+alarm caller cannot revalidate the original live Bash role clamp or explicit durable invocation consent;
+Billing admission occurs only after capacity is acquired. Disconnected replay remains disabled. TBR11's
+scheduled goal jobs already load current action/budget grants, but direct scripts still lack a run-level
+budget reservation. This checkpoint instead closes a concrete shared guard defect: `checkSessionBudget`
+now returns 503 for unavailable or malformed spend status instead of admitting work as zero-spend.
+Session spend status tests **7/7**, scheduled identity tests **9/9** (16 total), Agents typecheck and
+`git diff --check` pass locally. Code `c64aba7b07bddcd78e0bf789c64ceb667a908f38` is committed locally;
+remote push and durable ledgers are pending. `pnpm exec` attempted a workspace install and exited because
+its non-TTY safeguard refused to remove modules; direct local Vitest/TypeScript binaries passed. No
+deployment or live acceptance. Preserve `infra/scripts/__pycache__/`.
+
+Exact next action: push this safe checkpoint after fetching, then continue TBR11's direct-script budget
+contract only through an enforceable run-level reservation/admission boundary. Do not call a preflight
+tally a per-run cap. If no current effect boundary can consume that reservation, keep the gap explicit
+and move to another independent active-plan code requirement. Keep every rollout disabled.
+
 ## Previous checkpoint — 2026-11-17 (K09 crawl status and Shell recovery; `2a042cf4` pushed)
 
 K09 now exposes a separate owner-only GET for bounded crawl status and page URL/hash metadata. It checks

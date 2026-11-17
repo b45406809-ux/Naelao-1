@@ -1,3 +1,19 @@
+## Current resume pointer — 2026-11-17 (budget status fail-closed; `c64aba7b` local)
+
+`checkSessionBudget` now rejects unavailable or malformed session-spend status with 503 instead of
+interpreting it as zero and admitting work. Local focused session/authorization tests **16/16**, Agents
+typecheck and `git diff --check` pass. Code `c64aba7b07bddcd78e0bf789c64ceb667a908f38` is committed
+locally; no deployment/live acceptance. TBR07 remains already compared. SC03 disconnected invocation
+replay still lacks an alarm-safe validator for the original native `Bash` role clamp and durable consent;
+keep dispatch disabled. Direct scheduled-script `max_run_credits` also needs an atomic run-level
+reservation that every relevant effect consumes; do not substitute a preflight tally.
+
+**Reminder to myself:** Keep implementing the full mission after this recovery checkpoint. Never stop at a test pass, code commit, push or progress update; immediately continue to another independent authorized plan requirement.
+
+Exact next action: fetch and safely push `c64aba7b`, then investigate the enforceable direct-script run
+reservation path. If no supported effect boundary exists, record that exact code contract and move to the
+next independent requirement across the active plans. Keep rollout disabled and preserve the cache.
+
 ## Resume pointer — 2026-11-17 (EP05 audited owner takedown; locally verified, push pending)
 
 Owner/admin removal now records the authentic actor, exact slug, last accepted publication digest and

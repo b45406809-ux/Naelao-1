@@ -1,5 +1,23 @@
 # Shared compute scheduling and budget progress
 
+## Current SC03/TBR11 continuation — 2026-11-17 (`c64aba7b` local; push pending)
+
+TBR07 remains already compared; no grants or role composition were inferred. SC03 source trace confirms
+`ToolSandboxDO` stores a short-lived encrypted path/body receipt only for native project invocations with
+a membership revision. The receipt does not preserve a replayable host authorization callback, explicit
+durable replay consent or the live `Bash`/caller-role clamp. `ensureMeter` creates the Billing reservation
+after capacity is acquired. Therefore an alarm cannot safely reauthorize and dispatch the saved command;
+the extension workflow dispatcher is a distinct grant/resource contract and is not a substitute. Keep
+disconnected dispatch fail-closed.
+
+Code `c64aba7b07bddcd78e0bf789c64ceb667a908f38` hardens the shared session-budget admission read: missing
+or malformed spend status returns 503 instead of admitting zero spend. Focused tests **16/16**, Agents
+typecheck and `git diff --check` pass locally. A direct scheduled-script credit ceiling remains uncoded:
+the one-shot script runner has no run-level reservation consumption path, so tally-before/run-settlement
+after cannot enforce a maximum in the middle of work. Exact next action: inspect existing supported
+per-effect budget gates and design the atomic direct-script reservation link; if no caller consumes it,
+keep that requirement open and move to another independent plan code gap. No rollout or live acceptance.
+
 ## SC04/SC05 reconciliation — 2026-11-17 (Project reservation status already reachable; `3477bc8c` pushed)
 
 The Agents owner/admin Project endpoint already returns exact Billing reservation IDs, runtime kind,
