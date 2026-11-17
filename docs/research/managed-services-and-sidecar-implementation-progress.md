@@ -1,3 +1,9 @@
+## Latest SC03 checkpoint — 2026-11-17 (membership authorization revisions; `070e0326` pushed)
+
+SpaceDO migration 158 adds monotonic authority revisions for Space and Project membership changes and Project assistant-clamp changes, retaining revisions across removal/re-add. Member API responses expose the revision; native container requests bind it into their signed scope and cancel a waiting retry on revision drift. Local checks: Agents code-runner/capacity/scope **13/13**, SpaceDO migration tests **10/10**, Agents/Spaces typechecks and `git diff --check`. Code `070e0326` is remote-verified on `origin/Mcbt5s-Backup-2`; migration not deployed. This does not yet provide encrypted request recovery, automatic dispatch, owner lifecycle controls or a linked Billing hold.
+
+Exact next action: implement SC03 encrypted bounded invocation receipt and durable dispatch/status/cancel/retry with current authorization and Billing revalidation. TBR07 comparison is already recorded; do not repeat it. Continue other independent managed/platform gaps and keep rollouts disabled.
+
 ## Latest cross-plan checkpoint — 2026-11-17 (K02 XLSX Knowledge ingestion; `007b5a8f` pushed)
 
 `007b5a8f` is pushed to `origin/Mcbt5s-Backup-2`, following DOCX checkpoint `0e1a0b06`. The XLSX first-worksheet parser is bounded and connected through editable Knowledge preview, signed save approval, source/parser lineage, workflow chunking and archive recovery. Local focused tests **34/34**, Knowledge/Workflows/Shell typechecks and diff hygiene pass. No deployment or live acceptance. K02 still lacks presentation and OCR ingestion; K03 quality evidence remains incomplete.

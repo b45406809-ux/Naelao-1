@@ -1,3 +1,9 @@
+## Latest SC03 checkpoint — 2026-11-17 (membership authorization revisions; `070e0326` pushed)
+
+SpaceDO migration 158 maintains monotonic Space/Project membership and assistant-clamp authority revisions. Native container scopes bind the revision; code-runner cancels a capacity wait when it changes. Local Agent tests **13/13**, SpaceDO migration tests **10/10**, Agents/Spaces typechecks and diff hygiene pass. Migration is unapplied. This does not implement disconnected payload recovery, wake-on-release dispatch, owner job status/cancel/retry, installation-grant revision or linked Billing hold.
+
+Exact next action: continue SC03 encrypted invocation persistence and durable authorized dispatch from the shared-compute ledger, then move to the next uncoded P/PW/K/EP/AP/TBR/S/U gap. Keep rollout disabled.
+
 ## Latest cross-plan checkpoint — 2026-11-17 (K02 XLSX Knowledge ingestion; `007b5a8f` pushed)
 
 Pushed after DOCX checkpoint `0e1a0b06`, `007b5a8f` adds bounded first-worksheet XLSX parsing through Knowledge preview/review/save, lineage persistence, workflow ingestion and archive restore. XLSX values and formulas remain inert text; source, XML-part, row, column and output limits are enforced. Local affected suites **34/34**, Knowledge/Workflows/Shell typechecks and diff check pass. No browser, deployment or live acceptance. K02 presentation/OCR and K03 coordinates/confidence/quality work remain open.

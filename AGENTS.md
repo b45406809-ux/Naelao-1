@@ -6,11 +6,11 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  exact action is SC03 durable compute admission/dispatch in the shared-compute ledger; TBR07 has
-  already been compared, and K02 DOCX/XLSX slices are pushed. Then continue the next unfinished
-  requirement across **all** active S/U/P/PW/K/EP/AP/TBR and incorporated plan ledgers. Follow
-  dependencies, preserve completed work and recheck current authorization, security and billing
-  boundaries.
+  exact action is SC03 encrypted invocation receipt and wake/retry path in the shared-compute ledger;
+  membership revisions are pushed, while TBR07 was already compared and K02 DOCX/XLSX are pushed.
+  Then continue the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
+  incorporated plan ledgers. Follow dependencies, preserve completed work and recheck current
+  authorization, security and billing boundaries.
 - A milestone, local test pass, documentation refresh, status update, user status request, plan
   incorporation, compaction, commit or push is **not mission completion**. After each coherent
   verified checkpoint, update the relevant durable ledger and this runbook's current pointer, commit
@@ -34,13 +34,13 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (K02 bounded XLSX Knowledge ingestion; `007b5a8f` pushed)
+## Latest cross-plan checkpoint — 2026-11-17 (SC03 monotonic membership authorization revision; `070e0326` pushed)
 
-Code `007b5a8f` is pushed to `origin/Mcbt5s-Backup-2`. Knowledge now supports scoped, editable first-worksheet XLSX preview/save. The bounded parser resolves the workbook's first sheet and shared strings, preserves cell values as text, renders formulas as text without cached results, and retains original bytes plus parser/source/extraction/approved-content lineage through workflow ingestion and archive restore. Limits include 5 MiB source, at most 512 archive entries, 4 MiB per selected XML part, 8 MiB metadata expansion per pass, 10,000 rows, 256 columns and 1 MiB output. Extra sheets, formatting, charts, hidden content, external links and formula cached results are disclosed as omitted. DOCX support remains pushed at `0e1a0b06`. Verification: XLSX/DOCX/PDF ingestion/archive/telemetry and Shell preview/file tests **34/34**; Knowledge, Workflows and Shell typechecks plus diff check pass. No browser, deployed or provider acceptance. K02 remains partial for presentation and OCR ingestion; K03 remains partial for page coordinates, extraction confidence and parser/provider quality evidence.
+Code `070e0326` is pushed to `origin/Mcbt5s-Backup-2`. SpaceDO migration 158 backfills and maintains monotonic authority revisions for Space membership and Project membership/assistant-clamp changes, including deletion and re-add; member readers expose the revision. Agent container authorization now pins the exact current Space/Project revision in the signed ToolSandbox scope and cancels a capacity wait if that revision changes before retry. This prevents a queued caller from silently adopting a later grant after membership churn. Local verification: Agent code-runner/capacity and container-scope tests **13/13**, SpaceDO migration tests **10/10**, Agents/Spaces typechecks and diff hygiene pass. Migration is not deployed; no live acceptance. This closes only the monotonic membership revision and retry binding, not payload recovery, automatic dispatch, installation-grant revisions, owner job status, or durable Billing-hold linkage. Preserve the pre-existing untracked `infra/scripts/__pycache__/`.
 
 **Reminder to myself:** Keep implementing the full authorized mission after every checkpoint. Do not stop at a status update, slice, test pass, documentation edit, commit or push; immediately move to the next independent unfinished requirement unless the user stops the mission or a real blocker prevents all progress.
 
-Exact next action: resume SC03 durable compute admission and dispatch from `docs/research/shared-compute-scheduling-and-budget-progress.md`. The TBR07 authority comparison is already recorded; do not repeat it. Inspect only concrete current host authorities and encrypted stores needed to define a durable job receipt, then implement reachable status/cancel/retry/recovery and a fenced dispatcher that revalidates current authorization and Billing admission. Do not persist arbitrary executable payload in ConcurrencyDO or make synchronous work block. If a required retention/product contract is genuinely undecided, record that exact decision and continue another independent gap. Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
+Exact next action: continue SC03 by designing the encrypted, bounded invocation receipt and wake/retry path for capacity-waiting executions. Store no executable text in ConcurrencyDO; bind encrypted payload AAD to immutable request hash, execution/scope, membership authorization revision and short expiry; erase on completion, cancel, revocation or expiry. Revalidate current authorization and Billing admission before dispatch. Add an owner-visible status/cancel/retry caller only where current authenticated routes support it. Do not claim arbitrary process-memory restoration. If the lifecycle needs a retention or human-confirmation decision, record it precisely and continue other active-plan code. TBR07 is already recorded; do not repeat that audit. Rollouts remain disabled.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (SC05 Project sidecar budget receipts; `84dd206f` pushed)
 
