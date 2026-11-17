@@ -1,3 +1,9 @@
+## Current checkpoint — 2026-11-17 (Knowledge citation and deletion telemetry; `ab284ee1` pushed)
+
+K26 now covers privacy-safe retrieval/parse/scheduled-refresh/access-denial/citation/deletion outcomes with bounded fixed labels and failure isolation. It omits raw identifiers, query/content/citation bodies, and provider cost. `ab284ee1` and prior Knowledge telemetry commits through `c9e796c7` are pushed. Relevant tests **62/62**, Knowledge typecheck and diff check pass. No live/deployed telemetry acceptance.
+
+EP06 remains partial for wider provider-resource dependencies, invoice-backed costs and lifecycle receipts. TBR06 remains proposal-only without an authoritative role-to-grant mapping/outbox. Exact next action: reconcile K26 remaining source/provider retry and cost-attribution paths, then move to other uncoded cross-plan requirements.
+
 ## Current checkpoint — 2026-11-17 (Knowledge authorization and refresh-lag telemetry; `0ed5adeb` pushed)
 
 K26 now includes privacy-safe retrieval metrics, PDF preview parse outcomes, scheduled website refresh counts/duration/maximum due lag, and fixed-label Project-access denial categories. Values are bounded, raw tenant/Space/Project IDs and query content are omitted, and telemetry exceptions do not alter work. Code `0ed5adeb`, `3c4242b7`, `9476fc1d`, `370b99f5`, and `67719e1a` are pushed. Focused suites **10/10**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance.
