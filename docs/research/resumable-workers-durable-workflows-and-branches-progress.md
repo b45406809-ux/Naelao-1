@@ -132,3 +132,18 @@ Local Knowledge parser/ingestion/archive/workflow checks **26/26** and typecheck
 Exact next action: implement the owner/admin worker-attempt usage read described above, with tests for
 project scope, missing/unpriced receipts and multiple attempts. Then continue all remaining active-plan
 requirements. Do not equate token allocation with actual currency/compute or claim runtime isolation.
+
+## PW03 checkpoint lineage — 2026-11-17 (`b7b2d163` pushed)
+
+Sub-agent checkpoint JSON now uses a bounded v1 envelope carrying save time and attempt metadata;
+oversized payloads become an explicit truncated receipt. Readers continue to accept legacy raw JSON,
+and malformed v1 envelopes fail explicitly instead of appearing as absent progress. Focused
+checkpoint/delegation tests **14/14**, Agents typecheck and `git diff --check` pass. Code `b7b2d163`
+is pushed to `origin/Mcbt5s-Backup-2`.
+
+PW03 remains partial: the envelope does not pin a verified workspace head, persist a checkpoint
+history/lineage chain, or prove restored state after process/DO/runtime interruption. The Shell
+timestamp/loss disclaimer is in `856fb145`; owner attempt usage receipts are in `c1372b54`. Exact next
+action: continue SC03 durable compute admission/dispatch, then return to PW exact workspace revision,
+missing/corrupt checkpoint status and runtime interruption evidence. Do not claim unsaved process
+memory recovery.

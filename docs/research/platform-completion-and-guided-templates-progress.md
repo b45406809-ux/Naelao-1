@@ -3109,6 +3109,15 @@ and Billing-admission requirements; no replay or rollout was enabled. TBR05's bl
 proposal-only invitation role path is already wired and tested. Exact next action: trace TBR04's
 symbolic-resource preview against current authoritative grants and implement only concrete
 owner-approved mappings, then return to SC03 and TBR11.
+
+## Cross-plan checkpoint — 2026-11-17 (PW03 versioned checkpoints; pushed `b7b2d163`)
+
+Sub-agent checkpoint persistence now uses a bounded versioned envelope with attempt/time metadata,
+legacy JSON reads, explicit truncation, and malformed-envelope denial. Focused worker/delegation tests
+**14/14**, Agents typecheck and diff hygiene pass. Code `b7b2d163` is pushed. Workspace-head proof,
+checkpoint history, real interruption recovery and unsaved-memory restoration remain incomplete.
+Exact next action: continue SC03 durable compute admission/dispatch, then PW exact revision and
+recovery-state work, plus other independent active-plan code requirements.
 ## Cross-plan checkpoint — 2026-11-17 (K02 reviewed image OCR caller)
 
 Space and Project Knowledge forms now accept bounded PNG/JPEG files through the signed editable preview
