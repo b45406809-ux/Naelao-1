@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0280_space_invitation_business_roles",
+  "requiredSchemaVersion": "0281_scheduled_service_billing_attribution",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1123,6 +1123,10 @@
     {
       "filename": "0280_space_invitation_business_roles.sql",
       "sha256": "19d970f602c4af11b39e254a3e9247f0a5a6ec08023517dea4adeccc7d958d73"
+    },
+    {
+      "filename": "0281_scheduled_service_billing_attribution.sql",
+      "sha256": "02fbed12aae43f977b2bba3a1436a60a75808c6c15ce52ecbf5c433825421a91"
     }
   ]
 }

@@ -17,9 +17,12 @@ function harness(planTier = "free") {
     readFileSync(join(__dirname, "../../../infra/migrations/0007_billing_meters.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0032_usage_events_idempotency.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0081_workflow_budget_reservations.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../../infra/migrations/0098_llm_token_reservations.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../../infra/migrations/0152_decision_call_reservations.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0109_usage_events_v2.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0110_workflow_usage_dimensions.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0266_extension_installation_workflow_budgets.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../../infra/migrations/0281_scheduled_service_billing_attribution.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0180_managed_service_credit_reservations.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0181_managed_service_ownership_and_audit.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0182_managed_service_plan_entitlements.sql"), "utf8"),
@@ -95,6 +98,7 @@ describe("unpriced scheduled Knowledge refresh usage receipts", () => {
     const h = harness();
     const body = { schema_version: 2, event_type: "knowledge_website_refresh_invocation", quantity: 1,
       unit: "invocations", space_id: "space-a", project_id: "project-a", run_id: "scheduled_" + "a".repeat(48),
+      service_identity_id: "scheduled_job:job-1", service_authorization_revision: "2026-11-17T12:00:00.000Z",
       idempotency_key: "knowledge-website-refresh:scheduled_" + "a".repeat(48) };
     const first = await h.post("/billing/usage", body);
     const retry = await h.post("/billing/usage", body);
@@ -104,9 +108,10 @@ describe("unpriced scheduled Knowledge refresh usage receipts", () => {
     await expect(retry.json()).resolves.toMatchObject({ recorded: false, deduplicated: true });
     expect(h.db.db.prepare(`SELECT COUNT(*) AS count FROM usage_events WHERE event_type='knowledge_website_refresh_invocation'`).get())
       .toEqual({ count: 1 });
-    expect(h.db.db.prepare(`SELECT payer_kind,cost_credits,rate_card_version,decision FROM usage_events
+    expect(h.db.db.prepare(`SELECT payer_kind,cost_credits,rate_card_version,decision,service_identity_id,service_authorization_revision FROM usage_events
       WHERE event_type='knowledge_website_refresh_invocation'`).get())
-      .toEqual({ payer_kind: null, cost_credits: null, rate_card_version: null, decision: null });
+      .toEqual({ payer_kind: null, cost_credits: null, rate_card_version: null, decision: null,
+        service_identity_id: "scheduled_job:job-1", service_authorization_revision: "2026-11-17T12:00:00.000Z" });
     expect(h.queueState.messages).toEqual([]);
 
     const token = await mintInternalToken(secret, "org-a");
@@ -118,6 +123,32 @@ describe("unpriced scheduled Knowledge refresh usage receipts", () => {
     expect(summary).toMatchObject({ event_count: 1, unpriced_event_count: 1,
       breakdown: [{ event_type: "knowledge_website_refresh_invocation", payer_kind: "unassigned",
         cost_credits: null, unpriced_event_count: 1 }] });
+  });
+
+  it("pins the scheduled identity and job revision from LLM reservation through settlement", async () => {
+    const h = harness();
+    const reservation = { reservation_id: "run-scheduled-1:1", run_id: "run-scheduled-1", space_id: "space-a",
+      estimated_tokens: 50, service_identity_id: "scheduled_job:job-1", service_authorization_revision: "revision-7" };
+    expect((await h.post("/internal/usage/llm-tokens/reservations/reserve", reservation)).status).toBe(201);
+    expect((await h.post("/internal/usage/llm-tokens/reservations/reserve", { ...reservation,
+      service_authorization_revision: "revision-8" })).status).toBe(409);
+    const settled = await h.post("/internal/usage/llm-tokens/reservations/settle", { run_id: "run-scheduled-1",
+      actual_tokens: 32, model_id: "@cf/test-model", cost_credits: 4, rate_card_version: "test-v1" });
+    expect(settled.status).toBe(200);
+    expect(h.db.db.prepare("SELECT service_identity_id,service_authorization_revision,status FROM llm_token_reservations WHERE id=?")
+      .get(reservation.reservation_id)).toEqual({ service_identity_id: "scheduled_job:job-1", service_authorization_revision: "revision-7", status: "settled" });
+    expect(h.db.db.prepare("SELECT service_identity_id,service_authorization_revision,quantity FROM usage_events WHERE run_id=? AND event_type='llm_tokens'")
+      .get(reservation.run_id)).toEqual({ service_identity_id: "scheduled_job:job-1", service_authorization_revision: "revision-7", quantity: 32 });
+    expect(h.queueState.messages.some(message => JSON.stringify(message).includes("service_identity_id"))).toBe(false);
+  });
+
+  it("rejects partial or malformed scheduled-service billing attribution", async () => {
+    const h = harness();
+    const base = { schema_version: 2, event_type: "infra_credits", quantity: 1, unit: "credits",
+      space_id: "space-a", idempotency_key: "scheduled-attribution-invalid" };
+    expect((await h.post("/billing/usage", { ...base, service_identity_id: "scheduled_job:job-1" })).status).toBe(400);
+    expect((await h.post("/billing/usage", { ...base, service_identity_id: "owner", service_authorization_revision: "r1" })).status).toBe(400);
+    expect(h.db.db.prepare("SELECT COUNT(*) AS count FROM usage_events").get()).toEqual({ count: 0 });
   });
 });
 

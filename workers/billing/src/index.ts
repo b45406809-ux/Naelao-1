@@ -537,6 +537,8 @@ app.post("/billing/usage", async (c) => {
     runtime_tier?: number;
     /** Opaque irreversible digest only; never send provider contact IDs to this ledger. */
     subject_hash?: string;
+    service_identity_id?: string;
+    service_authorization_revision?: string;
     payer_kind?: "plan_quota" | "platform" | "unknown";
     decision?: "allowed" | "denied" | "charged" | "released" | "failed" | "not_billable";
     // G-AN09: Caller may supply an idempotency key; if absent, one is computed
@@ -564,6 +566,10 @@ app.post("/billing/usage", async (c) => {
     || (body.runtime_tier !== undefined && (!Number.isInteger(body.runtime_tier) || body.runtime_tier < 1 || body.runtime_tier > 6))) {
     return c.json({ error_code: "invalid_usage_event" }, 400);
   }
+  if ((body.service_identity_id === undefined) !== (body.service_authorization_revision === undefined)
+    || (body.service_identity_id !== undefined && (!/^scheduled_job:[A-Za-z0-9_-]{1,128}$/.test(body.service_identity_id)
+      || typeof body.service_authorization_revision !== "string" || body.service_authorization_revision.length < 1
+      || body.service_authorization_revision.length > 128))) return c.json({ error_code: "invalid_service_attribution" }, 400);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -587,8 +593,8 @@ app.post("/billing/usage", async (c) => {
   // G-AN09: INSERT OR IGNORE on event_hash — if duplicate, silently skip (idempotent)
   const result = await c.env.PLATFORM_DB.prepare(
     `INSERT OR IGNORE INTO usage_events (id, org_id, space_id, event_type, quantity, recorded_at, event_hash,
-       schema_version,unit,rate_card_version,cost_credits,project_id,installation_id,run_id,provider,model_id,connector_provider,runtime_tier,subject_hash,payer_kind,decision)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       schema_version,unit,rate_card_version,cost_credits,project_id,installation_id,run_id,provider,model_id,connector_provider,runtime_tier,subject_hash,payer_kind,decision,service_identity_id,service_authorization_revision)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
@@ -612,6 +618,8 @@ app.post("/billing/usage", async (c) => {
       body.subject_hash ?? null,
       body.payer_kind ?? null,
       body.decision ?? null,
+      body.service_identity_id ?? null,
+      body.service_authorization_revision ?? null,
     )
     .run();
 
@@ -739,23 +747,29 @@ app.post("/internal/decisions/reservations/status", async (c) => {
 });
 app.post("/internal/usage/llm-tokens/reservations/reserve", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
-  const body = await c.req.json<{ reservation_id?: string; run_id?: string; space_id?: string; estimated_tokens?: number; expires_in_seconds?: number }>().catch(() => null);
+  const body = await c.req.json<{ reservation_id?: string; run_id?: string; space_id?: string; estimated_tokens?: number; expires_in_seconds?: number; service_identity_id?: string; service_authorization_revision?: string }>().catch(() => null);
   const id = body?.reservation_id ?? "", runId = body?.run_id ?? "", spaceId = body?.space_id ?? "", tokens = body?.estimated_tokens ?? 0;
   const expiresInSeconds = body?.expires_in_seconds ?? 15 * 60;
   if (!orgId || !id || id.length > 200 || !runId || runId.length > 128 || !spaceId || !Number.isSafeInteger(tokens) || tokens <= 0 || tokens > 10_000_000
-    || !Number.isSafeInteger(expiresInSeconds) || expiresInSeconds < 60 || expiresInSeconds > 30 * 86400) return c.json({ error_code: "bad_request" }, 400);
-  const existing = await c.env.PLATFORM_DB.prepare("SELECT run_id,estimated_tokens,status FROM llm_token_reservations WHERE id=? AND org_id=?").bind(id, orgId).first<{ run_id: string; estimated_tokens: number; status: string }>();
+    || !Number.isSafeInteger(expiresInSeconds) || expiresInSeconds < 60 || expiresInSeconds > 30 * 86400
+    || (body?.service_identity_id === undefined) !== (body?.service_authorization_revision === undefined)
+    || (body?.service_identity_id !== undefined && (!/^scheduled_job:[A-Za-z0-9_-]{1,128}$/.test(body.service_identity_id)
+      || typeof body.service_authorization_revision !== "string" || body.service_authorization_revision.length < 1 || body.service_authorization_revision.length > 128))) return c.json({ error_code: "bad_request" }, 400);
+  const existing = await c.env.PLATFORM_DB.prepare("SELECT run_id,estimated_tokens,status,service_identity_id,service_authorization_revision FROM llm_token_reservations WHERE id=? AND org_id=?").bind(id, orgId).first<{ run_id: string; estimated_tokens: number; status: string; service_identity_id: string | null; service_authorization_revision: string | null }>();
   if (existing) return existing.run_id === runId && existing.estimated_tokens === tokens && existing.status === "held"
+    && existing.service_identity_id === (body?.service_identity_id ?? null)
+    && existing.service_authorization_revision === (body?.service_authorization_revision ?? null)
     ? c.json({ reserved: true, deduplicated: true, reservation_id: id })
     : c.json({ error_code: "reservation_id_conflict" }, 409);
   const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
   const allowOverage = await resolveAllowOverage(c.env.PLATFORM_DB, orgId);
   const limits = PLAN_LIMITS[planTier] ?? PLAN_LIMITS.free!;
   const admission = llmReservationAdmission(orgId, tokens, limits, allowOverage);
-  const binds: unknown[] = [id, orgId, spaceId, runId, tokens, new Date(Date.now() + expiresInSeconds * 1000).toISOString()];
+  const binds: unknown[] = [id, orgId, spaceId, runId, tokens, new Date(Date.now() + expiresInSeconds * 1000).toISOString(),
+    body?.service_identity_id ?? null, body?.service_authorization_revision ?? null];
   binds.push(...admission.bindings);
-  const result = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO llm_token_reservations(id,org_id,space_id,run_id,estimated_tokens,status,expires_at,created_at,updated_at)
-    SELECT ?,?,?,?,?, 'held', ?,datetime('now'),datetime('now') WHERE ${admission.predicate}`).bind(...binds).run();
+  const result = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO llm_token_reservations(id,org_id,space_id,run_id,estimated_tokens,status,expires_at,service_identity_id,service_authorization_revision,created_at,updated_at)
+    SELECT ?,?,?,?,?, 'held', ?,?,?,datetime('now'),datetime('now') WHERE ${admission.predicate}`).bind(...binds).run();
   if (!result.meta.changes) return c.json({ error_code: "quota_exceeded", message: "Estimated LLM request would exceed the daily, weekly, or monthly token quota" }, 402);
   return c.json({ reserved: true, reservation_id: id, estimated_tokens: tokens }, 201);
 });
@@ -777,7 +791,7 @@ app.post("/internal/usage/llm-tokens/reservations/settle", async (c) => {
     || (body.rate_card_version !== undefined && (typeof body.rate_card_version !== "string" || body.rate_card_version.length < 1 || body.rate_card_version.length > 80))) return c.json({ error_code: "bad_request" }, 400);
   const prior = await c.env.PLATFORM_DB.prepare("SELECT actual_tokens FROM llm_token_run_settlements WHERE org_id=? AND run_id=?").bind(orgId, body.run_id).first<{ actual_tokens: number }>();
   if (prior) return c.json({ settled: true, deduplicated: true, actual_tokens: prior.actual_tokens });
-  const held = await c.env.PLATFORM_DB.prepare("SELECT space_id FROM llm_token_reservations WHERE org_id=? AND run_id=? AND status='held' LIMIT 1").bind(orgId, body.run_id).first<{ space_id: string }>();
+  const held = await c.env.PLATFORM_DB.prepare("SELECT space_id,service_identity_id,service_authorization_revision FROM llm_token_reservations WHERE org_id=? AND run_id=? AND status='held' LIMIT 1").bind(orgId, body.run_id).first<{ space_id: string; service_identity_id: string | null; service_authorization_revision: string | null }>();
   if (!held) return c.json({ settled: false, error_code: "reservation_not_found" }, 409);
   const now = new Date().toISOString();
   const hashBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`llm-token-reservation:${orgId}:${body.run_id}`));
@@ -790,10 +804,11 @@ app.post("/internal/usage/llm-tokens/reservations/settle", async (c) => {
     c.env.PLATFORM_DB.prepare("UPDATE llm_token_reservations SET status='settled',updated_at=? WHERE org_id=? AND run_id=? AND status='held'").bind(now, orgId, body.run_id),
     c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO llm_token_run_settlements(org_id,run_id,actual_tokens,settled_at) VALUES(?,?,?,?)").bind(orgId, body.run_id, body.actual_tokens, now),
     c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO usage_events
-      (id,org_id,space_id,event_type,quantity,recorded_at,event_hash,schema_version,unit,rate_card_version,cost_credits,provider,model_id,payer_kind,decision)
-      VALUES(?,?,?,'llm_tokens',?,?,?,2,'tokens',?,?,?,?,'plan_quota','charged')`)
+      (id,org_id,space_id,event_type,quantity,recorded_at,event_hash,schema_version,unit,rate_card_version,cost_credits,provider,model_id,run_id,payer_kind,decision,service_identity_id,service_authorization_revision)
+      VALUES(?,?,?,'llm_tokens',?,?,?,2,'tokens',?,?,?,?,?,'plan_quota','charged',?,?)`)
       .bind(eventId, orgId, held.space_id, body.actual_tokens, now, eventHash,
-        body.rate_card_version ?? null, body.cost_credits ?? null, body.model_id ? provider : null, body.model_id ?? null),
+        body.rate_card_version ?? null, body.cost_credits ?? null, body.model_id ? provider : null, body.model_id ?? null,
+        body.run_id, held.service_identity_id, held.service_authorization_revision),
   ]);
   if ((batch[2]?.meta.changes ?? 0) > 0 && (body.actual_tokens ?? 0) > 0) {
     await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "llm_tokens");

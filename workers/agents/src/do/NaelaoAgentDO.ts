@@ -7037,7 +7037,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     await this.settleRunBilling({ spaceId: body.spaceId, tenantId: body.tenantId ?? "", projectId: body.projectId,
       hasSpendCap, runId, tokensUsed: result.tokens_used, inputTokens: result.input_tokens ?? 0,
       outputTokens: result.output_tokens ?? 0, model: DEFAULT_WORKING_MODEL, notes: [], projectSpendReserved,
-      tier: result.tier, durationMs: result.duration_ms, chargeInfraToProject: true });
+      tier: result.tier, durationMs: result.duration_ms, chargeInfraToProject: true,
+      ...(body.context?.trigger === "scheduled_job" && typeof body.context.service_identity_id === "string"
+        && typeof body.context.authorization_revision === "string" ? { serviceIdentityId: body.context.service_identity_id,
+          serviceAuthorizationRevision: body.context.authorization_revision } : {}) });
     return Response.json({ result });
   }
 
@@ -7761,7 +7764,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           if (!this.env.BILLING_WORKER) throw new Error("monthly_llm_quota_reservation_unavailable");
           const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/llm-tokens/reservations/reserve", {
             method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-            body: JSON.stringify({ reservation_id: `${runId}:${++reservationSequence}`, run_id: runId, space_id: spaceId, estimated_tokens: estimate.estimatedInputTokens + estimate.reservedOutputTokens }),
+            body: JSON.stringify({ reservation_id: `${runId}:${++reservationSequence}`, run_id: runId, space_id: spaceId,
+              estimated_tokens: estimate.estimatedInputTokens + estimate.reservedOutputTokens,
+              ...(scheduledServiceContext ? { service_identity_id: scheduledServiceContext.service_identity_id,
+                service_authorization_revision: scheduledServiceContext.authorization_revision } : {}) }),
           }));
           if (response.status === 402) return false;
           if (!response.ok) throw new Error("monthly_llm_quota_reservation_unavailable");
@@ -8091,6 +8097,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         tier: result.result?.tier,
         durationMs: result.result?.duration_ms,
         sessionId, sessionCreditCeiling: body.sessionCreditCeiling,
+        ...(typeof scheduledServiceContext?.service_identity_id === "string" && typeof scheduledServiceContext.authorization_revision === "string"
+          ? { serviceIdentityId: scheduledServiceContext.service_identity_id,
+            serviceAuthorizationRevision: scheduledServiceContext.authorization_revision } : {}),
       });
 
       // Persist the answer into the thread. The client already writes the USER message before
@@ -10494,8 +10503,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
      *  enforceRunGates' pre-run check. Only posts the increment when a ceiling is actually
      *  configured — a space that never opted in pays zero extra round-trip cost per run. */
     sessionId?: string | undefined; sessionCreditCeiling?: number | undefined;
+    serviceIdentityId?: string | undefined; serviceAuthorizationRevision?: string | undefined;
   }): Promise<void> {
-    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, tokensUsed, inputTokens, outputTokens, model, modelPricing, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling, projectSpendReserved, llmQuotaReserved, chargeInfraToProject } = params;
+    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, tokensUsed, inputTokens, outputTokens, model, modelPricing, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling, projectSpendReserved, llmQuotaReserved, chargeInfraToProject, serviceIdentityId, serviceAuthorizationRevision } = params;
+    const serviceAttribution = serviceIdentityId && /^scheduled_job:[A-Za-z0-9_-]{1,128}$/.test(serviceIdentityId)
+      && serviceAuthorizationRevision && serviceAuthorizationRevision.length <= 128
+      ? { service_identity_id: serviceIdentityId, service_authorization_revision: serviceAuthorizationRevision } : {};
 
     // §A1.26: infra-credit usage is recorded independent of whether this run used any LLM
     // tokens at all (a pure script execution — e.g. a scheduled workflow.run with no reasoning
@@ -10514,6 +10527,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             space_id: spaceId, ...(projectId ? { project_id: projectId } : {}), run_id: runId,
             runtime_tier: typeof tier === "number" ? tier : undefined,
             payer_kind: "platform",
+            ...serviceAttribution,
             decision: "charged", idempotency_key: `run:${runId}:infra`,
           });
           if (this.env.ANALYTICS) {
@@ -10583,11 +10597,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // enter the platform subscription meter.
       if (tokensUsed > 0) {
         const modelId = model ?? DEFAULT_WORKING_MODEL;
-        await this.recordCanonicalUsageEvent(tenantId, projectLlmUsageEvent({
+        await this.recordCanonicalUsageEvent(tenantId, { ...projectLlmUsageEvent({
           spaceId, projectId, runId, modelId, tokens: tokensUsed, costCredits: tokenCredits,
           rateCardVersion: modelPricing?.rateCardVersion ?? BILLING_CORE_RATE_CARD_VERSION,
           payer: "platform",
-        }));
+        }), ...serviceAttribution });
       }
     } else if (BUILDER_CALLER_ROLES.has(callerRole ?? "") || callerRole === "product_end_user") {
       // Space Assistant usage without a project is charged to the tenant's monthly plan quota.
@@ -10608,6 +10622,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           model_id: modelId, provider, cost_credits: tokenCredits,
           rate_card_version: modelPricing?.rateCardVersion ?? BILLING_CORE_RATE_CARD_VERSION,
           payer_kind: "plan_quota", decision: "charged",
+          ...serviceAttribution,
         });
       }
     }
