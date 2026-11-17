@@ -10,6 +10,12 @@ Exact AP action after the next TBR06 grant-authority slice: implement generic pr
 
 # AgentPhone and AgentPort adapter evaluation progress
 
+## Reconciliation update — 2026-11-17 (source provenance and current service-wake changes)
+
+Commit `3ef84165546a781ebcde6867d62e563f022385b9` is present locally and directly yields the copied plan hash `9d457136974d65ac5252123bfc2b67c6aa779c0604a5d845337026e7b63ae83d`. A fresh fetch showed the current planning-branch tip no longer contains that path; the exact supplied commit still exists, so provenance is verified from the commit object without checking out or merging the planning branch. Current source inspection found no `agentphone` integration in Agents, Shell or Agent SDK. Existing AgentPort discovery remains provider-declared metadata; managed capability admission requires current operator verification and plan entitlement; channel/AgentMail and Telnyx voice remain independent. Their current billing receipts do not establish AgentPhone pricing, payer, regions or behavior. The new connector-poll approval clamp (local tests **14/14**) is host authorization only and adds no provider support. No registration, credentials, number provisioning, calls, messages or charges occurred.
+
+Exact next action: bind connector-poll authority to a current enabled connector revision at effects and HITL resume, then implement provider-neutral setup guidance only from operator-verified capability records. Keep AgentPhone absent/unavailable until its current contract, commercial terms and live behavior have separately verified evidence. Rollouts remain disabled. The independent connector-poll approval clamp is pushed at `503a9d22af8d5e91884fb820fdb68ab10629e829`; it does not imply AgentPhone support.
+
 ## Current reconciliation — 2026-11-16
 
 Fetched the source plan from `origin/plan/microapps-ui-sdk-voice` commit `3ef84165546a781ebcde6867d62e563f022385b9`; copied it into this branch without switching or merging. SHA-256: `9d457136974d65ac5252123bfc2b67c6aa779c0604a5d845337026e7b63ae83d`. Its requirements are incorporated as AP01–AP06 in platform plan section 18.

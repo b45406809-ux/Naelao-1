@@ -1,4 +1,8 @@
-## Cross-plan update — 2026-11-17 (scheduled approval checkpoint retains service identity; `688f69e4` pushed)
+## Cross-plan update — 2026-11-17 (connector polls fail closed on non-read actions; local verified)
+
+Code `503a9d22af8d5e91884fb820fdb68ab10629e829` is pushed and remote-verified. Connector polls now share the scheduled-service approval restriction: broad Space `yolo` no longer authorizes writes on a system wake; non-read-safe operations require exact-action approval. Local Agents tests **14/14**, typecheck and diff hygiene pass. No provider/deployed acceptance. TBR11 still needs a durable connector identity/revision, exact action grants and budget; this local restriction does not provide those. Exact next action: bind current connector owner/enabled revision to a service session and recheck before effects and HITL resume, then implement only role-to-host grant mappings that existing authorities specify. Keep shared-data and private-Project semantics unresolved and non-granting.
+
+## Previous cross-plan update — 2026-11-17 (scheduled approval checkpoint retains service identity; `688f69e4` pushed)
 
 Code `688f69e4c9cae6c29986efb17d65a507779134e9` is remote-verified. Scheduled HITL suspension now persists the exact job service identity/revision, checks it against authenticated session metadata on resume, recovers older checkpoints from the session, and denies stale/edited job revisions at resume and between goal actions. Tests **28/28**, Agents typecheck and diff hygiene pass. TBR11 remains **PARTIAL** for owner-reviewed reusable action scopes and budgets, cancellation after an effect starts, Project Steward opt-in and customer event/channel identities. Next: verify any existing Billing/operation ledger can bind an exact scheduled service budget without inheriting a creator's authority; otherwise retain the code gap and continue independent requirements.
 
