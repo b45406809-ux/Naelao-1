@@ -37,6 +37,7 @@ import {
   getProject,
   getProjectUsageSummary,
   getWebsiteKnowledgeCrawlCapability,
+  getWebsiteKnowledgeCrawlStatus,
   listAgentDefinitions,
   listWebsiteConnections,
   listExternalKnowledgePublicationEvents,
@@ -197,6 +198,72 @@ export default function ProjectDetailPage() {
         setWebsiteCrawlConcurrencyLimit(capability.active_operations_per_tenant);
       } })
       .catch(() => { if (current) setWebsiteCrawlAvailable(false); });
+    return () => { current = false; };
+  }, [activeSpaceId, params.projectId, session]);
+
+  React.useEffect(() => {
+    let current = true;
+    if (!creds || typeof window === "undefined") return () => { current = false; };
+    const storageKey = `naelao:website-crawl:${activeSpaceId}:${params.projectId}`;
+    const saved = window.sessionStorage.getItem(storageKey);
+    if (!saved) return () => { current = false; };
+    let receipt: { operationId?: unknown; idempotencyKey?: unknown; connectionId?: unknown };
+    try { receipt = JSON.parse(saved) as typeof receipt; }
+    catch { window.sessionStorage.removeItem(storageKey); return () => { current = false; }; }
+    if (typeof receipt.operationId !== "string" || !/^[0-9a-f-]{36}$/i.test(receipt.operationId)
+      || typeof receipt.idempotencyKey !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(receipt.idempotencyKey)
+      || typeof receipt.connectionId !== "string" || !receipt.connectionId) {
+      window.sessionStorage.removeItem(storageKey);
+      return () => { current = false; };
+    }
+    websiteCrawlRequestKeyRef.current = receipt.idempotencyKey;
+    setWebsiteConnectionId(receipt.connectionId);
+    void getWebsiteKnowledgeCrawlStatus(activeSpaceId, params.projectId, receipt.operationId, creds)
+      .then((status) => {
+        if (!current) return;
+        setWebsiteCrawl(status);
+        const root = status.pages.find(page => page.depth === 0)?.requested_url;
+        if (root) setWebsiteSourceUrl(root);
+        if (!status.continuation_available) websiteCrawlRequestKeyRef.current = null;
+      })
+      .catch(() => {
+        if (!current) return;
+        window.sessionStorage.removeItem(storageKey);
+        websiteCrawlRequestKeyRef.current = null;
+      });
+    return () => { current = false; };
+  }, [activeSpaceId, params.projectId, session]);
+
+  React.useEffect(() => {
+    let current = true;
+    if (!creds || typeof window === "undefined") return () => { current = false; };
+    const storageKey = `naelao:website-crawl:${activeSpaceId}:${params.projectId}`;
+    const saved = window.sessionStorage.getItem(storageKey);
+    if (!saved) return () => { current = false; };
+    let receipt: { operationId?: unknown; idempotencyKey?: unknown; connectionId?: unknown; rootUrl?: unknown };
+    try { receipt = JSON.parse(saved) as typeof receipt; }
+    catch { window.sessionStorage.removeItem(storageKey); return () => { current = false; }; }
+    if (typeof receipt.operationId !== "string" || !/^[0-9a-f-]{36}$/i.test(receipt.operationId)
+      || typeof receipt.idempotencyKey !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(receipt.idempotencyKey)
+      || typeof receipt.connectionId !== "string" || !receipt.connectionId || typeof receipt.rootUrl !== "string") {
+      window.sessionStorage.removeItem(storageKey);
+      return () => { current = false; };
+    }
+    websiteCrawlRequestKeyRef.current = receipt.idempotencyKey;
+    setWebsiteConnectionId(receipt.connectionId);
+    setWebsiteSourceUrl(receipt.rootUrl);
+    void getWebsiteKnowledgeCrawlStatus(activeSpaceId, params.projectId, receipt.operationId, creds)
+      .then((status) => {
+        if (!current) return;
+        setWebsiteCrawl(status);
+        const root = status.pages.find(page => page.depth === 0)?.requested_url;
+        if (root) setWebsiteSourceUrl(root);
+      })
+      .catch(() => {
+        if (!current) return;
+        window.sessionStorage.removeItem(storageKey);
+        websiteCrawlRequestKeyRef.current = null;
+      });
     return () => { current = false; };
   }, [activeSpaceId, params.projectId, session]);
 
@@ -510,6 +577,8 @@ export default function ProjectDetailPage() {
         max_pages: 8, max_depth: 2, owner_confirmed_site_terms: true,
       });
       setWebsiteCrawl(result);
+      if (typeof window !== "undefined") window.sessionStorage.setItem(`naelao:website-crawl:${activeSpaceId}:${params.projectId}`,
+        JSON.stringify({ operationId: result.operation_id, idempotencyKey, connectionId: websiteConnectionId }));
       if (!result.continuation_available) websiteCrawlRequestKeyRef.current = null;
     } catch (error) {
       show(error instanceof Error ? error.message : "Couldn't discover approved website pages.");
@@ -1233,6 +1302,11 @@ export default function ProjectDetailPage() {
               ) : <div role="status" className="settings-row-sub">Multi-page discovery remains disabled while site-terms and live acceptance gates are open.</div>}
               {websiteCrawl && <div role="status" style={{ borderTop: "1px solid var(--border)", paddingTop: 8, fontSize: 12 }}>
                 <strong>Discovery {websiteCrawl.status} · {websiteCrawl.totals.page_count} pages · {websiteCrawl.totals.byte_count.toLocaleString()} bytes</strong>
+                  <Button size="sm" variant="ghost" type="button" onClick={() => {
+                    setWebsiteCrawl(null);
+                    websiteCrawlRequestKeyRef.current = null;
+                    if (typeof window !== "undefined") window.sessionStorage.removeItem(`naelao:website-crawl:${activeSpaceId}:${params.projectId}`);
+                  }}>Forget discovery status</Button>
                 {websiteCrawl.pages.map((page) => <div key={page.requested_url} className="settings-row-sub" style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
                   <span style={{ paddingLeft: page.depth * 12 }}>{page.status} · {page.requested_url}{page.error_code ? ` · ${page.error_code}` : ""}</span>
                   {page.status === "preview_ready" && <Button size="sm" variant="ghost" type="button" onClick={() => {

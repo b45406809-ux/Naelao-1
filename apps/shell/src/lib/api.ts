@@ -4004,6 +4004,7 @@ export interface WebsiteKnowledgeCrawlResult {
   operation_id: string;
   status: "partial" | "completed" | "paused" | "running";
   continuation_available: boolean;
+  lease_expires_at?: string | null;
   limits: { max_pages: number; max_depth: number; max_page_bytes: number; max_total_bytes: number;
     max_links_per_page: number; max_redirects: number; elapsed_ms_per_request: number };
   totals: { page_count: number; byte_count: number; queued_count: number; retryable_count: number };
@@ -4026,6 +4027,14 @@ export async function previewWebsiteKnowledgeCrawl(spaceId: string, projectId: s
   return apiFetch<WebsiteKnowledgeCrawlResult>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/sources/website/crawl/preview`,
     { method: "POST", body: JSON.stringify(input), session, cache: "no-store" },
+  );
+}
+
+export async function getWebsiteKnowledgeCrawlStatus(spaceId: string, projectId: string, operationId: string, session: SessionCredentials) {
+  if (!/^[0-9a-f-]{36}$/i.test(operationId)) throw new Error("Invalid website crawl operation id");
+  return apiFetch<WebsiteKnowledgeCrawlResult>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/sources/website/crawl/operations/${encodeURIComponent(operationId)}`,
+    { session, cache: "no-store" },
   );
 }
 
