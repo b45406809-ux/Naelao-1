@@ -392,8 +392,15 @@ async function runContainerRequest(
       if (resp.status !== 429 || attempt >= 5 || controller.signal.aborted) break;
       const admission: { status?: unknown } = await resp.clone().json<{ status?: unknown }>().catch((): { status?: unknown } => ({}));
       if (admission.status !== "waiting_for_capacity") break;
-      // Retry the same immutable scope, execution ID and payload. The host receipt has not
-      // started guest execution; it can dispatch only after current auth/budget checks pass.
+      // The wait receipt has not started guest execution. Recheck the caller's live grant
+      // before retrying; the DO rechecks entitlement and budget before it starts paid work.
+      // A revocation cancels this exact waiter so it cannot reserve a slot after access ends.
+      if (!opts.authorizeContainer || !await opts.authorizeContainer(params)) {
+        controller.abort(); // finally sends the exact execution cancellation once
+        return { ok: false, error: "container_execution_denied", tier: 6, actual_tier: 6, engine: "container",
+          duration_ms: Date.now() - started, tokens_used: 0 };
+      }
+      // Keep the same immutable scope, execution ID and payload across authorized retries.
       const retryAfterSeconds = Number(resp.headers.get("retry-after"));
       const delayMs = Number.isFinite(retryAfterSeconds) ? Math.max(0, Math.min(5_000, retryAfterSeconds * 1000)) : 5_000;
       if (delayMs > 0) await new Promise<void>(resolve => {
