@@ -5,7 +5,8 @@ const SCHEDULE_BATCH_LIMIT = 4;
 const SCHEDULE_LEASE_MS = 3 * 60_000;
 const SCHEDULE_FAILURE_BACKOFF_CAP_MINUTES = 360;
 
-interface ScheduleEnvironment { PLATFORM_DB: D1Database; PLATFORM_SECRET: string; BILLING_WORKER?: Fetcher; KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED?: string }
+interface ScheduleEnvironment { PLATFORM_DB: D1Database; PLATFORM_SECRET: string; BILLING_WORKER?: Fetcher;
+  KNOWLEDGE_ANALYTICS?: AnalyticsEngineDataset; KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED?: string }
 interface DueWebsiteRefresh {
   schedule_id: string; tenant_id: string; space_id: string; project_id: string; document_id: string;
   connection_ref: string; owner_user_id: string; enabled: number; interval_hours: 24 | 168; generation: number;
@@ -21,6 +22,16 @@ interface SchedulePreview {
 }
 export interface ScheduledRefreshRunResult { selected: number; claimed: number; completed: number; failed: number; paused: number }
 type InternalFetcher = (request: Request, env: ScheduleEnvironment, ctx: ExecutionContext) => Promise<Response>;
+
+function emitScheduledRefreshMetrics(env: ScheduleEnvironment, result: ScheduledRefreshRunResult, durationMs: number): void {
+  try {
+    const count = (value: number) => Math.max(0, Math.min(SCHEDULE_BATCH_LIMIT, Math.round(value)));
+    env.KNOWLEDGE_ANALYTICS?.writeDataPoint({ blobs: ["website_refresh", "scheduled",
+      env.KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED === "true" ? "enabled" : "disabled"],
+      doubles: [count(result.selected), count(result.claimed), count(result.completed), count(result.failed), count(result.paused),
+        Math.max(0, Math.min(120_000, Math.round(durationMs)))], indexes: [] });
+  } catch { /* observability must not alter refresh work */ }
+}
 
 function errorCodeFrom(body: unknown): string {
   if (body && typeof body === "object" && "error_code" in body && typeof body.error_code === "string"
@@ -98,13 +109,16 @@ async function finishUnchanged(env: ScheduleEnvironment, schedule: DueWebsiteRef
 
 export async function runScheduledWebsiteRefreshes(env: ScheduleEnvironment, fetchInternal: InternalFetcher,
   ctx: ExecutionContext, now = new Date()): Promise<ScheduledRefreshRunResult> {
+  const startedAt = performance.now();
   if (env.KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED !== "true") {
     // Continue delivering prior receipts while refresh activation remains disabled.
     await flushWebsiteRefreshUsageOutbox(env, now);
     await env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_schedules SET enabled=0,generation=generation+1,next_run_at=NULL,
       last_result='paused',last_error_code='schedule_rollout_disabled',lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE enabled=1`)
       .bind(now.toISOString()).run();
-    return { selected: 0, claimed: 0, completed: 0, failed: 0, paused: 0 };
+    const result = { selected: 0, claimed: 0, completed: 0, failed: 0, paused: 0 };
+    emitScheduledRefreshMetrics(env, result, performance.now() - startedAt);
+    return result;
   }
   const nowIso = now.toISOString();
   const due = await env.PLATFORM_DB.prepare(`SELECT rs.id AS schedule_id,rs.tenant_id,rs.space_id,rs.project_id,
@@ -201,5 +215,6 @@ export async function runScheduledWebsiteRefreshes(env: ScheduleEnvironment, fet
     }
   }
   await flushWebsiteRefreshUsageOutbox(env, now);
+  emitScheduledRefreshMetrics(env, result, performance.now() - startedAt);
   return result;
 }
