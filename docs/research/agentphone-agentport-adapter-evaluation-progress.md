@@ -1,3 +1,9 @@
+## Cross-plan checkpoint — 2026-11-17 (`b4a06736` pushed)
+
+EP03's RAG package now has a host-authorized custom retriever wrapper: pre-ranking current chunk allowlist, explicit query-egress admission, lineage/budget checks, and post-call revoke/source/deletion fencing. Synthetic tests **7/7**, RAG/Knowledge typechecks pass. No custom runtime caller or AgentPhone adapter was added. AP06 owner UI guidance uses only current operator-verified capability scopes (`41e01624`); AgentPhone API, pricing, events and live behavior remain unverified.
+
+Exact next cross-plan action: inspect whether current signed extension runtime offers a reachable, host-mediated Knowledge invocation; only wire it to existing persistent grant/publication/source authority if supported. Otherwise retain the runtime gap and proceed to EP04/other independent plan requirements. Rollouts remain disabled.
+
 ## Cross-plan checkpoint — 2026-11-17 (custom Knowledge contract; `d99f40cb` pushed)
 
 The RAG package exports a first host-validated custom Knowledge extension contract with exact scope/source/parser/chunker/index/retrieval lineage, bounded chunk hashes/coordinates and candidate allowlisting. Tests **3/3**, package typecheck and diff hygiene pass. No live extension or AgentPhone integration is implied. The owner UI provider-neutral verified-scope guidance is at `41e01624`; AgentPhone still has no verified API, events, pricing or rollout record.
