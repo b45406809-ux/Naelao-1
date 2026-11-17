@@ -1,3 +1,15 @@
+## Resume pointer — 2026-11-17 (EP05 bounded JSON errors; locally verified, push pending)
+
+Malformed page JSON now returns HTTP 400 `invalid_json`; only bounded-body overflow returns HTTP 413
+`payload_too_large`. The route rejects both before dispatch to MicroAppDO. Focused Spaces route/DO tests
+**15/15**, typecheck and diff check pass. This is local evidence; public delivery rollout remains off.
+
+**Reminder to myself:** Continue the full autonomous mission after this verified slice; commit and push are recovery points, not completion.
+
+Exact next action after push: resume SC03 durable dispatch only where explicit user consent, exact current
+authority and fresh Billing can be revalidated before launch; otherwise move to another independent
+uncoded plan requirement and keep automatic replay fail-closed.
+
 ## Resume pointer — 2026-11-17 (EP05 owner publication inventory; pushed as `61161067`)
 
 See the platform completion ledger for the bounded authenticated publication list, integrity status and

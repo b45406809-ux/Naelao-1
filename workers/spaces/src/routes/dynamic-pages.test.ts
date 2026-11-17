@@ -58,6 +58,20 @@ describe("dynamic page isolation boundary", () => {
     expect(JSON.parse(await h.fetch.mock.calls[0]![0].clone().text())).toMatchObject({ actor_id: "owner-a", review_id: "123e4567-e89b-12d3-a456-426614174000" });
   });
 
+  it("distinguishes malformed page JSON from an oversized request", async () => {
+    const h = harness();
+    const token = await mintInternalToken("test-secret", "tenant-a");
+    const headers = { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-internal-token": token, "x-naelao-role": "owner" };
+    const malformed = await h.app.request("/spaces/s/apps/app/pages", { method: "POST", headers, body: "{" }, h.env);
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toMatchObject({ error_code: "invalid_json" });
+    const oversized = await h.app.request("/spaces/s/apps/app/pages", { method: "POST", headers,
+      body: new Uint8Array(1024 * 1024 + 1) }, h.env);
+    expect(oversized.status).toBe(413);
+    expect(await oversized.json()).toMatchObject({ error_code: "payload_too_large" });
+    expect(h.fetch).not.toHaveBeenCalled();
+  });
+
   it("allows only a tenant Space owner/admin to take down an exact public page", async () => {
     const h = harness();
     const path = "/spaces/s/apps/app/pages/spring-signup";

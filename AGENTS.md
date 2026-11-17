@@ -38,21 +38,20 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 isolated owner preview; pushed as `d7db0499`)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 bounded JSON error handling; locally verified, pending push)
 
-The owner-reviewed page iframe now uses an empty sandbox plus a document CSP (`default-src 'none'`,
-`img-src data:`, no forms, no base URL), so previewed content cannot load remote assets or submit forms.
-Review/publish still uses the exact immutable digest; public delivery stays disabled. Shell typecheck,
-preview isolation + API tests **2/2**, and diff hygiene pass. Local tests only; no browser/deployed
-acceptance. The publication inventory code is pushed at `61161067` (docs `16b276ca`), and the top-level
-mission pointer is `bf9f8bf1`; this hardening checkpoint is pushed as `d7db0499`.
+The owner page review/apply routes now distinguish malformed JSON (`400 invalid_json`) from requests
+exceeding the 1 MiB body ceiling (`413 payload_too_large`) and reject both before invoking MicroAppDO.
+Focused Spaces route/DO tests **15/15**, Spaces typecheck and diff hygiene pass. Prior page inventory is
+pushed at `61161067` (docs `16b276ca`); preview isolation is pushed at `d7db0499` (docs `1a3f0145`).
+This small correction awaits push. Public rollout remains disabled.
 
-**Reminder to myself:** Keep implementing the full mission; do not stop after tests, docs, commit or push. Continue with the next independent uncoded requirement after this recovery checkpoint.
+**Reminder to myself:** Keep implementing the entire mission after every checkpoint. A test pass, docs update, commit or push is not a stop; continue with the next independent uncoded requirement unless the user stops or a real blocker prevents progress.
 
-Exact next action after push: continue SC03's durable compute job contract only with explicit invocation
-consent, exact current authority revalidation and fresh Billing admission before dispatch. The live
-`authorizeContainer` closure is not a durable callback, so keep detached replay denied until a supported
-host authority path exists. Then move to another independent S2–S9/U01–U12/EP/K/P/PW/AP/TBR gap.
+Exact next action after push: continue SC03's durable job contract only where explicit invocation
+consent, exact current authority revalidation and fresh Billing admission can be made callable before
+dispatch. The live `authorizeContainer` closure cannot be replayed after disconnect; keep that path denied
+and proceed to another S2–S9/U01–U12/EP/K/P/PW/AP/TBR gap.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
 

@@ -14,6 +14,17 @@ function validIdentity(spaceId: string, appId: string, slug: string): boolean {
   return /^[a-zA-Z0-9_-]{1,128}$/.test(spaceId) && /^[a-z][a-z0-9_-]{1,63}$/.test(appId) && /^[a-z0-9][a-z0-9_-]{0,62}$/.test(slug);
 }
 
+async function readPageJson(c: Context<{ Bindings: Env }>): Promise<{ ok: true; value: unknown } | { ok: false; response: Response }> {
+  let bytes: Uint8Array;
+  try { bytes = await readBoundedRequestBytes(c.req.raw, 1024 * 1024); }
+  catch (error) {
+    return { ok: false, response: c.json({ error_code: error instanceof Error && error.message === "request_body_too_large" ? "payload_too_large" : "invalid_json" },
+      error instanceof Error && error.message === "request_body_too_large" ? 413 : 400) };
+  }
+  try { return { ok: true, value: JSON.parse(new TextDecoder().decode(bytes)) as unknown }; }
+  catch { return { ok: false, response: c.json({ error_code: "invalid_json" }, 400) }; }
+}
+
 function previewHostSuffix(env: Env): string | undefined {
   const suffix = env.DYNAMIC_PAGE_HOST_SUFFIX?.trim().toLowerCase().replace(/^\.+|\.+$/g, "");
   const applicationSuffix = env.APPLICATION_HOST_SUFFIX?.trim().toLowerCase().replace(/^\.+|\.+$/g, "");
@@ -80,9 +91,9 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
       WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active' AND o.status = 'active'`).bind(spaceId, tenantId).first();
     if (!owned) return c.notFound();
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
-    let draft: unknown;
-    try { draft = JSON.parse(new TextDecoder().decode(await readBoundedRequestBytes(c.req.raw, 1024 * 1024))); }
-    catch { return c.json({ error_code: "payload_too_large" }, 413); }
+    const parsed = await readPageJson(c);
+    if (!parsed.ok) return parsed.response;
+    const draft = parsed.value;
     const lease = await acquirePageRuntime(c.env, tenantId, spaceId, appId);
     if (lease.error) return c.json({ error_code: lease.error }, 409);
     const release = () => releasePageRuntime(c.env, tenantId, spaceId, lease);
@@ -103,9 +114,9 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
     const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
       WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active' AND o.status = 'active'`).bind(spaceId, tenantId).first();
     if (!owned) return c.notFound();
-    let publication: unknown;
-    try { publication = JSON.parse(new TextDecoder().decode(await readBoundedRequestBytes(c.req.raw, 1024 * 1024))); }
-    catch { return c.json({ error_code: "payload_too_large" }, 413); }
+    const parsed = await readPageJson(c);
+    if (!parsed.ok) return parsed.response;
+    const publication = parsed.value;
     const lease = await acquirePageRuntime(c.env, tenantId, spaceId, appId);
     if (lease.error) return c.json({ error_code: lease.error }, 409);
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
