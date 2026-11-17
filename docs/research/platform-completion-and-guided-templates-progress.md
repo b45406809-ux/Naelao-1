@@ -1,3 +1,9 @@
+## Current cross-plan checkpoint — 2026-11-17 (source-refresh recovery telemetry; `dc73af2e` pushed)
+
+Knowledge code `dc73af2e` now records fixed-label `interrupted_recovered` and `backoff_active` outcomes at the durable website source-refresh recovery boundary; `550ee028` records the unpriced Billing usage-receipt `sent`/`retry` path. EP06 exact-install Gadget structured-data table/row/value-byte inventory is at `6fac3fec`. All are remote-verified. Knowledge source-refresh/telemetry suites **26/26**, typecheck and diff check pass; Spaces **29/29**, Shell **4/4** and their typechecks also pass. No deployment, live telemetry, invoice or rollout.
+
+TBR04 current grant/Knowledge resolution remains a symbolic-to-concrete scope contract gap; no grants were written. EP06 provider dependencies, invoice-backed cost and lifecycle/export state remain partial. Exact next action: add fixed-label telemetry for owner-approved website preview fetch failure using only safe recorded categories, then continue other uncoded cross-plan requirements. Rollout disabled.
+
 ## Current cross-plan checkpoint — 2026-11-17 (EP06 structured usage and K26 receipt retry metrics; `550ee028` pushed)
 
 Code `6fac3fec` adds exact-install Gadget table/row/logical value-byte totals to the owner storage view; the live SpaceDO installation pin is compared with immutable MicroAppDO metadata, and stale IDs fail closed. Code `550ee028` adds fixed-label `sent`/`retry` telemetry for the existing unpriced website-refresh Billing receipt outbox with bounded duration/attempts and failure isolation. Both are remote-verified. Local tests: Spaces **29/29**, Shell **4/4**, Knowledge **9/9**; Spaces/Shell/Knowledge typechecks and diff check pass. No deployment/live acceptance, provider invoice, or rollout.

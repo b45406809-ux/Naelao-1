@@ -1,8 +1,8 @@
-## TBR04 contract reconciliation — 2026-11-17 (`550ee028` cross-plan checkpoint)
+## TBR04 contract reconciliation — 2026-11-17 (`dc73af2e` cross-plan checkpoint)
 
 The read-only trace found no safe join from current host grants or published Knowledge into the Space activation preview: role requests refer to symbolic resources and template Projects, whereas extension resource grants and Knowledge publications require concrete installation and Project IDs. The blueprint contains no approved binding for those IDs. The current UI accurately labels Knowledge as declared-only and says it does not evaluate independent access. TBR04 remains partial; do not infer access from declaration or Space membership. EP06 structured-data usage and K26 unpriced receipt retry telemetry are pushed at `6fac3fec` and `550ee028`.
 
-Exact next action in the cross-plan ledger: instrument Knowledge source-refresh interrupted recovery and backoff outcomes using durable receipt state, then continue independent requirements. TBR06 remains proposal-only (`grants_applied=0`) until an authoritative role-to-grant mapping/outbox exists; private-Project semantics remain unresolved.
+Knowledge source-refresh interrupted/backoff telemetry is now implemented at `dc73af2e`. Exact next action in the cross-plan ledger: instrument the owner-approved website preview fetch failure using its safe bounded outcome category, then continue independent requirements. TBR06 remains proposal-only (`grants_applied=0`) until an authoritative role-to-grant mapping/outbox exists; private-Project semantics remain unresolved.
 
 ## Cross-plan checkpoint — 2026-11-17 (`6fac3fec` pushed)
 

@@ -1,3 +1,9 @@
+## Current K26 checkpoint — 2026-11-17 (source-refresh recovery telemetry; `dc73af2e` pushed)
+
+Alongside the unpriced Billing usage-receipt `sent`/`retry` metric at `550ee028`, `dc73af2e` records fixed-label `interrupted_recovered` and `backoff_active` outcomes from the durable website source-refresh operation ledger. It includes only bounded attempt count; Analytics errors cannot alter recovery/backoff. Remote-verified; source-refresh/telemetry suites **26/26**, Knowledge typecheck and diff check pass. No deployment/live telemetry or invoice acceptance.
+
+K26 still has other existing provider/source failure and cost-reconciliation outcomes to reconcile, plus deployed acceptance. Exact next action: add fixed-label telemetry for owner-approved website preview fetch failure using the safe recorded error category only; continue K10–K30 and other active plans. AI Search remains unselected.
+
 ## Current K26 checkpoint — 2026-11-17 (Billing usage receipt retry metrics; `550ee028` pushed)
 
 The existing scheduled website-refresh Billing outbox now emits privacy-safe fixed labels for receipt `sent` or `retry`, with bounded duration and attempt count. Billing receipts remain unpriced and carry no inferred payer or rate; Analytics failure cannot alter delivery or retry persistence. `550ee028` is remote-verified. Focused Knowledge usage/telemetry suites **9/9**, Knowledge typecheck and diff check pass. No deployment, provider invoice, or live telemetry acceptance.

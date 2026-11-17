@@ -1,3 +1,9 @@
+## Cross-plan checkpoint — 2026-11-17 (Knowledge source-refresh recovery telemetry; `dc73af2e` pushed)
+
+Following EP06 structured-data inventory `6fac3fec` and unpriced Billing receipt telemetry `550ee028`, Knowledge code `dc73af2e` records fixed-label `interrupted_recovered` and `backoff_active` outcomes from durable refresh-operation state. Attempt counts are bounded and no source/tenant IDs or costs are emitted. Tests **26/26**, Knowledge typecheck and diff check pass; remote verified. No provider/deployment/live acceptance. Preserve `infra/scripts/__pycache__/`.
+
+EP06 provider dependency, invoice cost and lifecycle/export inventory remains partial. Exact next action: add safe fixed-label telemetry for the owner-approved website preview fetch failure outcome; continue S4–S9/U01–U12 and all other active plans. Rollout disabled.
+
 ## Cross-plan checkpoint — 2026-11-17 (K26 receipt retry telemetry; `550ee028` pushed)
 
 Following EP06 structured-data inventory `6fac3fec`, K26 code `550ee028` records fixed-label `sent`/`retry` outcomes for durable website-refresh Billing usage receipts, with bounded latency/attempts and failure isolation. These receipts remain unpriced; no customer cost is inferred. Knowledge tests **9/9**, typecheck and diff check pass. Both code SHAs are remote-verified. No deployment or provider activity; preserve `infra/scripts/__pycache__/`.
