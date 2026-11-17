@@ -34,6 +34,12 @@ Remaining code: project updates do not consume the signed review token; the Gadg
 
 Unfinished code: signed review-token persistence, drained-work policy, project-bound apply CAS, migration staging/rollback/recovery, and activation/resource grant transition. Do not treat provider credentials as blocking these. Exact next action: reconcile existing project Gadget and resource migration primitives with SpaceDO generation fences and durable receipts; then implement the apply boundary with signed review pin, owner approval where needed, paused/drained status and in-DO compare-and-swap. Test stale generation, revoked publisher, migration failure, retries and recovery before wiring any mutation. Continue the other active plans immediately after this slice. Preserve untracked `infra/scripts/__pycache__/`; keep rollout disabled.
 
+## Cross-plan checkpoint — 2026-11-17 (`62ce248e` pushed)
+
+Scheduled-service identity/revision now reaches Project spend holds, settled receipts and decision-reservation reconciliation through migration 157. Stale revision, uncertain replay, malformed input and settlement conflicts are tested; SpaceDO **12/12**, Spaces/Agents typechecks and diff check pass. Local test evidence only; migration is unapplied and no deployed acceptance occurred. Independent plans remain in progress.
+
+Exact next action: continue TBR07 by tracing how current signed template role proposals relate to live Project, Knowledge and extension grants and assistant access; implement only a safe read-only authority view where exact IDs already exist, preserve proposal-only grants, and record unresolved symbolic binding contracts. Then continue all remaining cross-plan code gaps.
+
 ## Current cross-plan checkpoint — 2026-11-17 (jobs-only resource approval UI; `ce7e01c5` pushed)
 
 `ce7e01c54bdef5660f1bfbd6113a02f14d328011` is remote-verified on `origin/Mcbt5s-Backup-2`. Shell now labels a staged installation with only a `jobs` resource declaration as “resource approval required,” matching the existing jobs grant-review flow; previously this branch checked only objects and structured data. Shell focused resource API tests **4/4**, Shell typecheck and diff check pass.

@@ -1,3 +1,9 @@
+## Cross-plan checkpoint — 2026-11-17 (`62ce248e` pushed)
+
+Project spend reservations and settlements now persist scheduled actor/revision attribution through SpaceDO migration 157; Agent goal, document, direct-script and decision reservation paths provide the exact pair, including uncertain-state reconciliation. Tests **12/12**, Spaces/Agents typechecks and diff check pass locally. Migration remains unapplied; deployed/live acceptance is open. This does not create owner-approved per-job effects/budgets or cancellation.
+
+Exact next action: trace TBR07 effective host authority and assistant inheritance across existing role proposal, Project ACL, Knowledge and extension stores; implement a read-only view only for exact current authority mappings, otherwise preserve denial and move to another independent gap. Then continue the complete S/U/P/PW/K/EP/AP/TBR mission.
+
 ## Cross-plan checkpoint — 2026-11-17 (`019853ef` pushed)
 
 Scheduled Agent goal runs now pin the job identity and current revision in Billing's durable LLM reservation and internal usage receipt. Direct scheduled scripts write the same attribution on their usage receipt. Mismatched duplicate revisions conflict; malformed identity is denied. These audit fields are not forwarded to subscription metering. Billing **22/22**, Agents scheduled identity **14/14**, related typechecks and migration manifest checks pass locally; migration 0281 is unapplied. This does not add owner-approved per-effect grants, project-spend hold attribution or in-flight cancellation.

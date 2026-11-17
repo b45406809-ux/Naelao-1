@@ -1,3 +1,9 @@
+## Cross-plan checkpoint — 2026-11-17 (`62ce248e` pushed)
+
+Scheduled identity/revision now reaches durable Project spend holds, settlement receipts and decision reconciliation. Project spend replay with changed revision conflicts; uncertain retries require the same actor/revision; malformed attribution is rejected. SpaceDO tests **12/12**, Spaces/Agents typechecks and diff check pass. This does not apply business-role grants.
+
+Exact next action: continue TBR07 by tracing effective resource authority and assistant inheritance through current member role proposals and authoritative Project, Knowledge and extension grant stores. Add a non-granting read-only caller only for exact concrete mappings; keep symbolic/unmapped role references proposal-only and report the missing mapping contract.
+
 ## TBR onboarding checkpoint — 2026-11-17 (`8e6cb6ea` pushed)
 
 `65dd32d5` added authenticated self-role reads and `2c37eaa6` the member Shell view. `8e6cb6ea` adds owner/admin assignment of a proposal to an existing current member using the existing signed-blueprint/membership-epoch server checks. All responses and UI say no grants are applied. Shell UI **3/3**, Spaces **6/6**, Router **86/86**, affected typechecks/diff checks pass. Local mocks only.

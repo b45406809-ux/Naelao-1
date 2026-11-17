@@ -1,3 +1,9 @@
+## Cross-plan checkpoint — 2026-11-17 (`62ce248e` pushed)
+
+Scheduled identity/revision now persists in Project spend reservation and settlement receipts through SpaceDO migration 157. Agent goal, document-inference, direct-script and decision reservation/settlement paths pass the exact pair; stale retries conflict, uncertain retries require the original pair, and malformed attribution is rejected. SpaceDO tests **12/12**, Spaces/Agents typechecks and diff check pass. Local only; migration is unapplied. Per-job owner-approved action scopes/budgets and in-flight cancellation remain open.
+
+Exact next action: continue TBR07's effective-authority and assistant-inheritance trace against current host grant stores, implementing a non-granting current-authority caller where the identity mapping is defined; continue TBR08–TBR12 and all remaining S/U/P/PW/K/EP/AP code gaps.
+
 ## Cross-plan checkpoint — 2026-11-17 (`019853ef` pushed)
 
 Scheduled goal-run LLM quota reservations now persist service identity and exact authorization revision. Settlement writes both to internal usage history. Direct scheduled-script settlements also record the identity/revision. Duplicate reservation with another revision conflicts, invalid attribution fails closed, and provider subscription metering does not receive internal identity fields. Migration 0281 is tracked in release/deployment manifests but is unapplied. Billing tests **22/22**, scheduled-identity tests **14/14**, Billing/Agents typechecks and manifest validators pass. Local mock/SQLite evidence only; deployed acceptance remains open.
