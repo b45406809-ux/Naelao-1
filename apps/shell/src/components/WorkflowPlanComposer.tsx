@@ -7,6 +7,7 @@ import { canonicalExtensionManifestForPublisher, extensionPublisherSigningPayloa
 import { Button } from "@naelao/ui";
 import { getProjectExtensionUpdateReceipt, installProjectCanvasExtension, listContainerInstallations, listExtensionPublisherKeys, reviewProjectExtensionUpdate,
   saveWorkflowPlanDraft, type ExtensionPublisherKey, type SessionCredentials } from "@/lib/api";
+import { previewExtensionPublisherProvenance } from "@/lib/extension-publisher-provenance";
 
 type DraftStep = { id: string; operation: string; args: string; mockResponse: string };
 const newStep = (index: number): DraftStep => ({ id: `step-${index}`, operation: "", args: "{}", mockResponse: JSON.stringify({ simulated: true, step: `step-${index}` }, null, 2) });
@@ -29,6 +30,7 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
   const [upgradeConfirmed, setUpgradeConfirmed] = React.useState(false);
   const [installResult, setInstallResult] = React.useState<string | null>(null);
   const [keyLoadError, setKeyLoadError] = React.useState<string | null>(null);
+  const [releaseProvenance, setReleaseProvenance] = React.useState<{ manifestJson: string; artifactsJson: string; digest: string; sourceCount: number; sourceBytes: number } | null>(null);
 
   React.useEffect(() => {
     let live = true;
@@ -98,6 +100,22 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
       return { ...release, manifestJson, artifacts, signingPayload: extensionPublisherSigningPayload(manifestJson, artifacts) };
     } catch (cause) { return { error: cause instanceof Error ? cause.message : "Couldn't prepare an internal workflow release." }; }
   })();
+  const releaseManifestJson = releaseDraft && !("error" in releaseDraft) ? releaseDraft.manifestJson : "";
+  const releaseArtifactsJson = releaseDraft && !("error" in releaseDraft) ? JSON.stringify(releaseDraft.artifacts) : "";
+
+  React.useEffect(() => {
+    let current = true;
+    setReleaseProvenance(null);
+    if (releaseManifestJson && releaseArtifactsJson) {
+      void previewExtensionPublisherProvenance(releaseManifestJson, releaseArtifactsJson).then(result => {
+        if (current) setReleaseProvenance({ manifestJson: releaseManifestJson, artifactsJson: releaseArtifactsJson,
+          digest: result.signingPayloadSha256, sourceCount: result.sourceCount, sourceBytes: result.sourceBytes });
+      }).catch(() => { if (current) setReleaseProvenance(null); });
+    }
+    return () => { current = false; };
+  }, [releaseManifestJson, releaseArtifactsJson]);
+  const currentReleaseProvenance = releaseProvenance?.manifestJson === releaseManifestJson
+    && releaseProvenance.artifactsJson === releaseArtifactsJson ? releaseProvenance : null;
 
   const installWorkflow = async () => {
     if (!releaseDraft || "error" in releaseDraft) return;
@@ -174,7 +192,9 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
         <details><summary>Canonical publisher signing payload</summary><p>Sign this JSON with the publisher key using <code>signExtensionPublisherRelease</code> from <code>@naelao/agent-sdk</code>. The private key stays outside Naelao.</p><pre style={{ maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap" }}>{JSON.stringify({ manifestJson: releaseDraft.manifestJson, artifacts: releaseDraft.artifacts, signingPayload: releaseDraft.signingPayload }, null, 2)}</pre></details>
         <label style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={installConfirmed} onChange={event => setInstallConfirmed(event.target.checked)} />I reviewed the internal workflow manifest, operations, and generated artifact.</label>
         <label style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={upgradeConfirmed} onChange={event => setUpgradeConfirmed(event.target.checked)} />Approve a forward version upgrade for this extension ID</label>
-        <Button type="button" disabled={busy || !installConfirmed || !publisherKeyId || !publisherSignature.trim()} onClick={installWorkflow}>{busy ? "Installing…" : "Install signed internal workflow"}</Button>
+        {currentReleaseProvenance && <p role="status">Generated source provenance: {currentReleaseProvenance.sourceCount} file(s), {currentReleaseProvenance.sourceBytes} UTF-8 bytes, publisher signing payload SHA-256 <code>{currentReleaseProvenance.digest}</code>. This fingerprints source input; the host runtime artifact digest is assigned after server validation and build.</p>}
+        <p role="note">Cost estimate: unknown. Offline mock outputs do not measure runtime, provider, storage, or customer charges. Installation adds no operation grants; runtime access stays behind current host authorization and budget checks.</p>
+      <Button type="button" disabled={busy || !installConfirmed || !currentReleaseProvenance || !publisherKeyId || !publisherSignature.trim()} onClick={installWorkflow}>{busy ? "Installing…" : "Install signed internal workflow"}</Button>
       </>}
     </details>
     {installResult && <p role="status">{installResult}</p>}
