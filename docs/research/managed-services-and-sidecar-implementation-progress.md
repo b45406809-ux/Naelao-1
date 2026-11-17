@@ -144,7 +144,13 @@ Code `6f8422bbc19a9bc0cfaf5aa237a106f3390b1455` suppresses pending/running brows
 
 SC03 owner queue expiry status is separately implemented in `e767adb84872daac931519c2f4807b85db468222`; it is observation only. A disconnected dispatcher still lacks a reusable encrypted request store and a durable host callback that can revalidate an exact authorization revision and current budget. Do not mark SC03 complete.
 
-Exact next action: complete U12's declared toolchain/release verification against the current checkout: verify the pinned Node/pnpm versions, migration checksum manifest/runner checks and affected workspace typechecks from a clean command invocation; fix any actual diagnostics, then continue S4–S9 and remaining incorporated plan gaps. Do not apply migrations or deploy. Preserve the existing untracked `infra/scripts/__pycache__/` and rollout=false settings.
+The U12 verification action below supersedes this checkpoint's task pointer. No migration or deployment is authorized; preserve the existing untracked `infra/scripts/__pycache__/` and rollout=false settings.
+
+### U12 verification — 2026-11-17 (local)
+
+Verified Node **v24.19.0** and Corepack pnpm **9.12.0** against root declarations (Node `>=22.5.0`, pnpm `9.12.0`). The release manifest validates **282** migration files and requires schema `0282_scheduled_job_service_grants`; the validator explicitly reports the legacy D1 baseline as operator-verified and no deployed schema inspected. Release migration runner tests **20/20**, release manifest tests **5/5**, deployment manifest validator passes, and recursive workspace typechecks pass (**66/67 projects with a declared typecheck script**). No migration was applied and no deployment/live probe ran. No U12 code diagnostic remains in this checkout; this is local tooling verification only.
+
+Exact next action: resume EP04's owner activation preview gap from `platform-completion-and-guided-templates-progress.md`: trace planner/worker-generated artifacts through signed manifest/install preview and expose exact artifact/provenance plus known/unknown cost to the owner before install, implementing any missing reachable caller field. Keep P01/P02 production isolation and live resource receipts separate; do not repeat their completed local audits. SC03 remains partial: expiry is observable, but no safe durable invocation artifact/dispatcher with current authorization revision and billing revalidation exists. Preserve rollout disabled and `infra/scripts/__pycache__/`.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (TBR05 verified Product-member invitations; `743c2284` pushed)
 
