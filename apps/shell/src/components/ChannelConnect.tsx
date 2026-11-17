@@ -20,6 +20,7 @@ import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { ExtensionAgentMaintenanceDelegation } from "@/components/ExtensionAgentMaintenanceDelegation";
 import { MicroAppStorageStatus, projectGadgetStorageApps } from "@/components/MicroAppStorageStatus";
 import { previewExtensionResourceRequirements } from "@/lib/extension-resource-preview";
+import { previewExtensionPublisherProvenance } from "@/lib/extension-publisher-provenance";
 import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
@@ -754,6 +755,19 @@ export function ChannelConnect({
   const [canvasInstanceKey, setCanvasInstanceKey] = React.useState("default");
   const [canvasPublisherKeyId, setCanvasPublisherKeyId] = React.useState("");
   const [canvasPublisherSignature, setCanvasPublisherSignature] = React.useState("");
+  const [canvasProvenance, setCanvasProvenance] = React.useState<{ manifest: string; artifacts: string; digest: string; sourceCount: number; sourceBytes: number } | null>(null);
+
+  React.useEffect(() => {
+    let current = true;
+    setCanvasProvenance(null);
+    if (canvasManifestDraft.trim() && canvasArtifactsDraft.trim()) {
+      void previewExtensionPublisherProvenance(canvasManifestDraft, canvasArtifactsDraft).then(result => {
+        if (current) setCanvasProvenance({ manifest: canvasManifestDraft, artifacts: canvasArtifactsDraft,
+          digest: result.signingPayloadSha256, sourceCount: result.sourceCount, sourceBytes: result.sourceBytes });
+      }).catch(() => { if (current) setCanvasProvenance(null); });
+    }
+    return () => { current = false; };
+  }, [canvasManifestDraft, canvasArtifactsDraft]);
 
   // Give the installer a readable map of the package graph before the owner approves raw JSON.
   // Deliberately project only public manifest fields; never echo arbitrary manifest values here.
@@ -1235,6 +1249,10 @@ export function ChannelConnect({
                   {requirement.targets.length ? ` · ${requirement.targets.join(" · ")}` : ""} · limits {requirement.limits.requestsPerMinute}/min, {requirement.limits.maxConcurrent} concurrent, {requirement.limits.maxBytesPerOperation} bytes/operation
                 </div>)}
                 <div style={{ marginTop: 4, color: "var(--text3)" }}>Declarations are not grants or runtime availability. Owner approval and host capability checks are separate; these limits are not prices. Review the installation budget after staging.</div>
+              </div>}
+              {canvasProvenance?.manifest === canvasManifestDraft && canvasProvenance.artifacts === canvasArtifactsDraft && <div style={{ marginTop: 7 }}><strong>Publisher source provenance</strong>
+                <div>{canvasProvenance.sourceCount} source file(s) · {canvasProvenance.sourceBytes} UTF-8 bytes · signing payload SHA-256 <code>{canvasProvenance.digest}</code></div>
+                <div style={{ color: "var(--text3)" }}>This fingerprints the canonical manifest and exact original source map used by the publisher signature. The host-generated runtime artifact digest is assigned after server validation and build.</div>
               </div>}
               <div style={{ marginTop: 7, color: "var(--text3)" }}>All listed parts share this extension ID and release version. Each installation key creates a separate instance. This preview summarizes declarations; server validation remains authoritative.</div>
             </>}
