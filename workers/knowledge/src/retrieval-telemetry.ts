@@ -15,6 +15,15 @@ export function recordProjectAccessMetric(dataset: AnalyticsEngineDataset | unde
   catch { /* telemetry failures must not change authorization behavior */ }
 }
 
+export function recordDocumentDeletionMetric(dataset: AnalyticsEngineDataset | undefined, outcome: "pending" | "complete" | "busy" | "error",
+  durationMs: number, attempts = 0): void {
+  try {
+    const bounded = (value: number, maximum: number) => Number.isFinite(value) ? Math.max(0, Math.min(maximum, Math.round(value))) : 0;
+    dataset?.writeDataPoint({ blobs: ["knowledge_cleanup", "document_deletion", outcome],
+      doubles: [bounded(durationMs, 120_000), bounded(attempts, 100)], indexes: [] });
+  } catch { /* telemetry failures must not change deletion behavior */ }
+}
+
 /** Produce bounded aggregate telemetry; caller, tenant, Space, Project and query data are omitted. */
 export function buildPrivacySafeRetrievalTelemetry(input: {
   event: GroundedSearchTelemetry;

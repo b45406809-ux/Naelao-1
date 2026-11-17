@@ -1,4 +1,5 @@
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
+import { recordDocumentDeletionMetric } from "./retrieval-telemetry.js";
 
 export interface KnowledgeDeletionBindings {
   PLATFORM_DB: D1Database;
@@ -7,6 +8,7 @@ export interface KnowledgeDeletionBindings {
   SEMANTIC_CACHE_VECTORS: VectorizeIndex;
   SEMANTIC_CACHE_KV: KVNamespace;
   AUTORAG_KB_INSTANCE?: string;
+  KNOWLEDGE_ANALYTICS?: AnalyticsEngineDataset;
 }
 
 export interface KnowledgeDocumentDeletion {
@@ -398,7 +400,7 @@ async function markPending(
 }
 
 /** Tombstone first, then retry each external cleanup stage idempotently from a durable cursor. */
-export async function processKnowledgeDocumentDeletion(
+async function processKnowledgeDocumentDeletionCore(
   env: KnowledgeDeletionBindings,
   documentId: string
 ): Promise<{ state: "pending" | "complete" | "busy"; attempts?: number }> {
@@ -568,6 +570,23 @@ export async function processKnowledgeDocumentDeletion(
       "resource_cleanup_retry_required"
     ).catch(() => undefined);
     return { state: "pending", attempts: operation.attempts };
+  }
+}
+
+export async function processKnowledgeDocumentDeletion(
+  env: KnowledgeDeletionBindings,
+  documentId: string
+): Promise<{ state: "pending" | "complete" | "busy"; attempts?: number }> {
+  const startedAt = performance.now();
+  let outcome: "pending" | "complete" | "busy" | "error" = "error";
+  let attempts = 0;
+  try {
+    const result = await processKnowledgeDocumentDeletionCore(env, documentId);
+    outcome = result.state;
+    attempts = result.attempts ?? 0;
+    return result;
+  } finally {
+    recordDocumentDeletionMetric(env.KNOWLEDGE_ANALYTICS, outcome, performance.now() - startedAt, attempts);
   }
 }
 
