@@ -1,3 +1,7 @@
+## Cross-plan update — 2026-11-17 (unavailable active-run status now blocks wake; local pending)
+
+Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO active-run endpoint. Active remains a 409; missing/non-OK/malformed/missing-field status returns a retryable 503 without dispatch. This closes the former fail-open overlap behavior. Focused wake/dispatch/tenant-scope tests **12/12**, Agents typecheck and diff check pass. This is local evidence; no deployed DO/workflow acceptance. Exact next action: bind scheduled-work service identity, exact job revision and cancellation/revocation receipt to the durable run, then continue runtime/effect isolation and other PW gaps. Do not claim cancellation of already-running effects.
+
 # Resumable workers, durable workflows and branches progress
 
 ## Latest code checkpoint — 2026-11-16 (exact Coordinator worker branch pin; `c17b6e01` pushed)

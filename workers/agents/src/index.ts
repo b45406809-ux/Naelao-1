@@ -71,6 +71,7 @@ import { claimScheduledJobDispatch, releaseScheduledJobDispatch, scheduledJobDis
 import { claimProjectStewardRun, finishProjectStewardRun } from "./project-steward-dispatch.js";
 import { enqueueExtensionJobOutbox, handleExtensionJobTick, type ExtensionJobEnvironment } from "./workflows/extension-jobs.js";
 import { rankProjectStewardReviews } from "../../spaces/src/project-steward.js";
+import { admitAutonomousWake } from "./autonomous-wake-admission.js";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { compileDynamicCode } from "./script-engine/dynamic-code.js";
 import { compileWorkflowEntrypoint } from "./workflows/workflow-compiler.js";
@@ -2983,20 +2984,15 @@ async function wakeAgentGoal(
   // overlapping reasoning run into that instance. Skipped, not failed: `last_run_at` is left
   // untouched by the caller so the next due tick retries — a run that's simply still working is
   // not a failure to record against the job.
-  try {
-    const busyResp = await stub.fetch("http://agent-do/active-run");
-    if (busyResp.ok) {
-      const busy = await busyResp.json<{ active: boolean; run_id?: string }>();
-      if (busy.active) {
-        return Response.json(
-          { skipped: true, reason: "assistant_busy", active_run_id: busy.run_id ?? null },
-          { status: 409 }
-        );
-      }
-    }
-  } catch {
-    // A failed busy-check must never block a wake that would otherwise have run fine — fail open
-    // into dispatching normally, same posture as every other best-effort read in this file.
+  let activeRunResponse: Response | null = null;
+  try { activeRunResponse = await stub.fetch("http://agent-do/active-run"); } catch { /* evaluated as unavailable below */ }
+  const admission = await admitAutonomousWake(activeRunResponse);
+  if (!admission.allowed) {
+    return Response.json(
+      { skipped: admission.status === 409, reason: admission.errorCode,
+        ...(admission.status === 409 ? { active_run_id: admission.activeRunId ?? null } : {}) },
+      { status: admission.status },
+    );
   }
 
   const heartbeatSessionId = await createHeartbeatSession(

@@ -1,3 +1,7 @@
+## Cross-plan update — 2026-11-17 (autonomous wake conflict handling; local pending)
+
+The active-run overlap guard now fails closed: only an explicit valid idle response admits a scheduled planner wake; active work returns 409 and unavailable status returns retryable 503. Tests **12/12**, Agents typecheck, diff check. No provider/deployed work. Exact next action: persist a scheduled-job-specific service identity and exact authorization revision through execution and billing receipts, then continue independent S/U/P/PW/K/EP/AP gaps. Rollouts disabled.
+
 ## Cross-plan update — 2026-11-17 (scheduled job pre-dispatch authorization fence; local pending)
 
 The Agents queue consumer now revalidates the exact current scheduled-job row after its claim and before calling the planner/script. Disabled, deleted, or edited authorization/config snapshots are skipped and recorded. Tests: dispatch/tenant-scope **6/6**, Agents typecheck, diff check. This only narrows the queue-to-effect race; it does not implement a revocable service principal, effect-specific grant or per-job budget. The earlier AgentPort metadata contract slice is pushed at `20db3bf9553605b82f6f686d388027452dc4aca9`; it exposes provider declarations only. No migration/deployment/provider/live acceptance occurred. Exact next action: implement job-revision-bound service authority only where current tool gates and billing contract support it; continue S/U/P/PW/K/EP/AP independent gaps and keep all rollouts disabled.

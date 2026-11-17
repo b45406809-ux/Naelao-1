@@ -1,3 +1,7 @@
+## Latest cross-plan update — 2026-11-17 (autonomous overlap guard; local pending)
+
+`wakeAgentGoal` no longer fails open when active-run status is unavailable. It dispatches only on a valid idle receipt, preserves 409 for a known active run and returns retryable 503 for unknown status. Tests **12/12**, Agents typecheck and diff check pass. TBR11 remains a code gap for durable service identities/scopes/budgets and in-flight revocation; PW cancellation of effects already in flight remains separate. Exact next action: bind the exact scheduled job identity/revision to durable run receipts and make effect authorization/budget consume it, then continue all remaining S/U/P/PW/K/EP/AP/TBR work.
+
 ## Latest cross-plan update — 2026-11-17 (scheduled-job snapshot reauthorization; local pending)
 
 The scheduled-job consumer rechecks the exact current enabled/configuration revision after claiming a dispatch lease and before planner/script effects. A stale or revoked snapshot is skipped and auditable in existing run history. Agents dispatch/tenant-scope tests **6/6**, typecheck and diff check pass. This does not close TBR11: effect-level service principal, scopes, budget, in-flight revocation and cross-channel/provider identities remain gaps. Exact next action: trace the current AgentDO mutation gates and billing receipts for scheduled script/goal runs; bind an explicit service identity to enforceable existing action scopes or keep the unsupported effect denied, then continue remaining S/U/P/PW/K/EP/AP work. Rollouts disabled.

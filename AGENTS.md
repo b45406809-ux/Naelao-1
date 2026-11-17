@@ -1,3 +1,7 @@
+## Current cross-plan checkpoint — 2026-11-17 (autonomous wake conflict guard; local pending)
+
+The `wakeAgentGoal` admission gate now dispatches only when the AgentDO active-run endpoint returns a valid `{active:false}` receipt. An active run remains a 409 with its run ID; endpoint errors, malformed JSON or missing status return retryable 503 and do not dispatch. This removes the prior fail-open overlap path. Local focused wake/dispatch/tenant-scope tests **12/12**, Agents typecheck and `git diff --check` pass. No deployment or live Workflow/DO acceptance ran. Exact next action: add durable per-job service-principal identity and authorization revision to scheduled run receipts, then enforce exact effect scope/budget or deny unsupported effects; continue remaining PW/TBR/S/U/K/EP/AP requirements. Rollouts stay disabled.
+
 ## Current cross-plan checkpoint — 2026-11-17 (scheduled wake revocation recheck; local pending)
 
 The AgentPort SDK metadata-disclosure slice from `20db3bf9553605b82f6f686d388027452dc4aca9` is pushed and remote-verified: `listServices`/`discoverServices` return typed provider-authored metadata, and `getServiceMetadata` is available. Documentation explicitly says declarations do not prove Naelao capability, entitlement, authorization, region, or live success. SDK tests **15/15**, SDK/Agents typechecks, AgentPort route tests **14/14**, and `git diff --check` pass. This does not register or support AgentPhone.

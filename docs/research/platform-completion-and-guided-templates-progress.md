@@ -1,3 +1,7 @@
+## Latest code update — 2026-11-17 (fail-closed autonomous wake conflict guard; local pending)
+
+Assistant busy admission now requires a successful valid idle response; active is 409, and unavailable/malformed state is retryable 503 with no dispatch. Wake/dispatch/tenant-scope tests **12/12**, Agents typecheck and diff check pass. Exact next action: connect job-bound service-principal identity and revision to durable execution receipts and per-effect authorization/budget checks; preserve explicit gaps for in-flight cancellation and unresolved role/grant mappings, then continue independent plan requirements. Rollouts off.
+
 ## Latest code update — 2026-11-17 (scheduled wake stale authorization fence; local pending)
 
 Agent scheduled-job dispatch now checks the current exact row after lease acquisition and immediately before the effect. Missing/disabled/edited jobs are recorded as `authorization_changed_before_dispatch` and skipped. Focused tests **6/6**, Agents typecheck and diff check pass. This is a partial revocation fence, not complete TBR11 service identity, grant, budget or in-flight cancellation. Exact next action: trace scheduled planner/script calls through AgentDO authorization and billing; implement a durable job-bound principal only where an existing host-enforceable action contract exists, and retain fail-closed denials elsewhere. Continue all other independent platform requirements. Rollouts remain off.
