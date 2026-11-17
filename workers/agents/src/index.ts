@@ -10561,12 +10561,14 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
         { method: "POST", headers },
       ));
       if (!installationResponse.ok) throw new Error(`Project Steward installation unavailable (HTTP ${installationResponse.status})`);
-      const installation = await installationResponse.json<{ installation_id: string; platform_managed: boolean }>();
-      if (!installation.platform_managed || typeof installation.installation_id !== "string" || !installation.installation_id) {
+      const installation = await installationResponse.json<{ installation_id: string; generation: number; platform_managed: boolean }>();
+      if (!installation.platform_managed || typeof installation.installation_id !== "string" || !installation.installation_id
+        || !Number.isInteger(installation.generation) || installation.generation < 1) {
         throw new Error("Invalid Project Steward installation response");
       }
+      const summaryQuery = new URLSearchParams({ installation_id: installation.installation_id, generation: String(installation.generation) });
       const response = await env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/internal/spaces/${encodeURIComponent(msg.spaceId)}/project-steward/summary`, { headers }
+        `http://spaces-worker/internal/spaces/${encodeURIComponent(msg.spaceId)}/project-steward/summary?${summaryQuery}`, { headers }
       ));
       if (!response.ok) throw new Error(`Project Steward summary unavailable (HTTP ${response.status})`);
       const payload = await response.json<{ grant: string; generated_at: number; data: Array<{ project_id: string; project_name: string; created_at: string; last_activity_at: string | null; failed_routines: Array<{ routine_id: string; consecutive_failures: number }>; pending_task_count: number; in_progress_task_count: number; blocked_task_count: number; active_extension_count: number; unhealthy_extension_connection_count: number }> }>();
@@ -10584,7 +10586,10 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
         unhealthy_extension_connection_count: row.unhealthy_extension_connection_count,
       }));
       const generatedAt = Date.now();
-      const report = { run_day: runDay, generated_at: generatedAt, advisory_only: true, data: rankProjectStewardReviews(facts, generatedAt) };
+      const report = { run_day: runDay, generated_at: generatedAt, advisory_only: true,
+        service_identity_id: `project_steward:${installation.installation_id}`,
+        service_identity_generation: installation.generation,
+        data: rankProjectStewardReviews(facts, generatedAt) };
       const reportJson = JSON.stringify(report);
       if (!await finishProjectStewardRun(env.PLATFORM_DB, { spaceId: msg.spaceId, runDay, claimToken, reportJson, now: generatedAt })) {
         throw new Error("Project Steward run lease expired before report persistence");

@@ -802,6 +802,30 @@ describe("runtime extension installation", () => {
     expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("removed");
   });
 
+  it("exposes the exact Space-shared extension service identity and preserves disable/removal revocation", async () => {
+    const storage = createDOStorage(), secret = "service-identity-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    const capability = "space.project_steward.read_summary";
+    const manifest = { id: "ext_project_steward", type: "extension", declaredPermissions: [], capabilityRequirements: [capability],
+      gadgets: [], daemons: [], commands: [] };
+    const installed = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest, installedBy: "naelao-platform", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: [capability] }) }));
+    expect(installed.status).toBe(201);
+    const { installationId } = await installed.json() as { installationId: string };
+    const token = await mintInternalToken(secret, "tenant");
+    const query = new URLSearchParams({ tenant_id: "tenant", space_id: "space", extension_id: manifest.id });
+    const identity = () => space.fetch(new Request(`http://space/extension-service-identity?${query}`, { headers: { "x-naelao-internal-token": token } }));
+    expect(await (await identity()).json()).toMatchObject({ installation_id: installationId, status: "active", generation: 1, capabilities: [capability] });
+    const factsQuery = new URLSearchParams({ tenant_id: "tenant", space_id: "space", installation_id: installationId, generation: "1" });
+    expect((await space.fetch(new Request(`http://space/project-steward-facts?${factsQuery}`))).status).toBe(200);
+    await space.fetch(new Request("http://space/space-shared-extension-lifecycle", { method: "PATCH", headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", instanceId: installationId, action: "disable" }) }));
+    expect(await (await identity()).json()).toMatchObject({ installation_id: installationId, status: "disabled" });
+    expect((await space.fetch(new Request(`http://space/project-steward-facts?${factsQuery}`))).status).toBe(403);
+    await space.fetch(new Request(`http://space/extension-installation?${new URLSearchParams({ instance_id: installationId, tenant_id: "tenant", space_id: "space" })}`, { method: "DELETE" }));
+    expect(await (await identity()).json()).toMatchObject({ installation_id: installationId, status: "removed" });
+  });
+
   it("serializes concurrent runtime admission with pause, replays lost lease responses, and drains after restart", async () => {
     const storage = createDOStorage(), secret = "runtime-work-lease-secret";
     let space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);

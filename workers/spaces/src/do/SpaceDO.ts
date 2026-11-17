@@ -6128,6 +6128,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (coordinationRevoke?.[1] && method === "DELETE") return this.revokeSpaceCoordination(request, decodeURIComponent(coordinationRevoke[1]));
       if (coordinationRevoke?.[1] && method === "PATCH") return this.updateSpaceCoordination(request, decodeURIComponent(coordinationRevoke[1]));
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
+      if (url.pathname === "/extension-service-identity" && method === "GET") return await this.getExtensionServiceIdentity(request, url.searchParams);
       if (url.pathname === "/extension-installation/activate" && method === "POST") return this.activateExtensionInstallation(request);
       if (url.pathname === "/extension-installation/abort" && method === "POST") return this.abortStagedExtensionInstallation(request);
       if (url.pathname === "/space-shared-extensions" && method === "GET") return this.listSpaceSharedExtensions(url.searchParams);
@@ -15133,6 +15134,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ apps });
   }
 
+  /** Read a Space-shared extension's host-enforced service identity at the exact install scope.
+   * Internal schedulers use this to honor disable/removal as revocation; declaration alone is not
+   * authority and a missing/unknown installation never becomes active through this read path. */
+  private async getExtensionServiceIdentity(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    const extensionId = params.get("extension_id") ?? "", instanceKey = params.get("instance_key") ?? "default";
+    if (!tenantId || !spaceId || !/^ext_[a-z0-9_-]{2,62}$/.test(extensionId)
+      || !/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const row = queryOne<{ instance_id: string; status: string; generation: number; manifest_json: string; release_version: string | null }>(
+      this.ctx.storage.sql as never,
+      `SELECT i.instance_id,i.status,i.generation,m.manifest_json,i.release_version
+       FROM extension_instances i JOIN extension_installation_manifests m ON m.instance_id=i.instance_id
+       WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.scope='SPACE_SHARED' AND i.instance_key=? LIMIT 1`,
+      tenantId, spaceId, extensionId, instanceKey,
+    );
+    if (!row) return Response.json({ error_code: "extension_service_identity_not_found" }, { status: 404 });
+    let manifest: ExtensionManifest;
+    try { manifest = validateExtensionManifest(JSON.parse(row.manifest_json)); }
+    catch { return Response.json({ error_code: "extension_service_identity_manifest_invalid" }, { status: 409 }); }
+    return Response.json({ tenant_id: tenantId, space_id: spaceId, extension_id: extensionId,
+      installation_id: row.instance_id, generation: row.generation, status: row.status,
+      release_version: row.release_version, capabilities: [...new Set(manifest.capabilityRequirements)].sort() },
+      { headers: { "cache-control": "private, no-store" } });
+  }
+
   private async extensionDependencyClosureSnapshotActive(tenantId: string, spaceId: string, manifest: ExtensionManifest,
     scope: string, projectId?: string): Promise<{ resolved: boolean; dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }>;
       manifestJsonByPin: Map<string, string> }> {
@@ -18446,7 +18474,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    * conversations, user identities, or provider payloads cross this read-only boundary. */
   private projectStewardFacts(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
-    if (!spaceId) return Response.json({ error_code: "space_id_required" }, { status: 400 });
+    const tenantId = params.get("tenant_id") ?? "", installationId = params.get("installation_id") ?? "";
+    const generation = Number(params.get("generation"));
+    if (!spaceId || !tenantId || !installationId || !Number.isInteger(generation) || generation < 1)
+      return Response.json({ error_code: "service_identity_required" }, { status: 403 });
+    const identity = queryOne<{ instance_id: string; generation: number; status: string; manifest_json: string }>(this.ctx.storage.sql as never,
+      `SELECT i.instance_id,i.generation,i.status,m.manifest_json FROM extension_instances i
+       JOIN extension_installation_manifests m ON m.instance_id=i.instance_id
+       WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.extension_id='ext_project_steward'
+         AND i.scope='SPACE_SHARED' AND i.instance_key='default' LIMIT 1`, installationId, tenantId, spaceId);
+    if (!identity || identity.status !== "active" || identity.generation !== generation)
+      return Response.json({ error_code: "service_identity_revoked" }, { status: 403 });
+    try {
+      const manifest = validateExtensionManifest(JSON.parse(identity.manifest_json));
+      if (!manifest.capabilityRequirements.includes("space.project_steward.read_summary"))
+        return Response.json({ error_code: "service_identity_capability_missing" }, { status: 403 });
+    } catch { return Response.json({ error_code: "service_identity_manifest_invalid" }, { status: 403 }); }
     const projects = queryAll<{ project_id: string; project_name: string; created_at: string; last_activity_at: string | null }>(
       this.ctx.storage.sql as never,
       "SELECT id AS project_id,name AS project_name,created_at,last_activity_at FROM projects WHERE space_id=? AND status='active' ORDER BY id",

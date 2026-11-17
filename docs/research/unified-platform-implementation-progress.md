@@ -1,3 +1,7 @@
+## Latest cross-plan update — 2026-11-17 (Project Steward service grant is now revocable)
+
+The platform-managed Project Steward's summary scope is bound to an exact active install generation and read-summary capability, checked at the SpaceDO fact-read itself. Disable/removal prevents future reads and scheduler bootstrap no longer reactivates it; advisory reports record the identity. Tests **40/40**, Spaces/Agents typechecks and diff check pass. Remaining TBR11 is still code/policy: explicit owner opt-in, job-specific effect grants/budgets, channel/provider principal scopes, and in-flight cancellation. Exact next action: add durable owner-approved scheduled principal scope/budget enforcement, preserving denials where effect grants are unspecified.
+
 ## Latest cross-plan update — 2026-11-17 (scheduled actor/session revision enforced; local pending)
 
 The scheduled job identity and exact authorization revision are now persisted in session metadata and required to match at AgentDO ingress; stale rows and unavailable busy status are denied before dispatch. Blackboard wakes have a distinct trigger and remain user-authorized. Tests **22/22**, Agents typecheck and diff check pass. Full host grant storage/revocation, per-job budget enforcement and in-flight effect cancellation remain gaps. Exact next action: enforce a durable owner-approved scheduled service grant at action/Billing mutation boundaries, then continue S/U/P/PW/K/EP/AP/TBR.

@@ -16,6 +16,7 @@ import { EXTENSION_RESOURCE_CAPABILITIES } from "@naelao/agent-sdk";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST } from "./workspace-manifest.js";
+import { PROJECT_STEWARD_EXTENSION_ID } from "./project-steward-extension.js";
 import { cfSaasConfig, createCustomHostname, deleteCustomHostname, getCustomHostname, normalizeCustomHostname } from "./cf-saas.js";
 import { validateCronExpression, computeNextRun } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
@@ -4514,6 +4515,15 @@ async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
   return env.SPACE_DO.get(doId);
 }
 
+type ProjectStewardServiceIdentity = { installation_id: string; generation: number; status: string; capabilities: string[] };
+async function getProjectStewardServiceIdentity(env: Env, spaceId: string, tenantId: string): Promise<Response> {
+  const stub = await spaceDoStub(env, spaceId, tenantId);
+  const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: PROJECT_STEWARD_EXTENSION_ID });
+  return stub.fetch(new Request(`http://space-do/extension-service-identity?${query}`, {
+    headers: { "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) },
+  }));
+}
+
 async function activePublisherKeyIds(env: Env, tenantId: string, spaceId: string, keyIds: string[]): Promise<Set<string>> {
   const unique = [...new Set(keyIds.filter(keyId => /^[a-f0-9]{64}$/.test(keyId)))];
   if (!unique.length) return new Set();
@@ -7993,8 +8003,20 @@ app.get("/internal/spaces/:spaceId/project-steward/summary", async (c) => {
      AND EXISTS (SELECT 1 FROM orgs o WHERE o.id=s.tenant_id AND o.status='active')`,
   ).bind(spaceId, owned.tenantId).first<{ id: string }>();
   if (!active) return c.json({ error_code: "tenant_suspended" }, 403);
+  const requestedInstallationId = c.req.query("installation_id") ?? "";
+  const requestedGeneration = Number(c.req.query("generation"));
+  if (!requestedInstallationId || requestedInstallationId.length > 768 || !Number.isInteger(requestedGeneration) || requestedGeneration < 1)
+    return c.json({ error_code: "service_identity_required" }, 400);
+  const identityResponse = await getProjectStewardServiceIdentity(c.env, spaceId, owned.tenantId);
+  if (!identityResponse.ok) return c.json({ error_code: "project_steward_service_identity_unavailable" }, 403);
+  const serviceIdentity = await identityResponse.json<ProjectStewardServiceIdentity>();
+  if (serviceIdentity.status !== "active" || serviceIdentity.installation_id !== requestedInstallationId
+    || serviceIdentity.generation !== requestedGeneration
+    || !serviceIdentity.capabilities.includes("space.project_steward.read_summary"))
+    return c.json({ error_code: "project_steward_service_identity_revoked" }, 403);
   const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
-  const projectResponse = await forwardToSpaceDO(stub, `/project-steward-facts?${new URLSearchParams({ space_id: spaceId })}`, "GET");
+  const projectResponse = await forwardToSpaceDO(stub, `/project-steward-facts?${new URLSearchParams({ space_id: spaceId,
+    tenant_id: owned.tenantId, installation_id: requestedInstallationId, generation: String(requestedGeneration) })}`, "GET");
   if (!projectResponse.ok) return c.json({ error_code: "project_review_unavailable" }, 503);
   const payload = await projectResponse.json<{ data?: Array<{ project_id: string; project_name: string; created_at: string; last_activity_at: string | null; pending_task_count: number; in_progress_task_count: number; blocked_task_count: number; active_extension_count: number }> }>();
   const projects = payload.data ?? [];
@@ -8039,6 +8061,15 @@ app.post("/internal/spaces/:spaceId/project-steward/installation", async (c) => 
      AND EXISTS (SELECT 1 FROM orgs o WHERE o.id=s.tenant_id AND o.status='active')`,
   ).bind(spaceId, owned.tenantId).first<{ id: string }>();
   if (!active) return c.json({ error_code: "tenant_suspended" }, 403);
+  const currentResponse = await getProjectStewardServiceIdentity(c.env, spaceId, owned.tenantId);
+  if (currentResponse.ok) {
+    const current = await currentResponse.json<ProjectStewardServiceIdentity>();
+    if (current.status !== "active" || !current.capabilities.includes("space.project_steward.read_summary"))
+      return c.json({ error_code: "project_steward_service_identity_revoked" }, 409);
+    return c.json({ extension_id: PROJECT_STEWARD_EXTENSION_ID, installation_id: current.installation_id,
+      generation: current.generation, scope: "SPACE_SHARED", platform_managed: true });
+  }
+  if (currentResponse.status !== 404) return c.json({ error_code: "project_steward_service_identity_unavailable" }, 503);
   const manifest = validateExtensionManifest(PROJECT_STEWARD_EXTENSION_MANIFEST, {
     gatekeeperCapabilities: ["space.project_steward.read_summary"],
   });
@@ -8052,7 +8083,14 @@ app.post("/internal/spaces/:spaceId/project-steward/installation", async (c) => 
   if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
   const result = await response.json<{ installationId?: string }>();
   if (!result.installationId) return c.json({ error_code: "project_steward_installation_id_missing" }, 503);
-  return c.json({ extension_id: manifest.id, installation_id: result.installationId, scope: "SPACE_SHARED", platform_managed: true });
+  const provisionedResponse = await getProjectStewardServiceIdentity(c.env, spaceId, owned.tenantId);
+  if (!provisionedResponse.ok) return c.json({ error_code: "project_steward_service_identity_unavailable" }, 503);
+  const provisioned = await provisionedResponse.json<ProjectStewardServiceIdentity>();
+  if (provisioned.status !== "active" || provisioned.installation_id !== result.installationId
+    || !provisioned.capabilities.includes("space.project_steward.read_summary"))
+    return c.json({ error_code: "project_steward_service_identity_revoked" }, 409);
+  return c.json({ extension_id: manifest.id, installation_id: result.installationId, generation: provisioned.generation,
+    scope: "SPACE_SHARED", platform_managed: true });
 });
 
 // Scheduler fence for queued project routines: SpaceDO remains the authority for project
