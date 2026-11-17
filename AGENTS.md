@@ -6,8 +6,8 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is owner/admin public-page takedown (`1a6920e2`) pushed; next continue EP05 abuse
-  controls and then the next independent platform requirement while SC03 remains fail-closed pending a
+  checkpoint is public-page action abuse control (`c6f7837f`) pushed; next continue EP05 immutable
+  publication review and then the next independent platform requirement while SC03 remains fail-closed pending a
   callable durable authority/consent contract. TBR07's authority comparison is already recorded and
   must not be repeated. Membership revisions and K02 PPTX/DOCX/XLSX code are pushed.
   Then continue the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
@@ -36,7 +36,20 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 public-page action abuse control; `c6f7837f` pushed)
+
+`c6f7837f0a400a0a3a7ecd171af9d99e5f9c2de8` is pushed to `origin/Mcbt5s-Backup-2`. Public form
+actions now require a rate-limit identity HMACed by the Space Worker from Cloudflare's edge client
+address, and enforce 30 accepted actions per client/page per minute. The DO stores no raw address,
+expires old buckets and caps bucket rows at 5,000. Route + DO suites **12/12**, Spaces typecheck and
+`git diff --check` pass. This is local fake evidence; no deployed edge/IP, browser or domain acceptance.
+Owner/admin page takedown is pushed at `1a6920e2`; public site rollout remains disabled.
+
+**Reminder to myself:** Continue the entire authorized mission after each checkpoint. Never stop at tests, a progress update, a completed slice, documentation, a commit or a push; immediately move to the next independent unfinished requirement unless the user stops or a genuine blocker prevents all progress.
+
+Exact next action: implement EP05's immutable page publication review/approval path before any site rollout, preserving exact owner, page and artifact pins plus takedown. Then continue the other active plan requirements. Keep deployment suffixes/rollout off, SC03 fail-closed, and preserve the untracked Python cache.
+
+## Previous cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
 
 `1a6920e2d20146114c7fe9016f1234226f6d8de2` is pushed to `origin/Mcbt5s-Backup-2`. The Space
 dynamic-page management API has a tenant-bound owner/admin DELETE route for one exact page slug;
