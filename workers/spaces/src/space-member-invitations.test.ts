@@ -67,6 +67,15 @@ async function installRoleBlueprint(env: never, artifact: SpaceBlueprint) {
 }
 
 describe("Space Product-user invitations", () => {
+  it("enforces all-or-none template role binding on persisted invitation rows", () => {
+    const { db } = setup();
+    expect(() => db.prepare(
+      `INSERT INTO space_member_invitations
+        (id,tenant_id,space_id,product_id,inviter_user_id,recipient_email_hash,token_hash,role,expires_at,business_role_id)
+       VALUES('partial','tenant-a','space-a','product-a','owner-a','recipient','token','member','2099-01-01','stock_lead')`
+    ).run()).toThrow(/space_member_invitation_role_binding_invalid/);
+  });
+
   it("redeems once for the matching verified identity and keeps it out of SpaceDO", async () => {
     const { db, env } = setup();
     const created = await inviteRequest(env, "owner-a", "/spaces/space-a/member-invitations", "POST", { email: " MEMBER@example.test " });
@@ -104,6 +113,10 @@ describe("Space Product-user invitations", () => {
     expect(redeemed.status, JSON.stringify(await redeemed.clone().json())).toBe(200);
     expect(await redeemed.json()).toMatchObject({
       role: "member", business_role_id: "stock_lead", role_review: { status: "proposal_only", grants_applied: false },
+    });
+    const replay = await inviteRequest(env, "member-a", `/spaces/space-a/member-invitations/${invitation.id}/redeem`, "POST", { token: invitation.token });
+    expect(await replay.json()).toMatchObject({
+      status: "accepted", business_role_id: "stock_lead", role_review: { status: "proposal_only", grants_applied: false }, replayed: true,
     });
     const review = db.prepare("SELECT blueprint_id,artifact_sha256,business_role_id,status,grants_applied FROM space_business_role_reviews").get();
     expect(review).toEqual({ blueprint_id: artifact.id, artifact_sha256: artifactSha256, business_role_id: "stock_lead", status: "proposal_only", grants_applied: 0 });
