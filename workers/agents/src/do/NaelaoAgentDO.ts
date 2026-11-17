@@ -4678,7 +4678,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               const ownerHashes = await tx.get<string[]>(ownerIndexKey) ?? [];
               if (!ownerHashes.includes(hash)) await tx.put(ownerIndexKey, [...ownerHashes, hash].slice(-50));
             }
-            await tx.put(`goal-activity:metadata:${hash}`, { tenantId, spaceId, actorId: userId ?? null, tasks: tasks.map(task => ({ id: task.id, title: task.title, dependencies: task.dependencies ?? [], communication_recipients: task.communication_recipients ?? [] })) });
+            await tx.put(`goal-activity:metadata:${hash}`, { tenantId, spaceId, actorId: userId ?? null, tasks: tasks.map(task => ({
+              id: task.id,
+              title: task.title,
+              dependencies: task.dependencies ?? [],
+              communication_recipients: task.communication_recipients ?? [],
+              assigned_role: task.assigned_role,
+              budget_tokens: task.budget_tokens,
+              acceptance_criteria: task.acceptance_criteria ?? [],
+              ...(task.runtime_capability ? { runtime_capability: task.runtime_capability } : {}),
+            })) });
           });
           // Resolve the account's current execution ceiling once per goal. If billing is
           // unavailable, use the free-plan ceiling; worker fan-out must never fail open.
@@ -6147,7 +6156,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const goals = [];
     for (const hash of hashes.slice(history ? -20 : -10)) {
       if (!/^[a-f0-9]{64}$/.test(hash)) continue;
-      const metadata = await this.ctx.storage.get<{ tenantId: string; spaceId: string; actorId: string | null; tasks: Array<{ id: string; title: string; dependencies: string[]; communication_recipients?: string[] }> }>(`goal-activity:metadata:${hash}`);
+      const metadata = await this.ctx.storage.get<{ tenantId: string; spaceId: string; actorId: string | null; tasks: Array<{ id: string; title: string; dependencies: string[]; communication_recipients?: string[]; assigned_role?: string; budget_tokens?: number; acceptance_criteria?: string[]; runtime_capability?: string }> }>(`goal-activity:metadata:${hash}`);
       if (!metadata || metadata.tenantId !== tenantId || metadata.spaceId !== spaceId || metadata.actorId !== actorId) continue;
       // Goal DAG journals are projected into SQLite by the durable scheduler. Older
       // K/V-backed journals remain readable during migration, but a K/V-only lookup makes
@@ -6176,7 +6185,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const state = journal.tasks[task.id];
         const dispatch = dispatchByTask.get(`${hash}:${task.id}`);
         const status = state?.status === "running" && dispatch?.status === "review" ? "needs_review" : state?.status ?? "pending";
-        return { ...task, communication_recipients: task.communication_recipients ?? [], status, workerId: state?.workerId,
+        return { ...task, communication_recipients: task.communication_recipients ?? [],
+          ...(typeof task.assigned_role === "string" ? { assigned_role: task.assigned_role.slice(0, 128) } : {}),
+          ...(Number.isSafeInteger(task.budget_tokens) && (task.budget_tokens ?? 0) > 0 && (task.budget_tokens ?? 0) <= MAX_SUB_AGENT_BUDGET_TOKENS ? { budget_tokens: task.budget_tokens } : {}),
+          ...(Array.isArray(task.acceptance_criteria) ? { acceptance_criteria: task.acceptance_criteria.filter(value => typeof value === "string").slice(0, 8).map(value => value.slice(0, 500)) } : {}),
+          ...(typeof task.runtime_capability === "string" ? { runtime_capability: task.runtime_capability.slice(0, 64) } : {}),
+          status, workerId: state?.workerId,
           ...(dispatch && ["intent", "delivering", "acknowledged", "uncertain", "review"].includes(dispatch.status) ? { dispatch: { status: dispatch.status, ...(Number.isSafeInteger(dispatch.attempt) && (dispatch.attempt ?? 0) > 0 ? { attempt: dispatch.attempt } : {}) } } : {}),
           ...(state?.verification ? { verification: { outcome: state.verification.outcome, reason: state.verification.reason.slice(0, 300) } } : {}),
           ...(state?.runtime ? { runtime: state.runtime } : {}) };

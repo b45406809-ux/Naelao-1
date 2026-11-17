@@ -23,7 +23,7 @@ describe("task blackboard durable object route", () => {
           tenantId: "t",
           spaceId: "s",
           actorId: "u",
-          tasks: [{ id: "a", title: "Task", dependencies: [] }],
+          tasks: [{ id: "a", title: "Task", dependencies: [], assigned_role: "schema-validator", budget_tokens: 2400, acceptance_criteria: ["Return a verified result"] }],
         },
       ],
       [
@@ -97,6 +97,9 @@ describe("task blackboard durable object route", () => {
         verificationRequired: boolean;
         routing?: { mode: string; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number };
         tasks: Array<{
+          assigned_role?: string;
+          budget_tokens?: number;
+          acceptance_criteria?: string[];
           verification?: { outcome: string; reason: string };
           dispatch?: { status: string; attempt?: number };
         }>;
@@ -110,6 +113,9 @@ describe("task blackboard durable object route", () => {
       routing: { mode: "single_worker", taskCount: 1, selectedConcurrency: 1, hostConcurrencyCeiling: 4 },
       tasks: [
         {
+            assigned_role: "schema-validator",
+            budget_tokens: 2400,
+            acceptance_criteria: ["Return a verified result"],
           verification: {
             outcome: "failed",
             reason: "Independent evidence rejected.",

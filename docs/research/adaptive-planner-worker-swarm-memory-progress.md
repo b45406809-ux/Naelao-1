@@ -55,6 +55,18 @@ SC03 remains independently blocked from disconnected replay because the host can
 the exact invocation authority and fresh Billing admission; keep it fail-closed and continue other
 code work. Rollouts remain disabled.
 
+## Cross-plan checkpoint — 2026-11-17 (durable task contract in owner view; implementation pending push)
+
+The persisted actor-scoped goal metadata now keeps each task's role, bounded model-token budget,
+acceptance criteria and host-approved runtime recommendation. The authenticated activity route
+validates/bounds these optional fields while retaining compatibility with older records; the Shell
+shows them beside dependencies, verification and status. The runtime recommendation is descriptive
+and does not grant capability. Local AgentDO route tests **5/5**, Agents/Shell typechecks and diff
+hygiene pass. No browser/deployed acceptance. Exact next action: fetch and safely push this checkpoint,
+then continue APW03 revision/ownership lineage or APW04 scoped memory and privacy gaps from their
+existing records. SC03 remains fail-closed pending exact disconnected invocation authorization and
+Billing admission. Keep rollout disabled and preserve the Python cache.
+
 ## Cross-plan checkpoint — 2026-11-17 (owner task topology receipt; implementation pending push)
 
 The authenticated goal-activity projection now includes only a validated topology receipt from the
