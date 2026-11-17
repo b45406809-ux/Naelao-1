@@ -21,6 +21,7 @@ import { ExtensionAgentMaintenanceDelegation } from "@/components/ExtensionAgent
 import { MicroAppStorageStatus, projectGadgetStorageApps } from "@/components/MicroAppStorageStatus";
 import { previewExtensionResourceRequirements } from "@/lib/extension-resource-preview";
 import { previewExtensionPublisherProvenance } from "@/lib/extension-publisher-provenance";
+import { projectInstalledExtensionReleaseProvenance } from "@/lib/extension-release-provenance";
 import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
@@ -1282,6 +1283,7 @@ export function ChannelConnect({
           if (!instanceId || !extensionId) return null;
           const storageApps = projectGadgetStorageApps(item, projectId);
           const statusLabel = projectExtensionSetupStatusLabel(item.instance.status, item.manifest.resourceRequirements);
+          const releaseProvenance = projectInstalledExtensionReleaseProvenance(item.instance);
           return <div key={instanceId} style={{ padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 11.5 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
               <span>{extensionId} · {item.manifest.bundle?.version ?? "legacy"} · {item.instance.instance_key ?? "default"} · {item.instance.publisher_trusted === false ? "publisher trust blocked" : statusLabel}</span>
@@ -1300,6 +1302,11 @@ export function ChannelConnect({
               spaceId={spaceId} projectId={projectId} instanceId={instanceId}
               requirements={(item.manifest.resourceRequirements ?? []).filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs")} session={session} />}
             {item.instance.status === "staging" && <div style={{ color: "var(--text3)", fontSize: 11 }}>Setup did not finish. This extension is not available to workers or channels; uninstall it or retry installation.</div>}
+            {releaseProvenance && <div style={{ marginTop: 4, color: "var(--text3)", fontSize: 10.5 }}>
+              Verified release {releaseProvenance.version} · manifest <code>{releaseProvenance.manifestSha256}</code> · host-built artifact <code>{releaseProvenance.hostArtifactSha256}</code> · publisher key <code>{releaseProvenance.publisherKeyId}</code> · signature {item.instance.publisher_trusted === false ? "valid but publisher key revoked" : "valid"}
+              {releaseProvenance.publisherPayloadSha256 && <> · signed source payload <code>{releaseProvenance.publisherPayloadSha256}</code></>}
+              {!releaseProvenance.trusted && item.instance.publisher_trusted !== false && " · current publisher trust unavailable"}
+            </div>}
             {item.instance.publisher_trusted === false && <div role="alert" style={{ color: "var(--text2)", fontSize: 11 }}>The publisher key for this installed release is no longer trusted{item.instance.publisher_revoked_at ? ` (revoked ${new Date(item.instance.publisher_revoked_at).toLocaleString()})` : "."} The host blocks new work and resume attempts. Review a release signed by a currently trusted key before reinstalling.</div>}
             {item.instance.status !== "staging" && item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ instance_id: instanceId, extension_id: extensionId,
               version: item.manifest.bundle.version, release_version: item.instance.release_version ?? null,

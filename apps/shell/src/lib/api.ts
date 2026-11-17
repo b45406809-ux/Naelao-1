@@ -1715,7 +1715,8 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
 }
 export interface ContainerInstallation {
   instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string; release_version?: string | null;
-    publisher_key_id?: string | null; publisher_trusted?: boolean; publisher_revoked_at?: string | null };
+    pinned_artifact_sha256?: string | null; manifest_sha256?: string | null; publisher_payload_sha256?: string | null;
+    publisher_attestation_valid?: boolean; publisher_key_id?: string | null; publisher_trusted?: boolean; publisher_revoked_at?: string | null };
   manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; resourceRequirements?: ProjectExtensionResourceRequirement[]; settingsSchema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; settingsActivation?: "owner_publish"; containers?: Array<{ id?: string }>; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; name?: string; scope?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }>; businessActions?: Array<{ id: string }> }> } };
 }
 export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string, includeDisabled = false) {
