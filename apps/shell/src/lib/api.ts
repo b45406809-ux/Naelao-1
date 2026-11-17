@@ -1851,6 +1851,8 @@ export function getModalSandboxOperationStatus(spaceId: string, projectId: strin
 }
 export interface ProjectRuntimeBudgetReservation {
   reservationId: string;
+  runtimeKind: "project_main" | "project_sidecar";
+  installationId?: string;
   status: "held" | "expired" | "released" | "settled" | "unknown";
   reservedCredits: number;
   chargedCredits: number | null;

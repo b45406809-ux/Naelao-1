@@ -28,7 +28,7 @@ it("uses authenticated no-store Project queue reads and sends cancellation by op
 
 it("reads bounded runtime budget receipts without claiming invoice-backed provider cost", async () => {
   const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-    reservations: [{ reservationId: "container:receipt-a", status: "settled", reservedCredits: 300, chargedCredits: 120,
+    reservations: [{ reservationId: "container:receipt-a", runtimeKind: "project_main", status: "settled", reservedCredits: 300, chargedCredits: 120,
       createdAt: "2026-11-17T10:00:00.000Z", updatedAt: "2026-11-17T10:02:00.000Z", expiresAt: "2026-11-17T11:00:00.000Z" }],
     source: "workflow_budget_reservations_and_usage_events", costUnit: "internal_credits", providerInvoiceVerified: false,
   }), { status: 200, headers: { "content-type": "application/json" } }));

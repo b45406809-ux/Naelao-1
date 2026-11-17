@@ -33,7 +33,13 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP04 generated-workflow provenance and cost; `445e3635` pending ledger push)
+## Latest cross-plan checkpoint — 2026-11-17 (SC05 Project sidecar budget receipts; local)
+
+Project owner/admin runtime budget status now shows main-runtime and active `PROJECT_BOUND`/`PROJECT_SHARED` sidecar Tier 5 receipts. The Agents route first resolves exact active installations through SpaceDO; member-private `PROJECT_USER` receipts remain excluded. Shell labels runtime kind and internal-credit values and makes no invoice/USD claim. Focused route/API tests **2/2** each, Agents/Shell typechecks pass. The `pnpm` preflight aborted before test execution because it attempted modules-directory reconciliation without a TTY; already-installed local binaries performed verification, and no package directory was changed. No deployed/browser acceptance.
+
+SC03 source recheck confirms no reusable encrypted invocation store or alarm-safe durable caller for the live AgentDO authorization callback. Queue state and execution receipts deliberately omit executable payload; there is no generic durable grant revision or linked Billing hold for disconnected replay. Keep dispatch fail-closed; do not infer revisions or replay state. Exact next action: continue the next independent uncoded plan requirement, then revisit SC03 only with a host-owned job receipt that binds exact revocable authority, bounded encrypted request and current Billing admission. Preserve `infra/scripts/__pycache__/`; keep rollout disabled.
+
+## Previous cross-plan checkpoint — 2026-11-17 (EP04 generated-workflow provenance and cost; `445e3635` pushed)
 
 The owner preinstall audit confirmed earlier work already supplies signed resource declarations/source fingerprint (`83d81107`), post-validation host artifact/publisher pins (`d7ae34f4`), exact Project update review and staged receipt recovery (`d83bc20c`/`ff8a94c0`). Code `5eb1ea1a` now labels unpriced resource costs unknown before confirmation. Code `445e3635` shows the generated internal workflow's exact publisher signing-payload SHA-256, source-file count/bytes, distinguishes this from the later host-built artifact digest, and labels runtime/provider/storage/customer cost unknown. Checks: preview utilities **7/7**, Shell typecheck and diff hygiene pass. No deployed/browser acceptance; no price is invented. Exact next action: continue the next uncoded platform/managed-services requirement and return to SC03's host-owned durable invocation/authority/budget contract. Keep rollout disabled and preserve `infra/scripts/__pycache__/`.
 

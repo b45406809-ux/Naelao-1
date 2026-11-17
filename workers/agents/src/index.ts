@@ -5472,18 +5472,43 @@ app.get("/spaces/:spaceId/projects/:projectId/modal-operations", async c => {
 
 app.get("/spaces/:spaceId/projects/:projectId/runtime-budget-reservations", async c => {
   const { spaceId, projectId } = c.req.param();
-  const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
-  const rows = await c.env.PLATFORM_DB.prepare(`SELECT r.id,r.status,r.credits,r.expires_at,r.created_at,r.updated_at,
+  const { tenantId, userId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  // Project owners may inspect the shared Project runtime and Project-bound extension runtimes.
+  // Resolve the current signed installation scope first so PROJECT_USER receipts from another
+  // member can never leak through this Project-wide view.
+  const installationsResponse = await c.env.SPACES_WORKER!.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/container-installations?project_id=${encodeURIComponent(projectId)}`,
+    { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
+  if (!installationsResponse.ok) return c.json({ error_code: "runtime_budget_installations_unavailable" }, 503);
+  const installationData = await readBoundedResponseJson<{ installations?: unknown }>(installationsResponse, 256 * 1024).catch(() => null);
+  if (!installationData || !Array.isArray(installationData.installations) || installationData.installations.length > 128)
+    return c.json({ error_code: "runtime_budget_installations_invalid" }, 503);
+  const projectInstallationIds = installationData.installations.flatMap(value => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const instance = (value as { instance?: Record<string, unknown> }).instance;
+    if (!instance || instance.tenant_id !== tenantId || instance.space_id !== spaceId || instance.project_id !== projectId
+      || instance.status !== "active" || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(String(instance.scope))
+      || typeof instance.instance_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(instance.instance_id)) return [];
+    return [instance.instance_id];
+  });
+  const installationFilter = projectInstallationIds.length
+    ? ` OR r.installation_id IN (${projectInstallationIds.map(() => "?").join(",")})` : "";
+  const rows = await c.env.PLATFORM_DB.prepare(`SELECT r.id,r.status,r.credits,r.expires_at,r.created_at,r.updated_at,r.installation_id,
       (SELECT u.quantity FROM usage_events u WHERE u.org_id=r.org_id AND u.space_id=r.space_id
         AND u.project_id=r.project_id AND u.run_id=r.workflow_id AND u.event_type='infra_credits'
         ORDER BY u.recorded_at DESC LIMIT 1) AS charged_credits
     FROM workflow_budget_reservations r
-    WHERE r.org_id=? AND r.space_id=? AND r.project_id=? AND r.installation_id IS NULL AND r.runtime_tier=5 AND r.budget_key=?
+    WHERE r.org_id=? AND r.space_id=? AND r.project_id=? AND r.runtime_tier=5 AND r.budget_key=?
+      AND (r.installation_id IS NULL${installationFilter})
     ORDER BY r.created_at DESC LIMIT 50`)
-    .bind(tenantId, spaceId, projectId, `container:${spaceId}:${projectId}`)
-    .all<{ id: string; status: string; credits: number; expires_at: string; created_at: string; updated_at: string; charged_credits: number | null }>();
+    .bind(tenantId, spaceId, projectId, `container:${spaceId}:${projectId}`, ...projectInstallationIds)
+    .all<{ id: string; status: string; credits: number; expires_at: string; created_at: string; updated_at: string;
+      installation_id: string | null; charged_credits: number | null }>();
   const reservations = (rows.results ?? []).map(row => ({
     reservationId: row.id,
+    runtimeKind: row.installation_id ? "project_sidecar" as const : "project_main" as const,
+    ...(row.installation_id ? { installationId: row.installation_id } : {}),
     status: row.status === "held" && Date.parse(row.expires_at) <= Date.now() ? "expired"
       : (["held", "released", "settled"].includes(row.status) ? row.status : "unknown"),
     reservedCredits: row.credits,

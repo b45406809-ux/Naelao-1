@@ -16,7 +16,12 @@ async function fixture(role: "owner" | "admin" | "member" = "owner") {
   await db.prepare("INSERT INTO spaces(id,tenant_id,status) VALUES('space-a','tenant-a','active')").run();
   await db.prepare("INSERT INTO org_members(org_id,user_id,role) VALUES('tenant-a','user-a',?)").bind(role).run();
   const env = { PLATFORM_SECRET: secret, PLATFORM_DB: db,
-    SPACES_WORKER: { fetch: async () => Response.json({ project_id: "project-a" }) },
+    SPACES_WORKER: { fetch: async (request: Request) => new URL(request.url).pathname.endsWith("/container-installations")
+      ? Response.json({ installations: [
+        { instance: { instance_id: "install-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", status: "active", scope: "PROJECT_BOUND" } },
+        { instance: { instance_id: "install-user", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", status: "active", scope: "PROJECT_USER" } },
+        { instance: { instance_id: "install-stale", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", status: "disabled", scope: "PROJECT_SHARED" } },
+      ] }) : Response.json({ project_id: "project-a" }) },
   } as never;
   const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "user-a",
     "x-naelao-role": role, "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
@@ -24,17 +29,20 @@ async function fixture(role: "owner" | "admin" | "member" = "owner") {
 }
 
 describe("Project runtime budget reservation status", () => {
-  it("shows only exact Project Tier 5 container holds and settled internal-credit usage", async () => {
+  it("shows Project main and active Project-bound sidecar Tier 5 holds without exposing personal installs", async () => {
     const f = await fixture("admin");
     const insert = (id: string, status: string, project: string, tier: number, budgetKey: string, installationId: string | null = null) => f.db.prepare(`INSERT INTO workflow_budget_reservations
       (id,org_id,space_id,workflow_id,budget_key,credits,status,expires_at,created_at,updated_at,project_id,installation_id,runtime_tier)
       VALUES(?,?,?,?,?,300,?,'2099-01-01T00:00:00.000Z',?,'2026-11-17T10:01:00.000Z',?,?,?)`)
-      .bind(id, "tenant-a", "space-a", id, budgetKey, status, id.endsWith("settled") ? "2026-11-17T10:00:01.000Z" : "2026-11-17T10:00:00.000Z", project, installationId, tier).run();
+      .bind(id, "tenant-a", "space-a", id, budgetKey, status, id === "container:sidecar" ? "2026-11-17T10:00:03.000Z"
+        : id.endsWith("settled") ? "2026-11-17T10:00:01.000Z" : "2026-11-17T10:00:00.000Z", project, installationId, tier).run();
     await insert("container:held", "held", "project-a", 5, "container:space-a:project-a");
     await insert("container:settled", "settled", "project-a", 5, "container:space-a:project-a");
     await insert("container:other-project", "held", "project-b", 5, "container:space-a:project-b");
     await insert("workflow:other-tier", "held", "project-a", 4, "container:space-a:project-a");
     await insert("container:sidecar", "held", "project-a", 5, "container:space-a:project-a", "install-a");
+    await insert("container:personal-sidecar", "held", "project-a", 5, "container:space-a:project-a", "install-user");
+    await insert("container:disabled-sidecar", "held", "project-a", 5, "container:space-a:project-a", "install-stale");
     await f.db.prepare(`INSERT INTO usage_events(org_id,space_id,project_id,run_id,event_type,quantity,recorded_at)
       VALUES('tenant-a','space-a','project-a','container:settled','infra_credits',120,'2026-11-17T10:02:00.000Z')`).run();
 
@@ -43,9 +51,11 @@ describe("Project runtime budget reservation status", () => {
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.json()).toEqual({ source: "workflow_budget_reservations_and_usage_events", costUnit: "internal_credits",
       providerInvoiceVerified: false, reservations: [
-        { reservationId: "container:settled", status: "settled", reservedCredits: 300, chargedCredits: 120,
+        { reservationId: "container:sidecar", runtimeKind: "project_sidecar", installationId: "install-a", status: "held", reservedCredits: 300, chargedCredits: null,
+          createdAt: "2026-11-17T10:00:03.000Z", updatedAt: "2026-11-17T10:01:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z" },
+        { reservationId: "container:settled", runtimeKind: "project_main", status: "settled", reservedCredits: 300, chargedCredits: 120,
           createdAt: "2026-11-17T10:00:01.000Z", updatedAt: "2026-11-17T10:01:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z" },
-        { reservationId: "container:held", status: "held", reservedCredits: 300, chargedCredits: null,
+        { reservationId: "container:held", runtimeKind: "project_main", status: "held", reservedCredits: 300, chargedCredits: null,
           createdAt: "2026-11-17T10:00:00.000Z", updatedAt: "2026-11-17T10:01:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z" },
       ] });
   });

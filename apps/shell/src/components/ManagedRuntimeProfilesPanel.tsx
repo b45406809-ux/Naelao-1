@@ -534,21 +534,22 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
       </div>}
     </div>
     <div style={{ margin: "8px 0 18px" }}>
-      <div className="section-label">Main runtime budget reservations</div>
+      <div className="section-label">Project runtime budget reservations</div>
       <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 8px" }}>
-        Amounts cover this Project's main runtime and are internal plan credits from the Billing ledger, not provider invoices or USD estimates.
+        Amounts cover this Project's main runtime and active Project-bound sidecars. Personal member installations are omitted. These are internal plan credits, not provider invoices or USD estimates.
       </p>
       <button type="button" className="btn btn-ghost btn-sm" style={{ marginBottom: 8 }} disabled={busy !== null || loading}
         onClick={() => void reloadRuntimeBudgetReservations()}>
         {busy === "runtime-budget-refresh" ? "Refreshing…" : "Refresh reservations"}
       </button>
       {runtimeBudgetError ? <p role="status" style={{ color: "var(--text3)", fontSize: 13 }}>{runtimeBudgetError}</p>
-        : runtimeBudgetReservations.length === 0 ? <p style={{ color: "var(--text3)", fontSize: 13 }}>No main runtime budget reservations are recorded.</p>
-          : <div className="settings-block" aria-label="Main runtime budget reservations">
+        : runtimeBudgetReservations.length === 0 ? <p style={{ color: "var(--text3)", fontSize: 13 }}>No Project runtime budget reservations are recorded.</p>
+          : <div className="settings-block" aria-label="Project runtime budget reservations">
             {runtimeBudgetReservations.map(reservation => (
               <div className="settings-row" key={reservation.reservationId}>
                 <div>
-                  <div className="settings-row-label">{reservation.status.replaceAll("_", " ")} · {reservation.reservedCredits} reserved credits</div>
+                  <div className="settings-row-label">{reservation.runtimeKind === "project_sidecar"
+                    ? `Sidecar ${reservation.installationId ?? "(installation unknown)"}` : "Main runtime"} · {reservation.status.replaceAll("_", " ")} · {reservation.reservedCredits} reserved credits</div>
                   <div className="settings-row-sub">
                     {reservation.chargedCredits === null ? "No settled usage receipt" : `${reservation.chargedCredits} charged credits`}
                     {` · created ${new Date(reservation.createdAt).toLocaleString()}`}
