@@ -1113,23 +1113,13 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       || await sha256(migrationPayload) !== claims.migrationsSha256
       || await sha256(JSON.stringify(identity)) !== operationKey)
       return Response.json({ error_code: "gadget_schema_update_authorization_invalid" }, { status: 403 });
+    const actorGeneration = Number(this.metadata("installation_generation") ?? "0");
     if (this.metadata("app_id") !== claims.appId || this.metadata("scope") !== (projectBound ? "PROJECT_BOUND" : "SPACE_SHARED")
-      || projectBound && (this.metadata("project_id") !== claims.projectId
-        || this.metadata("installation_generation") !== String(claims.installationGeneration)
-        || this.metadata("tenant_id") !== claims.tenantId || this.metadata("space_id") !== claims.spaceId)
+      || projectBound && (this.metadata("project_id") !== claims.projectId || this.metadata("extension_installation_id") !== claims.installationId
+        || this.metadata("tenant_id") !== claims.tenantId || this.metadata("space_id") !== claims.spaceId
+        || !Number.isSafeInteger(actorGeneration) || actorGeneration < (claims.installationGeneration ?? 0))
       || !projectBound && this.gadgetTier() !== 3)
       return Response.json({ error_code: "gadget_schema_update_actor_mismatch" }, { status: 409 });
-
-    const proofJson = this.metadata("release_proof"), html = this.metadata("html");
-    if (!proofJson || !html) return Response.json({ error_code: "gadget_schema_update_signed_source_unavailable" }, { status: 409 });
-    let sourceProof: CanvasReleaseProof;
-    try { sourceProof = JSON.parse(proofJson) as CanvasReleaseProof; }
-    catch { return Response.json({ error_code: "gadget_schema_update_signed_source_invalid" }, { status: 409 }); }
-    if (sourceProof.extensionId !== claims.extensionId || !await this.verifyCanvasReleaseProof(sourceProof, html))
-      return Response.json({ error_code: "gadget_schema_update_source_pin_conflict" }, { status: 409 });
-    const existingInstallationId = this.metadata("extension_installation_id");
-    if (existingInstallationId && existingInstallationId !== claims.installationId)
-      return Response.json({ error_code: "gadget_schema_update_installation_mismatch" }, { status: 409 });
 
     const prior = [...this.ctx.storage.sql.exec<{ operationKey: string; tenantId: string; spaceId: string; installationId: string;
       extensionId: string; appId: string; fromVersion: string; toVersion: string; sourceManifestSha256: string;
@@ -1154,6 +1144,19 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         return Response.json({ error_code: "gadget_schema_update_operation_conflict" }, { status: 409 });
       return Response.json({ applied: true, replayed: true, operation_key: operationKey }, { headers: { "cache-control": "private, no-store" } });
     }
+
+    if (projectBound && actorGeneration !== claims.installationGeneration)
+      return Response.json({ error_code: "gadget_schema_update_installation_generation_mismatch" }, { status: 409 });
+    const proofJson = this.metadata("release_proof"), html = this.metadata("html");
+    if (!proofJson || !html) return Response.json({ error_code: "gadget_schema_update_signed_source_unavailable" }, { status: 409 });
+    let sourceProof: CanvasReleaseProof;
+    try { sourceProof = JSON.parse(proofJson) as CanvasReleaseProof; }
+    catch { return Response.json({ error_code: "gadget_schema_update_signed_source_invalid" }, { status: 409 }); }
+    if (sourceProof.extensionId !== claims.extensionId || !await this.verifyCanvasReleaseProof(sourceProof, html))
+      return Response.json({ error_code: "gadget_schema_update_source_pin_conflict" }, { status: 409 });
+    const existingInstallationId = this.metadata("extension_installation_id");
+    if (existingInstallationId && existingInstallationId !== claims.installationId)
+      return Response.json({ error_code: "gadget_schema_update_installation_mismatch" }, { status: 409 });
 
     const storedSourceVersion = this.metadata("schema_release_version") ?? sourceProof.version;
     const storedSourceManifest = this.metadata("schema_manifest_sha256")

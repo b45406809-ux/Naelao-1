@@ -230,11 +230,24 @@ describe("signed Space-shared Gadget schema update", () => {
     expect(await applied.json()).toMatchObject({ applied: true, replayed: false, operation_key: operationKey });
     expect(storage.sql.exec("SELECT project_id,installation_generation,scope FROM gadget_extension_schema_update_receipts").toArray())
       .toEqual([{ project_id: "project-a", installation_generation: 4, scope: "PROJECT_BOUND" }]);
+    const candidateManifest = { ...manifest, bundle: { ...manifest.bundle, version: "1.2.0",
+      primitives: manifest.bundle.primitives.map(primitive => ({ ...primitive, version: "1.2.0" })) } };
+    const candidateManifestJson = JSON.stringify(candidateManifest), candidateArtifactSha256 = "c".repeat(64);
+    const candidateHostSignature = await signHmac(JSON.stringify([extensionId, "1.2.0", candidateManifestJson, candidateArtifactSha256]), secret);
+    const candidateBindingSignature = await signHmac(JSON.stringify([extensionId, "1.2.0", candidateManifestJson, candidateArtifactSha256,
+      candidateHostSignature, "./dashboard.html", canvasSha256]), secret);
+    const candidateProof = { extensionId, version: "1.2.0", manifestJson: candidateManifestJson, artifactSha256: candidateArtifactSha256,
+      hostSignature: candidateHostSignature, canvasPath: "./dashboard.html", canvasSha256, bindingSignature: candidateBindingSignature };
+    const advancedActor = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 2,
+        tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", extensionInstallationId: "install-project-a",
+        installationGeneration: 5, html, releaseProof: candidateProof }) }));
+    expect(advancedActor.status, await advancedActor.clone().text()).toBe(201);
     const replay = await apply();
     expect(await replay.json()).toMatchObject({ applied: true, replayed: true });
 
     for (const [override, expected] of [[{ projectId: "project-b" }, "gadget_schema_update_actor_mismatch"],
-      [{ installationGeneration: 3 }, "gadget_schema_update_actor_mismatch"]] as const) {
+      [{ installationGeneration: 3 }, "gadget_schema_update_installation_generation_mismatch"]] as const) {
       const altered = { ...claims, ...override };
       const { operationKey: _prior, ...identity } = altered;
       const alteredClaims = { ...altered, operationKey: await sha256(JSON.stringify(identity)) };
