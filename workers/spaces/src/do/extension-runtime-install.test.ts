@@ -1067,6 +1067,14 @@ describe("runtime extension installation", () => {
     expect(receipt).toEqual({ status: "staged", project_id: "project-a", source_generation: sourceGeneration, applied_generation: sourceGeneration + 1,
       source_artifact_sha256: currentArtifact, artifact_sha256: candidateArtifact, publisher_key_id: publisher.publisherKeyId });
 
+    const expiredClaims = { ...claims, expiresAt: Date.now() - 1 };
+    const recovered = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...updateBody, projectUpdateReview: { claims: expiredClaims,
+        signature: await signHmac(JSON.stringify(expiredClaims), secret) }, projectUpdateRecoveryRequestId: claims.requestId }) }));
+    expect(recovered.status, await recovered.clone().text()).toBe(201);
+    expect(storage.sql.exec("SELECT status,applied_generation FROM project_extension_update_receipts WHERE request_id=?", claims.requestId).toArray())
+      .toEqual([{ status: "staged", applied_generation: sourceGeneration + 1 }]);
+
     const activated = await space.fetch(new Request("http://space/extension-installation/activate", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": await mintInternalToken(secret, "tenant") },
       body: JSON.stringify({ installationId, extensionId: "ext_project_receipt", version: "2.0.0", artifactSha256: candidateArtifact,

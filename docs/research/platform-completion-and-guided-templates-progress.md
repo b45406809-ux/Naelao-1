@@ -1,8 +1,8 @@
-## Local checkpoint — 2026-11-17 (Project update receipt recovery lookup)
+## Local checkpoint — 2026-11-17 (staged Project update replay; not yet pushed)
 
-After `53d07a16`, owner/admin callers can query a durable update receipt scoped by tenant/Space/Project/install/request. Review results expose request ID; Canvas/Gadget and workflow callers display status. A replay with an exact active receipt succeeds idempotently even after token expiry; expiry still blocks an update when no receipt exists. Receipt mismatch fails closed; staged receipt currently returns an explicit recovery-required conflict. Focused SpaceDO install/runtime, migration and review suites **49/49**, Spaces/Shell typechecks and diff check pass. Local mocks only.
+After `2df5ec2b`, owner/admin callers can query a durable update receipt scoped by tenant/Space/Project/install/request. Review results expose request ID; Canvas/Gadget and workflow callers display status. Active receipts replay idempotently; a same-request retry can resume a staged receipt after token expiry only after gateway and SpaceDO revalidate all receipt/candidate pins and publisher trust. The worker reuses actor initialization and activation. Focused SpaceDO install/runtime, migration and review tests **49/49**, Spaces/Shell typechecks and diff check pass. Local mocks only. The UI does not yet preserve and retry a pending request after an uncertain response.
 
-Exact next action: implement staged recovery by revalidating the candidate and pins, initializing the runtime actor idempotently, and advancing only the matching durable receipt. Then wire Project-bound additive Gadget migration and recover migration/activation failures. Continue remaining independent work across all active plans; rollout disabled.
+Exact next action: add caller-facing recovery that retains the original request token and candidate after an uncertain response, then wire Project-bound additive Gadget migration and recover migration/activation failures. Continue remaining independent work across all active plans; rollout disabled.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (Project update receipt through activation; `53d07a16` pushed)
 

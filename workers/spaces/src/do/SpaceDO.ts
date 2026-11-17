@@ -18613,7 +18613,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async installExtension(request: Request): Promise<Response> {
-    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; expectedCurrentGeneration?: number; expectedCurrentVersion?: string; expectedCurrentManifestSha256?: string; deferActivation?: boolean; projectUpdateReview?: { claims?: ProjectBoundExtensionUpdateClaims; signature?: string }; artifactSha256?: string; publisherId?: string; publisherKeyId?: string; publisherSignature?: string; publisherPayloadSha256?: string; approvedSharedFilesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>();
+    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; expectedCurrentGeneration?: number; expectedCurrentVersion?: string; expectedCurrentManifestSha256?: string; deferActivation?: boolean; projectUpdateReview?: { claims?: ProjectBoundExtensionUpdateClaims; signature?: string }; projectUpdateRecoveryRequestId?: string; artifactSha256?: string; publisherId?: string; publisherKeyId?: string; publisherSignature?: string; publisherPayloadSha256?: string; approvedSharedFilesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>();
     if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
     if (body.scope && (!body.tenantId || !body.spaceId)) return Response.json({ error: "tenantId and spaceId are required for scoped installations" }, { status: 400 });
     let manifest: ExtensionManifest;
@@ -18716,13 +18716,51 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(body.expectedCurrentVersion)
         || typeof body.expectedCurrentManifestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedCurrentManifestSha256))
         return Response.json({ error_code: "extension_upgrade_current_pin_required" }, { status: 409 });
-      const currentPin = queryOne<{ generation: number; release_version: string | null; manifest_json: string;
+      const recoveryRequestId = body.projectUpdateRecoveryRequestId;
+      if (recoveryRequestId !== undefined) {
+        const claims = body.projectUpdateReview?.claims, signature = body.projectUpdateReview?.signature;
+        if (!/^[0-9a-f-]{36}$/i.test(recoveryRequestId) || !claims || claims.requestId !== recoveryRequestId
+          || typeof signature !== "string" || !await verifyHmac(JSON.stringify(claims), signature, this.env.PLATFORM_SECRET)
+          || claims.version !== 1 || claims.purpose !== "project_bound_extension_update" || claims.tenantId !== body.tenantId
+          || claims.spaceId !== body.spaceId || claims.projectId !== body.projectId || claims.actorId !== body.installedBy
+          || claims.installationId !== instanceId || claims.extensionId !== manifest.id || claims.toVersion !== manifest.bundle?.version
+          || claims.candidateManifestSha256 !== await digestExtensionManifest(manifest) || claims.artifactSha256 !== artifactSha256
+          || claims.publisherId !== body.publisherId || claims.publisherKeyId !== body.publisherKeyId)
+          return Response.json({ error_code: "extension_update_recovery_claims_invalid" }, { status: 409 });
+        const receipt = queryOne<{ tenant_id: string; space_id: string; project_id: string; instance_id: string; extension_id: string;
+          actor_id: string; source_generation: number; applied_generation: number; from_version: string; to_version: string;
+          source_manifest_sha256: string; candidate_manifest_sha256: string; source_artifact_sha256: string; artifact_sha256: string;
+          publisher_id: string; publisher_key_id: string; status: string }>(this.ctx.storage.sql as never,
+          `SELECT tenant_id,space_id,project_id,instance_id,extension_id,actor_id,source_generation,applied_generation,from_version,to_version,
+            source_manifest_sha256,candidate_manifest_sha256,source_artifact_sha256,artifact_sha256,publisher_id,publisher_key_id,status
+           FROM project_extension_update_receipts WHERE request_id=?`, recoveryRequestId);
+        const staged = queryOne<{ status: string; generation: number; release_version: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
+          `SELECT i.status,i.generation,i.release_version,m.manifest_json FROM extension_instances i
+           JOIN extension_installation_manifests m ON m.instance_id=i.instance_id WHERE i.instance_id=? AND i.tenant_id=?
+             AND i.space_id=? AND i.project_id=? AND i.scope='PROJECT_BOUND'`, instanceId, body.tenantId, body.spaceId, body.projectId);
+        if (!receipt || receipt.tenant_id !== body.tenantId || receipt.space_id !== body.spaceId || receipt.project_id !== body.projectId
+          || receipt.instance_id !== instanceId || receipt.extension_id !== manifest.id || receipt.actor_id !== body.installedBy
+          || receipt.source_generation !== claims.installationGeneration || receipt.from_version !== claims.fromVersion
+          || receipt.to_version !== claims.toVersion || receipt.source_manifest_sha256 !== claims.sourceManifestSha256
+          || receipt.candidate_manifest_sha256 !== claims.candidateManifestSha256 || receipt.source_artifact_sha256 !== claims.sourceArtifactSha256
+          || receipt.artifact_sha256 !== claims.artifactSha256 || receipt.publisher_id !== claims.publisherId
+          || receipt.publisher_key_id !== claims.publisherKeyId || receipt.status !== "staged" || !staged
+          || staged.status !== "staging" || staged.generation !== receipt.applied_generation || staged.release_version !== claims.toVersion
+          || staged.manifest_json !== JSON.stringify(manifest))
+          return Response.json({ error_code: "extension_update_recovery_receipt_conflict" }, { status: 409 });
+        projectUpdateClaims = claims;
+        projectUpdateCandidateManifestSha256 = claims.candidateManifestSha256;
+      }
+      const currentPin = body.projectUpdateRecoveryRequestId ? null : queryOne<{ generation: number; release_version: string | null; manifest_json: string;
         artifact_sha256: string | null; publisher_id: string | null; publisher_key_id: string | null }>(this.ctx.storage.sql as never,
         `SELECT i.generation,i.release_version,m.manifest_json,r.artifact_sha256,r.publisher_id,r.publisher_key_id FROM extension_instances i
          JOIN extension_installation_manifests m ON m.instance_id=i.instance_id
          LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
          WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope='PROJECT_BOUND'`,
         instanceId, body.tenantId, body.spaceId, body.projectId);
+      if (body.projectUpdateRecoveryRequestId) {
+        expectedCurrentManifestJson = undefined;
+      } else {
       if (!currentPin || currentPin.generation !== body.expectedCurrentGeneration || currentPin.release_version !== body.expectedCurrentVersion)
         return Response.json({ error_code: "extension_upgrade_current_pin_changed" }, { status: 409 });
       try {
@@ -18749,6 +18787,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           return Response.json({ error_code: "extension_update_review_token_invalid" }, { status: 409 });
         projectUpdateClaims = reviewClaims;
         projectUpdateCandidateManifestSha256 = candidateManifestSha256;
+      }
       }
     }
     let reuseVerifiedHistoricalRelease = false;
@@ -18827,6 +18866,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             if (this.activeExtensionRuntimeWorkCount(instanceId) > 0)
               throw new Error("extension_runtime_work_not_drained");
             if (body.scope === "PROJECT_BOUND") {
+              if (body.projectUpdateRecoveryRequestId) {
+                const receipt = queryOne<{ applied_generation: number; status: string; to_version: string }>(this.ctx.storage.sql as never,
+                  "SELECT applied_generation,status,to_version FROM project_extension_update_receipts WHERE request_id=? AND instance_id=? AND project_id=?",
+                  body.projectUpdateRecoveryRequestId, instanceId, body.projectId);
+                if (!receipt || receipt.status !== "staged" || existingInstance.status !== "staging"
+                  || existingInstance.generation !== receipt.applied_generation || existingInstance.release_version !== receipt.to_version)
+                  throw new Error("extension_update_recovery_receipt_conflict");
+              } else {
               const latestManifest = queryOne<{ manifest_json: string }>(this.ctx.storage.sql as never,
                 "SELECT manifest_json FROM extension_installation_manifests WHERE instance_id=?", instanceId);
               if (existingInstance.generation !== body.expectedCurrentGeneration
@@ -18843,6 +18890,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
                   || projectUpdateClaims.candidateManifestSha256 !== projectUpdateCandidateManifestSha256
                   || projectUpdateClaims.artifactSha256 !== artifactSha256)
                   throw new Error("extension_update_review_token_stale");
+              }
               }
             }
           }

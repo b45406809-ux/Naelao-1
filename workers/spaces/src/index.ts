@@ -5878,6 +5878,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   let expectedUpgradePin: { generation: number; version: string; manifestSha256: string } | null = null;
   let projectUpdateReviewClaims: ReturnType<typeof projectBoundExtensionUpdateClaims> | undefined;
   let projectUpdateReviewSignature: string | undefined;
+  let resumeStagedProjectUpdate = false;
+  let stagedReceiptAppliedGeneration: number | undefined;
   if (body.upgrade === true) {
     if (typeof body.updateReviewToken !== "string" || body.updateReviewToken.length > 16_384)
       return c.json({ error_code: "extension_update_review_token_required" }, 409);
@@ -5927,12 +5929,16 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       if (receipt.status === "active") return c.json({ installed: true, replayed: true,
         installationId: updateClaims.installationId, projectUpdateReceipt: { requestId: updateClaims.requestId, status: "active",
           installationGeneration: receipt.applied_generation } }, 200, { "cache-control": "private, no-store" });
-      if (receipt.status === "staged") return c.json({ error_code: "extension_update_staged_recovery_required",
-        request_id: updateClaims.requestId, status: "staged" }, 409);
+      if (receipt.status === "staged") {
+        resumeStagedProjectUpdate = true;
+        stagedReceiptAppliedGeneration = Number(receipt.applied_generation);
+      }
+      else {
       return c.json({ error_code: "extension_update_review_token_consumed", request_id: updateClaims.requestId }, 409);
+      }
     }
-    if (updateReceiptResponse.status !== 404) return c.json({ error_code: "extension_update_receipt_lookup_unavailable" }, 503);
-    if (updateClaims.expiresAt <= Date.now()) return c.json({ error_code: "extension_update_review_token_stale" }, 409);
+    if (!updateReceiptResponse.ok && updateReceiptResponse.status !== 404) return c.json({ error_code: "extension_update_receipt_lookup_unavailable" }, 503);
+    if (updateClaims.expiresAt <= Date.now() && !resumeStagedProjectUpdate) return c.json({ error_code: "extension_update_review_token_stale" }, 409);
     const otherInstances = findUnsafeProjectExtensionUpgrade(currentInstalls.installations ?? [], { extensionId: bundle.id, projectId, instanceKey });
     if (otherInstances.length) return c.json({ error_code: "extension_upgrade_multiple_instances_unsupported",
       message: "A legacy sibling installation has no verified pinned release. Remove or migrate it before upgrading this extension.",
@@ -5941,22 +5947,33 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       && (item.instance_key ?? "default") === instanceKey && ["active", "disabled", "staging"].includes(item.status));
     if (!currentInstall || !Number.isSafeInteger(currentInstall.generation) || !currentInstall.release_version
       || !currentInstall.manifest_sha256) return c.json({ error_code: "extension_upgrade_current_pin_unavailable" }, 409);
-    expectedUpgradePin = { generation: currentInstall.generation!, version: currentInstall.release_version,
+    if (resumeStagedProjectUpdate) {
+      if (currentInstall.instance_id !== updateClaims.installationId || currentInstall.status !== "staging"
+        || currentInstall.generation !== stagedReceiptAppliedGeneration
+        || currentInstall.release_version !== bundle.version || currentInstall.manifest_sha256 !== candidateManifestSha256)
+        return c.json({ error_code: "extension_update_staged_candidate_changed" }, 409);
+      expectedUpgradePin = { generation: updateClaims.installationGeneration, version: updateClaims.fromVersion,
+        manifestSha256: updateClaims.sourceManifestSha256 };
+      projectUpdateReviewClaims = updateClaims;
+      projectUpdateReviewSignature = decodedReview.signature;
+    } else expectedUpgradePin = { generation: currentInstall.generation!, version: currentInstall.release_version,
       manifestSha256: currentInstall.manifest_sha256 };
     let trustedCurrentManifest: ReturnType<typeof validateExtensionManifest>;
     try { trustedCurrentManifest = validateExtensionManifest(currentInstall.manifest); }
     catch { return c.json({ error_code: "extension_upgrade_current_manifest_invalid" }, 409); }
     const currentManifestSha256 = await digestExtensionManifest(trustedCurrentManifest);
-    if (!updateClaims || JSON.stringify(updateClaims) !== decodedReview.payload
+    if (!resumeStagedProjectUpdate && (!updateClaims || JSON.stringify(updateClaims) !== decodedReview.payload
       || !isCurrentProjectBoundExtensionUpdate(updateClaims, { tenantId: identity.tenantId, spaceId, projectId, actorId: identity.userId,
         installationId: currentInstall.instance_id, extensionId: bundle.id, installationGeneration: expectedUpgradePin.generation,
         fromVersion: expectedUpgradePin.version, toVersion: bundle.version, sourceManifestSha256: expectedUpgradePin.manifestSha256,
         candidateManifestSha256: await digestExtensionManifest(manifest), sourceArtifactSha256: currentInstall.pinned_artifact_sha256 ?? "",
         artifactSha256: digest, publisherId: trustedPublisher.publisher_id, publisherKeyId })
-      || expectedUpgradePin.manifestSha256 !== currentManifestSha256 || !isVersionOnlyManifestChange(trustedCurrentManifest, manifest))
+      || expectedUpgradePin.manifestSha256 !== currentManifestSha256 || !isVersionOnlyManifestChange(trustedCurrentManifest, manifest)))
       return c.json({ error_code: "extension_update_review_token_stale" }, 409);
-    projectUpdateReviewClaims = updateClaims;
-    projectUpdateReviewSignature = decodedReview.signature;
+    if (!resumeStagedProjectUpdate) {
+      projectUpdateReviewClaims = updateClaims!;
+      projectUpdateReviewSignature = decodedReview.signature;
+    }
     if (currentInstall) {
       const expansion = extensionReleaseAccessExpansion(currentInstall, { permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements });
       if ((expansion.permissions.length || expansion.capabilities.length) && body.permissionExpansionApproved !== true) {
@@ -5981,7 +5998,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       ...(mustRemainStaged ? { deferActivation: true } : {}), ...(body.upgrade ? { upgrade: true,
         expectedCurrentGeneration: expectedUpgradePin?.generation, expectedCurrentVersion: expectedUpgradePin?.version,
         expectedCurrentManifestSha256: expectedUpgradePin?.manifestSha256,
-        projectUpdateReview: { claims: projectUpdateReviewClaims, signature: projectUpdateReviewSignature } } : {}) }) }));
+        projectUpdateReview: { claims: projectUpdateReviewClaims, signature: projectUpdateReviewSignature },
+        ...(resumeStagedProjectUpdate ? { projectUpdateRecoveryRequestId: projectUpdateReviewClaims?.requestId } : {}) } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
   const installedResult = await readBoundedResponseJson<{ installationId?: string; installationGeneration?: number;
     release?: { version?: string; artifactSha256?: string; hostSignature?: string; publisher?: { keyId?: string } } }>(installed.clone(), 64 * 1024);
