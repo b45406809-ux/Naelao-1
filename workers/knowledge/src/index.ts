@@ -1926,7 +1926,7 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
     parseOutcome = "succeeded";
   } catch (error) {
     if (fileFormat !== "pdf" && error instanceof Error && error.message.startsWith(`knowledge_${fileFormat}_`)) {
-      const tooLarge = /(?:archive_too_large|part_too_large|text_too_large|entries_exceeded|rows_exceeded|columns_exceeded|slides_exceeded|slide_too_large|xml_too_large)/.test(error.message);
+      const tooLarge = /(?:archive_too_large|part_too_large|text_too_large|entries_exceeded|rows_exceeded|columns_exceeded|slides_exceeded|slide_too_large|xml_too_large|table_(?:rows|columns|cells)_exceeded)/.test(error.message);
       throw new HttpError(tooLarge ? 413 : 422, error.message, tooLarge
         ? `This ${fileFormat.toUpperCase()} exceeds the supported extraction limits.`
         : `This ${fileFormat.toUpperCase()} is unsupported or could not be safely extracted. Try saving it as a standard ${fileFormat.toUpperCase()} file.`);
@@ -1954,7 +1954,7 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
       ? ["DOCX preview extracts the main body in document order. Headers, footers, images, page layout, comments, and tracked changes are not included; review table text before saving."]
       : fileFormat === "xlsx"
         ? ["XLSX preview extracts values from the first worksheet only. Additional sheets, formatting, charts, hidden content, external links, and formulas' cached results are omitted; formulas display as text."]
-        : ["PPTX preview extracts text from numbered slides in slide order. Images, speaker notes, charts, animations, layout, and non-text content are omitted; review the extraction before saving."];
+        : ["PPTX preview extracts text from numbered slides in slide order and includes bounded table cells with slide/table/row/cell labels. Tables follow slide body text; merged cells, visual layout, images, speaker notes, charts, animations, and other non-text content are omitted. Review before saving."];
   if (injectionDetected) extractionWarnings.push("Potential prompt-injection text was detected. The document will remain subject to Knowledge safety filtering.");
   return c.json({ preview: { content: previewContent, source_sha256: sourceSha256, extraction_sha256: extractionSha256,
     parser_version: parserVersion, preview_token: previewToken, source_file_name: sourceFileName,

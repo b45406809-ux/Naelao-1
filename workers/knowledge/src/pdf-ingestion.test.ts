@@ -192,7 +192,7 @@ describe("Knowledge PDF preview and approved ingestion", () => {
     const { preview } = await previewResponse.json() as { preview: {
       content: string; extraction_sha256: string; preview_token: string; source_sha256: string; parser_version: string; extraction_warnings: string[];
     } };
-    expect(preview).toMatchObject({ content: "## Slide 1\n\nQuarterly results\nRevenue up 12%", parser_version: "naelao:pptx-slide-text-v1" });
+    expect(preview).toMatchObject({ content: "## Slide 1\n\nQuarterly results\nRevenue up 12%", parser_version: "naelao:pptx-slide-text-table-v2" });
     expect(preview.extraction_warnings[0]).toContain("PPTX preview extracts text");
     expect(network).not.toHaveBeenCalled();
 
@@ -205,7 +205,7 @@ describe("Knowledge PDF preview and approved ingestion", () => {
     expect(saved.status).toBe(201);
     const record = f.calls.find(({ sql }) => sql.includes("INSERT INTO kb_documents"));
     expect(record?.args).toContain("pptx");
-    expect(record?.args).toContain("naelao:pptx-slide-text-v1");
+    expect(record?.args).toContain("naelao:pptx-slide-text-table-v2");
     expect(record?.args).toContain(preview.source_sha256);
     expect([...f.objects.entries()].some(([key, bytes]) => key.endsWith("/original") && bytes.length === pptxBytes.length)).toBe(true);
   });

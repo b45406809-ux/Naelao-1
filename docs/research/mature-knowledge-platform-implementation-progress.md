@@ -1,3 +1,19 @@
+## Current K02/K03 checkpoint — 2026-11-17 (bounded PPTX table extraction; locally verified, push pending)
+
+The PPTX parser now emits bounded table cells as explicit slide/table/row/cell entries instead of
+flattening them into adjacent slide paragraphs. It limits each table to 256 rows and 64 columns and
+the document to 20,000 cells; table content counts against the existing extracted-text bound. Its
+parser version advanced to `naelao:pptx-slide-text-table-v2`, invalidating stale preview receipts. The
+owner preview warns that tables follow slide body text and merged cells, visual layout, images, notes,
+charts and animation remain omitted. Knowledge PPTX/file/PDF-preview suites **13/13**, Knowledge
+typecheck and `git diff --check` pass. Local tests only; no browser/deployed/provider acceptance.
+
+This improves structured table text but does not provide visual table coordinates, scanned-image OCR,
+confidence or parser-quality evidence. Task attachment OCR remains a separate host path and is not
+persisted into Knowledge. Exact next action: fetch/push this checkpoint, then continue K02/K03's
+independent PDF page/table provenance and OCR requirements only through a supported reviewed Knowledge
+preview path; preserve the existing Cohere Parse default and retrieval path.
+
 ## Current K02/K03 checkpoint — 2026-11-17 (bounded PPTX preview; `41904a10` pushed)
 
 Commit `41904a1077ec88d3c9b5ab38c0aa5d4841e61f08` is pushed to `origin/Mcbt5s-Backup-2`. The new PPTX parser extracts text from numbered slide XML in slide order, generates editable slide headings, rejects unsafe XML/entities, and caps archive bytes (5 MiB), entries (512), slides (100), selected XML (4 MiB total/1 MiB per slide) and output text (1 MiB). Space and Project Knowledge forms route PPTX through signed preview, editable approval, source/parser/extraction/approved hashes, storage usage receipts and archive restore. It explicitly warns that notes, images, charts, animation and layout are omitted. Local Knowledge parser/ingestion/archive/telemetry tests **28/28**, Knowledge typecheck, Shell typecheck and file helper tests **5/5** pass. No browser, deployed or provider acceptance.

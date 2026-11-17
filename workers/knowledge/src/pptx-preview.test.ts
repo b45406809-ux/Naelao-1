@@ -25,6 +25,26 @@ describe("bounded PowerPoint Knowledge preview", () => {
       .rejects.toThrow("knowledge_pptx_xml_invalid");
   });
 
+  it("preserves bounded table cells with explicit slide/table/row/cell coordinates", async () => {
+    const xml = `<p:sld><a:p><a:r><a:t>Sales overview</a:t></a:r></a:p><a:graphicFrame><a:tbl>
+      <a:tr><a:tc><a:p><a:r><a:t>Product</a:t></a:r></a:p></a:tc><a:tc><a:p><a:r><a:t>Count &amp; value</a:t></a:r></a:p></a:tc></a:tr>
+      <a:tr><a:tc><a:p><a:r><a:t>Tea | coffee</a:t></a:r></a:p></a:tc><a:tc><a:p><a:r><a:t>4</a:t></a:r></a:p></a:tc></a:tr>
+    </a:tbl></a:graphicFrame></p:sld>`;
+    await expect(parseKnowledgePptx(pptx({ 1: xml }))).resolves.toBe(
+      `## Slide 1\n\nSales overview\n\n### Table 1\n\nRow 1: Cell 1="Product" | Cell 2="Count & value"\nRow 2: Cell 1="Tea | coffee" | Cell 2="4"`,
+    );
+  });
+
+  it("rejects excessive table dimensions and total cell work", async () => {
+    const row = (columns: number) => `<a:tr>${Array.from({ length: columns }, () => "<a:tc><a:p><a:t>x</a:t></a:p></a:tc>").join("")}</a:tr>`;
+    const table = (rows: number, columns: number) => `<p:sld><a:tbl>${Array.from({ length: rows }, () => row(columns)).join("")}</a:tbl></p:sld>`;
+    await expect(parseKnowledgePptx(pptx({ 1: table(257, 1) }))).rejects.toThrow("knowledge_pptx_table_rows_exceeded");
+    await expect(parseKnowledgePptx(pptx({ 1: table(1, 65) }))).rejects.toThrow("knowledge_pptx_table_columns_exceeded");
+    const slides: Record<number, string> = {};
+    for (let slide = 1; slide <= 16; slide++) slides[slide] = table(21, 64);
+    await expect(parseKnowledgePptx(pptx(slides))).rejects.toThrow("knowledge_pptx_table_cells_exceeded");
+  });
+
   it("caps archive bytes, slide count, total XML and output text", async () => {
     await expect(parseKnowledgePptx(new Uint8Array(MAX_KNOWLEDGE_PPTX_BYTES + 1))).rejects.toThrow("knowledge_pptx_archive_too_large");
     const slides: Record<number, string> = {};

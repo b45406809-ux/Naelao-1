@@ -6,11 +6,11 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is task-scoped OCR settings correction (code/docs push pending), after P04 restore
-  (`946e1881`, pointer `084e4f94`) pushed. Settings now accurately says task OCR supports at most five
-  rendered pages from a <=1 MiB scanned PDF, with the existing 20-call shared quota. Agents OCR/
-  attachment tests 20/20 and Agents/Shell typechecks pass. This does not wire OCR into Knowledge
-  ingestion. No browser/deployment/live model acceptance. Keep
+  checkpoint is bounded PPTX table extraction for Knowledge (code/docs push pending), after task OCR
+  settings correction (`7aee2ef1`) and P04 restore (`946e1881`, pointer `084e4f94`) pushed. PPTX now
+  has explicit slide/table/row/cell entries, 256-row/64-column/20,000-cell bounds, and a new parser
+  version. Focused Knowledge suites 13/13 and typecheck pass. This does not add visual layout or OCR.
+  No browser/deployment/provider acceptance. Keep
   public rollout disabled. TBR07 is compared and must not be repeated. SC03 still lacks an alarm-safe
   host job caller that can reconstruct the live Bash role clamp and link fresh Billing admission after
   disconnect; keep automatic replay disabled and continue other independent S/U/P/PW/K/EP/AP/TBR work.
@@ -37,21 +37,20 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (Attachment OCR controls reflect scanned-PDF path; push pending)
+## Current checkpoint — 2026-11-17 (bounded PPTX table extraction; push pending)
 
-The task-scoped OCR endpoint already supports first-five-page scanned PDF OCR after per-Space
-enablement and egress checks; it renders a <=1 MiB PDF, sends each bounded <=1 MiB/20 MP page to
-Workers AI, and charges each page against the shared rolling 20-call quota. Settings confirmation and
-owner-facing copy now describe those bounds and variable model cost. Local Agents OCR/attachment tests
-**20/20**, Agents/Shell typechecks and `git diff --check` pass. No browser, deployed or live model/
-billing acceptance. This does not implement Knowledge ingestion, persistence or lineage.
+PPTX Knowledge previews now retain cell order and label each cell by slide, table, row and column index
+inside bounded extracted Markdown. The parser version changed, so existing preview receipts cannot
+apply against the new output. Owner preview warns about table ordering and omitted visual semantics.
+Local PPTX/file/PDF-preview suites **13/13**, Knowledge typecheck and `git diff --check` pass. No
+browser, deployed or provider acceptance. Visual cell geometry, scanned-image OCR and parser-quality
+evidence remain open.
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
 
-Exact next action: fetch and push this verified settings update, then inspect Knowledge's existing
-`createParseV5Request` scanned-PDF behavior and add only a bounded owner-reviewed Knowledge preview/
-lineage path supported by that parser contract. Keep it distinct from task attachment OCR and preserve
-rollout disabled.
+Exact next action: fetch and push this parser checkpoint, then continue the Knowledge PDF page/table
+provenance and OCR gaps only through a supported owner-reviewed preview path. Keep attachment OCR
+separate, preserve the current Cohere Parse/default retrieval paths, and keep rollout disabled.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (P04 personal MicroApp restore caller; pushed as `946e1881`)
 
