@@ -2689,9 +2689,11 @@ export interface ProjectExtensionUpdateReview {
   dependencies: { added: string[]; removed: string[]; changed: string[] };
   primitives: { added: string[]; removed: string[]; changed: string[] };
   cost_terms: { status: "unknown"; reason: string };
-  apply_supported: false;
-  apply_block_reason: string;
+  apply_supported: boolean;
+  apply_block_reason: string | null;
   mutates_installation: false;
+  update_review_token?: string;
+  update_review_expires_at?: number;
 }
 
 export async function reviewProjectExtensionUpdate(spaceId: string, projectId: string, installationId: string,
@@ -2871,10 +2873,10 @@ export async function installProjectChannelExtension(
 export async function installProjectCanvasExtension(
   spaceId: string, projectId: string, session: SessionCredentials, manifest: unknown,
   artifacts: Record<string, string>, upgrade = false, instanceKey = "default", publisherSignature?: { key_id: string; signature: string },
-  permissionExpansionApproved = false, attachmentAccessApproved = false,
+  permissionExpansionApproved = false, attachmentAccessApproved = false, updateReviewToken?: string,
 ): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string; canvas_mount_warning?: string }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions`, {
-    method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}), ...(attachmentAccessApproved ? { attachmentAccessApproved: true } : {}) }), session,
+    method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}), ...(updateReviewToken ? { updateReviewToken } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}), ...(attachmentAccessApproved ? { attachmentAccessApproved: true } : {}) }), session,
   });
 }
 

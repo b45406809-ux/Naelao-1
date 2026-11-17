@@ -1,7 +1,7 @@
 import type { ExtensionManifest } from "@naelao/agent-sdk";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES, isSpaceSharedPackagePermissionAllowed } from "./shared-extension-package-policy.js";
 
-function isVersionOnlyManifestChange(current: ExtensionManifest, candidate: ExtensionManifest): boolean {
+export function isVersionOnlyManifestChange(current: ExtensionManifest, candidate: ExtensionManifest): boolean {
   if (current.id !== candidate.id || !current.bundle || !candidate.bundle
     || current.bundle.version === candidate.bundle.version) return false;
   const normalize = (manifest: ExtensionManifest): string => {

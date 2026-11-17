@@ -1,8 +1,8 @@
-## Cross-plan local checkpoint — 2026-11-17 (Project Gadget migration identity contract)
+## Cross-plan local checkpoint — 2026-11-17 (Project owner update token)
 
-The MicroAppDO migration handler now supports a distinct signed Project-bound contract with exact tenant/Space/Project/install/generation validation and a durable receipt that records Project, generation and scope. `SPACE_SHARED` remains a separate unchanged authorization purpose. Local focused tests **7/7**, Spaces typecheck and diff hygiene pass. The Project review route still cannot apply: it issues no review token and no apply caller consumes one. This is an uncoded integration gap, not a credential gate.
+Project release review now issues a short HMAC token only for disabled/drained, same-publisher, version-only changes. The Project bundle uploader validates it against exact actor and tenant/Space/Project/install generation, current/candidate manifest and artifact hashes, publisher key and expiry before artifact writes; current SpaceDO install CAS remains enforced. Shell Canvas/Gadget and workflow callers request the review token. Space focused review/install/runtime suites **77/77**, Spaces/Shell typechecks pass. Local/mock evidence only.
 
-Exact next action: create the Project-bound signed review/apply flow and wire it to this contract only after rechecking current trusted release, active publisher key, exact install generation/version/manifest and drained runtime; persist and recover the install receipt. Rollout remains disabled.
+Remaining Project update code: token persistence/single-use, migration apply through Project-bound receipt, and failure recovery after staging/activation. Exact next action: implement the durable receipt and migration apply/recovery, with interruption/replay/revocation tests. No live/deployed acceptance; rollout stays off.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (jobs-only resource approval UI; `ce7e01c5` pushed)
 

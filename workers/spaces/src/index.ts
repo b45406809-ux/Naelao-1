@@ -78,7 +78,8 @@ import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, spaceSha
 import { attachBlueprintAssistantChannelDefaults, attachBlueprintBusinessRoles, attachBlueprintCoordinationDefaults, attachBlueprintExpectedUsage, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 import { buildProviderDependencyInventory, type ProviderConnectionStatusRow, type ProviderDependencyDeclaration } from "./extension-provider-inventory.js";
 import { buildProviderCleanupInventory, type ProviderCleanupReceiptRow } from "./extension-provider-cleanup-inventory.js";
-import { buildProjectExtensionUpdateReview } from "./project-extension-update-review.js";
+import { buildProjectExtensionUpdateReview, isCurrentProjectBoundExtensionUpdate, projectBoundExtensionUpdateClaims } from "./project-extension-update-review.js";
+import { isVersionOnlyManifestChange } from "./extension-update-contract.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -5728,8 +5729,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const role = identity.role === "product_end_user" && identity.userId
     ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
-  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean; attachmentAccessApproved?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }>()
-    .catch(() => ({} as { manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean; attachmentAccessApproved?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }));
+  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; updateReviewToken?: string; permissionExpansionApproved?: boolean; attachmentAccessApproved?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }>()
+    .catch(() => ({} as { manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; updateReviewToken?: string; permissionExpansionApproved?: boolean; attachmentAccessApproved?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }));
   const instanceKey = body.instanceKey ?? "default";
   if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_instance_key_invalid" }, 400);
   if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
@@ -5872,15 +5873,20 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   const dependencyClosure = await resolveSpaceExtensionDependencies(c.env, identity.tenantId, spaceId, manifest, "PROJECT_BOUND", projectId);
   if (!dependencyClosure.resolved) return c.json({ error_code: `extension_${dependencyClosure.error}` }, dependencyClosure.error === "dependency_registry_unavailable" ? 503 : 409);
+  const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sourceEntries))))]
+    .map(x => x.toString(16).padStart(2, "0")).join("");
   let expectedUpgradePin: { generation: number; version: string; manifestSha256: string } | null = null;
   if (body.upgrade === true) {
+    if (typeof body.updateReviewToken !== "string" || body.updateReviewToken.length > 16_384)
+      return c.json({ error_code: "extension_update_review_token_required" }, 409);
     const current = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({
-      tenant_id: identity.tenantId, space_id: spaceId, extension_id: bundle.id,
+      tenant_id: identity.tenantId, space_id: spaceId, extension_id: bundle.id, include_manifest: "1",
     })}`));
     if (!current.ok) return c.json({ error_code: "extension_upgrade_preflight_unavailable" }, 503);
     const currentInstalls = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; extension_id: string; project_id: string | null;
       scope: string; instance_key?: string; status: string; generation?: number; release_version?: string | null;
-      manifest_sha256?: string | null; permissions?: string[]; capabilities?: string[] }> }>(current, 2 * 1024 * 1024);
+      manifest_sha256?: string | null; pinned_artifact_sha256?: string | null; manifest?: unknown; publisher_id?: string | null;
+      publisher_key_id?: string | null; permissions?: string[]; capabilities?: string[] }> }>(current, 2 * 1024 * 1024);
     const otherInstances = findUnsafeProjectExtensionUpgrade(currentInstalls.installations ?? [], { extensionId: bundle.id, projectId, instanceKey });
     if (otherInstances.length) return c.json({ error_code: "extension_upgrade_multiple_instances_unsupported",
       message: "A legacy sibling installation has no verified pinned release. Remove or migrate it before upgrading this extension.",
@@ -5891,6 +5897,23 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       || !currentInstall.manifest_sha256) return c.json({ error_code: "extension_upgrade_current_pin_unavailable" }, 409);
     expectedUpgradePin = { generation: currentInstall.generation!, version: currentInstall.release_version,
       manifestSha256: currentInstall.manifest_sha256 };
+    const decodedReview = decodeSpacePackageReviewToken(body.updateReviewToken);
+    if (!decodedReview || !await verifyHmac(decodedReview.payload, decodedReview.signature, c.env.PLATFORM_SECRET))
+      return c.json({ error_code: "extension_update_review_token_invalid" }, 409);
+    let updateClaims: ReturnType<typeof projectBoundExtensionUpdateClaims> | null = null;
+    try { updateClaims = JSON.parse(decodedReview.payload) as ReturnType<typeof projectBoundExtensionUpdateClaims>; } catch { /* invalid token */ }
+    let trustedCurrentManifest: ReturnType<typeof validateExtensionManifest>;
+    try { trustedCurrentManifest = validateExtensionManifest(currentInstall.manifest); }
+    catch { return c.json({ error_code: "extension_upgrade_current_manifest_invalid" }, 409); }
+    const currentManifestSha256 = await digestExtensionManifest(trustedCurrentManifest);
+    if (!updateClaims || JSON.stringify(updateClaims) !== decodedReview.payload
+      || !isCurrentProjectBoundExtensionUpdate(updateClaims, { tenantId: identity.tenantId, spaceId, projectId, actorId: identity.userId,
+        installationId: currentInstall.instance_id, extensionId: bundle.id, installationGeneration: expectedUpgradePin.generation,
+        fromVersion: expectedUpgradePin.version, toVersion: bundle.version, sourceManifestSha256: expectedUpgradePin.manifestSha256,
+        candidateManifestSha256: await digestExtensionManifest(manifest), sourceArtifactSha256: currentInstall.pinned_artifact_sha256 ?? "",
+        artifactSha256: digest, publisherId: trustedPublisher.publisher_id, publisherKeyId })
+      || expectedUpgradePin.manifestSha256 !== currentManifestSha256 || !isVersionOnlyManifestChange(trustedCurrentManifest, manifest))
+      return c.json({ error_code: "extension_update_review_token_stale" }, 409);
     if (currentInstall) {
       const expansion = extensionReleaseAccessExpansion(currentInstall, { permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements });
       if ((expansion.permissions.length || expansion.capabilities.length) && body.permissionExpansionApproved !== true) {
@@ -5907,7 +5930,6 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
         path, bytes: new TextEncoder().encode(source).byteLength });
     }
   }
-  const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sourceEntries))))].map(x => x.toString(16).padStart(2, "0")).join("");
   const requiresRuntimeActivation = canvases.length > 0 || gadgets.length > 0;
   const mustRemainStaged = requiresRuntimeActivation || requiresResourceApproval;
   const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
@@ -6072,12 +6094,12 @@ app.post("/spaces/:spaceId/projects/:projectId/extension-installations/:instance
   if (!installedResponse.ok) return c.json({ error_code: "extension_installation_lookup_unavailable" }, 503);
   const installedData = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; extension_id: string; project_id: string | null;
     scope: string; status: string; generation: number; release_version: string | null; manifest_sha256: string | null;
-    pinned_artifact_sha256: string | null; publisher_key_id?: string | null; publisher_attestation_valid?: boolean; publisher_trusted?: boolean;
+    pinned_artifact_sha256: string | null; publisher_id?: string | null; publisher_key_id?: string | null; publisher_attestation_valid?: boolean; publisher_trusted?: boolean;
     manifest?: unknown }> }>(installedResponse, 2 * 1024 * 1024).catch(() => null);
   const rawInstall = installedData?.installations?.find(item => item.instance_id === instanceId && item.project_id === projectId);
   if (!rawInstall || rawInstall.scope !== "PROJECT_BOUND") return c.json({ error_code: "project_bound_extension_not_found" }, 404);
   const [trustedInstall] = await trustedExtensionInstallations(c.env, identity.tenantId, spaceId, [rawInstall]);
-  if (rawInstall.status !== "active" || !trustedInstall || !rawInstall.publisher_key_id || rawInstall.publisher_attestation_valid !== true)
+  if (!(rawInstall.status === "active" || rawInstall.status === "disabled") || !trustedInstall || !rawInstall.publisher_key_id || rawInstall.publisher_attestation_valid !== true)
     return c.json({ error_code: "installed_extension_release_untrusted_or_inactive" }, 409);
   let currentManifest: ReturnType<typeof validateExtensionManifest>;
   try { currentManifest = validateExtensionManifest(rawInstall.manifest); }
@@ -6106,11 +6128,43 @@ app.post("/spaces/:spaceId/projects/:projectId/extension-installations/:instance
     return c.json({ error_code: "extension_candidate_manifest_pin_invalid" }, 409);
   if (!rawInstall.manifest_sha256 || !rawInstall.generation || typeof trustedRelease.publisher.id !== "string" || typeof trustedRelease.publisher.keyId !== "string")
     return c.json({ error_code: "extension_installation_pin_incomplete" }, 409);
+  const candidateManifestSha256 = await digestExtensionManifest(candidateManifest);
+  const samePublisher = rawInstall.publisher_id === trustedRelease.publisher.id && rawInstall.publisher_key_id === trustedRelease.publisher.keyId;
+  const versionOnly = isVersionOnlyManifestChange(currentManifest, candidateManifest);
+  const runtimeStatusResponse = await stub.fetch(new Request("http://space-do/extension-runtime-work", { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+    body: JSON.stringify({ action: "status", tenantId: identity.tenantId, spaceId, projectId, instanceId,
+      workId: "project-update-review-status", workKind: "gadget" }) }));
+  if (!runtimeStatusResponse.ok) return c.json({ error_code: "extension_update_review_runtime_status_unavailable" }, 503);
+  const runtimeStatus = await readBoundedResponseJson<{ active_work_count?: number }>(runtimeStatusResponse, 16 * 1024);
+  if (!Number.isSafeInteger(runtimeStatus.active_work_count) || (runtimeStatus.active_work_count ?? -1) < 0)
+    return c.json({ error_code: "extension_update_review_runtime_status_invalid" }, 503);
+  const canApply = rawInstall.status === "disabled" && runtimeStatus.active_work_count === 0 && samePublisher && versionOnly
+    && /^[a-f0-9]{64}$/.test(rawInstall.pinned_artifact_sha256 ?? "");
+  let updateReviewToken: string | undefined;
+  let updateReviewExpiresAt: number | undefined;
+  if (canApply) {
+    updateReviewExpiresAt = Date.now() + 5 * 60_000;
+    const claims = projectBoundExtensionUpdateClaims({ tenantId: identity.tenantId, spaceId, projectId, actorId: identity.userId,
+      installationId: instanceId, extensionId: rawInstall.extension_id, installationGeneration: rawInstall.generation,
+      fromVersion: body.expected_current_version, toVersion: body.candidate_version,
+      sourceManifestSha256: rawInstall.manifest_sha256, candidateManifestSha256,
+      sourceArtifactSha256: rawInstall.pinned_artifact_sha256 ?? "", artifactSha256: trustedRelease.artifactSha256,
+      publisherId: trustedRelease.publisher.id, publisherKeyId: trustedRelease.publisher.keyId,
+      expiresAt: updateReviewExpiresAt, requestId: crypto.randomUUID() });
+    const payload = JSON.stringify(claims);
+    updateReviewToken = encodeSpacePackageReviewToken(payload, await signHmac(payload, c.env.PLATFORM_SECRET));
+  }
   return c.json(buildProjectExtensionUpdateReview({ installationId: instanceId, installationGeneration: rawInstall.generation,
     currentManifestSha256: rawInstall.manifest_sha256, currentArtifactSha256: rawInstall.pinned_artifact_sha256,
-    current: currentManifest, candidateManifestSha256: await digestExtensionManifest(candidateManifest),
+    current: currentManifest, candidateManifestSha256,
     candidateArtifactSha256: trustedRelease.artifactSha256, candidate: candidateManifest,
-    publisherId: trustedRelease.publisher.id, publisherKeyId: trustedRelease.publisher.keyId }), 200,
+    publisherId: trustedRelease.publisher.id, publisherKeyId: trustedRelease.publisher.keyId, applySupported: canApply,
+    applyBlockReason: canApply ? null : rawInstall.status !== "disabled" ? "disable the installation before reviewing an update"
+      : runtimeStatus.active_work_count !== 0 ? "wait for admitted runtime work to drain"
+        : !samePublisher ? "updates with a publisher change need a separate owner review contract"
+          : "only version-only signed Project package updates are currently supported",
+    ...(updateReviewToken ? { updateReviewToken, updateReviewExpiresAt: updateReviewExpiresAt! } : {}) }), 200,
     { "cache-control": "private, no-store" });
 });
 

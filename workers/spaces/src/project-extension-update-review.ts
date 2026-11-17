@@ -12,6 +12,37 @@ function rows<T extends { id: string }>(before: T[], after: T[]) {
   };
 }
 
+export function projectBoundExtensionUpdateClaims(input: { tenantId: string; spaceId: string; projectId: string;
+  actorId: string; installationId: string; extensionId: string; installationGeneration: number;
+  fromVersion: string; toVersion: string; sourceManifestSha256: string; candidateManifestSha256: string;
+  sourceArtifactSha256: string; artifactSha256: string; publisherId: string; publisherKeyId: string;
+  expiresAt: number; requestId: string }) {
+  return { version: 1, purpose: "project_bound_extension_update", ...input };
+}
+
+export interface ProjectBoundExtensionUpdateClaims {
+  version: 1; purpose: "project_bound_extension_update"; tenantId: string; spaceId: string; projectId: string;
+  actorId: string; installationId: string; extensionId: string; installationGeneration: number;
+  fromVersion: string; toVersion: string; sourceManifestSha256: string; candidateManifestSha256: string;
+  sourceArtifactSha256: string; artifactSha256: string; publisherId: string; publisherKeyId: string;
+  expiresAt: number; requestId: string;
+}
+
+export function isCurrentProjectBoundExtensionUpdate(value: unknown, expected: Omit<ProjectBoundExtensionUpdateClaims, "version" | "purpose" | "expiresAt" | "requestId">,
+  now = Date.now()): value is ProjectBoundExtensionUpdateClaims {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const claims = value as Partial<ProjectBoundExtensionUpdateClaims>;
+  return claims.version === 1 && claims.purpose === "project_bound_extension_update"
+    && claims.tenantId === expected.tenantId && claims.spaceId === expected.spaceId && claims.projectId === expected.projectId
+    && claims.actorId === expected.actorId && claims.installationId === expected.installationId && claims.extensionId === expected.extensionId
+    && claims.installationGeneration === expected.installationGeneration && claims.fromVersion === expected.fromVersion
+    && claims.toVersion === expected.toVersion && claims.sourceManifestSha256 === expected.sourceManifestSha256
+    && claims.candidateManifestSha256 === expected.candidateManifestSha256 && claims.sourceArtifactSha256 === expected.sourceArtifactSha256
+    && claims.artifactSha256 === expected.artifactSha256 && claims.publisherId === expected.publisherId && claims.publisherKeyId === expected.publisherKeyId
+    && Number.isSafeInteger(claims.expiresAt) && (claims.expiresAt ?? 0) > now && (claims.expiresAt ?? 0) <= now + 5 * 60_000
+    && typeof claims.requestId === "string" && /^[0-9a-f-]{36}$/i.test(claims.requestId);
+}
+
 export function buildProjectExtensionUpdateReview(input: {
   installationId: string;
   installationGeneration: number;
@@ -23,6 +54,10 @@ export function buildProjectExtensionUpdateReview(input: {
   candidate: unknown;
   publisherId: string;
   publisherKeyId: string;
+  applySupported?: boolean;
+  applyBlockReason?: string | null;
+  updateReviewToken?: string;
+  updateReviewExpiresAt?: number;
 }) {
   const current = input.current as any;
   const candidate = input.candidate as any;
@@ -54,8 +89,11 @@ export function buildProjectExtensionUpdateReview(input: {
     primitives: rows((current.bundle?.primitives ?? []).filter((row: any): row is { id: string } => typeof row.id === "string"),
       (candidate.bundle?.primitives ?? []).filter((row: any): row is { id: string } => typeof row.id === "string")),
     cost_terms: { status: "unknown", reason: "the extension release contract has no approved price or metering terms" },
-    apply_supported: false as const,
-    apply_block_reason: "project-bound forward update admission and migration compare-and-swap are not implemented",
+    review: { apply_supported: input.applySupported === true, apply_block_reason: input.applyBlockReason ?? null,
+      mutates_installation: false as const },
+    ...(input.updateReviewToken ? { update_review_token: input.updateReviewToken, update_review_expires_at: input.updateReviewExpiresAt! } : {}),
+    apply_supported: input.applySupported === true,
+    apply_block_reason: input.applySupported ? null : input.applyBlockReason ?? "project-bound package change is outside the version-only update contract",
     mutates_installation: false as const,
   };
 }

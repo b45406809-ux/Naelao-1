@@ -1028,7 +1028,22 @@ export function ChannelConnect({
         && (item.instance.instance_key ?? "default") === canvasInstanceKey.trim());
       const permissionExpansionApproved = confirmExtensionAuthorityExpansion(current ? { permissions: current.manifest.declaredPermissions ?? [], capabilities: current.manifest.capabilityRequirements ?? [] } : undefined, candidate);
       if (permissionExpansionApproved === null) return;
-      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim(), { key_id: canvasPublisherKeyId, signature: canvasPublisherSignature.trim() }, permissionExpansionApproved, canvasInstallConfirmed);
+      let updateReviewToken: string | undefined;
+      if (confirmUpgrade) {
+        const currentInstance = current?.instance;
+        if (!currentInstance?.instance_id || currentInstance.status !== "disabled" || !currentInstance.generation
+          || !currentInstance.release_version || !currentInstance.manifest_sha256)
+          throw new Error("Pause the current installation, wait for admitted work to drain, then review this version-only update.");
+        const review = await reviewProjectExtensionUpdate(spaceId, projectId, currentInstance.instance_id, {
+          candidateVersion: String((manifest as { bundle?: { version?: unknown } })?.bundle?.version ?? ""),
+          expectedGeneration: currentInstance.generation, expectedCurrentVersion: currentInstance.release_version,
+          expectedManifestSha256: currentInstance.manifest_sha256,
+        }, session);
+        if (!review.apply_supported || !review.update_review_token || (review.update_review_expires_at ?? 0) <= Date.now())
+          throw new Error(review.apply_block_reason ?? "This update requires a separate owner review contract.");
+        updateReviewToken = review.update_review_token;
+      }
+      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim(), { key_id: canvasPublisherKeyId, signature: canvasPublisherSignature.trim() }, permissionExpansionApproved, canvasInstallConfirmed, updateReviewToken);
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Canvas/Gadget package installation failed");
       setExtensionNotice(installed.canvas_mount_warning ?? null);
       const [channels, all] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true)]);

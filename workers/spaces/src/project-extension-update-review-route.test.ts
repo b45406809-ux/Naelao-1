@@ -26,19 +26,21 @@ const candidateManifest = validateExtensionManifest({ ...currentManifest,
     workerRoles: [{ id: "reader", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./read.ts", primitiveIds: ["read_file"] }] },
 }, { gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.simulate"] });
 
-function harness(options: { generation?: number; activeKey?: boolean } = {}) {
+function harness(options: { generation?: number; activeKey?: boolean; status?: "active" | "disabled"; candidate?: typeof candidateManifest } = {}) {
   const requests: Request[] = [];
   const installed = { instance_id: "instance-a", extension_id: extensionId, project_id: "project-a", scope: "PROJECT_BOUND",
-    status: "active", generation: options.generation ?? 4, release_version: "1.0.0", manifest_sha256: "pending",
-    pinned_artifact_sha256: "b".repeat(64), publisher_key_id: publisherKeyId, publisher_attestation_valid: true, manifest: currentManifest };
+    status: options.status ?? "active", generation: options.generation ?? 4, release_version: "1.0.0", manifest_sha256: "pending",
+    pinned_artifact_sha256: "b".repeat(64), publisher_id: "publisher-a", publisher_key_id: publisherKeyId,
+    publisher_attestation_valid: true, manifest: currentManifest };
   const stub = { fetch: vi.fn(async (request: Request) => {
     requests.push(request);
     const url = new URL(request.url);
     if (url.pathname === "/projects/project-a/automation-access") return Response.json({ project_id: "project-a", can_manage: true });
     if (url.pathname === "/extension-installations") return Response.json({ installations: [{ ...installed,
       manifest_sha256: await digestExtensionManifest(currentManifest) }] });
-    if (url.pathname === "/extension-releases") return Response.json({ releases: [{ version: "2.0.0", manifest: candidateManifest,
+    if (url.pathname === "/extension-releases") return Response.json({ releases: [{ version: "2.0.0", manifest: options.candidate ?? candidateManifest,
       artifactSha256: "c".repeat(64), signatureValid: true, publisher: { id: "publisher-a", keyId: publisherKeyId } }] });
+    if (url.pathname === "/extension-runtime-work") return Response.json({ active_work_count: 0 });
     return Response.json({ error_code: "unexpected_route" }, { status: 404 });
   }) };
   const env = { PLATFORM_SECRET: secret,
@@ -88,5 +90,23 @@ describe("PROJECT_BOUND extension update review route", () => {
 
     const member = harness();
     expect((await post(member.env, body(), "member")).status).toBe(403);
+  });
+
+  it("issues a short signed apply token only for a paused, drained, version-only update", async () => {
+    const versionOnly = validateExtensionManifest({ ...currentManifest, bundle: { ...currentManifest.bundle!, version: "2.0.0",
+      primitives: currentManifest.bundle!.primitives.map(primitive => ({ ...primitive, version: "2.0.0" })) },
+    }, { gatekeeperCapabilities: ["extension.project_canvas"] });
+    const h = harness({ status: "disabled", candidate: versionOnly });
+    const requestBody = body();
+    requestBody.expected_manifest_sha256 = await digestExtensionManifest(currentManifest);
+    const response = await post(h.env, requestBody);
+    const result = await response.json() as { apply_supported?: boolean; apply_block_reason?: string | null;
+      update_review_token?: string; update_review_expires_at?: number };
+    expect(response.status).toBe(200);
+    expect(result.apply_supported).toBe(true);
+    expect(result.update_review_token).toBeTruthy();
+    expect(result.update_review_expires_at).toBeGreaterThan(Date.now());
+    expect(result.apply_block_reason).toBeNull();
+    expect(h.requests.some(request => new URL(request.url).pathname === "/extension-installation/activate")).toBe(false);
   });
 });

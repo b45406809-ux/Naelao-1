@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectExtensionUpdateReview } from "./project-extension-update-review.js";
+import { buildProjectExtensionUpdateReview, isCurrentProjectBoundExtensionUpdate, projectBoundExtensionUpdateClaims } from "./project-extension-update-review.js";
 
 describe("project extension update review", () => {
   it("binds review to the exact installation generation and reports authority, resource, dependency and code changes", () => {
@@ -22,5 +22,19 @@ describe("project extension update review", () => {
       resources: { added: ["uploads"], removed: [], changed: ["records"] },
       dependencies: { removed: ["ext_dep"] }, primitives: { added: ["sync"] },
       cost_terms: { status: "unknown" }, apply_supported: false, mutates_installation: false });
+  });
+
+  it("accepts only a current, exact and unexpired Project update pin set", () => {
+    const expected = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "owner",
+      installationId: "install", extensionId: "ext_updates", installationGeneration: 7, fromVersion: "1.0.0", toVersion: "2.0.0",
+      sourceManifestSha256: "a".repeat(64), candidateManifestSha256: "b".repeat(64), sourceArtifactSha256: "c".repeat(64),
+      artifactSha256: "d".repeat(64), publisherId: "publisher", publisherKeyId: "e".repeat(64) };
+    const claims = projectBoundExtensionUpdateClaims({ ...expected, expiresAt: 10_000, requestId: "123e4567-e89b-12d3-a456-426614174000" });
+    expect(isCurrentProjectBoundExtensionUpdate(claims, expected, 9_000)).toBe(true);
+    expect(isCurrentProjectBoundExtensionUpdate({ ...claims, projectId: "other" }, expected, 9_000)).toBe(false);
+    expect(isCurrentProjectBoundExtensionUpdate({ ...claims, installationGeneration: 6 }, expected, 9_000)).toBe(false);
+    expect(isCurrentProjectBoundExtensionUpdate({ ...claims, publisherKeyId: "f".repeat(64) }, expected, 9_000)).toBe(false);
+    expect(isCurrentProjectBoundExtensionUpdate({ ...claims, expiresAt: 9_000 }, expected, 9_000)).toBe(false);
+    expect(isCurrentProjectBoundExtensionUpdate({ ...claims, expiresAt: 310_001 }, expected, 10_000)).toBe(false);
   });
 });
