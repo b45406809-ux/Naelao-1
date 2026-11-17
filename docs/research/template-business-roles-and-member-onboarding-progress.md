@@ -1,4 +1,23 @@
-## Current TBR11 checkpoint — 2026-11-17 (`c64aba7b`, ledgers through `3f7f6da4` pushed)
+## Current TBR05/TBR04 reconciliation — 2026-11-17 (source inspected; queue checkpoint `3ab863de`)
+
+The invitation source already binds an optional business-role proposal to the exact active blueprint
+artifact SHA and role ID. Redemption requires the authenticated Product identity's verified matching
+email, a fresh invitation token, current active blueprint/hash/role, active Space/Product, current
+inviter authority, and one-time non-member acceptance. It creates a `proposal_only` review constrained
+by `grants_applied=0`; replays return the review without applying grants. Existing tests in
+`workers/spaces/src/space-member-invitations.test.ts` cover pinned roles, stale artifacts, identity
+mismatch, replay and proposal-only persistence. Do not restart TBR05's invite-role binding work;
+provider delivery and real invitations remain disabled.
+
+The current TBR04 gap is the owner preview's inability to resolve symbolic blueprint resource
+references to host-issued exact installation/Project/Knowledge grants; the blueprint has no approved
+binding for those IDs. Preserve `declared_only`/unavailable and `grants_applied=false`; no grant may be
+inferred. Exact next action: implement a non-granting exact-resource preview only where a concrete
+owner-approved binding exists; otherwise keep the unsupported mapping explicit, then continue SC03
+durable dispatch and TBR11 reservation work. Code checkpoint `3ab863de` adds owner-visible queue-full
+status; details and tests are in the shared-compute ledger.
+
+## Previous TBR11 checkpoint — 2026-11-17 (`c64aba7b`, ledgers through `3f7f6da4` pushed)
 
 The shared session-budget gate now fails closed when its status read is non-OK or returns malformed
 credits/warning fields. It no longer treats an unavailable tally as zero. Local session-spend validation

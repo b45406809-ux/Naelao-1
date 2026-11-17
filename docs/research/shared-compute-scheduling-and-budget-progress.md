@@ -260,3 +260,20 @@ queue APIs, then implement one durable host-managed job record/dispatcher path w
 authority and Billing rechecks. Keep caller retry and logical admission distinct from actual
 execution. Return to TBR11 reservation work after this independent SC03 slice; continue SC04 and
 all other active plans after each checkpoint.
+
+## SC03 queue-full owner status — 2026-11-17 (`3ab863de` pushed)
+
+ConcurrencyDO now stores bounded, content-free `capacity_queue_full` receipts for requests rejected
+at the global/tenant waiting-queue bound. Project owner list responses include these separately from
+actual waiters and expired admissions; a same-ID retry admitted later removes its stale rejection.
+The owner panel labels the entry “Queue full · retry from the original caller” and offers no cancel
+or dispatch claim. Receipts expire after 24 hours and are capped at 2,000 globally. ConcurrencyDO
+suite **28/28**, Agents/Shell typechecks, and diff hygiene pass; no deployed acceptance.
+
+This closes owner-visible status for queue-full refusals only. SC03 remains a code gap for a
+durable host job/dispatcher that can safely resume after caller disconnect. ToolSandbox currently
+persists executable intent only under a narrower capacity-wait path and lacks durable replay consent
+plus alarm-safe live authority and Billing revalidation; keep autonomous replay disabled. Exact next
+action: continue TBR04's non-granting exact-resource preview audit (TBR05 invitation role binding is
+already implemented and tested), then return to the independent SC03 dispatcher and TBR11
+reservation requirements.

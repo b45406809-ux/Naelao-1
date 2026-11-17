@@ -3098,6 +3098,17 @@ ordinary caller wiring but not atomic reservation or uncertain-outcome recovery;
 acceptance is claimed. Exact next action: proceed to SC03 durable compute admission/dispatch across
 ConcurrencyDO, ToolSandbox invocation recovery and owner queue callers; then return to the TBR11
 reservation gap and continue all remaining active-plan requirements.
+
+## Cross-plan checkpoint — 2026-11-17 (SC03 queue-full owner status; pushed `3ab863de`)
+
+The owner queue now displays bounded, content-free queue-full refusals separately from live waiters
+and expired entries, directing users to retry the original caller. It does not offer cancellation
+for a request that was never queued. ConcurrencyDO tests **28/28**, Agents/Shell typechecks and diff
+check pass. SC03 durable dispatch remains a code gap with explicit consent, authority-revalidation
+and Billing-admission requirements; no replay or rollout was enabled. TBR05's blueprint-pinned
+proposal-only invitation role path is already wired and tested. Exact next action: trace TBR04's
+symbolic-resource preview against current authoritative grants and implement only concrete
+owner-approved mappings, then return to SC03 and TBR11.
 ## Cross-plan checkpoint — 2026-11-17 (K02 reviewed image OCR caller)
 
 Space and Project Knowledge forms now accept bounded PNG/JPEG files through the signed editable preview

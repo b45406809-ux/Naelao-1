@@ -70,7 +70,22 @@ cursors and verified pricing remain unsupported contract gaps; K09 applicable si
 live acceptance remain open. Reconcile active callers before choosing the next K/EP/P/PW/S/U/TBR item.
 Keep rollout disabled, preserve the cache, and continue after checkpoints.
 
-## Current checkpoint — 2026-11-17 (scheduled direct-script ceiling; `7af7ce5e` pushed)
+## Current checkpoint — 2026-11-17 (SC03 capacity rejection visibility; `3ab863de` pushed)
+
+**Reminder to myself:** Never stop after a status update, implementation slice, test pass, checkpoint, commit, push or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
+
+Bounded owner-scoped queue-full receipts now distinguish rejected admissions from live waiters;
+the Shell directs the owner to retry from the caller. ConcurrencyDO **28/28**, Agents/Shell
+typechecks, and diff check pass. Code `3ab863de` is pushed. SC03's host dispatcher remains uncoded
+because replay needs exact durable consent, current authority revalidation and Billing admission;
+ordinary missing dispatcher work remains open. TBR05's exact blueprint-pinned invite-role proposal,
+verified identity redemption and no-grant review are already wired and tested; do not repeat that
+slice. Exact next task: trace TBR04's symbolic-resource preview against current authoritative grants
+and implement only concrete owner-approved mappings. Then return to SC03 dispatcher and TBR11
+reservation work. Keep rollout disabled, preserve `infra/scripts/__pycache__/`, and continue after
+every checkpoint.
+
+## Previous checkpoint — 2026-11-17 (scheduled direct-script ceiling; `7af7ce5e` pushed)
 
 **Reminder to myself:** Never stop after a status update, implementation slice, test pass, checkpoint, commit, push or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
 
