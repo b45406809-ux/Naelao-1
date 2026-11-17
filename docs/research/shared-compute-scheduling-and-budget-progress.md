@@ -1,6 +1,16 @@
 # Shared compute scheduling and budget progress
 
-## Current checkpoint — 2026-11-17 (SC03 monotonic authorization revision; `070e0326` pushed)
+## Current checkpoint — 2026-11-17 (SC03 encrypted invocation receipt; local verification pending push)
+
+ToolSandbox now stores a short-lived, size-bounded AES-GCM envelope in R2 when a native capacity waiter has a monotonic membership revision and the configured R2/key bindings exist. Authenticated data binds request path/hash, tenant, Space/Project, actor, agent, run, execution ID, revision and expiry. Sidecars and revision-less scopes do not persist a replay payload. Exact cancellation deletes the envelope; alarms erase expired payloads, mark waiting receipts expired, and retry cleanup after deletion failure. The execution record and ConcurrencyDO still hold metadata only. Focused DynamicSandboxDO tests **40/40**, Agents typecheck and `git diff --check` pass. The pnpm preflight stopped before package scripts because its no-TTY dependency reconciliation guard refused module removal; installed local binaries performed verification. No deployed, live or provider acceptance.
+
+This is bounded encrypted persistence and cleanup only. There is no disconnected dispatcher, current installation-grant revision, durable Billing reservation link, process-memory restoration, or owner-visible recovery lifecycle. The 10-minute retention is an implementation bound matching the current maximum admission waiter TTL; it is not a general data-retention policy. Rollout remains disabled.
+
+**Reminder to myself:** Keep implementing the full mission after this checkpoint. Do not stop at tests, a ledger update, commit or push; immediately continue with the next independent authorized requirement.
+
+Exact next action: map the durable host-owned dispatcher/job receipt to existing membership and installation authority readers plus Billing admission, then implement dispatch and owner status/cancel/retry only where revalidation is enforceable. Keep replay disabled if authority or budget cannot be rechecked; in that case continue the next independent active-plan code gap. TBR07 is already recorded; do not repeat it.
+
+## Previous checkpoint — 2026-11-17 (SC03 monotonic authorization revision; `070e0326` pushed)
 
 `070e0326` is pushed to `origin/Mcbt5s-Backup-2`. SpaceDO migration 158 maintains monotonic Space/Project membership revisions (including assistant clamp), with member readers exposing the version. Native container authorization binds its current revision into the signed runtime scope; code-runner cancels an exact capacity waiter if membership authority changes before retry. Local evidence: Agents code-runner/capacity and container-policy tests **13/13**, SpaceDO migration suite **10/10**, Agents/Spaces typechecks and diff check. Migration remains unapplied and there is no deployed acceptance.
 

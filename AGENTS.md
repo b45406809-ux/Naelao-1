@@ -6,8 +6,9 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  exact action is SC03 encrypted invocation receipt and wake/retry path in the shared-compute ledger;
-  membership revisions are pushed, while TBR07 was already compared and K02 DOCX/XLSX are pushed.
+  exact action is SC03's host-owned durable dispatcher and owner lifecycle, following the encrypted
+  invocation receipt checkpoint below; membership revisions are pushed, TBR07 was already compared,
+  and K02 DOCX/XLSX are pushed.
   Then continue the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
   incorporated plan ledgers. Follow dependencies, preserve completed work and recheck current
   authorization, security and billing boundaries.
@@ -34,7 +35,25 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (SC03 monotonic membership authorization revision; `070e0326` pushed)
+## Latest cross-plan checkpoint — 2026-11-17 (SC03 encrypted invocation receipt; pending push)
+
+The local ToolSandbox change stores only an authenticated encrypted request envelope in R2 for a
+capacity-waiting native execution with a host-supplied monotonic membership revision. AAD binds the
+request path/hash, tenant, Space/Project, actor, agent, run, execution, revision and short expiry;
+installed sidecars and revision-less scopes remain caller-retry-only. Exact cancel deletes the
+envelope; expiry cleanup erases it and marks a still-waiting receipt expired, with retries on delete
+failure. Local evidence: DynamicSandboxDO tests **40/40**, Agents typecheck and diff hygiene pass.
+The normal pnpm preflight aborted before touching dependencies because its no-TTY install guard
+refused to reconcile modules; installed local binaries ran the checks. No deployed/live acceptance.
+This is encrypted persistence and cleanup only: it does not wake, dispatch, restore process memory,
+revalidate a disconnected caller, or reserve Billing ahead of dispatch. The currently existing live
+authorization callback is caller-bound, and installation grants have no matching monotonic revision.
+
+**Reminder to myself:** Keep implementing the full authorized mission after every checkpoint. Do not stop at a status update, slice, test pass, documentation edit, commit or push; immediately move to the next independent unfinished requirement unless the user stops the mission or a real blocker prevents all progress.
+
+Exact next action: continue SC03 by mapping a durable host-owned job receipt and alarm-safe caller to existing membership/installation authorities and Billing admission. Implement owner status/cancel/retry and dispatch only if current authority and budget can be revalidated at launch; otherwise keep replay disabled and proceed to the next independent active-plan code gap. TBR07 is already recorded; do not repeat it. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-17 (SC03 monotonic membership authorization revision; `070e0326` pushed)
 
 Code `070e0326` is pushed to `origin/Mcbt5s-Backup-2`. SpaceDO migration 158 backfills and maintains monotonic authority revisions for Space membership and Project membership/assistant-clamp changes, including deletion and re-add; member readers expose the revision. Agent container authorization now pins the exact current Space/Project revision in the signed ToolSandbox scope and cancels a capacity wait if that revision changes before retry. This prevents a queued caller from silently adopting a later grant after membership churn. Local verification: Agent code-runner/capacity and container-scope tests **13/13**, SpaceDO migration tests **10/10**, Agents/Spaces typechecks and diff hygiene pass. Migration is not deployed; no live acceptance. This closes only the monotonic membership revision and retry binding, not payload recovery, automatic dispatch, installation-grant revisions, owner job status, or durable Billing-hold linkage. Preserve the pre-existing untracked `infra/scripts/__pycache__/`.
 

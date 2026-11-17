@@ -40,6 +40,7 @@ import { DurableObject } from "cloudflare:workers";
 import { readBytesWithHash } from "../script-engine/r2-cas.js";
 import { readBoundedRequestBytes, readBoundedResponseText, RequestBodyTooLargeError, verifyInternalToken } from "@naelao/http";
 import { BILLING_CORE_RATE_CARD_VERSION, infraTimeToCredits } from "@naelao/billing-core";
+import { deriveKek, encryptAuthenticated } from "@naelao/crypto";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import { validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import type { InstallationScope } from "@naelao/agent-sdk";
@@ -106,6 +107,7 @@ interface SandboxBindings {
   BILLING_WORKER?: Fetcher;
   ANALYTICS?: AnalyticsEngineDataset;
   PLATFORM_DB?: D1Database;
+  SPACES_WORKER?: Fetcher;
 }
 type ProjectErasureState = "active" | "erased" | "unavailable";
 
@@ -133,6 +135,9 @@ const ACTIVE_TASK_IDLE_WINDOW_MS = BASE_IDLE_WINDOW_MS;
 // Keep marketplace sidecars warm only across immediate calls from the same delegated run.
 // This initial short lease should be tuned from cold-start and billed-idle measurements.
 const SIDECAR_WARM_LEASE_MS = 5_000;
+// Matches the maximum ConcurrencyDO waiter TTL. Expired receipts are erased and are never replayed.
+const MAX_RECOVERABLE_INVOCATION_TTL_MS = 10 * 60_000;
+const MAX_RECOVERABLE_INVOCATION_OBJECT_BYTES = 6 * 1024 * 1024;
 const WORKSPACE_ROUTES = [
   "/workspace/read",
   "/workspace/write",
@@ -154,7 +159,8 @@ interface ExecutionWorkspaceMetrics {
   bytesRead: number; bytesWriteAttempted: number; bytesHydrated: number; bytesCaptured: number; bytesStaged: number;
   checkpoints: number; checkpointMs: number; failedCheckpoints: number; failedCheckpointMs: number; stagingAgeMs: number;
 }
-interface ExecutionRecord { scope: ContainerInvocationScope; payloadHash: string; status: "prepared" | "waiting_capacity" | "capacity_rejected" | "committed" | "indeterminate"; response?: { status: number; body: string } }
+interface ExecutionRecord { scope: ContainerInvocationScope; payloadHash: string; status: "prepared" | "waiting_capacity" | "capacity_rejected" | "committed" | "indeterminate" | "cancelled" | "expired";
+  recovery?: { objectKey: string; expiresAt: number; authenticatedData: string }; response?: { status: number; body: string } }
 type ContainerEgressProfile = "disabled" | "trusted-package-hosts";
 
 interface StoredShellState {
@@ -400,8 +406,13 @@ export class ToolSandboxDO extends DurableObject {
     for (const key of ["workspace_snapshot", "workspace_files", "workspace_hashes", "workspace_pending_coordinator_checkpoint", "shell_state"]) {
       await this.ctx.storage.delete(key);
     }
-    const executions = await this.ctx.storage.list({ prefix: "execution:" });
-    for (const key of executions.keys()) await this.ctx.storage.delete(key);
+    const executions = await this.ctx.storage.list<ExecutionRecord>({ prefix: "execution:" });
+    for (const [key, record] of executions) {
+      if (record?.recovery && !await this.deleteRecoveryPayload(record)) {
+        await this.ctx.storage.put(key, { ...record, status: "cancelled", recovery: { ...record.recovery, expiresAt: Date.now() } });
+        await this.ctx.storage.setAlarm(Date.now() + 1000);
+      } else await this.ctx.storage.delete(key);
+    }
     const transfers = await this.ctx.storage.list({ prefix: "sidecar_artifact_transfer:" });
     for (const key of transfers.keys()) await this.ctx.storage.delete(key);
     await this.ctx.storage.delete("container_control_token");
@@ -723,6 +734,11 @@ export class ToolSandboxDO extends DurableObject {
     if (!record || record.scope.runId !== scope.runId || record.scope.actorId !== scope.actorId || record.scope.installationId !== scope.installationId) return Response.json({ ok: false, error: "container_execution_not_found" }, { status: 404 });
     if (record.status === "committed") return Response.json({ ok: true, already_completed: true });
     if (record.status === "waiting_capacity") await this.cancelPendingCapacity(record.scope);
+    const removed = await this.deleteRecoveryPayload(record);
+    const { recovery: _recovery, ...recordWithoutRecovery } = record;
+    await this.ctx.storage.put("execution:" + scope.executionId, removed
+      ? { ...recordWithoutRecovery, status: "cancelled" } : { ...record, status: "cancelled" });
+    if (!removed && record.recovery) await this.ctx.storage.setAlarm(Date.now() + 1000);
     await this.ctx.storage.put("cancelled:" + scope.executionId, true);
     if (this.activeExecution?.id === scope.executionId) {
       this.activeExecution.controller.abort();
@@ -775,7 +791,7 @@ export class ToolSandboxDO extends DurableObject {
     }
     try {
       await this.registerWorkspaceRuntime(scope, request);
-      await this.ctx.storage.put(key, { scope, payloadHash, status: "prepared" } satisfies ExecutionRecord);
+      await this.ctx.storage.put(key, { scope, payloadHash, status: "prepared", ...(previous?.recovery ? { recovery: previous.recovery } : {}) } satisfies ExecutionRecord);
     } catch {
       if (mainWriter) await this.releaseProjectMainWriter(scope.executionId).catch(() => undefined);
       return Response.json({ ok: false, error: "workspace_runtime_registry_unavailable" }, { status: 503 });
@@ -834,8 +850,15 @@ export class ToolSandboxDO extends DurableObject {
       retainSidecarWarm = Boolean(scope.installationId && response.ok);
       if (new URL(request.url).pathname !== "/computer/screenshot") {
         const responseBody = await readBoundedResponseText(response.clone(), 2 * 1024 * 1024);
-        await this.ctx.storage.put(key, { scope, payloadHash, status: "committed", response: { status: response.status, body: responseBody } } satisfies ExecutionRecord);
-      } else await this.ctx.storage.put(key, { scope, payloadHash, status: "indeterminate" } satisfies ExecutionRecord);
+        await this.ctx.storage.put(key, { scope, payloadHash, status: "committed", ...(previous?.recovery ? { recovery: previous.recovery } : {}), response: { status: response.status, body: responseBody } } satisfies ExecutionRecord);
+      } else await this.ctx.storage.put(key, { scope, payloadHash, status: "indeterminate", ...(previous?.recovery ? { recovery: previous.recovery } : {}) } satisfies ExecutionRecord);
+      if (previous?.recovery && await this.deleteRecoveryPayload(previous)) {
+        const committed = await this.ctx.storage.get<ExecutionRecord>(key);
+        if (committed?.recovery?.objectKey === previous.recovery.objectKey) {
+          const { recovery: _recovery, ...committedWithoutRecovery } = committed;
+          await this.ctx.storage.put(key, committedWithoutRecovery);
+        }
+      }
       return response;
     } catch (error) {
       controller.abort();
@@ -843,8 +866,15 @@ export class ToolSandboxDO extends DurableObject {
       // removed. For an unavailable check, keep the indeterminate receipt for reconciliation.
       const capacityWait = error instanceof Error && error.message === "container_concurrency_limit";
       const capacityQueueFull = error instanceof Error && error.message === "container_admission_queue_full";
-      if (await this.projectErasureState(scope) !== "erased")
-        await this.ctx.storage.put(key, { scope, payloadHash, status: capacityWait ? "waiting_capacity" : capacityQueueFull ? "capacity_rejected" : "indeterminate" } satisfies ExecutionRecord);
+      if (await this.projectErasureState(scope) !== "erased") {
+        const record: ExecutionRecord = { scope, payloadHash, status: capacityWait ? "waiting_capacity" : capacityQueueFull ? "capacity_rejected" : "indeterminate",
+          ...(previous?.recovery ? { recovery: previous.recovery } : {}) };
+        if (capacityWait && !scope.installationId && scope.authorizationRevision) {
+          const recovery = await this.persistRecoveryPayload(request, scope, payloadHash).catch(() => undefined);
+          if (recovery) record.recovery = recovery;
+        }
+        await this.ctx.storage.put(key, record);
+      }
       if (metered) {
         await this.updateRuntimeMetrics({ executionMs: Math.max(0, Date.now() - startedAt) }, Boolean(scope.installationId));
         await this.flushExecutionWorkspaceMetrics(scope);
@@ -878,6 +908,67 @@ export class ToolSandboxDO extends DurableObject {
         } else await this.stopContainer().catch(() => this.ctx.storage.setAlarm(Date.now() + 1000));
       }
     }
+  }
+
+  /** Store only short-lived encrypted request bytes for native, revision-bound invocations.
+   * Installed sidecars and scopes without a live membership revision remain caller-retry-only. */
+  private async persistRecoveryPayload(request: Request, scope: ContainerInvocationScope, payloadHash: string): Promise<ExecutionRecord["recovery"]> {
+    const bindings = this.env as unknown as SandboxBindings;
+    if (!bindings.SCRIPTS_R2 || !bindings.PLATFORM_SECRET || !scope.authorizationRevision || scope.installationId) return undefined;
+    const path = new URL(request.url).pathname;
+    const body = await request.clone().text();
+    const plaintext = JSON.stringify({ path, body });
+    if (new TextEncoder().encode(plaintext).byteLength > MAX_RECOVERABLE_INVOCATION_OBJECT_BYTES) return undefined;
+    const expiresAt = Date.now() + MAX_RECOVERABLE_INVOCATION_TTL_MS;
+    const authenticatedData = JSON.stringify({ version: 1, tenantId: scope.tenantId, spaceId: scope.spaceId,
+      projectId: scope.projectId ?? null, actorId: scope.actorId, agentId: scope.agentId, runId: scope.runId,
+      executionId: scope.executionId, authorizationRevision: scope.authorizationRevision, path, payloadHash, expiresAt });
+    const key = await deriveKek(bindings.PLATFORM_SECRET, scope.tenantId);
+    const envelope = await encryptAuthenticated(plaintext, key, authenticatedData);
+    const encoded = JSON.stringify(envelope);
+    if (new TextEncoder().encode(encoded).byteLength > MAX_RECOVERABLE_INVOCATION_OBJECT_BYTES) return undefined;
+    const identity = JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId ?? "", scope.actorId, scope.agentId, scope.runId, scope.executionId]);
+    const objectKey = `runtime-invocations/${scope.tenantId}/${await hashWorkspaceContent(identity)}`;
+    await bindings.SCRIPTS_R2.put(objectKey, encoded, { httpMetadata: { contentType: "application/vnd.naelao.encrypted-invocation+json" },
+      customMetadata: { expiresAt: String(expiresAt), payloadHash } });
+    const alarm = await this.ctx.storage.getAlarm?.();
+    if (alarm === null || alarm === undefined || alarm > expiresAt) await this.ctx.storage.setAlarm(expiresAt);
+    return { objectKey, expiresAt, authenticatedData };
+  }
+
+  private async deleteRecoveryPayload(record: ExecutionRecord): Promise<boolean> {
+    if (!record.recovery) return true;
+    const bucket = (this.env as unknown as SandboxBindings).SCRIPTS_R2;
+    if (!bucket) return false;
+    try {
+      await bucket.delete(record.recovery.objectKey);
+      return true;
+    } catch { return false; }
+  }
+
+  private async cleanupRecoveryPayloads(): Promise<number | undefined> {
+    const records = await this.ctx.storage.list<ExecutionRecord>({ prefix: "execution:" });
+    let nextExpiry: number | undefined;
+    for (const [key, record] of records) {
+      if (!record?.recovery) continue;
+      if (record.status === "cancelled" || record.status === "expired") {
+        const removed = await this.deleteRecoveryPayload(record);
+        if (removed) {
+          const { recovery: _recovery, ...recordWithoutRecovery } = record;
+          await this.ctx.storage.put(key, recordWithoutRecovery);
+        } else nextExpiry = Math.min(nextExpiry ?? Infinity, Date.now() + 1000);
+        continue;
+      }
+      if (record.recovery.expiresAt > Date.now()) {
+        nextExpiry = Math.min(nextExpiry ?? Infinity, record.recovery.expiresAt);
+        continue;
+      }
+      const removed = await this.deleteRecoveryPayload(record);
+      const status = record.status === "waiting_capacity" ? "expired" : record.status;
+      const { recovery: _recovery, ...recordWithoutRecovery } = record;
+      await this.ctx.storage.put(key, (removed ? { ...recordWithoutRecovery, status } : { ...record, status }) satisfies ExecutionRecord);
+    }
+    return nextExpiry;
   }
 
   private workspacePrefix(scope: SandboxWorkspaceScope): string {
@@ -1418,6 +1509,8 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   override async alarm(): Promise<void> {
+    const recoveryExpiry = await this.cleanupRecoveryPayloads();
+    if (recoveryExpiry !== undefined) await this.ctx.storage.setAlarm(recoveryExpiry);
     const pending = await this.ctx.storage.get<ContainerMeter>("container_reservation_pending");
     if (pending && pending.expiresAt <= Date.now()) {
       await finalizeWorkflowBudget(this.env as Env, pending.tenantId, pending.reservationId, "release");
@@ -1498,9 +1591,12 @@ export class ToolSandboxDO extends DurableObject {
 
   private async idleAlarm(): Promise<void> {
     const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
+    const recoveryExpiry = [...(await this.ctx.storage.list<ExecutionRecord>({ prefix: "execution:" })).values()]
+      .flatMap(record => record?.recovery ? [record.recovery.expiresAt] : []).reduce<number | undefined>((earliest, value) => Math.min(earliest ?? Infinity, value), undefined);
     const sidecarExpiresAt = await this.ctx.storage.get<number>("sidecar_warm_expires_at");
     if (sidecarExpiresAt !== undefined && sidecarExpiresAt <= Date.now()) {
       await this.stopContainer(true);
+      if (recoveryExpiry !== undefined) await this.ctx.storage.setAlarm(recoveryExpiry);
       return;
     }
     const lastUsed =
@@ -1523,8 +1619,9 @@ export class ToolSandboxDO extends DurableObject {
       }
       else await this.settleMeter();
       await this.ctx.storage.put("container_status", "hibernated");
+      if (recoveryExpiry !== undefined) await this.ctx.storage.setAlarm(recoveryExpiry);
     } else {
-      await this.ctx.storage.setAlarm(Math.min(lastUsed + idleWindow, meter?.expiresAt ?? Infinity));
+      await this.ctx.storage.setAlarm(Math.min(lastUsed + idleWindow, meter?.expiresAt ?? Infinity, recoveryExpiry ?? Infinity));
     }
   }
 

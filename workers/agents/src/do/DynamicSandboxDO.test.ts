@@ -55,7 +55,7 @@ function capacityService() {
 }
 function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean;
   snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean; omitBudgetReservationReceipt?: boolean;
-  budgetProjectId?: string } = {}) {
+  budgetProjectId?: string; recoveryStore?: boolean } = {}) {
   const records = new Map<string, any>();
   const projectMainRegistry = new Map<string, { runtimeObjectName: string; allocationGeneration: number; allocationToken?: string;
     budgetReservationId?: string; fencingToken: number; activeBranch: string; state: string }>();
@@ -63,6 +63,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
   const capacity = options.capacity ?? capacityService();
   const billing: any[] = [];
   const snapshotRetentionWrites: string[] = [];
+  const recoveryObjects = new Map<string, string>();
   let snapshotRetentionFails = false;
   let running = false;
   let info: any;
@@ -172,6 +173,8 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
     }) }) },
     CONTAINER_IMAGE_REGISTRY: JSON.stringify([{ image, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object", networkPolicy: "none",
       cpuCores: options.cpu ?? .0625, memoryMb: options.memory ?? 256 }]),
+      ...(options.recoveryStore ? { SCRIPTS_R2: { put: async (key: string, value: string) => { recoveryObjects.set(key, value); },
+        delete: async (key: string) => { recoveryObjects.delete(key); } } } : {}),
       BILLING_WORKER: { fetch: async (request: Request) => {
         const path = new URL(request.url).pathname;
         const body = await request.json() as any;
@@ -214,7 +217,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
     return sandbox.fetch(new Request("http://sandbox/_internal/workspace/erase", { method: "POST", body: JSON.stringify({ scope, confirm: true }),
       headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken("secret", "tenant") } }));
   }
-  return { invoke, profile, privateState, transport, records, capacity, env, billing, projectMainRegistry, budgetReservations, snapshotRetentionWrites, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
+  return { invoke, profile, privateState, transport, records, capacity, env, billing, projectMainRegistry, budgetReservations, snapshotRetentionWrites, recoveryObjects, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
     setSnapshotRetentionFails: (value: boolean) => { snapshotRetentionFails = value; },
     restart: () => { sandbox = new DynamicSandboxDO(ctx as never, env as never); },
     setInfo: (v: any) => { info = v; }, hangBuild: () => { taskStarted = new Promise<void>(resolve => { markTaskStarted = resolve; }); task = new Promise<Response>(resolve => { releaseTask = resolve; }); },
@@ -427,6 +430,40 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.records.get("execution:" + executionId)?.status).toBe("committed");
     expect(r.transport.start).toHaveBeenCalledOnce();
     expect(r.billing.filter(item => item.path.endsWith("/reserve"))).toHaveLength(1);
+  });
+  it("stores a bounded encrypted recovery envelope only for revision-bound native capacity waits and erases it at expiry", async () => {
+    let now = 2_200_000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ recoveryStore: true });
+    const held = r.capacity.held.get("tenant:tenant") ?? new Map<string, number>();
+    held.set("other-invocation", now + 60_000); r.capacity.held.set("tenant:tenant", held);
+    const executionId = "recoverable-native-invocation";
+    const waiting = await r.invoke("/prewarm", { mainComputer: true, executionId, authorizationRevision: "space:4.project:7", deadline: now + 55_000 });
+    expect(waiting.status).toBe(429);
+    const record = r.records.get("execution:" + executionId);
+    expect(record.recovery).toMatchObject({ expiresAt: now + 10 * 60_000 });
+    expect(r.recoveryObjects.size).toBe(1);
+    const encrypted = [...r.recoveryObjects.values()][0];
+    expect(encrypted).not.toContain("/prewarm");
+    expect(encrypted).not.toContain("recoverable-native-invocation");
+    expect(record.recovery.authenticatedData).toContain("space:4.project:7");
+    expect(r.alarmAt).toBe(record.recovery.expiresAt);
+
+    now = record.recovery.expiresAt;
+    await r.alarm();
+    expect(r.recoveryObjects.size).toBe(0);
+    expect(r.records.get("execution:" + executionId)).toMatchObject({ status: "expired" });
+  });
+  it("erases a persisted encrypted invocation immediately when its exact capacity waiter is cancelled", async () => {
+    const r = runtime({ recoveryStore: true });
+    const held = r.capacity.held.get("tenant:tenant") ?? new Map<string, number>();
+    held.set("other-invocation", Date.now() + 60_000); r.capacity.held.set("tenant:tenant", held);
+    const executionId = "cancel-encrypted-native";
+    const scope = { mainComputer: true, executionId, authorizationRevision: "space:4.project:7", deadline: Date.now() + 55_000 };
+    expect((await r.invoke("/prewarm", scope)).status).toBe(429);
+    expect(r.recoveryObjects.size).toBe(1);
+    expect((await r.invoke("/cancel", scope)).status).toBe(200);
+    expect(r.recoveryObjects.size).toBe(0);
+    expect(r.records.get("execution:" + executionId)).toMatchObject({ status: "cancelled" });
   });
   it("does not claim a hard-cap rejection is queued and permits an exact same-ID retry", async () => {
     const r = runtime();
