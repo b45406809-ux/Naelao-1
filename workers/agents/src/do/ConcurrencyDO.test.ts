@@ -463,6 +463,59 @@ describe("ConcurrencyDO slot admission bounds", () => {
     expect(await list.json()).toMatchObject({ admissions: [{ execution_id: "exec-active", status: "capacity_reserved" }] });
   });
 
+  it("round-robins eligible tenants before serving another waiting Project", async () => {
+    const storage = Object.assign(createDOStorage(), { getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} });
+    const secret = "compute-admission-fairness-secret";
+    const object = new ConcurrencyDO({ storage } as never, { PLATFORM_SECRET: secret });
+    const send = async (action: "request" | "release", input: { tenant: string; space: string; project: string; actor: string; execution: string; holder: string; fence?: number }) => {
+      const { tenant, space, project, actor, execution, holder, fence } = input;
+      return object.fetch(new Request("http://do/compute-admission/" + action, { method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(secret, tenant) },
+        body: JSON.stringify({ tenant_id: tenant, space_id: space, project_id: project, actor_id: actor, execution_id: execution,
+          holder_id: holder, ...(action === "request" ? { global_limit: 2, tenant_limit: 2, ttl_ms: 60_000 } : { fencing_token: fence }) }) }));
+    };
+    const a0 = { tenant: "tenant-a", space: "space-a", project: "project-a1", actor: "member-a", execution: "exec-a0", holder: "holder-a0" };
+    const b0 = { tenant: "tenant-b", space: "space-b", project: "project-b1", actor: "member-b", execution: "exec-b0", holder: "holder-b0" };
+    const a1 = { ...a0, project: "project-a1", execution: "exec-a1", holder: "holder-a1" };
+    const a2 = { ...a0, project: "project-a2", execution: "exec-a2", holder: "holder-a2" };
+    const b1 = { ...b0, project: "project-b1", execution: "exec-b1", holder: "holder-b1" };
+    const firstA = await (await send("request", a0)).json() as { fencing_token: number };
+    const firstB = await (await send("request", b0)).json() as { fencing_token: number };
+    await send("request", a1); await send("request", a2); await send("request", b1);
+
+    await send("release", { ...a0, fence: firstA.fencing_token });
+    await send("release", { ...b0, fence: firstB.fencing_token });
+    const rows = storage.sql.exec("SELECT execution_id,state FROM compute_admissions").toArray() as Array<{ execution_id: string; state: string }>;
+    const states = new Map(rows.map(row => [row.execution_id, row.state]));
+    expect(states).toEqual(new Map([["exec-a1", "active"], ["exec-a2", "waiting"], ["exec-b1", "active"]]));
+  });
+
+  it("rotates Project and actor partitions within a tenant while keeping each leaf FIFO", async () => {
+    const storage = Object.assign(createDOStorage(), { getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} });
+    const secret = "compute-admission-hierarchy-secret";
+    const object = new ConcurrencyDO({ storage } as never, { PLATFORM_SECRET: secret });
+    const send = async (action: "request" | "release" | "cancel", input: { execution: string; holder: string; project: string; actor: string; fence?: number }) => object.fetch(new Request(
+      "http://do/compute-admission/" + action, { method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+      body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", project_id: input.project, actor_id: input.actor,
+        execution_id: input.execution, holder_id: input.holder, ...(action === "request" ? { global_limit: 1, tenant_limit: 1, ttl_ms: 60_000 }
+          : action === "release" ? { fencing_token: input.fence } : {}) }) }));
+    const current = { execution: "current", holder: "holder-current", project: "project-middle", actor: "member-middle" };
+    const olderProject = { execution: "older-project", holder: "holder-older-project", project: "project-alpha", actor: "member-alpha" };
+    const firstLeaf = { execution: "first-leaf", holder: "holder-first-leaf", project: "project-zulu", actor: "member-alpha" };
+    const secondLeaf = { execution: "second-leaf", holder: "holder-second-leaf", project: "project-zulu", actor: "member-alpha" };
+    const otherMember = { execution: "other-member", holder: "holder-other-member", project: "project-zulu", actor: "member-zulu" };
+    const currentLease = await (await send("request", current)).json() as { fencing_token: number };
+    await send("request", olderProject); await send("request", firstLeaf); await send("request", secondLeaf); await send("request", otherMember);
+    await send("release", { ...current, fence: currentLease.fencing_token });
+    await send("cancel", olderProject);
+    const firstLease = storage.sql.exec("SELECT fencing_token FROM compute_admissions WHERE holder_id=?", firstLeaf.holder).toArray()[0] as { fencing_token: number };
+    expect(firstLease.fencing_token).toBeGreaterThan(0);
+    await send("release", { ...firstLeaf, fence: firstLease.fencing_token });
+    const rows = storage.sql.exec("SELECT execution_id,state FROM compute_admissions").toArray() as Array<{ execution_id: string; state: string }>;
+    const states = new Map(rows.map(row => [row.execution_id, row.state]));
+    expect(states).toEqual(new Map([["second-leaf", "waiting"], ["other-member", "active"]]));
+  });
+
   it("caps caller supplied slot capacity and cannot turn a malformed request into unlimited admission", async () => {
     const storage = Object.assign(createDOStorage(), {
       getAlarm: async () => null,

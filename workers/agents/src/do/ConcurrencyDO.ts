@@ -76,6 +76,10 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_compute_admissions_state ON compute_admissions(state,requested_at)`);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS compute_admission_fence (id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL)`);
     this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO compute_admission_fence(id,value) VALUES(1,0)`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS compute_admission_cursor (
+      id INTEGER PRIMARY KEY CHECK(id=1), tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+      project_id TEXT NOT NULL, actor_id TEXT NOT NULL
+    )`);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS compute_admission_cancellations (
       tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL, execution_id TEXT NOT NULL,
       expires_at INTEGER NOT NULL, PRIMARY KEY(tenant_id,space_id,project_id,execution_id)
@@ -743,18 +747,54 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     return Response.json({ cancelled: true, execution_id: executionId });
   }
 
-  /** Oldest eligible tenant is promoted first; a full tenant does not head-of-line block others. */
+  /** Round-robin tenant → Space → Project → actor; each identity remains FIFO within its turn. */
   private promoteComputeAdmissions(now: number): void {
-    const waiters = this.ctx.storage.sql.exec("SELECT holder_id,tenant_id,global_limit,tenant_limit FROM compute_admissions WHERE state='waiting' AND expires_at>? ORDER BY requested_at,holder_id", now)
-      .toArray() as Array<{ holder_id: string; tenant_id: string; global_limit: number; tenant_limit: number }>;
-    for (const waiter of waiters) {
-      const active = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM compute_admissions WHERE state='active'").toArray()[0] as { count: number };
-      const tenantActive = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM compute_admissions WHERE state='active' AND tenant_id=?", waiter.tenant_id).toArray()[0] as { count: number };
-      if (active.count >= waiter.global_limit || tenantActive.count >= waiter.tenant_limit) continue;
+    type Admission = { holder_id: string; tenant_id: string; space_id: string; project_id: string; actor_id: string;
+      global_limit: number; tenant_limit: number; requested_at: number };
+    const waiters = this.ctx.storage.sql.exec(`SELECT holder_id,tenant_id,space_id,project_id,actor_id,global_limit,tenant_limit,requested_at
+      FROM compute_admissions WHERE state='waiting' AND expires_at>? ORDER BY requested_at,holder_id`, now).toArray() as Admission[];
+    if (!waiters.length) return;
+    const activeRows = this.ctx.storage.sql.exec("SELECT tenant_id,COUNT(*) AS count FROM compute_admissions WHERE state='active' GROUP BY tenant_id")
+      .toArray() as Array<{ tenant_id: string; count: number }>;
+    const tenantActive = new Map(activeRows.map(row => [row.tenant_id, row.count]));
+    let globalActive = activeRows.reduce((count, row) => count + row.count, 0);
+    const cursorRow = this.ctx.storage.sql.exec("SELECT tenant_id,space_id,project_id,actor_id FROM compute_admission_cursor WHERE id=1")
+      .toArray()[0] as { tenant_id: string; space_id: string; project_id: string; actor_id: string } | undefined;
+    let cursor = cursorRow;
+
+    while (true) {
+      const eligible = waiters.filter(row => globalActive < row.global_limit && (tenantActive.get(row.tenant_id) ?? 0) < row.tenant_limit);
+      if (!eligible.length) return;
+      const tenants = [...new Set(eligible.map(row => row.tenant_id))].sort();
+      const tenantId = this.nextAfterOrFirst(tenants, cursor?.tenant_id);
+      const inTenant = eligible.filter(row => row.tenant_id === tenantId);
+      const spaces = [...new Set(inTenant.map(row => row.space_id))].sort();
+      const spaceId = this.nextAfterOrFirst(spaces, cursor?.tenant_id === tenantId ? cursor.space_id : undefined);
+      const inSpace = inTenant.filter(row => row.space_id === spaceId);
+      const projects = [...new Set(inSpace.map(row => row.project_id))].sort();
+      const projectId = this.nextAfterOrFirst(projects,
+        cursor?.tenant_id === tenantId && cursor.space_id === spaceId ? cursor.project_id : undefined);
+      const inProject = inSpace.filter(row => row.project_id === projectId);
+      const actors = [...new Set(inProject.map(row => row.actor_id))].sort();
+      const actorId = this.nextAfterOrFirst(actors, cursor?.tenant_id === tenantId && cursor.space_id === spaceId
+        && cursor.project_id === projectId ? cursor.actor_id : undefined);
+      const waiter = inProject.filter(row => row.actor_id === actorId).sort((a, b) => a.requested_at - b.requested_at || a.holder_id.localeCompare(b.holder_id))[0]!;
+
       this.ctx.storage.sql.exec("UPDATE compute_admission_fence SET value=value+1 WHERE id=1");
       const fence = this.ctx.storage.sql.exec("SELECT value FROM compute_admission_fence WHERE id=1").toArray()[0] as { value: number };
       this.ctx.storage.sql.exec("UPDATE compute_admissions SET state='active',fencing_token=? WHERE holder_id=? AND state='waiting'", fence.value, waiter.holder_id);
+      waiters.splice(waiters.indexOf(waiter), 1);
+      globalActive++;
+      tenantActive.set(tenantId, (tenantActive.get(tenantId) ?? 0) + 1);
+      cursor = { tenant_id: tenantId, space_id: spaceId, project_id: projectId, actor_id: actorId };
+      this.ctx.storage.sql.exec(`INSERT INTO compute_admission_cursor(id,tenant_id,space_id,project_id,actor_id) VALUES(1,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET tenant_id=excluded.tenant_id,space_id=excluded.space_id,project_id=excluded.project_id,actor_id=excluded.actor_id`,
+        tenantId, spaceId, projectId, actorId);
     }
+  }
+
+  private nextAfterOrFirst(values: string[], prior?: string): string {
+    return values.find(value => value > (prior ?? "\uffff")) ?? values[0]!;
   }
 
   private handleStatus(key: string): Response {
