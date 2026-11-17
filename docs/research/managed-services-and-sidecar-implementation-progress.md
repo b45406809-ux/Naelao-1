@@ -1,11 +1,11 @@
-## Resume pointer — 2026-11-17 (EP05 immutable publication proof; verified locally, push pending)
+## Resume pointer — 2026-11-17 (EP05 immutable publication proof; pushed as `c6bf77b1`)
 
 Each accepted page publication now records immutable review ID, owner, slug, exact artifact SHA-256 and
 publication time. Public rendering revalidates current HTML/action bytes against the latest receipt;
 legacy unreviewed rows and any tampered artifact fail closed. Focused route/DO tests **13/13**, Spaces
 typecheck and diff hygiene pass (local fakes only). No owner UI, browser, deployed/domain or provider
 acceptance. Rollout remains disabled. API review/apply is pushed at `a35237d5`; this proof hardening
-checkpoint is pending push.
+checkpoint is pushed as `c6bf77b1`.
 
 **Reminder to myself:** Continue the entire mission after this checkpoint; do not stop after tests,
 documentation, commit or push.

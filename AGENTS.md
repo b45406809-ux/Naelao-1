@@ -36,7 +36,7 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 immutable publication proof; verified locally, pending push)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 immutable publication proof; pushed as `c6bf77b1`)
 
 Owner/admin page submission now returns a 10-minute review receipt pinned to canonical artifact SHA-256,
 actor and slug; apply publishes only the same draft and atomically consumes the receipt. An immutable
@@ -45,7 +45,7 @@ verifies current page bytes against the newest publication record; mismatched or
 rows fail closed. Existing owner takedown, action nonce and privacy-safe page/client rate limit remain.
 Route/DO tests **13/13**, Spaces typecheck and `git diff --check` pass (local fakes only). No owner UI,
 browser, deployed edge/domain or provider acceptance; site rollout remains disabled. Previous API
-slice is pushed at `a35237d5`; this proof hardening checkpoint is pending push.
+slice is pushed at `a35237d5`; this proof hardening checkpoint is pushed as `c6bf77b1`.
 
 **Reminder to myself:** Keep implementing the full mission. Do not stop after a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops or a real blocker prevents all progress.
 
