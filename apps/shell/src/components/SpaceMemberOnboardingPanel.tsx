@@ -8,10 +8,12 @@ import {
   listSpaceMemberInvitations,
   revokeSpaceBusinessRoleReview,
   revokeSpaceMemberInvitation,
+  listMySpaceBusinessRoles,
   type SessionCredentials,
   type SpaceBusinessRoleReview,
   type SpaceBusinessRoleOptionCatalog,
   type SpaceMemberInvitation,
+  type MySpaceBusinessRole,
 } from "@/lib/api";
 import { buildSpaceInvitationLink } from "@/lib/space-invitation-link";
 
@@ -34,6 +36,9 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [myRoles, setMyRoles] = React.useState<MySpaceBusinessRole[]>([]);
+  const [myRolesLoading, setMyRolesLoading] = React.useState(true);
+  const [myRolesError, setMyRolesError] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
     if (!session || !canManage) return;
@@ -58,6 +63,20 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
   }, [spaceId, session, canManage]);
 
   React.useEffect(() => { void refresh(); }, [refresh]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (canManage || !session) { setMyRolesLoading(false); return; }
+    setMyRolesLoading(true); setMyRolesError(false);
+    void listMySpaceBusinessRoles(spaceId, session).then(result => {
+      if (!cancelled) setMyRoles(result);
+    }).catch(() => {
+      if (!cancelled) setMyRolesError(true);
+    }).finally(() => {
+      if (!cancelled) setMyRolesLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [spaceId, session, canManage]);
 
   async function createInvitation(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -123,7 +142,35 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
     }
   }
 
-  if (!canManage) return <p className="settings-section-sub">Only Space owners and authorized administrators can manage invitations or review template-role proposals.</p>;
+  if (!canManage) return (
+    <section aria-labelledby="my-business-roles-heading">
+      <div className="settings-section-title" id="my-business-roles-heading">Your template roles</div>
+      <p className="settings-section-sub">Role instructions help with onboarding. They do not grant Project, app, Knowledge, channel, or spending access.</p>
+      {myRolesLoading ? <p className="settings-row-sub" role="status">Loading your current role details…</p>
+        : myRolesError ? <p className="settings-row-sub" role="alert">Your current role details could not be loaded. Refresh to check again.</p>
+          : myRoles.length === 0 ? <p className="settings-row-sub">No active template role proposals are recorded for your current Space membership.</p>
+            : <div className="settings-block">{myRoles.map(item => (
+              <article className="settings-row" key={item.id} aria-label={`${item.business_role_id ?? "Template role"} status`}>
+                <div>
+                  <div className="settings-row-label">{item.name?.en ?? (item.name ? Object.values(item.name)[0] : undefined) ?? item.business_role_id ?? "Template role"}</div>
+                  <div className="settings-row-sub">{item.status === "proposal_only" ? "Owner-reviewed onboarding proposal · no resource grants applied"
+                    : item.status === "stale" ? "This role references a changed or unavailable template and needs owner review"
+                      : "This role proposal was revoked"}</div>
+                  {item.status === "proposal_only" && item.description && Object.keys(item.description).length > 0 &&
+                    <p className="settings-row-sub">{item.description.en ?? Object.values(item.description)[0]}</p>}
+                  {item.status === "proposal_only" && item.onboarding_steps?.map(step => (
+                    <div className="settings-row-sub" key={step.id} style={{ marginTop: 8 }}>
+                      <strong>{step.title.en ?? Object.values(step.title)[0] ?? step.id}{step.required ? " · required" : " · optional"}</strong>
+                      <div>{step.instructions.en ?? Object.values(step.instructions)[0]}</div>
+                    </div>
+                  ))}
+                  {item.status === "proposal_only" && item.assistant_policy &&
+                    <div className="settings-row-sub" style={{ marginTop: 8 }}>Assistant proposal: {item.assistant_policy.mode ?? "inherit"}. Host permissions still apply.</div>}
+                </div>
+              </article>
+            ))}</div>}
+    </section>
+  );
 
   return (
     <section aria-labelledby="member-onboarding-heading">

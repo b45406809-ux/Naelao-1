@@ -20,10 +20,11 @@ describe("SpaceMemberOnboardingPanel", () => {
     expect(adminMarkup).not.toContain("<option value=\"admin\">Administrator</option>");
   });
 
-  it("does not expose invitation controls to members", () => {
+  it("shows members their self-scoped role surface without invitation controls", () => {
     const markup = renderToStaticMarkup(<SpaceMemberOnboardingPanel spaceId="space-a" session={session}
       productSlug="product-a" canManage={false} canInviteAdmin={false} />);
-    expect(markup).toContain("Only Space owners and authorized administrators");
+    expect(markup).toContain("Your template roles");
+    expect(markup).toContain("do not grant Project, app, Knowledge, channel, or spending access");
     expect(markup).not.toContain("member-invite-email");
     expect(markup).not.toContain("Invitation status");
   });
