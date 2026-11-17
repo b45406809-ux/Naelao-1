@@ -54,6 +54,7 @@ describe("custom Knowledge extension contracts", () => {
       context, query: "approved query", readAuthority: async () => ({ sourceVersion: 4, contentSha256: context.contentSha256,
         deletionGeneration: 2, indexVersion: "index-2", retrievalVersion: "search-1",
         authorizedChunkIds: ++authorityReads === 1 ? ["allowed-a", "revoked-after-search"] : ["allowed-a"] }),
+      authorizeQueryEgress: async () => true,
       adapter: { search: async input => {
         adapterInput = input;
         return ["allowed-a", "revoked-after-search"].map(chunkId => ({ chunkId, score: 0.7, sourceVersion: 4,
@@ -66,9 +67,20 @@ describe("custom Knowledge extension contracts", () => {
   });
 
   it("refuses retrieval when source or deletion generation changed before ranking", async () => {
-    const search = searchKnowledgeExtension({ context, query: "query", adapter: { search: async () => [] },
+    const search = searchKnowledgeExtension({ context, query: "query", adapter: { search: async () => [] }, authorizeQueryEgress: async () => true,
       readAuthority: async () => ({ sourceVersion: 4, contentSha256: context.contentSha256, deletionGeneration: 3,
         indexVersion: "index-2", retrievalVersion: "search-1", authorizedChunkIds: ["chunk-a"] }) });
     await expect(search).rejects.toThrow("source_stale");
+  });
+
+  it("does not send a query to an extension without host egress admission", async () => {
+    let dispatched = false;
+    await expect(searchKnowledgeExtension({ context, query: "sensitive query",
+      readAuthority: async () => ({ sourceVersion: 4, contentSha256: context.contentSha256, deletionGeneration: 2,
+        indexVersion: "index-2", retrievalVersion: "search-1", authorizedChunkIds: ["chunk-a"] }),
+      authorizeQueryEgress: async () => false,
+      adapter: { search: async () => { dispatched = true; return []; } },
+    })).rejects.toThrow("query_egress_denied");
+    expect(dispatched).toBe(false);
   });
 });

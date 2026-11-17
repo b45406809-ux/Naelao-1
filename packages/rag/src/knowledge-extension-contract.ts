@@ -166,6 +166,8 @@ export async function searchKnowledgeExtension(input: {
   query: string;
   adapter: KnowledgeExtensionSearchAdapter;
   readAuthority(context: KnowledgeExtensionContext): Promise<KnowledgeExtensionAuthoritySnapshot>;
+  /** Host-side consent, classification, destination and budget admission for query egress. */
+  authorizeQueryEgress(context: KnowledgeExtensionContext, query: string): Promise<boolean>;
   maxCandidates?: number;
 }): Promise<KnowledgeExtensionCandidate[]> {
   if (!validContext(input.context)) throw new Error("knowledge_extension_context_invalid");
@@ -180,6 +182,7 @@ export async function searchKnowledgeExtension(input: {
   if (!matchesCurrentContext(before)) throw new Error("knowledge_extension_source_stale");
   const authorized = [...new Set(before.authorizedChunkIds.filter(id => ID.test(id)))].slice(0, 2_000);
   if (authorized.length === 0) return [];
+  if (!await input.authorizeQueryEgress(input.context, input.query)) throw new Error("knowledge_extension_query_egress_denied");
   const raw = await input.adapter.search({ query: input.query, chunkIds: authorized,
     indexVersion: input.context.indexVersion, retrievalVersion: input.context.retrievalVersion });
   const candidates = validateKnowledgeExtensionCandidates(input.context, new Set(authorized), raw, input.maxCandidates ?? 200);
