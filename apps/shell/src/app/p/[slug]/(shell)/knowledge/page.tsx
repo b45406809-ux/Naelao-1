@@ -97,8 +97,9 @@ export default function KnowledgePage() {
     setSaving(true);
     try {
       const idempotencyKey = createIdempotencyKeyRef.current ?? (createIdempotencyKeyRef.current = crypto.randomUUID());
+      const previewFormat = pdfPreview && /\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "docx" : "pdf";
       const created = await createKbDocument(activeSpaceId, creds, pdfPreview ? {
-        title: title.trim(), content: pdfPreview.base64, content_type: "pdf", idempotency_key: idempotencyKey,
+        title: title.trim(), content: pdfPreview.base64, content_type: previewFormat, idempotency_key: idempotencyKey,
         ...(pdfPreview.receipt.source_file_name ? { source_file_name: pdfPreview.receipt.source_file_name } : {}),
         preview_content: submittedContent, preview_token: pdfPreview.receipt.preview_token,
         preview_extraction_sha256: pdfPreview.receipt.extraction_sha256,
@@ -134,14 +135,14 @@ export default function KnowledgePage() {
     createIdempotencyKeyRef.current = null;
     setPdfPreview(null);
     setCsvPreviewActive(false);
-    if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
+    if (/\.(pdf|docx)$/i.test(file.name)) {
       if (!creds) return;
       setFileError(null);
       setPreviewingPdf(true);
       try {
         const base64 = await readKnowledgePdfFile(file);
         const receipt = await previewKbPdf(activeSpaceId, creds, { content: base64, source_file_name: file.name });
-        setTitle((current) => current || file.name.replace(/\.pdf$/i, ""));
+        setTitle((current) => current || file.name.replace(/\.(pdf|docx)$/i, ""));
         setContent(receipt.content);
         setPdfPreview({ base64, receipt });
       } catch (err) {
@@ -270,18 +271,18 @@ export default function KnowledgePage() {
               Space-wide text limit: 1 MiB ({knowledgeContentByteLength(content.trim()).toLocaleString()} bytes entered). Project Knowledge supports up to 5 MiB.
             </div>
             {pdfPreview && <div role="status" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, fontSize: 12 }}>
-              <strong>PDF extraction preview · {pdfPreview.receipt.parser_version}</strong>
+              <strong>{/\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "DOCX" : "PDF"} extraction preview · {pdfPreview.receipt.parser_version}</strong>
               <div>Source SHA-256: <code>{pdfPreview.receipt.source_sha256}</code></div>
               <div>{pdfPreview.receipt.source_bytes.toLocaleString()} source bytes · {pdfPreview.receipt.extracted_bytes.toLocaleString()} extracted bytes (1 MiB Space-wide limit)</div>
-              <p>Review and edit the extracted text below before saving. This selected PDF is bound to the preview for 15 minutes.</p>
+              <p>Review and edit the extracted text below before saving. This selected file is bound to the preview for 15 minutes.</p>
               <ul>{pdfPreview.receipt.extraction_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
             </div>}
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <Button onClick={() => void handleAdd()} disabled={saving || previewingPdf || !title.trim() || !content.trim() || knowledgeContentByteLength(content.trim()) > SPACE_KNOWLEDGE_MAX_CONTENT_BYTES}>
                 {saving ? "Adding…" : "Add"}
               </Button>
-              <input ref={fileInputRef} type="file" accept=".pdf,.txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.yaml,.yml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handleFilePick(event)} />
-              <Button variant="ghost" onClick={() => fileInputRef.current?.click()} disabled={previewingPdf}>{previewingPdf ? "Preparing PDF preview…" : "Upload text or PDF"}</Button>
+              <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.yaml,.yml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handleFilePick(event)} />
+              <Button variant="ghost" onClick={() => fileInputRef.current?.click()} disabled={previewingPdf}>{previewingPdf ? "Preparing document preview…" : "Upload text, PDF or DOCX"}</Button>
               {fileError && <span style={{ fontSize: 12, color: "var(--danger)" }}>{fileError}</span>}
             </div>
           </div>

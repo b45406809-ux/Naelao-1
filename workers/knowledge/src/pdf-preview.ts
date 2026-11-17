@@ -41,6 +41,7 @@ export async function createKnowledgePdfPreviewToken(input: {
   scope: KnowledgePdfPreviewScope;
   sourceSha256: string;
   extractionSha256: string;
+  parserVersion?: string;
   now?: number;
   nonce?: string;
 }): Promise<string> {
@@ -53,7 +54,7 @@ export async function createKnowledgePdfPreviewToken(input: {
     ...input.scope,
     sourceSha256: input.sourceSha256,
     extractionSha256: input.extractionSha256,
-    parserVersion: KNOWLEDGE_PDF_PARSER_VERSION,
+    parserVersion: input.parserVersion ?? KNOWLEDGE_PDF_PARSER_VERSION,
     nonce: input.nonce ?? crypto.randomUUID(),
     issuedAt: now,
     expiresAt: now + KNOWLEDGE_PDF_PREVIEW_TTL_MS,
@@ -69,6 +70,7 @@ export async function verifyKnowledgePdfPreviewToken(input: {
   scope: KnowledgePdfPreviewScope;
   sourceSha256: string;
   extractionSha256: string;
+  parserVersion?: string;
   now?: number;
 }): Promise<boolean> {
   if (typeof input.token !== "string" || input.token.length > 4096) return false;
@@ -85,7 +87,8 @@ export async function verifyKnowledgePdfPreviewToken(input: {
     const now = input.now ?? Date.now();
     return claims.version === 1 && claims.tenantId === input.scope.tenantId && claims.spaceId === input.scope.spaceId
       && claims.projectId === input.scope.projectId && claims.sourceSha256 === input.sourceSha256
-      && claims.extractionSha256 === input.extractionSha256 && claims.parserVersion === KNOWLEDGE_PDF_PARSER_VERSION
+      && claims.extractionSha256 === input.extractionSha256
+      && claims.parserVersion === (input.parserVersion ?? KNOWLEDGE_PDF_PARSER_VERSION)
       && typeof claims.nonce === "string" && claims.nonce.length >= 16 && Number.isSafeInteger(claims.issuedAt)
       && Number.isSafeInteger(claims.expiresAt) && Number(claims.expiresAt) > now
       && Number(claims.issuedAt) <= now && Number(claims.expiresAt) - Number(claims.issuedAt) === KNOWLEDGE_PDF_PREVIEW_TTL_MS;

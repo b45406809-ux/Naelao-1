@@ -423,7 +423,7 @@ export default function ProjectDetailPage() {
     createIdempotencyKeyRef.current = null;
     setWebsitePreview(null);
     setCsvPreviewActive(false);
-    if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
+    if (/\.(pdf|docx)$/i.test(file.name)) {
       if (!creds) return;
       setPdfPreview(null);
       setPreviewingPdf(true);
@@ -432,7 +432,7 @@ export default function ProjectDetailPage() {
         const receipt = await previewKbPdf(activeSpaceId, creds, {
           content: base64, source_file_name: file.name, project_id: params.projectId,
         });
-        if (!newDocTitle.trim()) setNewDocTitle(file.name.replace(/\.pdf$/i, ""));
+        if (!newDocTitle.trim()) setNewDocTitle(file.name.replace(/\.(pdf|docx)$/i, ""));
         setNewDocContent(receipt.content);
         setPdfPreview({ base64, receipt });
       } catch (err) {
@@ -1256,24 +1256,24 @@ export default function ProjectDetailPage() {
           Project-private text limit: 5 MiB ({knowledgeContentByteLength(newDocContent.trim()).toLocaleString()} bytes entered).
         </div>
         {pdfPreview && <div role="status" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, fontSize: 12 }}>
-          <strong>PDF extraction preview · {pdfPreview.receipt.parser_version}</strong>
+          <strong>{/\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "DOCX" : "PDF"} extraction preview · {pdfPreview.receipt.parser_version}</strong>
           <div>Source SHA-256: <code>{pdfPreview.receipt.source_sha256}</code></div>
           <div>{pdfPreview.receipt.source_bytes.toLocaleString()} source bytes · {pdfPreview.receipt.extracted_bytes.toLocaleString()} extracted bytes (5 MiB project limit)</div>
-          <p>Review and edit the extracted text before adding it to this project. Preview expires after 15 minutes.</p>
+          <p>Review and edit the extracted text before adding it to this project. This file preview expires after 15 minutes.</p>
           <ul>{pdfPreview.receipt.extraction_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
         </div>}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <Button size="sm" disabled={addingDoc || previewingPdf || knowledgeContentByteLength(newDocContent.trim()) > PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES}>
             {addingDoc ? "Adding…" : "Add document"}
           </Button>
-          <input ref={fileInputRef} type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.xml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handlePickFile(event)} />
+          <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt,.md,.csv,.json,.html,.xml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handlePickFile(event)} />
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => fileInputRef.current?.click()}
             style={{ fontSize: 12.5 }}
           >
-            {previewingPdf ? "Preparing PDF preview…" : "Upload text or PDF"}
+            {previewingPdf ? "Preparing document preview…" : "Upload text, PDF or DOCX"}
           </button>
         </div>
       </form>

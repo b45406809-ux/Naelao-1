@@ -38,7 +38,7 @@ const MAX_CONTENT_BYTES = 5 * 1024 * 1024;
 type IngestionChunk = TextChunkWithOffsets | StructuralChunk;
 
 function chunkKnowledgeText(text: string, contentType: string): IngestionChunk[] {
-  return contentType === "pdf" ? chunkStructuredMarkdown(text) : chunkTextWithOffsets(text);
+  return contentType === "pdf" || contentType === "docx" ? chunkStructuredMarkdown(text) : chunkTextWithOffsets(text);
 }
 
 export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams> {

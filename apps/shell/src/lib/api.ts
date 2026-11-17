@@ -3868,7 +3868,7 @@ export interface KbDocument {
   project_id: string | null;
   title: string;
   source_url: string | null;
-  content_type: "text" | "url" | "code" | "pdf";
+  content_type: "text" | "url" | "code" | "pdf" | "docx";
   status: "pending" | "processing" | "indexed" | "flagged" | "failed" | "deleting" | "reindex_required";
   chunk_count: number;
   source_adapter?: "manual" | "website" | "connector";
@@ -3897,17 +3897,7 @@ export async function listKbDocuments(spaceId: string, session: SessionCredentia
   return res.data;
 }
 
-export interface KnowledgePdfPreview {
-  content: string;
-  source_sha256: string;
-  extraction_sha256: string;
-  parser_version: string;
-  preview_token: string;
-  source_file_name: string | null;
-  source_bytes: number;
-  extracted_bytes: number;
-  extraction_warnings: string[];
-}
+export type KnowledgePdfPreview = KnowledgeFilePreview;
 
 export interface WebsiteKnowledgePreview {
   content: string;
@@ -4001,17 +3991,32 @@ export async function setWebsiteKnowledgeRefreshSchedule(
   });
 }
 
-export async function previewKbPdf(
+export interface KnowledgeFilePreview {
+  content: string;
+  source_sha256: string;
+  extraction_sha256: string;
+  parser_version: string;
+  preview_token: string;
+  source_file_name: string;
+  source_bytes: number;
+  extracted_bytes: number;
+  extraction_warnings: string[];
+}
+
+export async function previewKnowledgeFile(
   spaceId: string,
   session: SessionCredentials,
   input: { content: string; source_file_name: string; project_id?: string }
-): Promise<KnowledgePdfPreview> {
-  const response = await apiFetch<{ preview: KnowledgePdfPreview }>(
+): Promise<KnowledgeFilePreview> {
+  const response = await apiFetch<{ preview: KnowledgeFilePreview }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/kb/documents/preview`,
     { method: "POST", body: JSON.stringify(input), session, cache: "no-store" },
   );
   return response.preview;
 }
+
+/** Backward-compatible PDF wrapper; the endpoint also supports the bounded DOCX preview path. */
+export const previewKbPdf = previewKnowledgeFile;
 
 export async function createKbDocument(
   spaceId: string,
@@ -4020,8 +4025,8 @@ export async function createKbDocument(
     preview_content?: string; preview_token?: string; preview_extraction_sha256?: string; source_file_name?: string;
     website_connection_id?: string; website_requested_url?: string; website_preview_sha256?: string; website_preview_token?: string }
 ): Promise<KbDocument> {
-  if (input.content_type === "pdf") {
-    if (!input.preview_content) throw new Error("Preview and approve the PDF extraction before saving.");
+  if (input.content_type === "pdf" || input.content_type === "docx") {
+    if (!input.preview_content) throw new Error("Preview and approve the document extraction before saving.");
     assertKnowledgeContentWithinScope(input.preview_content, input.project_id);
   } else {
     assertKnowledgeContentWithinScope(input.content, input.project_id);

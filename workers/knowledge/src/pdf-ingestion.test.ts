@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { strToU8, zipSync } from "fflate";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
 const pdfBytes = new TextEncoder().encode("%PDF-1.4\nsource bytes\n");
+const docxBytes = zipSync({ "word/document.xml": strToU8(`<w:document xmlns:w="x"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Inventory</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>SKU</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Qty</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>001</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>0007</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>`) });
 function base64(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -114,6 +116,34 @@ function stubParser(markdown = "# Parsed guide\n\nOriginal extracted content.") 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Knowledge PDF preview and approved ingestion", () => {
+  it("previews and ingests DOCX through bounded local extraction with signed source lineage", async () => {
+    const f = fixture();
+    const network = vi.fn();
+    vi.stubGlobal("fetch", network);
+    const previewResponse = await worker.fetch(await request("/spaces/space-1/kb/documents/preview", {
+      content: base64(docxBytes), source_file_name: "inventory.docx", project_id: "project-1",
+    }), f.env, {} as ExecutionContext);
+    expect(previewResponse.status).toBe(200);
+    const { preview } = await previewResponse.json() as { preview: {
+      content: string; extraction_sha256: string; preview_token: string; source_sha256: string; parser_version: string;
+    } };
+    expect(preview).toMatchObject({ content: "# Inventory\nSKU\tQty\n001\t0007", parser_version: "naelao:docx-main-body-v1" });
+    expect(network).not.toHaveBeenCalled();
+
+    const saved = await worker.fetch(await request("/spaces/space-1/kb/documents", {
+      title: "Inventory", content: base64(docxBytes), content_type: "docx", source_file_name: "inventory.docx",
+      preview_content: preview.content, preview_token: preview.preview_token,
+      preview_extraction_sha256: preview.extraction_sha256, project_id: "project-1",
+      idempotency_key: "docx-approved-request-key-001",
+    }), f.env, {} as ExecutionContext);
+    expect(saved.status).toBe(201);
+    const record = f.calls.find(({ sql }) => sql.includes("INSERT INTO kb_documents"));
+    expect(record?.args).toContain("docx");
+    expect(record?.args).toContain("naelao:docx-main-body-v1");
+    expect(record?.args).toContain(preview.source_sha256);
+    expect([...f.objects.entries()].some(([key, bytes]) => key.endsWith("/original") && bytes.length === docxBytes.length)).toBe(true);
+  });
+
   it("previews under the requested project ACL and binds the selected bytes and scope", async () => {
     const parse = stubParser();
     const f = fixture();

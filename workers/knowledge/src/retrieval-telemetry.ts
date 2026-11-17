@@ -4,9 +4,14 @@ const TIMING_KEYS = ["autorag_search_ms", "cache_lookup_ms", "dense_search_ms", 
 export type RetrievalTimingKey = typeof TIMING_KEYS[number];
 
 export function recordPdfPreviewParseMetric(dataset: AnalyticsEngineDataset | undefined, outcome: "succeeded" | "failed", durationMs: number): void {
+  recordKnowledgeFilePreviewParseMetric(dataset, "pdf", outcome, durationMs);
+}
+
+export function recordKnowledgeFilePreviewParseMetric(dataset: AnalyticsEngineDataset | undefined, format: "pdf" | "docx",
+  outcome: "succeeded" | "failed", durationMs: number): void {
   try {
     const latency = Number.isFinite(durationMs) ? Math.max(0, Math.min(120_000, Math.round(durationMs))) : 0;
-    dataset?.writeDataPoint({ blobs: ["knowledge_parse", "pdf", "preview", outcome], doubles: [latency], indexes: [] });
+    dataset?.writeDataPoint({ blobs: ["knowledge_parse", format, "preview", outcome], doubles: [latency], indexes: [] });
   } catch { /* telemetry failures must not change ingestion behavior */ }
 }
 
