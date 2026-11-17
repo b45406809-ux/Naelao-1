@@ -1755,6 +1755,9 @@ function WorkersPanel({
             <strong>{task.title}</strong> · {workerActivityLabel(task.status)}
             {(task.assigned_role || task.budget_tokens !== undefined) && <div>Worker plan: {task.assigned_role ? `${task.assigned_role.slice(0, 80)} role` : "worker"}{task.budget_tokens !== undefined ? ` · up to ${task.budget_tokens.toLocaleString()} output tokens` : ""}{task.runtime_capability ? ` · ${task.runtime_capability.slice(0, 64)} runtime recommendation` : ""}</div>}
             {task.acceptance_criteria?.length ? <div>Acceptance: {task.acceptance_criteria.map(item => item.slice(0, 240)).join(" · ")}</div> : null}
+            {task.workerId && <div data-technical-detail="billing">{workerUsage?.has(task.workerId)
+              ? `${workerUsage.get(task.workerId)!.cost_credits.toLocaleString()} internal credits${workerUsage.get(task.workerId)!.unpriced_event_count ? ` · ${workerUsage.get(task.workerId)!.unpriced_event_count} unpriced events` : ""}`
+              : "Internal-credit usage pending or unavailable"}</div>}
             {task.dispatch && <div>Worker dispatch: {task.dispatch.status.replaceAll("_", " ")}{task.dispatch.attempt ? ` · attempt ${task.dispatch.attempt}` : ""}</div>}
             <div>Verification: {task.verification?.outcome ?? (goal.verificationRequired ? "pending" : "not required")}{task.verification?.reason ? ` · ${task.verification.reason}` : ""}</div>
             {task.dependencies.length > 0 && <div>Depends on: {task.dependencies.join(", ")}</div>}
