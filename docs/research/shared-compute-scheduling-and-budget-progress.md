@@ -6,7 +6,7 @@ SC03 was rechecked against `ContainerInvocationScope`, ToolSandbox execution rec
 
 Code `84dd206f8d962bc3b0e2fdd66c588c61afc2dce6` is pushed and remote-verified on `origin/Mcbt5s-Backup-2`. SC05 now includes active `PROJECT_BOUND`/`PROJECT_SHARED` sidecar Tier 5 reservation receipts in the Project owner/admin view, in addition to main-runtime reservations. The Agents route first resolves active installations through the scoped SpaceDO list and filters sidecar receipts to those exact IDs; `PROJECT_USER` receipts are excluded. Rows retain internal-credit semantics and explicitly do not claim invoice-backed cost. Local evidence: route test **2/2**, Shell API test **2/2**, Agents/Shell typechecks. `pnpm`'s workspace guard aborted before running because it attempted module-directory reconciliation without a TTY; no package directory was changed, and the already-installed local Vitest/TypeScript binaries were used. No deployed route/browser/Container acceptance.
 
-Exact next action: continue the next independent uncoded active-plan requirement. For SC03, a safe dispatcher still requires a host-owned durable job receipt, generic revocable authorization revision, encrypted bounded payload contract and current Billing reservation revalidation; return only when those authorities are concretely available. Keep rollout disabled.
+Exact next action: continue K02 rich-file ingestion and other independent uncoded requirements. For SC03, a safe dispatcher still requires a host-owned durable job receipt, generic revocable authorization revision, encrypted bounded payload contract and current Billing reservation revalidation; return only when those authorities are concretely available. Keep rollout disabled.
 
 ## Active SC03 next action — 2026-11-17
 
