@@ -3685,6 +3685,13 @@ export async function listSpaceBusinessRoleReviews(spaceId: string, session: Ses
   return result.data ?? [];
 }
 
+export function createSpaceBusinessRoleReview(spaceId: string, session: SessionCredentials, input: {
+  blueprint_id: string; end_user_id: string; business_role_id: string;
+}) {
+  return apiFetch<{ id: string; status: "proposal_only"; business_role_id: string; grants_applied: false; reviewed_at: string }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/member-role-reviews`, { method: "POST", session, body: JSON.stringify(input) });
+}
+
 export function revokeSpaceBusinessRoleReview(spaceId: string, session: SessionCredentials, reviewId: string) {
   return apiFetch<{ id: string; status: "revoked"; grants_applied: false }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/member-role-reviews/${encodeURIComponent(reviewId)}`,

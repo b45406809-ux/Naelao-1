@@ -3,6 +3,7 @@
 import * as React from "react";
 import {
   createSpaceMemberInvitation,
+  createSpaceBusinessRoleReview,
   listSpaceBusinessRoleReviews,
   listSpaceBusinessRoleOptions,
   listSpaceMemberInvitations,
@@ -14,15 +15,17 @@ import {
   type SpaceBusinessRoleOptionCatalog,
   type SpaceMemberInvitation,
   type MySpaceBusinessRole,
+  type SpaceMember,
 } from "@/lib/api";
 import { buildSpaceInvitationLink } from "@/lib/space-invitation-link";
 
-export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canManage, canInviteAdmin }: {
+export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canManage, canInviteAdmin, members }: {
   spaceId: string;
   productSlug: string;
   session: SessionCredentials | null;
   canManage: boolean;
   canInviteAdmin: boolean;
+  members: SpaceMember[];
 }) {
   const [invitations, setInvitations] = React.useState<SpaceMemberInvitation[]>([]);
   const [reviews, setReviews] = React.useState<SpaceBusinessRoleReview[]>([]);
@@ -31,6 +34,9 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
   const [role, setRole] = React.useState<"viewer" | "member" | "admin">("member");
   const [blueprintId, setBlueprintId] = React.useState("");
   const [businessRoleId, setBusinessRoleId] = React.useState("");
+  const [reviewMemberId, setReviewMemberId] = React.useState("");
+  const [reviewBlueprintId, setReviewBlueprintId] = React.useState("");
+  const [reviewBusinessRoleId, setReviewBusinessRoleId] = React.useState("");
   const [created, setCreated] = React.useState<{ id: string; token: string } | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -102,6 +108,22 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
     } finally {
       setSaving(false);
     }
+  }
+
+  async function proposeRoleForMember(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !canManage || !reviewMemberId || !reviewBlueprintId || !reviewBusinessRoleId || saving) return;
+    setSaving(true); setError(null); setNotice(null);
+    try {
+      const result = await createSpaceBusinessRoleReview(spaceId, session, {
+        blueprint_id: reviewBlueprintId, end_user_id: reviewMemberId, business_role_id: reviewBusinessRoleId,
+      });
+      setNotice(`Role proposal recorded for the current member. Status: ${result.status}; no resource grants were applied.`);
+      await refresh();
+    } catch {
+      setError("Role proposal could not be recorded. Confirm the member and signed template are still current, then refresh.");
+      await refresh();
+    } finally { setSaving(false); }
   }
 
   async function revokeInvitation(invitation: SpaceMemberInvitation) {
@@ -211,6 +233,36 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
         </details>
         <button className="btn btn-primary btn-sm" type="submit" disabled={saving || !session} style={{ marginTop: 14 }}>
           {saving ? "Creating…" : "Create copy-only invitation"}
+        </button>
+      </form>
+
+      <form className="settings-block" onSubmit={proposeRoleForMember} aria-label="Propose a template role for an existing member" style={{ padding: 16, marginTop: 12 }}>
+        <div className="settings-row-label">Assign onboarding guidance to an existing member</div>
+        <p className="settings-row-sub">This records a reviewed role proposal against the member’s current membership epoch. It does not apply Project, app, Knowledge, channel, assistant, or spending permissions.</p>
+        <label className="settings-row-label" htmlFor="role-review-member">Member</label>
+        <select id="role-review-member" className="form-input" required value={reviewMemberId} onChange={event => setReviewMemberId(event.target.value)}>
+          <option value="">Choose a current member</option>
+          {members.map(member => <option key={member.end_user_id} value={member.end_user_id}>{member.end_user_id} · {member.role}</option>)}
+        </select>
+        <label className="settings-row-label" htmlFor="role-review-blueprint" style={{ marginTop: 8 }}>Active signed template</label>
+        <select id="role-review-blueprint" className="form-input" required value={reviewBlueprintId} onChange={event => {
+          const selected = event.target.value;
+          setReviewBlueprintId(selected);
+          setReviewBusinessRoleId(roleOptions.find(item => item.blueprint_id === selected)?.roles[0]?.id ?? "");
+        }}>
+          <option value="">Choose a template</option>
+          {roleOptions.map(option => <option key={option.blueprint_id} value={option.blueprint_id}>{option.blueprint_id}</option>)}
+        </select>
+        <label className="settings-row-label" htmlFor="role-review-business-role" style={{ marginTop: 8 }}>Business role</label>
+        <select id="role-review-business-role" className="form-input" required value={reviewBusinessRoleId} disabled={!reviewBlueprintId}
+          onChange={event => setReviewBusinessRoleId(event.target.value)}>
+          <option value="">Choose a declared role</option>
+          {roleOptions.find(item => item.blueprint_id === reviewBlueprintId)?.roles.map(option => <option key={option.id} value={option.id}>
+            {option.name.en ?? Object.values(option.name)[0] ?? option.id} ({option.id})
+          </option>)}
+        </select>
+        <button className="btn btn-primary btn-sm" type="submit" disabled={saving || !session || members.length === 0} style={{ marginTop: 12 }}>
+          {saving ? "Saving…" : "Record role proposal"}
         </button>
       </form>
 

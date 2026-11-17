@@ -409,7 +409,7 @@ function MembersTab({ members, spaceId, productSlug, session, canManage, canInvi
         )}
       </div>
 
-      <SpaceMemberOnboardingPanel spaceId={spaceId} productSlug={productSlug} session={session} canManage={canManage} canInviteAdmin={canInviteAdmin} />
+      <SpaceMemberOnboardingPanel spaceId={spaceId} productSlug={productSlug} session={session} canManage={canManage} canInviteAdmin={canInviteAdmin} members={members} />
 
     </div>
   );
