@@ -5,8 +5,11 @@ requirements**, not a single slice or a documentation update. This section is th
 continuation instruction; historical checkpoints and their "next action" paragraphs below describe
 past work and do not override the current progress records or require repeating completed work.
 
-- Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is the K03 optional PDF page-marker preservation (local verification; push pending), after
+- Start or resume from the newest verified progress records and actual code/worktree. K03 optional PDF
+  page-marker preservation is pushed as `acc85dd8`. The latest source reconciliation corrected stale
+  PW05 accounting claims: delegated attempts already reserve/settle per deterministic child `runId`,
+  while owner-visible per-worker credits remain uncoded. Next action is the scoped owner/admin usage
+  read and Shell receipt, then continue all active requirements. After
   the K02 reviewed PNG/JPEG OCR caller (`8a6d5026`), after
   K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
   bounded PPTX tables (`34800a4a`), task OCR settings (`7aee2ef1`) and P04 restore (`946e1881`,
@@ -40,19 +43,18 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (K03 optional PDF page markers; local verification)
+## Current checkpoint — 2026-11-17 (PW05 accounting trace; source reconciliation)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
 
-Knowledge PDF parser preserves optional explicit, bounded, increasing page numbers as `Page N` headings;
-otherwise it retains the flat Markdown path and never invents coordinates. The behavior has a new parser
-version to stale old preview receipts. Focused local checks: parser/ingestion/archive/workflow **26/26**,
-Knowledge typecheck and `git diff --check`. Provider page metadata is not live-verified; no deployment or
-provider call occurred. K03 still lacks typed geometry, confidence and parser-quality evidence.
+K03 was pushed as `acc85dd8` after parser/ingestion/archive/workflow **26/26**, Knowledge typecheck and
+`git diff --check`. Provider page metadata remains unverified. PW05 code review found deterministic
+per-attempt run IDs and existing model/project reservation and model/runtime settlement in the normal
+child script-run path; Shell currently shows tokens but no exact worker attempt credits. The ledgers now
+distinguish implemented accounting from the remaining owner-visible receipt.
 
-Exact next action: trace PW05 delegated worker runtime execution into per-run Billing reservation and
-settlement; implement only a run-scoped host receipt that fits current authorization/budget identities.
-Then continue every active plan. Keep all rollouts disabled.
+Exact next action: implement owner/admin-authorized, exact Project-scoped worker-attempt usage receipts
+with pending/unpriced states; then continue every other active-plan requirement. Keep rollouts disabled.
 
 ## Previous checkpoint — 2026-11-17 (K02 PNG/JPEG reviewed OCR caller; pushed as `8a6d5026`)
 

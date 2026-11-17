@@ -61,14 +61,30 @@ The prior action to trace WorkflowRunDO checkpoint/recovery was completed in `1d
 ## Cross-plan update — 2026-11-17 (scheduled HITL resume authorization recovery; `688f69e4` pushed)
 
 Code `688f69e4c9cae6c29986efb17d65a507779134e9` is remote-verified. Durable suspended-run rows now preserve the scheduled job service context; resume rechecks the signed internal heartbeat session and exact current enabled job revision, and a missing/stale identity cannot be resumed as an ordinary user run. Older rows may recover only from the authenticated session; transient session lookup failure remains retryable. Focused tests **28/28**, Agents typecheck and diff hygiene pass. This is not unsaved process-memory recovery, in-flight provider cancellation, runtime isolation acceptance or a per-job compute-cost reservation. Continue PW cost/cancellation requirements alongside other plans.
-## Cross-plan update — 2026-11-17 (K03 page-marker preservation; PW05 next)
+## Cross-plan update — 2026-11-17 (PW05 per-attempt accounting trace)
+
+The PW05 matrix claim that no per-run reservation/settlement exists was stale. A delegated worker
+executes with run ID `<worker-id>` on attempt 1 and `<worker-id>:attempt:<n>` on later attempts.
+Its normal `handleScriptRun` path performs model admission through the existing Project/Billing
+reservation callbacks and calls `settleRunBilling` with that same run ID, actual token counts,
+runtime tier and duration; canonical usage events are idempotently keyed to the run. Parent worker
+rows retain aggregate token use and the monotonic attempt number, so each attempt ID is derivable.
+This does not prove external invoice reconciliation or runtime isolation.
+
+PW05 remains PARTIAL for owner-visible per-worker internal-credit/compute receipts: the Shell shows
+model tokens and allocated token budget but does not query/render cost by worker attempt. Existing
+Project usage is an aggregate and must not be presented as an exact worker receipt. Next code action:
+add an owner/admin-authorized, exact Project-scoped read of worker-attempt usage events and show
+internal credits with pending/unpriced states; keep provider invoice/USD claims out. Also continue
+other independent plan gaps after this slice.
+
+## Previous cross-plan update — 2026-11-17 (K03 page-marker preservation; pushed `acc85dd8`)
 
 The Knowledge PDF adapter now preserves only explicit increasing page numbers from optional parser
 response metadata and binds the behavior to a new parser version. Missing/malformed metadata falls back
 to the previous flat text path; no current Cohere response contract or live page output was verified.
 Local Knowledge parser/ingestion/archive/workflow checks **26/26** and typecheck pass. K03 remains partial.
 
-Exact next action: trace PW05 delegated worker execution through current per-run Billing reservation and
-settlement receipts; implement an exact run-scoped host receipt if current authorization, budget and
-runtime identities align. Do not equate model token allocations with actual currency/compute usage or
-claim runtime isolation. Continue all other active plans after this slice.
+Exact next action: implement the owner/admin worker-attempt usage read described above, with tests for
+project scope, missing/unpriced receipts and multiple attempts. Then continue all remaining active-plan
+requirements. Do not equate token allocation with actual currency/compute or claim runtime isolation.
