@@ -18,7 +18,7 @@ export interface GoalTaskRuntimeState {
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; dispatchId?: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain" | "verification_failed" | "verification_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" | "review_verification" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean }
+export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number } }
 /** Automatic repair is an opt-in, host-budgeted path with a hard kernel ceiling. */
 export const MAX_GOAL_FIXERS_PER_RUN = 2;
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
@@ -46,6 +46,46 @@ export interface GoalDagHost {
   fix?(task: GoalTask, workerId: string, failure: GoalWorkerResult): Promise<GoalWorkerResult>;
   acquireResources?(task: GoalTask, holderId: string, onRuntimeState?: (state: GoalTaskRuntimeState) => Promise<void>): Promise<() => Promise<void>>;
   recordRuntimeMetrics?(event: { capability?: string; status: "completed" | "failed"; queueWaitMs?: number; executionMs?: number }): void;
+}
+
+/**
+ * Pick the smallest useful topology from the already-authorized task graph. The host ceiling
+ * remains the hard maximum. A chain runs one worker at a time; a graph with independent tasks
+ * may use the host's bounded concurrency, and the scheduler naturally expands/contracts as its
+ * ready frontier changes. This does not create tasks or grant capabilities.
+ */
+function selectGoalRouting(tasks: GoalTask[], hostConcurrency: number): NonNullable<GoalDagJournal["routing"]> {
+  const ancestors = new Map<string, Set<string>>();
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  const collect = (id: string): Set<string> => {
+    const cached = ancestors.get(id);
+    if (cached) return cached;
+    const result = new Set<string>();
+    for (const dependency of byId.get(id)?.dependencies ?? []) {
+      result.add(dependency);
+      for (const ancestor of collect(dependency)) result.add(ancestor);
+    }
+    ancestors.set(id, result);
+    return result;
+  };
+  for (const task of tasks) collect(task.id);
+  let independentPair = false;
+  for (let i = 0; i < tasks.length && !independentPair; i++) {
+    for (let j = i + 1; j < tasks.length; j++) {
+      const left = tasks[i]!, right = tasks[j]!;
+      if (!ancestors.get(left.id)!.has(right.id) && !ancestors.get(right.id)!.has(left.id)) {
+        independentPair = true;
+        break;
+      }
+    }
+  }
+  const mode = tasks.length === 1 ? "single_worker" : independentPair ? "parallel" : "sequential";
+  return {
+    mode,
+    taskCount: tasks.length,
+    selectedConcurrency: mode === "parallel" ? Math.min(hostConcurrency, tasks.length) : 1,
+    hostConcurrencyCeiling: hostConcurrency,
+  };
 }
 
 function dependencyHandoffs(task: GoalTask, journal: GoalDagJournal): GoalHandoff[] {
@@ -115,6 +155,9 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
   if (persistedFixerLimit !== undefined && (!Number.isSafeInteger(persistedFixerLimit) || persistedFixerLimit < 0 || persistedFixerLimit > MAX_GOAL_FIXERS_PER_RUN)) throw new Error("goal_journal_invalid_fixer_limit");
   const effectiveFixerLimit = persistedFixerLimit === undefined ? hostFixerLimit : Math.min(persistedFixerLimit, hostFixerLimit);
   const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, fixerEnabled: host.fixerEnabled === true, verificationRequired: host.verificationRequired === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
+  // Recompute on every resume so a stale persisted choice can never exceed current host policy.
+  journal.routing = selectGoalRouting(tasks, host.concurrency);
+  await host.save(structuredClone(journal));
   // The feature flag is a live host kill switch. Persisted opt-in must not override a
   // stricter rollout setting when a graph resumes.
   journal.fixerEnabled = host.fixerEnabled === true;
@@ -255,7 +298,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       return journal;
     }
     // Claim and persist each available slot before starting its external worker effects.
-    const slots = Math.max(0, host.concurrency - inFlight.size);
+    const slots = Math.max(0, journal.routing.selectedConcurrency - inFlight.size);
     const dispatch: GoalTask[] = [];
     const claimedResources = new Set(activeResources);
     for (const task of ready) {

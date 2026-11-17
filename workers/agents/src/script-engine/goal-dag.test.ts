@@ -13,6 +13,21 @@ function fixture(initial?: GoalDagJournal) {
   return { host, snapshot: () => saved! };
 }
 describe("durable goal DAG", () => {
+  it("selects one worker for a chain and preserves the host ceiling for independent work", async () => {
+    const sequential = fixture();
+    const chain = await executeGoalDag([task("a"), task("b", ["a"]), task("c", ["b"])], sequential.host);
+    expect(chain.routing).toEqual({ mode: "sequential", taskCount: 3, selectedConcurrency: 1, hostConcurrencyCeiling: 4 });
+
+    const parallel = fixture();
+    const graph = await executeGoalDag([task("a"), task("b"), task("c", ["a"])], parallel.host);
+    expect(graph.routing).toEqual({ mode: "parallel", taskCount: 3, selectedConcurrency: 3, hostConcurrencyCeiling: 4 });
+  });
+  it("recomputes the topology ceiling from current host policy on resume", async () => {
+    const resumed = fixture({ routing: { mode: "parallel", taskCount: 2, selectedConcurrency: 4, hostConcurrencyCeiling: 4 }, tasks: { a: { status: "pending", workerId: "worker:a" }, b: { status: "pending", workerId: "worker:b" } } });
+    resumed.host.concurrency = 1;
+    const result = await executeGoalDag([task("a"), task("b")], resumed.host);
+    expect(result.routing).toEqual({ mode: "parallel", taskCount: 2, selectedConcurrency: 1, hostConcurrencyCeiling: 1 });
+  });
   it("fails closed without host evidence when verification is required", async () => {
     const f = fixture(); f.host.verificationRequired = true;
     const result = await executeGoalDag([{ ...task("a"), acceptance_criteria: ["verified"] }, task("b", ["a"])], f.host);
