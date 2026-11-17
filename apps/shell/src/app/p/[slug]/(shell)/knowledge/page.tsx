@@ -26,6 +26,7 @@ import {
 } from "@/lib/api";
 import { knowledgeContentByteLength, SPACE_KNOWLEDGE_MAX_CONTENT_BYTES } from "@/lib/knowledge-upload-limits";
 import { readKnowledgePdfFile } from "@/lib/knowledge-pdf-preview";
+import { KnowledgeCsvPreview } from "@/components/KnowledgeCsvPreview";
 
 const STATUS_COLOR: Record<KbDocument["status"], "green" | "amber" | "red"> = {
   indexed: "green",
@@ -49,6 +50,7 @@ export default function KnowledgePage() {
   const [showAdd, setShowAdd] = React.useState(false);
   const [title, setTitle] = React.useState("");
   const [content, setContent] = React.useState("");
+  const [csvPreviewActive, setCsvPreviewActive] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -110,6 +112,7 @@ export default function KnowledgePage() {
       createIdempotencyKeyRef.current = null;
       setTitle("");
       setContent("");
+      setCsvPreviewActive(false);
       setPdfPreview(null);
       setFileError(null);
       setShowAdd(false);
@@ -130,6 +133,7 @@ export default function KnowledgePage() {
     if (!file) return;
     createIdempotencyKeyRef.current = null;
     setPdfPreview(null);
+    setCsvPreviewActive(false);
     if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
       if (!creds) return;
       setFileError(null);
@@ -157,6 +161,7 @@ export default function KnowledgePage() {
     file.text().then((text) => {
       setTitle((t) => t || file.name);
       setContent(text);
+      setCsvPreviewActive(/\.csv$/i.test(file.name));
     }).catch(() => setFileError(`Couldn't read "${file.name}".`));
   }
 
@@ -260,6 +265,7 @@ export default function KnowledgePage() {
               rows={8}
               style={{ resize: "vertical" }}
             />
+            {csvPreviewActive && <KnowledgeCsvPreview content={content} />}
             <div style={{ fontSize: 12, color: "var(--text3)" }}>
               Space-wide text limit: 1 MiB ({knowledgeContentByteLength(content.trim()).toLocaleString()} bytes entered). Project Knowledge supports up to 5 MiB.
             </div>

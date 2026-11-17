@@ -69,6 +69,7 @@ import {
 } from "@/lib/api";
 import { knowledgeContentByteLength, PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES } from "@/lib/knowledge-upload-limits";
 import { readKnowledgePdfFile } from "@/lib/knowledge-pdf-preview";
+import { KnowledgeCsvPreview } from "@/components/KnowledgeCsvPreview";
 import { Button, Card, CardDesc, CardLabel, CardTitle, CardValue, FormInput, FormSelect, FormTextarea, Modal, Toast, useToast } from "@naelao/ui";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
@@ -120,6 +121,7 @@ export default function ProjectDetailPage() {
   const [docsLoading, setDocsLoading] = React.useState(true);
   const [newDocTitle, setNewDocTitle] = React.useState("");
   const [newDocContent, setNewDocContent] = React.useState("");
+  const [csvPreviewActive, setCsvPreviewActive] = React.useState(false);
   const [addingDoc, setAddingDoc] = React.useState(false);
   const [pdfPreview, setPdfPreview] = React.useState<{ base64: string; receipt: Awaited<ReturnType<typeof previewKbPdf>> } | null>(null);
   const [previewingPdf, setPreviewingPdf] = React.useState(false);
@@ -420,6 +422,7 @@ export default function ProjectDetailPage() {
     if (!file) return;
     createIdempotencyKeyRef.current = null;
     setWebsitePreview(null);
+    setCsvPreviewActive(false);
     if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
       if (!creds) return;
       setPdfPreview(null);
@@ -457,6 +460,7 @@ export default function ProjectDetailPage() {
       }
       if (!newDocTitle.trim()) setNewDocTitle(file.name.replace(/\.[^.]+$/, ""));
       setNewDocContent(text);
+      setCsvPreviewActive(/\.csv$/i.test(file.name));
     } catch {
       show("Couldn't read that file.");
     }
@@ -466,6 +470,7 @@ export default function ProjectDetailPage() {
     if (!creds || !websiteConnectionId || !websiteSourceUrl.trim() || previewingWebsite) return;
     createIdempotencyKeyRef.current = null;
     setPdfPreview(null);
+    setCsvPreviewActive(false);
     setWebsitePreview(null);
     setPreviewingWebsite(true);
     try {
@@ -629,6 +634,7 @@ export default function ProjectDetailPage() {
       createIdempotencyKeyRef.current = null;
       setNewDocTitle("");
       setNewDocContent("");
+      setCsvPreviewActive(false);
       setPdfPreview(null);
       setWebsitePreview(null);
       await refreshDocs();
@@ -1245,6 +1251,7 @@ export default function ProjectDetailPage() {
           rows={4}
           required
         />
+        {csvPreviewActive && <KnowledgeCsvPreview content={newDocContent} />}
         <div style={{ fontSize: 12, color: "var(--text3)" }}>
           Project-private text limit: 5 MiB ({knowledgeContentByteLength(newDocContent.trim()).toLocaleString()} bytes entered).
         </div>
