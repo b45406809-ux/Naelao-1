@@ -1960,6 +1960,8 @@ export interface ProjectExtensionResourceUsageSnapshot {
   provider_dependencies: { declared: Array<{ connection_id: string; provider: string; purpose: string; required: boolean }>;
     configured: Array<{ connection_id: string; provider: string; status: "active" | "expired" | "revoked" | "error";
       connected_at: string; last_verified_at: string | null }> };
+  provider_cleanup: Array<{ provider: string; operation: "setup" | "cleanup"; status: "pending" | "complete" | "not_supported";
+    attempts: number; last_attempt_at: string | null; updated_at: string }>;
   operations: Array<{ lease_id: string; requirement_id: string; operation_id: string; table_name: string; grant_revision: number;
     status: string; created_at: string; updated_at: string }>;
   receipts: Array<{ job_id: string; requirement_id: string; status: string; dispatch_attempts: number; payload_bytes: number;

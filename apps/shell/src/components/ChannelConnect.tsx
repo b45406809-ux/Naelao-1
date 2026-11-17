@@ -168,6 +168,18 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
         : <div role="status" style={{ color: "var(--text3)" }}>Loading provider connection status…</div>}
     </div>
     <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
+      <strong>Provider setup and cleanup receipts</strong>
+      <p style={{ margin: "4px 0 6px", color: "var(--text3)", fontSize: 10.5 }}>
+        Durable host receipts for this exact installation. Pending cleanup means provider-side removal may need follow-up; no retry is started here.
+      </p>
+      {usageError ? <div role="status" style={{ color: "var(--text3)" }}>Provider lifecycle receipts unavailable.</div>
+        : usage ? usage.provider_cleanup.length === 0 ? <div style={{ color: "var(--text3)" }}>No provider lifecycle receipts.</div>
+          : <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text3)" }}>{usage.provider_cleanup.map((receipt, index) =>
+            <li key={`${receipt.provider}-${receipt.operation}-${receipt.updated_at}-${index}`}>{receipt.provider} · {receipt.operation} · {receipt.status}
+              · {receipt.attempts} attempts · updated {new Date(receipt.updated_at).toLocaleString()}</li>)}</ul>
+        : <div role="status" style={{ color: "var(--text3)" }}>Loading provider lifecycle receipts…</div>}
+    </div>
+    <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
       <strong>Recent host job receipts</strong>
       <p style={{ margin: "4px 0 6px", color: "var(--text3)", fontSize: 10.5 }}>Latest 50 operation leases and job receipts for this exact signed installation generation. Payloads and provider charges are not shown; payload bytes are recorded usage only, not a price. A released lease records access, not the operation's result.</p>
       {usageError && <div role="status" style={{ color: "var(--text3)" }}>Receipt activity unavailable.</div>}

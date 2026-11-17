@@ -77,6 +77,7 @@ import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, spaceSha
   supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
 import { attachBlueprintAssistantChannelDefaults, attachBlueprintBusinessRoles, attachBlueprintCoordinationDefaults, attachBlueprintExpectedUsage, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 import { buildProviderDependencyInventory, type ProviderConnectionStatusRow, type ProviderDependencyDeclaration } from "./extension-provider-inventory.js";
+import { buildProviderCleanupInventory, type ProviderCleanupReceiptRow } from "./extension-provider-cleanup-inventory.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -6198,6 +6199,11 @@ app.get(projectExtensionResourceUsagePath, async c => {
       .bind(identity.tenantId, spaceId, projectId, instanceId)
       .all<ProviderConnectionStatusRow>();
     const providerInventory = buildProviderDependencyInventory(snapshot.provider_dependencies?.declared ?? [], providerResult.results ?? []);
+    const cleanupResult = await c.env.PLATFORM_DB.prepare(`SELECT provider,operation_kind,status,attempt_count,last_attempt_at,updated_at
+      FROM extension_provider_cleanup_operations WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=?
+      ORDER BY updated_at DESC,operation_id DESC LIMIT 30`)
+      .bind(identity.tenantId, spaceId, projectId, instanceId)
+      .all<ProviderCleanupReceiptRow>();
     const { results } = await c.env.PLATFORM_DB.prepare(`SELECT job_id,requirement_id,status,dispatch_attempts,payload_bytes,
       deadline_at,created_at,updated_at,started_at,completed_at FROM extension_resource_jobs
       WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND extension_id=?
@@ -6209,6 +6215,7 @@ app.get(projectExtensionResourceUsagePath, async c => {
       dependency_inventory: { declared: snapshot.dependency_inventory?.declared ?? [],
         resolved: snapshot.dependency_inventory?.resolved === true, active: snapshot.dependency_inventory?.active ?? [] },
       provider_dependencies: providerInventory,
+      provider_cleanup: buildProviderCleanupInventory(cleanupResult.results ?? []),
       receipts: results.map(row => ({ job_id: row.job_id, requirement_id: row.requirement_id, status: row.status,
         dispatch_attempts: row.dispatch_attempts, payload_bytes: row.payload_bytes, deadline_at: row.deadline_at,
         created_at: row.created_at, updated_at: row.updated_at, started_at: row.started_at, completed_at: row.completed_at })) },
