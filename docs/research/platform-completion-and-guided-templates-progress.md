@@ -1,4 +1,4 @@
-## Resume pointer — 2026-11-17 (EP05 bounded JSON errors; locally verified, push pending)
+## Resume pointer — 2026-11-17 (EP05 bounded JSON errors; locally verified, pushed as `703f5c2b`)
 
 Malformed page JSON now returns HTTP 400 `invalid_json`; only bounded-body overflow returns HTTP 413
 `payload_too_large`. The route rejects both before dispatch to MicroAppDO. Focused Spaces route/DO tests
@@ -10,7 +10,7 @@ Exact next action after push: resume SC03 durable dispatch only where explicit u
 authority and fresh Billing can be revalidated before launch; otherwise move to another independent
 uncoded plan requirement and keep automatic replay fail-closed.
 
-## Resume pointer — 2026-11-17 (EP05 isolated owner preview; locally verified, push pending)
+## Resume pointer — 2026-11-17 (EP05 isolated owner preview; locally verified, pushed as `703f5c2b`)
 
 The owner review iframe uses an empty sandbox and restrictive document CSP (`default-src 'none'`,
 `img-src data:`, no form submission or base URL). This blocks remote assets and active navigation while

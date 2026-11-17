@@ -38,13 +38,13 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 bounded JSON error handling; locally verified, pending push)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 bounded JSON error handling; pushed as `703f5c2b`)
 
 The owner page review/apply routes now distinguish malformed JSON (`400 invalid_json`) from requests
 exceeding the 1 MiB body ceiling (`413 payload_too_large`) and reject both before invoking MicroAppDO.
 Focused Spaces route/DO tests **15/15**, Spaces typecheck and diff hygiene pass. Prior page inventory is
 pushed at `61161067` (docs `16b276ca`); preview isolation is pushed at `d7db0499` (docs `1a3f0145`).
-This small correction awaits push. Public rollout remains disabled.
+This correction is pushed as `703f5c2b`. Public rollout remains disabled.
 
 **Reminder to myself:** Keep implementing the entire mission after every checkpoint. A test pass, docs update, commit or push is not a stop; continue with the next independent uncoded requirement unless the user stops or a real blocker prevents progress.
 

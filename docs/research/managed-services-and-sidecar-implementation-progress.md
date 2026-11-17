@@ -1,4 +1,4 @@
-## Resume pointer — 2026-11-17 (EP05 bounded JSON errors; locally verified, push pending)
+## Resume pointer — 2026-11-17 (EP05 bounded JSON errors; locally verified, pushed as `703f5c2b`)
 
 Malformed page JSON now returns HTTP 400 `invalid_json`; only bounded-body overflow returns HTTP 413
 `payload_too_large`. The route rejects both before dispatch to MicroAppDO. Focused Spaces route/DO tests
