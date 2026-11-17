@@ -71,10 +71,10 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   // knowledge-base
   "knowledge.search",
   "knowledge.search_brief",
+  // document.partition is host-local preparation; these three operations transmit document
+  // content to a configured external model and consume provider budget, so a read-only role
+  // must not gain that egress/cost authority merely from the operation's verb.
   "document.partition",
-  "document.summarize",
-  "document.extract",
-  "document.compress",
   // memory / fabric / wiki recall (remember/forget/record/upsert mutate)
   "memory.recall",
   "fabric.recall",

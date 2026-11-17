@@ -16,11 +16,15 @@ describe("public tool surface", () => {
 
   it("hides Project write capabilities from reduced-access callers during discovery", async () => {
     const tools = new ScriptToolSurface({ scriptsBucket: bucket, spaceId: "s", agentId: "a", tenantId: "t", effectiveRole: "viewer" },
-      ["business-email", "r2-workspace", "web-search"]);
+      ["business-email", "document-processing", "r2-workspace", "web-search"]);
     const operations = tools.availableOperations();
     expect(operations).toContain("search");
     expect(operations).not.toContain("email.send");
     expect(operations).not.toContain("Write");
+    expect(operations).toContain("document.partition");
+    expect(operations).not.toContain("document.summarize");
+    expect(operations).not.toContain("document.extract");
+    expect(operations).not.toContain("document.compress");
     await expect(tools.run("tools.search", { query: "email" })).resolves.toMatchObject({
       ok: true, output: { results: expect.not.arrayContaining([expect.objectContaining({ name: "email.send" })]) },
     });
