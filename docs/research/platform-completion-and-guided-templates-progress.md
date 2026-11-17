@@ -2654,3 +2654,8 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
 Keep rollout disabled. Do not deploy, create resources, purchase services, or claim deployed/live
 acceptance. Commit and push each coherent checkpoint to `origin/Mcbt5s-Backup-2` after fetching and
 safely integrating any remote advances.
+## Current checkpoint — 2026-11-17 (job resource owner review is reachable; `b60a2999` local)
+
+The Project extension resource review caller now includes signed `jobs` requirements alongside structured data and object requirements. It reuses the existing owner-authorized exact-install snapshot and explicitly keeps the host job adapter unavailable pending acceptance. Focused Shell caller tests **2/2**, Shell typecheck and `git diff --check` pass. No persistence schema, operation/job usage receipt view, provider action, deployment or rollout changed. Code `b60a2999` is committed locally; docs and push are pending. Preserve `infra/scripts/__pycache__/`.
+
+EP06 remains partial: the owner can inspect declared requirements, grants and budget per install, but there is no complete Project-level dependency/usage inventory and no safe owner read path linking durable operation/job receipts to the exact install. Exact next action: trace the existing receipt stores and authorization path; implement read-only exact-install usage records only where durable IDs/generation support the join, without inventing provider cost. Continue remaining requirements across all active plans afterward.
