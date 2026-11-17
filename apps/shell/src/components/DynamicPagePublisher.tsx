@@ -11,6 +11,10 @@ const STARTER_DRAFT = JSON.stringify({
   actions: { signup: { key: "signup", fields: ["email"] } },
 }, null, 2);
 
+export function buildDynamicPagePreviewDocument(html: string): string {
+  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'"><body>${html}</body>`;
+}
+
 export function DynamicPagePublisher({ spaceId, appId, session }: { spaceId: string; appId: string; session: SessionCredentials }) {
   const [source, setSource] = React.useState(STARTER_DRAFT);
   const [review, setReview] = React.useState<PublicDynamicPageReview | null>(null);
@@ -56,7 +60,9 @@ export function DynamicPagePublisher({ spaceId, appId, session }: { spaceId: str
     } catch (error) { setNotice(error instanceof Error ? error.message : "Could not take down the page."); }
     finally { setBusy(false); }
   }
-  const previewHtml = review?.draft.html.replace(/\{\{NAELAO_ACTION_TOKEN:[a-z0-9_-]+\}\}/g, "[secure action token]");
+  const previewHtml = review ? buildDynamicPagePreviewDocument(
+    review.draft.html.replace(/\{\{NAELAO_ACTION_TOKEN:[a-z0-9_-]+\}\}/g, "[secure action token]")
+  ) : undefined;
 
   return <Card style={{ margin: "12px 0", padding: 16 }}>
     <CardTitle>Public page review</CardTitle>

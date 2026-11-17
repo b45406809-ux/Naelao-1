@@ -38,20 +38,21 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 owner publication inventory; pushed as `61161067`)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 isolated owner preview; locally verified, pending push)
 
-The owner/admin-only Shell page control now lists the 100 most recent publication receipts, shows exact
-slug/digest/time and integrity state (`published`, `integrity_error`, `removed`), refreshes after publish
-or takedown, and lets an owner take down the selected exact slug. The route is tenant/Space/role bound;
-MicroAppDO verifies current page bytes against the newest immutable receipt. Spaces route/DO tests **14/14**,
-Shell API test **1/1**, Spaces/Shell typechecks and diff hygiene pass. Local mocks only; no browser,
-deployed domain/edge or live acceptance. Public delivery remains disabled. Previous EP05 review/backend
-and owner caller are pushed (`f80e1577`, docs `19ef37a5`); this inventory checkpoint is pushed as `61161067`.
-SC03 waiter cleanup is pushed (`d99720f0`, docs `8f203d51`).
+The owner-reviewed page iframe now uses an empty sandbox plus a document CSP (`default-src 'none'`,
+`img-src data:`, no forms, no base URL), so previewed content cannot load remote assets or submit forms.
+Review/publish still uses the exact immutable digest; public delivery stays disabled. Shell typecheck,
+preview isolation + API tests **2/2**, and diff hygiene pass. Local tests only; no browser/deployed
+acceptance. The publication inventory code is pushed at `61161067` (docs `16b276ca`), and the top-level
+mission pointer is `bf9f8bf1`; this hardening checkpoint awaits push.
 
-**Reminder to myself:** Keep implementing the full mission. Do not stop after a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops or a real blocker prevents all progress.
+**Reminder to myself:** Keep implementing the full mission; do not stop after tests, docs, commit or push. Continue with the next independent uncoded requirement after this recovery checkpoint.
 
-Exact next action after push: continue SC03's durable compute job contract with explicit invocation consent, exact current-authority revalidation and Billing admission before dispatch. Current live `authorizeContainer` is a run closure, so replay must remain denied unless an existing host authority can revalidate it after disconnect. Then continue other independent S2–S9/U01–U12/EP/K/P/PW/AP/TBR gaps; preserve the untracked Python cache and all disabled rollouts.
+Exact next action after push: continue SC03's durable compute job contract only with explicit invocation
+consent, exact current authority revalidation and fresh Billing admission before dispatch. The live
+`authorizeContainer` closure is not a durable callback, so keep detached replay denied until a supported
+host authority path exists. Then move to another independent S2–S9/U01–U12/EP/K/P/PW/AP/TBR gap.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
 

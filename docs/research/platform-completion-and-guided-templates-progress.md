@@ -1,3 +1,17 @@
+## Resume pointer — 2026-11-17 (EP05 isolated owner preview; locally verified, push pending)
+
+The owner review iframe uses an empty sandbox and restrictive document CSP (`default-src 'none'`,
+`img-src data:`, no form submission or base URL). This blocks remote assets and active navigation while
+the owner inspects the exact reviewed page. Shell typecheck and the preview/API tests **2/2** pass; diff
+check passes. Local verification only. Public host rollout remains disabled.
+
+**Reminder to myself:** Continue all active plans after this checkpoint. Do not stop at a successful test,
+documentation edit, commit or push.
+
+Exact next action after push: continue SC03's durable dispatch contract only with explicit invocation
+consent, exact current authority revalidation and Billing admission. Otherwise keep replay denied and
+proceed to another independent uncoded active-plan requirement.
+
 ## Resume pointer — 2026-11-17 (EP05 owner publication inventory; pushed as `61161067`)
 
 The authenticated owner/admin API lists up to 100 recent immutable publication receipts with exact
