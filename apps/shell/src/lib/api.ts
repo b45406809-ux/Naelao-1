@@ -2893,9 +2893,15 @@ export async function installProjectCanvasExtension(
   permissionExpansionApproved = false, attachmentAccessApproved = false, updateReviewToken?: string,
 ): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string; canvas_mount_warning?: string;
   projectUpdateReceipt?: { requestId: string; status: "staged" | "active"; installationGeneration?: number } }> {
-  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions`, {
-    method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}), ...(updateReviewToken ? { updateReviewToken } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}), ...(attachmentAccessApproved ? { attachmentAccessApproved: true } : {}) }), session,
-  });
+  const request = { method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}), ...(updateReviewToken ? { updateReviewToken } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}), ...(attachmentAccessApproved ? { attachmentAccessApproved: true } : {}) }), session };
+  const path = `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions`;
+  try { return await apiFetch(path, request); }
+  catch (error) {
+    // This one reviewed update has a durable request receipt and exact replay contract.
+    // A bounded identical retry resumes a staged receipt after an ambiguous response.
+    if (!upgrade || !updateReviewToken || !(error instanceof ApiError) || (error.status !== 0 && error.status < 500)) throw error;
+    return apiFetch(path, request);
+  }
 }
 
 /** Connect a channel, or turn one off/back on. Owner/admin only, enforced server-side. */

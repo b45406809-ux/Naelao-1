@@ -1,8 +1,8 @@
 ## Current cross-plan checkpoint — 2026-11-17 (staged Project update replay; local verification)
 
-After `2df5ec2b`, Project update receipts have an owner/admin, tenant/Space/Project/install/request-scoped read path. Exact active replay is idempotent. A same-request retry resumes staged receipt processing after token expiry only after gateway and SpaceDO validate all receipt/candidate pins and active publisher; the existing actor initialization/activation flow is replayed. Focused SpaceDO install/runtime, migration and review suites **49/49**, Spaces/Shell typechecks and diff check pass. Local verification only. UI does not yet retain/retry the request after an uncertain response.
+After `17f005a5`, Project update receipts have an owner/admin, tenant/Space/Project/install/request-scoped read path. Exact active replay is idempotent. A same-request retry resumes staged receipt processing after token expiry only after gateway and SpaceDO validate all receipt/candidate pins and active publisher; the existing actor initialization/activation flow is replayed. Focused SpaceDO install/runtime, migration and review suites **49/49**, Spaces/Shell typechecks and diff check pass. Local verification only. The shared Canvas/Gadget API retries one network/5xx ambiguity with the identical signed payload; no generic mutation retry was enabled.
 
-Exact next action: add caller-facing recovery that retains the original request and candidate after an uncertain response. Then connect Project-bound additive Gadget migration and interruption recovery. Continue all remaining independent S2–S9/U01–U12 and incorporated-plan gaps. Keep rollout disabled; preserve untracked `infra/scripts/__pycache__/`.
+Exact next action: connect Project-bound additive Gadget migration to reviewed updates, then recover migration/activation interruption and continue all remaining independent S2–S9/U01–U12 and incorporated-plan gaps. Continue all remaining independent S2–S9/U01–U12 and incorporated-plan gaps. Keep rollout disabled; preserve untracked `infra/scripts/__pycache__/`.
 
 ## Cross-plan local checkpoint — 2026-11-17 (Project update receipt through activation)
 
