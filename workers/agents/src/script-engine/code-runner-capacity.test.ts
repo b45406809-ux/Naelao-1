@@ -75,4 +75,23 @@ describe("durable container capacity retry", () => {
     expect(scopes[0]?.authorizationRevision).toBe("space:2.project:4");
     expect(paths).toEqual(["/exec", "/cancel"]);
   });
+
+  it("cancels the exact queued admission when bounded caller retries are exhausted", async () => {
+    const paths: string[] = [];
+    const fetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      paths.push(path);
+      return path === "/cancel" ? Response.json({ cancelled: true })
+        : Response.json({ ok: false, status: "waiting_for_capacity", admission_id: "exhausted-execution" },
+          { status: 429, headers: { "retry-after": "0" } });
+    });
+    const runner = buildCodeRunner({ platformSecret: "capacity-test-secret",
+      toolSandbox: { idFromName: (name: string) => name, get: () => ({ fetch }) } as never,
+      authorizeContainer: async () => true, containerTimeoutMs: 10_000 });
+    const result = await runner.run({ name: "container.execute", code: "printf safe", args: {}, tier: 6, maxTier: 6,
+      tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", userId: "owner-a", agentId: "agent-a", runId: "run-a",
+      executionId: "exhausted-execution" } as never);
+    expect(result).toMatchObject({ ok: false, error: "container_capacity_wait_cancelled" });
+    expect(paths).toEqual([...Array(6).fill("/exec"), "/cancel"]);
+  });
 });

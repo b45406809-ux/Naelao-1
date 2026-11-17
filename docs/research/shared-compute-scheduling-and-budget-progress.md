@@ -1,23 +1,27 @@
 # Shared compute scheduling and budget progress
 
-## Resume pointer — 2026-11-17
+## Resume pointer — 2026-11-17 (SC03 abandoned waiter cleanup; locally verified, push pending)
 
-TBR07's SpaceDO/Knowledge/extension authority comparison is already recorded below and in the
-template-business-roles ledger; no shared ACL writer was found, and private same-Space Project access
-remains an unresolved policy. Do not repeat the audit or widen access. Current mission action is
-SC03. Source tracing confirms `nativeGrantRevision` is a `buildScriptEngineEnv` closure bound to the
-live run's `Bash` tool surface, caller role clamp, and `codeGrantIsActive`; it is not currently
-addressable as an alarm-safe durable authority check. `ToolSandboxDO` persists an encrypted,
-bounded native request envelope for some waiters, but ConcurrencyDO queues only scoped IDs and
-fences. Capacity is acquired before `reserveWorkflowBudget`; there is no Billing reservation while
-waiting. A caller-independent dispatcher would need an explicit durable consent/job identity and a
-host route that revalidates the exact invocation authority, plus a fresh Billing admission before
-launch. This is a missing code/contract path, not a credential blocker. Keep automatic replay
-disabled until implemented and tested. Project update resource-diff UI code `e3b5f2bca2ca697cb1004ea8354dbfc5edfce04b` and PPTX workflow provenance `f2266e64666bc3c375427031074a5ed2622ade5e` are pushed; no rollout or live acceptance. Preserve the pre-existing untracked pycache.
+When a synchronous caller exhausts six bounded retries against the exact persisted `waiting_for_capacity`
+execution, CodeRunner now calls the signed `/cancel` route for that same scope/execution ID. The
+cancellation helper is idempotent across caller abort, deadline and exhaustion. Existing retry logic
+rechecks the live container grant and monotonic membership revision before each retry, and ToolSandbox
+reserves current Billing only after capacity. Capacity test suite **4/4**, Agents typecheck and diff
+check pass. This prevents an abandoned live request from retaining capacity until TTL.
 
-**Reminder to myself:** Keep implementing the whole mission after this checkpoint. A test pass, ledger update, commit or push is not a stopping point; continue with the next independent authorized requirement unless the user stops or a real blocker prevents all progress.
+This is not disconnected replay. The encrypted envelope is bounded storage only; there is no host caller
+that can reconstruct `authorizeContainer`'s live `Bash` surface/role clamp after disconnect, no explicit
+durable job-consent contract and no current Billing reservation tied to an admission receipt. Keep
+automatic replay disabled. TBR07's authority comparison is complete and must not be repeated. Rollout
+remains disabled.
 
-Exact next action: continue an independent uncoded active-plan requirement while keeping SC03 fail-closed; resume SC03 only with an explicitly authorized durable invocation identity, exact authority revalidator, and a dispatcher that obtains current Billing admission before execution. TBR07 has already been reconciled; do not repeat it.
+**Reminder to myself:** Continue the whole mission after this checkpoint; never stop at tests, docs,
+commit or push.
+
+Exact next action after push: continue SC03's host-owned durable job contract only if exact current
+authority, explicit invocation consent and fresh Billing can all be rechecked before dispatch. If the
+live closure cannot be reconstructed from an existing authority, record that contract limitation and
+move to another independent S2–S9/U01–U12/EP/K/P/PW/AP/TBR requirement. Keep replay fail-closed.
 
 ## Current checkpoint — 2026-11-17 (SC03 encrypted invocation receipt; `d3a0f194` pushed)
 

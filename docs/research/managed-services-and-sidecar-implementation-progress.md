@@ -1,3 +1,20 @@
+## Resume pointer — 2026-11-17 (SC03 abandoned waiter cleanup; locally verified, push pending)
+
+After a Tier-6 live caller exhausts six bounded retries, it cancels its exact waiting execution instead
+of holding queue capacity until expiry. Cancellation is idempotent for retry exhaustion, abort and
+deadline; each retry still rechecks current caller authority and paid work still passes fresh admission.
+Focused CodeRunner tests **4/4**, Agents typecheck and diff hygiene pass. This is local evidence only;
+it does not enable disconnected replay. The authority callback is a live `Bash`/role-clamped closure,
+not a durable job authority record; no durable consent/Billing link exists. TBR07 comparison is done.
+EP05 immutable review/apply, publication proof and Shell owner caller are pushed through `f80e1577`
+(pointer `19ef37a5`); host/domain rollout stays disabled.
+
+**Reminder to myself:** Continue through all active plans after this checkpoint; commit/push is a recovery
+boundary, not mission completion.
+
+Exact next action: continue SC03 only where a durable job can revalidate exact authority and fresh
+Billing with explicit invocation consent; otherwise proceed to the next independent uncoded requirement.
+
 ## Resume pointer — 2026-11-17 (EP05 owner preview/apply UI; locally verified, pushed as `f80e1577`)
 
 The Shell Space Extensions page now calls the owner review API, shows the returned exact-digest page in

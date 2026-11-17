@@ -36,19 +36,20 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 owner publication caller; pushed as `f80e1577`)
+## Latest cross-plan checkpoint — 2026-11-17 (SC03 abandoned waiter cleanup; locally verified, push pending)
 
-The Shell Space Extensions view now provides an owner-facing dynamic-page editor for installed Gadget apps.
-Owners can request the bounded exact-digest review, see the artifact in a sandboxed preview, explicitly
-confirm the same draft and publish it, or take down its exact slug. Authenticated Shell API wrappers
-bind all calls to the signed Product session. API path/auth test **1/1**, Shell typecheck, Spaces
-route/DO tests **13/13**, Spaces typecheck and diff hygiene pass. These are local tests only; no browser,
-deployed domain/edge or live acceptance. Public host rollout stays disabled. Publication proof/backend
-checkpoint `c6bf77b1` and its pointer docs `e46a3240` are pushed; this owner UI checkpoint is pending.
+The Tier-6 caller now cancels its exact persisted capacity waiter when six bounded same-invocation
+retries are exhausted, and its cancellation dispatch is idempotent across retry exhaustion, caller abort
+and deadline. The caller still checks live authority before every retry; ToolSandbox still performs
+current admission/Billing before paid work. Focused CodeRunner capacity tests **4/4**, Agents typecheck
+and diff check pass. This closes stale queue occupancy for abandoned live callers only; there is still
+no disconnected dispatcher or durable current-grant/Billing job authority. SC03 code checkpoint is
+verified locally and pending push. TBR07 authority comparison is already complete; do not repeat it.
+EP05 reviewed publication/UI code is pushed (`f80e1577`, docs `19ef37a5`) and public rollout is off.
 
 **Reminder to myself:** Keep implementing the full mission. Do not stop after a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops or a real blocker prevents all progress.
 
-Exact next action after push: resume SC03 durable compute admission/dispatch from the already completed TBR07 authority comparison. Implement only with a durable invocation identity, current exact authority revalidation and Billing admission before launch; keep replay denied if those checks cannot be reached. Then continue the next independent uncoded active-plan gap, preserving `infra/scripts/__pycache__/` and every rollout gate.
+Exact next action after push: continue SC03 toward a host-owned durable job contract only if it can bind explicit invocation consent, a current exact authority revalidator and fresh Billing admission before launch. Current live `authorizeContainer` closure is not addressable after disconnect, so do not enable replay from the encrypted envelope alone. Then continue another independent active-plan code gap; preserve the untracked Python cache and all disabled rollout flags.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
 

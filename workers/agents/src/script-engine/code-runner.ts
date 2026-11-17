@@ -347,13 +347,16 @@ async function runContainerRequest(
   const headers = { "content-type": "application/json", "x-naelao-container-scope": JSON.stringify(scope),
     ...(scope.projectId && !localTunnel ? { "x-naelao-runtime-object-name": runtimeObjectName } : {}),
     ...(token ? { "x-naelao-internal-token": token } : {}) };
+  let cancellationSent = false;
   const cancel = () => {
-    controller.abort();
+    if (!controller.signal.aborted) controller.abort();
+    if (cancellationSent) return;
+    cancellationSent = true;
     const cancelledScope = { ...scope, timeoutMs: 5000, deadline: Date.now() + 5000 };
     void stub.fetch(new Request("http://sandbox/cancel", { method: "POST", headers: { ...headers, "x-naelao-container-scope": JSON.stringify(cancelledScope) }, body: "{}" })).catch(() => undefined);
   };
   params.signal?.addEventListener("abort", cancel, { once: true });
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(cancel, timeoutMs);
   let polling = false, completed = false, lastOutput = "";
   const poll = async () => {
     if (!params.onOutput || polling || completed || controller.signal.aborted) return;
@@ -394,9 +397,15 @@ async function runContainerRequest(
         body: requestBody,
         signal: controller.signal,
       }));
-      if (resp.status !== 429 || attempt >= 5 || controller.signal.aborted) break;
+      if (resp.status !== 429 || controller.signal.aborted) break;
       const admission: { status?: unknown } = await resp.clone().json<{ status?: unknown }>().catch((): { status?: unknown } => ({}));
       if (admission.status !== "waiting_for_capacity") break;
+      if (attempt >= 5) {
+        // A same-invocation caller which exhausted its bounded retries has abandoned this
+        // admission. Remove only this exact waiter so it cannot occupy fair capacity until TTL.
+        cancel();
+        break;
+      }
       // The wait receipt has not started guest execution. Recheck the caller's live grant
       // before retrying; the DO rechecks entitlement and budget before it starts paid work.
       // A revocation cancels this exact waiter so it cannot reserve a slot after access ends.
@@ -425,6 +434,7 @@ async function runContainerRequest(
     }
     const body = await resp.json<{
       ok: boolean;
+      status?: unknown;
       result?: unknown;
       error?: string;
       logs?: string;
@@ -434,7 +444,7 @@ async function runContainerRequest(
       ...(resp.ok && body.ok
         ? { output: body.result === undefined ? body : typeof body.result === "object" && body.result !== null && !Array.isArray(body.result)
           ? { ...body.result, ...("workspace_sync" in body ? { workspace_sync: body.workspace_sync } : {}) } : body.result }
-        : { error: `${body.error ?? `container returned ${resp.status}`}${typeof body.logs === "string" && body.logs ? `\n\nFull terminal output:\n${body.logs}` : ""}` }),
+        : { error: `${body.status === "waiting_for_capacity" ? "container_capacity_wait_cancelled" : body.error ?? `container returned ${resp.status}`}${typeof body.logs === "string" && body.logs ? `\n\nFull terminal output:\n${body.logs}` : ""}` }),
       tier: 6,
       actual_tier: 6,
       engine: "container",
