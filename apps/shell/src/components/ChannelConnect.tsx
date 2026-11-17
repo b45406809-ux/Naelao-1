@@ -19,6 +19,7 @@ import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { ExtensionAgentMaintenanceDelegation } from "@/components/ExtensionAgentMaintenanceDelegation";
 import { MicroAppStorageStatus, projectGadgetStorageApps } from "@/components/MicroAppStorageStatus";
+import { previewExtensionResourceRequirements } from "@/lib/extension-resource-preview";
 import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
@@ -766,6 +767,7 @@ export function ChannelConnect({
       const roles = Array.isArray(bundle.workerRoles) ? bundle.workerRoles.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item)) : [];
       const connections = Array.isArray(bundle.connections) ? bundle.connections.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item)) : [];
       const knowledge = Array.isArray(bundle.knowledge) ? bundle.knowledge.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item)) : [];
+      const resourcePreview = previewExtensionResourceRequirements(root.resourceRequirements);
       return {
         id: typeof bundle.id === "string" ? bundle.id : "Unknown extension",
         version: typeof bundle.version === "string" ? bundle.version : "Unknown version",
@@ -778,6 +780,8 @@ export function ChannelConnect({
             .flatMap(part => Array.isArray(part.toolNames) ? part.toolNames.filter((name): name is string => typeof name === "string") : []) })),
         connections: connections.map(item => `${typeof item.id === "string" ? item.id : "connection"} · ${typeof item.provider === "string" ? item.provider : "provider missing"}${item.required === true ? " · required" : " · optional"}`),
         knowledge: knowledge.map(item => `${typeof item.id === "string" ? item.id : "collection"} · ${typeof item.access === "string" ? item.access : "access missing"}`),
+        resourceRequirements: resourcePreview.requirements,
+        resourceRequirementsInvalid: resourcePreview.invalid,
       };
     } catch { return { error: "Manifest JSON is incomplete or invalid." }; }
   }, [canvasManifestDraft]);
@@ -1224,6 +1228,14 @@ export function ChannelConnect({
               {bundlePreview.roles.length > 0 && <div style={{ marginTop: 7 }}><strong>Worker bindings</strong>{bundlePreview.roles.map((role, index) => <div key={`${role.id}-${index}`} style={{ marginTop: 2 }}><code>{role.id}</code> · {role.principal} · {role.invocation} on {role.execution} · parts: {role.parts.join(", ") || "none"}{role.grants.length ? ` · declared operations: ${role.grants.join(", ")}` : ""}</div>)}</div>}
               {bundlePreview.connections.length > 0 && <div style={{ marginTop: 7 }}><strong>Host connections</strong>{bundlePreview.connections.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}</div>}
               {bundlePreview.knowledge.length > 0 && <div style={{ marginTop: 7 }}><strong>Knowledge grants</strong>{bundlePreview.knowledge.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}</div>}
+              {bundlePreview.resourceRequirementsInvalid && <div role="alert" style={{ marginTop: 7, color: "var(--danger, #b42318)" }}>Resource declarations are malformed and cannot be reviewed from this preview.</div>}
+              {bundlePreview.resourceRequirements.length > 0 && <div style={{ marginTop: 7 }}><strong>Requested host resources (not granted)</strong>
+                {bundlePreview.resourceRequirements.map((requirement, index) => <div key={`${requirement.id}-${index}`} style={{ marginTop: 3 }}>
+                  <code>{requirement.id}</code> · {requirement.kind} · {requirement.scope} · {requirement.operations.map(operation => `${operation.id} (${operation.meteringUnit})`).join(", ")}
+                  {requirement.targets.length ? ` · ${requirement.targets.join(" · ")}` : ""} · limits {requirement.limits.requestsPerMinute}/min, {requirement.limits.maxConcurrent} concurrent, {requirement.limits.maxBytesPerOperation} bytes/operation
+                </div>)}
+                <div style={{ marginTop: 4, color: "var(--text3)" }}>Declarations are not grants or runtime availability. Owner approval and host capability checks are separate; these limits are not prices. Review the installation budget after staging.</div>
+              </div>}
               <div style={{ marginTop: 7, color: "var(--text3)" }}>All listed parts share this extension ID and release version. Each installation key creates a separate instance. This preview summarizes declarations; server validation remains authoritative.</div>
             </>}
           </section>}
