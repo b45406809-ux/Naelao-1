@@ -122,6 +122,12 @@ Exact next action: continue TBR06 by tracing every current Space/Project/extensi
 
 ## Active mission and checkpoint
 
+## Latest cross-plan checkpoint — 2026-11-17 (EP04 signed rollback-candidate review; `79bdc2ef` pushed)
+
+Code `79bdc2ef76521c492dbb984c2d7a08bc54c17685` is pushed and remote-verified. Project extension rollback candidates now show the exact signed host artifact SHA-256, publisher/key identity, signature and current key revocation state, plus permission/capability expansion before confirmation. Invalid receipts and revoked publishers cannot be selected for rollback. Focused Shell suites **13/13**, Shell typecheck and `git diff --check` pass. Local only; no browser/deployment/rollback execution or rollout. Preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: continue EP04 by determining whether the existing server-side shared-package update review contract can be safely extended to PROJECT_BOUND releases. Bind any preview to the exact installation generation/current version/current artifact and candidate manifest/artifact/publisher/dependency digests, return non-mutating migration/resource/cost deltas, and require owner CAS at apply. If no supported project-bound package candidate feed exists, keep update unavailable and implement an honest reason in UI; then continue other active-plan code gaps. Rollouts remain disabled.
+
 ## Latest cross-plan checkpoint — 2026-11-17 (EP04 verified staged-release provenance; `d7ae34f4` pushed)
 
 `d7ae34f459e9aa2625613f17f82613151c5efe8d` is pushed and remote-verified. The owner-authorized staged-install listing now projects the DO's exact manifest, host-built artifact, and publisher signing-payload SHA-256 values, release version, and publisher key fingerprint only when the host release attestation validates. Current key trust is separate from signature validity, so a revoked key remains visibly revoked. The raw publisher signature is not rendered. Local checks: four focused Shell suites **11/11**, Shell typecheck, and `git diff --check`; no browser/deployment/live acceptance or rollout. Preserve untracked `infra/scripts/__pycache__/`.

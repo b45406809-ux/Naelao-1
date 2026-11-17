@@ -115,6 +115,12 @@ Exact next action: TBR06 grant lifecycle trace and smallest specified durable gr
 
 # Platform completion and guided templates progress
 
+## Cross-plan code checkpoint — 2026-11-17 (EP04 signed rollback-candidate review; `79bdc2ef` pushed)
+
+Code `79bdc2ef76521c492dbb984c2d7a08bc54c17685` is remote-verified. The existing project rollback picker now shows a verified release's immutable host artifact digest, publisher/key identity and signature status, current key revocation, plus permission/capability expansion before confirmation. It blocks rollback when the release attestation is invalid or publisher key is revoked. Focused Shell suites **13/13**, Shell typecheck and diff check pass. This is local UI/helper verification; no rollback was executed and no deployment/live acceptance or rollout occurred.
+
+EP04 still lacks project-bound update-candidate review and migration/resource/cost deltas; rollback does not provide data recovery. Exact next action: reconcile whether the shared-package update review service can support project-bound signed releases under exact install generation/current pin and candidate digest/dependency pins; if not, leave update unavailable with a specific surfaced reason. Keep preview non-mutating, then continue other independent plan gaps. Preserve `infra/scripts/__pycache__/`; rollouts disabled.
+
 ## Cross-plan code checkpoint — 2026-11-17 (EP04 verified staged-release provenance; `d7ae34f4` pushed)
 
 Code `d7ae34f459e9aa2625613f17f82613151c5efe8d` is remote-verified. The existing owner-authorized installation-list API already supplied the exact manifest SHA-256, pinned host-built artifact SHA-256, publisher payload SHA-256, publisher key ID and attestation status; Shell now types and displays that safe projection for staged/active project installs. Signature attestation validity is distinguished from current publisher trust/revocation; the raw signature is never rendered. Combined with `c04361e9`/`83d81107`, preinstall shows resource declarations and the exact publisher signing-payload source fingerprint, while post-stage review shows authoritative host artifact pins. Focused Shell suites **11/11**, Shell typecheck and diff check pass. Local only; no browser, deployed acceptance, provider action or rollout.
