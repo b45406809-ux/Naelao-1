@@ -47,7 +47,7 @@ Knowledge Space and Project upload callers now support a versioned, signed, edit
 and approval path with validated image signatures/dimensions, 1 MiB/20 MP bounds, source lineage, original
 bytes, storage receipts and archive validation. Feature flag `KNOWLEDGE_IMAGE_PARSE_ENABLED` is explicitly
 false in development/staging/production. Provider image support, privacy/egress, quality, billing and live
-acceptance remain gates; no live call or deployment occurred. Local verification: Knowledge **21/21**, Shell
+acceptance remain gates; no live call or deployment occurred. Local verification: Knowledge **22/22**, Shell
 helper **6/6**, both typechecks and `git diff --check`. Code `8a6d50264a756a87e514a1cb05c478acf6cf074a` is
 pushed to `origin/Mcbt5s-Backup-2`.
 

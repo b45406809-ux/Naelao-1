@@ -257,6 +257,30 @@ describe("Knowledge archive scope and deletion fences", () => {
     ]));
   });
 
+  it("accepts image source lineage in archives and rejects a mismatched source extension", async () => {
+    const base = await archiveDocument();
+    const source = "bounded raster source bytes";
+    const document: KnowledgeArchiveDocument = {
+      ...base,
+      content_type: "image",
+      source_sha256: await sha256(source),
+      source_file_name: "scan.png",
+      parser_version: "cohere:parse-v5.0-image-ocr-v1",
+      parser_output_sha256: await sha256("recognized text"),
+      approved_content_sha256: await sha256("corrected text"),
+      objectReferences: [...base.objectReferences,
+        { key: "kb/space-1/_space/doc-1/original", etag: "image-etag", size: source.length }],
+    };
+    const snapshot = { version: 1 as const, scope, documents: [document],
+      omissions: { nonIndexedDocuments: 0, deletionFencedDocuments: 0 } };
+    await expect(validateKnowledgeArchiveSnapshot(snapshot, scope)).resolves.toMatchObject({ documents: [
+      { content_type: "image", source_file_name: "scan.png", parser_version: "cohere:parse-v5.0-image-ocr-v1" },
+    ] });
+    const mismatched = structuredClone(snapshot);
+    mismatched.documents[0]!.source_file_name = "scan.pdf";
+    await expect(validateKnowledgeArchiveSnapshot(mismatched, scope)).rejects.toThrow("knowledge_archive_document_invalid");
+  });
+
   it("exports and restores XLSX source bytes and parser lineage", async () => {
     const { document, source } = await archiveXlsxDocument();
     const exportedFixture = fixture({ documents: [document], chunks: document.chunks });

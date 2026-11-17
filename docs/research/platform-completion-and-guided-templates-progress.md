@@ -3085,7 +3085,7 @@ and normal approved save flow. The host validates format, <=1 MiB size and <=20 
 original bytes and parser lineage, records storage usage and includes image sources in archive validation.
 OCR uncertainty is disclosed in the preview. The feature flag is explicitly false in development,
 staging and production until current Cohere image support, privacy, quality, billing and live acceptance
-are verified. Local checks: Knowledge suites **21/21**, Shell upload suite **6/6**, both typechecks and
+are verified. Local checks: Knowledge suites **22/22**, Shell upload suite **6/6**, both typechecks and
 `git diff --check`. No live provider call or deployment occurred. Code
 `8a6d50264a756a87e514a1cb05c478acf6cf074a` is pushed to `origin/Mcbt5s-Backup-2`.
 
