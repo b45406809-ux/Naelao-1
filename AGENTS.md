@@ -6,11 +6,12 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is bounded PPTX table extraction for Knowledge (`34800a4a`) pushed, after task OCR
-  settings correction (`7aee2ef1`) and P04 restore (`946e1881`, pointer `084e4f94`) pushed. PPTX now
-  has explicit slide/table/row/cell entries, 256-row/64-column/20,000-cell bounds, and a new parser
-  version. Focused Knowledge suites 13/13 and typecheck pass. This does not add visual layout or OCR.
-  No browser/deployment/provider acceptance. Keep
+  checkpoint is EP04 Project update-flow reconciliation (code was already present; docs push pending),
+  after bounded PPTX tables (`34800a4a`), task OCR settings (`7aee2ef1`) and P04 restore (`946e1881`,
+  pointer `084e4f94`) were pushed. Current EP04 review/apply/recovery has exact pin/trust/dependency/
+  migration checks and reachable Shell callers. Spaces suites 47/47, Shell API suite 2/2 and both
+  typechecks pass locally. This corrects a stale ledger gap; no new EP04 code or live acceptance.
+  Keep
   public rollout disabled. TBR07 is compared and must not be repeated. SC03 still lacks an alarm-safe
   host job caller that can reconstruct the live Bash role clamp and link fresh Billing admission after
   disconnect; keep automatic replay disabled and continue other independent S/U/P/PW/K/EP/AP/TBR work.
@@ -37,22 +38,20 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (bounded PPTX table extraction; pushed as `34800a4a`)
+## Current checkpoint — 2026-11-17 (EP04 Project update flow already implemented; reconciliation pending push)
 
-PPTX Knowledge previews now retain cell order and label each cell by slide, table, row and column index
-inside bounded extracted Markdown. The parser version changed, so existing preview receipts cannot
-apply against the new output. Owner preview warns about table ordering and omitted visual semantics.
-Local PPTX/file/PDF-preview suites **13/13**, Knowledge typecheck and `git diff --check` pass. No
-browser, deployed or provider acceptance. Visual cell geometry, scanned-image OCR and parser-quality
-evidence remain open.
+Current code already provides the PROJECT_BOUND update review, verified candidate pins, owner apply,
+durable update receipt, and recovery route/UI. The old matrix incorrectly called it uncoded. Spaces
+review/route/DO/apply suites **47/47**, Shell retry/API tests **2/2**, Spaces/Shell typechecks and diff
+hygiene pass. Local mocks only; no browser, deployed or publisher acceptance. Cost terms remain unknown.
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
 
-Code `34800a4a` is pushed to `origin/Mcbt5s-Backup-2`. Exact next action: continue SC03 only through
-an implementable host job boundary that can revalidate exact current authority and reserve Billing;
-the current live `nativeGrantRevision` closure is request-scoped and no alarm-safe job receipt exists.
-If that authority API cannot be safely persisted, advance to another independent requirement without
-repeating TBR07. Keep replay and rollout disabled.
+Exact next action: continue SC03 durable dispatch only if the host can persist explicit invocation
+consent, exact authority revision and a fresh Billing hold for alarm-safe launch. Current
+`nativeGrantRevision` includes request-scoped role/clamp and live grant closures; no durable job receipt
+or revalidator exists. Keep replay disabled if that contract is unavailable and continue another
+independent requirement without repeating TBR07. Commit/push this reconciliation, then proceed.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (P04 personal MicroApp restore caller; pushed as `946e1881`)
 
