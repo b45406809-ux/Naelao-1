@@ -113,6 +113,9 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
     <p style={{ margin: "4px 0 8px", color: "var(--text3)", fontSize: 10.5 }}>
       Approval records selected operations for this signed release and install generation. Structured-data approvals also name exact tables. It does not activate this staged extension; resource capabilities remain unavailable until their host adapters pass acceptance.
     </p>
+    <div style={{ color: "var(--text3)", fontSize: 10.5, margin: "5px 0" }}>
+      Stored host objects · {snapshot.object_usage.object_count} · {snapshot.object_usage.bytes} bytes. This is recorded storage, not a provider price.
+    </div>
     <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
       <strong>Installation spend budget</strong>
       <p style={{ margin: "4px 0 8px", color: "var(--text3)", fontSize: 10.5 }}>

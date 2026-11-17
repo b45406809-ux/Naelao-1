@@ -1951,6 +1951,7 @@ export interface ProjectExtensionResourceGrantSnapshot {
   budget: { max_run_credits: number; monthly_credits: number; revision: number; installation_generation: number;
     approved_by: string; approved_at: string; updated_by: string; updated_at: string } | null;
   grants: ProjectExtensionResourceGrant[];
+  object_usage: { object_count: number; bytes: number };
 }
 export interface ProjectExtensionResourceUsageSnapshot {
   installation_id: string; generation: number;

@@ -115,7 +115,8 @@ describe("runtime extension installation", () => {
     expect(await snapshot.json()).toMatchObject({ installation: { instance_id: installationId, status: "staging", generation: 1 },
       requirements: expect.arrayContaining([expect.objectContaining({ requirement_id: "records", kind: "structured_data", requested_tables: ["records"] }),
         expect.objectContaining({ requirement_id: "attachments", kind: "objects", requested_tables: [] }),
-        expect.objectContaining({ requirement_id: "background", kind: "jobs", requested_tables: [], requested_workflows: ["process_job"] })]), budget: null, grants: [] });
+        expect.objectContaining({ requirement_id: "background", kind: "jobs", requested_tables: [], requested_workflows: ["process_job"] })]),
+      budget: null, grants: [], object_usage: { object_count: 0, bytes: 0 }, operation_usage: [] });
     const setBudget = (expectedRevision: number, maxRunCredits = 25, monthlyCredits = 250) => space.fetch(new Request("http://space/extension-resource-budget", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
         actorId: "owner", expectedRevision, maxRunCredits, monthlyCredits }) }));
@@ -228,6 +229,8 @@ describe("runtime extension installation", () => {
     expect(await (await objectOperation("put", putLeaseId, objectInput)).json()).toMatchObject({ stored: true, size: 5, sha256: expect.any(String) });
     expect((await objectOperation("put", putLeaseId, objectInput)).status).toBe(403);
     expect(await (await releaseLease(putLeaseId)).json()).toMatchObject({ released: true });
+    const objectUsageSnapshot = await space.fetch(new Request(grantsUrl, { headers }));
+    expect(await objectUsageSnapshot.json()).toMatchObject({ object_usage: { object_count: 1, bytes: 5 } });
     const getClaim = await claimObject("get");
     const { lease_id: getLeaseId } = await getClaim.json() as { lease_id: string };
     expect(await (await objectOperation("get", getLeaseId, { key: objectInput.key })).json()).toMatchObject({ found: true,
