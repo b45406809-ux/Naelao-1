@@ -21,6 +21,15 @@ describe("Batch 05 phase 2", () => {
     ).toEqual(["Lease"]);
   });
 
+  it("tracks heading levels without sparse paths or stale same-level ancestors", () => {
+    const markdown = "## Slide 1\n\nIntro\n\n### Detail\n\nBody\n\n## Slide 2\n\nNext";
+    const chunks = chunkStructuredMarkdown(markdown);
+    expect(chunks.find((chunk) => chunk.content === "Intro")?.headingPath).toEqual(["Slide 1"]);
+    expect(chunks.find((chunk) => chunk.content === "Body")?.headingPath).toEqual(["Slide 1", "Detail"]);
+    expect(chunks.find((chunk) => chunk.content === "Next")?.headingPath).toEqual(["Slide 2"]);
+    expect(chunks.every((chunk) => chunk.headingPath.every((heading) => typeof heading === "string" && heading.length > 0))).toBe(true);
+  });
+
   it("bounds oversized tables, repeats their headers, and keeps UTF-16 source coordinates", () => {
     const rows = Array.from({ length: 30 }, (_, index) => `| row ${index} | value ${index} |`).join("\r\n");
     const table = `| Name | Value |\r\n| --- | --- |\r\n${rows}`;
