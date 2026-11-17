@@ -398,22 +398,10 @@ async function syncUserPortAgentPortConnectorInternal(env: AgentsEnv, scope: Com
 
     const at = new Date().toISOString();
     const priorAccountToRetire=previous?.revision===revision?previous.previous_account_id:previous?.account_id??null;
-    const stillConsented=await env.PLATFORM_DB.prepare(`SELECT status FROM managed_service_owner_links WHERE id=? AND tenant_id=?
-      AND owner_type=? AND owner_id=?`).bind(ownerLinkId,scope.tenantId,providerOwner.ownerType,providerOwner.ownerId)
-      .first<{status:string}>();
-    if (stillConsented?.status!=="active") {
-      await revokeAgentPortAccount(env,scope.tenantId,accountId);
-      if (priorAccountToRetire&&priorAccountToRetire!==accountId) await revokeAgentPortAccount(env,scope.tenantId,priorAccountToRetire);
-      await persistRevokedUserPortBinding(env,{scope,alias,ownerLinkId,serviceId,agentId,hostResourceId:resource,
-        connectionHash:hashOfConnection,actions:actionMap,revision,operationId:operation.operationId});
-      await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='cancelled',error_code='userport_owner_link_revoked',
-        lease_until=NULL,next_reconcile_at=NULL,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'`)
-        .bind(at,operation.operationId,scope.tenantId).run();
-      throw new Error("userport_owner_link_revoked");
-    }
     // AgentPort creation/grant calls are external and can take long enough for an owner to
-    // disable or edit the alias. Recheck the exact current connector and selected tool set at
-    // the host persistence boundary; an old remote grant must never become an active binding.
+    // disable or edit the alias, while discovery itself is another async call. Recheck the exact
+    // current connector and selected tool set, then the owner link, at the host persistence
+    // boundary; an old remote grant must never become an active binding.
     if (!await userPortSelectionIsCurrent(env, scope, alias, hashOfConnection, actionMap)) {
       try {
         await revokeAgentPortAccount(env, scope.tenantId, accountId);
@@ -430,6 +418,19 @@ async function syncUserPortAgentPortConnectorInternal(env: AgentsEnv, scope: Com
         lease_until=NULL,next_reconcile_at=NULL,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'`)
         .bind(new Date().toISOString(),operation.operationId,scope.tenantId).run();
       throw new Error("userport_connector_sync_scope_changed");
+    }
+    const stillConsented=await env.PLATFORM_DB.prepare(`SELECT status FROM managed_service_owner_links WHERE id=? AND tenant_id=?
+      AND owner_type=? AND owner_id=?`).bind(ownerLinkId,scope.tenantId,providerOwner.ownerType,providerOwner.ownerId)
+      .first<{status:string}>();
+    if (stillConsented?.status!=="active") {
+      await revokeAgentPortAccount(env,scope.tenantId,accountId);
+      if (priorAccountToRetire&&priorAccountToRetire!==accountId) await revokeAgentPortAccount(env,scope.tenantId,priorAccountToRetire);
+      await persistRevokedUserPortBinding(env,{scope,alias,ownerLinkId,serviceId,agentId,hostResourceId:resource,
+        connectionHash:hashOfConnection,actions:actionMap,revision,operationId:operation.operationId});
+      await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='cancelled',error_code='userport_owner_link_revoked',
+        lease_until=NULL,next_reconcile_at=NULL,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'`)
+        .bind(new Date().toISOString(),operation.operationId,scope.tenantId).run();
+      throw new Error("userport_owner_link_revoked");
     }
     await env.PLATFORM_DB.prepare(`INSERT INTO agentport_userport_connector_bindings(
       tenant_id,space_id,alias_id,server_id,owner_link_id,provider,provider_connection_sha256,service_id,account_id,agent_id,

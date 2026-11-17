@@ -376,6 +376,24 @@ describe("UserPort to AgentPort connector synchronization", () => {
     expect(t.port.calls.filter(call=>call.path.endsWith("/revoke"))).toHaveLength(1);
   });
 
+  it("rechecks owner-link consent after the final asynchronous tool discovery", async () => {
+    const t=setup();
+    let discoveries=0;
+    t.hubFetch.mockImplementation(async () => {
+      discoveries++;
+      if (discoveries === 2) t.f.db.db.prepare(`UPDATE managed_service_owner_links SET status='revoked',
+        revoked_at='2026-11-17T00:00:00.000Z' WHERE consent_source='userport.connector_sync'`).run();
+      return Response.json({tools:[{name:"GMAIL_SEND"},{name:"GMAIL_LIST"}]});
+    });
+    await expect(syncUserPortAgentPortConnector(t.env,scope,"alias-1",["GMAIL_SEND"]))
+      .rejects.toThrow("userport_owner_link_revoked");
+    expect(t.f.db.db.prepare("SELECT status FROM agentport_userport_connector_bindings WHERE alias_id='alias-1'").get())
+      .toMatchObject({status:"revoked"});
+    expect(t.f.db.db.prepare("SELECT status,error_code FROM managed_service_operations WHERE operation_name='agentport_connector_sync'").get())
+      .toMatchObject({status:"cancelled",error_code:"userport_owner_link_revoked"});
+    expect(t.port.calls.filter(call=>call.path.endsWith("/revoke"))).toHaveLength(1);
+  });
+
   it("cleans an uncertain AgentPort account when the owner link is revoked before scheduled retry", async () => {
     const t=setup();
     t.port.failNextGrant();

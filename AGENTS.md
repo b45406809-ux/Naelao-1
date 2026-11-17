@@ -35,11 +35,11 @@ past work and do not override the current progress records or require repeating 
 
 ## Latest cross-plan checkpoint — 2026-11-17 (S2 UserPort post-grant reauthorization; local)
 
-UserPort sync rechecks exact alias identity, active server, provider/connection hash, granted scopes and selected tools after AgentPort account/grant calls and before persisting an active binding. Drift revokes the exact account and persists a revoked local binding; uncertain cleanup remains scheduled under the exact request. UserPort lifecycle tests **19/19**, Agents typecheck pass. No live provider or deployed acceptance.
+UserPort sync rechecks exact alias identity, active server, provider/connection hash, granted scopes and selected tools after AgentPort account/grant calls; it then rechecks owner-link consent after final asynchronous tool discovery and before persisting an active binding. Drift revokes the exact account and persists a revoked local binding; uncertain cleanup remains scheduled under the exact request. UserPort lifecycle tests **20/20**, Agents typecheck and diff hygiene pass. No live provider or deployed acceptance.
 
 **Reminder to myself:** Keep this mission active after every checkpoint. Do not stop at a status update, completed slice, test pass, commit, push, or progress-file edit; continue with the next independent implementation requirement until all authorized code work is complete or a genuine blocker prevents every path forward.
 
-Exact next action: continue S3/U05 against the current owner-authorized runtime allocation path, preserving unqualified candidates and requiring trusted live allocation/authorization/budget evidence before any capability is exposed. Keep SC03 dispatch fail-closed until its durable authority revision, encrypted request and Billing contract exists. Preserve the pycache and keep rollout disabled.
+Exact next action: continue S3/U05 against the current owner-authorized runtime allocation path, first reconciling the actual candidate-creation and budget reservation callers; preserve unqualified candidates and require trusted live allocation/authorization/budget evidence before any capability is exposed. Keep SC03 dispatch fail-closed until its durable authority revision, encrypted request and Billing contract exists. Preserve the pycache and keep rollout disabled.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (SC05 Project sidecar budget receipts; `84dd206f` pushed)
 
