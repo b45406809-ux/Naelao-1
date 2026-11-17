@@ -57,6 +57,22 @@ function microAppWithStorage(storage: ReturnType<typeof createDOStorage>, secret
 }
 
 describe("Gadget MCP record operations", () => {
+  it("reports structured-data rows and value bytes only for the exact active installation", async () => {
+    const storage = createDOStorage();
+    storage.sql.exec("CREATE TABLE gadget_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    storage.sql.exec("INSERT INTO gadget_metadata(key,value) VALUES('app_id','inventory'),('gadget_tier','2'),('extension_installation_id','install-a')");
+    storage.sql.exec("CREATE TABLE inventory_rows(id TEXT PRIMARY KEY, label TEXT, quantity INTEGER)");
+    storage.sql.exec("INSERT INTO inventory_rows(id,label,quantity) VALUES('sku-1','Pen',4),('sku-2','Notebook',12)");
+    const gadget = microAppWithStorage(storage, "gadget-test-secret");
+    const exact = await gadget.fetch(new Request("http://gadget/api/storage", { headers: { "x-naelao-active-installation-id": "install-a" } }));
+    expect(exact.status).toBe(200);
+    expect(await exact.json()).toMatchObject({ structuredDataUsage: { installationId: "install-a", tableCount: 1, rowCount: 2,
+      valueBytes: new TextEncoder().encode("sku-1Pen4sku-2Notebook12").byteLength, measurement: "sqlite_user_table_value_bytes" } });
+    const stale = await gadget.fetch(new Request("http://gadget/api/storage", { headers: { "x-naelao-active-installation-id": "install-b" } }));
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error_code: "gadget_installation_identity_mismatch" });
+  });
+
   it("backfills legacy inventory event rows when adding the versioned operation and quantity delta fields", async () => {
     const storage = createDOStorage();
     storage.sql.exec(`CREATE TABLE gadget_business_action_events (

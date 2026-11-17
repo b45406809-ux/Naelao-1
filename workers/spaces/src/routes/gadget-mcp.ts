@@ -503,7 +503,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!project.ok) return c.json({ error_code: project.status === 404 ? "not_found" : "forbidden" }, project.status === 404 ? 404 : 403);
     return null;
   };
-  const forwardProject = async (c: Context<{ Bindings: Env }>, path: string, method = c.req.method, override?: ArrayBuffer, memberWrite = false, requireManaged = false) => {
+  const forwardProject = async (c: Context<{ Bindings: Env }>, path: string, method = c.req.method, override?: ArrayBuffer, memberWrite = false,
+    requireManaged = false, expectedInstallationId?: string) => {
     const blocked = await projectAccess(c, method !== "GET" && !memberWrite);
     if (blocked) return blocked;
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
@@ -523,6 +524,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       if (!trustedPublisher) return c.json({ error_code: "project_extension_publisher_revoked" }, 503);
     }
     if (runtimeState.managed && !runtimeState.installationId) return c.json({ error_code: "extension_runtime_status_unavailable" }, 503);
+    if (expectedInstallationId && runtimeState.installationId !== expectedInstallationId)
+      return c.json({ error_code: "project_extension_installation_changed" }, 409);
     if (path === "/initialize" && runtimeState.managed) return c.json({ error_code: "project_extension_install_route_required" }, 409);
     const id = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     let requestBody: ArrayBuffer | Uint8Array | undefined;
@@ -568,7 +571,9 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, `/api/data${new URL(c.req.url).search}`));
   app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/api/storage", c => {
     if (!["owner", "admin"].includes(c.req.header("x-naelao-role") ?? "")) return c.json({ error_code: "forbidden" }, 403);
-    return forwardProject(c, "/api/storage", "GET", undefined, false, true);
+    const installationId = c.req.query("installation_id") ?? "";
+    if (!/^[A-Za-z0-9._:-]{1,768}$/.test(installationId)) return c.json({ error_code: "installation_id_required" }, 400);
+    return forwardProject(c, "/api/storage", "GET", undefined, false, true, installationId);
   });
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, "/api/data"));
   app.delete("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, `/api/data${new URL(c.req.url).search}`, "DELETE"));

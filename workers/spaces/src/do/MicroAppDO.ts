@@ -210,7 +210,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "POST" && url.pathname === "/page/publish") return await this.publishPage(request);
       if (request.method === "GET" && url.pathname === "/page/render") return await this.renderPublicPage(url);
       if (request.method === "POST" && url.pathname === "/page/action") return await this.submitPublicAction(request, url);
-      if (request.method === "GET" && url.pathname === "/api/storage") return this.readStorageUsage();
+      if (request.method === "GET" && url.pathname === "/api/storage") return this.readStorageUsage(request);
       if (request.method === "GET" && url.pathname === "/api/data") return this.readData(url);
       if (request.method === "POST" && url.pathname === "/api/data") return await this.writeData(request);
       if (request.method === "DELETE" && url.pathname === "/api/data") return this.deleteData(url);
@@ -266,7 +266,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     return [...this.ctx.storage.sql.exec<{ name: string; type: string; pk: number; notnull: number }>(`PRAGMA table_info("${table.replaceAll('"', '""')}")`)];
   }
 
-  private readStorageUsage(): Response {
+  private readStorageUsage(request: Request): Response {
     const pageCount = [...this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_count")][0];
     const pageSize = [...this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_size")][0];
     const count = Number(pageCount?.page_count ?? Object.values(pageCount ?? {})[0] ?? 0);
@@ -277,6 +277,36 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const allocatedBytes = count * size;
     const tier = this.gadgetTier();
     const limitBytes = tier === undefined ? null : GADGET_STORAGE_LIMIT_BYTES[tier];
+    let structuredDataUsage: { installationId: string; tableCount: number; rowCount: number; valueBytes: number;
+      measurement: "sqlite_user_table_value_bytes" } | null = null;
+    const activeInstallationId = request.headers.get("x-naelao-active-installation-id");
+    if (activeInstallationId) {
+      if (this.metadata("extension_installation_id") !== activeInstallationId) {
+        return Response.json({ error_code: "gadget_installation_identity_mismatch" }, { status: 409 });
+      }
+      let tableCount = 0, rowCount = 0, valueBytes = 0;
+      try {
+        for (const table of this.userTables()) {
+          const columns = this.columns(table).map(column => `COALESCE(length(CAST("${column.name.replaceAll('"', '""')}" AS BLOB)),0)`);
+          if (!columns.length) continue;
+          const quotedTable = `"${table.replaceAll('"', '""')}"`;
+          const totals = [...this.ctx.storage.sql.exec<{ row_count: number; value_bytes: number }>(
+            `SELECT COUNT(*) AS row_count, COALESCE(SUM(${columns.join("+")}),0) AS value_bytes FROM ${quotedTable}`)][0];
+          const rows = Number(totals?.row_count ?? 0), bytes = Number(totals?.value_bytes ?? 0);
+          if (!Number.isSafeInteger(rows) || rows < 0 || !Number.isSafeInteger(bytes) || bytes < 0
+            || !Number.isSafeInteger(rowCount + rows) || !Number.isSafeInteger(valueBytes + bytes)) {
+            return Response.json({ error_code: "structured_data_usage_unavailable" }, { status: 503 });
+          }
+          tableCount++;
+          rowCount += rows;
+          valueBytes += bytes;
+        }
+      } catch {
+        return Response.json({ error_code: "structured_data_usage_unavailable" }, { status: 503 });
+      }
+      structuredDataUsage = { installationId: activeInstallationId, tableCount, rowCount, valueBytes,
+        measurement: "sqlite_user_table_value_bytes" };
+    }
     return Response.json({
       appId: this.appId(),
       tier: tier ?? null,
@@ -288,6 +318,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       measuredAt: new Date().toISOString(),
       monthlyCostEstimateUsd: null,
       costEstimateReason: "Durable Object billing is not attributable to this gadget from SQLite page usage alone.",
+      structuredDataUsage,
     });
   }
 

@@ -1223,7 +1223,8 @@ export function ChannelConnect({
               </button>
               </div>
             </div>
-            {storageApps.map(app => <MicroAppStorageStatus key={app.appId} spaceId={spaceId} projectId={projectId} appId={app.appId} name={app.name} session={session} />)}
+            {storageApps.map(app => <MicroAppStorageStatus key={`${app.installationId}:${app.appId}`} spaceId={spaceId} projectId={projectId}
+              installationId={app.installationId} appId={app.appId} name={app.name} session={session} />)}
             {projectId && hasReviewableProjectExtensionResources(item.manifest.resourceRequirements) && <ExtensionResourceGrantReview
               spaceId={spaceId} projectId={projectId} instanceId={instanceId}
               requirements={(item.manifest.resourceRequirements ?? []).filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs")} session={session} />}

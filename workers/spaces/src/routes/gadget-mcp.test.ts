@@ -510,18 +510,26 @@ describe("gadget MCP host adapter", () => {
       headers: await auth("t", { "x-naelao-user-id": "member-a", "x-naelao-role": "member" }),
     }, env);
     expect(member.status).toBe(403);
-    const allowed = await app.request("/spaces/s/projects/p/apps/inventory/api/storage", {
+    const allowed = await app.request("/spaces/s/projects/p/apps/inventory/api/storage?installation_id=install-inventory", {
       headers: await auth("t", { "x-naelao-role": "admin" }),
     }, env);
     expect(await allowed.json()).toEqual({ path: "/api/storage" });
+    expect(actorFetch.mock.calls[0]?.[0].headers.get("x-naelao-active-installation-id")).toBe("install-inventory");
     expect(idFromName).toHaveBeenCalledWith("gadget:inventory:project:p");
     expect(actorFetch).toHaveBeenCalledOnce();
 
-    const foreignApp = await app.request("/spaces/s/projects/p/apps/not_installed/api/storage", {
+    const staleInstall = await app.request("/spaces/s/projects/p/apps/inventory/api/storage?installation_id=old-install", {
+      headers: await auth("t", { "x-naelao-role": "admin" }),
+    }, env);
+    expect(staleInstall.status).toBe(409);
+    expect(await staleInstall.json()).toEqual({ error_code: "project_extension_installation_changed" });
+    expect(actorFetch).toHaveBeenCalledOnce();
+
+    const foreignApp = await app.request("/spaces/s/projects/p/apps/not_installed/api/storage?installation_id=install-inventory", {
       headers: await auth("t", { "x-naelao-role": "admin" }),
     }, env);
     expect(foreignApp.status).toBe(404);
-    const foreignProject = await app.request("/spaces/s/projects/foreign/apps/inventory/api/storage", {
+    const foreignProject = await app.request("/spaces/s/projects/foreign/apps/inventory/api/storage?installation_id=install-inventory", {
       headers: await auth("t", { "x-naelao-role": "admin" }),
     }, env);
     expect(foreignProject.status).toBe(404);

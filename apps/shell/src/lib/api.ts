@@ -2174,9 +2174,9 @@ export function callSpaceSharedExtensionApi(spaceId: string, appId: string, sess
     method: request.method, session, ...(request.body !== undefined ? { body: JSON.stringify(request.body) } : {}), cache: "no-store",
   });
 }
-export function callProjectExtensionStorageUsage(spaceId: string, projectId: string, appId: string, session: SessionCredentials) {
+export function callProjectExtensionStorageUsage(spaceId: string, projectId: string, appId: string, installationId: string, session: SessionCredentials) {
   const path = "/v1/spaces/" + encodeURIComponent(spaceId) + "/projects/" + encodeURIComponent(projectId)
-    + "/apps/" + encodeURIComponent(appId) + "/api/storage";
+    + "/apps/" + encodeURIComponent(appId) + "/api/storage?installation_id=" + encodeURIComponent(installationId);
   return apiFetch<unknown>(path, { session, cache: "no-store" });
 }
 export function callSpaceSharedExtensionBusinessAction(spaceId: string, appId: string, session: SessionCredentials,
