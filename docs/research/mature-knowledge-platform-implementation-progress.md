@@ -1,12 +1,12 @@
-## Current K02/K03 checkpoint — 2026-11-17 (bounded PPTX preview; local verification pending push)
+## Current K02/K03 checkpoint — 2026-11-17 (bounded PPTX preview; `41904a10` pushed)
 
-The new PPTX parser extracts text from numbered slide XML in slide order, generates editable slide headings, rejects unsafe XML/entities, and caps archive bytes (5 MiB), entries (512), slides (100), selected XML (4 MiB total/1 MiB per slide) and output text (1 MiB). Space and Project Knowledge forms route PPTX through signed preview, editable approval, source/parser/extraction/approved hashes, storage usage receipts and archive restore. It explicitly warns that notes, images, charts, animation and layout are omitted. Local Knowledge parser/ingestion/archive/telemetry tests **28/28**, Knowledge typecheck, Shell typecheck and file helper tests **5/5** pass. No browser, deployed or provider acceptance.
+Commit `41904a1077ec88d3c9b5ab38c0aa5d4841e61f08` is pushed to `origin/Mcbt5s-Backup-2`. The new PPTX parser extracts text from numbered slide XML in slide order, generates editable slide headings, rejects unsafe XML/entities, and caps archive bytes (5 MiB), entries (512), slides (100), selected XML (4 MiB total/1 MiB per slide) and output text (1 MiB). Space and Project Knowledge forms route PPTX through signed preview, editable approval, source/parser/extraction/approved hashes, storage usage receipts and archive restore. It explicitly warns that notes, images, charts, animation and layout are omitted. Local Knowledge parser/ingestion/archive/telemetry tests **28/28**, Knowledge typecheck, Shell typecheck and file helper tests **5/5** pass. No browser, deployed or provider acceptance.
 
 K02 remains partial: scanned image/OCR ingestion and richer presentation/table extraction are not implemented. K03 remains partial for PDF page/section/table coordinates, confidence and quality evidence; PPTX slide headings preserve basic slide identification only. No OCR or parser accuracy is claimed.
 
 **Reminder to myself:** Continue the whole mission after this checkpoint. Do not stop at a test pass, progress update, commit or push; resume SC03 and then the next independent plan requirement.
 
-Exact next action: publish this verified PPTX slice, then continue SC03's durable dispatcher mapping. The membership revision callback is currently only available inside a live AgentDO invocation; implement safe disconnected dispatch only with a durable callable authority check plus current Billing admission. Otherwise keep replay disabled and advance to another independent plan gap.
+Exact next action: continue SC03 by tracing AgentDO object addressing and existing internal routes to design a durable callable authorization check that revalidates the native caller's exact current membership/Project authority after disconnect. Add a durable job authority receipt and Billing admission link only if the callback can preserve current run policy; otherwise keep replay denied and advance to another independent plan gap.
 
 ## Previous checkpoint — 2026-11-17 (bounded DOCX and XLSX ingestion; `007b5a8f` pushed)
 

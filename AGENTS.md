@@ -35,9 +35,10 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (K02 bounded PPTX Knowledge preview; pending push)
+## Latest cross-plan checkpoint — 2026-11-17 (K02 bounded PPTX Knowledge preview; `41904a10` pushed)
 
-The Knowledge Worker now parses text from numbered PPTX slides in order with bounds for the 5 MiB
+Commit `41904a1077ec88d3c9b5ab38c0aa5d4841e61f08` is pushed to
+`origin/Mcbt5s-Backup-2`. The Knowledge Worker parses text from numbered PPTX slides in order with bounds for the 5 MiB
 archive, 512 entries, 100 slides, 1 MiB per slide and total extracted text, and 4 MiB selected XML.
 It rejects unsafe XML/entities and returns explicit omissions for images, notes, charts, animations
 and layout. The signed preview and editable Space/Project approval path bind source/extraction/
@@ -48,7 +49,7 @@ image/OCR; K03 still lacks richer page/section/table coordinates and parser conf
 
 **Reminder to myself:** Keep implementing the full authorized mission after every checkpoint. Do not stop at a status update, slice, test pass, documentation edit, commit or push; immediately move to the next independent unfinished requirement unless the user stops the mission or a real blocker prevents all progress.
 
-Exact next action: commit and push this verified K02 slice, then continue SC03's durable host-owned job/dispatcher design using existing authority and Billing hooks. No alarm-safe callable native authorization currently exists outside the live AgentDO invocation; implement another boundary only when it preserves current authority, otherwise move immediately to the next independent plan code gap. TBR07 was already compared; do not repeat it. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+Exact next action: continue SC03 by tracing AgentDO object addressing and existing internal routes to design a durable callable authorization check that revalidates the native caller's exact current membership/Project authority after disconnect. Add a durable job authority receipt and Billing admission link only if that callback can preserve current run policy; otherwise leave replay denied and continue another independent plan gap. TBR07 was already compared; do not repeat it. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (SC03 encrypted invocation receipt; `d3a0f194` pushed)
 
