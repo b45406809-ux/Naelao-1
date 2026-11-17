@@ -648,6 +648,8 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // proposal-only assignment against the installed signed template; no resource grant follows.
   /^\/spaces\/([^/]+)\/member-role-reviews(?:\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/business-role-options$/,
+  // Product members can read only their own signed, non-granting onboarding role summary.
+  /^\/spaces\/([^/]+)\/my-business-roles$/,
   /^\/spaces\/([^/]+)\/sub-spaces(?:\/[^/]+(?:\/(?:projects|members)(?:\/[^/]+)?)?)?$/,
   /^\/spaces\/([^/]+)\/preferences$/,
   // The Spaces worker resolves current membership for registry reads and owner/admin for writes;

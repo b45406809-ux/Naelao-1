@@ -3976,6 +3976,21 @@ async function memberInviteSpace(c: Context<{ Bindings: Env }>, spaceId: string)
   return { identity, role, space };
 }
 
+async function memberBusinessRoleSelf(c: Context<{ Bindings: Env }>, spaceId: string) {
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || identity.role !== "product_end_user") return null;
+  const membership = await c.env.PLATFORM_DB.prepare(
+    `SELECT s.product_id,sm.created_at,sm.role FROM spaces s JOIN products p
+       ON p.id=s.product_id AND p.tenant_id=s.tenant_id AND p.status='active'
+       JOIN space_members sm ON sm.space_id=s.id AND sm.tenant_id=s.tenant_id AND sm.end_user_id=? AND sm.suspended_at IS NULL
+       JOIN product_end_users u ON u.product_space_id=p.id AND u.end_user_id=sm.end_user_id
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND u.email_verified_at IS NOT NULL
+        AND u.suspended_at IS NULL AND u.deleted_at IS NULL AND u.erasure_started_at IS NULL`
+  ).bind(identity.userId, spaceId, identity.tenantId)
+    .first<{ product_id: string; created_at: string; role: string }>();
+  return membership ? { identity, membership } : null;
+}
+
 async function inviteHmac(secret: string, purpose: string, value: string): Promise<string> {
   return signHmac(`space-member-invite:${purpose}:${value}`, secret);
 }
@@ -4254,6 +4269,36 @@ app.get("/spaces/:spaceId/business-role-options", async c => {
         recommended_space_role: role.recommendedSpaceRole ?? "member" })) }];
   });
   return c.json({ blueprints, grants_applied: false }, { headers: { "cache-control": "private, no-store" } });
+});
+
+// A member may see only their own current role proposals. This is onboarding guidance, not an
+// effective-permission view: role declarations never create grants, and stale artifacts are not
+// expanded into names or resource details.
+app.use("/spaces/:spaceId/my-business-roles", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/spaces/:spaceId/my-business-roles", async c => {
+  const spaceId = c.req.param("spaceId"), scope = await memberBusinessRoleSelf(c, spaceId);
+  if (!scope) return c.json({ error_code: "active_verified_product_member_required" }, 403);
+  const rows = await c.env.PLATFORM_DB.prepare(
+    `SELECT id,blueprint_id,artifact_sha256,business_role_id,status,reviewed_at
+       FROM space_business_role_reviews WHERE tenant_id=? AND space_id=? AND end_user_id=?
+         AND membership_created_at=? AND membership_role=? ORDER BY reviewed_at DESC LIMIT 50`
+  ).bind(scope.identity.tenantId, spaceId, scope.identity.userId, scope.membership.created_at, scope.membership.role)
+    .all<{ id: string; blueprint_id: string; artifact_sha256: string; business_role_id: string;
+      status: string; reviewed_at: string }>();
+  const roles = await Promise.all((rows.results ?? []).map(async row => {
+    if (row.status !== "proposal_only") return { id: row.id, status: row.status, grants_applied: false as const };
+    const current = await loadActiveBusinessRoleBlueprint(c, spaceId, row.blueprint_id);
+    if ("error" in current || current.artifactSha256 !== row.artifact_sha256)
+      return { id: row.id, status: "stale" as const, grants_applied: false as const };
+    const definition = current.blueprint.businessRoles?.find(role => role.id === row.business_role_id);
+    if (!definition) return { id: row.id, status: "stale" as const, grants_applied: false as const };
+    return { id: row.id, status: "proposal_only" as const, grants_applied: false as const,
+      blueprint_id: row.blueprint_id, artifact_sha256: row.artifact_sha256,
+      business_role_id: definition.id, name: definition.name, description: definition.description ?? {},
+      onboarding_steps: definition.onboardingSteps ?? [], assistant_policy: definition.assistant ?? null,
+      reviewed_at: row.reviewed_at };
+  }));
+  return c.json({ data: roles, grants_applied: false }, { headers: { "cache-control": "private, no-store" } });
 });
 
 app.use("/spaces/:spaceId/member-role-reviews", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));

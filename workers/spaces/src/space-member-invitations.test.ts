@@ -98,7 +98,8 @@ describe("Space Product-user invitations", () => {
     const artifact: SpaceBlueprint = {
       id: "tpl_invite_roles", schemaVersion: "2.0", metadata: { name: "Roles" }, templateCategory: "other",
       projects: [], requiredExtensions: [], requiredCredentials: [], businessRolesSchemaVersion: 1,
-      businessRoles: [{ id: "stock_lead", name: { en: "Stock lead" }, recommendedSpaceRole: "member" }],
+      businessRoles: [{ id: "stock_lead", name: { en: "Stock lead" }, recommendedSpaceRole: "member",
+        onboardingSteps: [{ id: "first_day", title: { en: "First day" }, instructions: { en: "Review the stock procedures." }, required: true }] }],
     };
     const { artifactSha256, platform } = await installRoleBlueprint(env, artifact);
     const options = await inviteRequest(env, "owner-a", "/spaces/space-a/business-role-options", "GET");
@@ -127,6 +128,15 @@ describe("Space Product-user invitations", () => {
     const review = db.prepare("SELECT blueprint_id,artifact_sha256,business_role_id,status,grants_applied FROM space_business_role_reviews").get();
     expect(review).toEqual({ blueprint_id: artifact.id, artifact_sha256: artifactSha256, business_role_id: "stock_lead", status: "proposal_only", grants_applied: 0 });
     expect(db.prepare("SELECT role FROM space_members WHERE end_user_id='member-a'").get()).toEqual({ role: "member" });
+    const selfRoles = await inviteRequest(env, "member-a", "/spaces/space-a/my-business-roles", "GET");
+    expect(selfRoles.status).toBe(200);
+    expect(await selfRoles.json()).toMatchObject({ grants_applied: false, data: [{
+      status: "proposal_only", grants_applied: false, blueprint_id: artifact.id, artifact_sha256: artifactSha256,
+      business_role_id: "stock_lead", name: { en: "Stock lead" },
+      onboarding_steps: [{ id: "first_day", title: { en: "First day" }, required: true }],
+    }] });
+    const unrelatedRoles = await inviteRequest(env, "other-a", "/spaces/space-a/my-business-roles", "GET");
+    expect(unrelatedRoles.status).toBe(403);
 
     const staleInvite = await inviteRequest(env, "owner-a", "/spaces/space-a/member-invitations", "POST", {
       email: "other@example.test", blueprint_id: artifact.id, business_role_id: "stock_lead",

@@ -3629,6 +3629,26 @@ export interface SpaceBusinessRoleOptionCatalog {
   grants_applied: false;
 }
 
+export interface MySpaceBusinessRole {
+  id: string;
+  status: "proposal_only" | "revoked" | "stale";
+  grants_applied: false;
+  blueprint_id?: string;
+  artifact_sha256?: string;
+  business_role_id?: string;
+  name?: Record<string, string>;
+  description?: Record<string, string>;
+  onboarding_steps?: Array<{ id: string; title: Record<string, string>; instructions: Record<string, string>; required: boolean }>;
+  assistant_policy?: { mode?: "inherit" | "read_only" | "none"; instructions?: Record<string, string>; allowedActions?: string[] } | null;
+  reviewed_at?: string;
+}
+
+export async function listMySpaceBusinessRoles(spaceId: string, session: SessionCredentials): Promise<MySpaceBusinessRole[]> {
+  const result = await apiFetch<{ data: MySpaceBusinessRole[]; grants_applied: false }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/my-business-roles`, { session, cache: "no-store" });
+  return result.data ?? [];
+}
+
 export function listSpaceBusinessRoleOptions(spaceId: string, session: SessionCredentials) {
   return apiFetch<SpaceBusinessRoleOptionCatalog>(`/v1/spaces/${encodeURIComponent(spaceId)}/business-role-options`, { session, cache: "no-store" });
 }
