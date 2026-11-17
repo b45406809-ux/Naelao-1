@@ -1074,6 +1074,18 @@ describe("runtime extension installation", () => {
     expect(activated.status, await activated.clone().text()).toBe(200);
     expect(storage.sql.exec("SELECT status FROM project_extension_update_receipts WHERE request_id=?", claims.requestId).toArray())
       .toEqual([{ status: "active" }]);
+    const receiptQuery = new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a",
+      instance_id: installationId, request_id: claims.requestId });
+    const receiptResponse = await space.fetch(new Request(`http://space/project-extension-update-receipt?${receiptQuery}`, {
+      headers: { "x-naelao-internal-token": await mintInternalToken(secret, "tenant") },
+    }));
+    expect(receiptResponse.status).toBe(200);
+    expect(await receiptResponse.json()).toMatchObject({ receipt: { status: "active", actor_id: "owner", source_generation: sourceGeneration,
+      applied_generation: sourceGeneration + 1, publisher_key_id: publisher.publisherKeyId } });
+    const wrongProjectReceipt = await space.fetch(new Request(`http://space/project-extension-update-receipt?${new URLSearchParams({
+      tenant_id: "tenant", space_id: "space", project_id: "project-b", instance_id: installationId, request_id: claims.requestId })}`,
+      { headers: { "x-naelao-internal-token": await mintInternalToken(secret, "tenant") } }));
+    expect(wrongProjectReceipt.status).toBe(404);
   });
 
   it("keeps a composed Canvas bundle unavailable until its host initialization is confirmed", async () => {

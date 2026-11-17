@@ -1,4 +1,10 @@
-## Current cross-plan checkpoint — 2026-11-17 (Project update receipt persists through activation; local verification)
+## Current cross-plan checkpoint — 2026-11-17 (Project update receipt recovery lookup; local verification)
+
+After `53d07a16`, the Project update receipt is queryable only by an authenticated Space admin/Project manager and is scoped again in SpaceDO to tenant/Space/Project/install/request. Review responses carry the durable request ID, both Shell update callers fetch and display receipt status, and exact matching `active` receipts return idempotent success. Expired tokens may only replay a matching durable receipt; they cannot start an update without a receipt. Receipt mismatch fails closed; staged receipts explicitly return recovery-required. Focused SpaceDO install/runtime, migration and review suites **49/49**, Spaces and Shell typechecks, and `git diff --check` pass. Local mocks only; no deployment/live acceptance.
+
+Exact next action: implement safe staged-update recovery after interruption: revalidate the persisted candidate and current pins, initialize the runtime actor idempotently, and transition only the matching durable receipt. Then add Project-bound additive Gadget migration to the reviewed apply path with recovery after migration or activation failure. Continue all remaining uncoded requirements across the active plans; keep rollout disabled and preserve `infra/scripts/__pycache__/`.
+
+## Previous cross-plan checkpoint — 2026-11-17 (Project update receipt persists through activation; `53d07a16` pushed)
 
 After `a17ba936`, SpaceDO now re-verifies the review claims and source/candidate pins inside the install transaction. Migration 156 persists `project_extension_update_receipts` with tenant/Space/Project, actor, instance, source/applied generations, source/candidate manifest/artifact and publisher pins. Staging creates a receipt; successful activation marks it active; abort records aborted. Tampered signatures leave no receipt. Focused SpaceDO install/runtime, migration and review suites **49/49**, Spaces typecheck and `git diff --check` pass. Local SQLite/DO mocks only; no deployed apply/live acceptance.
 

@@ -1,3 +1,9 @@
+## Current cross-plan checkpoint — 2026-11-17 (Project update receipt recovery lookup)
+
+After `53d07a16`, Project update receipts have an owner/admin, tenant/Space/Project/install/request-scoped read path. The update-review token includes a request ID; Canvas/Gadget and workflow callers show durable status. Exact active receipt replay remains idempotent after token expiry, while expired requests without a receipt cannot apply. Receipt-pin mismatch fails closed and staged receipts return recovery-required. Focused SpaceDO tests **49/49**, Spaces/Shell typechecks and diff check pass. Local verification only.
+
+Exact next action: implement staged update recovery with candidate/pin revalidation and idempotent runtime actor initialization, then Project-bound additive Gadget migration and interruption recovery. Continue all remaining independent S2–S9/U01–U12 and incorporated-plan gaps. Keep rollout disabled; preserve untracked `infra/scripts/__pycache__/`.
+
 ## Cross-plan local checkpoint — 2026-11-17 (Project update receipt through activation)
 
 SpaceDO migration 156 persists project update receipts with exact source/candidate pins, actor, publisher and installation generations inside the update transaction; activation and abort update receipt state. The review token is reverified by SpaceDO, and tampered signatures leave no receipt. Focused install/runtime, migration and review suites **49/49**, Spaces typecheck and diff check pass. Local/mock evidence only.

@@ -2694,6 +2694,7 @@ export interface ProjectExtensionUpdateReview {
   mutates_installation: false;
   update_review_token?: string;
   update_review_expires_at?: number;
+  update_review_request_id?: string;
 }
 
 export async function reviewProjectExtensionUpdate(spaceId: string, projectId: string, installationId: string,
@@ -2704,6 +2705,22 @@ export async function reviewProjectExtensionUpdate(spaceId: string, projectId: s
       expected_generation: input.expectedGeneration, expected_current_version: input.expectedCurrentVersion,
       expected_manifest_sha256: input.expectedManifestSha256 }),
   });
+}
+
+export interface ProjectExtensionUpdateReceipt {
+  request_id: string; tenant_id: string; space_id: string; project_id: string; instance_id: string;
+  extension_id: string; actor_id: string; source_generation: number; applied_generation: number;
+  from_version: string; to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string;
+  source_artifact_sha256: string; artifact_sha256: string; publisher_id: string; publisher_key_id: string;
+  status: "staged" | "active" | "aborted"; created_at: string; updated_at: string;
+}
+
+export async function getProjectExtensionUpdateReceipt(spaceId: string, projectId: string, installationId: string,
+  requestId: string, session: SessionCredentials): Promise<ProjectExtensionUpdateReceipt> {
+  const result = await apiFetch<{ receipt: ProjectExtensionUpdateReceipt }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(installationId)}/update-receipts/${encodeURIComponent(requestId)}`,
+    { session, cache: "no-store" });
+  return result.receipt;
 }
 
 export async function rollbackProjectExtension(spaceId: string, projectId: string, extensionId: string, installationId: string, expectedCurrentVersion: string | null, version: string, permissionExpansionApproved: boolean, session: SessionCredentials): Promise<void> {
@@ -2874,7 +2891,8 @@ export async function installProjectCanvasExtension(
   spaceId: string, projectId: string, session: SessionCredentials, manifest: unknown,
   artifacts: Record<string, string>, upgrade = false, instanceKey = "default", publisherSignature?: { key_id: string; signature: string },
   permissionExpansionApproved = false, attachmentAccessApproved = false, updateReviewToken?: string,
-): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string; canvas_mount_warning?: string }> {
+): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string; canvas_mount_warning?: string;
+  projectUpdateReceipt?: { requestId: string; status: "staged" | "active"; installationGeneration?: number } }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions`, {
     method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}), ...(updateReviewToken ? { updateReviewToken } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}), ...(attachmentAccessApproved ? { attachmentAccessApproved: true } : {}) }), session,
   });

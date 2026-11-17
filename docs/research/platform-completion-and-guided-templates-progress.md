@@ -1,4 +1,10 @@
-## Local checkpoint — 2026-11-17 (Project update receipt through activation)
+## Local checkpoint — 2026-11-17 (Project update receipt recovery lookup)
+
+After `53d07a16`, owner/admin callers can query a durable update receipt scoped by tenant/Space/Project/install/request. Review results expose request ID; Canvas/Gadget and workflow callers display status. A replay with an exact active receipt succeeds idempotently even after token expiry; expiry still blocks an update when no receipt exists. Receipt mismatch fails closed; staged receipt currently returns an explicit recovery-required conflict. Focused SpaceDO install/runtime, migration and review suites **49/49**, Spaces/Shell typechecks and diff check pass. Local mocks only.
+
+Exact next action: implement staged recovery by revalidating the candidate and pins, initializing the runtime actor idempotently, and advancing only the matching durable receipt. Then wire Project-bound additive Gadget migration and recover migration/activation failures. Continue remaining independent work across all active plans; rollout disabled.
+
+## Previous cross-plan checkpoint — 2026-11-17 (Project update receipt through activation; `53d07a16` pushed)
 
 SpaceDO now verifies project-review claims again at the installation transaction boundary and uses migration 156 to persist exact reviewed update pins with source/applied generation and status. Installation writes `staged`; activation marks `active`; abort marks `aborted`. Tampered signatures do not create receipts. Focused SpaceDO install/runtime, migration and review tests **49/49**, Spaces typecheck and diff hygiene pass. Local mocks only.
 

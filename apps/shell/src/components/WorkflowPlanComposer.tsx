@@ -5,7 +5,7 @@ import { compileWorkflowPlan, createWorkflowExtensionRelease, type WorkflowPlanS
 import { runMockWorkflowPlan } from "@naelao/sdk/testing";
 import { canonicalExtensionManifestForPublisher, extensionPublisherSigningPayload } from "@naelao/agent-sdk";
 import { Button } from "@naelao/ui";
-import { installProjectCanvasExtension, listContainerInstallations, listExtensionPublisherKeys, reviewProjectExtensionUpdate,
+import { getProjectExtensionUpdateReceipt, installProjectCanvasExtension, listContainerInstallations, listExtensionPublisherKeys, reviewProjectExtensionUpdate,
   saveWorkflowPlanDraft, type ExtensionPublisherKey, type SessionCredentials } from "@/lib/api";
 
 type DraftStep = { id: string; operation: string; args: string; mockResponse: string };
@@ -105,6 +105,7 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
     try {
       if (!publisherKeyId || !publisherSignature.trim()) throw new Error("Choose a trusted active publisher key and provide its release signature.");
       let updateReviewToken: string | undefined;
+      let updateReviewRequestId: string | undefined;
       if (upgradeConfirmed) {
         const installed = await listContainerInstallations(spaceId, session, projectId, true);
         const current = installed.installations.find(item => item.instance.extension_id === extensionId
@@ -119,11 +120,14 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
         if (!review.apply_supported || !review.update_review_token || (review.update_review_expires_at ?? 0) <= Date.now())
           throw new Error(review.apply_block_reason ?? "This update requires a separate owner review contract.");
         updateReviewToken = review.update_review_token;
+        updateReviewRequestId = review.update_review_request_id;
       }
       const result = await installProjectCanvasExtension(spaceId, projectId, session, releaseDraft.manifest, releaseDraft.artifacts, upgradeConfirmed, instanceKey,
         { key_id: publisherKeyId, signature: publisherSignature.trim() }, false, false, updateReviewToken);
       if (!result.installed) throw new Error(result.message ?? result.error_code ?? "Workflow extension installation failed.");
-      setInstallResult(`Installed ${extensionId} v${version} as instance ${result.installationId ?? instanceKey}. This is an internal project workflow; it does not expose a customer channel.`);
+      const updateReceipt = updateReviewRequestId && result.installationId
+        ? await getProjectExtensionUpdateReceipt(spaceId, projectId, result.installationId, updateReviewRequestId, session) : null;
+      setInstallResult(`Installed ${extensionId} v${version} as instance ${result.installationId ?? instanceKey}.${updateReceipt ? ` Update receipt ${updateReceipt.request_id} is ${updateReceipt.status}.` : ""} This is an internal project workflow; it does not expose a customer channel.`);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Couldn't install the signed workflow extension."); }
     finally { setBusy(false); }
   };

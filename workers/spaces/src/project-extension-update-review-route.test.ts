@@ -101,10 +101,11 @@ describe("PROJECT_BOUND extension update review route", () => {
     requestBody.expected_manifest_sha256 = await digestExtensionManifest(currentManifest);
     const response = await post(h.env, requestBody);
     const result = await response.json() as { apply_supported?: boolean; apply_block_reason?: string | null;
-      update_review_token?: string; update_review_expires_at?: number };
+      update_review_token?: string; update_review_expires_at?: number; update_review_request_id?: string };
     expect(response.status).toBe(200);
     expect(result.apply_supported).toBe(true);
     expect(result.update_review_token).toBeTruthy();
+    expect(result.update_review_request_id).toMatch(/^[0-9a-f-]{36}$/i);
     expect(result.update_review_expires_at).toBeGreaterThan(Date.now());
     expect(result.apply_block_reason).toBeNull();
     expect(h.requests.some(request => new URL(request.url).pathname === "/extension-installation/activate")).toBe(false);

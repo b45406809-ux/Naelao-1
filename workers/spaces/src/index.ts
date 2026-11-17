@@ -5889,6 +5889,50 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       scope: string; instance_key?: string; status: string; generation?: number; release_version?: string | null;
       manifest_sha256?: string | null; pinned_artifact_sha256?: string | null; manifest?: unknown; publisher_id?: string | null;
       publisher_key_id?: string | null; permissions?: string[]; capabilities?: string[] }> }>(current, 2 * 1024 * 1024);
+    const decodedReview = decodeSpacePackageReviewToken(body.updateReviewToken);
+    if (!decodedReview || !await verifyHmac(decodedReview.payload, decodedReview.signature, c.env.PLATFORM_SECRET))
+      return c.json({ error_code: "extension_update_review_token_invalid" }, 409);
+    let updateClaims: ReturnType<typeof projectBoundExtensionUpdateClaims> | null = null;
+    try { updateClaims = JSON.parse(decodedReview.payload) as ReturnType<typeof projectBoundExtensionUpdateClaims>; } catch { /* invalid token */ }
+    const candidateManifestSha256 = await digestExtensionManifest(manifest);
+    if (!updateClaims || JSON.stringify(updateClaims) !== decodedReview.payload || updateClaims.version !== 1
+      || updateClaims.purpose !== "project_bound_extension_update" || updateClaims.tenantId !== identity.tenantId
+      || updateClaims.spaceId !== spaceId || updateClaims.projectId !== projectId || updateClaims.actorId !== identity.userId
+      || updateClaims.extensionId !== bundle.id || updateClaims.toVersion !== bundle.version
+      || updateClaims.candidateManifestSha256 !== candidateManifestSha256 || updateClaims.artifactSha256 !== digest
+      || updateClaims.publisherId !== trustedPublisher.publisher_id || updateClaims.publisherKeyId !== publisherKeyId
+      || !Number.isSafeInteger(updateClaims.installationGeneration) || updateClaims.installationGeneration < 1
+      || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(updateClaims.fromVersion)
+      || !/^[a-f0-9]{64}$/.test(updateClaims.sourceManifestSha256) || !/^[a-f0-9]{64}$/.test(updateClaims.sourceArtifactSha256)
+      || !Number.isSafeInteger(updateClaims.expiresAt) || updateClaims.expiresAt <= 0
+      || updateClaims.expiresAt > Date.now() + 5 * 60_000 || !/^[0-9a-f-]{36}$/i.test(updateClaims.requestId))
+      return c.json({ error_code: "extension_update_review_token_stale" }, 409);
+    const updateReceiptQuery = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId,
+      instance_id: updateClaims.installationId, request_id: updateClaims.requestId });
+    const updateReceiptResponse = await stub.fetch(new Request(`http://space-do/project-extension-update-receipt?${updateReceiptQuery}`, {
+      headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+    }));
+    if (updateReceiptResponse.ok) {
+      const saved = await readBoundedResponseJson<{ receipt?: Record<string, unknown> }>(updateReceiptResponse, 32 * 1024);
+      const receipt = saved.receipt;
+      if (!receipt || receipt.request_id !== updateClaims.requestId || receipt.tenant_id !== identity.tenantId
+        || receipt.space_id !== spaceId || receipt.project_id !== projectId || receipt.instance_id !== updateClaims.installationId
+        || receipt.extension_id !== bundle.id || receipt.actor_id !== identity.userId
+        || receipt.source_generation !== updateClaims.installationGeneration || receipt.from_version !== updateClaims.fromVersion
+        || receipt.to_version !== bundle.version || receipt.source_manifest_sha256 !== updateClaims.sourceManifestSha256
+        || receipt.candidate_manifest_sha256 !== candidateManifestSha256 || receipt.source_artifact_sha256 !== updateClaims.sourceArtifactSha256
+        || receipt.artifact_sha256 !== digest || receipt.publisher_id !== trustedPublisher.publisher_id
+        || receipt.publisher_key_id !== publisherKeyId)
+        return c.json({ error_code: "extension_update_receipt_pin_conflict" }, 409);
+      if (receipt.status === "active") return c.json({ installed: true, replayed: true,
+        installationId: updateClaims.installationId, projectUpdateReceipt: { requestId: updateClaims.requestId, status: "active",
+          installationGeneration: receipt.applied_generation } }, 200, { "cache-control": "private, no-store" });
+      if (receipt.status === "staged") return c.json({ error_code: "extension_update_staged_recovery_required",
+        request_id: updateClaims.requestId, status: "staged" }, 409);
+      return c.json({ error_code: "extension_update_review_token_consumed", request_id: updateClaims.requestId }, 409);
+    }
+    if (updateReceiptResponse.status !== 404) return c.json({ error_code: "extension_update_receipt_lookup_unavailable" }, 503);
+    if (updateClaims.expiresAt <= Date.now()) return c.json({ error_code: "extension_update_review_token_stale" }, 409);
     const otherInstances = findUnsafeProjectExtensionUpgrade(currentInstalls.installations ?? [], { extensionId: bundle.id, projectId, instanceKey });
     if (otherInstances.length) return c.json({ error_code: "extension_upgrade_multiple_instances_unsupported",
       message: "A legacy sibling installation has no verified pinned release. Remove or migrate it before upgrading this extension.",
@@ -5899,11 +5943,6 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       || !currentInstall.manifest_sha256) return c.json({ error_code: "extension_upgrade_current_pin_unavailable" }, 409);
     expectedUpgradePin = { generation: currentInstall.generation!, version: currentInstall.release_version,
       manifestSha256: currentInstall.manifest_sha256 };
-    const decodedReview = decodeSpacePackageReviewToken(body.updateReviewToken);
-    if (!decodedReview || !await verifyHmac(decodedReview.payload, decodedReview.signature, c.env.PLATFORM_SECRET))
-      return c.json({ error_code: "extension_update_review_token_invalid" }, 409);
-    let updateClaims: ReturnType<typeof projectBoundExtensionUpdateClaims> | null = null;
-    try { updateClaims = JSON.parse(decodedReview.payload) as ReturnType<typeof projectBoundExtensionUpdateClaims>; } catch { /* invalid token */ }
     let trustedCurrentManifest: ReturnType<typeof validateExtensionManifest>;
     try { trustedCurrentManifest = validateExtensionManifest(currentInstall.manifest); }
     catch { return c.json({ error_code: "extension_upgrade_current_manifest_invalid" }, 409); }
@@ -6150,6 +6189,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extension-installations/:instance
     && /^[a-f0-9]{64}$/.test(rawInstall.pinned_artifact_sha256 ?? "");
   let updateReviewToken: string | undefined;
   let updateReviewExpiresAt: number | undefined;
+  let updateReviewRequestId: string | undefined;
   if (canApply) {
     updateReviewExpiresAt = Date.now() + 5 * 60_000;
     const claims = projectBoundExtensionUpdateClaims({ tenantId: identity.tenantId, spaceId, projectId, actorId: identity.userId,
@@ -6161,6 +6201,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extension-installations/:instance
       expiresAt: updateReviewExpiresAt, requestId: crypto.randomUUID() });
     const payload = JSON.stringify(claims);
     updateReviewToken = encodeSpacePackageReviewToken(payload, await signHmac(payload, c.env.PLATFORM_SECRET));
+    updateReviewRequestId = claims.requestId;
   }
   return c.json(buildProjectExtensionUpdateReview({ installationId: instanceId, installationGeneration: rawInstall.generation,
     currentManifestSha256: rawInstall.manifest_sha256, currentArtifactSha256: rawInstall.pinned_artifact_sha256,
@@ -6171,7 +6212,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extension-installations/:instance
       : runtimeStatus.active_work_count !== 0 ? "wait for admitted runtime work to drain"
         : !samePublisher ? "updates with a publisher change need a separate owner review contract"
           : "only version-only signed Project package updates are currently supported",
-    ...(updateReviewToken ? { updateReviewToken, updateReviewExpiresAt: updateReviewExpiresAt! } : {}) }), 200,
+    ...(updateReviewToken ? { updateReviewToken, updateReviewExpiresAt: updateReviewExpiresAt!, updateReviewRequestId: updateReviewRequestId! } : {}) }), 200,
     { "cache-control": "private, no-store" });
 });
 
@@ -6271,6 +6312,25 @@ app.patch("/spaces/:spaceId/projects/:projectId/extension-installations/:instanc
   return stub.fetch(new Request("http://space-do/project-extension-lifecycle", { method: "PATCH",
     headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
     body: JSON.stringify({ tenantId, spaceId, projectId, instanceId, action: body.action, drainTimeoutMs: body.drain_timeout_ms ?? 0 }) }));
+});
+
+const projectExtensionUpdateReceiptPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/update-receipts/:requestId";
+app.use(projectExtensionUpdateReceiptPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(projectExtensionUpdateReceiptPath, requireSpaceMembership({ GET: "admin" }));
+app.get(projectExtensionUpdateReceiptPath, async c => {
+  const { spaceId, projectId, instanceId, requestId } = c.req.param();
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  if (!/^[0-9a-f-]{36}$/i.test(requestId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId))
+    return c.json({ error_code: "project_extension_update_receipt_scope_invalid" }, 400);
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId) return c.json({ error_code: "unauthorized" }, 401);
+  const query = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId,
+    instance_id: instanceId, request_id: requestId });
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  return stub.fetch(new Request(`http://space-do/project-extension-update-receipt?${query}`, { headers: {
+    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId),
+  } }));
 });
 
 const projectExtensionResourceGrantsPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/resource-grants";

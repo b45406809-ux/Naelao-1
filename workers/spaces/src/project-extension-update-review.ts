@@ -58,6 +58,7 @@ export function buildProjectExtensionUpdateReview(input: {
   applyBlockReason?: string | null;
   updateReviewToken?: string;
   updateReviewExpiresAt?: number;
+  updateReviewRequestId?: string;
 }) {
   const current = input.current as any;
   const candidate = input.candidate as any;
@@ -91,7 +92,8 @@ export function buildProjectExtensionUpdateReview(input: {
     cost_terms: { status: "unknown", reason: "the extension release contract has no approved price or metering terms" },
     review: { apply_supported: input.applySupported === true, apply_block_reason: input.applyBlockReason ?? null,
       mutates_installation: false as const },
-    ...(input.updateReviewToken ? { update_review_token: input.updateReviewToken, update_review_expires_at: input.updateReviewExpiresAt! } : {}),
+    ...(input.updateReviewToken ? { update_review_token: input.updateReviewToken, update_review_expires_at: input.updateReviewExpiresAt!,
+      update_review_request_id: input.updateReviewRequestId! } : {}),
     apply_supported: input.applySupported === true,
     apply_block_reason: input.applySupported ? null : input.applyBlockReason ?? "project-bound package change is outside the version-only update contract",
     mutates_installation: false as const,

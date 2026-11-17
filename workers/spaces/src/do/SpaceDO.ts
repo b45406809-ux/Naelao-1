@@ -6180,6 +6180,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/extension-runtime-work" && method === "POST") return this.extensionRuntimeWork(request);
       if (url.pathname === "/space-shared-extension-update" && method === "POST") return this.applySpaceSharedExtensionUpdate(request);
       if (url.pathname === "/space-shared-extension-update-receipt" && method === "GET") return await this.getSpaceSharedExtensionUpdateReceipt(request, url.searchParams);
+      if (url.pathname === "/project-extension-update-receipt" && method === "GET") return this.getProjectExtensionUpdateReceipt(request, url.searchParams);
       if (url.pathname === "/space-shared-extension-updates" && method === "GET") return await this.listSpaceSharedExtensionUpdates(request, url.searchParams);
       if (url.pathname === "/project-extension-lifecycle" && method === "PATCH") return this.updateProjectExtensionLifecycle(request);
       if (url.pathname === "/project-steward-facts" && method === "GET") return this.projectStewardFacts(url.searchParams);
@@ -17651,6 +17652,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       : Response.json({ error_code: "extension_update_receipt_not_found" }, { status: 404 });
   }
 
+  private async getProjectExtensionUpdateReceipt(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    const projectId = params.get("project_id") ?? "", instanceId = params.get("instance_id") ?? "";
+    const requestId = params.get("request_id") ?? "";
+    if (!tenantId || !spaceId || !projectId || !instanceId || !/^[0-9a-f-]{36}$/i.test(requestId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const receipt = queryOne(this.ctx.storage.sql as never, `SELECT request_id,tenant_id,space_id,project_id,instance_id,
+      extension_id,actor_id,source_generation,applied_generation,from_version,to_version,source_manifest_sha256,
+      candidate_manifest_sha256,source_artifact_sha256,artifact_sha256,publisher_id,publisher_key_id,status,created_at,updated_at
+      FROM project_extension_update_receipts WHERE request_id=? AND tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+      requestId, tenantId, spaceId, projectId, instanceId);
+    return receipt ? Response.json({ receipt }, { headers: { "cache-control": "private, no-store" } })
+      : Response.json({ error_code: "project_extension_update_receipt_not_found" }, { status: 404 });
+  }
+
   private async updateSpaceSharedExtensionLifecycle(request: Request): Promise<Response> {
     const body = await request.json<{ tenantId?: string; spaceId?: string; instanceId?: string; action?: string; drainTimeoutMs?: number }>()
       .catch((): { tenantId?: string; spaceId?: string; instanceId?: string; action?: string; drainTimeoutMs?: number } => ({}));
@@ -18900,7 +18917,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       "SELECT publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, manifest.bundle.version) : null;
     const installationGeneration = instanceId ? queryOne<{ generation: number }>(this.ctx.storage.sql as never,
       "SELECT generation FROM extension_instances WHERE instance_id=?", instanceId)?.generation : undefined;
-    return Response.json({ installed: true, manifest, installedAt: now, ...(installationGeneration !== undefined ? { installationGeneration } : {}), ...(signature ? { release: { version: manifest.bundle!.version, artifactSha256, hostSignature: signature, signer: "naelao-host", manifestJson,
+    return Response.json({ installed: true, manifest, installedAt: now, ...(installationGeneration !== undefined ? { installationGeneration } : {}),
+      ...(projectUpdateClaims ? { projectUpdateReceipt: { requestId: projectUpdateClaims.requestId,
+        status: body.deferActivation ? "staged" : "active", installationGeneration } } : {}), ...(signature ? { release: { version: manifest.bundle!.version, artifactSha256, hostSignature: signature, signer: "naelao-host", manifestJson,
       ...(publisher?.publisher_key_id ? { publisher: { id: publisher.publisher_id, keyId: publisher.publisher_key_id, signature: publisher.publisher_signature,
         payloadSha256: publisher.publisher_payload_sha256, revoked: Boolean(publisher.publisher_revoked_at) } } : {}) } } : {}), ...(instanceId ? { installationId: instanceId } : {}) }, { status: 201 });
   }
