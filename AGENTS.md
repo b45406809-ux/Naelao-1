@@ -13,8 +13,8 @@ past work and do not override the current progress records or require repeating 
   bound to the current owner publication, installation grants and lease. Their results include
   source revision/hash and parser coordinates (`81791a69`). Dense/FTS retrieval, exact citations,
   collection discovery/source reads and owner publication edits require `source_state='current'`
-  (`3477bc8c`). K09 now has a separate owner-scoped, no-store crawl status endpoint and a Shell resume
-  caller that reloads status without refetching pages (`d32f5cef`, `2a042cf4`). The existing owner/admin
+  (`3477bc8c`). K09 has owner-scoped crawl status/resume and exact cancellation/discard, which fences
+  later writes and removes its URL frontier (`d32f5cef`, `2a042cf4`, `1e6abd43`). The existing owner/admin
   Project budget API reports exact reservation IDs/status/internal credits for main and active Project
   sidecar runtimes; no authoritative Space/Project cap exists. Continue the next independent K/EP/P/PW/
   S/U/TBR gap; SC03 disconnected native dispatch remains fail-closed pending durable invocation authority.
@@ -52,9 +52,25 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Resume checkpoint — 2026-11-17 (K09 crawl status and Shell recovery; `2a042cf4` pushed)
+## Resume checkpoint — 2026-11-17 (K09 owner crawl cancellation; `1e6abd43` pushed)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
+
+K09 now supports an exact-owner DELETE for the crawl operation. It verifies current Project owner/admin,
+original connection owner and unchanged host origin/path policy, then deletes the operation so the URL
+frontier cascades away. Page claims and writes require the still-running operation/generation; a
+read-only fetch already in flight may finish, but cannot persist results or enqueue child URLs after
+cancellation. The Shell offers cancel/discard and clears its tab-scoped receipt. Local Knowledge crawl
+route **7/7**, Shell API **5/5**, Knowledge/Shell typechecks and diff hygiene pass. Code
+`1e6abd436c7960c1e217fdd0067541789c845f49` is pushed. No live/browser/deployed acceptance; crawl flag
+remains false, migration 0277 is unapplied.
+
+Exact next action: continue the full mission at the next independent code gap. K08 provider connector
+cursors and verified pricing remain unsupported contract gaps; K09 applicable site-terms policy and
+live acceptance remain open. Reconcile active callers before choosing the next K/EP/P/PW/S/U/TBR item.
+Keep rollout disabled, preserve the cache, and continue after checkpoints.
+
+## Previous checkpoint — 2026-11-17 (K09 crawl status and Shell recovery; `2a042cf4` pushed)
 
 K09 now exposes a separate owner-only GET for bounded crawl status and page URL/hash metadata. It checks
 the original owner, live connection and exact origin/path policy before returning; a missing or changed

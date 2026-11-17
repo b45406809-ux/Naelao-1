@@ -481,3 +481,17 @@ browser/deployed/live acceptance; crawl flag remains disabled and migration 0277
 Exact next action: implement explicit owner cancellation/discard of a running or partial crawl with an
 atomic generation fence so future fetches/writes stop and URL metadata is erased. Then continue K08/K09
 site-terms policy and remaining independent K01–K30 and cross-plan work.
+## Current K09 checkpoint — 2026-11-17 (owner crawl cancellation; `1e6abd43` pushed)
+
+The exact owner can DELETE a running/partial/completed crawl after rechecking current Project owner/admin,
+the original connection owner, and unchanged origin/path policy. The operation deletion cascades the
+bounded URL/hash frontier. All subsequent page claims/writes require that operation and generation;
+already in-flight read-only fetches cannot persist or fan out afterward. The Project Shell exposes
+cancel/discard and clears its tab-scoped status receipt. Local Knowledge crawl suite **7/7**, Shell API
+suite **5/5**, both typechecks and `git diff --check` pass. Code
+`1e6abd436c7960c1e217fdd0067541789c845f49` is pushed. No browser/deployment/live acceptance; migration
+0277 remains unapplied and crawl rollout false.
+
+Exact next action: continue the next independent K/EP/P/PW/S/U/TBR code gap after reconciling current
+callers. K08 provider cursor/pricing contracts and K09 site-terms policy/live acceptance remain open;
+they do not block unrelated implementation.

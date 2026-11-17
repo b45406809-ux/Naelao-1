@@ -631,3 +631,15 @@ caller `2a042cf4` are pushed. No browser/deployed acceptance; rollout remains di
 Exact next action: add exact-owner crawl cancellation that generation-fences ongoing fetch/write work
 and erases the URL frontier, then continue the remaining active plans. SC03 remains fail-closed for
 disconnected native dispatch without explicit durable consent and alarm-safe authority/Billing checks.
+## Current K09 checkpoint — 2026-11-17 (crawl cancellation and erase; `1e6abd43` pushed)
+
+Owner/admin cancellation verifies the original connection owner and current origin/path grant, then
+deletes the bounded crawl ledger. Generation-fenced claims/writes prevent a running caller from
+persisting or expanding the URL frontier after cancellation, including when a read-only fetch was already
+in flight. Shell offers this cancellation from the recovered crawl receipt. Knowledge tests **7/7**,
+Shell API tests **5/5**, both typechecks and diff hygiene pass. Code is pushed; no live/deployed acceptance.
+
+Exact next action: continue the next independent active-plan code requirement; do not stop at this
+checkpoint. K08 provider cursor/pricing and K09 site-terms/live gates remain distinct. SC03 disconnected
+native execution remains fail-closed pending explicit durable consent and alarm-safe authority/Billing
+revalidation. Rollout stays disabled.
