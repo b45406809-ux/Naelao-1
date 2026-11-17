@@ -38,14 +38,14 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 isolated owner preview; locally verified, pending push)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 isolated owner preview; pushed as `d7db0499`)
 
 The owner-reviewed page iframe now uses an empty sandbox plus a document CSP (`default-src 'none'`,
 `img-src data:`, no forms, no base URL), so previewed content cannot load remote assets or submit forms.
 Review/publish still uses the exact immutable digest; public delivery stays disabled. Shell typecheck,
 preview isolation + API tests **2/2**, and diff hygiene pass. Local tests only; no browser/deployed
 acceptance. The publication inventory code is pushed at `61161067` (docs `16b276ca`), and the top-level
-mission pointer is `bf9f8bf1`; this hardening checkpoint awaits push.
+mission pointer is `bf9f8bf1`; this hardening checkpoint is pushed as `d7db0499`.
 
 **Reminder to myself:** Keep implementing the full mission; do not stop after tests, docs, commit or push. Continue with the next independent uncoded requirement after this recovery checkpoint.
 
