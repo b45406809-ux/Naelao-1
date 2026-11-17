@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { previewExtensionResourceRequirements } from "./extension-resource-preview";
+import { extensionResourceCostDisclosure, previewExtensionResourceRequirements } from "./extension-resource-preview";
 
 describe("extension resource manifest preview", () => {
+  it("discloses unknown cost before install when declarations have no approved rates", () => {
+    expect(extensionResourceCostDisclosure()).toEqual({ status: "unknown", providerCost: null, customerCharge: null,
+      reason: "No approved provider, storage, or customer charge rate is attached to these declarations." });
+  });
+
   it("projects exact supported resource declarations and limits", () => {
     expect(previewExtensionResourceRequirements([{ id: "catalog.v1", kind: "structured_data", apiVersion: "1.0", scope: "project",
       binding: { gadgetId: "catalog_data", tables: ["products"] }, operations: [{ id: "read", meteringUnit: "request" }],

@@ -19,7 +19,7 @@ import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { ExtensionAgentMaintenanceDelegation } from "@/components/ExtensionAgentMaintenanceDelegation";
 import { MicroAppStorageStatus, projectGadgetStorageApps } from "@/components/MicroAppStorageStatus";
-import { previewExtensionResourceRequirements } from "@/lib/extension-resource-preview";
+import { extensionResourceCostDisclosure, previewExtensionResourceRequirements } from "@/lib/extension-resource-preview";
 import { previewExtensionPublisherProvenance } from "@/lib/extension-publisher-provenance";
 import { projectInstalledExtensionReleaseProvenance } from "@/lib/extension-release-provenance";
 import { projectExtensionRollbackReview } from "@/lib/extension-rollback-review";
@@ -858,6 +858,7 @@ export function ChannelConnect({
         knowledge: knowledge.map(item => `${typeof item.id === "string" ? item.id : "collection"} · ${typeof item.access === "string" ? item.access : "access missing"}`),
         resourceRequirements: resourcePreview.requirements,
         resourceRequirementsInvalid: resourcePreview.invalid,
+        resourceCostDisclosure: extensionResourceCostDisclosure(),
       };
     } catch { return { error: "Manifest JSON is incomplete or invalid." }; }
   }, [canvasManifestDraft]);
@@ -1362,7 +1363,8 @@ export function ChannelConnect({
                   <code>{requirement.id}</code> · {requirement.kind} · {requirement.scope} · {requirement.operations.map(operation => `${operation.id} (${operation.meteringUnit})`).join(", ")}
                   {requirement.targets.length ? ` · ${requirement.targets.join(" · ")}` : ""} · limits {requirement.limits.requestsPerMinute}/min, {requirement.limits.maxConcurrent} concurrent, {requirement.limits.maxBytesPerOperation} bytes/operation
                 </div>)}
-                <div style={{ marginTop: 4, color: "var(--text3)" }}>Declarations are not grants or runtime availability. Owner approval and host capability checks are separate; these limits are not prices. Review the installation budget after staging.</div>
+                <div style={{ marginTop: 4, color: "var(--text3)" }}>Declarations are not grants or runtime availability. Owner approval and host capability checks are separate.</div>
+                <div role="note" style={{ marginTop: 4, color: "var(--text3)" }}>Cost estimate: {bundlePreview.resourceCostDisclosure.status}. {bundlePreview.resourceCostDisclosure.reason} Review the configured installation budget after staging.</div>
               </div>}
               {canvasProvenance?.manifest === canvasManifestDraft && canvasProvenance.artifacts === canvasArtifactsDraft && <div style={{ marginTop: 7 }}><strong>Publisher source provenance</strong>
                 <div>{canvasProvenance.sourceCount} source file(s) · {canvasProvenance.sourceBytes} UTF-8 bytes · signing payload SHA-256 <code>{canvasProvenance.digest}</code></div>

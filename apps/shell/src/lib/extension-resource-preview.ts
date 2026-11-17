@@ -7,6 +7,13 @@ export interface ExtensionResourceRequirementPreview {
   targets: string[];
 }
 
+export function extensionResourceCostDisclosure() {
+  // Signed resource declarations include units and hard limits, but no approved rate card.
+  // Keep the owner preview explicit instead of treating limits or byte counts as a price.
+  return { status: "unknown" as const, providerCost: null, customerCharge: null,
+    reason: "No approved provider, storage, or customer charge rate is attached to these declarations." };
+}
+
 const ID = /^[a-z][a-z0-9._-]{1,63}$/;
 
 /** Build a display-only projection of untrusted manifest resource declarations. */
