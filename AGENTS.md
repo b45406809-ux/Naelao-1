@@ -6,8 +6,8 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is full Project extension resource-diff details (`87e24bca`) pushed; next continue the
-  next independent platform requirement while SC03 remains fail-closed pending a
+  checkpoint is owner/admin public-page takedown (`1a6920e2`) pushed; next continue EP05 abuse
+  controls and then the next independent platform requirement while SC03 remains fail-closed pending a
   callable durable authority/consent contract. TBR07's authority comparison is already recorded and
   must not be repeated. Membership revisions and K02 PPTX/DOCX/XLSX code are pushed.
   Then continue the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
@@ -36,7 +36,20 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (full Project extension resource diff; `87e24bca` pushed)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
+
+`1a6920e2d20146114c7fe9016f1234226f6d8de2` is pushed to `origin/Mcbt5s-Backup-2`. The Space
+dynamic-page management API has a tenant-bound owner/admin DELETE route for one exact page slug;
+it calls that Space/app's MicroAppDO to remove the page, including while the extension is paused.
+Public rendering/actions no longer resolve the removed page. Spaces typecheck, focused route/DO
+checks **2/2**, and diff hygiene pass. This is local mock evidence; no browser/deployment/live-domain
+acceptance. Dynamic-page origin/domain rollout remains disabled.
+
+**Reminder to myself:** Keep implementing the full authorized mission after each checkpoint. Never stop at a status update, completed slice, test pass, documentation edit, commit or push; immediately continue with the next independent unfinished requirement unless the user stops the mission or a real blocker prevents all progress.
+
+Exact next action: add bounded abuse control for public dynamic-page actions using privacy-safe per-page accounting, reusing durable host state and preserving exact owner takedown/revocation. Then continue EP05 and other active plan code gaps. SC03 remains fail-closed pending durable authority/consent revalidation; TBR07 is already recorded. Preserve rollout-disabled flags and the untracked Python cache.
+
+## Previous cross-plan checkpoint — 2026-11-17 (full Project extension resource diff; `87e24bca` pushed)
 
 `87e24bcacc051ed285874177a72e9ff925f912f1` is pushed to `origin/Mcbt5s-Backup-2`. The Project
 extension update-review API now returns full bounded before/after resource declarations for added,
