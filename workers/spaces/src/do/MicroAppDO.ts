@@ -7,7 +7,7 @@ import { digestExtensionManifest, validateExtensionManifest, RECEIVE_STOCK_INPUT
   type ExtensionBusinessAction, type ListLowStockInput, type ReceiveStockInput, type AdjustStockInput } from "@naelao/agent-sdk";
 import { decodeMicroAppArchiveValue, encodeMicroAppArchiveValue, isMicroAppArchiveSnapshot,
   MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES, MAX_MICRO_APP_ARCHIVE_TABLE_ROWS, type MicroAppArchiveSnapshot } from "./microapp-archive.js";
-import { publicPageArtifactSha256, validatePublicPageDraft } from "../dynamic-page-review.js";
+import { publicPageArtifactSha256, validatePublicPageDraft, type PublicPageDraft } from "../dynamic-page-review.js";
 
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
 
@@ -145,6 +145,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       CREATE TABLE IF NOT EXISTS gadget_schema_migrations (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
       CREATE TABLE IF NOT EXISTS gadget_public_pages (slug TEXT PRIMARY KEY, html TEXT NOT NULL, actions_json TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS public_page_review_receipts (review_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, slug TEXT NOT NULL, artifact_sha256 TEXT NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS public_page_publications (review_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, slug TEXT NOT NULL, artifact_sha256 TEXT NOT NULL, published_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS consumed_public_action_nonces (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS public_page_action_rate_buckets (bucket_key TEXT NOT NULL, window_start INTEGER NOT NULL, request_count INTEGER NOT NULL,
         PRIMARY KEY(bucket_key, window_start));
@@ -1303,6 +1304,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (storageError) return Response.json({ error: "storage_limit_exceeded", ...storageError }, { status: 413 });
     const publish = () => {
       this.ctx.storage.sql.exec("INSERT INTO gadget_public_pages(slug,html,actions_json,updated_at) VALUES (?,?,?,?) ON CONFLICT(slug) DO UPDATE SET html=excluded.html,actions_json=excluded.actions_json,updated_at=excluded.updated_at", draft.slug, draft.html, JSON.stringify(draft.actions), new Date().toISOString());
+      this.ctx.storage.sql.exec("INSERT INTO public_page_publications(review_id,actor_id,slug,artifact_sha256,published_at) VALUES (?,?,?,?,?)",
+        body.review_id, body.actor_id, draft.slug, artifactSha256, new Date().toISOString());
       this.ctx.storage.sql.exec("DELETE FROM public_page_review_receipts WHERE review_id=?", body.review_id);
     };
     if (typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(publish);
@@ -1322,8 +1325,15 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (!pagePathPart(slug)) return Response.json({ error: "not_found" }, { status: 404 });
     const row = [...this.ctx.storage.sql.exec<{ html: string; actions_json: string }>("SELECT html,actions_json FROM gadget_public_pages WHERE slug = ?", slug)][0];
     if (!row) return Response.json({ error: "not_found" }, { status: 404 });
-    const actions = JSON.parse(row.actions_json) as Record<string, PublicPageAction>;
-    let html = row.html;
+    const publication = [...this.ctx.storage.sql.exec<{ artifact_sha256: string }>(
+      "SELECT artifact_sha256 FROM public_page_publications WHERE slug=? ORDER BY rowid DESC LIMIT 1", slug)][0];
+    if (!publication) return Response.json({ error: "not_found" }, { status: 404 });
+    let draft: PublicPageDraft;
+    try { draft = validatePublicPageDraft({ slug, html: row.html, actions: JSON.parse(row.actions_json) }); }
+    catch { return Response.json({ error: "not_found" }, { status: 404 }); }
+    if (await publicPageArtifactSha256(draft) !== publication.artifact_sha256) return Response.json({ error: "not_found" }, { status: 404 });
+    const actions = draft.actions as Record<string, PublicPageAction>;
+    let html = draft.html;
     for (const [name, action] of Object.entries(actions)) {
       const unsigned: PublicPageClaims = { spaceId: url.searchParams.get("spaceId") ?? "", appId: this.appId(), slug, action: name, key: action.key, fields: action.fields, nonce: crypto.randomUUID(), exp: Date.now() + PUBLIC_ACTION_TTL_MS };
       const payload = encodeToken(JSON.stringify(unsigned));

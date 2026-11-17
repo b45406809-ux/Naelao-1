@@ -25,8 +25,10 @@ describe("isolated public dynamic pages", () => {
   it("unpublishes the exact page and makes public rendering return not found", async () => {
     const pages = new Map<string, { html: string; actions_json: string }>();
     const reviews = new Map<string, { actor_id: string; slug: string; artifact_sha256: string; expires_at: number }>();
+    const publications = new Map<string, { actor_id: string; slug: string; artifact_sha256: string; published_at: string }>();
     const sql = { exec(query: string, ...args: unknown[]) {
       if (query.startsWith("INSERT INTO public_page_review_receipts")) reviews.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), expires_at: Number(args[4]) });
+      if (query.startsWith("INSERT INTO public_page_publications")) publications.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), published_at: String(args[4]) });
       if (query.startsWith("SELECT actor_id,slug,artifact_sha256,expires_at FROM public_page_review_receipts")) {
         const receipt = reviews.get(String(args[0])); return cursor(receipt ? [receipt] : []);
       }
@@ -51,13 +53,18 @@ describe("isolated public dynamic pages", () => {
     const reviewed = await instance.fetch(new Request("https://do/page/review", { method: "POST",
       body: JSON.stringify({ actor_id: "owner-a", draft }) }));
     expect(reviewed.status).toBe(200);
-    const reviewId = (await reviewed.json() as { review_id: string }).review_id;
+    const reviewedBody = await reviewed.json() as { review_id: string; artifact_sha256: string };
+    const reviewId = reviewedBody.review_id;
     const mismatched = await instance.fetch(new Request("https://do/page/publish-reviewed", { method: "POST",
       body: JSON.stringify({ actor_id: "owner-a", review_id: reviewId, draft: { ...draft, html: "<main>{{NAELAO_ACTION_TOKEN:submit}}</main>" } }) }));
     expect(mismatched.status).toBe(409);
     const published = await instance.fetch(new Request("https://do/page/publish-reviewed", { method: "POST",
       body: JSON.stringify({ actor_id: "owner-a", review_id: reviewId, draft }) }));
     expect(published.status).toBe(201);
+    expect(publications.get(reviewId)).toMatchObject({ actor_id: "owner-a", slug: "spring-signup", artifact_sha256: reviewedBody.artifact_sha256 });
+    pages.set("spring-signup", { html: "<main>tampered</main>", actions_json: JSON.stringify(draft.actions) });
+    expect((await instance.fetch(new Request("https://do/page/render?spaceId=s&slug=spring-signup"))).status).toBe(404);
+    pages.set("spring-signup", { html: draft.html, actions_json: JSON.stringify(draft.actions) });
     const replay = await instance.fetch(new Request("https://do/page/publish-reviewed", { method: "POST",
       body: JSON.stringify({ actor_id: "owner-a", review_id: reviewId, draft }) }));
     expect(replay.status).toBe(409);
@@ -71,6 +78,7 @@ describe("isolated public dynamic pages", () => {
     const pages = new Map<string, { html: string; actions_json: string }>();
     const rateCounts = new Map<string, number>();
     const reviews = new Map<string, { actor_id: string; slug: string; artifact_sha256: string; expires_at: number }>();
+    const publications = new Map<string, { actor_id: string; slug: string; artifact_sha256: string; published_at: string }>();
     const consumed = new Set<string>();
     const sql = { exec(query: string, ...args: unknown[]) {
       if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata") && args.length === 5) {
@@ -79,6 +87,10 @@ describe("isolated public dynamic pages", () => {
       if (query.includes("SELECT value FROM gadget_metadata WHERE key = 'app_id'")) return cursor(metadata.has("app_id") ? [{ value: metadata.get("app_id")! }] : []);
       if (query.includes("SELECT value FROM gadget_metadata WHERE key = ?")) return cursor(metadata.has(String(args[0])) ? [{ value: metadata.get(String(args[0]))! }] : []);
       if (query.startsWith("INSERT INTO gadget_public_pages")) pages.set(String(args[0]), { html: String(args[1]), actions_json: String(args[2]) });
+      if (query.startsWith("INSERT INTO public_page_publications")) publications.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), published_at: String(args[4]) });
+      if (query.startsWith("SELECT artifact_sha256 FROM public_page_publications")) {
+        const publication = [...publications.values()].reverse().find(item => item.slug === String(args[0])); return cursor(publication ? [{ artifact_sha256: publication.artifact_sha256 }] : []);
+      }
       if (query.startsWith("INSERT INTO public_page_review_receipts")) reviews.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), expires_at: Number(args[4]) });
       if (query.startsWith("SELECT actor_id,slug,artifact_sha256,expires_at FROM public_page_review_receipts")) {
         const receipt = reviews.get(String(args[0])); return cursor(receipt ? [receipt] : []);
@@ -168,6 +180,7 @@ describe("isolated public dynamic pages", () => {
     const metadata = new Map<string, string>();
     const pages = new Map<string, { html: string; actions_json: string }>();
     const reviews = new Map<string, { actor_id: string; slug: string; artifact_sha256: string; expires_at: number }>();
+    const publications = new Map<string, { actor_id: string; slug: string; artifact_sha256: string; published_at: string }>();
     const data = new Map<string, string>();
     const consumed = new Set<string>();
     const sql = { exec(query: string, ...args: unknown[]) {
@@ -181,6 +194,10 @@ describe("isolated public dynamic pages", () => {
         metadata.set("app_id", String(args[0])); metadata.set("scope", String(args[1])); metadata.set("gadget_tier", String(args[2])); metadata.set("html", String(args[3])); metadata.set("html_sha256", String(args[4]));
       }
       if (query.startsWith("INSERT INTO gadget_public_pages")) pages.set(String(args[0]), { html: String(args[1]), actions_json: String(args[2]) });
+      if (query.startsWith("INSERT INTO public_page_publications")) publications.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), published_at: String(args[4]) });
+      if (query.startsWith("SELECT artifact_sha256 FROM public_page_publications")) {
+        const publication = [...publications.values()].reverse().find(item => item.slug === String(args[0])); return cursor(publication ? [{ artifact_sha256: publication.artifact_sha256 }] : []);
+      }
       if (query.startsWith("INSERT INTO public_page_review_receipts")) reviews.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), expires_at: Number(args[4]) });
       if (query.startsWith("SELECT actor_id,slug,artifact_sha256,expires_at FROM public_page_review_receipts")) {
         const receipt = reviews.get(String(args[0])); return cursor(receipt ? [receipt] : []);

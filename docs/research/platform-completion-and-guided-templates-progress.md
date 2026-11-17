@@ -1,3 +1,19 @@
+## Resume pointer — 2026-11-17 (EP05 immutable publication proof; verified locally, push pending)
+
+Each accepted page publication now records immutable review ID, owner, slug, exact artifact SHA-256 and
+publication time. Public rendering revalidates current HTML/action bytes against the latest receipt;
+legacy unreviewed rows and any tampered artifact fail closed. Focused route/DO tests **13/13**, Spaces
+typecheck and diff hygiene pass (local fakes only). No owner UI, browser, deployed/domain or provider
+acceptance. Rollout remains disabled. API review/apply is pushed at `a35237d5`; this proof hardening
+checkpoint is pending push.
+
+**Reminder to myself:** Continue the entire mission after this checkpoint; do not stop after tests,
+documentation, commit or push.
+
+Exact next action: trace an established owner-facing preview/apply caller. None appeared in the current
+source search; keep that product-surface gap explicit and advance to another independent uncoded
+requirement. SC03 remains fail-closed absent durable authority revalidation and pre-dispatch Billing.
+
 ## Resume pointer — 2026-11-17 (EP05 immutable owner review/apply; pushed as `a35237d5`)
 
 The owner/admin API now returns a short-lived review receipt pinned to the canonical page artifact

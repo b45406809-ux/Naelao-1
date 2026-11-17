@@ -36,19 +36,20 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 immutable page review/apply; local verified)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 immutable publication proof; verified locally, pending push)
 
-Space owners/admins can submit a bounded page draft for a 10-minute review receipt pinned to the
-canonical artifact SHA-256, then publish only that same draft as the same actor. Receipts are
-single-use, actor/slug/digest/expiry bound, and consumed with publication in a DO transaction.
-Public rendering remains gated by the existing disabled host configuration; takedown and per-client
-rate limits remain intact. Focused route/DO tests **13/13**, Spaces typecheck and diff hygiene pass.
-Local mock evidence only; no owner UI/browser or deployed/domain acceptance. Code checkpoint is
-verified locally; recovery push follows this documentation update.
+Owner/admin page submission now returns a 10-minute review receipt pinned to canonical artifact SHA-256,
+actor and slug; apply publishes only the same draft and atomically consumes the receipt. An immutable
+publication row retains review ID, actor, slug, artifact digest and publication time. Public render
+verifies current page bytes against the newest publication record; mismatched or legacy unreviewed
+rows fail closed. Existing owner takedown, action nonce and privacy-safe page/client rate limit remain.
+Route/DO tests **13/13**, Spaces typecheck and `git diff --check` pass (local fakes only). No owner UI,
+browser, deployed edge/domain or provider acceptance; site rollout remains disabled. Previous API
+slice is pushed at `a35237d5`; this proof hardening checkpoint is pending push.
 
 **Reminder to myself:** Keep implementing the full mission. Do not stop after a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops or a real blocker prevents all progress.
 
-Exact next action: verify whether any established owner-facing surface can call the exact-digest preview/apply API; if none exists, record this as a product-surface code gap and advance to the next independent active-plan requirement. Preserve the untracked Python cache and rollout-disabled flags. SC03 stays fail-closed until a durable invocation identity, exact authority revalidation and pre-dispatch Billing admission exist.
+Exact next action after push: verify whether any established owner-facing surface can call the exact-digest preview/apply API; current source search found none. Preserve this as an owner UI code gap and continue the next independent uncoded active-plan requirement. Keep SC03 replay fail-closed until durable invocation authority revalidation and pre-dispatch Billing admission are implemented. Preserve the untracked Python cache and disabled rollouts.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
 
