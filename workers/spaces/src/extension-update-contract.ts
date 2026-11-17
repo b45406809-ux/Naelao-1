@@ -38,6 +38,40 @@ function additiveMigrationStatements(sql: string): boolean {
     || /^ALTER\s+TABLE\s+[a-zA-Z_][\w]*\s+ADD\s+COLUMN\s+[a-zA-Z_][\w]*\s+(?:TEXT|INTEGER|REAL|BLOB)(?:\s+NOT\s+NULL)?(?:\s+DEFAULT\s+(?:NULL|-?\d+(?:\.\d+)?|'[^']{0,256}'))?$/i.test(statement));
 }
 
+export interface ProjectBoundGadgetMigrationPlanEntry {
+  id: string;
+  migrations: Array<{ version: number; description: string; up: string }>;
+}
+
+/** Allow a Project owner-reviewed release to append only bounded additive SQL migrations to
+ * existing bundle Gadgets. All authority, runtime, schema, and identity fields stay pinned. */
+export function projectBoundGadgetMigrationPlan(current: ExtensionManifest, candidate: ExtensionManifest): ProjectBoundGadgetMigrationPlanEntry[] | null {
+  const currentPrimitives = current.bundle?.primitives ?? [];
+  const candidatePrimitives = candidate.bundle?.primitives ?? [];
+  const before = new Map(currentPrimitives.filter((part): part is Extract<typeof part, { kind: "gadget" }> => part.kind === "gadget")
+    .map(gadget => [gadget.id, gadget]));
+  const after = new Map(candidatePrimitives.filter((part): part is Extract<typeof part, { kind: "gadget" }> => part.kind === "gadget")
+    .map(gadget => [gadget.id, gadget]));
+  if (!before.size || before.size !== after.size || [...before.keys()].some(id => !after.has(id))) return null;
+  const plan: ProjectBoundGadgetMigrationPlanEntry[] = [];
+  for (const [id, next] of after) {
+    const prior = before.get(id)!;
+    const oldMigrations = prior.migrations ?? [], nextMigrations = next.migrations ?? [];
+    if (nextMigrations.length <= oldMigrations.length
+      || JSON.stringify(nextMigrations.slice(0, oldMigrations.length)) !== JSON.stringify(oldMigrations)) return null;
+    const appended = nextMigrations.slice(oldMigrations.length).map(migration => ({
+      version: migration.version, description: migration.description, up: migration.up,
+    }));
+    if (!appended.every(migration => additiveMigrationStatements(migration.up))) return null;
+    plan.push({ id, migrations: appended });
+  }
+  const totalBytes = plan.reduce((sum, gadget) => sum + gadget.migrations.reduce((nested, migration) => nested
+    + new TextEncoder().encode(JSON.stringify(migration)).byteLength, 0), 0);
+  if (!plan.length || plan.reduce((count, gadget) => count + gadget.migrations.length, 0) > 32 || totalBytes > 128_000
+    || normalizeGadgetMigrationLists(current) !== normalizeGadgetMigrationLists(candidate)) return null;
+  return plan.sort((left, right) => left.id.localeCompare(right.id));
+}
+
 export interface SpaceSharedGadgetMigrationPlanEntry {
   id: string;
   source: "bundle";

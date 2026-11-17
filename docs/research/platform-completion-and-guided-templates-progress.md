@@ -1,8 +1,8 @@
-## Local checkpoint — 2026-11-17 (staged Project update replay)
+## Local checkpoint — 2026-11-17 (Project Gadget migration apply; not yet pushed)
 
-After `17f005a5`, owner/admin callers can query a durable update receipt scoped by tenant/Space/Project/install/request. Review results expose request ID; Canvas/Gadget and workflow callers display status. Active receipts replay idempotently; a same-request retry can resume a staged receipt after token expiry only after gateway and SpaceDO revalidate all receipt/candidate pins and publisher trust. The worker reuses actor initialization and activation. Focused SpaceDO install/runtime, migration and review tests **49/49**, Spaces/Shell typechecks and diff check pass. Local mocks only. The shared Canvas/Gadget API performs one bounded identical retry on network/5xx failure only for a signed reviewed update; normal installs and conflicts are not retried.
+Recovery commits `17f005a5`/`06432f71` are remote. The Project update contract now permits only appended bounded additive SQL migrations on otherwise unchanged Gadgets. Owner review returns the exact SQL; Canvas/Gadget apply requests explicit confirmation. The route signs Project/install/source/candidate/generation migration claims and invokes MicroAppDO's durable receipt before candidate initialization/activation. Update failures preserve the staged receipt for exact retry. Tests: Spaces contract/review/runtime/schema suites **56/56**, Shell retry **2/2**; Spaces/Shell typechecks and diff check pass. Mocks only, no live acceptance.
 
-Exact next action: wire Project-bound additive Gadget migration into reviewed updates and recover migration/activation failures. Continue remaining independent work across all active plans; rollout disabled.
+Remaining: integration tests for routed migration, migration replay after activation failure, key revocation and multi-Gadget partial recovery. Exact next action: add these tests, then continue other independent implementation gaps across all active plans. Rollout disabled.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (Project update receipt through activation; `53d07a16` pushed)
 

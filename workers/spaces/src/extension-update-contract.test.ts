@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { LIST_LOW_STOCK_INPUT_SCHEMA, LIST_LOW_STOCK_OUTPUT_SCHEMA, validateExtensionManifest } from "@naelao/agent-sdk";
 import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
   spaceSharedDependencyExpansion, spaceSharedGadgetMigrationRetentionPlan, supportsOwnerApprovedSpaceSharedDependencyExpansion,
-  supportsVersionOnlySpaceSharedCodeUpdate, supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
+  projectBoundGadgetMigrationPlan, supportsVersionOnlySpaceSharedCodeUpdate, supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
 
 function packageManifest(version: string, options: { channel?: boolean; gadget?: boolean; dynamicCanvas?: boolean; permission?: string } = {}) {
   return validateExtensionManifest({
@@ -52,6 +52,18 @@ function readActionPackage(version: string, migrations: Array<{ version: number;
         component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false }, gadget,
     ] },
   }, { gatekeeperCapabilities: ["extension.project_canvas", "extension.gadget.business_action"] });
+}
+
+function projectGadgetPackage(version: string, migrations: Array<{ version: number; description: string; up: string }>) {
+  return validateExtensionManifest({ id: "ext_update_contract", type: "extension", declaredPermissions: [],
+    capabilityRequirements: ["extension.project_canvas"], gadgets: [], daemons: [], commands: [],
+    bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_update_contract", version, primitives: [
+      { schemaVersion: "1.0", kind: "canvas", id: "dashboard", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+        component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false },
+      { schemaVersion: "1.0", kind: "gadget", id: "records", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+        scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE records(id TEXT PRIMARY KEY);", migrations },
+    ] },
+  }, { gatekeeperCapabilities: ["extension.project_canvas"] });
 }
 
 describe("Space-shared code-only update contract", () => {
@@ -159,5 +171,19 @@ describe("Space-shared code-only update contract", () => {
         ? { ...primitive, version: "1.2.0", handlerScript: "./changed.ts" } : { ...primitive, version: "1.2.0" }) } });
     expect(spaceSharedDependencyExpansion(current, changedHandler)).toBeNull();
     expect(spaceSharedDependencyExpansion(candidate, current)).toBeNull();
+  });
+});
+
+describe("Project-bound Gadget migration plan", () => {
+  it("allows only appended additive migrations with all other package fields pinned", () => {
+    const first = { version: 1, description: "create records", up: "CREATE TABLE records(id TEXT PRIMARY KEY);" };
+    const added = { version: 2, description: "add status", up: "ALTER TABLE records ADD COLUMN status TEXT DEFAULT 'open';" };
+    expect(projectBoundGadgetMigrationPlan(projectGadgetPackage("1.0.0", [first]),
+      projectGadgetPackage("2.0.0", [first, added]))).toEqual([{ id: "records", migrations: [added] }]);
+    expect(projectBoundGadgetMigrationPlan(projectGadgetPackage("1.0.0", [first]),
+      projectGadgetPackage("2.0.0", [first, { ...added, up: "DROP TABLE records;" }]))).toBeNull();
+    expect(projectBoundGadgetMigrationPlan(projectGadgetPackage("1.0.0", [first]),
+      validateExtensionManifest({ ...projectGadgetPackage("2.0.0", [first, added]), declaredPermissions: ["assistant.phone.simulate"] },
+        { gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.simulate"] }))).toBeNull();
   });
 });

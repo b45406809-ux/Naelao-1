@@ -55,7 +55,7 @@ import { gadgetActorId } from "./MicroAppDO.js";
 import { isMicroAppArchiveOmissions, isMicroAppArchiveSnapshot, MAX_MICRO_APP_ARCHIVE_SNAPSHOTS,
   MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES, MAX_MICRO_APP_ARCHIVE_TOTAL_BYTES, type MicroAppArchiveSnapshot } from "./microapp-archive.js";
 import { isSpaceSharedDependencyPinList, isSpaceSharedGadgetMigrationRetentionPlan, spaceSharedAuthorityExpansion,
-  spaceSharedDependencyExpansion,
+  projectBoundGadgetMigrationPlan, spaceSharedDependencyExpansion,
   spaceSharedGadgetMigrationRetentionPlan, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
   supportsOwnerApprovedSpaceSharedDependencyExpansion, isVersionOnlyManifestChange,
   supportsVersionOnlySpaceSharedPackageUpdate } from "../extension-update-contract.js";
@@ -18783,7 +18783,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             candidateManifestSha256, sourceArtifactSha256: currentPin.artifact_sha256 ?? "", artifactSha256,
             publisherId: body.publisherId ?? "", publisherKeyId: body.publisherKeyId ?? "" })
           || currentPin.publisher_id !== reviewClaims.publisherId || currentPin.publisher_key_id !== reviewClaims.publisherKeyId
-          || !isVersionOnlyManifestChange(currentManifest, manifest))
+          || !isVersionOnlyManifestChange(currentManifest, manifest) && !projectBoundGadgetMigrationPlan(currentManifest, manifest))
           return Response.json({ error_code: "extension_update_review_token_invalid" }, { status: 409 });
         projectUpdateClaims = reviewClaims;
         projectUpdateCandidateManifestSha256 = candidateManifestSha256;

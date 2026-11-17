@@ -2688,6 +2688,7 @@ export interface ProjectExtensionUpdateReview {
   resources: { added: string[]; removed: string[]; changed: string[] };
   dependencies: { added: string[]; removed: string[]; changed: string[] };
   primitives: { added: string[]; removed: string[]; changed: string[] };
+  gadget_migrations?: Array<{ id: string; migrations: Array<{ version: number; description: string; up: string }> }>;
   cost_terms: { status: "unknown"; reason: string };
   apply_supported: boolean;
   apply_block_reason: string | null;

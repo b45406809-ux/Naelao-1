@@ -1042,6 +1042,12 @@ export function ChannelConnect({
         }, session);
         if (!review.apply_supported || !review.update_review_token || (review.update_review_expires_at ?? 0) <= Date.now())
           throw new Error(review.apply_block_reason ?? "This update requires a separate owner review contract.");
+        if (review.gadget_migrations?.length && !window.confirm([
+          "This reviewed update applies append-only SQL migrations to the selected Project Gadget.",
+          ...review.gadget_migrations.flatMap(gadget => gadget.migrations.map(migration =>
+            `${gadget.id} v${migration.version}: ${migration.description}\n${migration.up}`)),
+          "These additive schema changes remain if you later roll back the package version. Apply them?",
+        ].join("\n\n"))) return;
         updateReviewToken = review.update_review_token;
         updateReviewRequestId = review.update_review_request_id;
       }

@@ -59,6 +59,7 @@ export function buildProjectExtensionUpdateReview(input: {
   updateReviewToken?: string;
   updateReviewExpiresAt?: number;
   updateReviewRequestId?: string;
+  gadgetMigrations?: Array<{ id: string; migrations: Array<{ version: number; description: string; up: string }> }>;
 }) {
   const current = input.current as any;
   const candidate = input.candidate as any;
@@ -89,6 +90,7 @@ export function buildProjectExtensionUpdateReview(input: {
     dependencies: rows(currentDependencies, candidateDependencies),
     primitives: rows((current.bundle?.primitives ?? []).filter((row: any): row is { id: string } => typeof row.id === "string"),
       (candidate.bundle?.primitives ?? []).filter((row: any): row is { id: string } => typeof row.id === "string")),
+    gadget_migrations: (input.gadgetMigrations ?? []).map(gadget => ({ id: gadget.id, migrations: gadget.migrations })),
     cost_terms: { status: "unknown", reason: "the extension release contract has no approved price or metering terms" },
     review: { apply_supported: input.applySupported === true, apply_block_reason: input.applyBlockReason ?? null,
       mutates_installation: false as const },

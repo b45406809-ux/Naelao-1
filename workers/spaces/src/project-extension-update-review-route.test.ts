@@ -26,18 +26,31 @@ const candidateManifest = validateExtensionManifest({ ...currentManifest,
     workerRoles: [{ id: "reader", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./read.ts", primitiveIds: ["read_file"] }] },
 }, { gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.simulate"] });
 
-function harness(options: { generation?: number; activeKey?: boolean; status?: "active" | "disabled"; candidate?: typeof candidateManifest } = {}) {
+function projectGadgetManifest(version: string, migrations: Array<{ version: number; description: string; up: string }>) {
+  return validateExtensionManifest({ id: extensionId, type: "extension", declaredPermissions: [],
+    capabilityRequirements: ["extension.project_canvas"], gadgets: [], daemons: [], commands: [],
+    bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: extensionId, version, primitives: [
+      { schemaVersion: "1.0", kind: "canvas", id: "dashboard", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+        component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false },
+      { schemaVersion: "1.0", kind: "gadget", id: "records", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+        scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE records(id TEXT PRIMARY KEY);", migrations },
+    ] },
+  }, { gatekeeperCapabilities: ["extension.project_canvas"] });
+}
+
+function harness(options: { generation?: number; activeKey?: boolean; status?: "active" | "disabled"; candidate?: typeof candidateManifest;
+  current?: typeof currentManifest } = {}) {
   const requests: Request[] = [];
   const installed = { instance_id: "instance-a", extension_id: extensionId, project_id: "project-a", scope: "PROJECT_BOUND",
     status: options.status ?? "active", generation: options.generation ?? 4, release_version: "1.0.0", manifest_sha256: "pending",
     pinned_artifact_sha256: "b".repeat(64), publisher_id: "publisher-a", publisher_key_id: publisherKeyId,
-    publisher_attestation_valid: true, manifest: currentManifest };
+    publisher_attestation_valid: true, manifest: options.current ?? currentManifest };
   const stub = { fetch: vi.fn(async (request: Request) => {
     requests.push(request);
     const url = new URL(request.url);
     if (url.pathname === "/projects/project-a/automation-access") return Response.json({ project_id: "project-a", can_manage: true });
     if (url.pathname === "/extension-installations") return Response.json({ installations: [{ ...installed,
-      manifest_sha256: await digestExtensionManifest(currentManifest) }] });
+      manifest_sha256: await digestExtensionManifest(options.current ?? currentManifest) }] });
     if (url.pathname === "/extension-releases") return Response.json({ releases: [{ version: "2.0.0", manifest: options.candidate ?? candidateManifest,
       artifactSha256: "c".repeat(64), signatureValid: true, publisher: { id: "publisher-a", keyId: publisherKeyId } }] });
     if (url.pathname === "/extension-runtime-work") return Response.json({ active_work_count: 0 });
@@ -109,5 +122,18 @@ describe("PROJECT_BOUND extension update review route", () => {
     expect(result.update_review_expires_at).toBeGreaterThan(Date.now());
     expect(result.apply_block_reason).toBeNull();
     expect(h.requests.some(request => new URL(request.url).pathname === "/extension-installation/activate")).toBe(false);
+  });
+
+  it("reviews only appended additive Project Gadget migrations and returns the exact SQL", async () => {
+    const oldMigration = { version: 1, description: "create records", up: "CREATE TABLE records(id TEXT PRIMARY KEY);" };
+    const addedMigration = { version: 2, description: "add status", up: "ALTER TABLE records ADD COLUMN status TEXT DEFAULT 'open';" };
+    const current = projectGadgetManifest("1.0.0", [oldMigration]);
+    const candidate = projectGadgetManifest("2.0.0", [oldMigration, addedMigration]);
+    const h = harness({ status: "disabled", current, candidate });
+    const requestBody = body();
+    requestBody.expected_manifest_sha256 = await digestExtensionManifest(current);
+    const response = await post(h.env, requestBody);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ apply_supported: true, gadget_migrations: [{ id: "records", migrations: [addedMigration] }] });
   });
 });
