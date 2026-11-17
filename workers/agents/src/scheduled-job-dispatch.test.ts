@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { claimScheduledJobDispatch, releaseScheduledJobDispatch } from "./scheduled-job-dispatch.js";
+import { claimScheduledJobDispatch, releaseScheduledJobDispatch, scheduledJobDispatchSnapshotCurrent } from "./scheduled-job-dispatch.js";
 
-function makeDb(firstResult: { claim_token: string } | null) {
+function makeDb(firstResult: unknown) {
   const statements: Array<{ sql: string; values: unknown[] }> = [];
   const db = {
     prepare(sql: string) {
@@ -40,5 +40,30 @@ describe("scheduled job dispatch claims", () => {
     expect(statements).toHaveLength(1);
     expect(statements[0]!.sql).toContain("claim_token = ? AND status = 'running'");
     expect(statements[0]!.values).toEqual(["completed", 2_000, "job-1", 10, "claim-1"]);
+  });
+
+  it("revalidates the full owner authorization snapshot after claiming", async () => {
+    const { db, statements } = makeDb({ current: 1 });
+    const current = await scheduledJobDispatchSnapshotCurrent(db, {
+      jobId: "job-1", spaceId: "space-1", tenantId: "tenant-1", updatedAt: "2026-11-17T12:00:00Z",
+      projectId: "project-1", cronExpression: "0 * * * *", scriptName: "review", params: "{}", agentId: null,
+      goal: null, quietHoursStart: null, quietHoursEnd: null, quietHoursTimezone: "UTC",
+    });
+    expect(current).toBe(true);
+    expect(statements[0]!.sql).toContain("enabled=1 AND updated_at=? AND project_id=?");
+    expect(statements[0]!.sql).toContain("agent_id IS ? AND goal IS ?");
+    expect(statements[0]!.values).toEqual([
+      "job-1", "space-1", "tenant-1", "2026-11-17T12:00:00Z", "project-1", "0 * * * *", "review", "{}",
+      null, null, null, null, "UTC",
+    ]);
+  });
+
+  it("fails closed if the job was paused, removed, or edited after the initial read", async () => {
+    const { db } = makeDb(null);
+    await expect(scheduledJobDispatchSnapshotCurrent(db, {
+      jobId: "job-1", spaceId: "space-1", tenantId: "tenant-1", updatedAt: "old",
+      projectId: "project-1", cronExpression: "0 * * * *", scriptName: "review", params: "{}", agentId: null,
+      goal: null, quietHoursStart: null, quietHoursEnd: null, quietHoursTimezone: "UTC",
+    })).resolves.toBe(false);
   });
 });

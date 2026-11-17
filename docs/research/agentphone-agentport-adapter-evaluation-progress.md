@@ -4,6 +4,8 @@ The supplied AgentPhone plan was directly fetched from origin commit `3ef8416554
 
 TBR invitation implementation now accepts an optional role from an exact active signed blueprint, carries the digest through the invite, revalidates on redemption and persists a non-granting review. This adds no AgentPhone support. Local tests and migration inventory are recorded in AGENTS and the relevant ledgers. No provider registration, provisioning, call, message, credential disclosure or spend occurred.
 
+AgentPort SDK metadata access is now typed at pushed commit `20db3bf9553605b82f6f686d388027452dc4aca9`: `listServices`/`discoverServices` return provider-declared metadata and `getServiceMetadata` reads one declaration. The SDK docs expressly distinguish declarations from verified Naelao support, authority, region, entitlement and live behavior. SDK tests **15/15**, SDK/Agents typechecks and AgentPort worker route tests **14/14** pass locally. This is not an AgentPhone adapter or provider acceptance.
+
 Exact AP action after the next TBR06 grant-authority slice: implement generic provider-neutral SDK/setup documentation only against capability entries that are already operator-verified; keep AgentPhone absent/unavailable until its API, auth, event, channel, region, commercial and live acceptance evidence is verified.
 
 # AgentPhone and AgentPort adapter evaluation progress

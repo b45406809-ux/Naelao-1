@@ -34,6 +34,28 @@ export async function claimScheduledJobDispatch(
   return row?.claim_token ?? null;
 }
 
+/** Revalidate the exact owner-configured wake after acquiring its queue lease. An administrator
+ * may pause, delete, retarget, or edit a job between the initial due-row read and the effect.
+ * The lease is not permission to execute an older action snapshot. This narrows that window; it
+ * does not claim to cancel an effect already in flight after this check. */
+export async function scheduledJobDispatchSnapshotCurrent(
+  db: D1Database,
+  input: {
+    jobId: string; spaceId: string; tenantId: string; updatedAt: string; projectId: string;
+    cronExpression: string; scriptName: string; params: string; agentId: string | null; goal: string | null;
+    quietHoursStart: string | null; quietHoursEnd: string | null; quietHoursTimezone: string;
+  },
+): Promise<boolean> {
+  const current = await db.prepare(`SELECT 1 AS current FROM scheduled_jobs
+    WHERE id=? AND space_id=? AND tenant_id=? AND enabled=1 AND updated_at=? AND project_id=?
+      AND cron_expression=? AND script_name=? AND params=? AND agent_id IS ? AND goal IS ?
+      AND quiet_hours_start IS ? AND quiet_hours_end IS ? AND quiet_hours_timezone=? LIMIT 1`)
+    .bind(input.jobId, input.spaceId, input.tenantId, input.updatedAt, input.projectId, input.cronExpression,
+      input.scriptName, input.params, input.agentId, input.goal, input.quietHoursStart, input.quietHoursEnd,
+      input.quietHoursTimezone).first<{ current: number }>();
+  return current?.current === 1;
+}
+
 /** Mark a claim terminal before allowing later sweeps to proceed. A duplicate delivery for the
  * same sweep remains deduplicated by its primary key even after this status update. */
 export async function releaseScheduledJobDispatch(

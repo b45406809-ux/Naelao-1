@@ -67,7 +67,7 @@ import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./conne
 import { deployedContainerCatalogue, deployedDynamicImages } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
 import { isWithinScheduledQuietHours } from "@naelao/types";
-import { claimScheduledJobDispatch, releaseScheduledJobDispatch } from "./scheduled-job-dispatch.js";
+import { claimScheduledJobDispatch, releaseScheduledJobDispatch, scheduledJobDispatchSnapshotCurrent } from "./scheduled-job-dispatch.js";
 import { claimProjectStewardRun, finishProjectStewardRun } from "./project-steward-dispatch.js";
 import { enqueueExtensionJobOutbox, handleExtensionJobTick, type ExtensionJobEnvironment } from "./workflows/extension-jobs.js";
 import { rankProjectStewardReviews } from "../../spaces/src/project-steward.js";
@@ -10149,7 +10149,7 @@ const SCHEDULED_JOB_MAX_CONSECUTIVE_FAILURES = 5;
 interface ScheduledJobRow {
   id: string; space_id: string; tenant_id: string; project_id: string;
   cron_expression: string; script_name: string; params: string; last_run_at: number | null;
-  created_at: string; consecutive_failures: number;
+  created_at: string; updated_at: string; consecutive_failures: number;
   /** Which agent's own DO/config to wake. NULL = "naelao-agent" (the Space Assistant),
    *  unchanged default behavior from before these columns existed (migration 0043). */
   agent_id: string | null;
@@ -10356,7 +10356,7 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
           console.error(`[agent-ticks] cron check failed job=${row.id} space=${row.space_id}:`, (err as Error).message);
           await recordScheduledJobFailure(
             env,
-            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: row.project_id, cron_expression: row.cron_expression, script_name: "", params: "{}", agent_id: null, goal: null, quiet_hours_start: row.quiet_hours_start, quiet_hours_end: row.quiet_hours_end, quiet_hours_timezone: row.quiet_hours_timezone, last_run_at: row.last_run_at, created_at: row.created_at, consecutive_failures: 0 },
+            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: row.project_id, cron_expression: row.cron_expression, script_name: "", params: "{}", agent_id: null, goal: null, quiet_hours_start: row.quiet_hours_start, quiet_hours_end: row.quiet_hours_end, quiet_hours_timezone: row.quiet_hours_timezone, last_run_at: row.last_run_at, created_at: row.created_at, updated_at: row.created_at, consecutive_failures: 0 },
             now,
             (err as Error).message
           );
@@ -10764,7 +10764,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       // script_name/params changed — always act on current state.
       const row = await env.PLATFORM_DB.prepare(
         `SELECT id, space_id, tenant_id, project_id, cron_expression, script_name, params, agent_id, goal,
-                quiet_hours_start, quiet_hours_end, quiet_hours_timezone, last_run_at, created_at, consecutive_failures
+                quiet_hours_start, quiet_hours_end, quiet_hours_timezone, last_run_at, created_at, updated_at, consecutive_failures
            FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ? AND enabled = 1`
       ).bind(msg.jobId, msg.spaceId, msg.tenantId).first<ScheduledJobRow>();
       if (!row) return; // deleted or already disabled since enqueue — nothing to do.
@@ -10784,6 +10784,21 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const dispatchStarted = Date.now();
       let claimStatus: "completed" | "failed" | "skipped" = "failed";
       try {
+        // A pause, revoke, or owner edit may race the first row read and queue claim. Revalidate
+        // the exact current authorization snapshot after the lease and immediately before any
+        // planner/script dispatch. The scheduled job itself is the only current owner-approved
+        // unattended intent; do not silently execute a stale target or params snapshot.
+        const stillAuthorized = await scheduledJobDispatchSnapshotCurrent(env.PLATFORM_DB, {
+          jobId: row.id, spaceId: row.space_id, tenantId: row.tenant_id, updatedAt: row.updated_at,
+          projectId: row.project_id, cronExpression: row.cron_expression, scriptName: row.script_name,
+          params: row.params, agentId: row.agent_id, goal: row.goal, quietHoursStart: row.quiet_hours_start,
+          quietHoursEnd: row.quiet_hours_end, quietHoursTimezone: row.quiet_hours_timezone,
+        });
+        if (!stillAuthorized) {
+          await recordScheduledJobRun(env, row, { ok: false, error: "authorization_changed_before_dispatch", firedAt: now });
+          claimStatus = "skipped";
+          return;
+        }
         // Goal-based scheduled wakes get the compact diagnostics context used by connector polls.
         // This stays outside the persisted job goal, and lookup failure degrades to the standing
         // advance directive instead of suppressing the scheduled work.
