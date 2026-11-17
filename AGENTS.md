@@ -6,8 +6,8 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is EP04 Project update-flow reconciliation (code was already present; docs push pending),
-  after bounded PPTX tables (`34800a4a`), task OCR settings (`7aee2ef1`) and P04 restore (`946e1881`,
+  checkpoint is K02/K03 ledger correction (`def365b3`) pushed, after EP04 Project update-flow
+  reconciliation (`c2c8f8d0`), bounded PPTX tables (`34800a4a`), task OCR settings (`7aee2ef1`) and P04 restore (`946e1881`,
   pointer `084e4f94`) were pushed. Current EP04 review/apply/recovery has exact pin/trust/dependency/
   migration checks and reachable Shell callers. Spaces suites 47/47, Shell API suite 2/2 and both
   typechecks pass locally. This corrects a stale ledger gap; no new EP04 code or live acceptance.
@@ -38,16 +38,17 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (EP04 Project update flow already implemented; reconciliation pending push)
+## Current checkpoint — 2026-11-17 (K02/K03 status corrected after PPTX table support; pushed as `def365b3`)
 
-Current code already provides the PROJECT_BOUND update review, verified candidate pins, owner apply,
-durable update receipt, and recovery route/UI. The old matrix incorrectly called it uncoded. Spaces
-review/route/DO/apply suites **47/47**, Shell retry/API tests **2/2**, Spaces/Shell typechecks and diff
-hygiene pass. Local mocks only; no browser, deployed or publisher acceptance. Cost terms remain unknown.
+The Knowledge matrix now credits the pushed bounded PPTX table-cell extraction (`34800a4a`) while keeping
+visual layout, scanned-image Knowledge OCR and quality evidence open. The prior EP04 source reconciliation
+is also durable at `c2c8f8d0`: update review/apply/receipt/recovery already exists, covered locally by
+Spaces **47/47** and Shell **2/2** focused tests and both typechecks. No live provider/deployment/browser
+acceptance; cost terms remain unknown.
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
 
-Exact next action: continue SC03 durable dispatch only if the host can persist explicit invocation
+Code `def365b3` is pushed to `origin/Mcbt5s-Backup-2`. Exact next action: continue SC03 durable dispatch only if the host can persist explicit invocation
 consent, exact authority revision and a fresh Billing hold for alarm-safe launch. Current
 `nativeGrantRevision` includes request-scoped role/clamp and live grant closures; no durable job receipt
 or revalidator exists. Keep replay disabled if that contract is unavailable and continue another
