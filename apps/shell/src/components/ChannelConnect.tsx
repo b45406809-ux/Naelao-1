@@ -794,7 +794,39 @@ export function ChannelConnect({
         id: typeof bundle.id === "string" ? bundle.id : "Unknown extension",
         version: typeof bundle.version === "string" ? bundle.version : "Unknown version",
         primitives: primitives.map(item => ({ id: typeof item.id === "string" ? item.id : "unnamed", kind: typeof item.kind === "string" ? item.kind : "unknown",
-          detail: item.kind === "workflow" && typeof item.entry === "string" ? item.entry : item.kind === "canvas" && typeof item.component === "string" ? item.component : undefined })),
+          detail: item.kind === "workflow" && typeof item.entry === "string" ? item.entry : item.kind === "canvas" && typeof item.component === "string" ? item.component : undefined,
+          scope: typeof item.scope === "string" ? item.scope : undefined,
+          hasSchema: item.kind === "gadget" && typeof item.schemaSql === "string",
+          migrations: Array.isArray(item.migrations) ? item.migrations.slice(0, 128).flatMap(migration => {
+            if (!migration || typeof migration !== "object" || Array.isArray(migration)) return [];
+            const row = migration as Record<string, unknown>;
+            return Number.isSafeInteger(row.version) && Number(row.version) > 0 && typeof row.description === "string"
+              ? [{ version: Number(row.version), description: row.description.slice(0, 256) }] : [];
+          }) : [],
+          actions: Array.isArray(item.businessActions) ? item.businessActions.slice(0, 64).flatMap(action => {
+            if (!action || typeof action !== "object" || Array.isArray(action)) return [];
+            const row = action as Record<string, unknown>;
+            return typeof row.id === "string" ? [row.id.slice(0, 96)] : [];
+          }) : [],
+          toolNames: Array.isArray(item.toolNames) ? item.toolNames.slice(0, 128).filter((name): name is string => typeof name === "string").map(name => name.slice(0, 96)) : [] })),
+        legacyGadgets: Array.isArray(root.gadgets) ? root.gadgets.slice(0, 64).flatMap(gadget => {
+          if (!gadget || typeof gadget !== "object" || Array.isArray(gadget)) return [];
+          const row = gadget as Record<string, unknown>;
+          if (typeof row.id !== "string") return [];
+          const migrations = Array.isArray(row.migrations) ? row.migrations.slice(0, 128).flatMap(migration => {
+            if (!migration || typeof migration !== "object" || Array.isArray(migration)) return [];
+            const item = migration as Record<string, unknown>;
+            return Number.isSafeInteger(item.version) && Number(item.version) > 0 && typeof item.description === "string"
+              ? [{ version: Number(item.version), description: item.description.slice(0, 256) }] : [];
+          }) : [];
+          const actions = Array.isArray(row.businessActions) ? row.businessActions.slice(0, 64).flatMap(action => {
+            if (!action || typeof action !== "object" || Array.isArray(action)) return [];
+            const item = action as Record<string, unknown>;
+            return typeof item.id === "string" ? [item.id.slice(0, 96)] : [];
+          }) : [];
+          return [{ id: row.id.slice(0, 96), scope: typeof row.scope === "string" ? row.scope : "scope missing",
+            hasSchema: typeof row.defaultSchemaSql === "string", migrations, actions }];
+        }) : [],
         roles: roles.map(role => ({ id: typeof role.id === "string" ? role.id : "unnamed role", principal: typeof role.principal === "string" ? role.principal : "principal missing",
           invocation: typeof role.invocation === "string" ? role.invocation : "invocation missing", execution: typeof role.execution === "string" ? role.execution : "execution missing",
           parts: Array.isArray(role.primitiveIds) ? role.primitiveIds.filter((id): id is string => typeof id === "string") : [],
@@ -1246,7 +1278,15 @@ export function ChannelConnect({
           {bundlePreview && <section aria-label="Extension package map" style={{ border: "1px solid var(--border)", borderRadius: 7, padding: 9, fontSize: 11.5 }}>
             <div style={{ fontWeight: 650, marginBottom: 5 }}>Package map{("id" in bundlePreview) ? ` · ${bundlePreview.id} v${bundlePreview.version}` : ""}</div>
             {"error" in bundlePreview ? <div role="status" style={{ color: "var(--text3)" }}>{bundlePreview.error}</div> : <>
-              <div style={{ display: "grid", gap: 3 }}>{bundlePreview.primitives.map((part, index) => <div key={`${part.id}-${index}`}>Part <code>{part.id}</code> · {part.kind}{part.detail ? ` · ${part.detail}` : ""}</div>)}</div>
+              <div style={{ display: "grid", gap: 3 }}>{bundlePreview.primitives.map((part, index) => <div key={`${part.id}-${index}`}>
+                Part <code>{part.id}</code> · {part.kind}{part.detail ? ` · ${part.detail}` : ""}{part.scope ? ` · scope ${part.scope}` : ""}
+                {part.hasSchema && " · schema declared"}{part.migrations.length > 0 && ` · migrations: ${part.migrations.map(migration => `v${migration.version} ${migration.description}`).join("; ")}`}
+                {part.actions.length > 0 && ` · business actions: ${part.actions.join(", ")}`}{part.toolNames.length > 0 && ` · workflow tools: ${part.toolNames.join(", ")}`}
+              </div>)}</div>
+              {bundlePreview.legacyGadgets.length > 0 && <div style={{ marginTop: 7 }}><strong>Legacy Gadget declarations</strong>{bundlePreview.legacyGadgets.map(gadget => <div key={gadget.id}>
+                <code>{gadget.id}</code> · {gadget.scope}{gadget.hasSchema && " · schema declared"}{gadget.migrations.length > 0 && ` · migrations: ${gadget.migrations.map(migration => `v${migration.version} ${migration.description}`).join("; ")}`}
+                {gadget.actions.length > 0 && ` · business actions: ${gadget.actions.join(", ")}`}
+              </div>)}</div>}
               {bundlePreview.roles.length > 0 && <div style={{ marginTop: 7 }}><strong>Worker bindings</strong>{bundlePreview.roles.map((role, index) => <div key={`${role.id}-${index}`} style={{ marginTop: 2 }}><code>{role.id}</code> · {role.principal} · {role.invocation} on {role.execution} · parts: {role.parts.join(", ") || "none"}{role.grants.length ? ` · declared operations: ${role.grants.join(", ")}` : ""}</div>)}</div>}
               {bundlePreview.connections.length > 0 && <div style={{ marginTop: 7 }}><strong>Host connections</strong>{bundlePreview.connections.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}</div>}
               {bundlePreview.knowledge.length > 0 && <div style={{ marginTop: 7 }}><strong>Knowledge grants</strong>{bundlePreview.knowledge.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}</div>}
