@@ -350,6 +350,32 @@ describe("UserPort to AgentPort connector synchronization", () => {
     expect(t.port.calls.filter(call=>call.path.endsWith("/revoke"))).toHaveLength(1);
   });
 
+  it("does not persist an active binding if the connector is disabled during AgentPort grant", async () => {
+    const t=setup();
+    t.port.onGrant(()=>t.f.db.db.prepare("UPDATE mcp_servers SET enabled=0 WHERE id='server-1'").run());
+    await expect(syncUserPortAgentPortConnector(t.env,scope,"alias-1",["GMAIL_SEND"]))
+      .rejects.toThrow("userport_connector_sync_scope_changed");
+    expect(t.f.db.db.prepare("SELECT status FROM agentport_userport_connector_bindings WHERE alias_id='alias-1'").get())
+      .toMatchObject({status:"revoked"});
+    expect(t.f.db.db.prepare("SELECT status,error_code FROM managed_service_operations WHERE operation_name='agentport_connector_sync'").get())
+      .toMatchObject({status:"cancelled",error_code:"userport_connector_sync_scope_changed"});
+    expect(t.port.calls.filter(call=>call.path.endsWith("/grants"))).toHaveLength(1);
+    expect(t.port.calls.filter(call=>call.path.endsWith("/revoke"))).toHaveLength(1);
+  });
+
+  it("revokes the account if an owner-selected tool disappears before binding persistence", async () => {
+    const t=setup();
+    t.port.onGrant(()=>t.hubFetch.mockResolvedValue(Response.json({tools:[{name:"GMAIL_LIST"}]})));
+    await expect(syncUserPortAgentPortConnector(t.env,scope,"alias-1",["GMAIL_SEND"]))
+      .rejects.toThrow("userport_connector_sync_scope_changed");
+    expect(t.f.db.db.prepare("SELECT status FROM agentport_userport_connector_bindings WHERE alias_id='alias-1'").get())
+      .toMatchObject({status:"revoked"});
+    expect(t.f.db.db.prepare("SELECT status,error_code FROM managed_service_operations WHERE operation_name='agentport_connector_sync'").get())
+      .toMatchObject({status:"cancelled",error_code:"userport_connector_sync_scope_changed"});
+    expect(t.hubFetch).toHaveBeenCalledTimes(2);
+    expect(t.port.calls.filter(call=>call.path.endsWith("/revoke"))).toHaveLength(1);
+  });
+
   it("cleans an uncertain AgentPort account when the owner link is revoked before scheduled retry", async () => {
     const t=setup();
     t.port.failNextGrant();

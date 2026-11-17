@@ -181,6 +181,19 @@ async function ownerPrincipal(env: AgentsEnv, scope: CommunicationScope, alias: 
   return { ownerType: "user" as const, ownerId: scope.userId, principalId };
 }
 
+async function userPortSelectionIsCurrent(env: AgentsEnv, scope: CommunicationScope, original: UserPortAliasRow,
+  connectionHash: string, actions: ToolAction[]): Promise<boolean> {
+  const current = await userPortAlias(env, scope, original.id);
+  if (!current || current.enabled !== 1 || current.id !== original.id || current.server_id !== original.server_id
+    || current.scope !== original.scope || current.project_id !== original.project_id || current.user_id !== original.user_id
+    || current.provider !== original.provider || current.granted_scopes_json !== original.granted_scopes_json
+    || await digest(current.provider_connection_id ?? `direct:${current.server_id}`) !== connectionHash) return false;
+  try {
+    const available = new Set((await discoverTools(env, scope, current)).map(tool => tool.name));
+    return actions.every(action => available.has(action.toolName));
+  } catch { return false; }
+}
+
 async function revokeAgentPortAccount(env: AgentsEnv, tenantId: string, accountId: string) {
   if (!validId(accountId)) throw new Error("userport_agentport_account_invalid");
   const { response, result } = await agentPort(env, tenantId, `/accounts/${encodeURIComponent(accountId)}/revoke`, "POST", {}, true);
@@ -398,6 +411,26 @@ async function syncUserPortAgentPortConnectorInternal(env: AgentsEnv, scope: Com
         .bind(at,operation.operationId,scope.tenantId).run();
       throw new Error("userport_owner_link_revoked");
     }
+    // AgentPort creation/grant calls are external and can take long enough for an owner to
+    // disable or edit the alias. Recheck the exact current connector and selected tool set at
+    // the host persistence boundary; an old remote grant must never become an active binding.
+    if (!await userPortSelectionIsCurrent(env, scope, alias, hashOfConnection, actionMap)) {
+      try {
+        await revokeAgentPortAccount(env, scope.tenantId, accountId);
+        if (priorAccountToRetire && priorAccountToRetire !== accountId)
+          await revokeAgentPortAccount(env, scope.tenantId, priorAccountToRetire);
+      } catch (error) {
+        await finishConnectorSyncOperation(env, scope.tenantId, operation.operationId, "uncertain",
+          new Error("userport_connector_cleanup_requested"), accountId).catch(() => undefined);
+        throw new Error("userport_connector_cleanup_pending", { cause: error });
+      }
+      await persistRevokedUserPortBinding(env,{scope,alias,ownerLinkId,serviceId,agentId,hostResourceId:resource,
+        connectionHash:hashOfConnection,actions:actionMap,revision,operationId:operation.operationId});
+      await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='cancelled',error_code='userport_connector_sync_scope_changed',
+        lease_until=NULL,next_reconcile_at=NULL,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'`)
+        .bind(new Date().toISOString(),operation.operationId,scope.tenantId).run();
+      throw new Error("userport_connector_sync_scope_changed");
+    }
     await env.PLATFORM_DB.prepare(`INSERT INTO agentport_userport_connector_bindings(
       tenant_id,space_id,alias_id,server_id,owner_link_id,provider,provider_connection_sha256,service_id,account_id,agent_id,
       host_resource_id,tool_actions_json,revision,status,previous_account_id,created_by,created_at,updated_at,revoked_at)
@@ -420,6 +453,7 @@ async function syncUserPortAgentPortConnectorInternal(env: AgentsEnv, scope: Com
     await finishConnectorSyncOperation(env, scope.tenantId, operation.operationId, "complete", undefined, accountId);
     return { aliasId, accountId, serviceId, agentId, operations: actionMap.map((entry) => entry.toolName), revision, idempotent: false };
   } catch (error) {
+    if (error instanceof Error && error.message === "userport_connector_cleanup_pending") throw error;
     await finishConnectorSyncOperation(env, scope.tenantId, operation.operationId, "uncertain", error).catch(() => undefined);
     throw error;
   }

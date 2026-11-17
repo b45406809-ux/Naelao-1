@@ -1,3 +1,9 @@
+## Current S2 cross-plan checkpoint — 2026-11-17 (UserPort post-grant reauthorization; local)
+
+UserPort sync now rechecks the exact alias identity, enabled connector/provider/connection digest, granted scopes and every selected tool after AgentPort account/grant calls and before persisting an active binding. If the alias or selection changed during remote work, the exact account is revoked, a revoked local binding is recorded, and the sync operation is cancelled; if cleanup is uncertain, the operation retains the cleanup request for scheduled reconciliation. Focused UserPort lifecycle suite **19/19**, Agents typecheck pass. No provider action was issued beyond local AgentPort/MCP fakes; no live provider or deployed acceptance.
+
+The prior UserPort lifecycle ledger described unlink and retry but did not fence this in-flight edit/disable race. S2 remains partial for supported-provider live acceptance and other lifecycle contracts. Exact next action: continue S3/U05 against the actual owner-authorized runtime allocation path; preserve fail-closed capability qualification and do not fabricate provider attestations. SC03 disconnected dispatch still requires its explicit durable authority, encrypted request and Billing contract (see shared-compute ledger). Keep rollout disabled and preserve `infra/scripts/__pycache__/`.
+
 ## Cross-plan checkpoint — 2026-11-17 (`62ce248e` pushed)
 
 Scheduled identity/revision now persists in Project spend reservation and settlement receipts through SpaceDO migration 157. Agent goal, document-inference, direct-script and decision reservation/settlement paths pass the exact pair; stale retries conflict, uncertain retries require the original pair, and malformed attribution is rejected. SpaceDO tests **12/12**, Spaces/Agents typechecks and diff check pass. Local only; migration is unapplied. Per-job owner-approved action scopes/budgets and in-flight cancellation remain open.
