@@ -55,7 +55,7 @@ describe("scheduled website refresh", () => {
     expect(fetchInternal).not.toHaveBeenCalled();
     expect(f.sqlCalls.some((call) => call.sql.includes("last_error_code='schedule_rollout_disabled'"))).toBe(true);
     expect(f.analytics.writeDataPoint).toHaveBeenCalledWith(expect.objectContaining({
-      blobs: ["website_refresh", "scheduled", "disabled"], doubles: [0, 0, 0, 0, 0, expect.any(Number)], indexes: [],
+      blobs: ["website_refresh", "scheduled", "disabled"], doubles: [0, 0, 0, 0, 0, expect.any(Number), 0], indexes: [],
     }));
   });
 
@@ -81,6 +81,7 @@ describe("scheduled website refresh", () => {
     expect(metric.blobs).toEqual(["website_refresh", "scheduled", "enabled"]);
     expect(JSON.stringify(metric)).not.toContain("tenant-1");
     expect(metric.doubles.slice(0, 5)).toEqual([1, 1, 1, 0, 0]);
+    expect(metric.doubles[6]).toBe(now.getTime() - Date.parse(candidate.due_at));
   });
 
   it("keeps scheduled refresh execution working when Analytics Engine throws", async () => {

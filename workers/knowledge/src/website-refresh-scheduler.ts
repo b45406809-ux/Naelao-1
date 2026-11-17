@@ -23,13 +23,13 @@ interface SchedulePreview {
 export interface ScheduledRefreshRunResult { selected: number; claimed: number; completed: number; failed: number; paused: number }
 type InternalFetcher = (request: Request, env: ScheduleEnvironment, ctx: ExecutionContext) => Promise<Response>;
 
-function emitScheduledRefreshMetrics(env: ScheduleEnvironment, result: ScheduledRefreshRunResult, durationMs: number): void {
+function emitScheduledRefreshMetrics(env: ScheduleEnvironment, result: ScheduledRefreshRunResult, durationMs: number, maxDueLagMs = 0): void {
   try {
     const count = (value: number) => Math.max(0, Math.min(SCHEDULE_BATCH_LIMIT, Math.round(value)));
     env.KNOWLEDGE_ANALYTICS?.writeDataPoint({ blobs: ["website_refresh", "scheduled",
       env.KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED === "true" ? "enabled" : "disabled"],
       doubles: [count(result.selected), count(result.claimed), count(result.completed), count(result.failed), count(result.paused),
-        Math.max(0, Math.min(120_000, Math.round(durationMs)))], indexes: [] });
+        Math.max(0, Math.min(120_000, Math.round(durationMs))), Math.max(0, Math.min(2_592_000_000, Math.round(maxDueLagMs)))], indexes: [] });
   } catch { /* observability must not alter refresh work */ }
 }
 
@@ -137,6 +137,10 @@ export async function runScheduledWebsiteRefreshes(env: ScheduleEnvironment, fet
     ORDER BY rs.next_run_at,rs.id LIMIT ${SCHEDULE_BATCH_LIMIT}`)
     .bind(nowIso, nowIso).all<DueWebsiteRefresh>();
   const result: ScheduledRefreshRunResult = { selected: due.results.length, claimed: 0, completed: 0, failed: 0, paused: 0 };
+  const maxDueLagMs = due.results.reduce((maximum, schedule) => {
+    const dueAt = Date.parse(schedule.due_at);
+    return Number.isFinite(dueAt) ? Math.max(maximum, Math.max(0, now.getTime() - dueAt)) : maximum;
+  }, 0);
   for (const schedule of due.results) {
     const sourceIsCurrent = schedule.document_status === "indexed" || schedule.document_status === "failed";
     const connectionInactive = !schedule.connection_status || schedule.connection_status !== "active";
@@ -215,6 +219,6 @@ export async function runScheduledWebsiteRefreshes(env: ScheduleEnvironment, fet
     }
   }
   await flushWebsiteRefreshUsageOutbox(env, now);
-  emitScheduledRefreshMetrics(env, result, performance.now() - startedAt);
+  emitScheduledRefreshMetrics(env, result, performance.now() - startedAt, maxDueLagMs);
   return result;
 }
