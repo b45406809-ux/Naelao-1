@@ -6,3 +6,4 @@ export * from "./citations.js";
 export * from "./vectorize.js";
 export * from "./envelope.js";
 export * from "./semantic-cache.js";
+export * from "./knowledge-extension-contract.js";
