@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { approveProjectExtensionResourceGrant, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, hasReviewableProjectExtensionResources, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget } from "./api";
+import { approveProjectExtensionResourceGrant, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, hasReviewableProjectExtensionResources, projectExtensionSetupStatusLabel, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget } from "./api";
 
 describe("Project extension resource grant caller", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -10,6 +10,14 @@ describe("Project extension resource grant caller", () => {
     expect(hasReviewableProjectExtensionResources([{ id: "files", kind: "objects", scope: "project", operations: [] }])).toBe(true);
     expect(hasReviewableProjectExtensionResources([])).toBe(false);
     expect(hasReviewableProjectExtensionResources(undefined)).toBe(false);
+  });
+
+  it("labels a jobs-only staging install as awaiting resource approval", () => {
+    expect(projectExtensionSetupStatusLabel("staging", [{ id: "queue", kind: "jobs", scope: "project", operations: [] }]))
+      .toBe("resource approval required");
+    expect(projectExtensionSetupStatusLabel("staging", [])).toBe("setup incomplete");
+    expect(projectExtensionSetupStatusLabel("active", [])).toBe("enabled");
+    expect(projectExtensionSetupStatusLabel("disabled", [])).toBe("paused");
   });
 
   it("reads bounded job receipts through the authenticated exact-install usage route", async () => {

@@ -1936,6 +1936,11 @@ export interface ProjectExtensionResourceRequirement {
 export function hasReviewableProjectExtensionResources(requirements: ProjectExtensionResourceRequirement[] | undefined): boolean {
   return (requirements ?? []).some(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs");
 }
+export function projectExtensionSetupStatusLabel(status: string, requirements: ProjectExtensionResourceRequirement[] | undefined) {
+  if (status === "active") return "enabled" as const;
+  if (status === "staging") return hasReviewableProjectExtensionResources(requirements) ? "resource approval required" as const : "setup incomplete" as const;
+  return "paused" as const;
+}
 export interface ProjectExtensionResourceGrant {
   requirement_id: string; manifest_sha256: string; resource_sha256: string; installation_generation: number;
   operations: string[]; tables: string[]; status: "approved" | "revoked"; revision: number;
