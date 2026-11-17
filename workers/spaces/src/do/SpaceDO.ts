@@ -17902,6 +17902,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       grants: this.listExtensionResourceGrantRows(instanceId), operation_usage,
       dependency_inventory: { declared: target.manifest.dependencies ?? [], resolved: dependencyClosure.resolved,
         active: dependencyClosure.resolved ? dependencyClosure.dependencies : [] },
+      provider_dependencies: { declared: (target.manifest.bundle?.connections ?? []).map(connection => ({ connection_id: connection.id,
+        provider: connection.provider, purpose: connection.purpose, required: connection.required })) },
       object_usage: { object_count: objectUsage?.object_count ?? 0, bytes: objectUsage?.bytes ?? 0 } },
     { headers: { "cache-control": "private, no-store" } });
   }

@@ -76,6 +76,7 @@ import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, spaceSha
   supportsOwnerApprovedSpaceSharedAuthorityExpansion, supportsOwnerApprovedSpaceSharedDependencyExpansion,
   supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
 import { attachBlueprintAssistantChannelDefaults, attachBlueprintBusinessRoles, attachBlueprintCoordinationDefaults, attachBlueprintExpectedUsage, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
+import { buildProviderDependencyInventory, type ProviderConnectionStatusRow, type ProviderDependencyDeclaration } from "./extension-provider-inventory.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -6184,6 +6185,7 @@ app.get(projectExtensionResourceUsagePath, async c => {
       status: string; created_at: string; updated_at: string }>;
     dependency_inventory?: { declared?: Array<{ extensionId: string; version: string; manifestSha256: string }>;
       resolved?: boolean; active?: Array<{ extensionId: string; version: string; manifestSha256: string }> };
+    provider_dependencies?: { declared?: ProviderDependencyDeclaration[] };
   } | null;
   const install = snapshot?.installation;
   if (!install || install.instance_id !== instanceId || install.tenant_id !== identity.tenantId || install.space_id !== spaceId
@@ -6191,6 +6193,11 @@ app.get(projectExtensionResourceUsagePath, async c => {
     || typeof install.manifest_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(install.manifest_sha256))
     return c.json({ error_code: "extension_resource_installation_untrusted" }, 404);
   try {
+    const providerResult = await c.env.PLATFORM_DB.prepare(`SELECT connection_id,provider,status,connected_at,last_verified_at
+      FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? ORDER BY connection_id LIMIT 64`)
+      .bind(identity.tenantId, spaceId, projectId, instanceId)
+      .all<ProviderConnectionStatusRow>();
+    const providerInventory = buildProviderDependencyInventory(snapshot.provider_dependencies?.declared ?? [], providerResult.results ?? []);
     const { results } = await c.env.PLATFORM_DB.prepare(`SELECT job_id,requirement_id,status,dispatch_attempts,payload_bytes,
       deadline_at,created_at,updated_at,started_at,completed_at FROM extension_resource_jobs
       WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND extension_id=?
@@ -6200,11 +6207,12 @@ app.get(projectExtensionResourceUsagePath, async c => {
         deadline_at: number; created_at: number; updated_at: number; started_at: number | null; completed_at: number | null }>();
     return c.json({ installation_id: instanceId, generation: install.generation, operations: snapshot.operation_usage ?? [],
       dependency_inventory: { declared: snapshot.dependency_inventory?.declared ?? [],
-        resolved: snapshot.dependency_inventory?.resolved === true, active: snapshot.dependency_inventory?.active ?? [] }, receipts: results.map(row => ({
-      job_id: row.job_id, requirement_id: row.requirement_id, status: row.status, dispatch_attempts: row.dispatch_attempts,
-      payload_bytes: row.payload_bytes, deadline_at: row.deadline_at, created_at: row.created_at, updated_at: row.updated_at,
-      started_at: row.started_at, completed_at: row.completed_at,
-    })) }, { headers: { "cache-control": "private, no-store" } });
+        resolved: snapshot.dependency_inventory?.resolved === true, active: snapshot.dependency_inventory?.active ?? [] },
+      provider_dependencies: providerInventory,
+      receipts: results.map(row => ({ job_id: row.job_id, requirement_id: row.requirement_id, status: row.status,
+        dispatch_attempts: row.dispatch_attempts, payload_bytes: row.payload_bytes, deadline_at: row.deadline_at,
+        created_at: row.created_at, updated_at: row.updated_at, started_at: row.started_at, completed_at: row.completed_at })) },
+    { headers: { "cache-control": "private, no-store" } });
   } catch {
     return c.json({ error_code: "extension_resource_usage_unavailable" }, 503);
   }

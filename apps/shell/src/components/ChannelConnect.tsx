@@ -153,6 +153,21 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
         : <div role="status" style={{ color: "var(--text3)" }}>Loading dependency status…</div>}
     </div>
     <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
+      <strong>Declared provider connections</strong>
+      <p style={{ margin: "4px 0 6px", color: "var(--text3)", fontSize: 10.5 }}>
+        Configuration status only. This does not prove provider availability, authorization at use time, or successful live operation.
+      </p>
+      {usageError ? <div role="status" style={{ color: "var(--text3)" }}>Provider connection status unavailable.</div>
+        : usage ? usage.provider_dependencies.declared.length === 0 ? <div style={{ color: "var(--text3)" }}>No provider connections declared.</div>
+          : <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text3)" }}>{usage.provider_dependencies.declared.map(dependency => {
+            const configured = usage.provider_dependencies.configured.find(item => item.connection_id === dependency.connection_id
+              && item.provider === dependency.provider);
+            return <li key={dependency.connection_id}>{dependency.provider} · {dependency.purpose} · {configured?.status ?? "not configured"}
+              {dependency.required ? " · required" : " · optional"}</li>;
+          })}</ul>
+        : <div role="status" style={{ color: "var(--text3)" }}>Loading provider connection status…</div>}
+    </div>
+    <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
       <strong>Recent host job receipts</strong>
       <p style={{ margin: "4px 0 6px", color: "var(--text3)", fontSize: 10.5 }}>Latest 50 operation leases and job receipts for this exact signed installation generation. Payloads and provider charges are not shown; payload bytes are recorded usage only, not a price. A released lease records access, not the operation's result.</p>
       {usageError && <div role="status" style={{ color: "var(--text3)" }}>Receipt activity unavailable.</div>}
