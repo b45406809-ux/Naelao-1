@@ -1,3 +1,38 @@
+# Active mission: continue the full implementation
+
+The user has authorized an ongoing autonomous implementation of **all active plans and their
+requirements**, not a single slice or a documentation update. This section is the authoritative
+continuation instruction; historical checkpoints and their "next action" paragraphs below describe
+past work and do not override the current progress records or require repeating completed work.
+
+- Start or resume from the newest verified progress records and actual code/worktree. Continue the
+  latest actionable gap, including the staged Project extension update recovery recorded below,
+  then implement the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
+  other incorporated plan ledgers. Follow dependencies, preserve completed work and recheck current
+  authorization, security and billing boundaries.
+- A milestone, local test pass, documentation refresh, status update, user status request, plan
+  incorporation, compaction, commit or push is **not mission completion**. After each coherent
+  verified checkpoint, update the relevant durable ledger and this runbook's current pointer, commit
+  and push to the authorized recovery branch under the existing safe fast-forward rules, then
+  immediately continue independent implementation. Share brief progress in commentary without
+  ending the turn. A user status question should be answered briefly while work continues unless
+  the user explicitly changes or stops the mission.
+- If a requirement needs provider credentials, live tests, deployment or a genuinely unresolved
+  contract or policy, record the precise blocker and the independent work already completed; move
+  to another actionable requirement. Do not label unwritten independent code as externally blocked
+  or repeatedly re-audit unchanged work. A push rejected because the remote advanced requires
+  preserving both histories and avoiding force; continue independent safe local work if possible.
+- End the turn only when all authorized independent implementation has been completed and audited,
+  the user explicitly stops or redirects it, or a genuine environment/tool/authority blocker
+  prevents **all** further independent work. If execution must end, preserve and push any safe
+  verified checkpoint when possible; report precisely what remains and the next action. Keep rollout
+  disabled until its documented live acceptance gates pass; do not deploy, buy resources, contact
+  people or perform other unauthorized external effects.
+- The execution platform can interrupt a turn or end a session despite this instruction. A pushed
+  checkpoint makes recovery possible; it cannot keep a session alive, automatically restart it or
+  override platform/system instructions. After any restart or compaction, inspect the latest actual
+  worktree and current ledger pointers, resume the current requirement and continue the full mission.
+
 ## Current cross-plan checkpoint — 2026-11-17 (viewer capability disclosure and egress; `5fb3cfb4` pushed)
 
 The implementation commits `9bdf06eb1d7483ad5f76dfb5a86cce315e509649` and `5fb3cfb422f11fc6bc5665f0ea019818806d025f` are pushed to `origin/Mcbt5s-Backup-2`; ledger reconciliation is pushed at `e64f0686869529a1a39162f6d5f56501a3284e08`. `9bdf06eb` hides non-read-safe operation names/details from viewer discovery; `5fb3cfb4` removes provider-backed document summarize/extract/compress from the viewer read-safe allowlist. Focused Agents tests **28/28**, Agents typecheck and diff hygiene pass. Fetch and push initially had a transient invalid-token failure, then succeeded on retry. `infra/scripts/__pycache__/` remains untracked and preserved.
