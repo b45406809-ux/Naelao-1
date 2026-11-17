@@ -249,7 +249,20 @@ describe("scoped website Knowledge preview", () => {
     expect(response.status).toBe(502);
     expect(f.sqlCalls.some((sql) => sql.includes("state='failed'") && sql.includes("next_attempt_at"))).toBe(true);
     expect(f.sqlCalls.some((sql) => sql.includes("source_refresh_failures=source_refresh_failures+1"))).toBe(true);
-    expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_source_refresh", "preview_failure", "preview_failed"], doubles: [1], indexes: [] });
+    expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_source_preview", "owner_approved_fetch", "preview_failed"], doubles: [1], indexes: [] });
+  });
+
+  it("records privacy-safe telemetry when an owner-approved first-time preview fetch fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/robots.txt")) return new Response(null, { status: 404 });
+      throw new Error("network failed for https://docs.example/private-token");
+    }));
+    const f = fixture();
+    f.analytics.writeDataPoint.mockImplementation(() => { throw new Error("analytics offline"); });
+    const response = await worker.fetch!(await request({ connection_id: "connection-1", url: "https://docs.example/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(502);
+    expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_source_preview", "owner_approved_fetch", "preview_failed"], doubles: [1], indexes: [] });
+    expect(JSON.stringify(f.analytics.writeDataPoint.mock.calls)).not.toContain("private-token");
   });
 
   it("blocks a second refresh while the durable operation is fetching", async () => {

@@ -60,6 +60,12 @@ K26 remains partial for parse, sync lag, freshness, denials, deletion, cost attr
 
 # Mature knowledge platform implementation progress
 
+## Current cross-plan checkpoint — 2026-11-17 (owner-approved website preview failure telemetry; local)
+
+Knowledge website preview failures now emit fixed-label `knowledge_source_preview / owner_approved_fetch` outcomes for every authorized fetch attempt, including first-time previews and refresh previews. Error strings are mapped to a closed set; raw URL/tenant/Project details are omitted; Analytics exceptions cannot change preview status or durable refresh retry state. Local evidence: telemetry + website ingestion suites **28/28**, Knowledge typecheck, `git diff --check`. No deployed/live telemetry acceptance; scheduled Knowledge crawl and refresh rollout flags remain disabled. This slice is local and awaits a safe checkpoint push.
+
+The queue review in the shared-compute ledger confirms automatic replay still needs a durable host invocation contract; the scheduler intentionally does not store commands or secrets. The SC04 comparison found no authoritative configured Space/Project infra-credit budget to enforce. These are separate code/policy gaps, not credential blockers. Exact next action after pushing this slice: resume the newest actionable K10–K30/EP requirement in this ledger by tracing source-to-caller authority and implement the next supported gap; keep AI Search unselected, preserve disabled rollouts, and continue all active plans.
+
 ## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
 
 The role proposal contract/validator and proposal-only owner activation preview are pushed at `9ccd739538f4e0a8751ff9d289385adc5df4661b`; SDK/Security/Spaces tests **11/11**, **6/6**, **26/26**, three typechecks and diff check pass. This does not change K01–K30 status. No deployment or live acceptance ran; rollouts remain disabled. Exact next action across the active mission: TBR02 owner-controlled role authoring via existing template tooling; then TBR04 actual installed-resource preview. Continue K/S/U/P/PW/EP code gaps afterward.

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildPrivacySafeRetrievalTelemetry, recordCitationMetric, recordDocumentDeletionMetric, recordPdfPreviewParseMetric,
-  recordProjectAccessMetric, recordWebsiteRefreshFailureMetric } from "./retrieval-telemetry.js";
+  recordProjectAccessMetric, recordWebsitePreviewFailureMetric } from "./retrieval-telemetry.js";
 
 describe("privacy-safe Knowledge retrieval telemetry", () => {
   it("keeps bounded aggregate metrics and omits tenant, Space, Project and query identifiers", () => {
@@ -49,10 +49,10 @@ describe("privacy-safe Knowledge retrieval telemetry", () => {
 
   it("maps unexpected website error values to a fixed failure label and bounds retries", () => {
     const writeDataPoint = vi.fn();
-    recordWebsiteRefreshFailureMetric({ writeDataPoint } as never, "secret-url-token-tenant-a", 1000);
-    expect(writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_source_refresh", "preview_failure", "other"], doubles: [100], indexes: [] });
+    recordWebsitePreviewFailureMetric({ writeDataPoint } as never, "secret-url-token-tenant-a", 1000);
+    expect(writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_source_preview", "owner_approved_fetch", "other"], doubles: [100], indexes: [] });
     expect(JSON.stringify(writeDataPoint.mock.calls)).not.toContain("secret-url-token-tenant-a");
-    expect(() => recordWebsiteRefreshFailureMetric({ writeDataPoint: () => { throw new Error("offline"); } } as never,
+    expect(() => recordWebsitePreviewFailureMetric({ writeDataPoint: () => { throw new Error("offline"); } } as never,
       "website_source_empty", 1)).not.toThrow();
   });
 });
