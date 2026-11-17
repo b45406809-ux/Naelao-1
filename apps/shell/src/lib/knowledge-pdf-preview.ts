@@ -11,13 +11,14 @@ export function encodeKnowledgePdfBytes(bytes: Uint8Array): string {
 export async function readKnowledgeSourceFile(file: File, projectId?: string | null): Promise<string> {
   const isPdf = /\.pdf$/i.test(file.name) && (!file.type || file.type === "application/pdf");
   const isDocx = /\.docx$/i.test(file.name) && (!file.type || file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-  if (!isPdf && !isDocx) throw new TypeError("Choose a PDF or DOCX file.");
+  const isXlsx = /\.xlsx$/i.test(file.name) && (!file.type || file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  if (!isPdf && !isDocx && !isXlsx) throw new TypeError("Choose a PDF, DOCX or XLSX file.");
   if (file.size < 5 || file.size > knowledgeContentLimitBytes(projectId)) {
     throw new RangeError(projectId ? "Project Knowledge files are limited to 5 MiB." : "Space-wide Knowledge files are limited to 1 MiB.");
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (isPdf && new TextDecoder().decode(bytes.subarray(0, 5)) !== "%PDF-") throw new TypeError("The selected file is not a valid PDF document.");
-  if (isDocx && (bytes[0] !== 0x50 || bytes[1] !== 0x4b)) throw new TypeError("The selected file is not a DOCX archive.");
+  if ((isDocx || isXlsx) && (bytes[0] !== 0x50 || bytes[1] !== 0x4b)) throw new TypeError("The selected file is not a supported Office archive.");
   return encodeKnowledgePdfBytes(bytes);
 }
 

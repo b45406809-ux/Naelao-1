@@ -15,7 +15,7 @@ export interface KnowledgeCsvPreviewResult {
 }
 
 /** Bounded display parser only. The original CSV remains the editable source sent to Knowledge. */
-export function parseKnowledgeCsvPreview(text: string): KnowledgeCsvPreviewResult {
+export function parseKnowledgeCsvPreview(text: string, delimiter = ","): KnowledgeCsvPreviewResult {
   const rows: string[][] = [];
   let row: string[] = [];
   let field = "";
@@ -46,7 +46,7 @@ export function parseKnowledgeCsvPreview(text: string): KnowledgeCsvPreviewResul
         else quoted = false;
       } else field += char;
     } else if (char === '"' && field.length === 0) quoted = true;
-    else if (char === ",") pushField();
+    else if (char === delimiter) pushField();
     else if (char === "\n") pushRow();
     else if (char !== "\r") field += char;
   }
@@ -55,13 +55,13 @@ export function parseKnowledgeCsvPreview(text: string): KnowledgeCsvPreviewResul
   return { rows, truncatedRows, truncatedColumns, truncatedCells, malformedQuotes };
 }
 
-export function KnowledgeCsvPreview({ content }: { content: string }) {
-  const parsed = React.useMemo(() => parseKnowledgeCsvPreview(content), [content]);
+export function KnowledgeCsvPreview({ content, delimiter = ",", kind = "CSV" }: { content: string; delimiter?: string; kind?: "CSV" | "XLSX worksheet" }) {
+  const parsed = React.useMemo(() => parseKnowledgeCsvPreview(content, delimiter), [content, delimiter]);
   if (!content) return null;
   const [head = [], ...body] = parsed.rows;
   return (
     <details style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, fontSize: 12 }}>
-      <summary style={{ cursor: "pointer", fontWeight: 600 }}>CSV table preview · values shown as text</summary>
+      <summary style={{ cursor: "pointer", fontWeight: 600 }}>{kind} table preview · values shown as text</summary>
       <p style={{ color: "var(--text3)" }}>The editable text above remains the source. This preview does not infer number types or execute spreadsheet formulas.</p>
       {parsed.malformedQuotes && <p role="alert">A quoted field is not closed. Review the original CSV text before adding it.</p>}
       {(parsed.truncatedRows || parsed.truncatedColumns || parsed.truncatedCells) &&

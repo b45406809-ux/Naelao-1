@@ -13,6 +13,7 @@ import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
 import { createParseV5Request } from "./parse-v5.js";
 import { parseKnowledgeDocx, KNOWLEDGE_DOCX_PARSER_VERSION, MAX_KNOWLEDGE_DOCX_BYTES } from "./docx-preview.js";
+import { parseKnowledgeXlsx, KNOWLEDGE_XLSX_PARSER_VERSION, MAX_KNOWLEDGE_XLSX_BYTES } from "./xlsx-preview.js";
 import { queryScopedFtsCandidates, sparseRank } from "./search.js";
 import { reportKnowledgeStorageWrite } from "./storage-usage.js";
 import { acquireKnowledgeDocumentMutationLease, hasKnowledgeDocumentDeletionSince, hasPendingKnowledgeDocumentDeletion, processKnowledgeDocumentDeletion,
@@ -785,10 +786,11 @@ function sanitizeKbContent(content: string): { sanitized: string; injectionDetec
   return { sanitized: stripped, injectionDetected };
 }
 
-type KnowledgeFileFormat = "pdf" | "docx";
+type KnowledgeFileFormat = "pdf" | "docx" | "xlsx";
 const KNOWLEDGE_FILE_MIME: Record<KnowledgeFileFormat, string> = {
   pdf: "application/pdf",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 };
 
 function decodeKnowledgeFileContent(value: string, format: KnowledgeFileFormat): Uint8Array {
@@ -812,7 +814,7 @@ function safeKnowledgeSourceFileName(value: unknown, format: KnowledgeFileFormat
   if (value === undefined || value === null) return null;
   if (typeof value !== "string" || value.length > 512) throw badRequest("source_file_name must be at most 512 characters");
   const name = value.replace(/\\/g, "/").split("/").pop()!.replace(/[\u0000-\u001f\u007f]/g, "").trim();
-  const extension = format === "pdf" ? /\.pdf$/i : /\.docx$/i;
+  const extension = format === "pdf" ? /\.pdf$/i : format === "docx" ? /\.docx$/i : /\.xlsx$/i;
   if (!name || name.length > 255 || !extension.test(name)) throw badRequest(`source_file_name must be a ${format.toUpperCase()} filename`);
   return name;
 }
@@ -1892,9 +1894,10 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
     const access = await requireProjectAccess(c, projectId);
     if (access instanceof Response) return access;
   }
-  if (typeof body.content !== "string" || !body.content) throw badRequest("PDF or DOCX content is required");
+  if (typeof body.content !== "string" || !body.content) throw badRequest("PDF, DOCX or XLSX content is required");
   if (typeof body.source_file_name !== "string") throw badRequest("source_file_name is required");
-  const fileFormat: KnowledgeFileFormat = /\.docx$/i.test(body.source_file_name) ? "docx" : "pdf";
+  const fileFormat: KnowledgeFileFormat = /\.docx$/i.test(body.source_file_name) ? "docx"
+    : /\.xlsx$/i.test(body.source_file_name) ? "xlsx" : "pdf";
   const sourceFileName = safeKnowledgeSourceFileName(body.source_file_name, fileFormat);
   const sourceBytes = decodeKnowledgeFileContent(body.content, fileFormat);
   const contentLimit = projectId ? 5 * 1024 * 1024 : 1_048_576;
@@ -1906,6 +1909,8 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
     throw badRequest("The selected file is not a valid PDF document");
   if (fileFormat === "docx" && (sourceBytes[0] !== 0x50 || sourceBytes[1] !== 0x4b || sourceBytes.byteLength > MAX_KNOWLEDGE_DOCX_BYTES))
     throw badRequest("The selected file is not a supported DOCX archive");
+  if (fileFormat === "xlsx" && (sourceBytes[0] !== 0x50 || sourceBytes[1] !== 0x4b || sourceBytes.byteLength > MAX_KNOWLEDGE_XLSX_BYTES))
+    throw badRequest("The selected file is not a supported XLSX archive");
 
   let parsed: string;
   const parseStartedAt = performance.now();
@@ -1913,14 +1918,14 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
   try {
     parsed = fileFormat === "pdf"
       ? await createParseV5Request(sourceBytes, KNOWLEDGE_FILE_MIME.pdf, c.env)
-      : await parseKnowledgeDocx(sourceBytes);
+      : fileFormat === "docx" ? await parseKnowledgeDocx(sourceBytes) : await parseKnowledgeXlsx(sourceBytes);
     parseOutcome = "succeeded";
   } catch (error) {
-    if (fileFormat === "docx" && error instanceof Error && error.message.startsWith("knowledge_docx_")) {
-      const tooLarge = /(?:archive_too_large|xml_too_large|text_too_large|entries_exceeded)/.test(error.message);
+    if (fileFormat !== "pdf" && error instanceof Error && error.message.startsWith(fileFormat === "docx" ? "knowledge_docx_" : "knowledge_xlsx_")) {
+      const tooLarge = /(?:archive_too_large|part_too_large|text_too_large|entries_exceeded|rows_exceeded|columns_exceeded)/.test(error.message);
       throw new HttpError(tooLarge ? 413 : 422, error.message, tooLarge
-        ? "This DOCX exceeds the supported extraction limits."
-        : "This DOCX is unsupported or could not be safely extracted. Try saving it as a standard DOCX file.");
+        ? `This ${fileFormat.toUpperCase()} exceeds the supported extraction limits.`
+        : `This ${fileFormat.toUpperCase()} is unsupported or could not be safely extracted. Try saving it as a standard ${fileFormat.toUpperCase()} file.`);
     }
     preserveHttpStatus(error);
   } finally {
@@ -1935,12 +1940,15 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
   }
   const sourceSha256 = await sha256BytesHex(sourceBytes);
   const extractionSha256 = await sha256BytesHex(previewBytes);
-  const parserVersion = fileFormat === "pdf" ? KNOWLEDGE_PDF_PARSER_VERSION : KNOWLEDGE_DOCX_PARSER_VERSION;
+  const parserVersion = fileFormat === "pdf" ? KNOWLEDGE_PDF_PARSER_VERSION
+    : fileFormat === "docx" ? KNOWLEDGE_DOCX_PARSER_VERSION : KNOWLEDGE_XLSX_PARSER_VERSION;
   const previewToken = await createKnowledgePdfPreviewToken({ secret: c.env.PLATFORM_SECRET,
     scope: { tenantId, spaceId, projectId }, sourceSha256, extractionSha256, parserVersion });
   const extractionWarnings = fileFormat === "pdf"
     ? ["Review reading order, tables, and scanned pages before saving; automated PDF extraction can omit or misread them."]
-    : ["DOCX preview extracts the main body in document order. Headers, footers, images, page layout, comments, and tracked changes are not included; review table text before saving."];
+    : fileFormat === "docx"
+      ? ["DOCX preview extracts the main body in document order. Headers, footers, images, page layout, comments, and tracked changes are not included; review table text before saving."]
+      : ["XLSX preview extracts values from the first worksheet only. Additional sheets, formatting, charts, hidden content, external links, and formulas' cached results are omitted; formulas display as text."];
   if (injectionDetected) extractionWarnings.push("Potential prompt-injection text was detected. The document will remain subject to Knowledge safety filtering.");
   return c.json({ preview: { content: previewContent, source_sha256: sourceSha256, extraction_sha256: extractionSha256,
     parser_version: parserVersion, preview_token: previewToken, source_file_name: sourceFileName,
@@ -2012,10 +2020,10 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     throw badRequest("nonempty content is required");
   }
 
-  const validContentTypes = new Set(["text", "url", "code", "pdf", "docx"]);
+  const validContentTypes = new Set(["text", "url", "code", "pdf", "docx", "xlsx"]);
   const contentType = body.content_type ?? "text";
   if (!validContentTypes.has(contentType)) {
-    throw badRequest(`content_type must be one of: text, url, code, pdf, docx`);
+    throw badRequest(`content_type must be one of: text, url, code, pdf, docx, xlsx`);
   }
 
   const MAX_SYNC_CONTENT_BYTES = 1_048_576;
@@ -2023,7 +2031,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   if (body.source_url !== undefined && (typeof body.source_url !== "string" || body.source_url.length > 2_048)) {
     throw badRequest("source_url must be a string of at most 2048 characters");
   }
-  const parsedFileFormat: KnowledgeFileFormat | null = contentType === "pdf" || contentType === "docx" ? contentType : null;
+  const parsedFileFormat: KnowledgeFileFormat | null = contentType === "pdf" || contentType === "docx" || contentType === "xlsx" ? contentType : null;
   const originalBytes = parsedFileFormat ? decodeKnowledgeFileContent(body.content, parsedFileFormat) : new TextEncoder().encode(body.content);
   if (originalBytes.byteLength > MAX_WORKFLOW_CONTENT_BYTES) throw badRequest("content exceeds the 5 MiB ingestion limit");
   const sourceFileName = parsedFileFormat ? safeKnowledgeSourceFileName(body.source_file_name, parsedFileFormat) : null;
@@ -2036,6 +2044,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       throw badRequest("The selected file is not a valid PDF document");
     if (parsedFileFormat === "docx" && (originalBytes[0] !== 0x50 || originalBytes[1] !== 0x4b
       || originalBytes.byteLength > MAX_KNOWLEDGE_DOCX_BYTES)) throw badRequest("The selected file is not a supported DOCX archive");
+    if (parsedFileFormat === "xlsx" && (originalBytes[0] !== 0x50 || originalBytes[1] !== 0x4b
+      || originalBytes.byteLength > MAX_KNOWLEDGE_XLSX_BYTES)) throw badRequest("The selected file is not a supported XLSX archive");
     if (typeof body.preview_content !== "string" || !body.preview_content.trim() || typeof body.preview_extraction_sha256 !== "string") {
       throw new HttpError(409, "knowledge_document_preview_required", "Preview and approve the extracted document text before saving");
     }
@@ -2047,7 +2057,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     const approvedBytes = new TextEncoder().encode(indexContent);
     if (approvedBytes.byteLength > contentLimit) throw badRequest("Approved extracted text exceeds this Knowledge scope's content limit");
     parsedFileLineage = { sourceSha256, extractionSha256, approvedContentSha256: await sha256BytesHex(approvedBytes),
-      parserVersion: parsedFileFormat === "pdf" ? KNOWLEDGE_PDF_PARSER_VERSION : KNOWLEDGE_DOCX_PARSER_VERSION };
+      parserVersion: parsedFileFormat === "pdf" ? KNOWLEDGE_PDF_PARSER_VERSION
+        : parsedFileFormat === "docx" ? KNOWLEDGE_DOCX_PARSER_VERSION : KNOWLEDGE_XLSX_PARSER_VERSION };
   }
   if (!parsedFileFormat && originalBytes.byteLength > contentLimit) {
     throw badRequest(projectId ? "Project Knowledge content exceeds the 5 MiB limit" : "Space-wide Knowledge content exceeds the 1 MiB limit");
@@ -2124,7 +2135,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         if (!staged && claim.dispatchState === "claimed") {
           const stagedBytes = new TextEncoder().encode(indexContent);
           if (stagedBytes.byteLength > MAX_WORKFLOW_CONTENT_BYTES) throw badRequest("Parsed document exceeds the 5 MiB ingestion limit");
-          if (existing.content_type === "pdf" || existing.content_type === "docx") {
+          if (existing.content_type === "pdf" || existing.content_type === "docx" || existing.content_type === "xlsx") {
             const sourceKey = `kb/${spaceId}/${existing.project_id}/${existing.id}/original`;
             await c.env.KB_BUCKET.put(sourceKey, originalBytes, { httpMetadata: { contentType: KNOWLEDGE_FILE_MIME[existing.content_type] } });
           }
@@ -2137,7 +2148,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         const stagedBytes = new TextEncoder().encode(indexContent);
         await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, existing.project_id, existing.id,
           stagedBytes.byteLength, true, `workflow-stage:${existing.id}`);
-        if (existing.content_type === "pdf" || existing.content_type === "docx") await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, existing.project_id, existing.id,
+        if (existing.content_type === "pdf" || existing.content_type === "docx" || existing.content_type === "xlsx") await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, existing.project_id, existing.id,
           originalBytes.byteLength, true, `workflow-${existing.content_type}-source:${existing.id}`);
         const dispatching = await c.env.PLATFORM_DB.prepare(`UPDATE kb_document_idempotency_requests
           SET dispatch_state='dispatching' WHERE tenant_id=? AND space_id=? AND project_scope=? AND key_sha256=?

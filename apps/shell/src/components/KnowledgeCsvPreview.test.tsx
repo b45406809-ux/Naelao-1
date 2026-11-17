@@ -35,4 +35,12 @@ describe("KnowledgeCsvPreview", () => {
     expect(result.truncatedCells).toBe(true);
     expect(source).toHaveLength(305);
   });
+
+  it("renders XLSX tabular extraction as a text-only worksheet preview", () => {
+    const content = "SKU\tCount\n001\t=SUM(B2:B3)";
+    expect(parseKnowledgeCsvPreview(content, "\t").rows).toEqual([["SKU", "Count"], ["001", "=SUM(B2:B3)"]]);
+    const markup = renderToStaticMarkup(<KnowledgeCsvPreview content={content} delimiter="\t" kind="XLSX worksheet" />);
+    expect(markup).toContain("XLSX worksheet table preview");
+    expect(markup).toContain("=SUM(B2:B3)");
+  });
 });

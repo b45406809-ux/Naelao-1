@@ -122,6 +122,7 @@ export default function ProjectDetailPage() {
   const [newDocTitle, setNewDocTitle] = React.useState("");
   const [newDocContent, setNewDocContent] = React.useState("");
   const [csvPreviewActive, setCsvPreviewActive] = React.useState(false);
+  const [xlsxPreviewActive, setXlsxPreviewActive] = React.useState(false);
   const [addingDoc, setAddingDoc] = React.useState(false);
   const [pdfPreview, setPdfPreview] = React.useState<{ base64: string; receipt: Awaited<ReturnType<typeof previewKbPdf>> } | null>(null);
   const [previewingPdf, setPreviewingPdf] = React.useState(false);
@@ -423,7 +424,8 @@ export default function ProjectDetailPage() {
     createIdempotencyKeyRef.current = null;
     setWebsitePreview(null);
     setCsvPreviewActive(false);
-    if (/\.(pdf|docx)$/i.test(file.name)) {
+    setXlsxPreviewActive(false);
+    if (/\.(pdf|docx|xlsx)$/i.test(file.name)) {
       if (!creds) return;
       setPdfPreview(null);
       setPreviewingPdf(true);
@@ -432,11 +434,12 @@ export default function ProjectDetailPage() {
         const receipt = await previewKbPdf(activeSpaceId, creds, {
           content: base64, source_file_name: file.name, project_id: params.projectId,
         });
-        if (!newDocTitle.trim()) setNewDocTitle(file.name.replace(/\.(pdf|docx)$/i, ""));
+        if (!newDocTitle.trim()) setNewDocTitle(file.name.replace(/\.(pdf|docx|xlsx)$/i, ""));
         setNewDocContent(receipt.content);
         setPdfPreview({ base64, receipt });
+        setXlsxPreviewActive(/\.xlsx$/i.test(file.name));
       } catch (err) {
-        show(err instanceof Error ? err.message : "Couldn't preview that PDF.");
+        show(err instanceof Error ? err.message : "Couldn't preview that document.");
       } finally {
         setPreviewingPdf(false);
       }
@@ -461,6 +464,7 @@ export default function ProjectDetailPage() {
       if (!newDocTitle.trim()) setNewDocTitle(file.name.replace(/\.[^.]+$/, ""));
       setNewDocContent(text);
       setCsvPreviewActive(/\.csv$/i.test(file.name));
+      setXlsxPreviewActive(false);
     } catch {
       show("Couldn't read that file.");
     }
@@ -471,6 +475,7 @@ export default function ProjectDetailPage() {
     createIdempotencyKeyRef.current = null;
     setPdfPreview(null);
     setCsvPreviewActive(false);
+    setXlsxPreviewActive(false);
     setWebsitePreview(null);
     setPreviewingWebsite(true);
     try {
@@ -612,7 +617,8 @@ export default function ProjectDetailPage() {
       } : pdfPreview ? {
         title: newDocTitle.trim(),
         content: pdfPreview.base64,
-        content_type: "pdf",
+        content_type: /\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "docx"
+          : /\.xlsx$/i.test(pdfPreview.receipt.source_file_name) ? "xlsx" : "pdf",
         idempotency_key: idempotencyKey,
         ...(pdfPreview.receipt.source_file_name ? { source_file_name: pdfPreview.receipt.source_file_name } : {}),
         preview_content: submittedContent,
@@ -635,6 +641,7 @@ export default function ProjectDetailPage() {
       setNewDocTitle("");
       setNewDocContent("");
       setCsvPreviewActive(false);
+      setXlsxPreviewActive(false);
       setPdfPreview(null);
       setWebsitePreview(null);
       await refreshDocs();
@@ -1252,11 +1259,12 @@ export default function ProjectDetailPage() {
           required
         />
         {csvPreviewActive && <KnowledgeCsvPreview content={newDocContent} />}
+        {xlsxPreviewActive && <KnowledgeCsvPreview content={newDocContent} delimiter="\t" kind="XLSX worksheet" />}
         <div style={{ fontSize: 12, color: "var(--text3)" }}>
           Project-private text limit: 5 MiB ({knowledgeContentByteLength(newDocContent.trim()).toLocaleString()} bytes entered).
         </div>
         {pdfPreview && <div role="status" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, fontSize: 12 }}>
-          <strong>{/\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "DOCX" : "PDF"} extraction preview · {pdfPreview.receipt.parser_version}</strong>
+          <strong>{/\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "DOCX" : /\.xlsx$/i.test(pdfPreview.receipt.source_file_name) ? "XLSX" : "PDF"} extraction preview · {pdfPreview.receipt.parser_version}</strong>
           <div>Source SHA-256: <code>{pdfPreview.receipt.source_sha256}</code></div>
           <div>{pdfPreview.receipt.source_bytes.toLocaleString()} source bytes · {pdfPreview.receipt.extracted_bytes.toLocaleString()} extracted bytes (5 MiB project limit)</div>
           <p>Review and edit the extracted text before adding it to this project. This file preview expires after 15 minutes.</p>
@@ -1266,14 +1274,14 @@ export default function ProjectDetailPage() {
           <Button size="sm" disabled={addingDoc || previewingPdf || knowledgeContentByteLength(newDocContent.trim()) > PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES}>
             {addingDoc ? "Adding…" : "Add document"}
           </Button>
-          <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt,.md,.csv,.json,.html,.xml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handlePickFile(event)} />
+          <input ref={fileInputRef} type="file" accept=".pdf,.docx,.xlsx,.txt,.md,.csv,.json,.html,.xml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handlePickFile(event)} />
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => fileInputRef.current?.click()}
             style={{ fontSize: 12.5 }}
           >
-            {previewingPdf ? "Preparing document preview…" : "Upload text, PDF or DOCX"}
+            {previewingPdf ? "Preparing document preview…" : "Upload text, PDF, DOCX or XLSX"}
           </button>
         </div>
       </form>

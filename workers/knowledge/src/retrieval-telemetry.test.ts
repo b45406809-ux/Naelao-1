@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildPrivacySafeRetrievalTelemetry, recordCitationMetric, recordDocumentDeletionMetric, recordPdfPreviewParseMetric,
-  recordProjectAccessMetric, recordWebsitePreviewFailureMetric } from "./retrieval-telemetry.js";
+  recordKnowledgeFilePreviewParseMetric, recordProjectAccessMetric, recordWebsitePreviewFailureMetric } from "./retrieval-telemetry.js";
 
 describe("privacy-safe Knowledge retrieval telemetry", () => {
   it("keeps bounded aggregate metrics and omits tenant, Space, Project and query identifiers", () => {
@@ -24,6 +24,12 @@ describe("privacy-safe Knowledge retrieval telemetry", () => {
     recordPdfPreviewParseMetric({ writeDataPoint } as never, "failed", 120_500);
     expect(writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_parse", "pdf", "preview", "failed"], doubles: [120_000], indexes: [] });
     expect(() => recordPdfPreviewParseMetric({ writeDataPoint: () => { throw new Error("offline"); } } as never, "succeeded", 2)).not.toThrow();
+  });
+
+  it("labels DOCX and XLSX parse outcomes with fixed non-content identifiers", () => {
+    const writeDataPoint = vi.fn();
+    recordKnowledgeFilePreviewParseMetric({ writeDataPoint } as never, "xlsx", "succeeded", 12.4);
+    expect(writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_parse", "xlsx", "preview", "succeeded"], doubles: [12], indexes: [] });
   });
 
   it("records fixed authorization denial categories without caller or resource identifiers", () => {

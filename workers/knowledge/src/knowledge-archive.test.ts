@@ -71,6 +71,25 @@ async function archiveDocxDocument(): Promise<{ document: KnowledgeArchiveDocume
   };
 }
 
+async function archiveXlsxDocument(): Promise<{ document: KnowledgeArchiveDocument; source: string }> {
+  const document = await archiveDocument();
+  const source = "PK\u0003\u0004 xlsx source fixture";
+  return {
+    source,
+    document: {
+      ...document,
+      content_type: "xlsx",
+      source_sha256: await sha256(source),
+      source_file_name: "guide.xlsx",
+      parser_version: "naelao:xlsx-first-sheet-v1",
+      parser_output_sha256: await sha256("parsed xlsx output"),
+      approved_content_sha256: await sha256("approved xlsx content"),
+      objectReferences: [...document.objectReferences,
+        { key: "kb/space-1/_space/doc-1/original", etag: "xlsx-etag", size: new TextEncoder().encode(source).byteLength }],
+    },
+  };
+}
+
 function fixture(options: { documents?: unknown[]; chunks?: KnowledgeArchiveChunk[]; tombstones?: string[]; deniedLeases?: string[];
   current?: Record<string, { tenant_id: string; space_id: string; archive_restore_id: string | null; [key: string]: unknown }> } = {}) {
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
@@ -215,6 +234,35 @@ describe("Knowledge archive scope and deletion fences", () => {
     const insert = restored.dbCalls.find(({ sql }) => sql.includes("INSERT OR IGNORE INTO kb_documents"));
     expect(insert?.args).toEqual(expect.arrayContaining([
       "docx", document.source_sha256, "guide.docx", "naelao:docx-main-body-v1",
+      document.parser_output_sha256, document.approved_content_sha256,
+    ]));
+  });
+
+  it("exports and restores XLSX source bytes and parser lineage", async () => {
+    const { document, source } = await archiveXlsxDocument();
+    const exportedFixture = fixture({ documents: [document], chunks: document.chunks });
+    for (const reference of document.objectReferences) {
+      const text = reference.key.endsWith("original") ? source
+        : reference.key.endsWith(".txt") ? document.chunks[0]!.content : "{}";
+      exportedFixture.objects.set(reference.key, { text, etag: reference.etag });
+    }
+    const exported = await exportKnowledgeArchive(exportedFixture.env, scope);
+    const archived = exported.snapshot.documents[0]!;
+    expect(archived).toMatchObject({ content_type: "xlsx", source_sha256: document.source_sha256,
+      source_file_name: "guide.xlsx", parser_version: "naelao:xlsx-first-sheet-v1",
+      parser_output_sha256: document.parser_output_sha256,
+      approved_content_sha256: document.approved_content_sha256 });
+
+    const restored = fixture();
+    for (const reference of archived.objectReferences) {
+      const text = reference.key.endsWith("original") ? source
+        : reference.key.endsWith(".txt") ? archived.chunks[0]!.content : "{}";
+      restored.objects.set(reference.key, { text, etag: "restored-etag" });
+    }
+    await restoreKnowledgeArchive(restored.env, exported.snapshot, restoreId);
+    const insert = restored.dbCalls.find(({ sql }) => sql.includes("INSERT OR IGNORE INTO kb_documents"));
+    expect(insert?.args).toEqual(expect.arrayContaining([
+      "xlsx", document.source_sha256, "guide.xlsx", "naelao:xlsx-first-sheet-v1",
       document.parser_output_sha256, document.approved_content_sha256,
     ]));
   });

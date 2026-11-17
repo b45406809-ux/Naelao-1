@@ -5,6 +5,11 @@ import worker from "./index.js";
 
 const pdfBytes = new TextEncoder().encode("%PDF-1.4\nsource bytes\n");
 const docxBytes = zipSync({ "word/document.xml": strToU8(`<w:document xmlns:w="x"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Inventory</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>SKU</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Qty</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>001</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>0007</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>`) });
+const xlsxBytes = zipSync({
+  "xl/workbook.xml": strToU8('<workbook xmlns:r="x"><sheets><sheet name="Inventory" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+  "xl/_rels/workbook.xml.rels": strToU8('<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'),
+  "xl/worksheets/sheet1.xml": strToU8('<worksheet><sheetData><row><c r="A1" t="inlineStr"><is><t>SKU</t></is></c><c r="B1" t="inlineStr"><is><t>Qty</t></is></c></row><row><c r="A2"><v>001</v></c><c r="B2"><f>SUM(B3:B4)</f><v>7</v></c></row></sheetData></worksheet>'),
+});
 function base64(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -142,6 +147,34 @@ describe("Knowledge PDF preview and approved ingestion", () => {
     expect(record?.args).toContain("naelao:docx-main-body-v1");
     expect(record?.args).toContain(preview.source_sha256);
     expect([...f.objects.entries()].some(([key, bytes]) => key.endsWith("/original") && bytes.length === docxBytes.length)).toBe(true);
+  });
+
+  it("previews and ingests XLSX as editable first-sheet text with source lineage", async () => {
+    const f = fixture();
+    const network = vi.fn();
+    vi.stubGlobal("fetch", network);
+    const previewResponse = await worker.fetch(await request("/spaces/space-1/kb/documents/preview", {
+      content: base64(xlsxBytes), source_file_name: "inventory.xlsx", project_id: "project-1",
+    }), f.env, {} as ExecutionContext);
+    expect(previewResponse.status).toBe(200);
+    const { preview } = await previewResponse.json() as { preview: {
+      content: string; extraction_sha256: string; preview_token: string; source_sha256: string; parser_version: string;
+    } };
+    expect(preview).toMatchObject({ content: "SKU\tQty\n001\t=SUM(B3:B4)", parser_version: "naelao:xlsx-first-sheet-v1" });
+    expect(network).not.toHaveBeenCalled();
+
+    const saved = await worker.fetch(await request("/spaces/space-1/kb/documents", {
+      title: "Inventory", content: base64(xlsxBytes), content_type: "xlsx", source_file_name: "inventory.xlsx",
+      preview_content: preview.content, preview_token: preview.preview_token,
+      preview_extraction_sha256: preview.extraction_sha256, project_id: "project-1",
+      idempotency_key: "xlsx-approved-request-key-001",
+    }), f.env, {} as ExecutionContext);
+    expect(saved.status).toBe(201);
+    const record = f.calls.find(({ sql }) => sql.includes("INSERT INTO kb_documents"));
+    expect(record?.args).toContain("xlsx");
+    expect(record?.args).toContain("naelao:xlsx-first-sheet-v1");
+    expect(record?.args).toContain(preview.source_sha256);
+    expect([...f.objects.entries()].some(([key, bytes]) => key.endsWith("/original") && bytes.length === xlsxBytes.length)).toBe(true);
   });
 
   it("previews under the requested project ACL and binds the selected bytes and scope", async () => {

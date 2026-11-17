@@ -51,6 +51,7 @@ export default function KnowledgePage() {
   const [title, setTitle] = React.useState("");
   const [content, setContent] = React.useState("");
   const [csvPreviewActive, setCsvPreviewActive] = React.useState(false);
+  const [xlsxPreviewActive, setXlsxPreviewActive] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -97,7 +98,8 @@ export default function KnowledgePage() {
     setSaving(true);
     try {
       const idempotencyKey = createIdempotencyKeyRef.current ?? (createIdempotencyKeyRef.current = crypto.randomUUID());
-      const previewFormat = pdfPreview && /\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "docx" : "pdf";
+      const previewFormat = pdfPreview && /\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "docx"
+        : pdfPreview && /\.xlsx$/i.test(pdfPreview.receipt.source_file_name) ? "xlsx" : "pdf";
       const created = await createKbDocument(activeSpaceId, creds, pdfPreview ? {
         title: title.trim(), content: pdfPreview.base64, content_type: previewFormat, idempotency_key: idempotencyKey,
         ...(pdfPreview.receipt.source_file_name ? { source_file_name: pdfPreview.receipt.source_file_name } : {}),
@@ -114,6 +116,7 @@ export default function KnowledgePage() {
       setTitle("");
       setContent("");
       setCsvPreviewActive(false);
+      setXlsxPreviewActive(false);
       setPdfPreview(null);
       setFileError(null);
       setShowAdd(false);
@@ -135,18 +138,20 @@ export default function KnowledgePage() {
     createIdempotencyKeyRef.current = null;
     setPdfPreview(null);
     setCsvPreviewActive(false);
-    if (/\.(pdf|docx)$/i.test(file.name)) {
+    setXlsxPreviewActive(false);
+    if (/\.(pdf|docx|xlsx)$/i.test(file.name)) {
       if (!creds) return;
       setFileError(null);
       setPreviewingPdf(true);
       try {
         const base64 = await readKnowledgePdfFile(file);
         const receipt = await previewKbPdf(activeSpaceId, creds, { content: base64, source_file_name: file.name });
-        setTitle((current) => current || file.name.replace(/\.(pdf|docx)$/i, ""));
+        setTitle((current) => current || file.name.replace(/\.(pdf|docx|xlsx)$/i, ""));
         setContent(receipt.content);
         setPdfPreview({ base64, receipt });
+        setXlsxPreviewActive(/\.xlsx$/i.test(file.name));
       } catch (err) {
-        setFileError(err instanceof Error ? err.message : "Could not preview that PDF.");
+        setFileError(err instanceof Error ? err.message : "Could not preview that document.");
       } finally {
         setPreviewingPdf(false);
       }
@@ -163,6 +168,7 @@ export default function KnowledgePage() {
       setTitle((t) => t || file.name);
       setContent(text);
       setCsvPreviewActive(/\.csv$/i.test(file.name));
+      setXlsxPreviewActive(false);
     }).catch(() => setFileError(`Couldn't read "${file.name}".`));
   }
 
@@ -267,11 +273,12 @@ export default function KnowledgePage() {
               style={{ resize: "vertical" }}
             />
             {csvPreviewActive && <KnowledgeCsvPreview content={content} />}
+            {xlsxPreviewActive && <KnowledgeCsvPreview content={content} delimiter="\t" kind="XLSX worksheet" />}
             <div style={{ fontSize: 12, color: "var(--text3)" }}>
               Space-wide text limit: 1 MiB ({knowledgeContentByteLength(content.trim()).toLocaleString()} bytes entered). Project Knowledge supports up to 5 MiB.
             </div>
             {pdfPreview && <div role="status" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, fontSize: 12 }}>
-              <strong>{/\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "DOCX" : "PDF"} extraction preview · {pdfPreview.receipt.parser_version}</strong>
+              <strong>{/\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "DOCX" : /\.xlsx$/i.test(pdfPreview.receipt.source_file_name) ? "XLSX" : "PDF"} extraction preview · {pdfPreview.receipt.parser_version}</strong>
               <div>Source SHA-256: <code>{pdfPreview.receipt.source_sha256}</code></div>
               <div>{pdfPreview.receipt.source_bytes.toLocaleString()} source bytes · {pdfPreview.receipt.extracted_bytes.toLocaleString()} extracted bytes (1 MiB Space-wide limit)</div>
               <p>Review and edit the extracted text below before saving. This selected file is bound to the preview for 15 minutes.</p>
@@ -281,8 +288,8 @@ export default function KnowledgePage() {
               <Button onClick={() => void handleAdd()} disabled={saving || previewingPdf || !title.trim() || !content.trim() || knowledgeContentByteLength(content.trim()) > SPACE_KNOWLEDGE_MAX_CONTENT_BYTES}>
                 {saving ? "Adding…" : "Add"}
               </Button>
-              <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.yaml,.yml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handleFilePick(event)} />
-              <Button variant="ghost" onClick={() => fileInputRef.current?.click()} disabled={previewingPdf}>{previewingPdf ? "Preparing document preview…" : "Upload text, PDF or DOCX"}</Button>
+              <input ref={fileInputRef} type="file" accept=".pdf,.docx,.xlsx,.txt,.md,.csv,.json,.ts,.tsx,.js,.jsx,.py,.yaml,.yml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handleFilePick(event)} />
+              <Button variant="ghost" onClick={() => fileInputRef.current?.click()} disabled={previewingPdf}>{previewingPdf ? "Preparing document preview…" : "Upload text, PDF, DOCX or XLSX"}</Button>
               {fileError && <span style={{ fontSize: 12, color: "var(--danger)" }}>{fileError}</span>}
             </div>
           </div>

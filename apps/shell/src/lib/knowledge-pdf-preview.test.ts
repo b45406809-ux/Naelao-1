@@ -16,10 +16,21 @@ describe("Knowledge PDF source selection", () => {
     await expect(readKnowledgePdfFile(wrongType)).rejects.toThrow("Choose a PDF");
   });
 
+  it("accepts a bounded XLSX archive only with its matching filename and MIME", async () => {
+    const file = new File([new Uint8Array([0x50, 0x4b, 3, 4, 1])], "guide.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    await expect(readKnowledgePdfFile(file)).resolves.toBe("UEsDBAE=");
+    const wrongHeader = new File(["not zip"], "guide.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    await expect(readKnowledgePdfFile(wrongHeader)).rejects.toThrow("Office archive");
+    const wrongType = new File([new Uint8Array([0x50, 0x4b, 3, 4, 1])], "guide.xlsx", { type: "application/zip" });
+    await expect(readKnowledgePdfFile(wrongType)).rejects.toThrow("Choose a PDF");
+  });
+
   it("keeps PDF source bytes under the Space and Project upload ceilings", async () => {
     const spaceOversized = new File([new Uint8Array(1_048_577)], "large.pdf", { type: "application/pdf" });
     const projectOversized = new File([new Uint8Array(5 * 1_048_576 + 1)], "large.pdf", { type: "application/pdf" });
-    await expect(readKnowledgePdfFile(spaceOversized)).rejects.toThrow("Space-wide Knowledge PDF files are limited to 1 MiB");
-    await expect(readKnowledgePdfFile(projectOversized, "project-1")).rejects.toThrow("Project Knowledge PDF files are limited to 5 MiB");
+    await expect(readKnowledgePdfFile(spaceOversized)).rejects.toThrow("Space-wide Knowledge files are limited to 1 MiB");
+    await expect(readKnowledgePdfFile(projectOversized, "project-1")).rejects.toThrow("Project Knowledge files are limited to 5 MiB");
   });
 });
