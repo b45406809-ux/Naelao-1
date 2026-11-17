@@ -1,3 +1,9 @@
+## TBR member self-service checkpoint — 2026-11-17 (`65dd32d5` pushed)
+
+Members can now read only their own active proposal for the current membership epoch. The endpoint verifies Product identity, active membership and exact signed blueprint artifact, then returns localized role metadata, assistant proposal and onboarding steps; stale/revoked assignments disclose no resource detail. It does not grant access (`grants_applied=false`). Spaces tests **6/6**, Router route tests **86/86**, related typechecks and diff check pass. Local mocks only; no deployed D1/browser acceptance.
+
+TBR06 remains uncoded for applying role grants because no approved mapping/outbox spans separate host authorities. TBR07+ effective authorization and assistant/resource inheritance remain partial. Exact next action: add the member-facing Shell caller for this endpoint, then continue independent TBR07–TBR12 and other active-plan code gaps. Rollout stays disabled.
+
 ## TBR04 contract reconciliation — 2026-11-17 (`dc73af2e` cross-plan checkpoint)
 
 The read-only trace found no safe join from current host grants or published Knowledge into the Space activation preview: role requests refer to symbolic resources and template Projects, whereas extension resource grants and Knowledge publications require concrete installation and Project IDs. The blueprint contains no approved binding for those IDs. The current UI accurately labels Knowledge as declared-only and says it does not evaluate independent access. TBR04 remains partial; do not infer access from declaration or Space membership. EP06 structured-data usage and K26 unpriced receipt retry telemetry are pushed at `6fac3fec` and `550ee028`.

@@ -1,8 +1,8 @@
-## Current cross-plan checkpoint — 2026-11-17 (Project Gadget migration recovery route coverage; local)
+## Cross-plan checkpoint — 2026-11-17 (`65dd32d5` pushed)
 
-Recovery/review/apply commits through `fcfbdf94` are remote. Project updates now support a constrained Project-bound Gadget migration: the owner sees exact appended SQL and confirms; gateway/SpaceDO pin the signed package; MicroAppDO records the signed migration receipt by Project, installation and source generation; initialization/activation follows. Failure after migration preserves the staged update for receipt replay. Spaces contract/review/runtime/schema and route recovery suites **57/57**, Shell retry **2/2**, Spaces/Shell typechecks and diff hygiene pass. Mock/local only, no deployed acceptance.
+`65dd32d58fef5af85c6038a01965b3ffe0cfa124` is pushed and remote-verified. TBR member self-read checks current verified Product identity, active membership epoch and exact active signed artifact, returning only that member's role/onboarding details; stale/revoked rows disclose no role/resource details. `grants_applied` remains false. Tests: Spaces **6/6**, Router identity routes **86/86**, Spaces/Router/Shell typechecks and diff check pass. Local-only; rollouts remain disabled.
 
-These route tests use mock Durable Objects only. Exact next action: trace and implement the next independent S2–S9/U01–U12 requirement; then continue all remaining incorporated-plan requirements. Rollout disabled; preserve `infra/scripts/__pycache__/`.
+Project Gadget migration recovery is implemented through `4901cd7f` for the reviewed local contract, route replay, migration receipt and activation retry; deployed route-to-actor acceptance remains open. Exact next action: wire a member-facing Shell caller to the self-scoped role API, then continue remaining S2–S9/U01–U12 and all incorporated-plan code gaps. Preserve `infra/scripts/__pycache__/`.
 
 ## Cross-plan local checkpoint — 2026-11-17 (Project update receipt through activation)
 
