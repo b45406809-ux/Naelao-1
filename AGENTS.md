@@ -6,8 +6,9 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is K02/K03 ledger correction (`def365b3`) pushed, after EP04 Project update-flow
-  reconciliation (`c2c8f8d0`), bounded PPTX tables (`34800a4a`), task OCR settings (`7aee2ef1`) and P04 restore (`946e1881`,
+  checkpoint is the K02 reviewed PNG/JPEG OCR caller (local verification; recovery push pending), after
+  K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
+  bounded PPTX tables (`34800a4a`), task OCR settings (`7aee2ef1`) and P04 restore (`946e1881`,
   pointer `084e4f94`) were pushed. Current EP04 review/apply/recovery has exact pin/trust/dependency/
   migration checks and reachable Shell callers. Spaces suites 47/47, Shell API suite 2/2 and both
   typechecks pass locally. This corrects a stale ledger gap; no new EP04 code or live acceptance.
@@ -38,7 +39,25 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (K02/K03 status corrected after PPTX table support; pushed as `def365b3`)
+## Current checkpoint — 2026-11-17 (K02 PNG/JPEG reviewed OCR caller; local verification)
+
+**Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
+
+Knowledge Space and Project upload callers now support a versioned, signed, editable PNG/JPEG OCR preview
+and approval path with validated image signatures/dimensions, 1 MiB/20 MP bounds, source lineage, original
+bytes, storage receipts and archive validation. Feature flag `KNOWLEDGE_IMAGE_PARSE_ENABLED` is explicitly
+false in development/staging/production. Provider image support, privacy/egress, quality, billing and live
+acceptance remain gates; no live call or deployment occurred. Local verification: Knowledge **21/21**, Shell
+helper **6/6**, both typechecks and `git diff --check`.
+
+The requested TBR07 comparison is already recorded and unchanged. SC03 has no alarm-safe authority
+revalidator for the live Bash surface/role clamp and no durable pre-dispatch Billing hold; keep disconnected
+replay disabled and do not repeat the audit.
+
+Exact next action: implement the next independent K03 PDF/page provenance requirement through the current
+Knowledge preview path, then continue every other active-plan requirement after each verified push.
+
+## Previous checkpoint — 2026-11-17 (K02/K03 status corrected after PPTX table support; pushed as `def365b3`)
 
 The Knowledge matrix now credits the pushed bounded PPTX table-cell extraction (`34800a4a`) while keeping
 visual layout, scanned-image Knowledge OCR and quality evidence open. The prior EP04 source reconciliation

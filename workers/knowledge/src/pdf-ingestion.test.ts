@@ -4,6 +4,11 @@ import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
 const pdfBytes = new TextEncoder().encode("%PDF-1.4\nsource bytes\n");
+const pngBytes = new Uint8Array(24);
+pngBytes.set([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a], 0);
+pngBytes.set([0x49,0x48,0x44,0x52], 12);
+new DataView(pngBytes.buffer).setUint32(16, 100, false);
+new DataView(pngBytes.buffer).setUint32(20, 100, false);
 const docxBytes = zipSync({ "word/document.xml": strToU8(`<w:document xmlns:w="x"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Inventory</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>SKU</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Qty</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>001</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>0007</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>`) });
 const xlsxBytes = zipSync({
   "xl/workbook.xml": strToU8('<workbook xmlns:r="x"><sheets><sheet name="Inventory" sheetId="1" r:id="rId1"/></sheets></workbook>'),
@@ -40,7 +45,7 @@ function fixture(projectAuthorized = true) {
             args,
             async first() {
               if (sql.includes("FROM kb_document_idempotency_requests")) return claims.get(JSON.stringify(args.slice(0, 4))) ?? null;
-              if (sql.startsWith("SELECT id,tenant_id,space_id,project_id,title,source_url,content_type,status"))
+              if (sql.startsWith("SELECT id,tenant_id,space_id,project_id,title,source_url,content_type,source_file_name,status"))
                 return documents.get(String(args[0])) ?? null;
               if (sql.includes("SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status"))
                 return documents.get(String(args[0])) ?? null;
@@ -117,7 +122,7 @@ async function request(path: string, body: unknown): Promise<Request> {
 }
 
 function stubParser(markdown = "# Parsed guide\n\nOriginal extracted content.") {
-  const parse = vi.fn(async () => new Response(JSON.stringify({ markdown }), { status: 200 }));
+  const parse = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ markdown }), { status: 200 }));
   vi.stubGlobal("fetch", parse);
   return parse;
 }
@@ -125,6 +130,39 @@ function stubParser(markdown = "# Parsed guide\n\nOriginal extracted content.") 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Knowledge PDF preview and approved ingestion", () => {
+  it("keeps raster OCR default-off and uses a signed, reviewable receipt when explicitly enabled", async () => {
+    const parse = stubParser("Recognized text with possible OCR errors.");
+    const f = fixture();
+    const disabled = await worker.fetch(await request("/spaces/space-1/kb/documents/preview", {
+      content: base64(pngBytes), source_file_name: "scan.png",
+    }), f.env, {} as ExecutionContext);
+    expect(disabled.status).toBe(503);
+    expect(parse).not.toHaveBeenCalled();
+
+    (f.env as unknown as { KNOWLEDGE_IMAGE_PARSE_ENABLED: string }).KNOWLEDGE_IMAGE_PARSE_ENABLED = "true";
+    const enabled = await worker.fetch(await request("/spaces/space-1/kb/documents/preview", {
+      content: base64(pngBytes), source_file_name: "scan.png", project_id: "project-1",
+    }), f.env, {} as ExecutionContext);
+    expect(enabled.status).toBe(200);
+    const { preview } = await enabled.json() as { preview: {
+      content: string; parser_version: string; preview_token: string; extraction_sha256: string; extraction_warnings: string[];
+    } };
+    expect(preview).toMatchObject({ content: "Recognized text with possible OCR errors.", parser_version: "cohere:parse-v5.0-image-ocr-v1" });
+    expect(preview.extraction_warnings.join(" ")).toMatch(/misread.*Review and correct/i);
+    expect((parse.mock.calls[0]?.[1] as RequestInit).body).toBeInstanceOf(FormData);
+    expect(((parse.mock.calls[0]?.[1] as RequestInit).body as FormData).get("document")).toBeInstanceOf(Blob);
+    const saved = await worker.fetch(await request("/spaces/space-1/kb/documents", {
+      title: "Scanned label", content: base64(pngBytes), content_type: "image", source_file_name: "scan.png",
+      preview_content: "Corrected text from the scan.", preview_token: preview.preview_token,
+      preview_extraction_sha256: preview.extraction_sha256, project_id: "project-1",
+      idempotency_key: "approved-image-request-key-001",
+    }), f.env, {} as ExecutionContext);
+    expect(saved.status).toBe(201);
+    expect(f.calls.find(({ sql }) => sql.includes("INSERT INTO kb_documents"))?.args).toContain("cohere:parse-v5.0-image-ocr-v1");
+    expect([...f.objects.entries()].some(([key, bytes]) => key.endsWith("/original")
+      && key.includes("project-1") && bytes[0] === 0x89)).toBe(true);
+  });
+
   it("previews and ingests DOCX through bounded local extraction with signed source lineage", async () => {
     const f = fixture();
     const network = vi.fn();

@@ -15,6 +15,7 @@ import { createParseV5Request } from "./parse-v5.js";
 import { parseKnowledgeDocx, KNOWLEDGE_DOCX_PARSER_VERSION, MAX_KNOWLEDGE_DOCX_BYTES } from "./docx-preview.js";
 import { parseKnowledgeXlsx, KNOWLEDGE_XLSX_PARSER_VERSION, MAX_KNOWLEDGE_XLSX_BYTES } from "./xlsx-preview.js";
 import { parseKnowledgePptx, KNOWLEDGE_PPTX_PARSER_VERSION, MAX_KNOWLEDGE_PPTX_BYTES } from "./pptx-preview.js";
+import { KNOWLEDGE_IMAGE_PARSER_VERSION, MAX_KNOWLEDGE_IMAGE_BYTES, validateKnowledgeRasterImage } from "./image-preview.js";
 import { queryScopedFtsCandidates, sparseRank } from "./search.js";
 import { reportKnowledgeStorageWrite } from "./storage-usage.js";
 import { acquireKnowledgeDocumentMutationLease, hasKnowledgeDocumentDeletionSince, hasPendingKnowledgeDocumentDeletion, processKnowledgeDocumentDeletion,
@@ -59,6 +60,8 @@ interface KnowledgeEnv {
   /** Cohere Parse is mandatory for binary/layout-sensitive ingestion. It intentionally has no
    * fallback to pretending the model ran: callers receive a service-unavailable failure. */
   COHERE_API_KEY?: string;
+  /** Image OCR stays disabled until provider contract, privacy, quality and cost gates pass. */
+  KNOWLEDGE_IMAGE_PARSE_ENABLED?: string;
   RETRIEVAL_POLICY_VERSION?: string;
   RETRIEVAL_CONFIDENCE_THRESHOLD?: string;
   /** Response/retrieval caches remain off until caller and source/grant freshness are acceptance-tested. */
@@ -787,16 +790,17 @@ function sanitizeKbContent(content: string): { sanitized: string; injectionDetec
   return { sanitized: stripped, injectionDetected };
 }
 
-type KnowledgeFileFormat = "pdf" | "docx" | "xlsx" | "pptx";
+type KnowledgeFileFormat = "pdf" | "docx" | "xlsx" | "pptx" | "image";
 const KNOWLEDGE_FILE_MIME: Record<KnowledgeFileFormat, string> = {
   pdf: "application/pdf",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  image: "image/png",
 };
 
 function decodeKnowledgeFileContent(value: string, format: KnowledgeFileFormat): Uint8Array {
-  const mime = KNOWLEDGE_FILE_MIME[format].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const mime = format === "image" ? "image\\/(?:png|jpeg)" : KNOWLEDGE_FILE_MIME[format].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = new RegExp(`^data:${mime};base64,([A-Za-z0-9+/]*={0,2})$`, "i").exec(value);
   const encoded = match?.[1] ?? value;
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
@@ -812,11 +816,16 @@ function decodeKnowledgeFileContent(value: string, format: KnowledgeFileFormat):
   }
 }
 
+function knowledgeImageMime(fileName: string | null): "image/png" | "image/jpeg" {
+  return fileName && /\.png$/i.test(fileName) ? "image/png" : "image/jpeg";
+}
+
 function safeKnowledgeSourceFileName(value: unknown, format: KnowledgeFileFormat = "pdf"): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== "string" || value.length > 512) throw badRequest("source_file_name must be at most 512 characters");
   const name = value.replace(/\\/g, "/").split("/").pop()!.replace(/[\u0000-\u001f\u007f]/g, "").trim();
-  const extension = format === "pdf" ? /\.pdf$/i : format === "docx" ? /\.docx$/i : format === "xlsx" ? /\.xlsx$/i : /\.pptx$/i;
+  const extension = format === "pdf" ? /\.pdf$/i : format === "docx" ? /\.docx$/i : format === "xlsx" ? /\.xlsx$/i
+    : format === "pptx" ? /\.pptx$/i : /\.(?:png|jpe?g)$/i;
   if (!name || name.length > 255 || !extension.test(name)) throw badRequest(`source_file_name must be a ${format.toUpperCase()} filename`);
   return name;
 }
@@ -846,6 +855,7 @@ interface IdempotentKnowledgeDocument {
   title: string;
   source_url: string | null;
   content_type: string;
+  source_file_name: string | null;
   status: string;
   chunk_count: number;
   source_adapter: "manual" | "website" | "connector";
@@ -871,7 +881,7 @@ async function findKnowledgeCreateByIdempotency(
   if (claim.request_sha256 !== requestSha256) {
     throw new HttpError(409, "knowledge_idempotency_key_reused", "This upload request key was already used with different content or access settings");
   }
-  const document = await db.prepare(`SELECT id,tenant_id,space_id,project_id,title,source_url,content_type,status,
+  const document = await db.prepare(`SELECT id,tenant_id,space_id,project_id,title,source_url,content_type,source_file_name,status,
     chunk_count,source_adapter,source_revision,source_content_sha256,source_state,created_at,updated_at
     FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=? AND project_id IS ?`)
     .bind(claim.document_id, scope.tenantId, scope.spaceId, scope.projectId)
@@ -1896,13 +1906,17 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
     const access = await requireProjectAccess(c, projectId);
     if (access instanceof Response) return access;
   }
-  if (typeof body.content !== "string" || !body.content) throw badRequest("PDF, DOCX, XLSX or PPTX content is required");
+  if (typeof body.content !== "string" || !body.content) throw badRequest("PDF, DOCX, XLSX, PPTX or image content is required");
   if (typeof body.source_file_name !== "string") throw badRequest("source_file_name is required");
   const fileFormat: KnowledgeFileFormat = /\.docx$/i.test(body.source_file_name) ? "docx"
-    : /\.xlsx$/i.test(body.source_file_name) ? "xlsx" : /\.pptx$/i.test(body.source_file_name) ? "pptx" : "pdf";
+    : /\.xlsx$/i.test(body.source_file_name) ? "xlsx" : /\.pptx$/i.test(body.source_file_name) ? "pptx"
+      : /\.(?:png|jpe?g)$/i.test(body.source_file_name) ? "image" : "pdf";
   const sourceFileName = safeKnowledgeSourceFileName(body.source_file_name, fileFormat);
+  if (fileFormat === "image" && c.env.KNOWLEDGE_IMAGE_PARSE_ENABLED !== "true") {
+    throw new HttpError(503, "knowledge_image_parse_disabled", "Image OCR preview is not enabled for this Knowledge environment");
+  }
   const sourceBytes = decodeKnowledgeFileContent(body.content, fileFormat);
-  const contentLimit = projectId ? 5 * 1024 * 1024 : 1_048_576;
+  const contentLimit = fileFormat === "image" ? MAX_KNOWLEDGE_IMAGE_BYTES : projectId ? 5 * 1024 * 1024 : 1_048_576;
   if (sourceBytes.byteLength > contentLimit) {
     throw new HttpError(413, "knowledge_document_scope_limit_exceeded",
       projectId ? "Project Knowledge files are limited to 5 MiB" : "Space-wide Knowledge files are limited to 1 MiB");
@@ -1915,13 +1929,24 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
     throw badRequest("The selected file is not a supported XLSX archive");
   if (fileFormat === "pptx" && (sourceBytes[0] !== 0x50 || sourceBytes[1] !== 0x4b || sourceBytes.byteLength > MAX_KNOWLEDGE_PPTX_BYTES))
     throw badRequest("The selected file is not a supported PPTX archive");
+  if (fileFormat === "image") {
+    const mime = /\.png$/i.test(sourceFileName!) ? "image/png" : "image/jpeg";
+    try { validateKnowledgeRasterImage(mime, sourceBytes); }
+    catch (error) {
+      const code = error instanceof Error ? error.message : "knowledge_image_header_invalid";
+      throw new HttpError(code === "knowledge_image_size_invalid" || code === "knowledge_image_pixels_exceeded" ? 413 : 400,
+        code, code === "knowledge_image_pixels_exceeded" ? "Image exceeds the supported 20 megapixel limit"
+          : code === "knowledge_image_size_invalid" ? "Images are limited to 1 MiB" : "The selected file is not a supported PNG or JPEG image");
+    }
+  }
 
   let parsed: string;
   const parseStartedAt = performance.now();
   let parseOutcome: "succeeded" | "failed" = "failed";
   try {
-    parsed = fileFormat === "pdf"
-      ? await createParseV5Request(sourceBytes, KNOWLEDGE_FILE_MIME.pdf, c.env)
+    parsed = fileFormat === "pdf" || fileFormat === "image"
+      ? await createParseV5Request(sourceBytes, fileFormat === "pdf" ? KNOWLEDGE_FILE_MIME.pdf
+        : knowledgeImageMime(sourceFileName), c.env)
       : fileFormat === "docx" ? await parseKnowledgeDocx(sourceBytes) : fileFormat === "xlsx" ? await parseKnowledgeXlsx(sourceBytes) : await parseKnowledgePptx(sourceBytes);
     parseOutcome = "succeeded";
   } catch (error) {
@@ -1945,10 +1970,13 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
   const sourceSha256 = await sha256BytesHex(sourceBytes);
   const extractionSha256 = await sha256BytesHex(previewBytes);
   const parserVersion = fileFormat === "pdf" ? KNOWLEDGE_PDF_PARSER_VERSION
-    : fileFormat === "docx" ? KNOWLEDGE_DOCX_PARSER_VERSION : fileFormat === "xlsx" ? KNOWLEDGE_XLSX_PARSER_VERSION : KNOWLEDGE_PPTX_PARSER_VERSION;
+    : fileFormat === "docx" ? KNOWLEDGE_DOCX_PARSER_VERSION : fileFormat === "xlsx" ? KNOWLEDGE_XLSX_PARSER_VERSION
+      : fileFormat === "pptx" ? KNOWLEDGE_PPTX_PARSER_VERSION : KNOWLEDGE_IMAGE_PARSER_VERSION;
   const previewToken = await createKnowledgePdfPreviewToken({ secret: c.env.PLATFORM_SECRET,
     scope: { tenantId, spaceId, projectId }, sourceSha256, extractionSha256, parserVersion });
-  const extractionWarnings = fileFormat === "pdf"
+  const extractionWarnings = fileFormat === "image"
+    ? ["OCR output can omit or misread text, layout, handwriting, tables, units, and symbols. Review and correct the extracted text before saving; image content is untrusted input."]
+    : fileFormat === "pdf"
     ? ["Review reading order, tables, and scanned pages before saving; automated PDF extraction can omit or misread them."]
       : fileFormat === "docx"
       ? ["DOCX preview extracts the main body in document order. Headers, footers, images, page layout, comments, and tracked changes are not included; review table text before saving."]
@@ -2026,10 +2054,10 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     throw badRequest("nonempty content is required");
   }
 
-  const validContentTypes = new Set(["text", "url", "code", "pdf", "docx", "xlsx", "pptx"]);
+  const validContentTypes = new Set(["text", "url", "code", "pdf", "docx", "xlsx", "pptx", "image"]);
   const contentType = body.content_type ?? "text";
   if (!validContentTypes.has(contentType)) {
-    throw badRequest(`content_type must be one of: text, url, code, pdf, docx, xlsx, pptx`);
+    throw badRequest(`content_type must be one of: text, url, code, pdf, docx, xlsx, pptx, image`);
   }
 
   const MAX_SYNC_CONTENT_BYTES = 1_048_576;
@@ -2037,11 +2065,14 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   if (body.source_url !== undefined && (typeof body.source_url !== "string" || body.source_url.length > 2_048)) {
     throw badRequest("source_url must be a string of at most 2048 characters");
   }
-  const parsedFileFormat: KnowledgeFileFormat | null = contentType === "pdf" || contentType === "docx" || contentType === "xlsx" || contentType === "pptx" ? contentType : null;
+  const parsedFileFormat: KnowledgeFileFormat | null = contentType === "pdf" || contentType === "docx" || contentType === "xlsx" || contentType === "pptx" || contentType === "image" ? contentType : null;
+  if (parsedFileFormat === "image" && c.env.KNOWLEDGE_IMAGE_PARSE_ENABLED !== "true") {
+    throw new HttpError(503, "knowledge_image_parse_disabled", "Image OCR preview is not enabled for this Knowledge environment");
+  }
   const originalBytes = parsedFileFormat ? decodeKnowledgeFileContent(body.content, parsedFileFormat) : new TextEncoder().encode(body.content);
   if (originalBytes.byteLength > MAX_WORKFLOW_CONTENT_BYTES) throw badRequest("content exceeds the 5 MiB ingestion limit");
   const sourceFileName = parsedFileFormat ? safeKnowledgeSourceFileName(body.source_file_name, parsedFileFormat) : null;
-  const contentLimit = projectId ? MAX_WORKFLOW_CONTENT_BYTES : MAX_SYNC_CONTENT_BYTES;
+  const contentLimit = parsedFileFormat === "image" ? MAX_KNOWLEDGE_IMAGE_BYTES : projectId ? MAX_WORKFLOW_CONTENT_BYTES : MAX_SYNC_CONTENT_BYTES;
   let indexContent = body.content;
   let parsedFileLineage: { sourceSha256: string; extractionSha256: string; approvedContentSha256: string; parserVersion: string } | undefined;
   if (parsedFileFormat) {
@@ -2054,6 +2085,10 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       || originalBytes.byteLength > MAX_KNOWLEDGE_XLSX_BYTES)) throw badRequest("The selected file is not a supported XLSX archive");
     if (parsedFileFormat === "pptx" && (originalBytes[0] !== 0x50 || originalBytes[1] !== 0x4b
       || originalBytes.byteLength > MAX_KNOWLEDGE_PPTX_BYTES)) throw badRequest("The selected file is not a supported PPTX archive");
+    if (parsedFileFormat === "image") {
+      try { validateKnowledgeRasterImage(/\.png$/i.test(sourceFileName) ? "image/png" : "image/jpeg", originalBytes); }
+      catch { throw badRequest("The selected file is not a supported PNG or JPEG image"); }
+    }
     if (typeof body.preview_content !== "string" || !body.preview_content.trim() || typeof body.preview_extraction_sha256 !== "string") {
       throw new HttpError(409, "knowledge_document_preview_required", "Preview and approve the extracted document text before saving");
     }
@@ -2067,7 +2102,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     parsedFileLineage = { sourceSha256, extractionSha256, approvedContentSha256: await sha256BytesHex(approvedBytes),
       parserVersion: parsedFileFormat === "pdf" ? KNOWLEDGE_PDF_PARSER_VERSION
         : parsedFileFormat === "docx" ? KNOWLEDGE_DOCX_PARSER_VERSION
-          : parsedFileFormat === "xlsx" ? KNOWLEDGE_XLSX_PARSER_VERSION : KNOWLEDGE_PPTX_PARSER_VERSION };
+          : parsedFileFormat === "xlsx" ? KNOWLEDGE_XLSX_PARSER_VERSION
+            : parsedFileFormat === "pptx" ? KNOWLEDGE_PPTX_PARSER_VERSION : KNOWLEDGE_IMAGE_PARSER_VERSION };
   }
   if (!parsedFileFormat && originalBytes.byteLength > contentLimit) {
     throw badRequest(projectId ? "Project Knowledge content exceeds the 5 MiB limit" : "Space-wide Knowledge content exceeds the 1 MiB limit");
@@ -2144,9 +2180,11 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         if (!staged && claim.dispatchState === "claimed") {
           const stagedBytes = new TextEncoder().encode(indexContent);
           if (stagedBytes.byteLength > MAX_WORKFLOW_CONTENT_BYTES) throw badRequest("Parsed document exceeds the 5 MiB ingestion limit");
-          if (existing.content_type === "pdf" || existing.content_type === "docx" || existing.content_type === "xlsx" || existing.content_type === "pptx") {
+          if (["pdf", "docx", "xlsx", "pptx", "image"].includes(existing.content_type)) {
             const sourceKey = `kb/${spaceId}/${existing.project_id}/${existing.id}/original`;
-            await c.env.KB_BUCKET.put(sourceKey, originalBytes, { httpMetadata: { contentType: KNOWLEDGE_FILE_MIME[existing.content_type] } });
+            const sourceMime = existing.content_type === "image" ? knowledgeImageMime(String(existing.source_file_name ?? ""))
+              : KNOWLEDGE_FILE_MIME[existing.content_type as KnowledgeFileFormat];
+            await c.env.KB_BUCKET.put(sourceKey, originalBytes, { httpMetadata: { contentType: sourceMime } });
           }
           await c.env.KB_BUCKET.put(r2Key, stagedBytes, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
           staged = true;
@@ -2157,7 +2195,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         const stagedBytes = new TextEncoder().encode(indexContent);
         await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, existing.project_id, existing.id,
           stagedBytes.byteLength, true, `workflow-stage:${existing.id}`);
-        if (existing.content_type === "pdf" || existing.content_type === "docx" || existing.content_type === "xlsx" || existing.content_type === "pptx") await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, existing.project_id, existing.id,
+        if (["pdf", "docx", "xlsx", "pptx", "image"].includes(existing.content_type)) await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, existing.project_id, existing.id,
           originalBytes.byteLength, true, `workflow-${existing.content_type}-source:${existing.id}`);
         const dispatching = await c.env.PLATFORM_DB.prepare(`UPDATE kb_document_idempotency_requests
           SET dispatch_state='dispatching' WHERE tenant_id=? AND space_id=? AND project_scope=? AND key_sha256=?
@@ -2252,7 +2290,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
       }
       if (parsedFileFormat) {
-        await c.env.KB_BUCKET.put(sourceKey, originalBytes, { httpMetadata: { contentType: KNOWLEDGE_FILE_MIME[parsedFileFormat] } });
+        await c.env.KB_BUCKET.put(sourceKey, originalBytes, { httpMetadata: { contentType: parsedFileFormat === "image"
+          ? knowledgeImageMime(sourceFileName) : KNOWLEDGE_FILE_MIME[parsedFileFormat] } });
       }
       await c.env.KB_BUCKET.put(r2Key, stagedBytes, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
       await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, stagedBytes.byteLength, true, `workflow-stage:${docId}`);
@@ -2312,7 +2351,9 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   try {
     // ── G-BD01: Sanitize content — strip HTML, detect injection patterns ────
     const originalKey = `kb/${spaceId}/${projectId ?? "_space"}/${docId}/original`;
-    await c.env.KB_BUCKET.put(originalKey, originalBytes, { httpMetadata: { contentType: parsedFileFormat ? KNOWLEDGE_FILE_MIME[parsedFileFormat] : "text/plain; charset=utf-8" } });
+    await c.env.KB_BUCKET.put(originalKey, originalBytes, { httpMetadata: { contentType: parsedFileFormat
+      ? parsedFileFormat === "image" ? knowledgeImageMime(sourceFileName) : KNOWLEDGE_FILE_MIME[parsedFileFormat]
+      : "text/plain; charset=utf-8" } });
     storageBytesWritten += originalBytes.byteLength;
     const parsedContent = indexContent;
     const { sanitized: sanitizedContent, injectionDetected } = sanitizeKbContent(parsedContent);

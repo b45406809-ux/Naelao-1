@@ -19,6 +19,8 @@ crons = ["*/5 * * * *"]
 #                      web-search `search`/`extract` report configured:false; `fetch` still works.
 #   COHERE_API_KEY   — required for PDF/layout ingestion through Cohere parse-v5.0. Ingestion
 #                      fails closed when a parse-required document is submitted without it.
+#   Raster images use the same parser only when KNOWLEDGE_IMAGE_PARSE_ENABLED is explicitly
+#   enabled after provider, privacy, quality and cost acceptance. The flag stays false in every env.
 
 [ai]
 binding = "AI"
@@ -64,13 +66,14 @@ RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85"
 KNOWLEDGE_RESPONSE_CACHE_ENABLED = "false"
 KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED = "false"
 KNOWLEDGE_WEBSITE_CRAWL_ENABLED = "false"
+KNOWLEDGE_IMAGE_PARSE_ENABLED = "false"
 
 [[queues.producers]]
 binding = "EVENTS_QUEUE"
 queue = "naelao-events"
 
 [env.staging]
-vars = { ENVIRONMENT = "staging", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85", KNOWLEDGE_RESPONSE_CACHE_ENABLED = "false", KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED = "false", KNOWLEDGE_WEBSITE_CRAWL_ENABLED = "false" }
+vars = { ENVIRONMENT = "staging", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85", KNOWLEDGE_RESPONSE_CACHE_ENABLED = "false", KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED = "false", KNOWLEDGE_WEBSITE_CRAWL_ENABLED = "false", KNOWLEDGE_IMAGE_PARSE_ENABLED = "false" }
 
 [env.staging.triggers]
 crons = ["*/5 * * * *"]
@@ -84,7 +87,7 @@ binding = "BILLING_WORKER"
 service = "naelao-billing-staging"
 
 [env.production]
-vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85", KNOWLEDGE_RESPONSE_CACHE_ENABLED = "false", KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED = "false", KNOWLEDGE_WEBSITE_CRAWL_ENABLED = "false" }
+vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85", KNOWLEDGE_RESPONSE_CACHE_ENABLED = "false", KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED = "false", KNOWLEDGE_WEBSITE_CRAWL_ENABLED = "false", KNOWLEDGE_IMAGE_PARSE_ENABLED = "false" }
 
 [env.production.triggers]
 crons = ["*/5 * * * *"]

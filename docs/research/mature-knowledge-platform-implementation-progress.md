@@ -338,7 +338,7 @@ Statuses describe local code, not deployment or live acceptance. `IN_PROGRESS` m
 | ID | Status | Current source evidence and remaining action |
 | --- | --- | --- |
 | K01 Scope-specific ingestion limits | IMPLEMENTED_LOCAL | Shared UTF-8 byte helper and `createKbDocument` guard match backend's 1 MiB Space-wide and 5 MiB Project workflow limits. Both add forms check pasted text and selected text files and display the scope limit. Helper tests 3/3; Shell typecheck passed. |
-| K02 Supported formats and preview | PARTIAL | Text/Markdown/code/CSV/URL, scoped reviewed PDF, bounded DOCX, first-sheet XLSX and PPTX previews are local with source/parser/approval lineage and archive restore. CSV/XLSX preserve tabular text; PPTX now emits bounded table cells with slide/table/row/cell labels and discloses omitted visual relationships. Scanned-image/OCR ingestion in Knowledge and richer visual presentation extraction remain uncoded. |
+| K02 Supported formats and preview | PARTIAL_LOCAL + PROVIDER/LIVE GATE | Text/Markdown/code/CSV/URL, scoped reviewed PDF, bounded DOCX, first-sheet XLSX, text/table PPTX and a reviewed PNG/JPEG OCR caller are wired with source/parser/approval lineage and archive restore. Image parsing defaults off in all Wrangler environments pending provider contract, privacy, quality, cost and live acceptance. Scanned-PDF OCR and richer visual presentation extraction remain uncoded. |
 | K03 Parser safety and provenance | PARTIAL | PDF/DOCX/XLSX/PPTX parser output and human-approved text have distinct hashes; parser version, original source and archive lineage persist. CSV/XLSX preserve table text under explicit display bounds; PPTX labels slide number and bounded table row/cell indices. PDF page geometry, visual table coordinates, confidence and parser/model quality evidence remain open. |
 | K04 Idempotent durable ingestion | IMPLEMENTED_LOCAL | Required scope-bound request key and canonical request hash are atomically claimed with the row; sync and queued same-key retries converge, altered content/ACL conflict, Queue dispatch is deterministic/recoverable, usage keys are stable, and final delete preserves a request tombstone. Knowledge 111/111, Workflows queue 12/12, four package typechecks and migration/release checks pass. Deployed D1 concurrency, billing dedupe and synchronous crash recovery remain unaccepted/open. |
 | K05 Collection authority model | IN_PROGRESS | Project publications have monotonic revisions, versioned membership, CAS edits, revision-pinned grants, archive/restore-as-draft, metadata-only discovery, separate source reads, and owner/admin lifecycle history. Delete writes a content-free receipt and scoped tombstone so IDs cannot reset to an old grant revision. Extension-sharing grants now expose the last 20 content-free changes (selection IDs/revisions, actor, timestamp) to the owner/admin Shell. Generic ownership transfer, retention schedule and post-uninstall historical view still need policy/lifecycle decisions; deployed acceptance remains open. |
@@ -390,3 +390,19 @@ Official sources reviewed: Cloudflare [filtering](https://developers.cloudflare.
 Current local evidence and rollout limits are in the latest K14/K17 checkpoint above. No deployed D1/Worker, browser, live provider/invoice or production acceptance ran; do not infer deployed FTS, model behavior, multilingual quality, or real scale. AI Search remains unselected and rollout flags remain false.
 
 K14's local evaluator dimensions are implemented; they do not establish cross-language quality. K10 has no file-ACL provider identity caller; preserve it as uncoded until a supported identity-proof integration exists. Resume with the next cross-plan action in AGENTS.md: owner-authorized per-conversation AgentMail assistant routing, then continue the remaining S/U/P/PW/EP and K10–K30 gaps.
+## Latest K02 implementation checkpoint — 2026-11-17 (reviewed raster OCR path, rollout disabled)
+
+Knowledge now accepts bounded PNG/JPEG sources through the same signed preview, editable human
+approval, save, lineage, source-byte storage, storage-usage and archive path used by binary documents.
+Backend validation checks image signatures, JPEG/PNG dimensions, <=1 MiB bytes and <=20 megapixels;
+the parser version is `cohere:parse-v5.0-image-ocr-v1`. Both Space and Project Shell upload callers
+expose the path and show OCR review warnings. Development, staging and production explicitly set
+`KNOWLEDGE_IMAGE_PARSE_ENABLED=false`; this code does not run against a provider in those environments.
+Enabling it still requires current Cohere image-format contract, privacy/egress, quality, billing and
+live acceptance. No OCR accuracy is claimed. Local verification: Knowledge ingestion/image/archive
+tests **21/21**, Knowledge typecheck, Shell upload tests **6/6**, Shell typecheck and diff hygiene.
+
+K02 remains partial for scanned-PDF OCR, PDF/page and richer visual coordinates, and richer presentation
+extraction. K03 remains partial for PDF coordinates, extraction confidence and parser-quality evidence.
+Exact next action: continue K03 PDF/page provenance through the existing signed preview contract, and
+continue the full active mission after that checkpoint. Keep image parsing and rollouts disabled.

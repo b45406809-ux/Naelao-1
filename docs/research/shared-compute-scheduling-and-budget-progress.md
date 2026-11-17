@@ -1,5 +1,19 @@
 # Shared compute scheduling and budget progress
 
+## SC03 resume update — 2026-11-17 (TBR07 already compared; dispatcher still fail-closed)
+
+The requested TBR07 authority comparison is complete and remains recorded below; same-Space owner/admin
+versus Knowledge explicit-membership semantics remain a product/security decision. Rechecked SC03's
+existing encrypted ToolSandbox receipt, live `authorizeContainer` closure, ConcurrencyDO fencing/status
+and Billing path: no alarm-safe caller can reconstruct the Bash-tool and role clamp or bind a fresh
+Billing hold after the original invocation disconnects. Do not dispatch disconnected work or repeat
+the TBR07 audit. This is still a host-authority/job-contract code gap, not a credential gate. Preserve
+the existing queue/status/cancel behavior and keep replay disabled.
+
+Exact next action: proceed with independent K02/K03 Knowledge ingestion and provenance work; return to
+SC03 only when the host offers explicit durable invocation consent, a revocable authority revision and
+pre-dispatch Billing admission that an alarm-safe worker can revalidate.
+
 ## SC03 dispatch trace — 2026-11-17 (TBR07 complete; no safe disconnected dispatcher found)
 
 The current DynamicSandbox → ToolSandbox path is still synchronous. Capacity retry carries the

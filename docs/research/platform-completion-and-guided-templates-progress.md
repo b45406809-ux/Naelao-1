@@ -3078,3 +3078,15 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
 Keep rollout disabled. Do not deploy, create resources, purchase services, or claim deployed/live
 acceptance. Commit and push each coherent checkpoint to `origin/Mcbt5s-Backup-2` after fetching and
 safely integrating any remote advances.
+## Cross-plan checkpoint — 2026-11-17 (K02 reviewed image OCR caller)
+
+Space and Project Knowledge forms now accept bounded PNG/JPEG files through the signed editable preview
+and normal approved save flow. The host validates format, <=1 MiB size and <=20 megapixels, persists
+original bytes and parser lineage, records storage usage and includes image sources in archive validation.
+OCR uncertainty is disclosed in the preview. The feature flag is explicitly false in development,
+staging and production until current Cohere image support, privacy, quality, billing and live acceptance
+are verified. Local checks: Knowledge suites **21/21**, Shell upload suite **6/6**, both typechecks and
+`git diff --check`. No live provider call or deployment occurred.
+
+Exact next action: continue Knowledge PDF/page provenance and remaining independent active-plan gaps;
+SC03 disconnected dispatch remains disabled until current host authority and Billing can be rechecked.

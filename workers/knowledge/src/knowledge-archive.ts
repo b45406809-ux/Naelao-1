@@ -220,7 +220,7 @@ export async function validateKnowledgeArchiveSnapshot(
     if (!document || !validId(document.id) || ids.has(document.id) || document.tenant_id !== expected.tenantId
       || document.space_id !== expected.spaceId || document.project_id !== null && !validId(document.project_id)
       || typeof document.title !== "string" || document.title.length > 500
-      || !["text", "url", "code", "pdf", "docx", "xlsx", "pptx"].includes(document.content_type)
+      || !["text", "url", "code", "pdf", "docx", "xlsx", "pptx", "image"].includes(document.content_type)
       || document.source_url !== null && typeof document.source_url !== "string"
       || document.source_sha256 !== undefined && document.source_sha256 !== null && !/^[a-f0-9]{64}$/.test(document.source_sha256)
       || document.source_file_name !== undefined && document.source_file_name !== null &&
@@ -229,7 +229,8 @@ export async function validateKnowledgeArchiveSnapshot(
         (document.content_type === "pdf" && !/\.pdf$/i.test(document.source_file_name)
           || document.content_type === "docx" && !/\.docx$/i.test(document.source_file_name)
           || document.content_type === "xlsx" && !/\.xlsx$/i.test(document.source_file_name)
-          || document.content_type === "pptx" && !/\.pptx$/i.test(document.source_file_name))
+          || document.content_type === "pptx" && !/\.pptx$/i.test(document.source_file_name)
+          || document.content_type === "image" && !/\.(?:png|jpe?g)$/i.test(document.source_file_name))
       || document.parser_version !== undefined && document.parser_version !== null &&
         (typeof document.parser_version !== "string" || document.parser_version.length > 128)
       || document.parser_output_sha256 !== undefined && document.parser_output_sha256 !== null && !/^[a-f0-9]{64}$/.test(document.parser_output_sha256)
@@ -243,10 +244,10 @@ export async function validateKnowledgeArchiveSnapshot(
         && (!Number.isSafeInteger(document.source_grant_revision) || document.source_grant_revision < 1)
       || document.source_state !== undefined && !["current", "stale", "revoked", "unsupported"].includes(document.source_state)
       || document.source_adapter === "connector" && (!document.source_connection_ref || !document.source_grant_revision)
-      || typeof document.source_sha256 === "string" && (!(["pdf", "docx", "xlsx", "pptx"].includes(document.content_type))
+      || typeof document.source_sha256 === "string" && (!(["pdf", "docx", "xlsx", "pptx", "image"].includes(document.content_type))
         || typeof document.parser_version !== "string" || !document.parser_version
         || typeof document.parser_output_sha256 !== "string" || typeof document.approved_content_sha256 !== "string")
-      || ["docx", "xlsx", "pptx"].includes(document.content_type) && (typeof document.source_sha256 !== "string"
+      || ["docx", "xlsx", "pptx", "image"].includes(document.content_type) && (typeof document.source_sha256 !== "string"
         || typeof document.source_file_name !== "string" || typeof document.parser_version !== "string"
         || typeof document.parser_output_sha256 !== "string" || typeof document.approved_content_sha256 !== "string")
       || typeof document.created_at !== "string" || typeof document.updated_at !== "string"

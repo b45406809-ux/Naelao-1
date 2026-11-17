@@ -38,6 +38,19 @@ describe("Knowledge PDF source selection", () => {
     await expect(readKnowledgePdfFile(wrongType)).rejects.toThrow("Choose a PDF");
   });
 
+  it("accepts bounded PNG/JPEG sources and rejects mismatched image types", async () => {
+    const pngBytes = new Uint8Array(24);
+    pngBytes.set([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a], 0);
+    const png = new File([pngBytes], "scan.png", { type: "image/png" });
+    await expect(readKnowledgePdfFile(png)).resolves.toBe(encodeKnowledgePdfBytes(pngBytes));
+    const jpg = new File([new Uint8Array([0xff,0xd8,0x00,0xff,0xd9])], "scan.jpg", { type: "image/jpeg" });
+    await expect(readKnowledgePdfFile(jpg)).resolves.toBe("/9gA/9k=");
+    const wrongType = new File([pngBytes], "scan.png", { type: "image/gif" });
+    await expect(readKnowledgePdfFile(wrongType)).rejects.toThrow("Choose a PDF");
+    const oversized = new File([new Uint8Array(1_048_577)], "scan.png", { type: "image/png" });
+    await expect(readKnowledgePdfFile(oversized)).rejects.toThrow("Knowledge images are limited to 1 MiB");
+  });
+
   it("keeps PDF source bytes under the Space and Project upload ceilings", async () => {
     const spaceOversized = new File([new Uint8Array(1_048_577)], "large.pdf", { type: "application/pdf" });
     const projectOversized = new File([new Uint8Array(5 * 1_048_576 + 1)], "large.pdf", { type: "application/pdf" });

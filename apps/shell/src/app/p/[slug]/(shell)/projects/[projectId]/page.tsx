@@ -425,7 +425,7 @@ export default function ProjectDetailPage() {
     setWebsitePreview(null);
     setCsvPreviewActive(false);
     setXlsxPreviewActive(false);
-    if (/\.(pdf|docx|xlsx|pptx)$/i.test(file.name)) {
+    if (/\.(pdf|docx|xlsx|pptx|png|jpe?g)$/i.test(file.name)) {
       if (!creds) return;
       setPdfPreview(null);
       setPreviewingPdf(true);
@@ -434,7 +434,7 @@ export default function ProjectDetailPage() {
         const receipt = await previewKbPdf(activeSpaceId, creds, {
           content: base64, source_file_name: file.name, project_id: params.projectId,
         });
-        if (!newDocTitle.trim()) setNewDocTitle(file.name.replace(/\.(pdf|docx|xlsx|pptx)$/i, ""));
+        if (!newDocTitle.trim()) setNewDocTitle(file.name.replace(/\.(pdf|docx|xlsx|pptx|png|jpe?g)$/i, ""));
         setNewDocContent(receipt.content);
         setPdfPreview({ base64, receipt });
         setXlsxPreviewActive(/\.xlsx$/i.test(file.name));
@@ -619,7 +619,8 @@ export default function ProjectDetailPage() {
         content: pdfPreview.base64,
         content_type: /\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "docx"
           : /\.xlsx$/i.test(pdfPreview.receipt.source_file_name) ? "xlsx"
-            : /\.pptx$/i.test(pdfPreview.receipt.source_file_name) ? "pptx" : "pdf",
+            : /\.pptx$/i.test(pdfPreview.receipt.source_file_name) ? "pptx"
+              : /\.(?:png|jpe?g)$/i.test(pdfPreview.receipt.source_file_name) ? "image" : "pdf",
         idempotency_key: idempotencyKey,
         ...(pdfPreview.receipt.source_file_name ? { source_file_name: pdfPreview.receipt.source_file_name } : {}),
         preview_content: submittedContent,
@@ -1265,7 +1266,7 @@ export default function ProjectDetailPage() {
           Project-private text limit: 5 MiB ({knowledgeContentByteLength(newDocContent.trim()).toLocaleString()} bytes entered).
         </div>
         {pdfPreview && <div role="status" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, fontSize: 12 }}>
-          <strong>{/\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "DOCX" : /\.xlsx$/i.test(pdfPreview.receipt.source_file_name) ? "XLSX" : /\.pptx$/i.test(pdfPreview.receipt.source_file_name) ? "PPTX" : "PDF"} extraction preview · {pdfPreview.receipt.parser_version}</strong>
+          <strong>{/\.docx$/i.test(pdfPreview.receipt.source_file_name) ? "DOCX" : /\.xlsx$/i.test(pdfPreview.receipt.source_file_name) ? "XLSX" : /\.pptx$/i.test(pdfPreview.receipt.source_file_name) ? "PPTX" : /\.(?:png|jpe?g)$/i.test(pdfPreview.receipt.source_file_name) ? "IMAGE OCR" : "PDF"} extraction preview · {pdfPreview.receipt.parser_version}</strong>
           <div>Source SHA-256: <code>{pdfPreview.receipt.source_sha256}</code></div>
           <div>{pdfPreview.receipt.source_bytes.toLocaleString()} source bytes · {pdfPreview.receipt.extracted_bytes.toLocaleString()} extracted bytes (5 MiB project limit)</div>
           <p>Review and edit the extracted text before adding it to this project. This file preview expires after 15 minutes.</p>
@@ -1275,14 +1276,14 @@ export default function ProjectDetailPage() {
           <Button size="sm" disabled={addingDoc || previewingPdf || knowledgeContentByteLength(newDocContent.trim()) > PROJECT_KNOWLEDGE_MAX_CONTENT_BYTES}>
             {addingDoc ? "Adding…" : "Add document"}
           </Button>
-          <input ref={fileInputRef} type="file" accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.html,.xml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handlePickFile(event)} />
+          <input ref={fileInputRef} type="file" accept=".pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg,.txt,.md,.csv,.json,.html,.xml,.log,text/*" style={{ display: "none" }} onChange={(event) => void handlePickFile(event)} />
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => fileInputRef.current?.click()}
             style={{ fontSize: 12.5 }}
           >
-            {previewingPdf ? "Preparing document preview…" : "Upload text, PDF, DOCX, XLSX or PPTX"}
+            {previewingPdf ? "Preparing document preview…" : "Upload text, PDF, DOCX, XLSX, PPTX, PNG or JPEG"}
           </button>
         </div>
       </form>
