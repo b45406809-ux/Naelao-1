@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateKnowledgeExtensionCandidates, validateKnowledgeExtensionChunks, type KnowledgeExtensionContext } from "./knowledge-extension-contract.js";
+import { searchKnowledgeExtension, validateKnowledgeExtensionCandidates, validateKnowledgeExtensionChunks, type KnowledgeExtensionContext } from "./knowledge-extension-contract.js";
 
 const context: KnowledgeExtensionContext = {
   tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", collectionId: "collection-a", installationId: "install-a",
@@ -45,5 +45,30 @@ describe("custom Knowledge extension contracts", () => {
     }]);
     expect(() => validateKnowledgeExtensionCandidates(context, new Set(), [candidate])).toThrow("lineage");
     expect(() => validateKnowledgeExtensionCandidates(context, new Set(["chunk-a"]), [{ ...candidate, deletionGeneration: 1 }])).toThrow("lineage");
+  });
+
+  it("authorizes before ranking and removes results revoked during the adapter call", async () => {
+    let authorityReads = 0;
+    let adapterInput: unknown;
+    const candidates = await searchKnowledgeExtension({
+      context, query: "approved query", readAuthority: async () => ({ sourceVersion: 4, contentSha256: context.contentSha256,
+        deletionGeneration: 2, indexVersion: "index-2", retrievalVersion: "search-1",
+        authorizedChunkIds: ++authorityReads === 1 ? ["allowed-a", "revoked-after-search"] : ["allowed-a"] }),
+      adapter: { search: async input => {
+        adapterInput = input;
+        return ["allowed-a", "revoked-after-search"].map(chunkId => ({ chunkId, score: 0.7, sourceVersion: 4,
+          contentSha256: context.contentSha256, deletionGeneration: 2, indexVersion: "index-2", retrievalVersion: "search-1" }));
+      } },
+    });
+    expect(adapterInput).toEqual({ query: "approved query", chunkIds: ["allowed-a", "revoked-after-search"],
+      indexVersion: "index-2", retrievalVersion: "search-1" });
+    expect(candidates.map(item => item.chunkId)).toEqual(["allowed-a"]);
+  });
+
+  it("refuses retrieval when source or deletion generation changed before ranking", async () => {
+    const search = searchKnowledgeExtension({ context, query: "query", adapter: { search: async () => [] },
+      readAuthority: async () => ({ sourceVersion: 4, contentSha256: context.contentSha256, deletionGeneration: 3,
+        indexVersion: "index-2", retrievalVersion: "search-1", authorizedChunkIds: ["chunk-a"] }) });
+    await expect(search).rejects.toThrow("source_stale");
   });
 });
