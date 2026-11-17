@@ -124,15 +124,15 @@ export interface AssistantApprovalPlan {
   approvalMode: ApprovalMode;
 }
 
-/** Scheduled identities have no human actor from whom to inherit the Space's broad `yolo`
- * allowlist. Keep autonomous reads available, but require the existing exact-action HITL path
- * for every operation that is not explicitly classified read-safe. */
-export function restrictScheduledServiceApprovalPlan(
+/** Autonomous service wakes have no human actor from whom to inherit the Space's broad `yolo`
+ * allowlist. Keep explicitly read-safe operations available, but require the existing
+ * exact-action HITL path for every other operation. */
+export function restrictAutonomousServiceApprovalPlan(
   plan: AssistantApprovalPlan,
-  scheduledServiceRun: boolean,
+  autonomousServiceRun: boolean,
   availableActions: readonly string[],
 ): AssistantApprovalPlan {
-  if (!scheduledServiceRun) return plan;
+  if (!autonomousServiceRun) return plan;
   return {
     approvalMode: "gate_unless_listed",
     requiresApprovalFor: [...new Set(availableActions.filter(isReadSafeOperation))].sort(),

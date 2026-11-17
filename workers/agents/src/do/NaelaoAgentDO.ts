@@ -112,7 +112,7 @@ import { applyDurableObjectJurisdiction, issueDelegationClaim, verifyDelegationC
 import { routeMentionsWithSentry } from "../script-engine/mention-router.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { readVisibleSpaceCoordinationFacts, renderSpaceCoordinationContext } from "../script-engine/prebuilt/space-coordination.js";
-import { resolveAssistantApprovalPlan, restrictScheduledServiceApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
+import { resolveAssistantApprovalPlan, restrictAutonomousServiceApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { SkillLibrary } from "../script-engine/skill-library.js";
 import { bindCodeRpc, type CodeRpcBinding } from "../script-engine/code-rpc-broker.js";
@@ -7492,6 +7492,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
     const assembled = this.assembleUniversalAgent(manifest, body.spaceContext);
     engineEnv.maxTier = Math.min(engineEnv.maxTier ?? 6, assembled.maxTier) as ExecutionTier;
+    const autonomousServiceRun = body.context?.["trigger"] === "scheduled_job"
+      || body.context?.["trigger"] === "connector_poll";
     const scheduledServiceRun = body.context?.["trigger"] === "scheduled_job";
     const scheduledServiceContext = scheduledServiceRun ? {
       trigger: "scheduled_job",
@@ -7503,7 +7505,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return script ? Object.keys(script.operations) : [];
     });
     const approvalPlanForRun = (plan: ReturnType<typeof resolveAssistantApprovalPlan>) =>
-      restrictScheduledServiceApprovalPlan(plan, scheduledServiceRun, scheduledReadSafeActions);
+      restrictAutonomousServiceApprovalPlan(plan, autonomousServiceRun, scheduledReadSafeActions);
 
     // Approval policy. A project-bound Naelao Agent keeps the ordinary allowlist-of-gated
     // actions (spec §11, appendix A1.16.1). The Space Assistant (no projectId) is different:

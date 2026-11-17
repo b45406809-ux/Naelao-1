@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { restrictScheduledServiceApprovalPlan } from "./assistant-access.js";
+import { restrictAutonomousServiceApprovalPlan } from "./assistant-access.js";
 
 describe("scheduled service approval policy", () => {
   it("keeps only explicitly read-safe enabled actions out of the owner approval gate", () => {
-    const result = restrictScheduledServiceApprovalPlan(
+    const result = restrictAutonomousServiceApprovalPlan(
       { approvalMode: "gate_listed", requiresApprovalFor: [] }, true,
       ["project.list", "knowledge.search", "project.update", "mcp.call", "Read", "Read"],
     );
@@ -12,6 +12,14 @@ describe("scheduled service approval policy", () => {
 
   it("leaves interactive callers' configured policy unchanged", () => {
     const plan = { approvalMode: "gate_listed" as const, requiresApprovalFor: ["project.update"] };
-    expect(restrictScheduledServiceApprovalPlan(plan, false, ["Read"])).toBe(plan);
+    expect(restrictAutonomousServiceApprovalPlan(plan, false, ["Read"])).toBe(plan);
+  });
+
+  it("restricts autonomous connector polls independently of the Space yolo policy", () => {
+    const plan = { approvalMode: "gate_unless_listed" as const, requiresApprovalFor: [] };
+    expect(restrictAutonomousServiceApprovalPlan(plan, true, ["Read", "Write", "Dangerous"])).toEqual({
+      approvalMode: "gate_unless_listed",
+      requiresApprovalFor: ["Read"],
+    });
   });
 });
