@@ -3,6 +3,13 @@ import type { GroundedSearchTelemetry } from "@naelao/rag";
 const TIMING_KEYS = ["autorag_search_ms", "cache_lookup_ms", "dense_search_ms", "sparse_search_ms", "web_grounding_ms"] as const;
 export type RetrievalTimingKey = typeof TIMING_KEYS[number];
 
+export function recordPdfPreviewParseMetric(dataset: AnalyticsEngineDataset | undefined, outcome: "succeeded" | "failed", durationMs: number): void {
+  try {
+    const latency = Number.isFinite(durationMs) ? Math.max(0, Math.min(120_000, Math.round(durationMs))) : 0;
+    dataset?.writeDataPoint({ blobs: ["knowledge_parse", "pdf", "preview", outcome], doubles: [latency], indexes: [] });
+  } catch { /* telemetry failures must not change ingestion behavior */ }
+}
+
 /** Produce bounded aggregate telemetry; caller, tenant, Space, Project and query data are omitted. */
 export function buildPrivacySafeRetrievalTelemetry(input: {
   event: GroundedSearchTelemetry;

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { buildPrivacySafeRetrievalTelemetry } from "./retrieval-telemetry.js";
+import { describe, expect, it, vi } from "vitest";
+import { buildPrivacySafeRetrievalTelemetry, recordPdfPreviewParseMetric } from "./retrieval-telemetry.js";
 
 describe("privacy-safe Knowledge retrieval telemetry", () => {
   it("keeps bounded aggregate metrics and omits tenant, Space, Project and query identifiers", () => {
@@ -16,5 +16,12 @@ describe("privacy-safe Knowledge retrieval telemetry", () => {
     expect(serialized).not.toContain("space-secret");
     expect(serialized).not.toContain("project-secret");
     expect(serialized).not.toContain("secret_timing_with_query");
+  });
+
+  it("emits fixed PDF preview parse outcomes and isolates Analytics failures", () => {
+    const writeDataPoint = vi.fn();
+    recordPdfPreviewParseMetric({ writeDataPoint } as never, "failed", 120_500);
+    expect(writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_parse", "pdf", "preview", "failed"], doubles: [120_000], indexes: [] });
+    expect(() => recordPdfPreviewParseMetric({ writeDataPoint: () => { throw new Error("offline"); } } as never, "succeeded", 2)).not.toThrow();
   });
 });

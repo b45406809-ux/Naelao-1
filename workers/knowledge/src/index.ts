@@ -23,7 +23,7 @@ import { revisionExternalPublicationsForDocument } from "./external-publication-
 import { createWebsitePreviewToken, sha256TextHex, verifyWebsitePreviewToken } from "./website-source-preview.js";
 import { boundedWebsiteCrawlFrontier, extractWebsiteCrawlLinks, WEBSITE_CRAWL_LIMITS, type WebsiteCrawlPageRef } from "./website-crawl.js";
 import { runScheduledWebsiteRefreshes } from "./website-refresh-scheduler.js";
-import { buildPrivacySafeRetrievalTelemetry } from "./retrieval-telemetry.js";
+import { buildPrivacySafeRetrievalTelemetry, recordPdfPreviewParseMetric } from "./retrieval-telemetry.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -1883,10 +1883,15 @@ app.post("/spaces/:spaceId/kb/documents/preview", async (c) => {
   if (new TextDecoder().decode(sourceBytes.subarray(0, 5)) !== "%PDF-") throw badRequest("The selected file is not a valid PDF document");
 
   let parsed: string;
+  const parseStartedAt = performance.now();
+  let parseOutcome: "succeeded" | "failed" = "failed";
   try {
     parsed = await createParseV5Request(sourceBytes, "application/pdf", c.env);
+    parseOutcome = "succeeded";
   } catch (error) {
     preserveHttpStatus(error);
+  } finally {
+    recordPdfPreviewParseMetric(c.env.KNOWLEDGE_ANALYTICS, parseOutcome, performance.now() - parseStartedAt);
   }
   const { sanitized: previewContent, injectionDetected } = sanitizeKbContent(parsed);
   if (!previewContent) throw badRequest("The PDF parser did not produce readable text");
