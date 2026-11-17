@@ -1,48 +1,10 @@
-## Current cross-plan checkpoint — 2026-11-17 (provider lifecycle receipts; `86579537` pushed)
+## Current cross-plan checkpoint — 2026-11-17 (verified capability setup scope and U07 audit; `41e01624` pushed)
 
-`865795373cf204a6b1049714099487f728a1b7ce` is remote-verified on `origin/Mcbt5s-Backup-2`. EP06's owner-only exact-install usage view now includes up to 30 durable provider setup/cleanup receipts, filtered by tenant, Space, Project and installation. The response exposes only allowlisted provider/operation/status, bounded attempts and timestamps; it omits account, connection, credential, routing, error-detail and payload fields, and never retries a provider operation. Local Spaces focused tests **3/3**, Spaces and Shell typechecks, and `git diff --check` pass. `pnpm --filter` could not run because the workspace wrapper aborted a modules-directory purge in non-interactive mode; existing local test/typecheck binaries ran directly. No deployment, provider action, live acceptance or rollout. Preserve untracked `infra/scripts/__pycache__/`.
+`41e016244275f64c6ad14dfb10f8d83006a1de96` is remote-verified on `origin/Mcbt5s-Backup-2`. The owner Managed Services panel now presents generic setup scope only when the latest capability record is operator-verified and current: declared operations, account modes, regions and expiry, with a clear statement that this is not proof of account connection, provider health, entitlement or runtime authorization. Dashboard tests **3/3**, Agents and Shell typechecks, and diff hygiene pass. No AgentPhone record or support was added.
 
-Prior latest code is `cf714d05` (provider declaration status), `2e433de6` (signed package dependencies), and `1313befc` (Knowledge preview-failure telemetry); prior docs checkpoint is `c4d2ebee`. EP06 remains partial for invoice-backed costs and complete export/cleanup/lifecycle evidence; cleanup receipts are now visible but do not prove upstream deletion. S2 remains implemented locally for supported lanes; S3–S9/U01–U12 retain the contract/live gates in their matrices. TBR04 symbolic-to-concrete grant mapping and TBR06 non-granting review remain unresolved; AgentPhone capability/pricing claims remain unverified. Rollouts remain disabled.
+U07 source reconciliation confirms bounded durable checkpoint jobs and recovery in `WorkspaceCoordinatorDO`, but no first-party public caller exists; `/v1/live-checkpoint/request` is Coordinator-internal. A live caller remains dependent on U06's unsupported runtime writer/flush/reconnect adapter. `LIVE_WORKSPACE_ENABLED` remains false and `LIVE_RUNTIME_AGENT` is unbound. This is an implementation/platform contract dependency, not a credential-only gate; no caller was fabricated. EP06 exact-install provider setup/cleanup receipts remain read-only at `86579537`. No deployment, provider activity, live acceptance or rollout. Preserve `infra/scripts/__pycache__/`.
 
-All eight active plans and seven progress ledgers remain in scope. After compaction, interruption or a new session, read all active plans and progress records, inspect the actual worktree and resume this exact next task: audit U07's current checkpoint scheduler/recovery callers for a concrete source-backed implementation gap, implement and verify any independent gap, then continue the next uncoded S3–S9/U01–U12 and cross-plan requirement. Do not repeat completed audits without new evidence or stop at a checkpoint.
-
-## Current K26 checkpoint — 2026-11-17 (source-refresh recovery telemetry; `dc73af2e` pushed)
-
-Alongside the unpriced Billing usage-receipt `sent`/`retry` metric at `550ee028`, `dc73af2e` records fixed-label `interrupted_recovered` and `backoff_active` outcomes from the durable website source-refresh operation ledger. It includes only bounded attempt count; Analytics errors cannot alter recovery/backoff. Remote-verified; source-refresh/telemetry suites **26/26**, Knowledge typecheck and diff check pass. No deployment/live telemetry or invoice acceptance.
-
-K26 still has other existing provider/source failure and cost-reconciliation outcomes to reconcile, plus deployed acceptance. Exact next action: add fixed-label telemetry for owner-approved website preview fetch failure using the safe recorded error category only; continue K10–K30 and other active plans. AI Search remains unselected.
-
-## Current K26 checkpoint — 2026-11-17 (Billing usage receipt retry metrics; `550ee028` pushed)
-
-The existing scheduled website-refresh Billing outbox now emits privacy-safe fixed labels for receipt `sent` or `retry`, with bounded duration and attempt count. Billing receipts remain unpriced and carry no inferred payer or rate; Analytics failure cannot alter delivery or retry persistence. `550ee028` is remote-verified. Focused Knowledge usage/telemetry suites **9/9**, Knowledge typecheck and diff check pass. No deployment, provider invoice, or live telemetry acceptance.
-
-K26 remains partial for source-refresh interrupted recovery/backoff outcomes and deployed telemetry. Exact next action: add fixed-label metrics at the durable source-refresh interruption/backoff boundary, then continue K10–K30 and the other active plans. Cloudflare AI Search remains unselected.
-
-## Current K26 checkpoint — 2026-11-17 (citation and deletion outcome metrics; `ab284ee1` pushed)
-
-Knowledge metrics now cover retrieval, parse preview, scheduled website refresh/lag, Project-access denial, citation delivery/not-found/integrity/unavailable, and deletion pending/complete/busy/error/attempts. They use fixed labels and bounded values; omit raw identifiers/content; and fail independently of the measured operation. `ab284ee1` plus prior telemetry commits through `c9e796c7` are pushed. Relevant tests **62/62**, Knowledge typecheck and diff check pass. No deployed/live acceptance.
-
-K26 remains partial for full source/provider retry recovery and cost/invoice reconciliation metrics. Exact next action: reconcile those paths against authoritative receipt stores, instrument supported fixed-label outcomes only, then continue K10–K30 and the remaining active plans. AI Search remains unselected.
-
-## Current K26 checkpoint — 2026-11-17 (denial and refresh-lag metrics; `0ed5adeb` pushed)
-
-Knowledge now records privacy-safe retrieval aggregates, PDF preview parse outcomes, scheduled website refresh selected/claimed/completed/failed/paused counts and maximum due lag, and Project-access denial categories. Metrics use fixed labels and bounded numbers; raw identities/query are omitted and telemetry failures are isolated. Latest code `0ed5adeb` is pushed; relevant tests **10/10**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance.
-
-K26 remains partial for deletion/recovery, other denial/citation/provider-cost metrics. Exact next action: add fixed-label deletion/recovery status metrics at the durable cleanup boundary with failure isolation, then continue K10–K30 and other active plans; AI Search remains unselected.
-
-## Current K26 checkpoint — 2026-11-17 (bounded parse/sync metrics; `9476fc1d` pushed)
-
-Retrieval telemetry omits raw tenant/Space/Project IDs and query data; scheduled website refreshes emit fixed-label counters/duration; PDF preview parsing emits fixed-label success/failure/duration. Values are bounded and Analytics failures do not alter operation results. `9476fc1d` and prerequisite `370b99f5` are pushed; tests **9/9**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance.
-
-K26 remains partial for authorization denials, freshness, deletion, cost and provider recovery. Exact next action: instrument bounded fixed-label authorization denial and freshness/recovery outcomes without sensitive IDs/content, then continue K10–K30 and the other active plans. AI Search remains unselected.
-
-## Current K26 checkpoint — 2026-11-17 (retrieval telemetry excludes private IDs; `67719e1a` pushed)
-
-Knowledge retrieval Analytics Engine and JSON logs now emit allowlisted bounded aggregate metrics with fixed mode/state labels. Raw tenant, Space, Project identifiers and query content are omitted; timings, confidence and counts are clamped and unknown keys dropped. Code `67719e1a` is pushed and remote-verified. Helper test **1/1**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance; rollouts remain disabled.
-
-K26 remains partial for parse, sync lag, freshness, denials, deletion, cost attribution and provider recovery metrics. Exact next action: instrument current parse/sync boundaries with fixed-label outcomes and failure isolation; continue K10–K30 and all remaining active-plan code gaps. AI Search remains unselected.
-
-# Mature knowledge platform implementation progress
+Exact next action: implement EP03's first provider-neutral, versioned custom-Knowledge extension contract in the existing RAG package, carrying source/content lineage, scope, parser/chunker/index/retrieval versions and citation coordinates; validate untrusted extension output while leaving authorization, publication, retention and tombstone authority with the host. Then add focused contract tests and continue the remaining EP03 lifecycle example, K01–K30 and all other independent active-plan gaps. Do not stop after a checkpoint.
 
 ## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
 

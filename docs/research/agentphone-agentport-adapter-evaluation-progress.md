@@ -1,3 +1,9 @@
+## Cross-plan checkpoint — 2026-11-17 (`41e01624` pushed)
+
+The owner Managed Services panel now gives provider-neutral setup scope only for the newest currently operator-verified capability record: declared operations, account modes, regions and expiry. This narrows AP06's generic UI gap; no AgentPhone capability, pricing, adapter, SDK or live support was added. Local managed-capability dashboard tests **3/3**, Agents/Shell typechecks and diff check pass. AgentPhone APIs, terms, regions, event/signature behavior, pricing and live performance remain provider gates; no registration, number provisioning, calls, messages or charges occurred.
+
+Exact next cross-plan action: implement EP03's versioned custom-Knowledge extension contract in the existing RAG package with scoped lineage and validated parser/chunker/index/retrieval outputs; preserve host-owned authorization/publication/retention. Then continue AP06's remaining SDK/benchmark gap only against operator-verified records, plus other independent plan gaps. Rollouts remain disabled.
+
 ## Re-fetch and latest implementation reconciliation — 2026-11-17
 
 The supplied AgentPhone plan was directly fetched from origin commit `3ef84165546a781ebcde6867d62e563f022385b9`; source hash `9d457136974d65ac5252123bfc2b67c6aa779c0604a5d845337026e7b63ae83d` matches the existing copy. The planning branch currently points at that commit; no planning branch checkout or merge occurred. AP01–AP06 are already incorporated in platform plan section 18. Reconciliation against current code is unchanged: generic evidence-backed capability registry and AgentPort event proxy are reusable; no AgentPhone provider entry, adapter, credentials, event contract, voice support, subaccount contract, quote, setup UI or benchmark is present. Telnyx and AgentMail remain separate. Existing managed billing is not AgentPhone price evidence. AP06 and actual provider/deployed acceptance are still open.
