@@ -1629,6 +1629,60 @@ app.get("/spaces/:spaceId/kb/projects/:projectId/sources/website/crawl/capabilit
     requires_owner_site_terms_confirmation: true }, 200, { "cache-control": "private, no-store" });
 });
 
+// Owner-scoped read of a durable crawl receipt. It never resumes network work: the owner can
+// inspect progress after an interruption, then explicitly POST the original idempotent request
+// if a partial operation should continue.
+app.get("/spaces/:spaceId/kb/projects/:projectId/sources/website/crawl/operations/:operationId", async c => {
+  const tenantId = requireTenant(c);
+  const { spaceId, projectId, operationId } = c.req.param();
+  if (!/^[0-9a-f-]{36}$/i.test(operationId)) throw badRequest("Invalid website crawl operation id");
+  const access = await requireProjectAccess(c, projectId, 40);
+  if (access instanceof Response) return access;
+  const operation = await c.env.PLATFORM_DB.prepare(`SELECT id,connection_ref,owner_user_id,connection_policy_sha256,max_pages,max_depth,
+      status,lease_expires_at,expires_at FROM kb_website_crawl_operations
+    WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND owner_user_id=? AND expires_at>?`)
+    .bind(operationId, tenantId, spaceId, projectId, access.userId, new Date().toISOString())
+    .first<{ id: string; connection_ref: string; owner_user_id: string; connection_policy_sha256: string;
+      max_pages: number; max_depth: number; status: string; lease_expires_at: string | null; expires_at: string }>();
+  if (!operation) return c.json({ error_code: "not_found" }, 404);
+  const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,
+      knowledge_path_prefixes_json,status FROM website_connections
+    WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND owner_user_id=? AND status='active'`)
+    .bind(operation.connection_ref, tenantId, spaceId, projectId, access.userId).first<WebsiteConnectionGrant>();
+  const origins = connection ? websiteConnectionOrigins(connection) : null;
+  const pathPrefixes = connection ? websiteConnectionPathPrefixes(connection) : null;
+  if (!connection || !origins || !pathPrefixes
+    || await sha256TextHex(JSON.stringify({ origins, pathPrefixes })) !== operation.connection_policy_sha256) {
+    await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_website_crawl_operations WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+      .bind(operationId, tenantId, spaceId, projectId).run();
+    return c.json({ error_code: "not_found" }, 404);
+  }
+  const [pages, totals] = await Promise.all([
+    c.env.PLATFORM_DB.prepare(`SELECT requested_url,final_url,depth,status,content_sha256,byte_count,error_code
+      FROM kb_website_crawl_pages WHERE operation_id=? AND tenant_id=? AND space_id=? AND project_id=? ORDER BY depth,requested_url LIMIT ?`)
+      .bind(operationId, tenantId, spaceId, projectId, WEBSITE_CRAWL_LIMITS.pages).all<{
+        requested_url: string; final_url: string | null; depth: number; status: string; content_sha256: string | null;
+        byte_count: number; error_code: string | null;
+      }>(),
+    c.env.PLATFORM_DB.prepare(`SELECT COUNT(*) AS page_count,COALESCE(SUM(byte_count),0) AS byte_count,
+        SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued_count,
+        SUM(CASE WHEN status='failed' AND retry_count<3 THEN 1 ELSE 0 END) AS retryable_count
+      FROM kb_website_crawl_pages WHERE operation_id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+      .bind(operationId, tenantId, spaceId, projectId).first<{ page_count: number; byte_count: number; queued_count: number; retryable_count: number }>(),
+  ]);
+  const leaseIsCurrent = operation.status === "running" && operation.lease_expires_at !== null
+    && Date.parse(operation.lease_expires_at) > Date.now();
+  return c.json({ operation_id: operation.id, status: operation.status,
+    continuation_available: operation.status === "partial" || operation.status === "running" && !leaseIsCurrent,
+    lease_expires_at: operation.lease_expires_at,
+    limits: { max_pages: operation.max_pages, max_depth: operation.max_depth, max_page_bytes: WEBSITE_CRAWL_LIMITS.pageBytes,
+      max_total_bytes: WEBSITE_CRAWL_LIMITS.totalBytes, max_links_per_page: WEBSITE_CRAWL_LIMITS.linksPerPage,
+      max_redirects: WEBSITE_CRAWL_LIMITS.redirects, elapsed_ms_per_request: WEBSITE_CRAWL_LIMITS.elapsedMs },
+    totals: { page_count: totals?.page_count ?? 0, byte_count: totals?.byte_count ?? 0,
+      queued_count: totals?.queued_count ?? 0, retryable_count: totals?.retryable_count ?? 0 },
+    pages: pages.results ?? [] }, 200, { "cache-control": "private, no-store" });
+});
+
 // Bounded discovery stores URL/hash metadata only. Owners select a result and then use the
 // existing single-page preview/edit/approve caller; discovered text is never indexed here.
 app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/crawl/preview", async (c) => {

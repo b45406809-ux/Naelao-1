@@ -96,6 +96,13 @@ describe("owner-bounded website crawl route", () => {
       .toEqual([65, 21]);
     expect(f.d1.db.prepare("PRAGMA table_info(kb_website_crawl_pages)").all().some((column) => column.name === "content")).toBe(false);
 
+    const statusPath = `/spaces/space-1/kb/projects/project-1/sources/website/crawl/operations/${result.operation_id}`;
+    const statusResponse = await worker.fetch!(await request(statusPath), f.env, {} as ExecutionContext);
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toMatchObject({ operation_id: result.operation_id, status: "completed",
+      continuation_available: false, totals: { page_count: 2, byte_count: 86 }, pages: [{ status: "preview_ready" }, { status: "preview_ready" }] });
+    expect(outbound).toHaveBeenCalledTimes(3);
+
     const replay = await worker.fetch!(await request(crawlPath, crawlInput), f.env, {} as ExecutionContext);
     expect(replay.status).toBe(200);
     expect((await replay.json() as { operation_id: string }).operation_id).toBe(result.operation_id);
@@ -104,6 +111,23 @@ describe("owner-bounded website crawl route", () => {
     f.d1.db.prepare("UPDATE project_access SET role_rank=20 WHERE project_id='project-1' AND user_id='owner-1'").run();
     expect(f.d1.db.prepare("SELECT COUNT(*) AS count FROM kb_website_crawl_operations").get()).toMatchObject({ count: 0 });
     expect(f.d1.db.prepare("SELECT COUNT(*) AS count FROM kb_website_crawl_pages").get()).toMatchObject({ count: 0 });
+  });
+
+  it("keeps crawl status bound to the original owner and live connection policy", async () => {
+    const f = fixture();
+    const outbound = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://docs.example/robots.txt") return new Response(null, { status: 404 });
+      return new Response("A short page", { headers: { "content-type": "text/plain" } });
+    });
+    vi.stubGlobal("fetch", outbound);
+    const response = await worker.fetch!(await request(crawlPath, crawlInput), f.env, {} as ExecutionContext);
+    const result = await response.json() as { operation_id: string };
+    const statusPath = `/spaces/space-1/kb/projects/project-1/sources/website/crawl/operations/${result.operation_id}`;
+    f.d1.db.prepare("UPDATE website_connections SET owner_user_id='owner-2' WHERE id='connection-1'").run();
+    const status = await worker.fetch!(await request(statusPath), f.env, {} as ExecutionContext);
+    expect(status.status).toBe(404);
+    expect(f.d1.db.prepare("SELECT COUNT(*) AS count FROM kb_website_crawl_operations").get()).toMatchObject({ count: 0 });
   });
 
   it("revalidates the active grant after every fetch and rejects an out-of-prefix redirect", async () => {
