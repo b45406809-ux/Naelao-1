@@ -10965,10 +10965,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       userId
     );
     if (!row) {
-      // U isn't a member — but the space owner/admin has implicit access, and an assistant acting
-      // for them inherits it (mode can't clamp what isn't a project_members row; a builder wanting
-      // to clamp must add an explicit row). Fail closed for a plain non-member.
-      return this.isSpaceOwnerOrAdmin(userId) ? "owner" : null;
+      // Preserve the project's owner/admin policy only inside the Space that actually owns this
+      // project. An owner in an unrelated Space must not inherit this private-project grant.
+      // Knowledge intentionally remains stricter and requires explicit Project membership; that
+      // cross-service product-policy difference is documented rather than inferred away here.
+      const project = queryOne<{ space_id: string }>(this.ctx.storage.sql as never,
+        "SELECT space_id FROM projects WHERE id = ?", projectId);
+      return project && this.isSpaceOwnerOrAdmin(userId, project.space_id) ? "owner" : null;
     }
     if (row.assistant_mode === "none") return null;
     if (row.assistant_mode === "read_only") return "viewer";
