@@ -1,3 +1,9 @@
+## Current checkpoint — 2026-11-17 (bounded Knowledge parse/sync telemetry; `9476fc1d` pushed)
+
+Retrieval telemetry omits raw tenant/Space/Project IDs and query data; scheduled website refreshes emit fixed-label counters/duration, and PDF preview parsing emits success/failure/duration. Metrics are bounded and failure-isolated. Code `9476fc1d` and prerequisite `370b99f5` are pushed; Knowledge telemetry/scheduler tests **9/9**, typecheck and diff check pass. No deployed/live analytics acceptance.
+
+EP06 stays partial for provider resources, full dependency/cost/lifecycle inventory; TBR06 stays non-granting because there is no current role-to-host-grant mapping/outbox across separate authority stores. Exact next action: K26 authorization denial/freshness/deletion/recovery metrics with fixed labels and failure isolation, then independent remaining requirements.
+
 ## Current checkpoint — 2026-11-17 (privacy-safe Knowledge retrieval telemetry; `67719e1a` pushed)
 
 Retrieval Analytics Engine and JSON logs now contain allowlisted aggregate metrics and fixed retrieval labels only; tenant/Space/Project identifiers and query content are omitted. Timings, confidence and counts are bounded and unknown timing keys are discarded. Helper test **1/1**, Knowledge typecheck and diff check pass. `67719e1a` is pushed and remote-verified. No deployment/live analytics acceptance; rollout disabled.

@@ -1,3 +1,9 @@
+## Current K26 checkpoint — 2026-11-17 (bounded parse/sync metrics; `9476fc1d` pushed)
+
+Retrieval telemetry omits raw tenant/Space/Project IDs and query data; scheduled website refreshes emit fixed-label counters/duration; PDF preview parsing emits fixed-label success/failure/duration. Values are bounded and Analytics failures do not alter operation results. `9476fc1d` and prerequisite `370b99f5` are pushed; tests **9/9**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance.
+
+K26 remains partial for authorization denials, freshness, deletion, cost and provider recovery. Exact next action: instrument bounded fixed-label authorization denial and freshness/recovery outcomes without sensitive IDs/content, then continue K10–K30 and the other active plans. AI Search remains unselected.
+
 ## Current K26 checkpoint — 2026-11-17 (retrieval telemetry excludes private IDs; `67719e1a` pushed)
 
 Knowledge retrieval Analytics Engine and JSON logs now emit allowlisted bounded aggregate metrics with fixed mode/state labels. Raw tenant, Space, Project identifiers and query content are omitted; timings, confidence and counts are clamped and unknown keys dropped. Code `67719e1a` is pushed and remote-verified. Helper test **1/1**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance; rollouts remain disabled.

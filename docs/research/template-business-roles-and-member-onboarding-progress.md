@@ -1,3 +1,9 @@
+## Current TBR06 and cross-plan checkpoint — 2026-11-17 (`9476fc1d` pushed)
+
+The TBR06 boundary remains unchanged: schema-constrained proposal-only reviews (`grants_applied=0`), with no current symbolic role-to-effective-host-grant mapping/outbox across Project, Knowledge, extension and provider authorities. This is an uncoded host/product contract gap, not a credential blocker; do not promote generic Space membership into resource grants. Independent K26 work advanced: fixed-label bounded retrieval, scheduled-refresh and PDF-preview metrics are pushed at `67719e1a`, `370b99f5`, `9476fc1d`; tests **9/9**, Knowledge typecheck and diff check pass.
+
+Exact next action: add fixed-label authorization-denial/freshness/deletion/recovery metrics with failure isolation, then continue TBR03–TBR12 and all other independent S/U/P/PW/K/EP/AP gaps.
+
 ## TBR06 reconciliation — 2026-11-17 (no current safe role-to-grant mapping)
 
 Source audit confirms role reviews persist only as proposal-only with a schema constraint `grants_applied=0`; revocation only revokes that review. Project membership, Knowledge publication grants, extension resource grants and provider/channel grants each have separate issuers and authorization semantics. There is no current symbolic role-to-effective-grant mapping or durable application/revocation outbox. Do not apply a generic Space role to Project/private resources or treat the proposal as a grant. This is an uncoded host/product contract gap, not a credential blocker. Continue independent implementation; exact next action is K26 parse/sync/freshness/denial/recovery telemetry, then return to TBR06 when a supported authority mapping is explicit.
