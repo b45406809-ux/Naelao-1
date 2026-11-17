@@ -4038,6 +4038,14 @@ export async function getWebsiteKnowledgeCrawlStatus(spaceId: string, projectId:
   );
 }
 
+export async function cancelWebsiteKnowledgeCrawl(spaceId: string, projectId: string, operationId: string, session: SessionCredentials) {
+  if (!/^[0-9a-f-]{36}$/i.test(operationId)) throw new Error("Invalid website crawl operation id");
+  await apiFetch<unknown>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/sources/website/crawl/operations/${encodeURIComponent(operationId)}`,
+    { method: "DELETE", session, cache: "no-store" },
+  );
+}
+
 export async function previewWebsiteKnowledgeSource(
   spaceId: string,
   projectId: string,

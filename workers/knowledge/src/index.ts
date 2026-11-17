@@ -1683,6 +1683,44 @@ app.get("/spaces/:spaceId/kb/projects/:projectId/sources/website/crawl/operation
     pages: pages.results ?? [] }, 200, { "cache-control": "private, no-store" });
 });
 
+// Deleting the operation atomically removes its bounded URL frontier. Every page claim and write is
+// fenced by this running operation and its generation, so an already in-flight read-only fetch may
+// finish but cannot persist results or enqueue child URLs after cancellation.
+app.delete("/spaces/:spaceId/kb/projects/:projectId/sources/website/crawl/operations/:operationId", async c => {
+  const tenantId = requireTenant(c);
+  const { spaceId, projectId, operationId } = c.req.param();
+  if (!/^[0-9a-f-]{36}$/i.test(operationId)) throw badRequest("Invalid website crawl operation id");
+  const access = await requireProjectAccess(c, projectId, 40);
+  if (access instanceof Response) return access;
+  const operation = await c.env.PLATFORM_DB.prepare(`SELECT connection_ref,connection_policy_sha256 FROM kb_website_crawl_operations
+    WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND owner_user_id=? AND expires_at>?`)
+    .bind(operationId, tenantId, spaceId, projectId, access.userId, new Date().toISOString())
+    .first<{ connection_ref: string; connection_policy_sha256: string }>();
+  if (!operation) return c.json({ error_code: "not_found" }, 404);
+  const connection = await c.env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,owner_user_id,project_id,origins_json,
+      knowledge_path_prefixes_json,status FROM website_connections
+    WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND owner_user_id=? AND status='active'`)
+    .bind(operation.connection_ref, tenantId, spaceId, projectId, access.userId).first<WebsiteConnectionGrant>();
+  const origins = connection ? websiteConnectionOrigins(connection) : null;
+  const pathPrefixes = connection ? websiteConnectionPathPrefixes(connection) : null;
+  if (!connection || !origins || !pathPrefixes
+    || await sha256TextHex(JSON.stringify({ origins, pathPrefixes })) !== operation.connection_policy_sha256) {
+    await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_website_crawl_operations WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+      .bind(operationId, tenantId, spaceId, projectId).run();
+    return c.json({ error_code: "not_found" }, 404);
+  }
+  const deleted = await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_website_crawl_operations
+    WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND owner_user_id=? AND expires_at>?
+      AND EXISTS (SELECT 1 FROM project_access pa WHERE pa.tenant_id=? AND pa.space_id=? AND pa.project_id=?
+        AND pa.user_id=? AND pa.role_rank>=40)
+      AND EXISTS (SELECT 1 FROM website_connections wc WHERE wc.id=? AND wc.tenant_id=? AND wc.space_id=? AND wc.project_id=?
+        AND wc.owner_user_id=? AND wc.status='active')`)
+    .bind(operationId, tenantId, spaceId, projectId, access.userId, new Date().toISOString(), tenantId, spaceId, projectId,
+      access.userId, operation.connection_ref, tenantId, spaceId, projectId, access.userId).run();
+  if (!deleted.meta.changes) return c.json({ error_code: "not_found" }, 404);
+  return new Response(null, { status: 204, headers: { "cache-control": "private, no-store" } });
+});
+
 // Bounded discovery stores URL/hash metadata only. Owners select a result and then use the
 // existing single-page preview/edit/approve caller; discovered text is never indexed here.
 app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/crawl/preview", async (c) => {

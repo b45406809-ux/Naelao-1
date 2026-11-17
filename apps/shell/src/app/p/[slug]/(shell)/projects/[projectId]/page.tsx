@@ -24,6 +24,7 @@ import { useProduct } from "@/lib/product-context";
 import { relativeTime } from "@/lib/relativeTime";
 import {
   associateProjectDepartment,
+  cancelWebsiteKnowledgeCrawl,
   createDepartment,
   createKbDocument,
   applyWebsiteKnowledgeRefresh,
@@ -137,6 +138,7 @@ export default function ProjectDetailPage() {
   const [websiteCrawlTermsConfirmed, setWebsiteCrawlTermsConfirmed] = React.useState(false);
   const [websiteCrawl, setWebsiteCrawl] = React.useState<WebsiteKnowledgeCrawlResult | null>(null);
   const [crawlingWebsite, setCrawlingWebsite] = React.useState(false);
+  const [cancellingWebsiteCrawl, setCancellingWebsiteCrawl] = React.useState(false);
   const [websiteRefreshDraft, setWebsiteRefreshDraft] = React.useState<{ documentId: string; content: string; preview: WebsiteKnowledgePreview } | null>(null);
   const [refreshingWebsiteId, setRefreshingWebsiteId] = React.useState<string | null>(null);
   const [savingWebsiteScheduleId, setSavingWebsiteScheduleId] = React.useState<string | null>(null);
@@ -584,6 +586,22 @@ export default function ProjectDetailPage() {
       show(error instanceof Error ? error.message : "Couldn't discover approved website pages.");
     } finally {
       setCrawlingWebsite(false);
+    }
+  }
+
+  async function handleCancelWebsiteCrawl() {
+    if (!creds || !websiteCrawl || cancellingWebsiteCrawl) return;
+    setCancellingWebsiteCrawl(true);
+    try {
+      await cancelWebsiteKnowledgeCrawl(activeSpaceId, params.projectId, websiteCrawl.operation_id, creds);
+      setWebsiteCrawl(null);
+      websiteCrawlRequestKeyRef.current = null;
+      if (typeof window !== "undefined") window.sessionStorage.removeItem(`naelao:website-crawl:${activeSpaceId}:${params.projectId}`);
+      show("Website discovery cancelled and its URL frontier removed. Page text was not indexed.");
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't cancel website discovery.");
+    } finally {
+      setCancellingWebsiteCrawl(false);
     }
   }
 
@@ -1307,6 +1325,11 @@ export default function ProjectDetailPage() {
                     websiteCrawlRequestKeyRef.current = null;
                     if (typeof window !== "undefined") window.sessionStorage.removeItem(`naelao:website-crawl:${activeSpaceId}:${params.projectId}`);
                   }}>Forget discovery status</Button>
+                  {(websiteCrawl.status === "running" || websiteCrawl.continuation_available) &&
+                    <Button size="sm" variant="ghost" type="button" disabled={cancellingWebsiteCrawl}
+                      onClick={() => void handleCancelWebsiteCrawl()}>
+                      {cancellingWebsiteCrawl ? "Cancelling…" : "Cancel and discard discovery"}
+                    </Button>}
                 {websiteCrawl.pages.map((page) => <div key={page.requested_url} className="settings-row-sub" style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
                   <span style={{ paddingLeft: page.depth * 12 }}>{page.status} · {page.requested_url}{page.error_code ? ` · ${page.error_code}` : ""}</span>
                   {page.status === "preview_ready" && <Button size="sm" variant="ghost" type="button" onClick={() => {

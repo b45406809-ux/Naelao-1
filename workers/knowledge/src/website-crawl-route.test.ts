@@ -35,10 +35,10 @@ function fixture(enabled = true) {
   return { d1, env };
 }
 
-async function request(path: string, body?: unknown, role = "owner") {
+async function request(path: string, body?: unknown, role = "owner", method = body === undefined ? "GET" : "POST") {
   const token = await mintInternalToken("secret", "tenant-1");
   return new Request(`https://knowledge${path}`, {
-    method: body === undefined ? "GET" : "POST",
+    method,
     headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "owner-1",
       "x-naelao-role": role, "x-naelao-internal-token": token },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -108,7 +108,43 @@ describe("owner-bounded website crawl route", () => {
     expect((await replay.json() as { operation_id: string }).operation_id).toBe(result.operation_id);
     expect(outbound).toHaveBeenCalledTimes(3);
 
+    const cancelled = await worker.fetch!(await request(statusPath, undefined, "owner", "DELETE"), f.env, {} as ExecutionContext);
+    expect(cancelled.status).toBe(204);
+    expect(f.d1.db.prepare("SELECT COUNT(*) AS count FROM kb_website_crawl_operations").get()).toMatchObject({ count: 0 });
+    expect(f.d1.db.prepare("SELECT COUNT(*) AS count FROM kb_website_crawl_pages").get()).toMatchObject({ count: 0 });
+    expect((await worker.fetch!(await request(statusPath), f.env, {} as ExecutionContext)).status).toBe(404);
+
     f.d1.db.prepare("UPDATE project_access SET role_rank=20 WHERE project_id='project-1' AND user_id='owner-1'").run();
+    expect(f.d1.db.prepare("SELECT COUNT(*) AS count FROM kb_website_crawl_operations").get()).toMatchObject({ count: 0 });
+    expect(f.d1.db.prepare("SELECT COUNT(*) AS count FROM kb_website_crawl_pages").get()).toMatchObject({ count: 0 });
+  });
+
+  it("fences an in-flight crawl after owner cancellation and discards the URL frontier", async () => {
+    const f = fixture();
+    let finishPage!: (response: Response) => void;
+    let notifyPageStarted!: () => void;
+    const pageStarted = new Promise<void>(resolve => { notifyPageStarted = resolve; });
+    const outbound = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://docs.example/robots.txt") return new Response(null, { status: 404 });
+      if (url === "https://docs.example/docs/start") {
+        notifyPageStarted();
+        return await new Promise<Response>(resolve => { finishPage = resolve; });
+      }
+      throw new Error(`Cancelled crawl made an extra request: ${url}`);
+    });
+    vi.stubGlobal("fetch", outbound);
+    const crawl = worker.fetch!(await request(crawlPath, crawlInput), f.env, {} as ExecutionContext);
+    await pageStarted;
+    const operation = f.d1.db.prepare("SELECT id FROM kb_website_crawl_operations").get() as { id: string };
+    const statusPath = `/spaces/space-1/kb/projects/project-1/sources/website/crawl/operations/${operation.id}`;
+    const cancelled = await worker.fetch!(await request(statusPath, undefined, "owner", "DELETE"), f.env, {} as ExecutionContext);
+    expect(cancelled.status).toBe(204);
+    finishPage(new Response('<main>In-flight content</main><a href="/docs/child">Child</a>', { headers: { "content-type": "text/html" } }));
+    expect((await crawl).status).toBe(409);
+    expect(outbound.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://docs.example/robots.txt", "https://docs.example/docs/start",
+    ]);
     expect(f.d1.db.prepare("SELECT COUNT(*) AS count FROM kb_website_crawl_operations").get()).toMatchObject({ count: 0 });
     expect(f.d1.db.prepare("SELECT COUNT(*) AS count FROM kb_website_crawl_pages").get()).toMatchObject({ count: 0 });
   });

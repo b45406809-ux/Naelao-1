@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { applyWebsiteKnowledgeRefresh, createKbDocument, getExternalKnowledgePublicationSources, listExternalKnowledgePublicationEvents, listExternalKnowledgePublications,
-  getWebsiteKnowledgeCrawlCapability, getWebsiteKnowledgeCrawlStatus, previewWebsiteKnowledgeCrawl, previewWebsiteKnowledgeSource, setWebsiteKnowledgeRefreshSchedule } from "./api";
+  cancelWebsiteKnowledgeCrawl, getWebsiteKnowledgeCrawlCapability, getWebsiteKnowledgeCrawlStatus, previewWebsiteKnowledgeCrawl,
+  previewWebsiteKnowledgeSource, setWebsiteKnowledgeRefreshSchedule } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -135,5 +136,10 @@ it("loads crawl capability and resumes a scoped crawl with an idempotent owner c
   expect(fetchMock).toHaveBeenLastCalledWith(
     `http://localhost:8787/v1/spaces/space%2Fa/kb/projects/project%20b/sources/website/crawl/operations/${operationId}`,
     expect.objectContaining({ cache: "no-store", headers: expect.any(Headers) }),
+  );
+  await expect(cancelWebsiteKnowledgeCrawl("space/a", "project b", operationId, session)).resolves.toBeUndefined();
+  expect(fetchMock).toHaveBeenLastCalledWith(
+    `http://localhost:8787/v1/spaces/space%2Fa/kb/projects/project%20b/sources/website/crawl/operations/${operationId}`,
+    expect.objectContaining({ method: "DELETE", cache: "no-store", headers: expect.any(Headers) }),
   );
 });
