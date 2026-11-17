@@ -63,18 +63,17 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (adaptive routing policy; local verification)
+## Current checkpoint — 2026-11-17 (adaptive topology in owner task view; local verification)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit, push, or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
 
-The adaptive planner source and ledger are pushed at `c0c0f0fb`. Planner instructions now explain
-direct versus one-worker/sequential/parallel routing without encouraging extra workers or bypassing
-required capabilities; the durable DAG persists topology and recomputes its worker ceiling from live
-host limits on resume. Focused planner/DAG tests **66/66**, Agents typecheck, and diff hygiene pass.
-No learned routing, arbitrary in-flight task creation, deployed/live acceptance or rollout is claimed.
-Exact next action: continue APW03/APW04 with current task lineage and scoped memory authority; keep
-SC03 disconnected dispatch fail-closed absent exact invocation authority and fresh Billing. Preserve
-`infra/scripts/__pycache__/` and keep rollout disabled.
+The adaptive planner source and guidance are pushed at `c0c0f0fb` and `a1dbeac0`. The durable DAG
+records the topology and recalculates its ceiling on resume; the actor-scoped owner task view now
+displays this persisted receipt. Tests: planner/DAG **66/66**, AgentDO route **5/5**, Agents/Shell
+typechecks and diff hygiene pass. No learned routing, arbitrary in-flight task creation, deployed/live
+acceptance or rollout is claimed. Exact next action: continue APW03/APW04 with current task lineage
+and scoped memory authority; keep SC03 disconnected dispatch fail-closed absent exact invocation
+authority and fresh Billing. Preserve `infra/scripts/__pycache__/` and keep rollout disabled.
 
 ## Resume checkpoint — 2026-11-17 (K09 owner crawl cancellation; `1e6abd43` pushed)
 

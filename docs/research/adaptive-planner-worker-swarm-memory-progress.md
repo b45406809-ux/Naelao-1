@@ -54,3 +54,14 @@ Knowledge ACLs and private-Project policy, then implement the next missing reach
 SC03 remains independently blocked from disconnected replay because the host cannot yet revalidate
 the exact invocation authority and fresh Billing admission; keep it fail-closed and continue other
 code work. Rollouts remain disabled.
+
+## Cross-plan checkpoint — 2026-11-17 (owner task topology receipt; implementation pending push)
+
+The authenticated goal-activity projection now includes only a validated topology receipt from the
+actor-scoped durable journal. The Shell task and worker panels display its mode and selected
+concurrency relative to the host ceiling. This makes the actual persisted decision visible without
+exposing worker transcripts beyond the existing actor/message scope. Local verification: AgentDO
+goal-activity route **5/5**, Agents and Shell typechecks, `git diff --check`. No browser/deployed
+acceptance. Exact next action: fetch and push this caller/UI checkpoint safely, then continue
+APW03/APW04 lineage and memory authorization gaps; keep rollout disabled and preserve the Python
+cache artifact.

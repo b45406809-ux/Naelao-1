@@ -30,6 +30,7 @@ describe("task blackboard durable object route", () => {
         `goal-dag:${hash}`,
         {
           verificationRequired: true,
+          routing: { mode: "single_worker", taskCount: 1, selectedConcurrency: 1, hostConcurrencyCeiling: 4 },
           tasks: {
             a: {
               status: "failed",
@@ -94,6 +95,7 @@ describe("task blackboard durable object route", () => {
     const ownerResponse = (await (await get("u", "s")).json()) as {
       goals: Array<{
         verificationRequired: boolean;
+        routing?: { mode: string; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number };
         tasks: Array<{
           verification?: { outcome: string; reason: string };
           dispatch?: { status: string; attempt?: number };
@@ -105,6 +107,7 @@ describe("task blackboard durable object route", () => {
     expect(ownerGoals).toHaveLength(1);
     expect(ownerGoals[0]).toMatchObject({
       verificationRequired: true,
+      routing: { mode: "single_worker", taskCount: 1, selectedConcurrency: 1, hostConcurrencyCeiling: 4 },
       tasks: [
         {
           verification: {

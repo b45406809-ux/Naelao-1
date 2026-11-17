@@ -705,6 +705,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
     {goalError && <p role="status" className="workspace-tab-empty">Task graph and worker messages could not be loaded.</p>}
     {goals.map(goal => <details key={goal.id} className="settings-block" style={{ padding: 12, marginTop: 8 }}>
       <summary style={{ cursor: "pointer", fontWeight: 600 }}>Task graph · {goal.tasks.length} tasks</summary>
+      {goal.routing && <div role="status" style={{ color: "var(--text3)", fontSize: 11, paddingTop: 4 }}>Selected topology: {goal.routing.mode.replaceAll("_", " ")} · concurrency {goal.routing.selectedConcurrency} of host limit {goal.routing.hostConcurrencyCeiling}</div>}
       {goal.tasks.map(task => <div key={task.id} style={{ padding: "6px 0", overflowWrap: "anywhere" }}>
         <strong>{task.title.slice(0, 240)}</strong> · {workerActivityLabel(task.status)}
         {task.dispatch && <div style={{ color: "var(--text3)", fontSize: 11 }}>Worker dispatch: {task.dispatch.status.replaceAll("_", " ")}{task.dispatch.attempt ? ` · attempt ${task.dispatch.attempt}` : ""}</div>}
@@ -1747,6 +1748,7 @@ function WorkersPanel({
       {goals.map(goal => (
         <details key={goal.id} style={{ margin: "0 12px 10px", fontSize: 11, color: "var(--text2)" }}>
           <summary style={{ cursor: "pointer", fontWeight: 600 }}>Task coordination ({goal.tasks.length} tasks)</summary>
+          {goal.routing && <div role="status" style={{ color: "var(--text3)", paddingTop: 4 }}>Selected topology: {goal.routing.mode.replaceAll("_", " ")} · concurrency {goal.routing.selectedConcurrency} of host limit {goal.routing.hostConcurrencyCeiling}</div>}
           {goal.tasks.map(task => <div key={task.id} style={{ padding: "4px 0" }}>
             <strong>{task.title}</strong> · {workerActivityLabel(task.status)}
             {task.dispatch && <div>Worker dispatch: {task.dispatch.status.replaceAll("_", " ")}{task.dispatch.attempt ? ` · attempt ${task.dispatch.attempt}` : ""}</div>}

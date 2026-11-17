@@ -6183,7 +6183,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       });
       const projectedById = new Map(projected.map(task => [task.id, task.status]));
       for (const task of projected) if (task.status === "pending" && task.dependencies.some(dependency => projectedById.get(dependency) === "needs_review" || projectedById.get(dependency) === "blocked")) task.status = "blocked";
-      goals.push({ id: hash, verificationRequired: journal.verificationRequired === true, tasks: projected, escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
+      const routing = journal.routing;
+      const safeRouting = routing && ["single_worker", "sequential", "parallel"].includes(routing.mode)
+        && Number.isSafeInteger(routing.taskCount) && routing.taskCount > 0
+        && Number.isSafeInteger(routing.selectedConcurrency) && routing.selectedConcurrency > 0
+        && Number.isSafeInteger(routing.hostConcurrencyCeiling) && routing.hostConcurrencyCeiling > 0
+        && routing.selectedConcurrency <= routing.hostConcurrencyCeiling && routing.selectedConcurrency <= routing.taskCount
+        ? { mode: routing.mode, taskCount: routing.taskCount, selectedConcurrency: routing.selectedConcurrency, hostConcurrencyCeiling: routing.hostConcurrencyCeiling }
+        : undefined;
+      goals.push({ id: hash, ...(safeRouting ? { routing: safeRouting } : {}), verificationRequired: journal.verificationRequired === true, tasks: projected, escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
     }
     return Response.json({ goals: history ? goals.reverse() : goals });
   }
