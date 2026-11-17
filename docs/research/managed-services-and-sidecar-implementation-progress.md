@@ -1,8 +1,8 @@
-## Current cross-plan checkpoint — 2026-11-17 (Project Gadget migration apply; local, not yet pushed)
+## Current cross-plan checkpoint — 2026-11-17 (Project Gadget migration recovery route coverage; local)
 
-Recovery commits `17f005a5`/`06432f71` are remote. Project updates now support a constrained Project-bound Gadget migration: the owner sees exact appended SQL and confirms; gateway/SpaceDO pin the signed package; MicroAppDO records the signed migration receipt by Project, installation and source generation; initialization/activation follows. Failure after migration preserves the staged update for receipt replay. Spaces contract/review/runtime/schema suites **56/56**, Shell retry **2/2**, Spaces/Shell typechecks and diff hygiene pass. Mock/local only, no deployed acceptance.
+Recovery/review/apply commits through `fcfbdf94` are remote. Project updates now support a constrained Project-bound Gadget migration: the owner sees exact appended SQL and confirms; gateway/SpaceDO pin the signed package; MicroAppDO records the signed migration receipt by Project, installation and source generation; initialization/activation follows. Failure after migration preserves the staged update for receipt replay. Spaces contract/review/runtime/schema and route recovery suites **57/57**, Shell retry **2/2**, Spaces/Shell typechecks and diff hygiene pass. Mock/local only, no deployed acceptance.
 
-Exact next action: test the complete update route through actor migration, recovery after activation failure, revoked publisher and partial multi-Gadget migration. Then continue all remaining independent S2–S9/U01–U12 and incorporated-plan requirements. Rollout disabled; preserve `infra/scripts/__pycache__/`.
+These route tests use mock Durable Objects only. Exact next action: trace and implement the next independent S2–S9/U01–U12 requirement; then continue all remaining incorporated-plan requirements. Rollout disabled; preserve `infra/scripts/__pycache__/`.
 
 ## Cross-plan local checkpoint — 2026-11-17 (Project update receipt through activation)
 

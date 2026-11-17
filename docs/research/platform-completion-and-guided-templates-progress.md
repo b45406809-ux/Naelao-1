@@ -1,8 +1,8 @@
-## Local checkpoint — 2026-11-17 (Project Gadget migration apply; not yet pushed)
+## Local checkpoint — 2026-11-17 (Project Gadget migration recovery route coverage)
 
-Recovery commits `17f005a5`/`06432f71` are remote. The Project update contract now permits only appended bounded additive SQL migrations on otherwise unchanged Gadgets. Owner review returns the exact SQL; Canvas/Gadget apply requests explicit confirmation. The route signs Project/install/source/candidate/generation migration claims and invokes MicroAppDO's durable receipt before candidate initialization/activation. Update failures preserve the staged receipt for exact retry. Tests: Spaces contract/review/runtime/schema suites **56/56**, Shell retry **2/2**; Spaces/Shell typechecks and diff check pass. Mocks only, no live acceptance.
+Recovery commits `17f005a5`/`06432f71` are remote. The Project update contract now permits only appended bounded additive SQL migrations on otherwise unchanged Gadgets. Owner review returns the exact SQL; Canvas/Gadget apply requests explicit confirmation. The route signs Project/install/source/candidate/generation migration claims and invokes MicroAppDO's durable receipt before candidate initialization/activation. Update failures preserve the staged receipt for exact retry. Tests: Spaces contract/review/runtime/schema plus routed partial-migration/revocation/activation-retry suites **57/57**, Shell retry **2/2**; Spaces/Shell typechecks and diff check pass. Mocks only, no live acceptance.
 
-Remaining: integration tests for routed migration, migration replay after activation failure, key revocation and multi-Gadget partial recovery. Exact next action: add these tests, then continue other independent implementation gaps across all active plans. Rollout disabled.
+These route tests use in-process mock Durable Objects and do not establish deployed acceptance. Exact next action: continue the next independent S2–S9/U01–U12 implementation gap, then return to the remaining platform-plan code gaps. Rollout disabled.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (Project update receipt through activation; `53d07a16` pushed)
 
