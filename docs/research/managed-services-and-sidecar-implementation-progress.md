@@ -1,6 +1,6 @@
-## Cross-plan local checkpoint — 2026-11-17 (Project owner update token)
+## Cross-plan checkpoint — 2026-11-17 (Project owner update token; `a17ba936` pushed)
 
-Project release review now issues a short HMAC token only for disabled/drained, same-publisher, version-only changes. The Project bundle uploader validates it against exact actor and tenant/Space/Project/install generation, current/candidate manifest and artifact hashes, publisher key and expiry before artifact writes; current SpaceDO install CAS remains enforced. Shell Canvas/Gadget and workflow callers request the review token. Space focused review/install/runtime suites **77/77**, Spaces/Shell typechecks pass. Local/mock evidence only.
+`a17ba936` is remote-verified. Project release review now issues a short HMAC token only for disabled/drained, same-publisher, version-only changes. The Project bundle uploader validates it against exact actor and tenant/Space/Project/install generation, current/candidate manifest and artifact hashes, publisher key and expiry before artifact writes; current SpaceDO install CAS remains enforced. Shell Canvas/Gadget and workflow callers request and pass the review token. Space focused review/install/runtime suites **77/77**, Spaces/Shell typechecks pass. Local/mock evidence only.
 
 Remaining Project update code: token persistence/single-use, migration apply through Project-bound receipt, and failure recovery after staging/activation. Exact next action: implement the durable receipt and migration apply/recovery, with interruption/replay/revocation tests. No live/deployed acceptance; rollout stays off.
 
