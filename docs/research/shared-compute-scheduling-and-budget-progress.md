@@ -247,7 +247,16 @@ per-run reservation, there is no admission-time hold for the configured maximum,
 exceptions before a measured result do not have a durable reconciliation receipt. No credential or
 provider blocker. Code `7af7ce5e` is pushed to `origin/Mcbt5s-Backup-2`.
 
-Exact next action: implement a bounded, idempotent run reservation/settlement contract only if it
-can safely distinguish measured completion from uncertain execution and avoid double-counting the
-existing project/session settlement; otherwise keep the ceiling categorized as best-effort and
-continue other independent SC03/SC04 and active-plan requirements.
+Trace result: normal `ScriptToolSurface.run` returns model token counts, tier and duration into
+`settleRunBilling`; a thrown exception reaches a separate path without a durable measured-usage
+receipt. The scheduled queue claim fences one sweep, but `scheduled_job_runs` prunes old history
+and is not a durable reservation/idempotency ledger. A per-run hold therefore still needs a new
+bounded retention/tombstone contract and an explicit uncertain state; no provider gate applies.
+Do not describe the existing session tally as atomic.
+
+Exact next action: proceed in dependency order to SC03 durable compute admission and dispatch:
+reconcile the existing ConcurrencyDO queue with ToolSandbox invocation recovery and existing owner
+queue APIs, then implement one durable host-managed job record/dispatcher path with current
+authority and Billing rechecks. Keep caller retry and logical admission distinct from actual
+execution. Return to TBR11 reservation work after this independent SC03 slice; continue SC04 and
+all other active plans after each checkpoint.

@@ -3095,8 +3095,9 @@ The direct scheduled-script caller now loads the exact current grant and checks/
 usage against its service heartbeat session when a positive `max_run_credits` is configured.
 Focused scheduled/tenant/delegation suites pass **26/26** and Agents typecheck passes. This closes
 ordinary caller wiring but not atomic reservation or uncertain-outcome recovery; no live/provider
-acceptance is claimed. Exact next action: finish the safe per-run reservation contract or keep its
-precise code gap explicit and continue independent SC03/SC04 and remaining platform requirements.
+acceptance is claimed. Exact next action: proceed to SC03 durable compute admission/dispatch across
+ConcurrencyDO, ToolSandbox invocation recovery and owner queue callers; then return to the TBR11
+reservation gap and continue all remaining active-plan requirements.
 ## Cross-plan checkpoint — 2026-11-17 (K02 reviewed image OCR caller)
 
 Space and Project Knowledge forms now accept bounded PNG/JPEG files through the signed editable preview

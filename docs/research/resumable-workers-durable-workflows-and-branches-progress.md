@@ -68,11 +68,9 @@ workspace-head verification, lost-state detection or recovery after real DO/runt
 No deployment or runtime isolation acceptance. Code `856fb145` is pushed to
 `origin/Mcbt5s-Backup-2`; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: continue the independent scheduled direct-script budget gap (TBR11) by tracing
-the existing session-spend guard and exact direct-script dispatch boundary. Implement a durable,
-per-run reservation only if the same run can reliably settle/release it on completion, failure and
-unknown outcome; otherwise record the concrete missing boundary and move to another code gap.
-Continue the full mission after that checkpoint.
+Exact next action at this historical checkpoint was TBR11; it has since been partially implemented
+in `7af7ce5e` and retraced in the shared-compute ledger. The scheduled history is pruned, so it
+cannot be reused as the reservation ledger; uncertain completion still requires new durable state.
 
 ## Cross-plan continuation correction — 2026-11-17 (`7af7ce5e` pushed)
 
@@ -82,8 +80,9 @@ missing atomic durable hold/uncertain-outcome receipt remains code work, not a p
 PW checkpoint timestamp and loss-boundary UI are pushed in `856fb145`; versioned lineage, exact
 workspace-head proof, lost-state UI, runtime isolation and real interruption acceptance remain
 partial. Do not return to the stale TBR05 action above without new source evidence. Exact next action:
-review the run actual-usage/uncertainty boundary for safe idempotent reservation, then move directly
-to the next independent SC03/SC04 or active-plan code gap and keep the full mission active.
+proceed to SC03 durable compute admission/dispatch across ConcurrencyDO, ToolSandbox recovery and
+owner queue callers; then return to TBR11 reservation design and all remaining active-plan gaps.
+Keep the full mission active.
 
 The prior action to trace WorkflowRunDO checkpoint/recovery was completed in `1dd54057`/`fc3318bb`; delegated branch runtime separation is completed locally in `21de8512`, and exact Coordinator head binding is completed locally in `c17b6e01`. Continue from the top checkpoint: TBR05 invitation and identity boundaries, then remaining independent PW and cross-plan code gaps. Keep rollout disabled.
 ## Cross-plan update — 2026-11-17 (scheduled HITL resume authorization recovery; `688f69e4` pushed)

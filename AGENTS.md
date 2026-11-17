@@ -79,10 +79,12 @@ heartbeat-session tally before execution, and settle measured ScriptToolSurface 
 tally. Focused scheduled identity/dispatch/tenant-scope/delegation suites **26/26**, Agents
 typecheck and `git diff --check` pass. Code `7af7ce5e` is pushed. This is still not a hard run
 reservation: admission and settlement are not atomic, there is no durable held maximum, and
-uncertain exceptions lack a reconciliation receipt. Exact next task: determine whether the actual
-result/billing boundary supports a durable idempotent per-run hold without double-counting; if not,
-keep that contract gap explicit and proceed to independent SC03/SC04 and other plan requirements.
-Continue after every checkpoint. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+uncertain exceptions lack a reconciliation receipt. The scheduled-run history is pruned and cannot
+serve as a durable idempotency ledger. Exact next task: proceed to SC03 durable compute admission
+and dispatch by reconciling ConcurrencyDO, ToolSandbox invocation recovery and owner queue APIs;
+implement a host-managed durable job path with current authority/Billing rechecks. Return to the
+TBR11 run-reservation contract afterward. Continue after every checkpoint. Keep rollouts disabled
+and preserve `infra/scripts/__pycache__/`.
 
 ## Previous checkpoint — 2026-11-17 (worker checkpoint receipt; `856fb145` pushed)
 
