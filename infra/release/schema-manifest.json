@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0279_space_business_role_review_ledger",
+  "requiredSchemaVersion": "0280_space_invitation_business_roles",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1119,6 +1119,10 @@
     {
       "filename": "0279_space_business_role_review_ledger.sql",
       "sha256": "7a8fd48f96fe6df73ab82c8688c56eb5f915ec74cd0f767bf04695c79e4099de"
+    },
+    {
+      "filename": "0280_space_invitation_business_roles.sql",
+      "sha256": "19d970f602c4af11b39e254a3e9247f0a5a6ec08023517dea4adeccc7d958d73"
     }
   ]
 }

@@ -25,6 +25,7 @@ function setup() {
   ]);
   db.exec(readFileSync(join(__dirname, "../../../infra/migrations/0278_space_member_invitations.sql"), "utf8"));
   db.exec(readFileSync(join(__dirname, "../../../infra/migrations/0279_space_business_role_review_ledger.sql"), "utf8"));
+  db.exec(readFileSync(join(__dirname, "../../../infra/migrations/0280_space_invitation_business_roles.sql"), "utf8"));
   db.exec("INSERT INTO orgs VALUES('tenant-a','active')");
   db.exec("INSERT INTO products VALUES('product-a','tenant-a','active')");
   db.exec("INSERT INTO spaces VALUES('space-a','tenant-a','product-a','active')");
@@ -49,6 +50,22 @@ async function inviteRequest(env: never, userId: string, path: string, method: s
   }), env, { waitUntil: () => undefined } as never);
 }
 
+async function installRoleBlueprint(env: never, artifact: SpaceBlueprint) {
+  const certificate = await certifyStateDeltaArtifact(artifact, { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `role-${index}` })) },
+    { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-a");
+  if (!certificate) throw new Error("test_certificate_not_issued");
+  const digestBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(artifact)));
+  const artifactSha256 = [...new Uint8Array(digestBytes)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const platform = env as { SPACE_DO?: unknown; SCRIPTS_R2?: unknown };
+  platform.SPACE_DO = {
+    idFromName: (name: string) => name,
+    get: () => ({ fetch: async () => Response.json({ installations: [{ blueprint_id: artifact.id, artifact_sha256: artifactSha256,
+      status: "installed", lifecycle_state: "active", listing_id: null }] }) }),
+  };
+  platform.SCRIPTS_R2 = { get: async () => ({ json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) }) };
+  return { artifactSha256, platform };
+}
+
 describe("Space Product-user invitations", () => {
   it("redeems once for the matching verified identity and keeps it out of SpaceDO", async () => {
     const { db, env } = setup();
@@ -65,6 +82,44 @@ describe("Space Product-user invitations", () => {
     const replay = await inviteRequest(env, "member-a", path, "POST", { token: invitation.token });
     expect(await replay.json()).toMatchObject({ status: "accepted", replayed: true });
     expect(db.prepare("SELECT role FROM space_members WHERE space_id='space-a' AND end_user_id='member-a'").get()).toEqual({ role: "member" });
+  });
+
+  it("pins an invited business-role proposal to the exact artifact and keeps stale invitations pending", async () => {
+    const { db, env } = setup();
+    const artifact: SpaceBlueprint = {
+      id: "tpl_invite_roles", schemaVersion: "2.0", metadata: { name: "Roles" }, templateCategory: "other",
+      projects: [], requiredExtensions: [], requiredCredentials: [], businessRolesSchemaVersion: 1,
+      businessRoles: [{ id: "stock_lead", name: { en: "Stock lead" }, recommendedSpaceRole: "member" }],
+    };
+    const { artifactSha256, platform } = await installRoleBlueprint(env, artifact);
+    const created = await inviteRequest(env, "owner-a", "/spaces/space-a/member-invitations", "POST", {
+      email: "member@example.test", blueprint_id: artifact.id, business_role_id: "stock_lead",
+    });
+    expect(created.status).toBe(201);
+    const invitation = await created.json() as { id: string; token: string; business_role_id: string; grants_applied: boolean };
+    expect(invitation).toMatchObject({ business_role_id: "stock_lead", grants_applied: false });
+    expect(db.prepare("SELECT blueprint_id,artifact_sha256,business_role_id FROM space_member_invitations WHERE id=?").get(invitation.id))
+      .toEqual({ blueprint_id: artifact.id, artifact_sha256: artifactSha256, business_role_id: "stock_lead" });
+    const redeemed = await inviteRequest(env, "member-a", `/spaces/space-a/member-invitations/${invitation.id}/redeem`, "POST", { token: invitation.token });
+    expect(redeemed.status, JSON.stringify(await redeemed.clone().json())).toBe(200);
+    expect(await redeemed.json()).toMatchObject({
+      role: "member", business_role_id: "stock_lead", role_review: { status: "proposal_only", grants_applied: false },
+    });
+    const review = db.prepare("SELECT blueprint_id,artifact_sha256,business_role_id,status,grants_applied FROM space_business_role_reviews").get();
+    expect(review).toEqual({ blueprint_id: artifact.id, artifact_sha256: artifactSha256, business_role_id: "stock_lead", status: "proposal_only", grants_applied: 0 });
+    expect(db.prepare("SELECT role FROM space_members WHERE end_user_id='member-a'").get()).toEqual({ role: "member" });
+
+    const staleInvite = await inviteRequest(env, "owner-a", "/spaces/space-a/member-invitations", "POST", {
+      email: "other@example.test", blueprint_id: artifact.id, business_role_id: "stock_lead",
+    });
+    const stale = await staleInvite.json() as { id: string; token: string };
+    platform.SPACE_DO = { idFromName: (name: string) => name, get: () => ({ fetch: async () => Response.json({ installations: [{
+      blueprint_id: artifact.id, artifact_sha256: "f".repeat(64), status: "installed", lifecycle_state: "active", listing_id: null,
+    }] }) }) };
+    const staleRedeem = await inviteRequest(env, "other-a", `/spaces/space-a/member-invitations/${stale.id}/redeem`, "POST", { token: stale.token });
+    expect(staleRedeem.status).toBe(409);
+    expect(db.prepare("SELECT status FROM space_member_invitations WHERE id=?").get(stale.id)).toEqual({ status: "pending" });
+    expect(db.prepare("SELECT count(*) AS count FROM space_members WHERE end_user_id='other-a'").get()).toEqual({ count: 0 });
   });
 
   it("binds an owner-reviewed role proposal to the installed signed artifact and membership epoch without grants", async () => {

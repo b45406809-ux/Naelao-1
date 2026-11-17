@@ -3985,12 +3985,24 @@ app.post("/spaces/:spaceId/member-invitations", async (c) => {
   const spaceId = c.req.param("spaceId");
   const scope = await memberInviteSpace(c, spaceId);
   if (!scope) return c.json({ error_code: "owner_or_admin_required" }, 403);
-  const body = await c.req.json<{ email?: unknown; role?: unknown }>().catch(() => null);
+  const body = await c.req.json<{ email?: unknown; role?: unknown; blueprint_id?: unknown; business_role_id?: unknown }>().catch(() => null);
   if (typeof body?.email !== "string" || body.email.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim()) ||
       (body.role !== undefined && !["viewer", "member", "admin"].includes(String(body.role))))
     return c.json({ error_code: "invalid_invitation" }, 400);
+  const hasBusinessRole = body.blueprint_id !== undefined || body.business_role_id !== undefined;
+  if (hasBusinessRole && (typeof body.blueprint_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.blueprint_id)
+    || typeof body.business_role_id !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.business_role_id)))
+    return c.json({ error_code: "invalid_invitation_business_role" }, 400);
   const role = (body.role ?? "member") as "viewer" | "member" | "admin";
   if (role === "admin" && scope.role !== "owner") return c.json({ error_code: "owner_required_for_admin_invite" }, 403);
+  let artifactSha256: string | null = null;
+  if (hasBusinessRole) {
+    const current = await loadActiveBusinessRoleBlueprint(c, spaceId, body.blueprint_id as string);
+    if ("error" in current) return current.error;
+    if (!current.blueprint.businessRoles?.some(proposal => proposal.id === body.business_role_id))
+      return c.json({ error_code: "business_role_unknown" }, 404);
+    artifactSha256 = current.artifactSha256;
+  }
   const email = body.email.trim().toLowerCase();
   const recipientEmailHash = await inviteHmac(c.env.PLATFORM_SECRET, "email", email);
   const existing = await c.env.PLATFORM_DB.prepare(
@@ -4014,19 +4026,21 @@ app.post("/spaces/:spaceId/member-invitations", async (c) => {
   const tokenHash = await inviteHmac(c.env.PLATFORM_SECRET, "token", token);
   const inserted = await c.env.PLATFORM_DB.prepare(
     `INSERT INTO space_member_invitations
-      (id,tenant_id,space_id,product_id,inviter_user_id,recipient_email_hash,token_hash,role,expires_at)
-      SELECT ?,s.tenant_id,s.id,s.product_id,?,?,?, ?,strftime('%Y-%m-%dT%H:%M:%fZ','now','+7 days')
+      (id,tenant_id,space_id,product_id,inviter_user_id,recipient_email_hash,token_hash,role,expires_at,blueprint_id,artifact_sha256,business_role_id)
+      SELECT ?,s.tenant_id,s.id,s.product_id,?,?,?, ?,strftime('%Y-%m-%dT%H:%M:%fZ','now','+7 days'),?,?,?
        FROM spaces s JOIN products p ON p.id=s.product_id AND p.tenant_id=s.tenant_id
        JOIN space_members inviter ON inviter.space_id=s.id AND inviter.tenant_id=s.tenant_id
          AND inviter.end_user_id=? AND inviter.suspended_at IS NULL AND inviter.role IN ('owner','admin','moderator')
       WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND p.status='active'
         AND (?!='admin' OR inviter.role='owner')`
-  ).bind(id, scope.identity.userId, recipientEmailHash, tokenHash, role, scope.identity.userId,
-    spaceId, scope.identity.tenantId, role).run();
+  ).bind(id, scope.identity.userId, recipientEmailHash, tokenHash, role,
+    hasBusinessRole ? body.blueprint_id : null, artifactSha256, hasBusinessRole ? body.business_role_id : null,
+    scope.identity.userId, spaceId, scope.identity.tenantId, role).run();
   if (!inserted.meta.changes) return c.json({ error_code: "invitation_authority_changed" }, 409);
   // The bearer token is returned exactly once for manual handoff. The recipient must still
   // authenticate as a Product user with the matching verified email; forwarding cannot change it.
-  return c.json({ id, role, status: "pending", expires_in_seconds: 604800, delivery: "not_sent", token }, 201);
+  return c.json({ id, role, status: "pending", business_role_id: hasBusinessRole ? body.business_role_id : null,
+    grants_applied: false, expires_in_seconds: 604800, delivery: "not_sent", token }, 201);
 });
 
 app.get("/spaces/:spaceId/member-invitations", async (c) => {
@@ -4034,7 +4048,7 @@ app.get("/spaces/:spaceId/member-invitations", async (c) => {
   const scope = await memberInviteSpace(c, spaceId);
   if (!scope) return c.json({ error_code: "owner_or_admin_required" }, 403);
   const rows = await c.env.PLATFORM_DB.prepare(
-    `SELECT id,role,status,created_at,expires_at,redeemed_by,redeemed_at,revoked_by,revoked_at
+    `SELECT id,role,status,blueprint_id,artifact_sha256,business_role_id,created_at,expires_at,redeemed_by,redeemed_at,revoked_by,revoked_at
        FROM space_member_invitations WHERE tenant_id=? AND space_id=? ORDER BY created_at DESC LIMIT 100`
   ).bind(scope.identity.tenantId, spaceId).all();
   return c.json({ data: rows.results ?? [] });
@@ -4067,20 +4081,42 @@ app.post("/spaces/:spaceId/member-invitations/:invitationId/redeem", async (c) =
   if (!account?.email) return c.json({ error_code: "verified_product_identity_required" }, 403);
   const recipientEmailHash = await inviteHmac(c.env.PLATFORM_SECRET, "email", account.email.trim().toLowerCase());
   const invite = await c.env.PLATFORM_DB.prepare(
-    `SELECT id,status,role,inviter_user_id,redeemed_by FROM space_member_invitations
+    `SELECT id,status,role,inviter_user_id,redeemed_by,blueprint_id,artifact_sha256,business_role_id FROM space_member_invitations
       WHERE id=? AND tenant_id=? AND space_id=? AND product_id=? AND token_hash=?`
   ).bind(invitationId, identity.tenantId, spaceId, account.product_id, tokenHash)
-    .first<{ id: string; status: string; role: string; inviter_user_id: string; redeemed_by: string | null }>();
+    .first<{ id: string; status: string; role: string; inviter_user_id: string; redeemed_by: string | null;
+      blueprint_id: string | null; artifact_sha256: string | null; business_role_id: string | null }>();
   if (!invite) return c.json({ error_code: "invitation_not_found" }, 404);
-  if (invite.status === "accepted" && invite.redeemed_by === identity.userId) return c.json({ id: invite.id, status: "accepted", replayed: true });
+  if (invite.status === "accepted" && invite.redeemed_by === identity.userId) {
+    if (!invite.business_role_id) return c.json({ id: invite.id, status: "accepted", role: invite.role, business_role_id: null, grants_applied: false, replayed: true });
+    const review = await c.env.PLATFORM_DB.prepare(
+      `SELECT id,status,grants_applied FROM space_business_role_reviews WHERE tenant_id=? AND space_id=?
+        AND end_user_id=? AND blueprint_id=? AND artifact_sha256=? AND business_role_id=? ORDER BY reviewed_at DESC LIMIT 1`
+    ).bind(identity.tenantId, spaceId, identity.userId, invite.blueprint_id, invite.artifact_sha256, invite.business_role_id)
+      .first<{ id: string; status: string; grants_applied: number }>();
+    return c.json({ id: invite.id, status: "accepted", role: invite.role, business_role_id: invite.business_role_id,
+      role_review: review ? { id: review.id, status: review.status, grants_applied: false } : null, replayed: true },
+      { headers: { "cache-control": "private, no-store" } });
+  }
   if (invite.status !== "pending") return c.json({ error_code: "invitation_not_pending" }, 409);
   const boundRecipient = await c.env.PLATFORM_DB.prepare(
     "SELECT recipient_email_hash FROM space_member_invitations WHERE id=? AND token_hash=?"
   ).bind(invitationId, tokenHash).first<{ recipient_email_hash: string }>();
   if (recipientEmailHash !== boundRecipient?.recipient_email_hash)
     return c.json({ error_code: "invitation_identity_mismatch" }, 403);
+  let roleProposal: { artifactSha256: string; roleId: string } | null = null;
+  if (invite.business_role_id || invite.blueprint_id || invite.artifact_sha256) {
+    if (!invite.business_role_id || !invite.blueprint_id || !invite.artifact_sha256)
+      return c.json({ error_code: "invitation_business_role_binding_invalid" }, 409);
+    const current = await loadActiveBusinessRoleBlueprint(c, spaceId, invite.blueprint_id);
+    if ("error" in current) return c.json({ error_code: "invitation_business_role_stale", cause: (await current.error.json() as { error_code?: string }).error_code }, 409);
+    if (current.artifactSha256 !== invite.artifact_sha256
+      || !current.blueprint.businessRoles?.some(proposal => proposal.id === invite.business_role_id))
+      return c.json({ error_code: "invitation_business_role_stale" }, 409);
+    roleProposal = { artifactSha256: current.artifactSha256, roleId: invite.business_role_id };
+  }
   const nowIso = new Date().toISOString();
-  await c.env.PLATFORM_DB.batch([
+  const statements = [
     c.env.PLATFORM_DB.prepare(
       `UPDATE space_member_invitations SET status='accepted',redeemed_by=?,redeemed_at=?
         WHERE id=? AND tenant_id=? AND space_id=? AND product_id=? AND token_hash=? AND recipient_email_hash=?
@@ -4110,7 +4146,26 @@ app.post("/spaces/:spaceId/member-invitations/:invitationId/redeem", async (c) =
         ON CONFLICT(space_id,end_user_id) DO NOTHING`
     ).bind(identity.userId, nowIso, identity.userId, invitationId, identity.tenantId, spaceId,
       tokenHash, identity.userId, recipientEmailHash, account.email.trim().toLowerCase()),
-  ]);
+  ];
+  if (roleProposal) statements.push(c.env.PLATFORM_DB.prepare(
+    `INSERT OR IGNORE INTO space_business_role_reviews
+      (id,tenant_id,space_id,product_id,end_user_id,membership_created_at,membership_role,blueprint_id,artifact_sha256,business_role_id,status,reviewed_by,reviewed_at)
+     SELECT lower(hex(randomblob(16))),i.tenant_id,i.space_id,i.product_id,sm.end_user_id,sm.created_at,sm.role,
+       i.blueprint_id,i.artifact_sha256,i.business_role_id,'proposal_only',i.inviter_user_id,?
+       FROM space_member_invitations i JOIN space_members sm
+         ON sm.space_id=i.space_id AND sm.tenant_id=i.tenant_id AND sm.end_user_id=i.redeemed_by
+       JOIN space_members reviewer ON reviewer.space_id=i.space_id AND reviewer.tenant_id=i.tenant_id
+         AND reviewer.end_user_id=i.inviter_user_id AND reviewer.suspended_at IS NULL
+         AND reviewer.role IN ('owner','admin','moderator')
+       JOIN product_end_users u ON u.product_space_id=i.product_id AND u.end_user_id=sm.end_user_id
+         AND u.email_verified_at IS NOT NULL AND u.suspended_at IS NULL AND u.deleted_at IS NULL AND u.erasure_started_at IS NULL
+      WHERE i.id=? AND i.tenant_id=? AND i.space_id=? AND i.status='accepted' AND i.redeemed_by=?
+        AND i.blueprint_id=? AND i.artifact_sha256=? AND i.business_role_id=?
+        AND sm.created_at=? AND sm.role=i.role
+        AND (i.role!='admin' OR reviewer.role='owner')`
+  ).bind(nowIso, invitationId, identity.tenantId, spaceId, identity.userId,
+    invite.blueprint_id, roleProposal.artifactSha256, roleProposal.roleId, nowIso));
+  await c.env.PLATFORM_DB.batch(statements);
   const accepted = await c.env.PLATFORM_DB.prepare(
     `SELECT i.status,i.redeemed_by,sm.role FROM space_member_invitations i LEFT JOIN space_members sm
       ON sm.space_id=i.space_id AND sm.tenant_id=i.tenant_id AND sm.end_user_id=i.redeemed_by
@@ -4118,7 +4173,17 @@ app.post("/spaces/:spaceId/member-invitations/:invitationId/redeem", async (c) =
   ).bind(invitationId, identity.tenantId, spaceId).first<{ status: string; redeemed_by: string | null; role: string | null }>();
   if (accepted?.status !== "accepted" || accepted.redeemed_by !== identity.userId || !accepted.role)
     return c.json({ error_code: "invitation_redemption_conflict" }, 409);
-  return c.json({ id: invitationId, status: "accepted", role: accepted.role, replayed: false });
+  if (roleProposal) {
+    const review = await c.env.PLATFORM_DB.prepare(
+      `SELECT id,status,grants_applied FROM space_business_role_reviews WHERE tenant_id=? AND space_id=?
+        AND end_user_id=? AND membership_created_at=? AND blueprint_id=? AND artifact_sha256=? AND business_role_id=?`
+    ).bind(identity.tenantId, spaceId, identity.userId, nowIso, invite.blueprint_id, roleProposal.artifactSha256, roleProposal.roleId)
+      .first<{ id: string; status: string; grants_applied: number }>();
+    if (!review || review.grants_applied !== 0) return c.json({ error_code: "invitation_role_review_persist_failed" }, 503);
+    return c.json({ id: invitationId, status: "accepted", role: accepted.role, business_role_id: roleProposal.roleId,
+      role_review: { id: review.id, status: review.status, grants_applied: false }, replayed: false });
+  }
+  return c.json({ id: invitationId, status: "accepted", role: accepted.role, business_role_id: null, grants_applied: false, replayed: false });
 });
 
 async function loadActiveBusinessRoleBlueprint(c: Context<{ Bindings: Env }>, spaceId: string, blueprintId: string) {
