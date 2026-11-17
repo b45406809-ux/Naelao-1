@@ -112,7 +112,7 @@ import { applyDurableObjectJurisdiction, issueDelegationClaim, verifyDelegationC
 import { routeMentionsWithSentry } from "../script-engine/mention-router.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { readVisibleSpaceCoordinationFacts, renderSpaceCoordinationContext } from "../script-engine/prebuilt/space-coordination.js";
-import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
+import { resolveAssistantApprovalPlan, restrictScheduledServiceApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { SkillLibrary } from "../script-engine/skill-library.js";
 import { bindCodeRpc, type CodeRpcBinding } from "../script-engine/code-rpc-broker.js";
@@ -7478,6 +7478,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
     const assembled = this.assembleUniversalAgent(manifest, body.spaceContext);
     engineEnv.maxTier = Math.min(engineEnv.maxTier ?? 6, assembled.maxTier) as ExecutionTier;
+    const scheduledServiceRun = body.context?.["trigger"] === "scheduled_job";
+    const scheduledReadSafeActions = assembled.manifest.capabilities.enabledPrebuilts.flatMap(name => {
+      const script = PREBUILT_SCRIPTS[name];
+      return script ? Object.keys(script.operations) : [];
+    });
+    const approvalPlanForRun = (plan: ReturnType<typeof resolveAssistantApprovalPlan>) =>
+      restrictScheduledServiceApprovalPlan(plan, scheduledServiceRun, scheduledReadSafeActions);
 
     // Approval policy. A project-bound Naelao Agent keeps the ordinary allowlist-of-gated
     // actions (spec §11, appendix A1.16.1). The Space Assistant (no projectId) is different:
@@ -7496,7 +7503,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // Fall back to the markdown parse only for agents provisioned before this field existed.
       alwaysGatedActions = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
       const policy = await this.fetchAgentPolicy(spaceId, agentId, tenantId);
-      const plan = resolveAssistantApprovalPlan(policy, callerRole, spaceRole);
+      const plan = approvalPlanForRun(resolveAssistantApprovalPlan(policy, callerRole, spaceRole));
       requiresApprovalFor = plan.requiresApprovalFor;
       approvalMode = plan.approvalMode;
     } else {
@@ -7513,7 +7520,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // spaceRole is what stops that downgrade from locking a business OWNER out of the yolo
       // they set on their own business — resolved server-side from business_memberships by the
       // agents worker, never taken from the client.
-      const plan = resolveAssistantApprovalPlan(policy, callerRole, spaceRole);
+      const plan = approvalPlanForRun(resolveAssistantApprovalPlan(policy, callerRole, spaceRole));
       requiresApprovalFor = plan.requiresApprovalFor;
       approvalMode = plan.approvalMode;
     }
@@ -7831,7 +7838,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 ])
               : [null, null];
             const latestPolicy = latestConfig ? await this.fetchAgentPolicy(spaceId, agentId, tenantId) : null;
-            const policyPlan = resolveAssistantApprovalPlan(latestPolicy, callerRole, spaceRole);
+            const policyPlan = approvalPlanForRun(resolveAssistantApprovalPlan(latestPolicy, callerRole, spaceRole));
             const policyVersion = `${latestPolicy?.updated_at ?? "missing"}:${policyFiles[0]?.etag ?? "missing"}:${policyFiles[0]?.customMetadata?.["updatedAt"] ?? "legacy"}:${policyFiles[1]?.etag ?? "missing"}:${policyFiles[1]?.customMetadata?.["updatedAt"] ?? "legacy"}`;
             if (!latestConfig) {
               const failClosed = resolveAssistantApprovalPlan(null, callerRole, spaceRole);
@@ -7851,7 +7858,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             // Approval is checked per action, not just at run admission. Bypass the 30-second
             // ingress cache so an owner revoking autonomy affects the next action in this run.
             const latestPolicy = await this.fetchAssistantPolicy(spaceId, tenantId, true);
-            const latestPlan = resolveAssistantApprovalPlan(latestPolicy, callerRole, spaceRole);
+            const latestPlan = approvalPlanForRun(resolveAssistantApprovalPlan(latestPolicy, callerRole, spaceRole));
             requiresApprovalFor = latestPlan.requiresApprovalFor;
             approvalMode = latestPlan.approvalMode;
             const policyVersion = latestPolicy?.updated_at;
