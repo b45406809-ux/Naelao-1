@@ -714,7 +714,13 @@ function ExtensionReleaseControls({ spaceId, projectId, session, installation }:
     {updateReview && <div role="status" style={{ marginTop: 6, padding: 7, border: "1px solid var(--border)", borderRadius: 6 }}>
       <div>Verified candidate {updateReview.candidate.version} · publisher {updateReview.candidate.publisher_id} · key <code>{updateReview.candidate.publisher_key_id}</code></div>
       <div>Authority changes: permissions +{updateReview.permissions.added.length}/−{updateReview.permissions.removed.length}; capabilities +{updateReview.capabilities.added.length}/−{updateReview.capabilities.removed.length}.</div>
-      <div>Resource declarations: {updateReview.resources.added.length} added, {updateReview.resources.changed.length} changed, {updateReview.resources.removed.length} removed. Dependencies: {updateReview.dependencies.added.length} added, {updateReview.dependencies.changed.length} changed, {updateReview.dependencies.removed.length} removed.</div>
+      <div><strong>Host-managed resource declaration changes</strong>
+        <div>Added: {updateReview.resources.added.join(", ") || "none"}</div>
+        <div>Changed: {updateReview.resources.changed.join(", ") || "none"}</div>
+        <div>Removed: {updateReview.resources.removed.join(", ") || "none"}</div>
+        <div>Declarations request access; this update review does not grant resources. Each grant still requires separate owner approval and current host authorization.</div>
+      </div>
+      <div>Dependencies: {updateReview.dependencies.added.length} added, {updateReview.dependencies.changed.length} changed, {updateReview.dependencies.removed.length} removed.</div>
       <div>Price terms are unknown. {updateReview.apply_block_reason}; this review does not change the installation.</div>
     </div>}
     {selected && expandsAccess && <div role="status" style={{ marginTop: 5, color: "var(--warning, #b54708)" }}>
