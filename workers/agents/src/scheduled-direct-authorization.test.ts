@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalGrantConfig, scheduledGoalIsCurrent } from "./scheduled-direct-authorization.js";
+import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptGrantConfig, scheduledGoalGrantConfig, scheduledGoalIsCurrent } from "./scheduled-direct-authorization.js";
 
-function database(result: { current: number } | null) {
+function database(result: Record<string, unknown> | null) {
   const first = vi.fn(async () => result);
   const bind = vi.fn(() => ({ first }));
   const prepare = vi.fn(() => ({ bind }));
@@ -12,20 +12,20 @@ describe("scheduled direct-script authorization fence", () => {
   const input = { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", scriptName: "daily-review",
     serviceIdentityId: "scheduled_job:job-a", authorizationRevision: "2026-11-17T12:00:00.000Z" };
 
-  it("admits only the exact enabled job revision and script target", async () => {
-    const fixture = database({ current: 1 });
-    await expect(scheduledDirectScriptIsCurrent(fixture.db, input)).resolves.toBe(true);
+  it("loads the budget only from the same enabled direct-script job revision", async () => {
+    const fixture = database({ approved_actions_json: '["project.update"]', max_run_credits: 75 });
+    await expect(scheduledDirectScriptGrantConfig(fixture.db, input)).resolves.toEqual({ approvedActions: ["project.update"], maxRunCredits: 75 });
     expect(fixture.prepare.mock.calls[0]?.[0]).toContain("updated_at=? AND script_name=? AND goal IS NULL");
     expect(fixture.bind).toHaveBeenCalledWith("job-a", "tenant-a", "space-a", "project-a", input.authorizationRevision, "daily-review");
   });
 
   it.each([
     ["paused, deleted, or stale job", null, input],
-    ["invalid service identity", { current: 1 }, { ...input, serviceIdentityId: "job-a" }],
-    ["missing revision", { current: 1 }, { ...input, authorizationRevision: "" }],
+    ["invalid service identity", { approved_actions_json: '["project.update"]', max_run_credits: 500 }, { ...input, serviceIdentityId: "job-a" }],
+    ["missing revision", { approved_actions_json: '["project.update"]', max_run_credits: 500 }, { ...input, authorizationRevision: "" }],
   ])("rejects %s", async (_name, result, candidate) => {
-    const fixture = database(result as { current: number } | null);
-    await expect(scheduledDirectScriptIsCurrent(fixture.db, candidate as typeof input)).resolves.toBe(false);
+    const fixture = database(result as Record<string, unknown> | null);
+    await expect(scheduledDirectScriptGrantConfig(fixture.db, candidate as typeof input)).resolves.toBeNull();
     if (candidate === input) expect(fixture.first).toHaveBeenCalledOnce();
     else expect(fixture.prepare).not.toHaveBeenCalled();
   });

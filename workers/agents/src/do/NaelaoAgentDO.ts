@@ -65,7 +65,7 @@ import { createNamedTunnelGateway } from "../tunnels/host.js";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import { validPhoneExtensionEvent } from "../communications/phone-extension-event.js";
 import { verifyHeartbeatSession } from "../communications/heartbeat-scope.js";
-import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalIsCurrent,
+import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptGrantConfig, scheduledGoalIsCurrent,
   scheduledGoalGrantConfig } from "../scheduled-direct-authorization.js";
 import { parseSessionSpendStatus } from "../session-spend-status.js";
 import type { ScheduledJobGrantConfig } from "@naelao/security";
@@ -7053,6 +7053,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error: "spaceId and scriptName are required" }, { status: 400 });
     }
 
+    let scheduledRunCreditCeiling: number | undefined;
     if (body.context?.trigger === "scheduled_job") {
       const identityId = body.context.service_identity_id;
       const revision = body.context.authorization_revision;
@@ -7066,14 +7067,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       } catch {
         return Response.json({ error_code: "scheduled_script_session_mismatch" }, { status: 403 });
       }
-      let current = false;
+      let current: ScheduledJobGrantConfig | null = null;
       try {
-        current = await scheduledDirectScriptIsCurrent(this.env.PLATFORM_DB, { tenantId: body.tenantId, spaceId: body.spaceId,
+        current = await scheduledDirectScriptGrantConfig(this.env.PLATFORM_DB, { tenantId: body.tenantId, spaceId: body.spaceId,
           projectId: body.projectId, scriptName: body.scriptName, serviceIdentityId: identityId, authorizationRevision: revision });
       } catch {
         return Response.json({ error_code: "scheduled_script_authorization_unavailable" }, { status: 503 });
       }
       if (!current) return Response.json({ error_code: "scheduled_script_authorization_changed" }, { status: 409 });
+      scheduledRunCreditCeiling = current.maxRunCredits > 0 ? current.maxRunCredits : undefined;
     }
 
     const engineEnv = await this.buildScriptEngineEnv(body.spaceId, body.agentId, body.tenantId ?? "", undefined, body.projectId, undefined, body.airGappedOnly === true);
@@ -7088,6 +7090,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let hasSpendCap = false;
     let projectSpendReserved = false;
     const runId = body.runId ?? `trigger:${crypto.randomUUID()}`;
+    if (scheduledRunCreditCeiling !== undefined && body.sessionId) {
+      const budgetGate = await this.checkSessionBudget(body.spaceId, body.tenantId ?? "", body.sessionId,
+        body.agentId, runId, scheduledRunCreditCeiling);
+      if (!budgetGate.ok) return budgetGate.response;
+    }
     if (body.projectId) {
       const projectConfig = await this.fetchProjectConfig(body.spaceId, body.tenantId ?? "", body.projectId);
       if (projectConfig.status === "error") return Response.json({ error_code: "project_policy_unavailable" }, { status: 503 });
@@ -7133,6 +7140,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     await this.settleRunBilling({ spaceId: body.spaceId, tenantId: body.tenantId ?? "", projectId: body.projectId,
       hasSpendCap, runId, tokensUsed: result.tokens_used, inputTokens: result.input_tokens ?? 0,
       outputTokens: result.output_tokens ?? 0, model: DEFAULT_WORKING_MODEL, notes: [], projectSpendReserved,
+      ...(scheduledRunCreditCeiling !== undefined && body.sessionId
+        ? { sessionId: body.sessionId, sessionCreditCeiling: scheduledRunCreditCeiling } : {}),
       tier: result.tier, durationMs: result.duration_ms, chargeInfraToProject: true,
       ...(body.context?.trigger === "scheduled_job" && typeof body.context.service_identity_id === "string"
         && typeof body.context.authorization_revision === "string" ? { serviceIdentityId: body.context.service_identity_id,
