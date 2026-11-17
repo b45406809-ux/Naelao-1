@@ -13,6 +13,21 @@ describe("public tool surface", () => {
     expect(operations).toContain("search");
     expect(privacyBridgeCard("thread 1", "private")).toMatchObject({ type: "fork_scratchpad_card", target_thread_id: "thread 1" });
   });
+
+  it("hides Project write capabilities from reduced-access callers during discovery", async () => {
+    const tools = new ScriptToolSurface({ scriptsBucket: bucket, spaceId: "s", agentId: "a", tenantId: "t", effectiveRole: "viewer" },
+      ["business-email", "r2-workspace", "web-search"]);
+    const operations = tools.availableOperations();
+    expect(operations).toContain("search");
+    expect(operations).not.toContain("email.send");
+    expect(operations).not.toContain("Write");
+    await expect(tools.run("tools.search", { query: "email" })).resolves.toMatchObject({
+      ok: true, output: { results: expect.not.arrayContaining([expect.objectContaining({ name: "email.send" })]) },
+    });
+    await expect(tools.run("tools.describe", { name: "email.send" })).resolves.toMatchObject({
+      ok: true, output: { ok: false, error: expect.stringContaining("Unknown operation") },
+    });
+  });
 });
 
 describe("declarative pipelines", () => {

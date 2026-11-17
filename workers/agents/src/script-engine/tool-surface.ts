@@ -451,6 +451,10 @@ export class ScriptToolSurface {
 
   /** Operations a parent may either see or call without capability delegation. */
   private isPlannerVisible(name: string): boolean {
+    // Effective Project viewer access also limits discovery. Dispatch already blocks these
+    // operations, but exposing their names, descriptions and parameter hints can reveal
+    // capabilities/resources that the acting user cannot exercise.
+    if (this.env.effectiveRole === "viewer" && !isReadSafeOperation(name)) return false;
     if (!this.plannerScope) return true;
     // A persistent planner sees the stable Bash/REPL surface. Coordination remains executable
     // only after virtual-cli has parsed an explicit `naelao ...` command into a typed dispatch.
