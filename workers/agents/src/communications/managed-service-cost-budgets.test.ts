@@ -311,9 +311,13 @@ describe("managed-service provider-cost threshold notices", () => {
     await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
     await setManagedServiceCostBudget(f.env,ownerScope,{...budget,limitProviderCostMicros:null});
     const notify=vi.fn();f.env.NOTIFICATIONS_WORKER={fetch:notify} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toMatchObject({scanned:0,delivered:0});
     await expect(sweepManagedServiceCostBudgetAlertEmailDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z")))
       .resolves.toMatchObject({scanned:0,accepted:0});
     expect(notify).not.toHaveBeenCalled();
+    expect(f.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_alert_deliveries").get())
+      .toEqual({status:"suppressed",last_error:"budget_removed"});
     expect(f.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_email_deliveries").get())
       .toEqual({status:"suppressed",last_error:"budget_removed"});
   });

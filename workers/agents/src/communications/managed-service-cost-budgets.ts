@@ -35,6 +35,11 @@ export async function setManagedServiceCostBudget(env: AgentsEnv, scope: Communi
   const id = await budgetId(scope, input);
   const at = new Date().toISOString();
   if (input.limitProviderCostMicros === null) {
+    await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_alert_deliveries
+      SET status='suppressed',lease_token=NULL,lease_until=NULL,last_error='budget_removed',updated_at=?
+      WHERE status IN ('pending','running') AND alert_id IN (
+        SELECT id FROM managed_service_cost_budget_alerts WHERE budget_id=? AND tenant_id=? AND space_id=? AND project_id IS ?
+      )`).bind(at,id,scope.tenantId,scope.spaceId,scope.projectId??null).run();
     await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_email_deliveries
       SET status='suppressed',lease_token=NULL,lease_until=NULL,last_error='budget_removed',updated_at=?
       WHERE status IN ('pending','running') AND alert_id IN (
