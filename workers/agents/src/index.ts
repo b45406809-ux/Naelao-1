@@ -2990,6 +2990,7 @@ async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSes
 async function wakeAgentGoal(
   env: AgentsEnv,
   params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; userId?: string; runId?: string; goal: string; airGappedOnly?: boolean;
+    sessionCreditCeiling?: number;
     serviceIdentity?: { id: string; authorizationRevision: string }; trigger?: "scheduled_job" | "blackboard_wake" },
   reqId?: string
 ): Promise<Response> {
@@ -3061,6 +3062,7 @@ async function wakeAgentGoal(
         tenantId: params.tenantId,
         ...(params.userId ? { userId: params.userId } : {}),
         ...(params.runId ? { runId: params.runId } : {}),
+        ...(params.sessionCreditCeiling && params.sessionCreditCeiling > 0 ? { sessionCreditCeiling: params.sessionCreditCeiling } : {}),
         sessionId: heartbeatSessionId,
         ...(params.projectId ? { projectId: params.projectId } : {}),
         context: { trigger: params.trigger ?? (params.serviceIdentity ? "scheduled_job" : "blackboard_wake"),
@@ -10176,6 +10178,8 @@ interface ScheduledJobRow {
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
   quiet_hours_timezone: string;
+  approved_actions_json: string;
+  max_run_credits: number;
 }
 
 // Phase 3 item 27/28 — the max recent fires kept per job in scheduled_job_runs (migration 0071).
@@ -10375,7 +10379,7 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
           console.error(`[agent-ticks] cron check failed job=${row.id} space=${row.space_id}:`, (err as Error).message);
           await recordScheduledJobFailure(
             env,
-            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: row.project_id, cron_expression: row.cron_expression, script_name: "", params: "{}", agent_id: null, goal: null, quiet_hours_start: row.quiet_hours_start, quiet_hours_end: row.quiet_hours_end, quiet_hours_timezone: row.quiet_hours_timezone, last_run_at: row.last_run_at, created_at: row.created_at, updated_at: row.created_at, consecutive_failures: 0 },
+            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: row.project_id, cron_expression: row.cron_expression, script_name: "", params: "{}", agent_id: null, goal: null, quiet_hours_start: row.quiet_hours_start, quiet_hours_end: row.quiet_hours_end, quiet_hours_timezone: row.quiet_hours_timezone, approved_actions_json: "[]", max_run_credits: 0, last_run_at: row.last_run_at, created_at: row.created_at, updated_at: row.created_at, consecutive_failures: 0 },
             now,
             (err as Error).message
           );
@@ -10796,6 +10800,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       // script_name/params changed — always act on current state.
       const row = await env.PLATFORM_DB.prepare(
         `SELECT id, space_id, tenant_id, project_id, cron_expression, script_name, params, agent_id, goal,
+                approved_actions_json, max_run_credits,
                 quiet_hours_start, quiet_hours_end, quiet_hours_timezone, last_run_at, created_at, updated_at, consecutive_failures
            FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ? AND enabled = 1`
       ).bind(msg.jobId, msg.spaceId, msg.tenantId).first<ScheduledJobRow>();
@@ -10845,6 +10850,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
               ...(row.project_id ? { projectId: row.project_id } : {}),
               runId: serviceIdentity.runId,
               serviceIdentity: { id: serviceIdentity.serviceIdentityId, authorizationRevision: serviceIdentity.authorizationRevision },
+              ...(row.max_run_credits > 0 ? { sessionCreditCeiling: row.max_run_credits } : {}),
               goal: [wakeBrief, row.goal].filter(Boolean).join("\n"),
               ...(wakePolicy.airGappedOnly ? { airGappedOnly: true } : {}),
             })

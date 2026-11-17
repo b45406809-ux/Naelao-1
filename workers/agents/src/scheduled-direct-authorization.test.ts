@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalIsCurrent } from "./scheduled-direct-authorization.js";
+import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalGrantConfig, scheduledGoalIsCurrent } from "./scheduled-direct-authorization.js";
 
 function database(result: { current: number } | null) {
   const first = vi.fn(async () => result);
@@ -34,8 +34,23 @@ describe("scheduled direct-script authorization fence", () => {
     const fixture = database({ current: 1 });
     await expect(scheduledGoalIsCurrent(fixture.db, { tenantId: input.tenantId, spaceId: input.spaceId, projectId: input.projectId,
       agentId: "agent-a", serviceIdentityId: input.serviceIdentityId, authorizationRevision: input.authorizationRevision })).resolves.toBe(true);
-    expect(fixture.prepare.mock.calls[0]?.[0]).toContain("updated_at=? AND goal IS NOT NULL AND agent_id IS ?");
-    expect(fixture.bind).toHaveBeenCalledWith("job-a", "tenant-a", "space-a", "project-a", input.authorizationRevision, "agent-a");
+    expect(fixture.prepare.mock.calls[0]?.[0]).toContain("updated_at=? AND goal IS NOT NULL AND ((agent_id IS NULL AND ?='naelao-agent') OR agent_id=?)");
+    expect(fixture.bind).toHaveBeenCalledWith("job-a", "tenant-a", "space-a", "project-a", input.authorizationRevision, "agent-a", "agent-a");
+  });
+
+  it("loads grants and budget only from the exact current goal-job revision", async () => {
+    const first = vi.fn(async () => ({ approved_actions_json: '["project.update"]', max_run_credits: 500 }));
+    const bind = vi.fn(() => ({ first })), prepare = vi.fn(() => ({ bind }));
+    const db = { prepare } as never;
+    await expect(scheduledGoalGrantConfig(db, { tenantId: input.tenantId, spaceId: input.spaceId, projectId: input.projectId,
+      agentId: "agent-a", serviceIdentityId: input.serviceIdentityId, authorizationRevision: input.authorizationRevision }))
+      .resolves.toEqual({ approvedActions: ["project.update"], maxRunCredits: 500 });
+    expect(prepare.mock.calls[0]?.[0]).toContain("updated_at=? AND goal IS NOT NULL AND ((agent_id IS NULL AND ?='naelao-agent') OR agent_id=?)");
+    expect(bind).toHaveBeenCalledWith("job-a", "tenant-a", "space-a", "project-a", input.authorizationRevision, "agent-a", "agent-a");
+
+    first.mockResolvedValueOnce({ approved_actions_json: '["*"]', max_run_credits: 500 } as never);
+    await expect(scheduledGoalGrantConfig(db, { tenantId: input.tenantId, spaceId: input.spaceId, projectId: input.projectId,
+      agentId: "agent-a", serviceIdentityId: input.serviceIdentityId, authorizationRevision: input.authorizationRevision })).resolves.toBeNull();
   });
 
   it("recovers legacy suspended identity from the persisted session and rejects checkpoint disagreement", () => {

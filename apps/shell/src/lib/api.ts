@@ -2386,6 +2386,8 @@ export interface ScheduledJob {
   cron_expression: string;
   script_name?: string;
   goal?: string | null;
+  approved_actions?: string[];
+  max_run_credits?: number;
   quiet_hours_start?: string | null;
   quiet_hours_end?: string | null;
   quiet_hours_timezone?: string;
@@ -2434,6 +2436,8 @@ export async function createScheduledJob(
     quiet_hours_start?: string | null;
     quiet_hours_end?: string | null;
     quiet_hours_timezone?: string;
+    approved_actions?: string[];
+    max_run_credits?: number;
   }
 ): Promise<ScheduledJob> {
   return apiFetch(`/v1/spaces/${spaceId}/scheduled-jobs`, { method: "POST", body: JSON.stringify(input), session });
@@ -2454,6 +2458,8 @@ export async function updateScheduledJob(
     quiet_hours_start: string | null;
     quiet_hours_end: string | null;
     quiet_hours_timezone: string;
+    approved_actions: string[];
+    max_run_credits: number;
   }>
 ): Promise<{ id: string; updated_at: string }> {
   return apiFetch(`/v1/spaces/${spaceId}/scheduled-jobs/${encodeURIComponent(jobId)}`, {

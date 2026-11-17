@@ -1,0 +1,24 @@
+# Shared compute scheduling and budget progress
+
+Source: `docs/research/shared-compute-scheduling-and-budget-plan.md`, fetched from `origin/plan/microapps-ui-sdk-voice` commit `3770193d`; copied SHA-256 `7a03471b4396e5f2e5a35820659957dfb21ba3b756507292c9c7fb8bbe637145`. No planning branch checkout or merge.
+
+## Current reconciliation — 2026-11-17
+
+| ID | Status | Current evidence and remaining gap |
+| --- | --- | --- |
+| SC01 project, goal and computer lifecycle | PARTIAL | Checked WorkspaceCoordinator revisions, durable workflow/task state and on-demand runtime DOs are separate. Project files and goals persist while runtime may stop. Safe publication/checkpoint paths exist, but there is no general sleep/drain/flush bridge for arbitrary processes. Never claim process-memory, socket or credential restoration. |
+| SC02 runtime routing and capability truth | PARTIAL | Existing classifier routes supported VFS/JS paths separately; Python/Wasm is bounded/feature-gated and `python`/`npm` shell requests require Linux/container capability. Some runtime capability gates and provider isolation still need complete caller and live acceptance coverage. |
+| SC03 durable fair capacity scheduler | PARTIAL_LOCAL / CODE_GAP | `ConcurrencyDO` has a durable per-resource wait queue with fencing tokens, expiry, priority aging and position; planner workers use it. `DynamicSandboxDO` instead calls a separate global+tenant counter admission API and returns `container_concurrency_limit`, so container demand lacks a durable queued/waiting path. Existing queues do not yet enforce one consistent tenant→Space→Project/member fairness policy across workload classes or heterogeneous capacity. |
+| SC04 layered quotas, reservations and settlement | PARTIAL | Selected LLM, Project, extension and managed-provider paths reserve and settle idempotently; schedule grants now add an exact job ceiling. There is no uniform platform→provider→tenant→Space→Project→user/service→agent/job window intersection, nor authoritative provider invoice reconciliation across runtime types. |
+| SC05 owner queue and budget controls | CODE_GAP | Existing task status and selected runtime wait events are visible; there is no owner-visible shared compute queue with scoped status, reliable ETA, quota-window resets, reservation/cost and cancellation across all runtime callers. |
+| SC06 verified commercial and provider acceptance | EXTERNAL/LIVE GATE | Cloudflare runtime/Queue prices, included allowances, current account availability, snapshot behavior and actual invoices have not been verified in this checkout. Source-plan examples remain illustrations, not quotes or customer prices. Real Container/FUSE, deployed billing and invoice acceptance remain separate gates. |
+
+Reconciled code locations: `workers/agents/src/do/ConcurrencyDO.ts` implements durable resource waiters and lease fencing; `NaelaoAgentDO.ts` uses that queue for worker execution/resource dependencies. `DynamicSandboxDO.ts` reserves global and tenant capacity through separate `/acquire` calls and fails immediately at the cap. Durable workflows and workspace checkpoints persist logical task/project state but do not restore arbitrary process memory. Billing holds exist in selected paths only. Do not add a competing authority before connecting these existing components.
+
+## Local checkpoint — 2026-11-17 (scheduled job approval slice; pending push)
+
+Migration 0282 adds normalized per-job approved action names and a bounded per-run credit ceiling. Owner/admin configuration is reachable through Spaces API and Shell; AgentDO reloads grants from D1 against the exact enabled goal/job revision, intersects them with currently enabled operations, and clamps the run ceiling against the existing session ceiling. Legacy jobs remain read-safe; direct-script jobs receive no added effects. Local evidence: security tests **2/2**, scheduled identity/approval tests **13/13**, migration tests **3/3**, Agents/Spaces/Shell typechecks, `git diff --check`. Migration remains unapplied; no deployed or live acceptance.
+
+This closes only part of TBR11 and the per-job slice of SC04. Generic connector/provider event principals, all effect-boundary revocation/cancellation races, direct-script budgets, shared capacity fairness, quota windows and broad queue UX remain code gaps. Provider prices/invoices and deployed runtime behavior remain separate gates. Rollout stays disabled.
+
+Exact next action: commit/push this verified slice, then replace the DynamicSandbox global/tenant fail-fast capacity admission with a durable fenced waiting path built on the existing ConcurrencyDO queue, preserving current tenant/global caps and adding cleanup/renewal/retry tests. Afterwards continue the scheduler hierarchy (Space/Project fairness), quota windows, shared queue UI, and all other active-plan code gaps.

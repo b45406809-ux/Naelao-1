@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0281_scheduled_service_billing_attribution",
+  "requiredSchemaVersion": "0282_scheduled_job_service_grants",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1127,6 +1127,10 @@
     {
       "filename": "0281_scheduled_service_billing_attribution.sql",
       "sha256": "02fbed12aae43f977b2bba3a1436a60a75808c6c15ce52ecbf5c433825421a91"
+    },
+    {
+      "filename": "0282_scheduled_job_service_grants.sql",
+      "sha256": "658e974c129058cc21f8c78e2a7f385b2370c257ba5b07de04c9bcd1fc8c9bab"
     }
   ]
 }

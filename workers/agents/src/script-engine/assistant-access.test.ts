@@ -22,4 +22,11 @@ describe("scheduled service approval policy", () => {
       requiresApprovalFor: ["Read"],
     });
   });
+
+  it("adds only exact owner-approved actions that are enabled on the selected agent", () => {
+    expect(restrictAutonomousServiceApprovalPlan(
+      { approvalMode: "gate_listed", requiresApprovalFor: [] }, true,
+      ["Read", "project.update", "task.complete"], ["project.update", "connector.call", "project.update"],
+    )).toEqual({ approvalMode: "gate_unless_listed", requiresApprovalFor: ["Read", "project.update"] });
+  });
 });

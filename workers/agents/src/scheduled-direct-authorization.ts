@@ -1,4 +1,5 @@
 import type { D1Database } from "@cloudflare/workers-types";
+import { parseScheduledJobGrantConfig, type ScheduledJobGrantConfig } from "@naelao/security";
 
 export type ScheduledServiceResumeContext = {
   trigger: "scheduled_job";
@@ -57,10 +58,27 @@ export async function scheduledGoalIsCurrent(
   if (!match || !input.authorizationRevision || input.authorizationRevision.length > 128) return false;
   const row = await db.prepare(`SELECT 1 AS current FROM scheduled_jobs
     WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND enabled=1
-      AND updated_at=? AND goal IS NOT NULL AND agent_id IS ? LIMIT 1`)
-    .bind(match[1], input.tenantId, input.spaceId, input.projectId, input.authorizationRevision, input.agentId)
+      AND updated_at=? AND goal IS NOT NULL AND ((agent_id IS NULL AND ?='naelao-agent') OR agent_id=?) LIMIT 1`)
+    .bind(match[1], input.tenantId, input.spaceId, input.projectId, input.authorizationRevision, input.agentId, input.agentId)
     .first<{ current: number }>();
   return row?.current === 1;
+}
+
+/** Load a goal job's durable approval authority only for the exact currently enabled target and
+ * revision. Any invalid stored config becomes a deny/failure; callers may not use queue fields as
+ * a substitute. */
+export async function scheduledGoalGrantConfig(
+  db: D1Database,
+  input: { tenantId: string; spaceId: string; projectId: string; agentId: string; serviceIdentityId: string; authorizationRevision: string },
+): Promise<ScheduledJobGrantConfig | null> {
+  const match = /^scheduled_job:([A-Za-z0-9_-]{1,128})$/.exec(input.serviceIdentityId);
+  if (!match || !input.authorizationRevision || input.authorizationRevision.length > 128) return null;
+  const row = await db.prepare(`SELECT approved_actions_json,max_run_credits FROM scheduled_jobs
+    WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND enabled=1
+      AND updated_at=? AND goal IS NOT NULL AND ((agent_id IS NULL AND ?='naelao-agent') OR agent_id=?) LIMIT 1`)
+    .bind(match[1], input.tenantId, input.spaceId, input.projectId, input.authorizationRevision, input.agentId, input.agentId)
+    .first<{ approved_actions_json: string; max_run_credits: number }>();
+  return row ? parseScheduledJobGrantConfig(row.approved_actions_json, row.max_run_credits) : null;
 }
 
 /** Revalidate an autonomous connector poll against the exact enabled MCP connector revision

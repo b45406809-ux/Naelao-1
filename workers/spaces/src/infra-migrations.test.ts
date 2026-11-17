@@ -122,4 +122,16 @@ describe("latest D1 deployment migration batch", () => {
     expect(() => storage.sql.exec("INSERT INTO blueprint_export_jobs(id,tenant_id,space_id,artifact_key,request_id,request_sha256) VALUES('job-b','tenant-a','space-a','b.json','request-a','b')")).toThrow();
     expect(() => storage.sql.exec("INSERT INTO blueprint_export_jobs(id,tenant_id,space_id,artifact_key,request_id,request_sha256) VALUES('job-c','tenant-a','space-b','c.json','request-a','c')")).not.toThrow();
   });
+
+  it("adds default-deny scheduled service grant columns without changing existing jobs", () => {
+    const storage = createDOStorage();
+    storage.sql.exec(`CREATE TABLE scheduled_jobs (id TEXT PRIMARY KEY, name TEXT NOT NULL)`);
+    storage.sql.exec("INSERT INTO scheduled_jobs(id,name) VALUES('legacy-job','legacy')");
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0282_scheduled_job_service_grants.sql"), "utf8"));
+    expect(storage.sql.exec<{ approved_actions_json: string; max_run_credits: number }>(
+      "SELECT approved_actions_json,max_run_credits FROM scheduled_jobs WHERE id='legacy-job'").toArray())
+      .toEqual([{ approved_actions_json: "[]", max_run_credits: 0 }]);
+    expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('scheduled_jobs')").toArray().map(row => row.name))
+      .toEqual(expect.arrayContaining(["approved_actions_json", "max_run_credits"]));
+  });
 });

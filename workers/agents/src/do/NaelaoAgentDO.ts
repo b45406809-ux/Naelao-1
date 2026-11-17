@@ -65,7 +65,9 @@ import { createNamedTunnelGateway } from "../tunnels/host.js";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import { validPhoneExtensionEvent } from "../communications/phone-extension-event.js";
 import { verifyHeartbeatSession } from "../communications/heartbeat-scope.js";
-import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalIsCurrent } from "../scheduled-direct-authorization.js";
+import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalIsCurrent,
+  scheduledGoalGrantConfig } from "../scheduled-direct-authorization.js";
+import type { ScheduledJobGrantConfig } from "@naelao/security";
 import { renderExtensionVoiceResponse } from "../communications/voice-response.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
@@ -7265,6 +7267,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!body.goal || !spaceId) {
       return this.finishScriptFailure(runId, "goal and spaceId are required", 400, "bad_request");
     }
+    let scheduledJobGrants: ScheduledJobGrantConfig | null = null;
     if(body.context?.["trigger"]==="scheduled_job"||body.context?.["trigger"]==="space_trigger"){
       const serviceIdentity = body.context?.["trigger"] === "scheduled_job"
         ? { id: body.context["service_identity_id"], authorizationRevision: body.context["authorization_revision"] }
@@ -7282,14 +7285,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (body.context?.["trigger"] === "scheduled_job") {
         if (!this.env.PLATFORM_DB || typeof serviceIdentity?.id !== "string" || typeof serviceIdentity.authorizationRevision !== "string")
           return this.finishScriptFailure(runId,"Scheduled job authority is unavailable",503,"scheduled_job_authority_unavailable");
-        let current = false;
+        let current: ScheduledJobGrantConfig | null = null;
         try {
-          current = await scheduledGoalIsCurrent(this.env.PLATFORM_DB, { tenantId, spaceId, projectId: projectId ?? "",
+          current = await scheduledGoalGrantConfig(this.env.PLATFORM_DB, { tenantId, spaceId, projectId: projectId ?? "",
             agentId, serviceIdentityId: serviceIdentity.id, authorizationRevision: serviceIdentity.authorizationRevision });
         } catch { return this.finishScriptFailure(runId,"Scheduled job authority is unavailable",503,"scheduled_job_authority_unavailable"); }
         if (!current) return this.finishScriptFailure(runId,"Scheduled job was changed or revoked before this action resumed",409,"scheduled_job_authorization_changed");
+        scheduledJobGrants = current;
       }
     }
+    const scheduledRunCreditCeiling = scheduledJobGrants?.maxRunCredits ? scheduledJobGrants.maxRunCredits : undefined;
+    const effectiveSessionCreditCeiling = scheduledRunCreditCeiling !== undefined
+      ? typeof body.sessionCreditCeiling === "number" && Number.isSafeInteger(body.sessionCreditCeiling) && body.sessionCreditCeiling > 0
+        ? Math.min(body.sessionCreditCeiling, scheduledRunCreditCeiling) : scheduledRunCreditCeiling
+      : body.sessionCreditCeiling;
     const connectorPollRun = body.context?.["trigger"] === "connector_poll";
     const connectorPollServiceContext = connectorPollRun ? {
       trigger: "connector_poll",
@@ -7453,7 +7462,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // must call the identical gate logic rather than each carrying their own copy.
     const gate = await this.enforceRunGates({
       spaceId, tenantId, projectId, userId, callerRole,
-      sessionId, agentId, runId, sessionCreditCeiling: body.sessionCreditCeiling,
+      sessionId, agentId, runId, sessionCreditCeiling: effectiveSessionCreditCeiling,
     });
     if (!gate.ok) return this.finishScriptFailureResponse(runId, gate.response);
     const { hasSpendCap } = gate;
@@ -7544,7 +7553,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return script ? Object.keys(script.operations) : [];
     });
     const approvalPlanForRun = (plan: ReturnType<typeof resolveAssistantApprovalPlan>) =>
-      restrictAutonomousServiceApprovalPlan(plan, autonomousServiceRun, scheduledReadSafeActions);
+      restrictAutonomousServiceApprovalPlan(plan, autonomousServiceRun, scheduledReadSafeActions,
+        scheduledServiceRun ? scheduledJobGrants?.approvedActions ?? [] : []);
 
     // Approval policy. A project-bound Naelao Agent keeps the ordinary allowlist-of-gated
     // actions (spec §11, appendix A1.16.1). The Space Assistant (no projectId) is different:
@@ -8119,7 +8129,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         llmQuotaReserved,
         tier: result.result?.tier,
         durationMs: result.result?.duration_ms,
-        sessionId, sessionCreditCeiling: body.sessionCreditCeiling,
+        sessionId, sessionCreditCeiling: effectiveSessionCreditCeiling,
         ...(typeof scheduledServiceContext?.service_identity_id === "string" && typeof scheduledServiceContext.authorization_revision === "string"
           ? { serviceIdentityId: scheduledServiceContext.service_identity_id,
             serviceAuthorizationRevision: scheduledServiceContext.authorization_revision } : {}),

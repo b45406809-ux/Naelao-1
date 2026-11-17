@@ -920,6 +920,8 @@ function CronForm({
   const [name, setName] = React.useState(initial?.name ?? "");
   const [cronExpr, setCronExpr] = React.useState(initial?.cron_expression ?? "0 9 * * 1");
   const [goal, setGoal] = React.useState(initial?.goal ?? "");
+  const [approvedActions, setApprovedActions] = React.useState((initial?.approved_actions ?? []).join(", "));
+  const [maxRunCredits, setMaxRunCredits] = React.useState(String(initial?.max_run_credits ?? 0));
   const [quietHoursStart, setQuietHoursStart] = React.useState(initial?.quiet_hours_start ?? "");
   const [quietHoursEnd, setQuietHoursEnd] = React.useState(initial?.quiet_hours_end ?? "");
   const [quietHoursTimezone, setQuietHoursTimezone] = React.useState(initial?.quiet_hours_timezone ?? "UTC");
@@ -934,10 +936,19 @@ function CronForm({
     setSaving(true);
     setError(null);
     try {
+      const parsedRunCredits = Number(maxRunCredits);
+      const actions = approvedActions.trim() ? approvedActions.split(",").map(value => value.trim()).filter(Boolean) : [];
+      if (!Number.isSafeInteger(parsedRunCredits) || parsedRunCredits < 0 || parsedRunCredits > 1_000_000
+        || actions.length > 64 || new Set(actions).size !== actions.length || actions.some(action => !/^[A-Za-z][A-Za-z0-9_.-]{0,95}$/.test(action))
+        || actions.length > 0 && parsedRunCredits === 0) {
+        throw new Error("Use unique operation names and a per-run ceiling of 1–1,000,000 credits when granting actions.");
+      }
       if (isEdit && initial) {
-        await updateScheduledJob(spaceId, initial.id, session, { name, cron_expression: cronExpr, goal, quiet_hours_start: quietHoursStart, quiet_hours_end: quietHoursEnd, quiet_hours_timezone: quietHoursTimezone });
+        await updateScheduledJob(spaceId, initial.id, session, { name, cron_expression: cronExpr, goal, quiet_hours_start: quietHoursStart, quiet_hours_end: quietHoursEnd, quiet_hours_timezone: quietHoursTimezone,
+          approved_actions: actions, max_run_credits: parsedRunCredits });
       } else {
-        await createScheduledJob(spaceId, session, { name, cron_expression: cronExpr, goal, quiet_hours_start: quietHoursStart, quiet_hours_end: quietHoursEnd, quiet_hours_timezone: quietHoursTimezone, ...(projectId ? { project_id: projectId } : {}) });
+        await createScheduledJob(spaceId, session, { name, cron_expression: cronExpr, goal, quiet_hours_start: quietHoursStart, quiet_hours_end: quietHoursEnd, quiet_hours_timezone: quietHoursTimezone,
+          approved_actions: actions, max_run_credits: parsedRunCredits, ...(projectId ? { project_id: projectId } : {}) });
       }
       onSaved();
     } catch (err) {
@@ -980,6 +991,13 @@ function CronForm({
           rows={3}
           style={{ fontSize: 12, padding: "5px 8px", resize: "vertical" }}
         />
+        <label style={{ fontSize: 11, color: "var(--text2)" }}>Owner-approved autonomous operations (comma separated)
+          <input className="form-input" value={approvedActions} onChange={event => setApprovedActions(event.target.value)} placeholder="Leave empty for read-safe operations only" aria-label="Owner-approved autonomous operations" />
+        </label>
+        <label style={{ fontSize: 11, color: "var(--text2)" }}>Per-run credit ceiling (0 = no additional job ceiling)
+          <input className="form-input" type="number" min={0} max={1_000_000} step={1} value={maxRunCredits} onChange={event => setMaxRunCredits(event.target.value)} aria-label="Per-run credit ceiling" />
+        </label>
+        <div style={{ fontSize: 10, color: "var(--text3)" }}>Only exact operations enabled on this agent can be approved. Host mandatory approval gates still apply. Any added action requires a positive per-run credit ceiling; changes revoke the prior job revision before the next action.</div>
         {error && <div style={{ fontSize: 11, color: "#dc2626" }}>{error}</div>}
         <div style={{ display: "flex", gap: 6 }}>
           <button

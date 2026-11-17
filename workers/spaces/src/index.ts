@@ -51,6 +51,7 @@ import { runStateDeltaFixture, validateStateDeltaSuite, type StateDeltaSuite, ty
 import type { WorkerLoaderBinding } from "../../agents/src/script-engine/code-runner.js";
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
+import { parseScheduledJobGrantConfig, validateScheduledJobGrantConfig } from "@naelao/security";
 import { decodeExtensionPublisherPublicKey, extensionPublisherKeyId, extensionPublisherSigningPayload, verifyExtensionPublisherRelease,
   DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, instantiateBlueprint, validateBlueprintSetupMigrationCompatibility,
   validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateSpaceCoordinationSingletonKeys, validateExtensionManifest, resolveExtensionDependencyClosure,
@@ -8388,14 +8389,14 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
     const denied = await requireReadableAutomationProject(c, spaceId, projectId);
     if (denied) return denied;
     query = c.env.PLATFORM_DB.prepare(
-        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, approved_actions_json, max_run_credits, enabled, last_run_at,
                 quiet_hours_start, quiet_hours_end, quiet_hours_timezone,
                 consecutive_failures, last_error, created_at, updated_at
            FROM scheduled_jobs WHERE space_id = ? AND project_id = ? ORDER BY created_at DESC`
       ).bind(spaceId, projectId);
   } else if (scope === "assistant") {
     query = c.env.PLATFORM_DB.prepare(
-        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, approved_actions_json, max_run_credits, enabled, last_run_at,
                 quiet_hours_start, quiet_hours_end, quiet_hours_timezone,
                 consecutive_failures, last_error, created_at, updated_at
            FROM scheduled_jobs WHERE space_id = ? AND project_id IS NULL ORDER BY created_at DESC`
@@ -8406,7 +8407,7 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
     if (visible.length === 0) return c.json({ data: [], count: 0 });
     const placeholders = visible.map(() => "?").join(",");
     query = c.env.PLATFORM_DB.prepare(
-        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, approved_actions_json, max_run_credits, enabled, last_run_at,
                 quiet_hours_start, quiet_hours_end, quiet_hours_timezone,
                 consecutive_failures, last_error, created_at, updated_at
            FROM scheduled_jobs WHERE space_id = ? AND project_id IN (${placeholders}) ORDER BY created_at DESC`
@@ -8418,10 +8419,14 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
   // job or a malformed cron_expression (shouldn't exist given create/update validation, but a
   // row could predate it) reports null rather than throwing and losing the whole list.
   const now = Date.now();
-  const withNextRun = (results as Array<Record<string, unknown>>).map((row) => ({
-    ...row,
-    next_run_at: row["enabled"] ? safeComputeNextRun(String(row["cron_expression"]), now) : null,
-  }));
+  const withNextRun: Array<Record<string, unknown>> = [];
+  for (const row of results as Array<Record<string, unknown>>) {
+    const grantConfig = parseScheduledJobGrantConfig(row["approved_actions_json"], row["max_run_credits"]);
+    if (!grantConfig) return c.json({ error_code: "scheduled_job_grant_state_invalid" }, 503);
+    const { approved_actions_json: _storedActions, ...publicRow } = row;
+    withNextRun.push({ ...publicRow, approved_actions: grantConfig.approvedActions, max_run_credits: grantConfig.maxRunCredits,
+      next_run_at: row["enabled"] ? safeComputeNextRun(String(row["cron_expression"]), now) : null });
+  }
   return c.json({ data: withNextRun, count: withNextRun.length });
 });
 
@@ -8683,12 +8688,23 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
     quiet_hours_start?: string | null;
     quiet_hours_end?: string | null;
     quiet_hours_timezone?: string;
+    approved_actions?: unknown;
+    max_run_credits?: unknown;
   }>().catch(() => ({}) as Record<string, never>);
   if (!body.name || !body.project_id || !body.cron_expression || (!body.script_name && !body.goal)) {
     return c.json({ error_code: "bad_request", message: "name, project_id, cron_expression, and either script_name or goal are required" }, 400);
   }
   const denied = await requireManageableAutomationProject(c, spaceId, body.project_id);
   if (denied) return denied;
+  const grantConfig = validateScheduledJobGrantConfig(body.approved_actions ?? [], body.max_run_credits ?? 0);
+  if (!grantConfig || (grantConfig.approvedActions.length > 0 || grantConfig.maxRunCredits > 0) && !body.goal)
+    return c.json({ error_code: "scheduled_job_grant_config_invalid", message: "Explicit action grants and per-run ceilings require a goal-based job." }, 400);
+  if (grantConfig.approvedActions.length || grantConfig.maxRunCredits > 0) {
+    const identity = getCallerIdentity(c);
+    const role = identity.role === "product_end_user" && identity.userId
+      ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, owned.tenantId) : identity.role;
+    if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required_for_scheduled_job_grants" }, 403);
+  }
   const cronError = validateCronExpression(body.cron_expression);
   if (cronError) return c.json({ error_code: "bad_request", message: `Invalid cron_expression: ${cronError}` }, 400);
   const quietHoursError = validateScheduledQuietHours({ start: body.quiet_hours_start, end: body.quiet_hours_end, timeZone: body.quiet_hours_timezone ?? "UTC" });
@@ -8697,12 +8713,13 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO scheduled_jobs (id, space_id, tenant_id, project_id, name, cron_expression, script_name, params, agent_id, goal, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    `INSERT INTO scheduled_jobs (id, space_id, tenant_id, project_id, name, cron_expression, script_name, params, agent_id, goal, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, approved_actions_json, max_run_credits, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
   ).bind(
     id, spaceId, owned.tenantId, body.project_id, body.name, body.cron_expression,
     body.script_name ?? "", JSON.stringify(body.params ?? {}), body.agent_id ?? null, body.goal ?? null,
-    body.quiet_hours_start || null, body.quiet_hours_end || null, body.quiet_hours_timezone ?? "UTC", now, now
+    body.quiet_hours_start || null, body.quiet_hours_end || null, body.quiet_hours_timezone ?? "UTC",
+    JSON.stringify(grantConfig.approvedActions), grantConfig.maxRunCredits, now, now
   ).run();
 
   await fireScheduledJobEvent(c.env, spaceId, owned.tenantId, "scheduled_job.created", id, body.project_id, {
@@ -8714,6 +8731,7 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
     id, name: body.name, cron_expression: body.cron_expression, script_name: body.script_name ?? "",
     quiet_hours_start: body.quiet_hours_start || null, quiet_hours_end: body.quiet_hours_end || null, quiet_hours_timezone: body.quiet_hours_timezone ?? "UTC",
     project_id: body.project_id, agent_id: body.agent_id ?? null, goal: body.goal ?? null,
+    approved_actions: grantConfig.approvedActions, max_run_credits: grantConfig.maxRunCredits,
     enabled: true, last_run_at: null, created_at: now,
   }, 201);
 });
@@ -8741,6 +8759,8 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
     quiet_hours_end?: string | null;
     quiet_hours_timezone?: string;
     enabled?: boolean;
+    approved_actions?: unknown;
+    max_run_credits?: unknown;
   }>().catch(() => ({}) as Record<string, never>);
 
   if (body.cron_expression !== undefined) {
@@ -8752,8 +8772,23 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
   // (there's no such field on this route), so a plain read-before-write is fine for an
   // admin-only, low-frequency write, unlike a hot path that would want this folded into one query.
   const existing = await c.env.PLATFORM_DB.prepare(
-    "SELECT project_id, quiet_hours_start, quiet_hours_end, quiet_hours_timezone FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
-  ).bind(jobId, spaceId, owned.tenantId).first<{ project_id: string | null; quiet_hours_start: string | null; quiet_hours_end: string | null; quiet_hours_timezone: string }>();
+    "SELECT project_id, goal, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, approved_actions_json, max_run_credits, updated_at FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
+  ).bind(jobId, spaceId, owned.tenantId).first<{ project_id: string | null; goal: string | null; quiet_hours_start: string | null; quiet_hours_end: string | null;
+    quiet_hours_timezone: string; approved_actions_json: string; max_run_credits: number; updated_at: string }>();
+  if (!existing) return c.json({ error_code: "not_found", message: "Scheduled job not found" }, 404);
+  const currentGrantConfig = parseScheduledJobGrantConfig(existing.approved_actions_json, existing.max_run_credits);
+  if (!currentGrantConfig) return c.json({ error_code: "scheduled_job_grant_state_invalid" }, 409);
+  const grantConfig = validateScheduledJobGrantConfig(body.approved_actions ?? currentGrantConfig.approvedActions,
+    body.max_run_credits ?? currentGrantConfig.maxRunCredits);
+  const effectiveGoal = body.goal === undefined ? existing.goal : body.goal;
+  if (!grantConfig || (grantConfig.approvedActions.length > 0 || grantConfig.maxRunCredits > 0) && !effectiveGoal)
+    return c.json({ error_code: "scheduled_job_grant_config_invalid", message: "Explicit action grants and per-run ceilings require a goal-based job." }, 400);
+  if (body.approved_actions !== undefined || body.max_run_credits !== undefined) {
+    const identity = getCallerIdentity(c);
+    const role = identity.role === "product_end_user" && identity.userId
+      ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, owned.tenantId) : identity.role;
+    if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required_for_scheduled_job_grants" }, 403);
+  }
   const quietHoursError = validateScheduledQuietHours({
     start: body.quiet_hours_start === undefined ? existing?.quiet_hours_start : body.quiet_hours_start,
     end: body.quiet_hours_end === undefined ? existing?.quiet_hours_end : body.quiet_hours_end,
@@ -8761,7 +8796,8 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
   });
   if (quietHoursError) return c.json({ error_code: "bad_request", message: quietHoursError }, 400);
 
-  const now = new Date().toISOString();
+  const previousUpdatedAt = Date.parse(existing.updated_at);
+  const now = new Date(Math.max(Date.now(), Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0)).toISOString();
   const res = await c.env.PLATFORM_DB.prepare(
     `UPDATE scheduled_jobs SET
        name = COALESCE(?, name),
@@ -8773,6 +8809,8 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
        quiet_hours_start = COALESCE(?, quiet_hours_start),
        quiet_hours_end = COALESCE(?, quiet_hours_end),
        quiet_hours_timezone = COALESCE(?, quiet_hours_timezone),
+       approved_actions_json = COALESCE(?, approved_actions_json),
+       max_run_credits = COALESCE(?, max_run_credits),
        enabled = COALESCE(?, enabled),
        updated_at = ?
      WHERE id = ? AND space_id = ? AND tenant_id = ?`
@@ -8782,6 +8820,8 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
     body.agent_id ?? null, body.goal ?? null,
     body.quiet_hours_start === undefined ? null : (body.quiet_hours_start || ""),
     body.quiet_hours_end === undefined ? null : (body.quiet_hours_end || ""), body.quiet_hours_timezone ?? null,
+    body.approved_actions !== undefined || body.max_run_credits !== undefined ? JSON.stringify(grantConfig.approvedActions) : null,
+    body.approved_actions !== undefined || body.max_run_credits !== undefined ? grantConfig.maxRunCredits : null,
     body.enabled === undefined ? null : (body.enabled ? 1 : 0),
     now, jobId, spaceId, owned.tenantId
   ).run();

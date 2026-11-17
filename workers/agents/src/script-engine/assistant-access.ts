@@ -131,11 +131,13 @@ export function restrictAutonomousServiceApprovalPlan(
   plan: AssistantApprovalPlan,
   autonomousServiceRun: boolean,
   availableActions: readonly string[],
+  ownerApprovedActions: readonly string[] = [],
 ): AssistantApprovalPlan {
   if (!autonomousServiceRun) return plan;
+  const explicitlyApproved = new Set(ownerApprovedActions);
   return {
     approvalMode: "gate_unless_listed",
-    requiresApprovalFor: [...new Set(availableActions.filter(isReadSafeOperation))].sort(),
+    requiresApprovalFor: [...new Set(availableActions.filter(action => isReadSafeOperation(action) || explicitlyApproved.has(action)))].sort(),
   };
 }
 
