@@ -21,8 +21,8 @@ function bindings(owned: boolean, pendingDeletion = false, ftsFails = false, sea
           : { config_json: "{}" }),
       all: vi.fn(async () => {
         if (ftsFails && sql.includes("kb_chunks_fts")) throw new Error("FTS unavailable");
-        if (sql.includes("kb_chunks_fts")) return { results: searchFixture.ftsRows ?? [] };
-        if (sql.includes("SELECT k.*, d.title FROM kb_chunks")) return { results: searchFixture.chunkRows ?? [] };
+        if (sql.includes("kb_chunks_fts")) return { results: (searchFixture.ftsRows ?? []).filter(row => row.source_state !== "stale" || !sql.includes("d.source_state='current'")) };
+        if (sql.includes("SELECT k.*, d.title FROM kb_chunks")) return { results: (searchFixture.chunkRows ?? []).filter(row => row.source_state !== "stale" || !sql.includes("d.source_state='current'")) };
         return { results: [] };
       }),
       run: vi.fn(async () => ({ meta: { changes: 1 } })),
@@ -104,10 +104,11 @@ describe("content-free retrieval evaluation trace", () => {
     const currentId = "catalog-rx0042_chunk_0";
     const staleId = "policy-reagent-k_chunk_0";
     const forbiddenId = "private-procurement_chunk_0";
-    const row = (id: string, sourceRevision: number) => ({
+    const row = (id: string, sourceRevision: number, sourceState = "current") => ({
       id, tenant_id: "tenant-a", space_id: "space-b", project_id: "_space", required_role_rank: 0,
       content: `Synthetic indexed content for ${id}`, r2_key: `kb/${id}.txt`, byte_start: 0, byte_end: 32,
       line_start: 1, line_end: 1, heading_path: '["Page 2","Table 1"]', title: "Synthetic source", source_revision: sourceRevision,
+      source_state: sourceState,
     });
     const runRoute = async (caseId: string, query: string, id: string, canonicalRows: Array<Record<string, unknown>>) => {
       const env = bindings(true, false, false, {
@@ -155,5 +156,16 @@ describe("content-free retrieval evaluation trace", () => {
     expect(report.metrics.forbiddenExposureCount).toBe(0);
     expect(report.readiness.acceptanceEligible).toBe(false);
     expect(JSON.stringify(report).includes("Which catalog item uses code RX-0042?")).toBe(false);
+  });
+
+  it("filters stale connector source lineage from dense and sparse candidates", async () => {
+    const stale = { id: "connector_chunk_0", tenant_id: "tenant-a", space_id: "space-b", project_id: "_space",
+      required_role_rank: 0, content: "revoked connector content", r2_key: "kb/revoked.txt", byte_start: 0, byte_end: 24,
+      line_start: 1, line_end: 1, heading_path: "[]", title: "Revoked source", source_revision: 2, source_state: "stale" };
+    const env = bindings(true, false, false, { matches: [{ id: stale.id, score: 0.99 }], chunkRows: [stale], ftsRows: [stale] });
+    const response = await worker.fetch!(await searchRequest("revoked connector"), env as never, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ data: [] });
+    expect(env.query).toHaveBeenCalledOnce();
   });
 });

@@ -93,6 +93,7 @@ export async function queryScopedFtsCandidates(input: {
     JOIN kb_documents d ON d.id=k.document_id AND d.tenant_id=k.tenant_id AND d.space_id=k.space_id
     WHERE kb_chunks_fts MATCH ? AND ${scope.sql}
       AND k.deleted_at IS NULL AND d.status='indexed'
+      AND d.source_state='current'
       AND (d.allowed_user_ids_json IS NULL
         OR (json_valid(d.allowed_user_ids_json) AND json_type(d.allowed_user_ids_json)='array'
           AND (json_array_length(d.allowed_user_ids_json)=0

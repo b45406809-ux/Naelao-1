@@ -438,6 +438,7 @@ app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications", async (
        ON d.publication_id=p.id AND d.tenant_id=p.tenant_id AND d.space_id=p.space_id AND d.project_id=p.project_id
          AND d.publication_revision=p.revision
          AND EXISTS (SELECT 1 FROM kb_documents source_doc WHERE source_doc.id=d.document_id AND source_doc.status='indexed'
+           AND source_doc.source_state='current'
            AND (source_doc.source_adapter!='website' OR (source_doc.source_state='current' AND EXISTS (
              SELECT 1 FROM website_connections wc WHERE wc.id=source_doc.source_connection_ref AND wc.tenant_id=source_doc.tenant_id
                AND wc.space_id=source_doc.space_id AND wc.project_id=source_doc.project_id AND wc.status='active'
@@ -466,7 +467,7 @@ app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
        AND p.project_id=x.project_id AND p.revision=x.publication_revision AND p.archived_at IS NULL
      JOIN kb_documents d ON d.id=x.document_id AND d.tenant_id=x.tenant_id AND d.space_id=x.space_id AND d.project_id=x.project_id
      WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND p.revision=?
-       AND d.status='indexed'
+       AND d.status='indexed' AND d.source_state='current'
        AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
          SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
            AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
@@ -534,7 +535,7 @@ app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
     const placeholders = documentIds.map(() => "?").join(",");
     const { results } = await c.env.PLATFORM_DB.prepare(
       `SELECT id FROM kb_documents WHERE tenant_id=? AND space_id=? AND project_id=? AND status='indexed'
-        AND (source_adapter!='website' OR (source_state='current' AND EXISTS (
+        AND source_state='current' AND (source_adapter!='website' OR (source_state='current' AND EXISTS (
           SELECT 1 FROM website_connections wc WHERE wc.id=kb_documents.source_connection_ref AND wc.tenant_id=kb_documents.tenant_id
             AND wc.space_id=kb_documents.space_id AND wc.project_id=kb_documents.project_id AND wc.status='active'
         ))) AND id IN (${placeholders})`
@@ -3179,7 +3180,7 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
     `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end, heading_path, d.source_revision
      FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
      WHERE k.id=? AND k.document_id=? AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
-       AND k.required_role_rank<=? AND k.deleted_at IS NULL AND d.status='indexed'
+       AND k.required_role_rank<=? AND k.deleted_at IS NULL AND d.status='indexed' AND d.source_state='current'
        AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
          SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
            AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
@@ -3369,7 +3370,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       const placeholders = ids.map(() => "?").join(",");
       const rows = await c.env.PLATFORM_DB.prepare(
         `SELECT k.*, d.title FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
-         WHERE k.id IN (${placeholders}) AND ${retrievalPredicate.sql} AND k.deleted_at IS NULL AND d.status='indexed'
+         WHERE k.id IN (${placeholders}) AND ${retrievalPredicate.sql} AND k.deleted_at IS NULL AND d.status='indexed' AND d.source_state='current'
            AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
              SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
                AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'

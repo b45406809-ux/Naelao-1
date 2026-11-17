@@ -54,6 +54,7 @@ describe("independent permissioned FTS candidate generation", () => {
     expect(sql).toContain("kb_chunks_fts MATCH ?");
     expect(sql).toContain("k.tenant_id = ? AND k.space_id = ? AND k.project_id = ? AND k.required_role_rank <= ?");
     expect(sql).toContain("d.status='indexed'");
+    expect(sql).toContain("d.source_state='current'");
     expect(sql).toContain("json_each(d.allowed_user_ids_json) acl WHERE acl.value=?");
     expect(sql).toContain("ORDER BY bm25(kb_chunks_fts) ASC");
     expect(sql.match(/k\.tenant_id = \? AND k\.space_id = \? AND k\.project_id = \? AND k\.required_role_rank <= \?/g)).toHaveLength(1);
