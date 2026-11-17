@@ -39,6 +39,14 @@ export function recordWebsiteRefreshUsageReceiptMetric(dataset: AnalyticsEngineD
   } catch { /* Analytics must not change receipt delivery or retry state. */ }
 }
 
+export function recordWebsiteRefreshRecoveryMetric(dataset: AnalyticsEngineDataset | undefined,
+  outcome: "interrupted_recovered" | "backoff_active", attempts: number): void {
+  try {
+    const boundedAttempts = Number.isFinite(attempts) ? Math.max(0, Math.min(100, Math.round(attempts))) : 0;
+    dataset?.writeDataPoint({ blobs: ["knowledge_source_refresh", outcome], doubles: [boundedAttempts], indexes: [] });
+  } catch { /* Telemetry must not change durable source recovery or backoff. */ }
+}
+
 /** Produce bounded aggregate telemetry; caller, tenant, Space, Project and query data are omitted. */
 export function buildPrivacySafeRetrievalTelemetry(input: {
   event: GroundedSearchTelemetry;

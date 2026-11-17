@@ -23,7 +23,8 @@ import { revisionExternalPublicationsForDocument } from "./external-publication-
 import { createWebsitePreviewToken, sha256TextHex, verifyWebsitePreviewToken } from "./website-source-preview.js";
 import { boundedWebsiteCrawlFrontier, extractWebsiteCrawlLinks, WEBSITE_CRAWL_LIMITS, type WebsiteCrawlPageRef } from "./website-crawl.js";
 import { runScheduledWebsiteRefreshes } from "./website-refresh-scheduler.js";
-import { buildPrivacySafeRetrievalTelemetry, recordCitationMetric, recordPdfPreviewParseMetric, recordProjectAccessMetric } from "./retrieval-telemetry.js";
+import { buildPrivacySafeRetrievalTelemetry, recordCitationMetric, recordPdfPreviewParseMetric, recordProjectAccessMetric,
+  recordWebsiteRefreshRecoveryMetric } from "./retrieval-telemetry.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -1434,10 +1435,12 @@ app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/preview", asyn
           WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND source_revision=?
             AND source_connection_ref=? AND source_state='current'`)
           .bind(retryAt, refreshDocument.id, tenantId, spaceId, projectId, refreshDocument.source_revision, connection.id).run();
+        recordWebsiteRefreshRecoveryMetric(c.env.KNOWLEDGE_ANALYTICS, "interrupted_recovered", nextAttempt.attempt_count);
         return c.json({ error_code: "website_refresh_interrupted", retry_at: retryAt }, 429,
           { "retry-after": String(Math.max(1, Math.ceil((Date.parse(retryAt) - Date.now()) / 1000))) });
       }
       if (nextAttempt?.next_attempt_at && Date.parse(nextAttempt.next_attempt_at) > Date.now()) {
+        recordWebsiteRefreshRecoveryMetric(c.env.KNOWLEDGE_ANALYTICS, "backoff_active", nextAttempt.attempt_count);
         return c.json({ error_code: "website_refresh_backoff", retry_at: nextAttempt.next_attempt_at }, 429,
           { "retry-after": String(Math.max(1, Math.ceil((Date.parse(nextAttempt.next_attempt_at) - Date.now()) / 1000))) });
       }

@@ -45,9 +45,10 @@ function fixture(options: { connection?: typeof connection | null; projectRank?:
       return statements.map(() => ({ meta: { changes: 1 } }));
     }),
   };
-  const env = { ENVIRONMENT: "test", PLATFORM_SECRET: "secret", PLATFORM_DB: db,
+  const analytics = { writeDataPoint: vi.fn() };
+  const env = { ENVIRONMENT: "test", PLATFORM_SECRET: "secret", PLATFORM_DB: db, KNOWLEDGE_ANALYTICS: analytics,
     KNOWLEDGE_WEBSITE_REFRESH_SCHEDULE_ENABLED: options.scheduleEnabled === false ? "false" : "true" } as unknown as Parameters<NonNullable<typeof worker.fetch>>[1];
-  return { env, db, sqlCalls };
+  return { env, db, sqlCalls, analytics };
 }
 
 async function request(body: unknown, role = "owner") {
@@ -269,6 +270,7 @@ describe("scoped website Knowledge preview", () => {
       source_revision: 4, source_connection_ref: "connection-1", source_state: "current", source_adapter: "website" },
       refreshOperation: { id: "refresh-op", state: "fetching", request_sha256: await refreshRequestHash(), attempt_count: 1,
         next_attempt_at: null, last_attempt_at: new Date(Date.now() - 3 * 60_000).toISOString() } });
+    f.analytics.writeDataPoint.mockImplementation(() => { throw new Error("analytics offline"); });
     const response = await worker.fetch!(await request({ document_id: "doc-1", idempotency_key: "refresh-request-0003",
       url: "https://docs.example/guide" }), f.env, {} as ExecutionContext);
     expect(response.status).toBe(429);
@@ -276,6 +278,20 @@ describe("scoped website Knowledge preview", () => {
     expect(outbound).not.toHaveBeenCalled();
     expect(f.sqlCalls.some((sql) => sql.includes("error_code='website_refresh_interrupted'") && sql.includes("state='fetching'"))).toBe(true);
     expect(f.sqlCalls.some((sql) => sql.includes("source_refresh_failures=source_refresh_failures+1"))).toBe(true);
+    expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_source_refresh", "interrupted_recovered"], doubles: [1], indexes: [] });
+  });
+
+  it("records active source-refresh backoff using fixed labels and no source identifiers", async () => {
+    const f = fixture({ refreshDocument: { id: "doc-1", source_url: "https://docs.example/guide", source_requested_url: "https://docs.example/guide",
+      source_revision: 4, source_connection_ref: "connection-1", source_state: "current", source_adapter: "website" },
+      refreshOperation: { id: "refresh-op", state: "failed", request_sha256: await refreshRequestHash(), attempt_count: 3,
+        next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(), last_attempt_at: new Date().toISOString() } });
+    const response = await worker.fetch!(await request({ document_id: "doc-1", idempotency_key: "refresh-request-0003",
+      url: "https://docs.example/guide" }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(429);
+    expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_source_refresh", "backoff_active"], doubles: [3], indexes: [] });
+    expect(JSON.stringify(f.analytics.writeDataPoint.mock.calls)).not.toContain("doc-1");
+    expect(JSON.stringify(f.analytics.writeDataPoint.mock.calls)).not.toContain("project-1");
   });
 });
 
