@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildPrivacySafeRetrievalTelemetry, recordDocumentDeletionMetric, recordPdfPreviewParseMetric, recordProjectAccessMetric } from "./retrieval-telemetry.js";
+import { buildPrivacySafeRetrievalTelemetry, recordCitationMetric, recordDocumentDeletionMetric, recordPdfPreviewParseMetric, recordProjectAccessMetric } from "./retrieval-telemetry.js";
 
 describe("privacy-safe Knowledge retrieval telemetry", () => {
   it("keeps bounded aggregate metrics and omits tenant, Space, Project and query identifiers", () => {
@@ -37,5 +37,12 @@ describe("privacy-safe Knowledge retrieval telemetry", () => {
     recordDocumentDeletionMetric({ writeDataPoint } as never, "pending", 121_000, 500);
     expect(writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_cleanup", "document_deletion", "pending"], doubles: [120_000, 100], indexes: [] });
     expect(() => recordDocumentDeletionMetric({ writeDataPoint: () => { throw new Error("offline"); } } as never, "complete", 1)).not.toThrow();
+  });
+
+  it("records citation delivery states with no document, chunk, or tenant key", () => {
+    const writeDataPoint = vi.fn();
+    recordCitationMetric({ writeDataPoint } as never, "integrity_failed");
+    expect(writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_citation", "integrity_failed"], doubles: [1], indexes: [] });
+    expect(() => recordCitationMetric({ writeDataPoint: () => { throw new Error("offline"); } } as never, "unavailable")).not.toThrow();
   });
 });

@@ -23,7 +23,7 @@ import { revisionExternalPublicationsForDocument } from "./external-publication-
 import { createWebsitePreviewToken, sha256TextHex, verifyWebsitePreviewToken } from "./website-source-preview.js";
 import { boundedWebsiteCrawlFrontier, extractWebsiteCrawlLinks, WEBSITE_CRAWL_LIMITS, type WebsiteCrawlPageRef } from "./website-crawl.js";
 import { runScheduledWebsiteRefreshes } from "./website-refresh-scheduler.js";
-import { buildPrivacySafeRetrievalTelemetry, recordPdfPreviewParseMetric, recordProjectAccessMetric } from "./retrieval-telemetry.js";
+import { buildPrivacySafeRetrievalTelemetry, recordCitationMetric, recordPdfPreviewParseMetric, recordProjectAccessMetric } from "./retrieval-telemetry.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -3050,7 +3050,10 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
   const projectId = c.req.param("projectId");
   const userId = c.req.header("x-naelao-user-id") ?? "";
   const roleRank = await projectRoleRank(c.env.PLATFORM_DB, tenantId, spaceId, projectId, userId);
-  if (roleRank === null) throw notFound("Citation not found");
+  if (roleRank === null) {
+    recordCitationMetric(c.env.KNOWLEDGE_ANALYTICS, "not_found_or_denied");
+    throw notFound("Citation not found");
+  }
   const scope = { tenantId, spaceId, projectId, roleRank };
   const row = await c.env.PLATFORM_DB.prepare(
     `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end, d.source_revision
@@ -3063,14 +3066,30 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
        )))`
   ).bind(c.req.param("chunkId"), c.req.param("documentId"), tenantId, spaceId, projectId, roleRank)
     .first<Record<string, unknown>>();
-  if (!row) throw notFound("Citation not found");
-  const coordinate = verifyCitationSourceSpan({ r2Key: String(row.r2_key), byteStart: Number(row.byte_start),
-    byteEnd: Number(row.byte_end), lineStart: Number(row.line_start), lineEnd: Number(row.line_end) }, String(row.r2_key), 5 * 1024 * 1024);
-  const object = await c.env.KB_BUCKET.get(coordinate.r2Key);
-  if (!object) throw notFound("Citation not found");
-  if (object.customMetadata?.contentHash !== String(row.content_hash)) throw notFound("Citation not found");
-  const content = await object.text();
-  if (await sha256Hex(content) !== String(row.content_hash)) throw notFound("Citation not found");
+  if (!row) {
+    recordCitationMetric(c.env.KNOWLEDGE_ANALYTICS, "not_found_or_denied");
+    throw notFound("Citation not found");
+  }
+  let coordinate: ReturnType<typeof verifyCitationSourceSpan>;
+  try {
+    coordinate = verifyCitationSourceSpan({ r2Key: String(row.r2_key), byteStart: Number(row.byte_start),
+      byteEnd: Number(row.byte_end), lineStart: Number(row.line_start), lineEnd: Number(row.line_end) }, String(row.r2_key), 5 * 1024 * 1024);
+  } catch { recordCitationMetric(c.env.KNOWLEDGE_ANALYTICS, "integrity_failed"); throw notFound("Citation not found"); }
+  let object: R2ObjectBody | null;
+  try { object = await c.env.KB_BUCKET.get(coordinate.r2Key); }
+  catch { recordCitationMetric(c.env.KNOWLEDGE_ANALYTICS, "unavailable"); throw internalError("Citation source unavailable"); }
+  if (!object || object.customMetadata?.contentHash !== String(row.content_hash)) {
+    recordCitationMetric(c.env.KNOWLEDGE_ANALYTICS, object ? "integrity_failed" : "not_found_or_denied");
+    throw notFound("Citation not found");
+  }
+  let content: string;
+  try { content = await object.text(); }
+  catch { recordCitationMetric(c.env.KNOWLEDGE_ANALYTICS, "unavailable"); throw internalError("Citation source unavailable"); }
+  if (await sha256Hex(content) !== String(row.content_hash)) {
+    recordCitationMetric(c.env.KNOWLEDGE_ANALYTICS, "integrity_failed");
+    throw notFound("Citation not found");
+  }
+  recordCitationMetric(c.env.KNOWLEDGE_ANALYTICS, "delivered");
   return c.json({ citation: { version: 1, identity: `${row.document_id}:${row.id}:${row.content_hash}`,
     document_id: row.document_id, chunk_id: row.id, content_hash: row.content_hash,
     byte_start: coordinate.byteStart, byte_end: coordinate.byteEnd, line_start: coordinate.lineStart,

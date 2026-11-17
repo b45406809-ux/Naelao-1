@@ -24,6 +24,12 @@ export function recordDocumentDeletionMetric(dataset: AnalyticsEngineDataset | u
   } catch { /* telemetry failures must not change deletion behavior */ }
 }
 
+export function recordCitationMetric(dataset: AnalyticsEngineDataset | undefined,
+  outcome: "delivered" | "not_found_or_denied" | "integrity_failed" | "unavailable"): void {
+  try { dataset?.writeDataPoint({ blobs: ["knowledge_citation", outcome], doubles: [1], indexes: [] }); }
+  catch { /* telemetry failures must not change citation authorization or delivery */ }
+}
+
 /** Produce bounded aggregate telemetry; caller, tenant, Space, Project and query data are omitted. */
 export function buildPrivacySafeRetrievalTelemetry(input: {
   event: GroundedSearchTelemetry;

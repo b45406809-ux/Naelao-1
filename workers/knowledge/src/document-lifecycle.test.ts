@@ -12,6 +12,7 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
   const bucketObjects = new Set<string>();
   const queueMessages: unknown[] = [];
   const storageUsageEvents: Array<Record<string, unknown>> = [];
+  const analytics = { writeDataPoint: vi.fn() };
   const vectorUpserts: VectorizeVector[][] = [];
   let failFirstBucketPut = options.failFirstBucketPut ?? false;
   let queueAcceptThenThrow = options.queueAcceptThenThrow ?? false;
@@ -141,6 +142,7 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
   };
   const env = {
     ENVIRONMENT: "test", PLATFORM_SECRET: "secret", PLATFORM_DB: db,
+    KNOWLEDGE_ANALYTICS: analytics,
     KB_BUCKET: {
       put: vi.fn(async (key: string, value: unknown) => {
         if (failFirstBucketPut) { failFirstBucketPut = false; throw new Error("temporary R2 outage"); }
@@ -169,7 +171,7 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
       return { data: (Array.isArray(input.text) ? input.text : [input.text]).map(() => [0.1, 0.2]) };
     }) },
   } as never;
-  return { env, writes, dbCalls, vectorUpserts, vectorize, idempotencyClaims, documents, queueMessages, storageUsageEvents };
+  return { env, writes, dbCalls, vectorUpserts, vectorize, idempotencyClaims, documents, queueMessages, storageUsageEvents, analytics };
 }
 
 async function request(path: string, method: string, body?: unknown, addCreateIdempotencyKey = true): Promise<Request> {
@@ -469,6 +471,22 @@ describe("Knowledge document lifecycle boundaries", () => {
     expect(await response.json()).toMatchObject({ citation: { byte_start: 2_048, byte_end: 2_072, line_start: 5, line_end: 5,
       source_revision: 3 }, content });
     expect((f.env as unknown as { KB_BUCKET: { get: ReturnType<typeof vi.fn> } }).KB_BUCKET.get).toHaveBeenCalledWith(key);
+    expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_citation", "delivered"], doubles: [1], indexes: [] });
+  });
+
+  it("records citation integrity failures without identifiers", async () => {
+    const content = "citation body";
+    const contentHash = await sha256TextHex(content);
+    const f = fixture({ projectAccess: true,
+      citationRow: { id: "doc-1_chunk_1", document_id: "doc-1", r2_key: "kb/space-1/project-1/doc-1/chunk_1.txt", content_hash: contentHash,
+        byte_start: 0, byte_end: content.length, line_start: 1, line_end: 1, source_revision: 1 },
+      citationObject: { key: "kb/space-1/project-1/doc-1/chunk_1.txt", content, contentHash: "0".repeat(64) },
+    });
+    const response = await worker.fetch(await request(
+      "/spaces/space-1/projects/project-1/citations/doc-1/doc-1_chunk_1", "GET",
+    ), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(404);
+    expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_citation", "integrity_failed"], doubles: [1], indexes: [] });
   });
 
   it("keeps owner-supplied URL excerpts unsupported without a website approval receipt", async () => {
