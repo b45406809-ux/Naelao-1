@@ -83,4 +83,37 @@ describe("custom Knowledge extension contracts", () => {
     })).rejects.toThrow("query_egress_denied");
     expect(dispatched).toBe(false);
   });
+
+  it("keeps synthetic extension search behind owner grant, publication, revoke and deletion state", async () => {
+    const lifecycle = { ownerApproved: false, published: false, revoked: false, deleted: false, deletionGeneration: 2 };
+    let adapterCalls = 0;
+    const search = () => searchKnowledgeExtension({
+      context: { ...context, deletionGeneration: lifecycle.deletionGeneration }, query: "synthetic public FAQ",
+      readAuthority: async current => ({ sourceVersion: current.sourceVersion, contentSha256: current.contentSha256,
+        deletionGeneration: current.deletionGeneration, indexVersion: current.indexVersion, retrievalVersion: current.retrievalVersion,
+        authorizedChunkIds: lifecycle.ownerApproved && lifecycle.published && !lifecycle.revoked && !lifecycle.deleted ? ["faq-1"] : [] }),
+      authorizeQueryEgress: async () => lifecycle.ownerApproved && lifecycle.published && !lifecycle.revoked && !lifecycle.deleted,
+      adapter: { search: async input => {
+        adapterCalls++;
+        return input.chunkIds.map(chunkId => ({ chunkId, score: 0.9, sourceVersion: 4, contentSha256: context.contentSha256,
+          deletionGeneration: lifecycle.deletionGeneration, indexVersion: "index-2", retrievalVersion: "search-1" }));
+      } },
+    });
+
+    await expect(search()).resolves.toEqual([]);
+    expect(adapterCalls).toBe(0);
+    lifecycle.ownerApproved = true;
+    lifecycle.published = true;
+    await expect(search()).resolves.toMatchObject([{ chunkId: "faq-1" }]);
+    lifecycle.revoked = true;
+    await expect(search()).resolves.toEqual([]);
+    expect(adapterCalls).toBe(1);
+    lifecycle.deleted = true;
+    lifecycle.deletionGeneration++;
+    await expect(search()).resolves.toEqual([]);
+    await expect(searchKnowledgeExtension({ context, query: "stale source", readAuthority: async () => ({
+      sourceVersion: 4, contentSha256: context.contentSha256, deletionGeneration: lifecycle.deletionGeneration,
+      indexVersion: "index-2", retrievalVersion: "search-1", authorizedChunkIds: ["faq-1"],
+    }), authorizeQueryEgress: async () => true, adapter: { search: async () => [] } })).rejects.toThrow("source_stale");
+  });
 });
