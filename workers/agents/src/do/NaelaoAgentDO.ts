@@ -64,6 +64,8 @@ import { ExecutionSessions } from "../tunnels/execution-sessions.js";
 import { createNamedTunnelGateway } from "../tunnels/host.js";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import { validPhoneExtensionEvent } from "../communications/phone-extension-event.js";
+import { verifyHeartbeatSession } from "../communications/heartbeat-scope.js";
+import { scheduledDirectScriptIsCurrent } from "../scheduled-direct-authorization.js";
 import { renderExtensionVoiceResponse } from "../communications/voice-response.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
@@ -6947,6 +6949,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       agentId: string;
       tenantId?: string;
       projectId?: string;
+      sessionId?: string;
+      context?: Record<string, unknown>;
       workspaceBranch?: string;
       scriptName: string;
       params?: Record<string, unknown>;
@@ -6955,6 +6959,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }>().catch(() => null);
     if (!body?.spaceId || !body.scriptName) {
       return Response.json({ error: "spaceId and scriptName are required" }, { status: 400 });
+    }
+
+    if (body.context?.trigger === "scheduled_job") {
+      const identityId = body.context.service_identity_id;
+      const revision = body.context.authorization_revision;
+      if (!this.env.PLATFORM_DB || !body.tenantId || !body.projectId || !body.sessionId
+        || typeof identityId !== "string" || typeof revision !== "string") {
+        return Response.json({ error_code: "scheduled_script_authorization_unavailable" }, { status: 503 });
+      }
+      try {
+        await verifyHeartbeatSession(this.env.SPACES_WORKER, this.env.PLATFORM_SECRET, body.tenantId, body.spaceId,
+          body.sessionId, body.projectId, { id: identityId, authorizationRevision: revision });
+      } catch {
+        return Response.json({ error_code: "scheduled_script_session_mismatch" }, { status: 403 });
+      }
+      let current = false;
+      try {
+        current = await scheduledDirectScriptIsCurrent(this.env.PLATFORM_DB, { tenantId: body.tenantId, spaceId: body.spaceId,
+          projectId: body.projectId, scriptName: body.scriptName, serviceIdentityId: identityId, authorizationRevision: revision });
+      } catch {
+        return Response.json({ error_code: "scheduled_script_authorization_unavailable" }, { status: 503 });
+      }
+      if (!current) return Response.json({ error_code: "scheduled_script_authorization_changed" }, { status: 409 });
     }
 
     const engineEnv = await this.buildScriptEngineEnv(body.spaceId, body.agentId, body.tenantId ?? "", undefined, body.projectId, undefined, body.airGappedOnly === true);

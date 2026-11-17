@@ -2408,11 +2408,19 @@ app.post("/agents/:agentId/script/run", async (c) => {
 // script," never a reasoning session, so they share one dispatch path.
 async function fireScriptDirectly(
   env: AgentsEnv,
-  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; scriptName: string; params?: Record<string, unknown>; airGappedOnly?: boolean; runId?: string },
+  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; scriptName: string; params?: Record<string, unknown>; airGappedOnly?: boolean; runId?: string;
+    serviceIdentity?: { id: string; authorizationRevision: string } },
   reqId?: string
 ): Promise<Response> {
   const agentId = params.agentId ?? "naelao-agent";
   const stub = await getAgentDOForSpace(env, params.tenantId, params.spaceId, agentId, reqId);
+  let sessionId: string | null = null;
+  if (params.serviceIdentity) {
+    if (!params.projectId || !params.runId) return Response.json({ error_code: "scheduled_script_scope_required" }, { status: 400 });
+    sessionId = await createHeartbeatSession(env, params.spaceId, params.tenantId, `Scheduled script — ${params.runId}`,
+      params.projectId, undefined, undefined, params.serviceIdentity);
+    if (!sessionId) return Response.json({ error_code: "scheduled_script_session_unavailable" }, { status: 503 });
+  }
   return stub.fetch(
     new Request("http://agent-do/triggers/fire", {
       method: "POST",
@@ -2424,6 +2432,9 @@ async function fireScriptDirectly(
         ...(params.projectId ? { projectId: params.projectId } : {}),
         scriptName: params.scriptName,
         params: params.params ?? {},
+        ...(sessionId ? { sessionId, context: { trigger: "scheduled_job",
+          service_identity_id: params.serviceIdentity!.id,
+          authorization_revision: params.serviceIdentity!.authorizationRevision } } : {}),
         ...(params.runId ? { runId: params.runId } : {}),
         ...(params.airGappedOnly ? { airGappedOnly: true } : {}),
       }),
@@ -10834,6 +10845,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
               scriptName: row.script_name,
               params: JSON.parse(row.params || "{}") as Record<string, unknown>,
               runId: serviceIdentity.runId,
+              serviceIdentity: { id: serviceIdentity.serviceIdentityId, authorizationRevision: serviceIdentity.authorizationRevision },
               ...(wakePolicy.airGappedOnly ? { airGappedOnly: true } : {}),
             });
         if (doResp.status === 409) {
