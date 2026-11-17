@@ -17,7 +17,8 @@
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
 import { mintInternalToken, readBoundedResponseText } from "@naelao/http";
-import { chunkStructuredMarkdown, chunkTextWithOffsets, chunkSourceCoordinates, type StructuralChunk, type TextChunkWithOffsets } from "@naelao/rag";
+import { chunkSourceCoordinates, type StructuralChunk, type TextChunkWithOffsets } from "@naelao/rag";
+import { chunkKnowledgeText, type IngestionChunk } from "./kb-ingestion-chunking.js";
 import type { Env } from "../env";
 
 export interface IngestionParams {
@@ -34,12 +35,6 @@ export interface IngestionParams {
 
 // 5 MB content limit per workflow run
 const MAX_CONTENT_BYTES = 5 * 1024 * 1024;
-
-type IngestionChunk = TextChunkWithOffsets | StructuralChunk;
-
-function chunkKnowledgeText(text: string, contentType: string): IngestionChunk[] {
-  return contentType === "pdf" || contentType === "docx" || contentType === "xlsx" ? chunkStructuredMarkdown(text) : chunkTextWithOffsets(text);
-}
 
 export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams> {
   async run(

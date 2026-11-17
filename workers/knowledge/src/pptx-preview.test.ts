@@ -13,7 +13,7 @@ describe("bounded PowerPoint Knowledge preview", () => {
     await expect(parseKnowledgePptx(pptx({
       2: "<p:sld><a:p><a:r><a:t>Second &amp; last</a:t></a:r></a:p></p:sld>",
       1: "<p:sld><a:p><a:r><a:t>First</a:t></a:r><a:r><a:t> slide</a:t></a:r></a:p><a:p><a:r><a:t>Body</a:t></a:r></a:p></p:sld>",
-    }))).resolves.toBe("## Slide 1\nFirst slide\nBody\n\n## Slide 2\nSecond & last");
+    }))).resolves.toBe("## Slide 1\n\nFirst slide\nBody\n\n## Slide 2\n\nSecond & last");
   });
 
   it("rejects missing slides, malformed XML and entity expansion", async () => {

@@ -83,6 +83,7 @@ export function chunkStructuredMarkdown(markdown: string, maxChars = 2_048): Str
 
   const result: StructuralChunk[] = [];
   const headings: string[] = [];
+  const headingLevels: number[] = [];
   const emit = (content: string, charOffset: number, charEnd: number) => {
     if (content.trim()) result.push({ content, charOffset, charEnd, headingPath: [...headings] });
   };
@@ -90,8 +91,13 @@ export function chunkStructuredMarkdown(markdown: string, maxChars = 2_048): Str
   for (const block of paragraphBlocks(markdown)) {
     const heading = /^(#{1,6})\s+(.+)$/m.exec(block.content);
     if (heading?.[1] && heading[2]) {
-      headings.splice(heading[1].length - 1);
-      headings[heading[1].length - 1] = heading[2].trim();
+      const level = heading[1].length;
+      while (headingLevels.length > 0 && headingLevels[headingLevels.length - 1]! >= level) {
+        headingLevels.pop();
+        headings.pop();
+      }
+      headingLevels.push(level);
+      headings.push(heading[2].trim());
     }
 
     if (isTable(block.content)) {

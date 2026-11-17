@@ -38,7 +38,7 @@ function extractSlide(xml: string, slideNumber: number): string {
     if (total > MAX_PPTX_TEXT_CHARS) throw new Error("knowledge_pptx_text_too_large");
     paragraphs.push(text);
   }
-  return paragraphs.length ? `## Slide ${slideNumber}\n${paragraphs.join("\n")}` : "";
+  return paragraphs.length ? `## Slide ${slideNumber}\n\n${paragraphs.join("\n")}` : "";
 }
 
 async function readSlides(bytes: Uint8Array): Promise<Map<number, string>> {
