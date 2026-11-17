@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claimScheduledJobDispatch, releaseScheduledJobDispatch, scheduledJobDispatchSnapshotCurrent } from "./scheduled-job-dispatch.js";
+import { claimScheduledJobDispatch, releaseScheduledJobDispatch, scheduledJobDispatchSnapshotCurrent, scheduledJobExecutionIdentity } from "./scheduled-job-dispatch.js";
 
 function makeDb(firstResult: unknown) {
   const statements: Array<{ sql: string; values: unknown[] }> = [];
@@ -18,6 +18,14 @@ function makeDb(firstResult: unknown) {
 }
 
 describe("scheduled job dispatch claims", () => {
+  it("derives a stable service identity and run receipt from the owner job revision", () => {
+    expect(scheduledJobExecutionIdentity({ jobId: "job-1", revision: "v3", sweepKey: 10 })).toEqual({
+      serviceIdentityId: "scheduled_job:job-1", authorizationRevision: "v3", runId: "scheduled-job:job-1:10",
+    });
+    expect(scheduledJobExecutionIdentity({ jobId: "job-1", revision: "v4", sweepKey: 10 }).runId)
+      .toBe("scheduled-job:job-1:10");
+  });
+
   it("atomically deduplicates one sweep and refuses paused or actively leased jobs", async () => {
     const { db, statements } = makeDb({ claim_token: "claim-1" });
     const token = await claimScheduledJobDispatch(db, { jobId: "job-1", sweepKey: 10, now: 1_000 });

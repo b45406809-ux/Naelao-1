@@ -1,3 +1,7 @@
+## Cross-plan update — 2026-11-17 (scheduled identity and receipt correlation; local pending)
+
+Scheduled goal/direct-script wakes now carry deterministic job identity, exact authorization revision and per-sweep run ID. This is correlation/attribution only, not new AgentPort/provider support or a service-grant ledger. Tests **13/13**, Agents typecheck and diff check pass. Exact next action: enforce the actor/revision at AgentDO action and Billing boundaries, with revocation and budget receipts; continue S/U/PW/K/EP/AP code gaps. No live provider action; rollouts disabled.
+
 ## Cross-plan update — 2026-11-17 (autonomous wake conflict handling; local pending)
 
 The active-run overlap guard now fails closed: only an explicit valid idle response admits a scheduled planner wake; active work returns 409 and unavailable status returns retryable 503. Tests **12/12**, Agents typecheck, diff check. No provider/deployed work. Exact next action: persist a scheduled-job-specific service identity and exact authorization revision through execution and billing receipts, then continue independent S/U/P/PW/K/EP/AP gaps. Rollouts disabled.

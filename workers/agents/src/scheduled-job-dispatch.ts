@@ -1,6 +1,19 @@
 const SCHEDULED_JOB_DISPATCH_LEASE_MS = 30 * 60 * 1000;
 const SCHEDULED_JOB_DISPATCH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Stable identity for one owner-configured scheduled intent and a retry-safe run receipt. This
+ * is attribution and idempotency context; effect authorization still comes from current host
+ * Project, agent-policy, installation and billing checks. */
+export function scheduledJobExecutionIdentity(input: { jobId: string; revision: string; sweepKey: number }): {
+  serviceIdentityId: string; authorizationRevision: string; runId: string;
+} {
+  return {
+    serviceIdentityId: `scheduled_job:${input.jobId}`,
+    authorizationRevision: input.revision,
+    runId: `scheduled-job:${input.jobId}:${input.sweepKey}`,
+  };
+}
+
 /** Claim one due job in one hourly sweep. The primary key deduplicates queue redelivery; the
  * lease prevents separate sweeps from overlapping while the same job is still being dispatched.
  * Returning null means the job was paused/deleted, already claimed in this sweep, or another

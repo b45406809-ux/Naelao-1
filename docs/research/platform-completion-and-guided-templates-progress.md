@@ -1,3 +1,7 @@
+## Latest code update — 2026-11-17 (scheduled job actor and run correlation; local pending)
+
+Scheduled planner wakes now persist a deterministic `scheduled_job:<job-id>` actor label and exact configuration revision in the session/run context; direct scripts receive a deterministic run ID per sweep for existing effect/billing correlation. The exact current job row is rechecked after lease acquisition, and unknown assistant active-run state now blocks dispatch. Focused tests **13/13**, Agents typecheck and diff check pass. Identity is attribution only: durable grant authority, effect-scoped limits, per-job budget and cancellation remain code gaps. Exact next action: enforce scheduled identity at AgentDO mutation gates with a persisted, revocable host grant tied to exact target/revision and existing budget controls; continue other plan work.
+
 ## Latest code update — 2026-11-17 (fail-closed autonomous wake conflict guard; local pending)
 
 Assistant busy admission now requires a successful valid idle response; active is 409, and unavailable/malformed state is retryable 503 with no dispatch. Wake/dispatch/tenant-scope tests **12/12**, Agents typecheck and diff check pass. Exact next action: connect job-bound service-principal identity and revision to durable execution receipts and per-effect authorization/budget checks; preserve explicit gaps for in-flight cancellation and unresolved role/grant mappings, then continue independent plan requirements. Rollouts off.

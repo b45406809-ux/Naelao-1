@@ -1,3 +1,7 @@
+## Latest cross-plan update — 2026-11-17 (scheduled job execution identity; local pending)
+
+Goal and direct-script scheduled execution now carry deterministic service actor IDs and exact job revision/run ID context; they do not use owner or creator identity. Revalidation and fail-closed overlap handling run before dispatch. Tests **13/13**, Agents typecheck and diff check pass. This is not a completed service principal: the host still lacks a durable per-job grant/budget record and universal effect-level identity checks. Exact next action: enforce this actor/revision at AgentDO mutations and existing Billing gates, with an auditable revoke path; continue all remaining plans.
+
 ## Latest cross-plan update — 2026-11-17 (autonomous overlap guard; local pending)
 
 `wakeAgentGoal` no longer fails open when active-run status is unavailable. It dispatches only on a valid idle receipt, preserves 409 for a known active run and returns retryable 503 for unknown status. Tests **12/12**, Agents typecheck and diff check pass. TBR11 remains a code gap for durable service identities/scopes/budgets and in-flight revocation; PW cancellation of effects already in flight remains separate. Exact next action: bind the exact scheduled job identity/revision to durable run receipts and make effect authorization/budget consume it, then continue all remaining S/U/P/PW/K/EP/AP/TBR work.

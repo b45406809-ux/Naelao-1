@@ -1,3 +1,7 @@
+## Cross-plan update — 2026-11-17 (scheduled run identity/revision correlation; local pending)
+
+Scheduled goal and direct-script paths now share stable `scheduled_job:<id>` identity, exact configuration revision and deterministic sweep run ID. Goal execution stores identity/revision in session metadata and context; direct-script run ID feeds existing receipt/billing path. Together with stale-row reauthorization and fail-closed active-run status, this improves replay and conflict handling. Local tests **13/13**, Agents typecheck and diff check pass; no deployed acceptance. It does not cancel already-running effects or implement grant authority. Exact next action: enforce and persist the identity/revision at the downstream effect boundary, then continue other PW and cross-plan gaps.
+
 ## Cross-plan update — 2026-11-17 (unavailable active-run status now blocks wake; local pending)
 
 Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO active-run endpoint. Active remains a 409; missing/non-OK/malformed/missing-field status returns a retryable 503 without dispatch. This closes the former fail-open overlap behavior. Focused wake/dispatch/tenant-scope tests **12/12**, Agents typecheck and diff check pass. This is local evidence; no deployed DO/workflow acceptance. Exact next action: bind scheduled-work service identity, exact job revision and cancellation/revocation receipt to the durable run, then continue runtime/effect isolation and other PW gaps. Do not claim cancellation of already-running effects.

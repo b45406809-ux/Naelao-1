@@ -67,7 +67,7 @@ import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./conne
 import { deployedContainerCatalogue, deployedDynamicImages } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
 import { isWithinScheduledQuietHours } from "@naelao/types";
-import { claimScheduledJobDispatch, releaseScheduledJobDispatch, scheduledJobDispatchSnapshotCurrent } from "./scheduled-job-dispatch.js";
+import { claimScheduledJobDispatch, releaseScheduledJobDispatch, scheduledJobDispatchSnapshotCurrent, scheduledJobExecutionIdentity } from "./scheduled-job-dispatch.js";
 import { claimProjectStewardRun, finishProjectStewardRun } from "./project-steward-dispatch.js";
 import { enqueueExtensionJobOutbox, handleExtensionJobTick, type ExtensionJobEnvironment } from "./workflows/extension-jobs.js";
 import { rankProjectStewardReviews } from "../../spaces/src/project-steward.js";
@@ -2408,7 +2408,7 @@ app.post("/agents/:agentId/script/run", async (c) => {
 // script," never a reasoning session, so they share one dispatch path.
 async function fireScriptDirectly(
   env: AgentsEnv,
-  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; scriptName: string; params?: Record<string, unknown>; airGappedOnly?: boolean },
+  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; scriptName: string; params?: Record<string, unknown>; airGappedOnly?: boolean; runId?: string },
   reqId?: string
 ): Promise<Response> {
   const agentId = params.agentId ?? "naelao-agent";
@@ -2424,6 +2424,7 @@ async function fireScriptDirectly(
         ...(params.projectId ? { projectId: params.projectId } : {}),
         scriptName: params.scriptName,
         params: params.params ?? {},
+        ...(params.runId ? { runId: params.runId } : {}),
         ...(params.airGappedOnly ? { airGappedOnly: true } : {}),
       }),
     })
@@ -2699,7 +2700,8 @@ async function resolveWakeContext(
  * Best-effort: a failure here falls back to the old synthetic (never-persisted) id rather than
  * blocking the wake — a heartbeat that can't get a session should still try to do its job.
  */
-async function createHeartbeatSession(env: AgentsEnv, spaceId: string, tenantId: string, title: string, projectId?: string, sessionId?: string, userId?: string): Promise<string | null> {
+async function createHeartbeatSession(env: AgentsEnv, spaceId: string, tenantId: string, title: string, projectId?: string, sessionId?: string, userId?: string,
+  serviceIdentity?: { id: string; authorizationRevision: string }): Promise<string | null> {
   const fallback = null;
   if (!env.SPACES_WORKER) return null;
   try {
@@ -2726,7 +2728,9 @@ async function createHeartbeatSession(env: AgentsEnv, spaceId: string, tenantId:
     const res = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/sessions`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ ...(sessionId ? { id: sessionId } : {}), ...(threadId ? { thread_id: threadId } : {}), metadata: { session_kind: "heartbeat", title, ...(projectId ? { project_id: projectId } : {}) } }),
+      body: JSON.stringify({ ...(sessionId ? { id: sessionId } : {}), ...(threadId ? { thread_id: threadId } : {}), metadata: { session_kind: "heartbeat", title,
+        ...(projectId ? { project_id: projectId } : {}), ...(serviceIdentity ? { service_identity_id: serviceIdentity.id,
+          authorization_revision: serviceIdentity.authorizationRevision } : {}) } }),
     }));
     if (!res.ok) return projectId ? null : fallback;
     const created = await res.json<{ id: string }>();
@@ -2972,7 +2976,8 @@ async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSes
 
 async function wakeAgentGoal(
   env: AgentsEnv,
-  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; userId?: string; runId?: string; goal: string; airGappedOnly?: boolean },
+  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; userId?: string; runId?: string; goal: string; airGappedOnly?: boolean;
+    serviceIdentity?: { id: string; authorizationRevision: string } },
   reqId?: string
 ): Promise<Response> {
   const agentId = params.agentId ?? "naelao-agent";
@@ -3001,6 +3006,7 @@ async function wakeAgentGoal(
     params.projectId,
     undefined,
     params.userId,
+    params.serviceIdentity,
   );
   if (!heartbeatSessionId) return Response.json({ error_code: "project_thread_unavailable" }, { status: 503 });
   // The model and the business, resolved the same way /agent/run resolves them.
@@ -3044,7 +3050,9 @@ async function wakeAgentGoal(
         ...(params.runId ? { runId: params.runId } : {}),
         sessionId: heartbeatSessionId,
         ...(params.projectId ? { projectId: params.projectId } : {}),
-        context: { trigger: "scheduled_job", decoupled_context: true, max_context_tokens: 2_000, worker_token_budget: workerTokenBudget },
+        context: { trigger: "scheduled_job", decoupled_context: true, max_context_tokens: 2_000, worker_token_budget: workerTokenBudget,
+          ...(params.serviceIdentity ? { service_identity_id: params.serviceIdentity.id,
+            authorization_revision: params.serviceIdentity.authorizationRevision } : {}) },
         apiKey: env.ANTHROPIC_API_KEY ?? "",
         model: wake.model,
         ...(wake.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wake.openRouterCapabilityEvidence } : {}),
@@ -10777,6 +10785,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const sweepKey = msg.sweepKey ?? Math.floor(now / 3_600_000);
       const claimToken = await claimScheduledJobDispatch(env.PLATFORM_DB, { jobId: row.id, sweepKey, now });
       if (!claimToken) return; // duplicate this sweep, paused during enqueue, or another active run.
+      const serviceIdentity = scheduledJobExecutionIdentity({ jobId: row.id, revision: row.updated_at, sweepKey });
       const dispatchStarted = Date.now();
       let claimStatus: "completed" | "failed" | "skipped" = "failed";
       try {
@@ -10807,6 +10816,8 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
               tenantId: row.tenant_id,
               ...(row.agent_id ? { agentId: row.agent_id } : {}),
               ...(row.project_id ? { projectId: row.project_id } : {}),
+              runId: serviceIdentity.runId,
+              serviceIdentity: { id: serviceIdentity.serviceIdentityId, authorizationRevision: serviceIdentity.authorizationRevision },
               goal: [wakeBrief, row.goal].filter(Boolean).join("\n"),
               ...(wakePolicy.airGappedOnly ? { airGappedOnly: true } : {}),
             })
@@ -10817,6 +10828,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
               ...(row.project_id ? { projectId: row.project_id } : {}),
               scriptName: row.script_name,
               params: JSON.parse(row.params || "{}") as Record<string, unknown>,
+              runId: serviceIdentity.runId,
               ...(wakePolicy.airGappedOnly ? { airGappedOnly: true } : {}),
             });
         if (doResp.status === 409) {
