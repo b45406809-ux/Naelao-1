@@ -1,3 +1,9 @@
+## Cross-plan checkpoint — 2026-11-17 (`019853ef` pushed)
+
+Scheduled Agent goal runs now pin the job identity and current revision in Billing's durable LLM reservation and internal usage receipt. Direct scheduled scripts write the same attribution on their usage receipt. Mismatched duplicate revisions conflict; malformed identity is denied. These audit fields are not forwarded to subscription metering. Billing **22/22**, Agents scheduled identity **14/14**, related typechecks and migration manifest checks pass locally; migration 0281 is unapplied. This does not add owner-approved per-effect grants, project-spend hold attribution or in-flight cancellation.
+
+Exact next action: propagate this identity/revision to Project spend hold and settlement receipts, then continue the remaining unified-platform and cross-plan code gaps. Rollouts remain disabled.
+
 ## Latest cross-plan update — 2026-11-17 (scheduled goal action approval boundary; `2bb067d3` pushed)
 
 Code `2bb067d3f0251c274eef1e559f233152e3fc77f7` is remote-verified. Scheduled goal runs cannot inherit broad Space `yolo` approvals; only enabled operations on the explicit read-safe list remain autonomous and all other tool actions require exact HITL approval, including after live policy refresh. Tests **25/25**, Agents typecheck and diff check pass. This is a conservative action gate, not a durable per-job grant/budget ledger. Exact next action: audit scheduled-service identity/revision through HITL continuation and Billing reservation/settlement, then continue other independent plan gaps.

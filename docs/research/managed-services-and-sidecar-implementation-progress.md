@@ -1,8 +1,8 @@
-## Cross-plan checkpoint — 2026-11-17 (`8e6cb6ea` pushed)
+## Cross-plan checkpoint — 2026-11-17 (`019853ef` pushed)
 
-`65dd32d5` adds the member self-role endpoint, `2c37eaa6` its member-facing Shell view, and `8e6cb6ea` the owner/admin Shell caller for assigning a proposal to an existing current member. Exact signed artifact and membership epoch are checked; all role results remain non-granting. Tests: Shell onboarding UI **3/3**, Spaces **6/6**, Router **86/86**, related typechecks and diff check pass. Local mocks only; no D1 deployment or browser/live acceptance.
+Scheduled goal-run LLM quota reservations now persist service identity and exact authorization revision. Settlement writes both to internal usage history. Direct scheduled-script settlements also record the identity/revision. Duplicate reservation with another revision conflicts, invalid attribution fails closed, and provider subscription metering does not receive internal identity fields. Migration 0281 is tracked in release/deployment manifests but is unapplied. Billing tests **22/22**, scheduled-identity tests **14/14**, Billing/Agents typechecks and manifest validators pass. Local mock/SQLite evidence only; deployed acceptance remains open.
 
-Project Gadget update recovery is implemented locally through `4901cd7f`; deployed route-to-actor acceptance remains open. Exact next action: bind scheduled-service identity and authorization revision to durable Billing reservation/settlement receipts for goal and direct-script runs, with retry, stale-revision and revocation tests; then continue remaining S2–S9/U01–U12 and incorporated-plan code gaps. Preserve `infra/scripts/__pycache__/`.
+The TBR member/self/owner proposal UI through `8e6cb6ea` remains non-granting; TBR06 cross-authority grant mapping is still uncoded/undecided. Project Gadget update recovery is locally implemented through `4901cd7f`; deployed route-to-actor acceptance remains open. Exact next action: bind scheduled identity/revision to Project spend reservation/settlement receipts, then continue remaining S2–S9/U01–U12 and incorporated-plan code gaps. Preserve `infra/scripts/__pycache__/`.
 
 ## Cross-plan local checkpoint — 2026-11-17 (Project update receipt through activation)
 

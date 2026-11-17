@@ -1,8 +1,8 @@
-## Cross-plan checkpoint — 2026-11-17 (`8e6cb6ea` pushed)
+## Cross-plan checkpoint — 2026-11-17 (`019853ef` pushed)
 
-TBR self-service and existing-member assignment are wired through their Shell surfaces at `2c37eaa6` and `8e6cb6ea`. Owner proposals use the existing server-side current-member/signed-artifact checks; member UI displays only the member's own membership-epoch-bound role and instructions. No role creates effective grants. Shell UI tests **3/3**, Spaces **6/6**, Router **86/86**, affected typechecks and diff hygiene pass; mock evidence only.
+Migration 0281 binds scheduled service identity/revision to LLM quota reservations and persists the attribution on resulting internal usage receipts; scheduled direct-script usage receipts carry the same fields. The Billing route rejects malformed or partial identity, and changed-revision idempotent reservation attempts conflict. Internal identity is not forwarded to external subscription metering. Tests **22/22** Billing, **14/14** scheduled identity; Billing/Agents typechecks and release/deployment manifest validation pass. Local evidence only; migration unapplied and no deployed acceptance.
 
-EP02 host-managed jobs broker code is already implemented and pushed at `248d3838`; its former uncoded next action is stale. Project update apply/recovery through `4901cd7f` is local implementation evidence; deployed route-to-actor acceptance remains open. Exact next action: trace and implement scheduled-service identity/revision fields through Billing reservations and settlements, then continue open P01–P24, K01–K30, PW01–PW06, EP01–EP06, TBR01–TBR12, AP01–AP06 and S2–S9/U01–U12 requirements. Preserve `infra/scripts/__pycache__/`.
+TBR member self-service and existing-member proposal callers are pushed at `2c37eaa6`/`8e6cb6ea`, still non-granting. EP02 jobs broker code is already implemented at `248d3838`; stale ledger tasks must not be repeated. Project Gadget update/recovery through `4901cd7f` remains local only. Exact next action: bind scheduled identity/revision to the existing Project spend hold/settlement path, then continue open P01–P24, K01–K30, PW01–PW06, EP01–EP06, TBR01–TBR12, AP01–AP06 and S2–S9/U01–U12 requirements. Preserve `infra/scripts/__pycache__/`.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (Project update receipt through activation; `53d07a16` pushed)
 
