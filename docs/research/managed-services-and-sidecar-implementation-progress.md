@@ -1,6 +1,10 @@
+## Cross-plan checkpoint — 2026-11-17 (business-role-bound Product invitation; `2daeb037` pushed and remote-verified)
+
+Code `2daeb0378b39d5243b3383fda325c1639fe58cbe` is pushed and remote-verified. No managed provider behavior changed. TBR05 invitation creation/redeem now carries optional role ID pinned to exact active signed blueprint digest and persists the accepted membership plus proposal-only TBR06 review together. Migration 0280 is manifest-tracked but unapplied; no delivery/provider/live activity. Local evidence: Spaces **5/5**, Router **82/82**, both typechecks, manifest tests **5/5**, migration release tests **20/20**, migration inventory **280**, deployment manifest check and diff check. AgentPhone capabilities and pricing remain unverified claims; no number/call/message/charge action. Exact next action: TBR06 grant outbox/revocation only for specified current host grants, then return to independent S/U/S2–S9 and remaining plans; keep all rollouts off.
+
 # Managed services and sidecar implementation progress
 
-## Cross-plan checkpoint — 2026-11-17 (TBR05 verified Product-member invitations; `743c2284` pushed)
+## Previous cross-plan checkpoint — 2026-11-17 (TBR05 verified Product-member invitations; `743c2284` pushed)
 
 No managed-provider capability or status changed. TBR05 now has a local, copy-only, verified-Product-email invitation API with keyed token/recipient hashes, expiry, scoped redemption, current inviter-role check, revoke/list, and atomic generic membership insertion. Tests: Spaces **3/3**, Router **79/79**, affected typechecks, migration manifest/inventory **278**, and diff check pass. Migration is unapplied; no email/SMS/provider activity occurred. AgentPhone/AgentPort provider claims remain unverified and no number, call, message or charge action occurred. Exact next action: TBR06 proposal-only business-role assignment bound to the signed blueprint/member authority; then resume S/U/S2–S9 and remaining platform, Knowledge, PW, EP and AP code gaps. Rollouts remain disabled.
 

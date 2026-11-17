@@ -1,3 +1,11 @@
+## Current cross-plan checkpoint — 2026-11-17 (business-role-bound invitation redemption; `2daeb037` pushed and remote-verified)
+
+Code `2daeb0378b39d5243b3383fda325c1639fe58cbe` is pushed and remote-verified. Migration 0280 adds nullable exact-blueprint/artifact/role binding to Product-member invitations. Owners/admins may select only a role declared by the currently installed, active, signed blueprint. Redemption revalidates that exact artifact before accepting; a changed/unavailable artifact leaves the invite pending. Successful redemption creates the generic membership and a TBR06 `proposal_only` review tied to the membership epoch in the same D1 batch. Every response says `grants_applied: false`; no resource permission is applied, no email/SMS is sent, and SpaceDO collaborator identity remains separate. Migration and deployment manifests now require 0280. Local evidence: invitation/role route **5/5**, Router identity paths **82/82**, Spaces/Router typechecks, release manifest tests **5/5**, migration release tests **20/20**, migration inventory **280**, deployment manifest validation and diff check pass. Migration 0280 is unapplied; no browser, deployed D1, email/SMS, or multi-user live acceptance ran.
+
+AgentPhone plan provenance was re-fetched from remote commit `3ef84165546a781ebcde6867d62e563f022385b9`; its source SHA-256 matches the already copied plan. AP01–AP06 remain reconciled in platform section 18 and its ledger. AgentPhone API/auth/events/voice/regions/terms/prices remain unverified vendor claims; no account, number, call, message, or charge action occurred.
+
+Exact next action: continue TBR06 by tracing every current Space/Project/extension/Knowledge grant issuer and revocation caller against `space_business_role_reviews`; implement a durable host grant outbox only for independently specified capabilities, retaining proposal-only behavior for unresolved action/shared-data and private-Project policy. Add idempotent partial-failure/revocation coverage. If the TBR03/TBR10 contract blocks a grant class, keep it unavailable and continue TBR07–TBR12 and remaining S/U/P/PW/K/EP/AP code gaps. Rollouts remain disabled.
+
 # Autonomous managed-services and workspace implementation runbook
 
 ## Active mission and checkpoint
@@ -18,7 +26,7 @@ The requirements from `docs/research/planner-worker-isolation-and-conflict-resol
 
 For every coherent source, configuration or documentation change, verify it, commit it, then fetch and push it to `origin/Mcbt5s-Backup-2` before moving to the next change. Record the pushed SHA, evidence, remaining uncoded work, separate live/deployment gates and exact next action in this runbook and the relevant progress ledgers. Fetch immediately before each push; preserve concurrent remote commits and integrate them without force-pushing. Never stage unrelated untracked files such as `infra/scripts/__pycache__/`.
 
-## Current cross-plan checkpoint — 2026-11-17 (TBR05 copy-only verified Product-member invitation; `743c2284` pushed)
+## Previous cross-plan checkpoint — 2026-11-17 (TBR05 copy-only verified Product-member invitation; `743c2284` pushed)
 
 The D1 invitation ledger (migration 0278) is separate from SpaceDO's platform-collaborator membership. A Product Space owner/admin can create a seven-day copy-only invite for a normalized email; only keyed hashes persist, at most 100 pending invitations are admitted, duplicate pending recipients are fenced, owners alone may invite admins, and invitation status can be listed/revoked. Redemption is reachable through authenticated Product-session routing and requires the same active Product account, current verified email, matching tenant/Space/Product, unused unexpired token, and the inviter's current owner/admin membership; the membership insert and invite acceptance run in one D1 batch. No invite email/SMS is sent.
 

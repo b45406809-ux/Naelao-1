@@ -1,3 +1,9 @@
+## Latest cross-plan code checkpoint — 2026-11-17 (business-role-bound Product invitation; `2daeb037` pushed and remote-verified)
+
+Code `2daeb0378b39d5243b3383fda325c1639fe58cbe` is pushed and remote-verified. Migration 0280 binds optional invitation role selection to the exact currently installed signed blueprint digest. Redemption revalidates the artifact before changes, then atomically writes generic membership plus a proposal-only role review tied to the membership epoch. Stale blueprint leaves invite pending; no permissions are granted, no messages are delivered, and no SpaceDO collaborator is created. Local evidence: Spaces **5/5** and typecheck, Router **82/82** and typecheck, manifest tests **5/5**, migration tests **20/20**, inventory **280**, deployment manifest validator and diff check. Migration is unapplied; no live/browser acceptance.
+
+Exact next action: TBR06 grant lifecycle trace and smallest specified durable grant outbox/revocation recovery; TBR03 shared-data/action mapping and TBR10 private-Project policy remain unresolved contracts. Keep those capabilities proposal-only and continue other independent P/PW/K/EP/AP/S/U gaps.
+
 # Platform completion and guided templates progress
 
 ## Cross-plan code checkpoint — 2026-11-17 (TBR05 Product identity invitation; `743c2284` pushed)

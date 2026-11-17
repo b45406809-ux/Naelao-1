@@ -1,6 +1,14 @@
+## Latest code checkpoint — 2026-11-17 (business-role-bound Product invitation; `2daeb037` pushed and remote-verified)
+
+Code `2daeb0378b39d5243b3383fda325c1639fe58cbe` is pushed and remote-verified. Migration 0280 adds an optional exact `{blueprint_id, artifact_sha256, business_role_id}` tuple to invitations, guarded against partial binding. Creation validates owner/admin authority, active signed installed artifact and declared role. Redemption revalidates artifact digest and declaration before side effects; stale invitations remain pending and create neither member nor review. Successful redemption creates the generic Product membership and a `proposal_only`, `grants_applied=0` TBR06 review bound to that membership epoch in the same D1 batch. Replays return the role-review receipt. No grants, delivery or SpaceDO collaborator changes occur.
+
+Local evidence: Spaces invitation/role tests **5/5**, Spaces typecheck, Router identity path tests **82/82**, Router typecheck, release-manifest tests **5/5**, migration release tests **20/20**, schema inventory **280**, deployment-manifest validation and `git diff --check`. Migration 0280 remains unapplied; no browser/deployed D1/live multi-user acceptance.
+
+TBR05 remains partial for onboarding UI and delivery; TBR06 remains partial because effective resource-grant application/outbox/recovery is not implemented. TBR03 shared-data mapping/action catalog and TBR10 private-Project authority remain contract gaps; this code applies no grants. Exact next action: map each existing host grant issuer/revoker to the reviewed role record and implement only a specified grant class with an idempotent durable outbox and revoke/partial-failure recovery; keep unresolved resource classes proposal-only, then continue TBR07–TBR12 and independent S/U/P/PW/K/EP/AP code. Rollout remains disabled.
+
 # Template-defined business roles and member onboarding progress
 
-## Latest code checkpoint — 2026-11-17 (TBR05 verified Product-member invitation API; `743c2284` pushed)
+## Previous code checkpoint — 2026-11-17 (TBR05 verified Product-member invitation API; `743c2284` pushed)
 
 Migration 0278 and the Spaces API now provide owner/admin-created, seven-day, copy-only Product-user invitations with keyed token/email hashes, duplicate and 100-pending caps, revoke/list status, owner-only admin invitations, and same-Product verified-email redemption. Redemption rechecks the inviter's active Space role and atomically records acceptance plus the generic D1 Space membership. The SpaceDO platform-collaborator table is untouched, and delivery is always `not_sent`.
 

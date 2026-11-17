@@ -1,6 +1,12 @@
+## Latest cross-plan checkpoint — 2026-11-17 (business-role-bound Product invitation; `2daeb037` pushed and remote-verified)
+
+Code `2daeb0378b39d5243b3383fda325c1639fe58cbe` is pushed and remote-verified. Invitation migration 0280, API and redemption now carry only a role declared by the exact active signed blueprint. Redemption rechecks artifact freshness; on success, membership and non-granting role review are persisted together, with review receipt on retries. Stale blueprint blocks acceptance without consuming the invite. Local evidence: Spaces **5/5**, Router **82/82**, both typechecks, migration/release suites **25/25**, inventory **280**, deployment manifest validation and diff check. D1 migration unapplied; no deployed/browser/live acceptance.
+
+Exact next action: trace and implement the TBR06 role-to-host-grant outbox only where current resource authority is fully specified; preserve proposal-only state for TBR03/TBR10 gaps, then continue all independent S/U/P/PW/K/EP/AP/TBR requirements. Rollouts remain disabled.
+
 # Unified platform implementation progress
 
-## Cross-plan checkpoint — 2026-11-17 (TBR05 verified Product-member invitation; `743c2284` pushed)
+## Previous cross-plan checkpoint — 2026-11-17 (TBR05 verified Product-member invitation; `743c2284` pushed)
 
 Migration 0278 and the Spaces API now support owner/admin-created copy-only invitations bound to one normalized email hash, tenant/Space/Product, an expiring HMAC token, current inviter authority and an authenticated Product account with verified email. Acceptance and generic D1 membership creation are batched; SpaceDO collaborator membership, sends, and resource grants are untouched. Spaces invitation tests **3/3**, Router product route tests **79/79**, Spaces/Router typechecks, release manifest tests **5/5**, migration inventory **278**, SQLite trigger exercise and diff check pass. Code `743c22844bd194499a61da00ca76d45ce19ba313` is remote-verified; D1 migration unapplied, no browser/deployed/live acceptance. TBR05 remains partial for template role assignment and member UX; TBR06's grant application/outbox/recovery remain uncoded. Exact next action: trace the durable signed activation artifact and current member revision, then add a proposal-only owner-reviewed role assignment with stale/revoke fencing, or record the missing active-blueprint contract and keep it non-granting. Continue all remaining S/U/P/PW/K/TBR/EP/AP work; rollouts stay off.
 

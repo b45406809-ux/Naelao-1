@@ -1,3 +1,11 @@
+## Re-fetch and latest implementation reconciliation — 2026-11-17
+
+The supplied AgentPhone plan was directly fetched from origin commit `3ef84165546a781ebcde6867d62e563f022385b9`; source hash `9d457136974d65ac5252123bfc2b67c6aa779c0604a5d845337026e7b63ae83d` matches the existing copy. The planning branch currently points at that commit; no planning branch checkout or merge occurred. AP01–AP06 are already incorporated in platform plan section 18. Reconciliation against current code is unchanged: generic evidence-backed capability registry and AgentPort event proxy are reusable; no AgentPhone provider entry, adapter, credentials, event contract, voice support, subaccount contract, quote, setup UI or benchmark is present. Telnyx and AgentMail remain separate. Existing managed billing is not AgentPhone price evidence. AP06 and actual provider/deployed acceptance are still open.
+
+TBR invitation implementation now accepts an optional role from an exact active signed blueprint, carries the digest through the invite, revalidates on redemption and persists a non-granting review. This adds no AgentPhone support. Local tests and migration inventory are recorded in AGENTS and the relevant ledgers. No provider registration, provisioning, call, message, credential disclosure or spend occurred.
+
+Exact AP action after the next TBR06 grant-authority slice: implement generic provider-neutral SDK/setup documentation only against capability entries that are already operator-verified; keep AgentPhone absent/unavailable until its API, auth, event, channel, region, commercial and live acceptance evidence is verified.
+
 # AgentPhone and AgentPort adapter evaluation progress
 
 ## Current reconciliation — 2026-11-16
