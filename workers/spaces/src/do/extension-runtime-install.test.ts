@@ -578,7 +578,7 @@ describe("runtime extension installation", () => {
     expect(await (await work("release", "before-revoke")).json()).toMatchObject({ released: true, status: "released" });
     const installedView = await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=owner&project_id=project-a&include_disabled=1"));
     expect(await installedView.json()).toMatchObject({ installations: [expect.objectContaining({ instance: expect.objectContaining({
-      instance_id: instanceId, status: "disabled", publisher_key_id: "a".repeat(64), publisher_revoked_at: expect.any(String),
+      instance_id: instanceId, generation: 1, status: "disabled", publisher_key_id: "a".repeat(64), publisher_revoked_at: expect.any(String),
     }) })] });
     const channelView = await space.fetch(new Request("http://space/channel-installations?tenant_id=tenant&space_id=space&project_id=project-a&include_disabled=1"));
     expect(await channelView.json()).toMatchObject({ installations: [expect.objectContaining({ extension_id: "ext_publisher_lifecycle",
@@ -1304,17 +1304,20 @@ describe("runtime extension installation", () => {
 
     const firstId = "43f83d14-14df-4c9a-a0a5-07ccf87a5d82", secondId = "ebc58e0e-6b3c-49a5-b451-09ac1e4a0b2e";
     const results = await Promise.all([apply(firstId, true), apply(secondId, true)]);
+    const winnerIndex = results.findIndex(result => result.status === 200);
+    expect(winnerIndex).toBeGreaterThanOrEqual(0);
+    const winningRequestId = winnerIndex === 0 ? firstId : secondId;
     const statuses = results.map(result => result.status).sort();
     expect(statuses).toEqual([200, 409]);
     expect(storage.sql.exec<{ release_version: string; status: string }>("SELECT release_version,status FROM extension_instances WHERE instance_id=?", installationId).toArray())
       .toEqual([{ release_version: "1.2.0", status: "disabled" }]);
     expect(storage.sql.exec<{ request_id: string; authority_expansion_json: string }>(
       "SELECT request_id,authority_expansion_json FROM space_shared_extension_update_receipts WHERE installation_id=?", installationId).toArray())
-      .toEqual([{ request_id: firstId, authority_expansion_json: JSON.stringify({ permissions: ["assistant.phone.simulate"], capabilities: ["assistant.phone.simulate"] }) }]);
+      .toEqual([{ request_id: winningRequestId, authority_expansion_json: JSON.stringify({ permissions: ["assistant.phone.simulate"], capabilities: ["assistant.phone.simulate"] }) }]);
     const history = await space.fetch(new Request("http://space/space-shared-extension-updates?tenant_id=tenant&space_id=space", {
       headers: { "x-naelao-internal-token": token },
     }));
-    expect(await history.json()).toMatchObject({ receipts: [{ request_id: firstId, authority_expansion: {
+    expect(await history.json()).toMatchObject({ receipts: [{ request_id: winningRequestId, authority_expansion: {
       permissions: ["assistant.phone.simulate"], capabilities: ["assistant.phone.simulate"],
     } }] });
   });

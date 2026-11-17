@@ -6229,12 +6229,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/extension-installations" && method === "GET") {
         const extensionId = url.searchParams.get("extension_id") ?? "";
         const includeManifest = url.searchParams.get("include_manifest") === "1";
-        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; user_id: string | null; scope: string; instance_key: string; status: string; installed_at: string; manifest_json: string; release_version: string | null; pinned_artifact_sha256: string | null } & PublisherReleaseFields>(this.ctx.storage.sql as never,
-          extensionId === "__all__" ? `SELECT i.instance_id,i.extension_id,i.project_id,i.user_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version,r.artifact_sha256 AS pinned_artifact_sha256,
+        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; user_id: string | null; scope: string; instance_key: string; status: string; installed_at: string; generation: number; manifest_json: string; release_version: string | null; pinned_artifact_sha256: string | null } & PublisherReleaseFields>(this.ctx.storage.sql as never,
+          extensionId === "__all__" ? `SELECT i.instance_id,i.extension_id,i.project_id,i.user_id,i.scope,i.instance_key,i.status,i.installed_at,i.generation,i.manifest_json,i.release_version,r.artifact_sha256 AS pinned_artifact_sha256,
               r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
             FROM extension_installation_manifests i LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
             WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at`
-            : `SELECT i.instance_id,i.extension_id,i.project_id,i.user_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version,r.artifact_sha256 AS pinned_artifact_sha256,
+            : `SELECT i.instance_id,i.extension_id,i.project_id,i.user_id,i.scope,i.instance_key,i.status,i.installed_at,i.generation,i.manifest_json,i.release_version,r.artifact_sha256 AS pinned_artifact_sha256,
                 r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
               FROM extension_installation_manifests i LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
               WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at`,
