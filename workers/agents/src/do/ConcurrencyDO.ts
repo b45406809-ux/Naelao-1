@@ -89,6 +89,11 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       actor_id TEXT NOT NULL, requested_at INTEGER NOT NULL, expired_at INTEGER NOT NULL, retain_until INTEGER NOT NULL,
       PRIMARY KEY(tenant_id,space_id,project_id,execution_id)
     )`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS compute_admission_rejections (
+      tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL, execution_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL, requested_at INTEGER NOT NULL, retain_until INTEGER NOT NULL,
+      PRIMARY KEY(tenant_id,space_id,project_id,execution_id)
+    )`);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS locks (
       key TEXT PRIMARY KEY, holder_id TEXT NOT NULL, acquired_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
     )`);
@@ -679,6 +684,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     this.expireComputeAdmissions(now);
     this.ctx.storage.sql.exec("DELETE FROM compute_admission_cancellations WHERE expires_at<=?", now);
     this.ctx.storage.sql.exec("DELETE FROM compute_admission_expirations WHERE retain_until<=?", now);
+    this.ctx.storage.sql.exec("DELETE FROM compute_admission_rejections WHERE retain_until<=?", now);
     if (action === "list") return this.listComputeAdmissions(tenantId, String(body.space_id), String(body.project_id));
     if (action === "cancel-execution") return this.cancelComputeAdmission(tenantId, String(body.space_id), String(body.project_id), String(body.execution_id));
     if (action === "request") {
@@ -712,8 +718,18 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     } else if (!existing) {
       const globalWaiting = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM compute_admissions WHERE state='waiting'").toArray()[0] as { count: number };
       const tenantWaiting = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM compute_admissions WHERE state='waiting' AND tenant_id=?", tenantId).toArray()[0] as { count: number };
-      if (globalWaiting.count >= 1000 || tenantWaiting.count >= 200) return Response.json({ status: "full", retry_after_ms: 5_000 });
+      if (globalWaiting.count >= 1000 || tenantWaiting.count >= 200) {
+        this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO compute_admission_rejections
+          (tenant_id,space_id,project_id,execution_id,actor_id,requested_at,retain_until) VALUES(?,?,?,?,?,?,?)`,
+          tenantId, String(body.space_id), String(body.project_id), String(body.execution_id), String(body.actor_id), now, now + 24 * 60 * 60 * 1000);
+        this.ctx.storage.sql.exec(`DELETE FROM compute_admission_rejections WHERE rowid IN (
+          SELECT rowid FROM compute_admission_rejections ORDER BY requested_at DESC LIMIT -1 OFFSET 2000
+        )`);
+        return Response.json({ status: "full", retry_after_ms: 5_000 });
+      }
       this.ctx.storage.sql.exec("DELETE FROM compute_admission_expirations WHERE tenant_id=? AND space_id=? AND project_id=? AND execution_id=?",
+        tenantId, String(body.space_id), String(body.project_id), String(body.execution_id));
+      this.ctx.storage.sql.exec("DELETE FROM compute_admission_rejections WHERE tenant_id=? AND space_id=? AND project_id=? AND execution_id=?",
         tenantId, String(body.space_id), String(body.project_id), String(body.execution_id));
       this.ctx.storage.sql.exec("INSERT INTO compute_admissions(holder_id,tenant_id,state,global_limit,tenant_limit,requested_at,expires_at,fencing_token,space_id,project_id,actor_id,execution_id) VALUES(?,?,'waiting',?,?,?,?,0,?,?,?,?)",
         holderId, tenantId, globalLimit, tenantLimit, now, now + Number(body.ttl_ms), body.space_id, body.project_id, body.actor_id, body.execution_id);
@@ -737,12 +753,16 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       tenantId, spaceId, projectId).toArray() as Array<{ execution_id: string; actor_id: string; state: string; requested_at: number; expires_at: number }>;
     const expired = this.ctx.storage.sql.exec("SELECT execution_id,actor_id,requested_at,expired_at AS expires_at FROM compute_admission_expirations WHERE tenant_id=? AND space_id=? AND project_id=? AND retain_until>? ORDER BY expired_at DESC LIMIT 100",
       tenantId, spaceId, projectId, Date.now()).toArray() as Array<{ execution_id: string; actor_id: string; requested_at: number; expires_at: number }>;
+    const rejected = this.ctx.storage.sql.exec("SELECT execution_id,actor_id,requested_at,retain_until AS expires_at FROM compute_admission_rejections WHERE tenant_id=? AND space_id=? AND project_id=? AND retain_until>? ORDER BY requested_at DESC LIMIT 100",
+      tenantId, spaceId, projectId, Date.now()).toArray() as Array<{ execution_id: string; actor_id: string; requested_at: number; expires_at: number }>;
     const positions = new Map(waiters.map((row, index) => [row.execution_id, index + 1]));
     return Response.json({ admissions: [...active, ...waiters].map(row => ({ execution_id: row.execution_id, actor_id: row.actor_id,
       status: row.state === "active" ? "capacity_reserved" : "waiting_for_capacity", requested_at: row.requested_at,
       expires_at: row.expires_at, ...(positions.has(row.execution_id) ? { queue_position: positions.get(row.execution_id) } : {}) })),
       expired: expired.map(row => ({ execution_id: row.execution_id, actor_id: row.actor_id, status: "admission_expired",
-        requested_at: row.requested_at, expired_at: row.expires_at })) });
+        requested_at: row.requested_at, expired_at: row.expires_at })),
+      rejected: rejected.map(row => ({ execution_id: row.execution_id, actor_id: row.actor_id, status: "capacity_queue_full",
+        requested_at: row.requested_at, expires_at: row.expires_at, retry_from_caller: true })) });
   }
 
   private expireComputeAdmissions(now: number): void {

@@ -1866,11 +1866,19 @@ export interface ExpiredProjectComputeAdmission {
   requested_at: number;
   expired_at: number;
 }
+export interface RejectedProjectComputeAdmission {
+  execution_id: string;
+  actor_id: string;
+  status: "capacity_queue_full";
+  requested_at: number;
+  expires_at: number;
+  retry_from_caller: true;
+}
 function projectComputeAdmissionsPath(spaceId: string, projectId: string) {
   return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/runtime/compute-admissions`;
 }
 export function listProjectComputeAdmissions(spaceId: string, projectId: string, session: SessionCredentials) {
-  return apiFetch<{ admissions: ProjectComputeAdmission[]; expired: ExpiredProjectComputeAdmission[] }>(projectComputeAdmissionsPath(spaceId, projectId), { session, cache: "no-store" });
+  return apiFetch<{ admissions: ProjectComputeAdmission[]; expired: ExpiredProjectComputeAdmission[]; rejected: RejectedProjectComputeAdmission[] }>(projectComputeAdmissionsPath(spaceId, projectId), { session, cache: "no-store" });
 }
 export function cancelProjectComputeAdmission(spaceId: string, projectId: string, executionId: string, session: SessionCredentials) {
   return apiFetch<{ cancelled: boolean; execution_id?: string; already_finished?: boolean }>(projectComputeAdmissionsPath(spaceId, projectId), {

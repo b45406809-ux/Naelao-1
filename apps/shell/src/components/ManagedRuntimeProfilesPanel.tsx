@@ -29,6 +29,7 @@ import {
   type SidecarArtifactTransferReceipt,
   type ProjectComputeAdmission,
   type ExpiredProjectComputeAdmission,
+  type RejectedProjectComputeAdmission,
   type ProjectRuntimeBudgetReservation,
   type SessionCredentials,
   type WorkspaceRetentionPolicy,
@@ -74,6 +75,7 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
   const [branchScope, setBranchScope] = React.useState("");
   const [computeAdmissions, setComputeAdmissions] = React.useState<ProjectComputeAdmission[]>([]);
   const [expiredComputeAdmissions, setExpiredComputeAdmissions] = React.useState<ExpiredProjectComputeAdmission[]>([]);
+  const [rejectedComputeAdmissions, setRejectedComputeAdmissions] = React.useState<RejectedProjectComputeAdmission[]>([]);
   const [computeAdmissionsError, setComputeAdmissionsError] = React.useState("");
   const [runtimeBudgetReservations, setRuntimeBudgetReservations] = React.useState<ProjectRuntimeBudgetReservation[]>([]);
   const [runtimeBudgetError, setRuntimeBudgetError] = React.useState("");
@@ -87,6 +89,8 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     setModalOperations(null);
     setModalOperationsError("");
     setComputeAdmissions([]);
+    setExpiredComputeAdmissions([]);
+    setRejectedComputeAdmissions([]);
     setComputeAdmissionsError("");
     setRuntimeBudgetReservations([]);
     setRuntimeBudgetError("");
@@ -148,6 +152,8 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
       }
       if (savedComputeAdmissions) {
         setComputeAdmissions(savedComputeAdmissions.admissions);
+        setExpiredComputeAdmissions(savedComputeAdmissions.expired);
+        setRejectedComputeAdmissions(savedComputeAdmissions.rejected ?? []);
         setComputeAdmissionsError("");
       }
       if (savedRuntimeBudget) {
@@ -225,6 +231,7 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
       const current = await listProjectComputeAdmissions(spaceId, projectId, stableSession);
       setComputeAdmissions(current.admissions);
       setExpiredComputeAdmissions(current.expired);
+      setRejectedComputeAdmissions(current.rejected ?? []);
       setComputeAdmissionsError("");
     } catch (error) {
       setComputeAdmissionsError(error instanceof ApiError && error.status === 403
@@ -529,6 +536,14 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
           <div>
             <div className="settings-row-label">Admission expired</div>
             <div className="settings-row-sub">Execution {admission.execution_id} · actor {admission.actor_id} · expired {new Date(admission.expired_at).toLocaleString()}</div>
+          </div>
+        </div>)}
+      </div>}
+      {!computeAdmissionsError && rejectedComputeAdmissions.length > 0 && <div className="settings-block" aria-label="Rejected Project compute admissions">
+        {rejectedComputeAdmissions.map(admission => <div className="settings-row" key={`rejected:${admission.execution_id}`}>
+          <div>
+            <div className="settings-row-label">Queue full · retry from the original caller</div>
+            <div className="settings-row-sub">Execution {admission.execution_id} · actor {admission.actor_id} · rejected {new Date(admission.requested_at).toLocaleString()}</div>
           </div>
         </div>)}
       </div>}

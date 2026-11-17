@@ -481,6 +481,29 @@ describe("ConcurrencyDO slot admission bounds", () => {
     expect(storage.sql.exec("SELECT COUNT(*) AS count FROM compute_admission_expirations").toArray()).toMatchObject([{ count: 1 }]);
   });
 
+  it("shows bounded queue-full rejection receipts to the exact Project owner without calling them waiters", async () => {
+    const storage = Object.assign(createDOStorage(), { getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} });
+    const secret = "compute-admission-full-secret";
+    const object = new ConcurrencyDO({ storage } as never, { PLATFORM_SECRET: secret });
+    const send = async (action: "request" | "list", input: Record<string, unknown> = {}) => object.fetch(new Request(`http://do/compute-admission/${action}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+      body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", ...input }),
+    }));
+    const requestAdmission = (n: number) => send("request", { holder_id: `holder-${n}`, actor_id: "member-a", execution_id: `execution-${n}`,
+      global_limit: 1, tenant_limit: 1, ttl_ms: 60_000 });
+    expect((await (await requestAdmission(0)).json()).status).toBe("admitted");
+    for (let n = 1; n <= 200; n++) expect((await (await requestAdmission(n)).json()).status).toBe("waiting");
+    expect(await (await requestAdmission(201)).json()).toMatchObject({ status: "full", retry_after_ms: 5_000 });
+
+    const list = await (await send("list")).json() as { admissions: Array<{ execution_id: string }>; rejected: Array<Record<string, unknown>> };
+    expect(list.admissions).toHaveLength(201);
+    expect(list.admissions.some(row => row.execution_id === "execution-201")).toBe(false);
+    expect(list.rejected).toEqual([expect.objectContaining({ execution_id: "execution-201", actor_id: "member-a",
+      status: "capacity_queue_full", retry_from_caller: true, expires_at: expect.any(Number) })]);
+    const otherProject = await (await send("list", { project_id: "project-b" })).json() as { rejected: unknown[] };
+    expect(otherProject.rejected).toHaveLength(0);
+  });
+
   it("round-robins eligible tenants before serving another waiting Project", async () => {
     const storage = Object.assign(createDOStorage(), { getAlarm: async () => null, setAlarm: async () => {}, deleteAlarm: async () => {} });
     const secret = "compute-admission-fairness-secret";
