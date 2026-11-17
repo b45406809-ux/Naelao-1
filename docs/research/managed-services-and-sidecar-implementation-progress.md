@@ -1,3 +1,15 @@
+## Resume pointer — 2026-11-17 (EP05 owner publication inventory; locally verified, push pending)
+
+See the platform completion ledger for the bounded authenticated publication list, integrity status and
+exact-slug owner takedown caller. Spaces **14/14**, Shell API **1/1**, both typechecks and diff check pass.
+No browser/deployed acceptance; host rollout remains disabled.
+
+**Reminder to myself:** Keep implementing all active plans after tests, docs and pushes.
+
+Exact next action after push: continue SC03's explicit-consent, exact-authority and current-Billing
+revalidation contract; do not dispatch disconnected work without those authorities. Then continue other
+independent S2–S9/U01–U12 and incorporated plan gaps.
+
 ## Resume pointer — 2026-11-17 (SC03 abandoned waiter cleanup; pushed as `d99720f0`)
 
 After a Tier-6 live caller exhausts six bounded retries, it cancels its exact waiting execution instead

@@ -36,19 +36,20 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (SC03 abandoned waiter cleanup; pushed as `d99720f0`)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 owner publication inventory; locally verified, pending push)
 
-The Tier-6 caller now cancels its exact persisted capacity waiter when six bounded same-invocation
-retries are exhausted, and its cancellation dispatch is idempotent across retry exhaustion, caller abort
-and deadline. The caller still checks live authority before every retry; ToolSandbox still performs
-current admission/Billing before paid work. Focused CodeRunner capacity tests **4/4**, Agents typecheck
-and diff check pass. This closes stale queue occupancy for abandoned live callers only; there is still
-no disconnected dispatcher or durable current-grant/Billing job authority. SC03 code checkpoint is pushed as `d99720f0`. TBR07 authority comparison is already complete; do not repeat it.
-EP05 reviewed publication/UI code is pushed (`f80e1577`, docs `19ef37a5`) and public rollout is off.
+The owner/admin-only Shell page control now lists the 100 most recent publication receipts, shows exact
+slug/digest/time and integrity state (`published`, `integrity_error`, `removed`), refreshes after publish
+or takedown, and lets an owner take down the selected exact slug. The route is tenant/Space/role bound;
+MicroAppDO verifies current page bytes against the newest immutable receipt. Spaces route/DO tests **14/14**,
+Shell API test **1/1**, Spaces/Shell typechecks and diff hygiene pass. Local mocks only; no browser,
+deployed domain/edge or live acceptance. Public delivery remains disabled. Previous EP05 review/backend
+and owner caller are pushed (`f80e1577`, docs `19ef37a5`); this inventory checkpoint is pending push.
+SC03 waiter cleanup is pushed (`d99720f0`, docs `8f203d51`).
 
 **Reminder to myself:** Keep implementing the full mission. Do not stop after a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops or a real blocker prevents all progress.
 
-Exact next action after push: continue SC03 toward a host-owned durable job contract only if it can bind explicit invocation consent, a current exact authority revalidator and fresh Billing admission before launch. Current live `authorizeContainer` closure is not addressable after disconnect, so do not enable replay from the encrypted envelope alone. Then continue another independent active-plan code gap; preserve the untracked Python cache and all disabled rollout flags.
+Exact next action after push: continue SC03's durable compute job contract with explicit invocation consent, exact current-authority revalidation and Billing admission before dispatch. Current live `authorizeContainer` is a run closure, so replay must remain denied unless an existing host authority can revalidate it after disconnect. Then continue other independent S2–S9/U01–U12/EP/K/P/PW/AP/TBR gaps; preserve the untracked Python cache and all disabled rollouts.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
 

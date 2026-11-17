@@ -29,6 +29,7 @@ describe("isolated public dynamic pages", () => {
     const sql = { exec(query: string, ...args: unknown[]) {
       if (query.startsWith("INSERT INTO public_page_review_receipts")) reviews.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), expires_at: Number(args[4]) });
       if (query.startsWith("INSERT INTO public_page_publications")) publications.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), published_at: String(args[4]) });
+      if (query.startsWith("SELECT slug,artifact_sha256,published_at FROM public_page_publications")) return cursor([...publications.values()].reverse().map(({ slug, artifact_sha256, published_at }) => ({ slug, artifact_sha256, published_at })));
       if (query.startsWith("SELECT actor_id,slug,artifact_sha256,expires_at FROM public_page_review_receipts")) {
         const receipt = reviews.get(String(args[0])); return cursor(receipt ? [receipt] : []);
       }
@@ -62,8 +63,11 @@ describe("isolated public dynamic pages", () => {
       body: JSON.stringify({ actor_id: "owner-a", review_id: reviewId, draft }) }));
     expect(published.status).toBe(201);
     expect(publications.get(reviewId)).toMatchObject({ actor_id: "owner-a", slug: "spring-signup", artifact_sha256: reviewedBody.artifact_sha256 });
+    const listed = await instance.fetch(new Request("https://do/page/list"));
+    expect(await listed.json()).toMatchObject({ pages: [{ slug: "spring-signup", status: "published", artifact_sha256: reviewedBody.artifact_sha256 }], truncated: false });
     pages.set("spring-signup", { html: "<main>tampered</main>", actions_json: JSON.stringify(draft.actions) });
     expect((await instance.fetch(new Request("https://do/page/render?spaceId=s&slug=spring-signup"))).status).toBe(404);
+    expect((await (await instance.fetch(new Request("https://do/page/list"))).json() as { pages: Array<{ status: string }> }).pages[0]?.status).toBe("integrity_error");
     pages.set("spring-signup", { html: draft.html, actions_json: JSON.stringify(draft.actions) });
     const replay = await instance.fetch(new Request("https://do/page/publish-reviewed", { method: "POST",
       body: JSON.stringify({ actor_id: "owner-a", review_id: reviewId, draft }) }));

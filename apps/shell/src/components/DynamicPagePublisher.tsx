@@ -2,8 +2,8 @@
 
 import * as React from "react";
 import { Button, Card, CardDesc, CardTitle } from "@naelao/ui";
-import { publishReviewedSpaceSharedDynamicPage, reviewSpaceSharedDynamicPage, unpublishSpaceSharedDynamicPage,
-  type PublicDynamicPageDraft, type PublicDynamicPageReview, type SessionCredentials } from "@/lib/api";
+import { listSpaceSharedDynamicPages, publishReviewedSpaceSharedDynamicPage, reviewSpaceSharedDynamicPage, unpublishSpaceSharedDynamicPage,
+  type PublicDynamicPageDraft, type PublicDynamicPageList, type PublicDynamicPageReview, type SessionCredentials } from "@/lib/api";
 
 const STARTER_DRAFT = JSON.stringify({
   slug: "welcome",
@@ -14,9 +14,16 @@ const STARTER_DRAFT = JSON.stringify({
 export function DynamicPagePublisher({ spaceId, appId, session }: { spaceId: string; appId: string; session: SessionCredentials }) {
   const [source, setSource] = React.useState(STARTER_DRAFT);
   const [review, setReview] = React.useState<PublicDynamicPageReview | null>(null);
+  const [publishedPages, setPublishedPages] = React.useState<PublicDynamicPageList | null>(null);
   const [confirmed, setConfirmed] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [notice, setNotice] = React.useState("");
+
+  const refreshPages = React.useCallback(async () => {
+    try { setPublishedPages(await listSpaceSharedDynamicPages(spaceId, appId, session)); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "Could not load published page receipts."); }
+  }, [spaceId, appId, session]);
+  React.useEffect(() => { void refreshPages(); }, [refreshPages]);
 
   function invalidate() { setReview(null); setConfirmed(false); setNotice(""); }
   async function createReview() {
@@ -36,15 +43,16 @@ export function DynamicPagePublisher({ spaceId, appId, session }: { spaceId: str
       const result = await publishReviewedSpaceSharedDynamicPage(spaceId, appId, session, review.review_id, draft);
       setReview(null); setConfirmed(false);
       setNotice(`Published ${result.slug} with reviewed artifact ${result.artifact_sha256.slice(0, 16)}…`);
+      await refreshPages();
     } catch (error) { setNotice(error instanceof Error ? error.message : "Could not publish the reviewed page."); }
     finally { setBusy(false); }
   }
-  async function takeDown() {
+  async function takeDown(slug: string) {
     setBusy(true); setNotice("");
     try {
-      const draft = JSON.parse(source) as PublicDynamicPageDraft;
-      const result = await unpublishSpaceSharedDynamicPage(spaceId, appId, session, draft.slug);
-      invalidate(); setNotice(result.removed ? `Page ${result.slug} was taken down.` : `No published page exists at ${result.slug}.`);
+      const result = await unpublishSpaceSharedDynamicPage(spaceId, appId, session, slug);
+      setNotice(result.removed ? `Page ${result.slug} was taken down.` : `No published page exists at ${result.slug}.`);
+      await refreshPages();
     } catch (error) { setNotice(error instanceof Error ? error.message : "Could not take down the page."); }
     finally { setBusy(false); }
   }
@@ -59,8 +67,17 @@ export function DynamicPagePublisher({ spaceId, appId, session }: { spaceId: str
     <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
       <Button variant="secondary" disabled={busy} onClick={() => void createReview()}>{busy ? "Working…" : "Review exact draft"}</Button>
       <Button disabled={busy || !review || !confirmed || review.expires_at <= Date.now()} onClick={() => void publish()}>Publish reviewed page</Button>
-      <Button variant="secondary" disabled={busy} onClick={() => void takeDown()}>Take down this slug</Button>
     </div>
+    {publishedPages && <section aria-label="Published public pages" style={{ marginTop: 14 }}>
+      <h3>Published page receipts</h3>
+      {!publishedPages.pages.length ? <p style={{ color: "var(--text3)", fontSize: 12 }}>No reviewed pages are recorded for this Gadget.</p>
+        : <ul>{publishedPages.pages.map(page => <li key={`${page.slug}:${page.artifact_sha256}`} style={{ margin: "8px 0" }}>
+          <code>{page.slug}</code> · {page.status.replaceAll("_", " ")} · <code>{page.artifact_sha256.slice(0, 16)}…</code> · {new Date(page.published_at).toLocaleString()}
+          {page.status !== "removed" && <Button variant="secondary" disabled={busy} onClick={() => void takeDown(page.slug)}>Take down</Button>}
+        </li>)}</ul>}
+      {publishedPages.truncated && <p role="status">Showing the 100 most recent page receipts.</p>}
+      <Button variant="secondary" disabled={busy} onClick={() => void refreshPages()}>Refresh page status</Button>
+    </section>}
     {review && <section aria-label="Reviewed page preview" style={{ marginTop: 14, padding: 12, border: "1px solid var(--border, #ddd)", borderRadius: 8 }}>
       <p><strong>Reviewed artifact:</strong> <code>{review.artifact_sha256}</code></p>
       <p style={{ fontSize: 12, color: "var(--text3)" }}>Slug: <code>{review.draft.slug}</code> · expires {new Date(review.expires_at).toLocaleTimeString()} · owner review grants no runtime capabilities.</p>

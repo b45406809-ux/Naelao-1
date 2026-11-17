@@ -2231,6 +2231,12 @@ export function callSpaceSharedExtensionApi(spaceId: string, appId: string, sess
 }
 export interface PublicDynamicPageDraft { slug: string; html: string; actions: Record<string, { key: string; fields: string[] }> }
 export interface PublicDynamicPageReview { review_id: string; artifact_sha256: string; expires_at: number; draft: PublicDynamicPageDraft }
+export interface PublicDynamicPageList { pages: Array<{ slug: string; artifact_sha256: string; published_at: string; status: "published" | "integrity_error" | "removed" }>; truncated: boolean }
+export function listSpaceSharedDynamicPages(spaceId: string, appId: string, session: SessionCredentials) {
+  return apiFetch<PublicDynamicPageList>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}/pages`, {
+    session, cache: "no-store",
+  });
+}
 export function reviewSpaceSharedDynamicPage(spaceId: string, appId: string, session: SessionCredentials, draft: PublicDynamicPageDraft) {
   return apiFetch<PublicDynamicPageReview>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}/pages`, {
     method: "POST", session, cache: "no-store", body: JSON.stringify(draft),

@@ -225,6 +225,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "GET" && url.pathname === "/app") return await this.renderApp();
       if (request.method === "POST" && url.pathname === "/page/review") return await this.reviewPage(request);
       if (request.method === "POST" && url.pathname === "/page/publish-reviewed") return await this.publishReviewedPage(request);
+      if (request.method === "GET" && url.pathname === "/page/list") return await this.listPublicPages();
       if (request.method === "DELETE" && url.pathname === "/page/unpublish") return this.unpublishPage(url);
       if (request.method === "GET" && url.pathname === "/page/render") return await this.renderPublicPage(url);
       if (request.method === "POST" && url.pathname === "/page/action") return await this.submitPublicAction(request, url);
@@ -1311,6 +1312,23 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(publish);
     else publish();
     return Response.json({ published: true, slug: draft.slug, artifact_sha256: artifactSha256 }, { status: 201 });
+  }
+
+  private async listPublicPages(): Promise<Response> {
+    const rows = [...this.ctx.storage.sql.exec<{ slug: string; artifact_sha256: string; published_at: string }>(
+      "SELECT slug,artifact_sha256,published_at FROM public_page_publications ORDER BY rowid DESC LIMIT 1000")];
+    const latest = new Map<string, { slug: string; artifact_sha256: string; published_at: string }>();
+    for (const row of rows) if (!latest.has(row.slug)) latest.set(row.slug, row);
+    const items = await Promise.all([...latest.values()].slice(0, 100).map(async row => {
+      const page = [...this.ctx.storage.sql.exec<{ html: string; actions_json: string }>(
+        "SELECT html,actions_json FROM gadget_public_pages WHERE slug=?", row.slug)][0];
+      if (!page) return { ...row, status: "removed" as const };
+      try {
+        const draft = validatePublicPageDraft({ slug: row.slug, html: page.html, actions: JSON.parse(page.actions_json) });
+        return { ...row, status: await publicPageArtifactSha256(draft) === row.artifact_sha256 ? "published" as const : "integrity_error" as const };
+      } catch { return { ...row, status: "integrity_error" as const }; }
+    }));
+    return Response.json({ pages: items, truncated: rows.length >= 1000 || latest.size > 100 });
   }
 
   private unpublishPage(url: URL): Response {

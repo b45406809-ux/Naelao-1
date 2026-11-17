@@ -58,6 +58,18 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
   // Publishing trusts gateway-supplied tenant and role headers. Public preview
   // render/action routes below have their own host, origin, and token checks.
   app.use("/spaces/:spaceId/apps/:appId/pages", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+  app.get("/spaces/:spaceId/apps/:appId/pages", async c => {
+    const { tenantId, userId, role } = identity(c);
+    const { spaceId, appId } = c.req.param();
+    if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+    if (!validIdentity(spaceId, appId, "pages")) return c.json({ error_code: "bad_request" }, 400);
+    if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Space administrator required" }, 403);
+    const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active' AND o.status = 'active'`).bind(spaceId, tenantId).first();
+    if (!owned) return c.notFound();
+    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
+    return c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/page/list"));
+  });
   app.post("/spaces/:spaceId/apps/:appId/pages", async c => {
     const { tenantId, userId, role } = identity(c);
     const { spaceId, appId } = c.req.param();

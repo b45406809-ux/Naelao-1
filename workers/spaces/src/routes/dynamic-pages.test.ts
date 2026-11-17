@@ -35,6 +35,19 @@ describe("dynamic page isolation boundary", () => {
     expect(h.fetch).toHaveBeenCalledOnce();
   });
 
+  it("lists page receipts only for an authenticated Space owner or admin", async () => {
+    const h = harness();
+    const path = "/spaces/s/apps/app/pages";
+    const token = await mintInternalToken("test-secret", "tenant-a");
+    const headers = { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-internal-token": token };
+    expect((await h.app.request(path, { headers: { ...headers, "x-naelao-role": "member" } }, h.env)).status).toBe(403);
+    const response = await h.app.request(path, { headers: { ...headers, "x-naelao-role": "admin" } }, h.env);
+    expect(await response.json()).toEqual({ path: "/page/list", method: "GET" });
+    expect(h.idFromName).toHaveBeenCalledWith("gadget:app:space:s");
+    const forged = await h.app.request(path, { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-role": "owner" } }, h.env);
+    expect(forged.status).toBe(403);
+  });
+
   it("publishes only through a separately owner-authorized reviewed receipt", async () => {
     const h = harness();
     const token = await mintInternalToken("test-secret", "tenant-a");
