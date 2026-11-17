@@ -122,6 +122,10 @@ Exact next action: continue TBR06 by tracing every current Space/Project/extensi
 
 ## Active mission and checkpoint
 
+## Latest cross-plan checkpoint — 2026-11-17 (EP04 rollback requires complete publisher pin; `cc03889f` pushed)
+
+`cc03889fc1b5f6dba7584323e32c94f1eddd5335` is remote-verified. Rollback review now also fails closed unless the candidate has a valid artifact digest, publisher ID, and 64-character publisher key fingerprint; the UI explains the missing pin and disables the action. This closes the legacy/incomplete-publisher edge of `79bdc2ef`. Rollback review test **2/2**, Shell typecheck and diff check pass. No rollback, deployment or rollout. Exact next action remains project-bound update review: reuse the signed release inspector only after adjusting for project scope/capabilities, and produce a read-only current/candidate pin and migration/resource diff; don't send project packages through the Space-shared contract. Continue other active requirements afterward.
+
 ## Latest cross-plan checkpoint — 2026-11-17 (EP04 signed rollback-candidate review; `79bdc2ef` pushed)
 
 Code `79bdc2ef76521c492dbb984c2d7a08bc54c17685` is pushed and remote-verified. Project extension rollback candidates now show the exact signed host artifact SHA-256, publisher/key identity, signature and current key revocation state, plus permission/capability expansion before confirmation. Invalid receipts and revoked publishers cannot be selected for rollback. Focused Shell suites **13/13**, Shell typecheck and `git diff --check` pass. Local only; no browser/deployment/rollback execution or rollout. Preserve untracked `infra/scripts/__pycache__/`.

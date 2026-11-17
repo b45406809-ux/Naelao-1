@@ -115,6 +115,10 @@ Exact next action: TBR06 grant lifecycle trace and smallest specified durable gr
 
 # Platform completion and guided templates progress
 
+## Cross-plan fix — 2026-11-17 (rollback requires complete publisher pin; `cc03889f` pushed)
+
+Code `cc03889fc1b5f6dba7584323e32c94f1eddd5335` is remote-verified. Rollback is now unavailable unless the candidate has a verified signature, artifact digest, publisher ID and key fingerprint; incomplete legacy receipts show a clear unavailable reason. Focused rollback helper **2/2**, Shell typecheck and diff check pass. No rollback/deployment/rollout occurred. Exact next action: continue the planned project-bound update-review API/UI work; the existing signed package inspector enforces Space-shared-only constraints, so adapt scope validation intentionally rather than reusing it unchanged. Keep preview non-mutating and continue all other active plan gaps.
+
 ## Cross-plan code checkpoint — 2026-11-17 (EP04 signed rollback-candidate review; `79bdc2ef` pushed)
 
 Code `79bdc2ef76521c492dbb984c2d7a08bc54c17685` is remote-verified. The existing project rollback picker now shows a verified release's immutable host artifact digest, publisher/key identity and signature status, current key revocation, plus permission/capability expansion before confirmation. It blocks rollback when the release attestation is invalid or publisher key is revoked. Focused Shell suites **13/13**, Shell typecheck and diff check pass. This is local UI/helper verification; no rollback was executed and no deployment/live acceptance or rollout occurred.
