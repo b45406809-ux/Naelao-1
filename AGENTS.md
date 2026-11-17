@@ -6,11 +6,12 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is EP05 audited owner takedown (`024c7dfc`, docs `e2037dd6`) pushed. The current local
-  checkpoint adds P04 personal MicroApp archive preview/apply in Settings: version 3 export identity
-  and active-Space filtering, exact preview receipt and explicit apply, with existing backend
-  same-user/same-install/replay checks. Shell API tests 4/4, Space export/restore tests 37/37, Shell
-  typecheck and diff hygiene pass; push is pending. No browser/deployment/recovery acceptance. Keep
+  checkpoint is P04 personal MicroApp archive preview/apply (`946e1881`) pushed to
+  `origin/Mcbt5s-Backup-2`, after EP05 audited takedown (`024c7dfc`, docs `e2037dd6`). Settings
+  restore filters a version 3 export to the signed-in user and active Space, requests an exact
+  preview receipt and requires explicit apply; backend enforces same-user/same-install/replay checks.
+  Shell API tests 4/4, Space export/restore tests 37/37, Shell typecheck and diff hygiene pass. No
+  browser/deployment/recovery acceptance. Keep
   public rollout disabled. TBR07 is compared and must not be repeated. SC03 still lacks an alarm-safe
   host job caller that can reconstruct the live Bash role clamp and link fresh Billing admission after
   disconnect; keep automatic replay disabled and continue other independent S/U/P/PW/K/EP/AP/TBR work.
@@ -37,7 +38,7 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (P04 personal MicroApp restore caller; verification complete, push pending)
+## Current checkpoint — 2026-11-17 (P04 personal MicroApp restore caller; pushed as `946e1881`)
 
 Settings can import a version 3 export, retain only snapshots belonging to the signed-in user and
 currently active Space, request the backend preview receipt, show exact row counts per current install,
@@ -50,8 +51,8 @@ refused module reconciliation; already-installed local binaries ran verification
 
 **Reminder to myself:** Never stop after a requirement, tests, a checkpoint, commit or push; keep implementing the full authorized mission and continue with the next independent gap after each recovery checkpoint.
 
-Exact next action: fetch and push this verified checkpoint, then continue the next uncoded active-plan
-requirement without repeating closed audits. SC03's current code has no alarm-safe caller for the live
+Code `946e1881` is pushed to `origin/Mcbt5s-Backup-2`. Exact next action: continue the next uncoded
+active-plan requirement without repeating closed audits. SC03's current code has no alarm-safe caller for the live
 Bash authorization/role clamp and no durable Billing reservation link, so automatic replay stays off;
 return to its host-owned job boundary only when explicit consent and current authority can be checked.
 

@@ -1,4 +1,4 @@
-## Resume pointer — 2026-11-17 (P04 personal MicroApp restore caller; locally verified, push pending)
+## Resume pointer — 2026-11-17 (P04 personal MicroApp restore caller; pushed as `946e1881`)
 
 Settings now imports the signed-in user's version 3 product export, selects only snapshots for the
 current authenticated user and active Space, previews the exact snapshot set through the existing
@@ -11,11 +11,11 @@ Shell API tests **4/4**, existing Space export/preview/restore suites **37/37**,
 
 **Reminder to myself:** Never stop at one requirement, tests, a checkpoint, commit or push; keep implementing the complete authorized mission and move to the next independent gap after each recovery checkpoint.
 
-Exact next action: fetch and push this verified P04 caller checkpoint, then continue active requirements
-without repeating closed audits. SC03 remains an ordinary code gap: no alarm-safe caller can reconstruct
-the live Bash authorization/role clamp or link current Billing admission after disconnect; keep
-automatic replay disabled. Preserve exact same-install restore policy, rollout-off state and
-`infra/scripts/__pycache__/`.
+Code `946e1881` is pushed to `origin/Mcbt5s-Backup-2`. Exact next action: continue the next uncoded
+active-plan requirement in dependency order without repeating closed audits. SC03 remains an ordinary
+code gap: no alarm-safe caller can reconstruct the live Bash authorization/role clamp or link current
+Billing admission after disconnect; keep automatic replay disabled. Preserve exact same-install restore
+policy, rollout-off state and `infra/scripts/__pycache__/`.
 
 ## Resume pointer — 2026-11-17 (EP05 audited owner takedown; locally verified, push pending)
 
