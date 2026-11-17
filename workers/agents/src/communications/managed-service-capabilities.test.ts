@@ -78,6 +78,9 @@ describe("managed service capability verification", () => {
       id,org_id,space_id,region,operation_id,provider,service_id,operation_name,payer_id,credits,price_version,status,created_at,updated_at)
       VALUES('hold-1','tenant','space','us','op-1','agentmail','agentmail','provision','tenant',300,'agentmail-v1','uncertain',?,?)`)
       .run(at, at);
+    h.db.db.prepare(`UPDATE managed_service_capability_versions SET category='email',operations_json='["provision"]',regions_json='["us"]',
+      account_modes_json='["user_connected"]',isolation_model='per-account',status='verified',verified_by='operator-1',verified_at=?,
+      valid_until='2099-01-01T00:00:00.000Z',updated_at=? WHERE provider='agentmail' AND service_id='agentmail' AND version=1`).run(at, at);
 
     const headers = {
       "x-naelao-tenant-id": "tenant",
@@ -99,6 +102,9 @@ describe("managed service capability verification", () => {
       operations: [{ id: "op-1", status: "uncertain", errorCode: "provider_timeout" }],
       usage30d: [{ provider: "agentmail", heldCredits: 300, settledCredits: 0, operations: 1 }],
     });
+    expect(dashboard.capabilities.find((capability: Record<string, unknown>) => capability.provider === "agentmail"))
+      .toMatchObject({ serviceId: "agentmail", state: "verified", operations: ["provision"], regions: ["us"],
+        accountModes: ["user_connected"], isolationModel: "per-account" });
     expect(JSON.stringify(dashboard)).not.toContain("provider-secret-ref");
     expect(JSON.stringify(dashboard)).not.toContain("vault-secret-ref");
     expect(JSON.stringify(dashboard)).not.toContain("credential_ref");

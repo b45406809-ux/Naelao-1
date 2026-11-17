@@ -665,6 +665,11 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
                       ))}
                     </ul>
                   ) : <p className="settings-row-sub">No active plan entitlement is configured. This provider cannot be provisioned from this Space.</p>}
+                  {capability.state === "verified" ? (
+                    <p className="settings-row-sub" role="note">
+                      Verified setup scope: operations {capability.operations.map(title).join(", ") || "none"}; account modes {capability.accountModes.map(title).join(", ") || "none"}; regions {capability.regions.join(", ") || "none"}. This record is valid until {capability.validUntil ? new Date(capability.validUntil).toLocaleString() : "unknown"}. It does not confirm an account is connected or live provider availability; authorization and entitlement are checked separately.
+                    </p>
+                  ) : <p className="settings-row-sub" role="note">Setup guidance is unavailable until the latest provider capability has current operator verification.</p>}
                 </div>
               ))}
             </div>
