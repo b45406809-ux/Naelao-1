@@ -175,6 +175,17 @@ describe("host delegation admission", () => {
     expect(listed.data[0]).not.toHaveProperty("checkpoint_json");
     expect(listed.data[0]).not.toHaveProperty("checkpoint");
   });
+  it("surfaces malformed persisted checkpoint data instead of treating it as absent", async () => {
+    const f = fixture(), parent = f.host();
+    const run = f.spawn(parent, [{ goal: "persist progress" }]);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    const id = String(f.requests[0]!.context.sub_agent_id);
+    f.finishes[0]!({ result: { ok: true, output: "done", tokens_used: 2 } });
+    await run;
+    f.workers.get(id)!.checkpoint_json = "{malformed";
+    const received = await (parent as unknown as { receiveFromSubAgentImpl(id: string): Promise<Record<string, unknown>> }).receiveFromSubAgentImpl(id);
+    expect(received).toMatchObject({ ok: false, status: "done", error: "worker_session_checkpoint_invalid" });
+  });
   it("denies missing concurrency admission and leaf recursion before dispatch", async () => {
     const f = fixture();
     expect((await f.spawn(f.host(false), [{ goal: "task" }])).results[0]?.ok).toBe(false);
