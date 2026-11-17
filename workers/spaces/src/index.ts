@@ -3946,6 +3946,181 @@ app.get("/spaces/:spaceId/memberships", async (c) => {
   return c.json({ data: result.results ?? [], count: result.results?.length ?? 0 });
 });
 
+// TBR05: copy-only, authenticated Product-user invitations. This ledger is deliberately separate
+// from SpaceDO's platform-collaborator `/members` table. No mail/SMS is sent here; redemption is
+// bound to the exact active Product identity and its verified email.
+app.use("/spaces/:spaceId/member-invitations", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/member-invitations/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+
+async function memberInviteSpace(c: Context<{ Bindings: Env }>, spaceId: string) {
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || identity.role !== "product_end_user") return null;
+  const role = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId);
+  if (role !== "owner" && role !== "admin") return null;
+  const space = await c.env.PLATFORM_DB.prepare(
+    `SELECT s.id,s.tenant_id,s.product_id FROM spaces s JOIN products p ON p.id=s.product_id AND p.tenant_id=s.tenant_id
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND p.status='active'`
+  ).bind(spaceId, identity.tenantId).first<{ id: string; tenant_id: string; product_id: string }>();
+  if (!space) return null;
+  const inviter = await c.env.PLATFORM_DB.prepare(
+    `SELECT 1 FROM product_end_users WHERE product_space_id=? AND end_user_id=?
+      AND email_verified_at IS NOT NULL AND suspended_at IS NULL AND deleted_at IS NULL AND erasure_started_at IS NULL`
+  ).bind(space.product_id, identity.userId).first();
+  if (!inviter) return null;
+  return { identity, role, space };
+}
+
+async function inviteHmac(secret: string, purpose: string, value: string): Promise<string> {
+  return signHmac(`space-member-invite:${purpose}:${value}`, secret);
+}
+
+function newInviteToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+app.post("/spaces/:spaceId/member-invitations", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const scope = await memberInviteSpace(c, spaceId);
+  if (!scope) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const body = await c.req.json<{ email?: unknown; role?: unknown }>().catch(() => null);
+  if (typeof body?.email !== "string" || body.email.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim()) ||
+      (body.role !== undefined && !["viewer", "member", "admin"].includes(String(body.role))))
+    return c.json({ error_code: "invalid_invitation" }, 400);
+  const role = (body.role ?? "member") as "viewer" | "member" | "admin";
+  if (role === "admin" && scope.role !== "owner") return c.json({ error_code: "owner_required_for_admin_invite" }, 403);
+  const email = body.email.trim().toLowerCase();
+  const recipientEmailHash = await inviteHmac(c.env.PLATFORM_SECRET, "email", email);
+  const existing = await c.env.PLATFORM_DB.prepare(
+    `SELECT sm.end_user_id FROM space_members sm JOIN product_end_users u
+       ON u.product_space_id=? AND u.end_user_id=sm.end_user_id
+      WHERE sm.space_id=? AND sm.tenant_id=? AND lower(u.email)=? AND sm.suspended_at IS NULL LIMIT 1`
+  ).bind(scope.space.product_id, spaceId, scope.identity.tenantId, email).first();
+  if (existing) return c.json({ error_code: "already_a_member" }, 409);
+  const pending = await c.env.PLATFORM_DB.prepare(
+    `SELECT COUNT(*) AS count FROM space_member_invitations
+      WHERE tenant_id=? AND space_id=? AND status='pending' AND expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')`
+  ).bind(scope.identity.tenantId, spaceId).first<{ count: number }>();
+  if ((pending?.count ?? 0) >= 100) return c.json({ error_code: "pending_invitation_limit" }, 429);
+  const duplicate = await c.env.PLATFORM_DB.prepare(
+    `SELECT id FROM space_member_invitations WHERE tenant_id=? AND space_id=?
+      AND recipient_email_hash=? AND status='pending' AND expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') LIMIT 1`
+  ).bind(scope.identity.tenantId, spaceId, recipientEmailHash).first();
+  if (duplicate) return c.json({ error_code: "invitation_already_pending" }, 409);
+  const id = crypto.randomUUID();
+  const token = newInviteToken();
+  const tokenHash = await inviteHmac(c.env.PLATFORM_SECRET, "token", token);
+  const inserted = await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO space_member_invitations
+      (id,tenant_id,space_id,product_id,inviter_user_id,recipient_email_hash,token_hash,role,expires_at)
+      SELECT ?,s.tenant_id,s.id,s.product_id,?,?,?, ?,strftime('%Y-%m-%dT%H:%M:%fZ','now','+7 days')
+       FROM spaces s JOIN products p ON p.id=s.product_id AND p.tenant_id=s.tenant_id
+       JOIN space_members inviter ON inviter.space_id=s.id AND inviter.tenant_id=s.tenant_id
+         AND inviter.end_user_id=? AND inviter.suspended_at IS NULL AND inviter.role IN ('owner','admin','moderator')
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND p.status='active'
+        AND (?!='admin' OR inviter.role='owner')`
+  ).bind(id, scope.identity.userId, recipientEmailHash, tokenHash, role, scope.identity.userId,
+    spaceId, scope.identity.tenantId, role).run();
+  if (!inserted.meta.changes) return c.json({ error_code: "invitation_authority_changed" }, 409);
+  // The bearer token is returned exactly once for manual handoff. The recipient must still
+  // authenticate as a Product user with the matching verified email; forwarding cannot change it.
+  return c.json({ id, role, status: "pending", expires_in_seconds: 604800, delivery: "not_sent", token }, 201);
+});
+
+app.get("/spaces/:spaceId/member-invitations", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const scope = await memberInviteSpace(c, spaceId);
+  if (!scope) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const rows = await c.env.PLATFORM_DB.prepare(
+    `SELECT id,role,status,created_at,expires_at,redeemed_by,redeemed_at,revoked_by,revoked_at
+       FROM space_member_invitations WHERE tenant_id=? AND space_id=? ORDER BY created_at DESC LIMIT 100`
+  ).bind(scope.identity.tenantId, spaceId).all();
+  return c.json({ data: rows.results ?? [] });
+});
+
+app.delete("/spaces/:spaceId/member-invitations/:invitationId", async (c) => {
+  const spaceId = c.req.param("spaceId"), invitationId = c.req.param("invitationId");
+  const scope = await memberInviteSpace(c, spaceId);
+  if (!scope) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const changed = await c.env.PLATFORM_DB.prepare(
+    `UPDATE space_member_invitations SET status='revoked',revoked_by=?,revoked_at=datetime('now')
+      WHERE id=? AND tenant_id=? AND space_id=? AND status='pending'`
+  ).bind(scope.identity.userId, invitationId, scope.identity.tenantId, spaceId).run();
+  return changed.meta.changes ? c.json({ id: invitationId, status: "revoked" }) : c.json({ error_code: "invitation_not_pending" }, 409);
+});
+
+app.post("/spaces/:spaceId/member-invitations/:invitationId/redeem", async (c) => {
+  const identity = getCallerIdentity(c), spaceId = c.req.param("spaceId"), invitationId = c.req.param("invitationId");
+  if (identity.role !== "product_end_user" || !identity.userId || !identity.tenantId) return c.json({ error_code: "product_identity_required" }, 403);
+  const body = await c.req.json<{ token?: unknown }>().catch(() => null);
+  if (typeof body?.token !== "string" || !/^[A-Za-z0-9_-]{40,48}$/.test(body.token)) return c.json({ error_code: "invalid_invitation" }, 400);
+  const tokenHash = await inviteHmac(c.env.PLATFORM_SECRET, "token", body.token);
+  const account = await c.env.PLATFORM_DB.prepare(
+    `SELECT p.id AS product_id,u.email,u.display_name FROM spaces s JOIN products p
+       ON p.id=s.product_id AND p.tenant_id=s.tenant_id AND p.status='active'
+       JOIN product_end_users u ON u.product_space_id=p.id AND u.end_user_id=?
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND u.email_verified_at IS NOT NULL
+        AND u.suspended_at IS NULL AND u.deleted_at IS NULL AND u.erasure_started_at IS NULL`
+  ).bind(identity.userId, spaceId, identity.tenantId).first<{ product_id: string; email: string; display_name: string | null }>();
+  if (!account?.email) return c.json({ error_code: "verified_product_identity_required" }, 403);
+  const recipientEmailHash = await inviteHmac(c.env.PLATFORM_SECRET, "email", account.email.trim().toLowerCase());
+  const invite = await c.env.PLATFORM_DB.prepare(
+    `SELECT id,status,role,inviter_user_id,redeemed_by FROM space_member_invitations
+      WHERE id=? AND tenant_id=? AND space_id=? AND product_id=? AND token_hash=?`
+  ).bind(invitationId, identity.tenantId, spaceId, account.product_id, tokenHash)
+    .first<{ id: string; status: string; role: string; inviter_user_id: string; redeemed_by: string | null }>();
+  if (!invite) return c.json({ error_code: "invitation_not_found" }, 404);
+  if (invite.status === "accepted" && invite.redeemed_by === identity.userId) return c.json({ id: invite.id, status: "accepted", replayed: true });
+  if (invite.status !== "pending") return c.json({ error_code: "invitation_not_pending" }, 409);
+  const boundRecipient = await c.env.PLATFORM_DB.prepare(
+    "SELECT recipient_email_hash FROM space_member_invitations WHERE id=? AND token_hash=?"
+  ).bind(invitationId, tokenHash).first<{ recipient_email_hash: string }>();
+  if (recipientEmailHash !== boundRecipient?.recipient_email_hash)
+    return c.json({ error_code: "invitation_identity_mismatch" }, 403);
+  const nowIso = new Date().toISOString();
+  await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(
+      `UPDATE space_member_invitations SET status='accepted',redeemed_by=?,redeemed_at=?
+        WHERE id=? AND tenant_id=? AND space_id=? AND product_id=? AND token_hash=? AND recipient_email_hash=?
+          AND status='pending' AND expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          AND EXISTS (SELECT 1 FROM spaces s JOIN products p ON p.id=s.product_id AND p.tenant_id=s.tenant_id
+            WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND p.status='active')
+          AND EXISTS (SELECT 1 FROM space_members m WHERE m.space_id=? AND m.tenant_id=?
+            AND m.end_user_id=space_member_invitations.inviter_user_id AND m.suspended_at IS NULL
+            AND m.role IN ('owner','admin','moderator') AND (space_member_invitations.role!='admin' OR m.role='owner'))
+          AND EXISTS (SELECT 1 FROM product_end_users u WHERE u.product_space_id=? AND u.end_user_id=?
+            AND lower(u.email)=? AND u.email_verified_at IS NOT NULL AND u.suspended_at IS NULL AND u.deleted_at IS NULL
+            AND u.erasure_started_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM space_members existing WHERE existing.space_id=?
+            AND existing.tenant_id=? AND existing.end_user_id=?)`
+    ).bind(identity.userId, nowIso, invitationId, identity.tenantId, spaceId, account.product_id,
+      tokenHash, recipientEmailHash, spaceId, identity.tenantId, spaceId, identity.tenantId,
+      account.product_id, identity.userId, account.email.trim().toLowerCase(), spaceId,
+      identity.tenantId, identity.userId),
+    c.env.PLATFORM_DB.prepare(
+      `INSERT INTO space_members(id,space_id,tenant_id,end_user_id,email,display_name,role,created_at)
+        SELECT lower(hex(randomblob(16))),i.space_id,i.tenant_id,?,u.email,u.display_name,i.role,?
+          FROM space_member_invitations i JOIN product_end_users u
+            ON u.product_space_id=i.product_id AND u.end_user_id=?
+         WHERE i.id=? AND i.tenant_id=? AND i.space_id=? AND i.token_hash=? AND i.status='accepted'
+           AND i.redeemed_by=? AND i.recipient_email_hash=? AND u.email_verified_at IS NOT NULL
+           AND lower(u.email)=? AND u.suspended_at IS NULL AND u.deleted_at IS NULL AND u.erasure_started_at IS NULL
+        ON CONFLICT(space_id,end_user_id) DO NOTHING`
+    ).bind(identity.userId, nowIso, identity.userId, invitationId, identity.tenantId, spaceId,
+      tokenHash, identity.userId, recipientEmailHash, account.email.trim().toLowerCase()),
+  ]);
+  const accepted = await c.env.PLATFORM_DB.prepare(
+    `SELECT i.status,i.redeemed_by,sm.role FROM space_member_invitations i LEFT JOIN space_members sm
+      ON sm.space_id=i.space_id AND sm.tenant_id=i.tenant_id AND sm.end_user_id=i.redeemed_by
+      WHERE i.id=? AND i.tenant_id=? AND i.space_id=?`
+  ).bind(invitationId, identity.tenantId, spaceId).first<{ status: string; redeemed_by: string | null; role: string | null }>();
+  if (accepted?.status !== "accepted" || accepted.redeemed_by !== identity.userId || !accepted.role)
+    return c.json({ error_code: "invitation_redemption_conflict" }, 409);
+  return c.json({ id: invitationId, status: "accepted", role: accepted.role, replayed: false });
+});
+
 // ── SpaceDO session proxy ────────────────────────────────────────────────────
 // Forward /spaces/:spaceId/sessions/* to the SpaceDO for that space
 // A1.16.10 (layer-3 backstop, bucket B): investigated before gating — the router mounts this

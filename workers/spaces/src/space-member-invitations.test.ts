@@ -1,0 +1,93 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { mintInternalToken } from "@naelao/http";
+import { createFakeD1 } from "../../../tests/stubs/d1-sqlite.js";
+import worker from "./index.js";
+
+const secret = "space-member-invites-test-secret";
+
+function setup() {
+  const { db, ...platformDb } = createFakeD1([
+    `CREATE TABLE orgs(id TEXT PRIMARY KEY,status TEXT NOT NULL)`,
+    `CREATE TABLE products(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,status TEXT NOT NULL)`,
+    `CREATE TABLE spaces(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,product_id TEXT,status TEXT NOT NULL)`,
+    `CREATE TABLE product_end_users(
+      product_space_id TEXT NOT NULL,end_user_id TEXT NOT NULL,email TEXT,display_name TEXT,
+      email_verified_at TEXT,suspended_at TEXT,deleted_at TEXT,erasure_started_at TEXT,
+      PRIMARY KEY(product_space_id,end_user_id),UNIQUE(product_space_id,email))`,
+    `CREATE TABLE space_members(
+      id TEXT PRIMARY KEY,space_id TEXT NOT NULL,tenant_id TEXT NOT NULL,end_user_id TEXT NOT NULL,
+      email TEXT,display_name TEXT,role TEXT NOT NULL DEFAULT 'member',created_at TEXT DEFAULT(datetime('now')),suspended_at TEXT,
+      UNIQUE(space_id,end_user_id))`,
+  ]);
+  db.exec(readFileSync(join(__dirname, "../../../infra/migrations/0278_space_member_invitations.sql"), "utf8"));
+  db.exec("INSERT INTO orgs VALUES('tenant-a','active')");
+  db.exec("INSERT INTO products VALUES('product-a','tenant-a','active')");
+  db.exec("INSERT INTO spaces VALUES('space-a','tenant-a','product-a','active')");
+  db.exec(`INSERT INTO product_end_users VALUES
+    ('product-a','owner-a','owner@example.test','Owner','verified',NULL,NULL,NULL),
+    ('product-a','member-a','member@example.test','Member','verified',NULL,NULL,NULL),
+    ('product-a','other-a','other@example.test','Other','verified',NULL,NULL,NULL)`);
+  db.exec("INSERT INTO space_members(id,space_id,tenant_id,end_user_id,role) VALUES('owner-membership','space-a','tenant-a','owner-a','owner')");
+  const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb, ENVIRONMENT: "test" } as never;
+  return { db, env };
+}
+
+async function inviteRequest(env: never, userId: string, path: string, method: string, body?: unknown) {
+  return worker.fetch(new Request(`https://spaces.test${path}`, {
+    method,
+    headers: {
+      "content-type": "application/json", "x-naelao-tenant-id": "tenant-a",
+      "x-naelao-user-id": userId, "x-naelao-role": "product_end_user",
+      "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }), env, { waitUntil: () => undefined } as never);
+}
+
+describe("Space Product-user invitations", () => {
+  it("redeems once for the matching verified identity and keeps it out of SpaceDO", async () => {
+    const { db, env } = setup();
+    const created = await inviteRequest(env, "owner-a", "/spaces/space-a/member-invitations", "POST", { email: " MEMBER@example.test " });
+    expect(created.status).toBe(201);
+    const invitation = await created.json() as { id: string; token: string; delivery: string };
+    expect(invitation.delivery).toBe("not_sent");
+    const duplicate = await inviteRequest(env, "owner-a", "/spaces/space-a/member-invitations", "POST", { email: "member@example.test" });
+    expect(duplicate.status).toBe(409);
+    const path = `/spaces/space-a/member-invitations/${invitation.id}/redeem`;
+    const redeemed = await inviteRequest(env, "member-a", path, "POST", { token: invitation.token });
+    expect(redeemed.status).toBe(200);
+    expect(await redeemed.json()).toMatchObject({ status: "accepted", role: "member", replayed: false });
+    const replay = await inviteRequest(env, "member-a", path, "POST", { token: invitation.token });
+    expect(await replay.json()).toMatchObject({ status: "accepted", replayed: true });
+    expect(db.prepare("SELECT role FROM space_members WHERE space_id='space-a' AND end_user_id='member-a'").get()).toEqual({ role: "member" });
+  });
+
+  it("rejects forwarded tokens, admin escalation, and redemption after inviter revocation", async () => {
+    const { db, env } = setup();
+    const admin = await inviteRequest(env, "owner-a", "/spaces/space-a/member-invitations", "POST", { email: "member@example.test", role: "admin" });
+    expect(admin.status).toBe(201);
+    const invitation = await admin.json() as { id: string; token: string };
+    const path = `/spaces/space-a/member-invitations/${invitation.id}/redeem`;
+    const forwarded = await inviteRequest(env, "other-a", path, "POST", { token: invitation.token });
+    expect(forwarded.status).toBe(403);
+    db.exec("UPDATE space_members SET suspended_at='now' WHERE end_user_id='owner-a'");
+    const revokedInviter = await inviteRequest(env, "member-a", path, "POST", { token: invitation.token });
+    expect(revokedInviter.status).toBe(409);
+    expect(db.prepare("SELECT count(*) AS count FROM space_members WHERE end_user_id='member-a'").get()).toEqual({ count: 0 });
+  });
+
+  it("does not let an admin create an administrator invite and rechecks expiration", async () => {
+    const { db, env } = setup();
+    db.exec("INSERT INTO space_members(id,space_id,tenant_id,end_user_id,role) VALUES('admin-membership','space-a','tenant-a','member-a','admin')");
+    const denied = await inviteRequest(env, "member-a", "/spaces/space-a/member-invitations", "POST", { email: "other@example.test", role: "admin" });
+    expect(denied.status).toBe(403);
+    const created = await inviteRequest(env, "member-a", "/spaces/space-a/member-invitations", "POST", { email: "other@example.test" });
+    expect(created.status).toBe(201);
+    const invitation = await created.json() as { id: string; token: string };
+    db.prepare("UPDATE space_member_invitations SET expires_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(invitation.id);
+    const expired = await inviteRequest(env, "other-a", `/spaces/space-a/member-invitations/${invitation.id}/redeem`, "POST", { token: invitation.token });
+    expect(expired.status).toBe(409);
+  });
+});

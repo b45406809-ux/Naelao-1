@@ -90,6 +90,22 @@ describe("product user MicroApp routing", () => {
   });
 });
 
+describe("Space member invitation identity routing", () => {
+  it.each([
+    "/spaces/s/member-invitations",
+    "/spaces/s/member-invitations/invite-a/redeem",
+  ])("resolves a Product identity for %s so the Space host can enforce owner and verified-email gates", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
+  });
+
+  it.each([
+    "/spaces/s/member-invitations/invite-a/redeem/other",
+    "/spaces/s/member-invitations/invite-a/revoke/other",
+  ])("does not route unrelated invitation actions: %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
+  });
+});
+
 describe("Product-user billing status routing", () => {
   it("allows only the exact self-service status endpoint through product-session identity", () => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/customer-billing-status"))).toBe(true);

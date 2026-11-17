@@ -641,6 +641,9 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/customer-billing-status$/,
   /^\/spaces\/([^/]+)\/spaces$/,
   /^\/spaces\/([^/]+)\/memberships$/,
+  // Authenticated Product users may redeem a copy-only owner invitation. The Spaces Worker
+  // binds it to the matching verified Product email and rechecks the inviter's live role.
+  /^\/spaces\/([^/]+)\/member-invitations(?:\/[^/]+(?:\/redeem)?)?$/,
   /^\/spaces\/([^/]+)\/sub-spaces(?:\/[^/]+(?:\/(?:projects|members)(?:\/[^/]+)?)?)?$/,
   /^\/spaces\/([^/]+)\/preferences$/,
   // The Spaces worker resolves current membership for registry reads and owner/admin for writes;

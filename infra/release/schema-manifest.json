@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0277_knowledge_website_crawl_preview",
+  "requiredSchemaVersion": "0278_space_member_invitations",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1111,6 +1111,10 @@
     {
       "filename": "0277_knowledge_website_crawl_preview.sql",
       "sha256": "5c4baf2c89413cc020b7f736fe0a8b2f76f7a70ef13f937c2b0ecccd8eb7c982"
+    },
+    {
+      "filename": "0278_space_member_invitations.sql",
+      "sha256": "78e6a13332283b36e35bfc19724b425ab25d687157445efe11c26c2de5745193"
     }
   ]
 }
