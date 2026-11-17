@@ -1,4 +1,4 @@
-## Resume pointer — 2026-11-17 (EP05 immutable owner review/apply; locally verified, push pending)
+## Resume pointer — 2026-11-17 (EP05 immutable owner review/apply; pushed as `a35237d5`)
 
 See the platform completion progress ledger for implementation details. Focused Spaces route/DO
 checks **13/13**, typecheck and diff hygiene pass. No deployed/live acceptance; rollout remains off.
@@ -6,9 +6,7 @@ checks **13/13**, typecheck and diff hygiene pass. No deployed/live acceptance; 
 **Reminder to myself:** Continue all active plans after this checkpoint; a verified slice, documentation,
 commit or push is not mission completion.
 
-Exact next action: trace an owner-facing preview/apply caller; implement it if the established surface
-supports a safe exact-digest confirmation. Then advance to the next independent uncoded active-plan
-gap and keep SC03 dispatch denied absent durable authorization and current Billing admission.
+Exact next action: no owner UI caller exists in current source. Continue SC03 durable admission only if an exact authority revalidator and pre-dispatch Billing hook can be wired; otherwise advance to another independent code gap while replay remains denied.
 
 ## Latest SC03 checkpoint — 2026-11-17 (membership authorization revisions; `070e0326` pushed)
 

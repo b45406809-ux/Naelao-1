@@ -1,4 +1,4 @@
-## Resume pointer — 2026-11-17 (EP05 immutable owner review/apply; locally verified, push pending)
+## Resume pointer — 2026-11-17 (EP05 immutable owner review/apply; pushed as `a35237d5`)
 
 The owner/admin API now returns a short-lived review receipt pinned to the canonical page artifact
 SHA-256, actor and slug; a separate apply call publishes only the identical draft and consumes the
@@ -10,9 +10,7 @@ acceptance. Site configuration/rollout stays disabled. No credentials are needed
 **Reminder to myself:** Continue the full mission after each checkpoint. Do not stop after tests,
 documentation, commit or push; move immediately to the next independent unfinished requirement.
 
-Exact next action after the recovery push: trace whether an owner-facing caller can present the exact
-returned preview and invoke the second apply step. Add the supported UI/API caller if one exists;
-otherwise record that narrow product-surface gap and continue with the next uncoded active-plan item.
+Exact next action: no owner UI caller exists in current source; keep the service API fail-closed and continue with the next independent uncoded active-plan item.
 
 ## Resume pointer — 2026-11-17 (EP05 public-page action rate limit; `c6f7837f` pushed)
 

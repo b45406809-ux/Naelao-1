@@ -48,7 +48,7 @@ verified locally; recovery push follows this documentation update.
 
 **Reminder to myself:** Keep implementing the full mission. Do not stop after a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops or a real blocker prevents all progress.
 
-Exact next action: after pushing this verified change, reconcile EP05 owner-facing preview/apply UI and the next uncoded EP/P/K/S/U/PW/AP/TBR requirement against the active ledgers; implement one concrete reachable gap. Preserve the untracked Python cache and rollout-disabled flags. SC03 stays fail-closed until a durable invocation identity, exact authority revalidation and pre-dispatch Billing admission exist.
+Exact next action: verify whether any established owner-facing surface can call the exact-digest preview/apply API; if none exists, record this as a product-surface code gap and advance to the next independent active-plan requirement. Preserve the untracked Python cache and rollout-disabled flags. SC03 stays fail-closed until a durable invocation identity, exact authority revalidation and pre-dispatch Billing admission exist.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
 
