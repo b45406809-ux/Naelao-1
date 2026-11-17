@@ -468,3 +468,16 @@ K10 remains uncoded because no verified upstream file-ACL identity adapter exist
 aliases to provider file identity. Exact next action: continue K08/K09's remaining crawl queue and owner
 freshness/troubleshooting callers against the current refresh receipt; add only a supported bounded path,
 then continue remaining K01–K30 and all other active plans. AI Search remains unselected; rollout off.
+## Current K09 checkpoint — 2026-11-17 (owner crawl status recovery; API `d32f5cef`, Shell `2a042cf4` pushed)
+
+The bounded website crawl now has an owner/admin-only, exact-Project/connection/policy-fenced status
+read separate from its POST continuation route. It returns bounded URL/hash page state without contacting
+the site and deletes the receipt when the connection owner or policy is no longer current. The Project
+Shell persists only operation ID, idempotency key and connection ID in tab session storage, reloads the
+status after interruption, and repopulates the root URL from the authorized receipt. Local Knowledge
+crawl route suite **6/6**, Shell API suite **5/5**, Knowledge/Shell typechecks and diff hygiene pass. No
+browser/deployed/live acceptance; crawl flag remains disabled and migration 0277 unapplied.
+
+Exact next action: implement explicit owner cancellation/discard of a running or partial crawl with an
+atomic generation fence so future fetches/writes stop and URL metadata is erased. Then continue K08/K09
+site-terms policy and remaining independent K01–K30 and cross-plan work.

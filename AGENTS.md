@@ -10,13 +10,14 @@ past work and do not override the current progress records or require repeating 
   persists and expires intent but has no alarm-safe authority revalidation/Billing linkage; disconnected
   replay stays disabled. K03 now carries persisted Markdown table/page/section paths through permissioned
   search, exact citations, Agent metadata and Shell source display; signed extension Knowledge reads are
-  bound to the current owner publication, installation grants and lease. Their results now include
+  bound to the current owner publication, installation grants and lease. Their results include
   source revision/hash and parser coordinates (`81791a69`). Dense/FTS retrieval, exact citations,
-  collection discovery/source reads and owner publication edits now all require `source_state='current'`
-  (`3477bc8c`). The existing owner/admin Project budget API reports exact reservation IDs/status/internal
-  credits for main and active Project sidecar runtimes; no authoritative Space/Project cap exists. Next
-  continue the next independent K/EP/P/PW/S/U/TBR gap, while SC03 disconnected native dispatch remains
-  fail-closed pending a durable invocation authority contract.
+  collection discovery/source reads and owner publication edits require `source_state='current'`
+  (`3477bc8c`). K09 now has a separate owner-scoped, no-store crawl status endpoint and a Shell resume
+  caller that reloads status without refetching pages (`d32f5cef`, `2a042cf4`). The existing owner/admin
+  Project budget API reports exact reservation IDs/status/internal credits for main and active Project
+  sidecar runtimes; no authoritative Space/Project cap exists. Continue the next independent K/EP/P/PW/
+  S/U/TBR gap; SC03 disconnected native dispatch remains fail-closed pending durable invocation authority.
   After
   the K02 reviewed PNG/JPEG OCR caller (`8a6d5026`), after
   K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
@@ -51,9 +52,24 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Resume checkpoint — 2026-11-17 (stale-source Knowledge access fenced; `3477bc8c` pushed)
+## Resume checkpoint — 2026-11-17 (K09 crawl status and Shell recovery; `2a042cf4` pushed)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
+
+K09 now exposes a separate owner-only GET for bounded crawl status and page URL/hash metadata. It checks
+the original owner, live connection and exact origin/path policy before returning; a missing or changed
+grant erases the crawl receipt. The Project Shell stores only the opaque operation ID, idempotency key
+and connection ID in tab-scoped session storage, then reloads owner-authorized status without repeating
+outbound discovery. The root URL comes from the authorized receipt, not browser persistence. Local crawl
+route tests **6/6**, Shell API tests **5/5**, Knowledge/Shell typechecks and diff hygiene pass. API code
+`d32f5cef4921712d699c9e618db7c8a67ee259aa` and caller `2a042cf4e87408f723aeadd667a412d8920f9bd4` are
+pushed. Crawl flag remains false; migration 0277 is unapplied. No browser, deployed or live acceptance.
+
+Exact next action: add exact owner cancellation/discard for a running/partial crawl, fencing further
+page writes and network traversal while erasing its URL frontier; then continue K08/K09, SC03 and every
+other independent active-plan code gap. Keep rollout disabled and preserve the Python cache.
+
+## Previous checkpoint — 2026-11-17 (stale-source Knowledge access fenced; `3477bc8c` pushed)
 
 All Knowledge dense and independent FTS candidates, exact citation resolution, publication listing/source
 reads/edit validation and signed extension external search now exclude documents whose canonical

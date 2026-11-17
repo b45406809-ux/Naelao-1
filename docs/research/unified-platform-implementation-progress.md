@@ -620,3 +620,14 @@ ceiling.
 Exact next action: continue K08/K09 source refresh lifecycle, then proceed through remaining active plans.
 SC03 disconnected native execution remains fail-closed without a durable consented request and alarm-safe
 authority/Billing revalidation. TBR07 is already compared; keep all rollouts disabled.
+## Current K09 checkpoint — 2026-11-17 (owner crawl recovery caller; `2a042cf4` pushed)
+
+The signed Project Shell can now recover the exact owner-bounded website crawl receipt after reload via
+the new no-store, current-connection/policy-checked status API. It restores page choices without new site
+requests and keeps only opaque operation/idempotency/connection IDs in tab session storage. Local crawl
+route **6/6**, Shell API **5/5**, Knowledge/Shell typechecks and diff hygiene pass. API `d32f5cef` and Shell
+caller `2a042cf4` are pushed. No browser/deployed acceptance; rollout remains disabled.
+
+Exact next action: add exact-owner crawl cancellation that generation-fences ongoing fetch/write work
+and erases the URL frontier, then continue the remaining active plans. SC03 remains fail-closed for
+disconnected native dispatch without explicit durable consent and alarm-safe authority/Billing checks.
