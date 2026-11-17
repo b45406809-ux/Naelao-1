@@ -7,10 +7,10 @@ past work and do not override the current progress records or require repeating 
 
 - Start or resume from the newest verified progress records and actual code/worktree. K03 optional PDF
   page-marker preservation is pushed as `acc85dd8`. PW05 owner/admin per-attempt internal-credit reads
-  now cover both Space-level and exact Project scope; local Billing **24/24** and Billing, Agents and
-  Shell typechecks pass. The pushed SC03 encrypted receipt still lacks alarm-safe authority
-  revalidation/Billing linkage, so disconnected replay stays disabled. Continue uncoded
-  Knowledge/platform requirements and all active plans.
+  are pushed at `c1372b54`, covering Space-level and exact Project scope; Billing **24/24** and Billing,
+  Agents and Shell typechecks pass locally. The pushed SC03 encrypted receipt still lacks alarm-safe
+  authority revalidation/Billing linkage, so disconnected replay stays disabled. Continue with the next
+  uncoded Knowledge/platform requirement and all active plans.
   After
   the K02 reviewed PNG/JPEG OCR caller (`8a6d5026`), after
   K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
@@ -45,16 +45,17 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (PW05 owner-scoped worker usage; local verification)
+## Current checkpoint — 2026-11-17 (PW05 owner-scoped worker usage; `c1372b54` pushed)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
 
 K03 was pushed as `acc85dd8` after parser/ingestion/archive/workflow **26/26**, Knowledge typecheck and
 `git diff --check`. Provider page metadata remains unverified. PW05 review found deterministic attempt
-run IDs and existing settlement; the new owner/admin Space/Project-scoped routes join only those attempt
-IDs to Billing usage events and Shell shows internal credits plus missing/unpriced state. Local Billing
-route tests **24/24**, Billing/Agents/Shell typechecks and diff check pass. No browser, deployed Worker,
-or provider invoice acceptance. The feature labels provider invoices separately.
+run IDs and existing settlement; owner/admin Space/Project routes join only those attempt IDs to Billing
+usage events and Shell shows internal credits plus missing/unpriced state. Code
+`c1372b54421b1a958c44bfa7c77ff67933ef1ab6` is pushed to `origin/Mcbt5s-Backup-2`. Local Billing route
+tests **24/24**, Billing/Agents/Shell typechecks and diff check pass. No browser, deployed Worker, or
+provider invoice acceptance. The feature labels provider invoices separately.
 
 Exact next action: continue the next uncoded Knowledge/platform requirement. SC03's encrypted invocation
 receipt (`d3a0f194`) provides bounded persistence/cleanup only, not a valid disconnected dispatcher; do
