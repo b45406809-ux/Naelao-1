@@ -20,7 +20,7 @@ describe("heartbeat separation", () => {
           "session",
           project
         )
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({});
     }
   );
   it("rejects voice/chat sessions and other project heartbeats", async () => {
@@ -48,9 +48,14 @@ describe("heartbeat separation", () => {
     const identity = { id: "scheduled_job:job-1", authorizationRevision: "2026-11-17T12:00:00.000Z" };
     await expect(verifyHeartbeatSession(worker({ session_kind: "heartbeat", project_id: "project",
       service_identity_id: identity.id, authorization_revision: identity.authorizationRevision }),
-      "secret", "tenant", "space", "session", "project", identity)).resolves.toBeUndefined();
+      "secret", "tenant", "space", "session", "project", identity)).resolves.toEqual({ serviceIdentity: identity });
     await expect(verifyHeartbeatSession(worker({ session_kind: "heartbeat", project_id: "project",
       service_identity_id: "scheduled_job:other", authorization_revision: identity.authorizationRevision }),
       "secret", "tenant", "space", "session", "project", identity)).rejects.toThrow();
+  });
+  it("rejects malformed persisted service identity metadata rather than resuming as a user run", async () => {
+    await expect(verifyHeartbeatSession(worker({ session_kind: "heartbeat", project_id: "project",
+      service_identity_id: "unknown-service", authorization_revision: "revision" }),
+      "secret", "tenant", "space", "session", "project")).rejects.toThrow("heartbeat_session_service_identity_invalid");
   });
 });

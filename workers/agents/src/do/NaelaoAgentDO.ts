@@ -65,7 +65,7 @@ import { createNamedTunnelGateway } from "../tunnels/host.js";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import { validPhoneExtensionEvent } from "../communications/phone-extension-event.js";
 import { verifyHeartbeatSession } from "../communications/heartbeat-scope.js";
-import { scheduledDirectScriptIsCurrent } from "../scheduled-direct-authorization.js";
+import { reconcileScheduledServiceResumeContext, scheduledDirectScriptIsCurrent, scheduledGoalIsCurrent } from "../scheduled-direct-authorization.js";
 import { renderExtensionVoiceResponse } from "../communications/voice-response.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
@@ -1654,6 +1654,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         action_input_json TEXT,
         approval_policy_fingerprint TEXT,
         delegation_json TEXT,
+        context_json TEXT,
         steps_json   TEXT NOT NULL DEFAULT '[]',
         deliberation_round INTEGER NOT NULL DEFAULT 0,
         status       TEXT NOT NULL DEFAULT 'suspended',
@@ -1704,6 +1705,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN action_input_json TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN approval_policy_fingerprint TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN delegation_json TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN context_json TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE interrupted_runs ADD COLUMN deliberation_round INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
 
     // Background fibers
@@ -7258,8 +7260,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           || serviceIdentity.authorizationRevision.length > 128)) {
         return this.finishScriptFailure(runId,"Scheduled work requires a named service identity and authorization revision",403,"service_identity_required");
       }
-      try{await (await import("../communications/heartbeat-scope.js")).verifyHeartbeatSession(this.env.SPACES_WORKER,this.env.PLATFORM_SECRET,tenantId,spaceId,sessionId,projectId,
-        serviceIdentity as { id: string; authorizationRevision: string } | undefined);}catch{return this.finishScriptFailure(runId,"Scheduled work requires its own persisted heartbeat session and service identity",403,"heartbeat_scope_mismatch");}
+      try {
+        await verifyHeartbeatSession(this.env.SPACES_WORKER, this.env.PLATFORM_SECRET, tenantId, spaceId, sessionId, projectId,
+          serviceIdentity as { id: string; authorizationRevision: string } | undefined);
+      } catch { return this.finishScriptFailure(runId,"Scheduled work requires its own persisted heartbeat session and service identity",403,"heartbeat_scope_mismatch"); }
+      if (body.context?.["trigger"] === "scheduled_job") {
+        if (!this.env.PLATFORM_DB || typeof serviceIdentity?.id !== "string" || typeof serviceIdentity.authorizationRevision !== "string")
+          return this.finishScriptFailure(runId,"Scheduled job authority is unavailable",503,"scheduled_job_authority_unavailable");
+        let current = false;
+        try {
+          current = await scheduledGoalIsCurrent(this.env.PLATFORM_DB, { tenantId, spaceId, projectId: projectId ?? "",
+            agentId, serviceIdentityId: serviceIdentity.id, authorizationRevision: serviceIdentity.authorizationRevision });
+        } catch { return this.finishScriptFailure(runId,"Scheduled job authority is unavailable",503,"scheduled_job_authority_unavailable"); }
+        if (!current) return this.finishScriptFailure(runId,"Scheduled job was changed or revoked before this action resumed",409,"scheduled_job_authorization_changed");
+      }
     }
     const requestedModel = body.model ?? DEFAULT_WORKING_MODEL;
     let modelPolicy = body.modelPolicy;
@@ -7479,6 +7493,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const assembled = this.assembleUniversalAgent(manifest, body.spaceContext);
     engineEnv.maxTier = Math.min(engineEnv.maxTier ?? 6, assembled.maxTier) as ExecutionTier;
     const scheduledServiceRun = body.context?.["trigger"] === "scheduled_job";
+    const scheduledServiceContext = scheduledServiceRun ? {
+      trigger: "scheduled_job",
+      service_identity_id: body.context?.["service_identity_id"],
+      authorization_revision: body.context?.["authorization_revision"],
+    } : undefined;
     const scheduledReadSafeActions = assembled.manifest.capabilities.enabledPrebuilts.flatMap(name => {
       const script = PREBUILT_SCRIPTS[name];
       return script ? Object.keys(script.operations) : [];
@@ -7869,9 +7888,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         runId,
         sessionId,
         ...(config.pipelines ? { pipeline: config.pipelines } : {}),
-        // Checked once per step, so a Stop button actually stops something. Only wired here —
-        // the interactive path — since a cron wake or channel drain has nobody watching it.
-        shouldCancel: () => this.isCancelRequested(runId),
+        // Check stop state per step for interactive runs, and revalidate the scheduled job
+        // revision before every autonomous step. This blocks later actions after an owner pauses,
+        // edits, or deletes a job; it cannot cancel an external effect already in flight.
+        shouldCancel: async () => {
+          if (await this.isCancelRequested(runId)) return true;
+          if (!scheduledServiceRun) return false;
+          if (!this.env.PLATFORM_DB || typeof scheduledServiceContext?.service_identity_id !== "string"
+            || typeof scheduledServiceContext.authorization_revision !== "string" || !projectId) return true;
+          try {
+            return !await scheduledGoalIsCurrent(this.env.PLATFORM_DB, { tenantId, spaceId, projectId, agentId,
+              serviceIdentityId: scheduledServiceContext.service_identity_id,
+              authorizationRevision: scheduledServiceContext.authorization_revision });
+          } catch { return true; }
+        },
         ...(isLeaf?{pollSteering:async()=>{
           let instructions:string[]=[];
           do {
@@ -7916,6 +7946,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
           approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
+          ...(scheduledServiceContext ? { serviceContext: scheduledServiceContext } : {}),
           ...(delegation ? { delegation } : {}),
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
@@ -7930,6 +7961,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
           approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
+          ...(scheduledServiceContext ? { serviceContext: scheduledServiceContext } : {}),
           ...(delegation ? { delegation } : {}),
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
@@ -7953,6 +7985,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
           approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
+          ...(scheduledServiceContext ? { serviceContext: scheduledServiceContext } : {}),
           ...(delegation ? { delegation } : {}),
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
@@ -9197,6 +9230,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
       model?: string | undefined; goal: string; deliberationRound?: number | undefined;
       approvalPolicyFingerprint: string;
+      serviceContext?: Record<string, unknown>;
       delegation?: DelegationContract;
     }
   ): void {
@@ -9208,13 +9242,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         `INSERT OR REPLACE INTO suspended_runs
            (approval_id, run_id, space_id, tenant_id, agent_id, session_id, project_id, user_id,
             caller_role, model, goal, action_name, action_input_json, approval_policy_fingerprint,
-            steps_json, deliberation_round, status, delegation_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suspended', ?, ?)`,
+            steps_json, deliberation_round, status, delegation_json, context_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suspended', ?, ?, ?)`,
         approvalId, ctx.runId, ctx.spaceId, ctx.tenantId, ctx.agentId, ctx.sessionId,
         ctx.projectId ?? null, ctx.userId ?? null, ctx.callerRole ?? null, ctx.model ?? null,
         ctx.goal, actionName, stableStringify(params), ctx.approvalPolicyFingerprint,
         JSON.stringify(pending.steps_completed ?? []), ctx.deliberationRound ?? 0,
         ctx.delegation ? JSON.stringify(ctx.delegation) : null,
+        ctx.serviceContext ? JSON.stringify(ctx.serviceContext) : null,
         new Date().toISOString()
       );
     } catch {
@@ -9447,6 +9482,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ resumed: false, reason: "approval was not granted" });
     }
 
+    let serviceResumeContext: Record<string, unknown> | undefined;
+    try {
+      const fromCheckpoint = reconcileScheduledServiceResumeContext(row["context_json"]);
+      if (row["session_id"]) {
+        const sessionReceipt = await verifyHeartbeatSession(this.env.SPACES_WORKER, this.env.PLATFORM_SECRET,
+          row["tenant_id"] ?? "", row["space_id"] ?? "", row["session_id"] ?? "", row["project_id"] ?? undefined,
+          fromCheckpoint ? { id: fromCheckpoint.service_identity_id, authorizationRevision: fromCheckpoint.authorization_revision } : undefined);
+        serviceResumeContext = reconcileScheduledServiceResumeContext(row["context_json"], sessionReceipt.serviceIdentity);
+      } else serviceResumeContext = fromCheckpoint;
+    } catch (error) {
+      if (error instanceof Error && error.message === "heartbeat_session_unavailable") {
+        this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status='suspended' WHERE approval_id=?`, approvalId);
+        return Response.json({ resumed: false, reason: "could not read scheduled session authority" }, { status: 503 });
+      }
+      if (serviceResumeContext || row["context_json"]
+        || error instanceof Error && error.message.startsWith("heartbeat_session_service_identity")) {
+        this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status='stale' WHERE approval_id=?`, approvalId);
+        return Response.json({ resumed: false, reason: "scheduled service identity could not be verified; review the job again" }, { status: 409 });
+      }
+    }
+
     let steps: unknown[] = [];
     try {
       steps = JSON.parse(row["steps_json"] ?? "[]") as unknown[];
@@ -9474,11 +9530,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       resumeDelegation = { ...resumeDelegation, maxTokens: remaining, maxSteps: budgetToMaxSteps(remaining) };
     }
-    let resumeContext: Record<string, unknown> | undefined;
+    let resumeContext: Record<string, unknown> | undefined = serviceResumeContext;
     if (resumeDelegation) {
       try {
         const token = await issueDelegationContract(resumeDelegation, this.env.PLATFORM_SECRET);
         resumeContext = {
+          ...(resumeContext ?? {}),
           delegation_token: token, delegation_depth: resumeDelegation.depth, delegation_planner: resumeDelegation.planner,
           root_run_id: resumeDelegation.rootRunId, delegation_max_tier: resumeDelegation.maxTier,
           parent_run_id: resumeDelegation.parentRunId, parent_do_id: resumeDelegation.parentDoId,
