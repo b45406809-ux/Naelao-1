@@ -10,6 +10,11 @@ export function recordPdfPreviewParseMetric(dataset: AnalyticsEngineDataset | un
   } catch { /* telemetry failures must not change ingestion behavior */ }
 }
 
+export function recordProjectAccessMetric(dataset: AnalyticsEngineDataset | undefined, outcome: "not_found_or_unavailable" | "role_insufficient"): void {
+  try { dataset?.writeDataPoint({ blobs: ["knowledge_authorization", "project_access", outcome], doubles: [1], indexes: [] }); }
+  catch { /* telemetry failures must not change authorization behavior */ }
+}
+
 /** Produce bounded aggregate telemetry; caller, tenant, Space, Project and query data are omitted. */
 export function buildPrivacySafeRetrievalTelemetry(input: {
   event: GroundedSearchTelemetry;

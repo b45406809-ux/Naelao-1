@@ -23,7 +23,7 @@ import { revisionExternalPublicationsForDocument } from "./external-publication-
 import { createWebsitePreviewToken, sha256TextHex, verifyWebsitePreviewToken } from "./website-source-preview.js";
 import { boundedWebsiteCrawlFrontier, extractWebsiteCrawlLinks, WEBSITE_CRAWL_LIMITS, type WebsiteCrawlPageRef } from "./website-crawl.js";
 import { runScheduledWebsiteRefreshes } from "./website-refresh-scheduler.js";
-import { buildPrivacySafeRetrievalTelemetry, recordPdfPreviewParseMetric } from "./retrieval-telemetry.js";
+import { buildPrivacySafeRetrievalTelemetry, recordPdfPreviewParseMetric, recordProjectAccessMetric } from "./retrieval-telemetry.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -251,11 +251,17 @@ async function requireProjectAccess(c: any, projectId: string, minimumRoleRank =
   const spaceId = c.req.param("spaceId");
   const userId = c.req.header("x-naelao-user-id") ?? "";
   const projectRank = await projectRoleRank(c.env.PLATFORM_DB, tenantId, spaceId, projectId, userId);
-  if (projectRank === null) throw notFound("Project not found");
+  if (projectRank === null) {
+    recordProjectAccessMetric(c.env.KNOWLEDGE_ANALYTICS, "not_found_or_unavailable");
+    throw notFound("Project not found");
+  }
   // Product sessions carry a fixed `product_end_user` platform role. For Project actions, the
   // exact user ACL is the authority that distinguishes owner/admin/editor/member/viewer.
   const roleRank = c.req.header("x-naelao-role") === "product_end_user" ? projectRank : effectiveRoleRank(c);
-  if (roleRank < minimumRoleRank) return c.json({ error_code: "forbidden", message: "Project owner access required" }, 403);
+  if (roleRank < minimumRoleRank) {
+    recordProjectAccessMetric(c.env.KNOWLEDGE_ANALYTICS, "role_insufficient");
+    return c.json({ error_code: "forbidden", message: "Project owner access required" }, 403);
+  }
   return { tenantId, spaceId, userId };
 }
 

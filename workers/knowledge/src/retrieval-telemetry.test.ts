@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildPrivacySafeRetrievalTelemetry, recordPdfPreviewParseMetric } from "./retrieval-telemetry.js";
+import { buildPrivacySafeRetrievalTelemetry, recordPdfPreviewParseMetric, recordProjectAccessMetric } from "./retrieval-telemetry.js";
 
 describe("privacy-safe Knowledge retrieval telemetry", () => {
   it("keeps bounded aggregate metrics and omits tenant, Space, Project and query identifiers", () => {
@@ -23,5 +23,12 @@ describe("privacy-safe Knowledge retrieval telemetry", () => {
     recordPdfPreviewParseMetric({ writeDataPoint } as never, "failed", 120_500);
     expect(writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_parse", "pdf", "preview", "failed"], doubles: [120_000], indexes: [] });
     expect(() => recordPdfPreviewParseMetric({ writeDataPoint: () => { throw new Error("offline"); } } as never, "succeeded", 2)).not.toThrow();
+  });
+
+  it("records fixed authorization denial categories without caller or resource identifiers", () => {
+    const writeDataPoint = vi.fn();
+    recordProjectAccessMetric({ writeDataPoint } as never, "not_found_or_unavailable");
+    expect(writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_authorization", "project_access", "not_found_or_unavailable"], doubles: [1], indexes: [] });
+    expect(() => recordProjectAccessMetric({ writeDataPoint: () => { throw new Error("offline"); } } as never, "role_insufficient")).not.toThrow();
   });
 });
