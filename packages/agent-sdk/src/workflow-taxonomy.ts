@@ -99,7 +99,15 @@ export interface DurableJobOperationReceipt {
   installationGeneration?: number; grantRevision?: number; meteringUnit?: "request" | "job"; meteredUnits?: number;
   responseSha256?: string; responseBytes?: number; meteredCredits?: number; preparedAt: number; completedAt?: number; uncertainAt?: number;
 }
-export type DurableResourceOperationReceipt = DurableStructuredDataOperationReceipt | DurableObjectOperationReceipt | DurableJobOperationReceipt;
+/** Knowledge receipts store source/query hashes and revision pins, never query text or chunks. */
+export interface DurableKnowledgeOperationReceipt {
+  kind: "knowledge"; installationId: string; projectId: string; principalId: string; requirementId: string;
+  publicationSha256: string; publicationRevision: number; operation: "search"; requestSha256: string; requestBytes: number;
+  status: "prepared" | "completed" | "unknown"; manifestSha256: string; resourceSha256: string;
+  installationGeneration: number; grantRevision: number; meteringUnit: "request"; meteredUnits: number;
+  responseSha256?: string; responseBytes?: number; meteredCredits?: number; preparedAt: number; completedAt?: number; uncertainAt?: number;
+}
+export type DurableResourceOperationReceipt = DurableStructuredDataOperationReceipt | DurableObjectOperationReceipt | DurableJobOperationReceipt | DurableKnowledgeOperationReceipt;
 export interface DurableEffectRecord {
   key: string; operation: string; inputDigest: string; status: "prepared" | "committed" | "indeterminate";
   result?: WorkflowCheckpointPointer; providerReceipt?: string; resourceReceipt?: DurableResourceOperationReceipt;

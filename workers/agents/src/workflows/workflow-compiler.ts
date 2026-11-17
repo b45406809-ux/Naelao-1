@@ -41,6 +41,7 @@ export async function compileWorkflowEntrypoint(scriptSource: string): Promise<{
     '    delete:(stepKey,gadgetId,table,id)=>control.effect(identity.runId,stepKey,"extension.gadget.delete",{gadget_id:gadgetId,table,id})}),',
     '   resources:Object.freeze({execute:(stepKey,requirementId,operation,input)=>control.effect(identity.runId,stepKey,"extension.resource.structured_data",{requirement_id:requirementId,operation,input}),',
     '    objects:Object.freeze({execute:(stepKey,requirementId,operation,input)=>control.effect(identity.runId,stepKey,"extension.resource.objects",{requirement_id:requirementId,operation,input})}),',
+    '    knowledge:Object.freeze({search:(stepKey,requirementId,input)=>control.effect(identity.runId,stepKey,"extension.resource.knowledge",{requirement_id:requirementId,operation:"search",input})}),',
     '    jobs:Object.freeze({enqueue:(stepKey,requirementId,input)=>control.effect(identity.runId,stepKey,"extension.resource.jobs",{requirement_id:requirementId,operation:"enqueue",input:{workflowId:input.workflowId,paramsJson:input.params===undefined?undefined:JSON.stringify(input.params),deadlineSeconds:input.deadlineSeconds}}),',
     '     status:(stepKey,requirementId,jobId)=>control.effect(identity.runId,stepKey,"extension.resource.jobs",{requirement_id:requirementId,operation:"status",input:{jobId}})})}),',
     '   storage:Object.freeze({putArtifact:(value)=>control.putArtifact(identity.runId,value),readArtifact:(pointer)=>control.readArtifact(identity.runId,pointer)})});',

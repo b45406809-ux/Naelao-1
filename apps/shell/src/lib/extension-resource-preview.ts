@@ -1,6 +1,6 @@
 export interface ExtensionResourceRequirementPreview {
   id: string;
-  kind: "structured_data" | "objects" | "jobs";
+  kind: "structured_data" | "objects" | "jobs" | "knowledge";
   scope: "installation" | "project" | "space";
   operations: Array<{ id: string; meteringUnit: string }>;
   limits: { requestsPerMinute: number; maxConcurrent: number; maxBytesPerOperation: number };
@@ -18,7 +18,7 @@ export function previewExtensionResourceRequirements(value: unknown): { requirem
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return { requirements: [], invalid: true };
     const row = candidate as Record<string, unknown>;
     if (typeof row.id !== "string" || !ID.test(row.id)
-      || !["structured_data", "objects", "jobs"].includes(String(row.kind)) || row.apiVersion !== "1.0"
+      || !["structured_data", "objects", "jobs", "knowledge"].includes(String(row.kind)) || row.apiVersion !== "1.0"
       || typeof row.scope !== "string" || !["project", "installation", "space"].includes(row.scope)
       || !Array.isArray(row.operations) || row.operations.length < 1 || row.operations.length > 32
       || !row.operations.every(operation => operation && typeof operation === "object" && !Array.isArray(operation)
@@ -42,6 +42,13 @@ export function previewExtensionResourceRequirements(value: unknown): { requirem
       if (row.scope !== "project" || !binding || !Array.isArray(binding.workflowIds) || binding.workflowIds.length < 1 || binding.workflowIds.length > 32
         || new Set(binding.workflowIds).size !== binding.workflowIds.length || !binding.workflowIds.every(id => typeof id === "string" && ID.test(id))) return { requirements: [], invalid: true };
       targets.push(`workflows: ${(binding.workflowIds as string[]).join(", ") || "none"}`);
+    } else if (row.kind === "knowledge") {
+      const binding = row.binding as Record<string, unknown> | undefined;
+      if (row.scope !== "project" || !binding || Object.keys(binding).some(key => key !== "publicationIds")
+        || !Array.isArray(binding.publicationIds) || binding.publicationIds.length < 1 || binding.publicationIds.length > 16
+        || new Set(binding.publicationIds).size !== binding.publicationIds.length
+        || !binding.publicationIds.every(id => typeof id === "string" && /^[a-z][a-z0-9_-]{2,63}$/.test(id))) return { requirements: [], invalid: true };
+      targets.push(`published Knowledge: ${(binding.publicationIds as string[]).join(", ")}`);
     } else if (row.binding !== undefined) {
       return { requirements: [], invalid: true };
     }

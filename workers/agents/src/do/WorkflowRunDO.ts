@@ -1,11 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { wrapWorkflowBinding } from "@cloudflare/dynamic-workflows";
 import { WORKFLOW_CLASS_POLICIES, isTerminalWorkflow, validateDurableWorkflowIdentity, validateWorkflowPointer,
-  resolveExtensionJobResourceRequest, resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, type DurableJobOperationReceipt, type DurableObjectOperationReceipt,
+  resolveExtensionJobResourceRequest, resolveExtensionKnowledgeResourceRequest, resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, type DurableJobOperationReceipt, type DurableKnowledgeOperationReceipt, type DurableObjectOperationReceipt,
   type DurableResourceOperationReceipt, type DurableStructuredDataOperationReceipt, type DurableWorkflowIdentity,
   type WorkflowCheckpointPointer, type DurableWorkflowStatus } from "@naelao/agent-sdk";
 import { WorkflowJournal, type WorkflowJournalStorage, type WorkflowJournalRecord } from "../workflows/workflow-state.js";
-import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, resolveApprovedObjectGrant, resolveApprovedStructuredDataGrant,
+import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, resolveApprovedKnowledgeGrant, resolveApprovedObjectGrant, resolveApprovedStructuredDataGrant,
   resolveApprovedJobsGrant, workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowResourceUsage, reportWorkflowStepInfraUsage } from "../workflows/report-infra-usage.js";
 import type { Env } from "../env.js";
@@ -108,7 +108,8 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     if (!identity.capabilities.includes(operation) || !/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/.test(operation)) throw new Error("workflow_capability_denied");
     const json = JSON.stringify(params);
     if (!json || new TextEncoder().encode(json).byteLength > 262144) throw new Error("workflow_effect_input_limit");
-    const inputDigest = await workflowHash(json);
+    let inputDigest = await workflowHash(json);
+    let effectParams = params;
     let gadgetOperation = operation.match(/^extension\.gadget\.(list|get|insert|update|delete)$/)?.[1];
     let gadgetId = typeof params.gadget_id === "string" ? params.gadget_id : "";
     let table = typeof params.table === "string" ? params.table : "";
@@ -163,6 +164,31 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       const inputBytes = new TextEncoder().encode(JSON.stringify(params.input)).byteLength;
       resourceMetering = { unit: declaration.meteringUnit, units: declaration.meteringUnit === "job" ? 1 : inputBytes };
     }
+    let resolvedKnowledge: ReturnType<typeof resolveExtensionKnowledgeResourceRequest> = null;
+    let approvedKnowledgeGrant: Awaited<ReturnType<typeof resolveApprovedKnowledgeGrant>> = null;
+    let knowledgePublicationRevision = 0;
+    if (operation === "extension.resource.knowledge" && identity.workflowClass === "vertical_extension" && identity.definitionId) {
+      const grant = await readWorkflowGrant(this.env, identity);
+      const requirementId = typeof params.requirement_id === "string" ? params.requirement_id : "";
+      const operationId = typeof params.operation === "string" ? params.operation : "";
+      resolvedKnowledge = resolveExtensionKnowledgeResourceRequest({ manifest: grant.installation?.manifest ?? {}, workflowId: identity.definitionId,
+        requirementId, operationId, input: params.input });
+      if (!resolvedKnowledge) throw new Error("workflow_knowledge_resource_request_invalid");
+      approvedKnowledgeGrant = await resolveApprovedKnowledgeGrant(grant.installation, requirementId, operationId, resolvedKnowledge.publicationId);
+      if (!approvedKnowledgeGrant) throw new Error("workflow_knowledge_resource_owner_grant_required");
+      const publications = await this.env.KNOWLEDGE_WORKER?.fetch(new Request(
+        `http://knowledge-worker/internal/spaces/${encodeURIComponent(identity.spaceId)}/kb/projects/${encodeURIComponent(identity.projectId ?? "")}/external-publications`,
+        { headers: await workflowHeaders(this.env, identity.tenantId, identity.actorId) }));
+      if (!publications?.ok) throw new Error("workflow_knowledge_publication_unavailable");
+      const directory = await readBoundedResponseText(publications, 64 * 1024).then(value => JSON.parse(value) as { publications?: Array<{ id?: unknown; revision?: unknown }> });
+      const current = directory.publications?.find(item => item.id === resolvedKnowledge!.publicationId);
+      if (!current || !Number.isSafeInteger(current.revision) || Number(current.revision) < 1)
+        throw new Error("workflow_knowledge_publication_unavailable");
+      knowledgePublicationRevision = Number(current.revision);
+      effectParams = { ...params, publication_revision: knowledgePublicationRevision };
+      inputDigest = await workflowHash(JSON.stringify([json, "knowledge-publication-revision", knowledgePublicationRevision]));
+      resourceMetering = { unit: "request", units: 1 };
+    }
     let resourceReceipt: DurableResourceOperationReceipt | undefined;
     if (gadgetOperation
       && identity.workflowClass === "vertical_extension" && identity.projectId && identity.installationId
@@ -191,6 +217,14 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
         manifestSha256: approvedJobsGrant.manifest_sha256, resourceSha256: approvedJobsGrant.resource_sha256,
         installationGeneration: approvedJobsGrant.installation_generation, grantRevision: approvedJobsGrant.revision,
         ...(resourceMetering ? { meteringUnit: resourceMetering.unit as "request" | "job", meteredUnits: resourceMetering.units } : {}) };
+    } else if (resolvedKnowledge && approvedKnowledgeGrant && identity.workflowClass === "vertical_extension" && identity.projectId && identity.installationId) {
+      resourceReceipt = { kind: "knowledge", installationId: identity.installationId, projectId: identity.projectId, principalId: identity.actorId,
+        requirementId: String(params.requirement_id), publicationSha256: await workflowHash(resolvedKnowledge.publicationId),
+        publicationRevision: knowledgePublicationRevision, operation: "search", requestSha256: inputDigest,
+        requestBytes: new TextEncoder().encode(json).byteLength, status: "prepared", preparedAt: Date.now(),
+        manifestSha256: approvedKnowledgeGrant.manifest_sha256, resourceSha256: approvedKnowledgeGrant.resource_sha256,
+        installationGeneration: approvedKnowledgeGrant.installation_generation, grantRevision: approvedKnowledgeGrant.revision,
+        meteringUnit: "request", meteredUnits: 1 };
     }
     const { effect, created } = await this.journal.prepareExternalEffect(key, operation, inputDigest, resourceReceipt);
     if (effect.status === "committed" && effect.result) return readWorkflowArtifact(this.env, identity, effect.result);
@@ -206,7 +240,7 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       if (!this.env.AGENTS_WORKER) throw new Error("workflow_effect_host_unavailable");
       const response = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workflows/effect", {
         method: "POST", headers: await workflowHeaders(this.env, identity.tenantId, identity.actorId),
-        body: JSON.stringify({ identity, key, operation, params, idempotencyKey: runId + ":" + key }),
+        body: JSON.stringify({ identity, key, operation, params: effectParams, idempotencyKey: runId + ":" + key }),
       }));
       if (!response.ok) throw new Error("workflow_effect_failed:" + response.status);
       let result: unknown;

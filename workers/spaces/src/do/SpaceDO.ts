@@ -17958,13 +17958,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
     if (!target) return Response.json({ error_code: "extension_resource_installation_untrusted" }, { status: 404 });
-    const requirements = (target.manifest.resourceRequirements ?? []).filter(item => item.kind === "structured_data" || item.kind === "objects" || item.kind === "jobs").map(item => {
+    const requirements = (target.manifest.resourceRequirements ?? []).filter(item => item.kind === "structured_data" || item.kind === "objects" || item.kind === "jobs" || item.kind === "knowledge").map(item => {
       const binding = item.binding;
       return {
         requirement_id: item.id, kind: item.kind, scope: item.scope,
         gadget_id: item.kind === "structured_data" && binding && "gadgetId" in binding ? binding.gadgetId : null,
         requested_tables: item.kind === "structured_data" && binding && "tables" in binding ? [...binding.tables] : [],
         requested_workflows: item.kind === "jobs" && binding && "workflowIds" in binding ? [...binding.workflowIds] : [],
+        requested_publications: item.kind === "knowledge" && binding && "publicationIds" in binding ? [...binding.publicationIds] : [],
         requested_operations: item.operations.map(operation => ({
           id: operation.id, input: operation.input, output: operation.output, idempotency: operation.idempotency, metering_unit: operation.meteringUnit,
         })),
@@ -18074,14 +18075,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
     if (!target) return Response.json({ error_code: "extension_resource_installation_untrusted" }, { status: 404 });
     const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId
-      && (item.kind === "structured_data" || item.kind === "objects" || item.kind === "jobs"));
+      && (item.kind === "structured_data" || item.kind === "objects" || item.kind === "jobs" || item.kind === "knowledge"));
     const structuredTables = requirement?.kind === "structured_data" && requirement.binding && "tables" in requirement.binding
       ? requirement.binding.tables : undefined;
     const projectObjectRequirement = requirement?.kind === "objects" && requirement.scope === "project";
     const projectJobsRequirement = requirement?.kind === "jobs" && requirement.scope === "project" && requirement.binding !== undefined
       && "workflowIds" in requirement.binding;
+    const projectKnowledgeRequirement = requirement?.kind === "knowledge" && requirement.scope === "project" && requirement.binding !== undefined
+      && "publicationIds" in requirement.binding;
     if (!requirement || requirement.scope !== "project" || requirement.kind === "structured_data" && !structuredTables
-      || requirement.kind === "objects" && !projectObjectRequirement || requirement.kind === "jobs" && !projectJobsRequirement)
+      || requirement.kind === "objects" && !projectObjectRequirement || requirement.kind === "jobs" && !projectJobsRequirement
+      || requirement.kind === "knowledge" && !projectKnowledgeRequirement)
       return Response.json({ error_code: "extension_resource_requirement_not_found" }, { status: 404 });
     let operations: string[], tables: string[];
     if (action === "approved") {
@@ -18092,7 +18096,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         || !Array.isArray(body.tables)
         || requirement.kind === "structured_data" && (!body.tables.length || body.tables.length > structuredTables!.length
           || body.tables.some(item => typeof item !== "string" || !structuredTables!.includes(item)))
-        || (requirement.kind === "objects" || requirement.kind === "jobs") && body.tables.length !== 0
+        || (requirement.kind === "objects" || requirement.kind === "jobs" || requirement.kind === "knowledge") && body.tables.length !== 0
         || new Set(body.tables).size !== body.tables.length)
         return Response.json({ error_code: "extension_resource_grant_selection_invalid" }, { status: 400 });
       operations = [...body.operations as string[]].sort();
@@ -18689,7 +18693,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const unsupportedResources = findUnsupportedExtensionResources(manifest.resourceRequirements ?? []);
     const hasResourceRequirements = (manifest.resourceRequirements?.length ?? 0) > 0;
     const reviewableProjectResources = hasResourceRequirements && manifest.resourceRequirements!.every(item =>
-      item.scope === "project" && (item.kind === "structured_data" || item.kind === "objects" || item.kind === "jobs"))
+      item.scope === "project" && (item.kind === "structured_data" || item.kind === "objects" || item.kind === "jobs" || item.kind === "knowledge"))
       && manifest.bundle !== undefined && body.scope === "PROJECT_BOUND" && body.projectId !== undefined && body.deferActivation === true
       && typeof body.publisherKeyId === "string" && typeof body.publisherSignature === "string" && typeof body.publisherPayloadSha256 === "string";
     if (unsupportedResources.length && !reviewableProjectResources) return Response.json({ error_code: "extension_resource_capability_unavailable",
@@ -19095,7 +19099,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             ? requirement.binding !== undefined && tables.length > 0 && tables.every(table => typeof table === "string" && declaredTables.has(table))
             : (requirement.kind === "objects" && requirement.scope === "project" && tables.length === 0)
               || (requirement.kind === "jobs" && requirement.scope === "project" && requirement.binding !== undefined
-                && "workflowIds" in requirement.binding && tables.length === 0);
+                && "workflowIds" in requirement.binding && tables.length === 0)
+              || (requirement.kind === "knowledge" && requirement.scope === "project" && requirement.binding !== undefined
+                && "publicationIds" in requirement.binding && tables.length === 0);
           return validTableApproval && operations.every(operation => typeof operation === "string" && declaredOperations.has(operation))
             && new Set(operations).size === operations.length && new Set(tables).size === tables.length;
         });

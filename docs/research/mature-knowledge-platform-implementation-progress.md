@@ -60,6 +60,14 @@ K26 remains partial for parse, sync lag, freshness, denials, deletion, cost attr
 
 # Mature knowledge platform implementation progress
 
+## EP03 checkpoint — 2026-11-17 (Project workflow Knowledge caller; local, pending push)
+
+The signed Project workflow can now declare `knowledge.search` against an explicit list of owner-published publication IDs; SDK validation requires a single current project-member worker role and bounded query/topK/output. The durable workflow effect pins its digest and receipt to the currently published revision. AgentDO rechecks the current PROJECT_BOUND installation, exact owner resource grant, publication/revision and bounded host search response. SpaceDO and Shell include Knowledge in staged resource review; staged activation still rejects unsupported Knowledge capability, which remains deliberately `unavailable`.
+
+Local verification: Agent SDK tests **38/38**, Spaces extension runtime/install **35/35**, Shell preview **4/4**; Agent SDK, Agents, Spaces and Shell typechecks pass. No deployed/live workflow or provider acceptance. Remaining code before even considering capability enablement: route Knowledge calls through SpaceDO's existing per-resource request/concurrency lease and verify release/error paths; a reviewed owner grant alone does not enforce the declaration's rate/concurrency limits. Rollout remains disabled.
+
+Exact next action: follow the user-directed SC03 priority after the already-recorded TBR07 authority comparison—implement durable compute admission and dispatch with explicit current-authority revalidation, owner status/cancel/retry and recovery before connecting promoted capacity leases. Preserve the separate Knowledge lease gap above and continue all other active requirements.
+
 ## Current cross-plan checkpoint — 2026-11-17 (owner-approved website preview failure telemetry; local)
 
 Knowledge website preview failures now emit fixed-label `knowledge_source_preview / owner_approved_fetch` outcomes for every authorized fetch attempt, including first-time previews and refresh previews. Error strings are mapped to a closed set; raw URL/tenant/Project details are omitted; Analytics exceptions cannot change preview status or durable refresh retry state. Local evidence: telemetry + website ingestion suites **28/28**, Knowledge typecheck, `git diff --check`. No deployed/live telemetry acceptance; scheduled Knowledge crawl and refresh rollout flags remain disabled. This slice is local and awaits a safe checkpoint push.

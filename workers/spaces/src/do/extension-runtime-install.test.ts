@@ -83,6 +83,14 @@ describe("runtime extension installation", () => {
               status: { type: "string", required: true, maxLength: 16 }, attempt: { type: "number", required: true, minimum: 0, maximum: 5 } } },
             idempotency: "none", meteringUnit: "request" },
         ], limits: { requestsPerMinute: 2, maxConcurrent: 1, maxBytesPerOperation: 8192 },
+      }, {
+        id: "knowledge_search", kind: "knowledge", apiVersion: "1.0", scope: "project", binding: { publicationIds: ["owner_docs"] },
+        operations: [{ id: "search", input: { schemaVersion: "1.0", fields: {
+          publicationId: { type: "string", required: true, maxLength: 64 }, query: { type: "string", required: true, maxLength: 1000 },
+          topK: { type: "number", minimum: 1, maximum: 3 },
+        } }, output: { schemaVersion: "1.0", fields: { resultJson: { type: "string", required: true, maxLength: 32768 } } },
+        idempotency: "none", meteringUnit: "request" }],
+        limits: { requestsPerMinute: 10, maxConcurrent: 1, maxBytesPerOperation: 4096 },
       }],
       bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_granted_catalog", version: "1.0.0", primitives: [
         { schemaVersion: "1.0", kind: "gadget", id: "catalog", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
@@ -94,11 +102,14 @@ describe("runtime extension installation", () => {
           executionMode: "headless", entry: "./request.ts", steps: ["enqueue"], toolNames: ["extension.resource.jobs"] },
         { schemaVersion: "1.0", kind: "workflow", id: "process_job", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
           executionMode: "headless", entry: "./process.ts", steps: ["process"], toolNames: [] },
+        { schemaVersion: "1.0", kind: "workflow", id: "search_knowledge", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+          executionMode: "headless", entry: "./knowledge.ts", steps: ["search"], toolNames: ["extension.resource.knowledge"] },
       ], workerRoles: [
         { id: "lookup_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./lookup.ts",
           primitiveIds: ["lookup"], gadgetActions: [{ gadgetId: "catalog", operations: ["extension.gadget.get", "extension.gadget.insert"], tables: ["records"] }] },
         { id: "request_jobs_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./request.ts", primitiveIds: ["request_jobs"] },
         { id: "process_job_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./process.ts", primitiveIds: ["process_job"] },
+        { id: "knowledge_role", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./knowledge.ts", primitiveIds: ["search_knowledge"] },
       ] },
     }, { gatekeeperCapabilities: ["extension.workflow"] });
     const artifactSha256 = "a".repeat(64), publisher = { publisherId: "pub_example", publisherKeyId: "b".repeat(64),
@@ -116,7 +127,8 @@ describe("runtime extension installation", () => {
     expect(await snapshot.json()).toMatchObject({ installation: { instance_id: installationId, status: "staging", generation: 1 },
       requirements: expect.arrayContaining([expect.objectContaining({ requirement_id: "records", kind: "structured_data", requested_tables: ["records"] }),
         expect.objectContaining({ requirement_id: "attachments", kind: "objects", requested_tables: [] }),
-        expect.objectContaining({ requirement_id: "background", kind: "jobs", requested_tables: [], requested_workflows: ["process_job"] })]),
+        expect.objectContaining({ requirement_id: "background", kind: "jobs", requested_tables: [], requested_workflows: ["process_job"] }),
+        expect.objectContaining({ requirement_id: "knowledge_search", kind: "knowledge", requested_tables: [], requested_publications: ["owner_docs"] })]),
       budget: null, grants: [], object_usage: { object_count: 0, bytes: 0 }, operation_usage: [],
       dependency_inventory: { declared: [], resolved: true, active: [] } });
     const setBudget = (expectedRevision: number, maxRunCredits = 25, monthlyCredits = 250) => space.fetch(new Request("http://space/extension-resource-budget", { method: "POST", headers,
@@ -154,6 +166,13 @@ describe("runtime extension installation", () => {
     const approvedJobsBody = await approvedJobsResponse.json() as { manifest_sha256: string; resource_sha256: string; installation_generation: number; revision: number };
     expect(approvedJobsBody).toMatchObject({ revision: 1, installation_generation: 1 });
     expect(await (await approveJobs(0)).json()).toMatchObject({ replayed: true, revision: 1 });
+    const approveKnowledge = (expectedRevision: number, operations = ["search"], tables: string[] = []) => space.fetch(new Request("http://space/extension-resource-grants", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
+        requirementId: "knowledge_search", actorId: "owner", expectedRevision, operations, tables }) }));
+    expect((await approveKnowledge(0, ["search"], ["records"])).status).toBe(400);
+    const approvedKnowledge = await approveKnowledge(0);
+    expect(approvedKnowledge.status, await approvedKnowledge.clone().text()).toBe(200);
+    expect(await approvedKnowledge.json()).toMatchObject({ status: "approved", revision: 1, operations: ["search"], tables: [] });
     const wrongProject = await space.fetch(new Request("http://space/extension-resource-grants?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-b", instance_id: installationId }), { headers }));
     expect(wrongProject.status).toBe(404);
     storage.sql.exec("UPDATE extension_resource_grants SET operations_json='[\"delete\"]' WHERE instance_id=? AND requirement_id='records'", installationId);
@@ -177,6 +196,7 @@ describe("runtime extension installation", () => {
       expect.objectContaining({ requirementId: "records", kind: "structured_data", operations: ["get", "insert"] }),
       expect.objectContaining({ requirementId: "attachments", kind: "objects", operations: ["get", "put", "delete"] }),
       expect.objectContaining({ requirementId: "background", kind: "jobs", operations: ["enqueue", "status"] }),
+      expect.objectContaining({ requirementId: "knowledge_search", kind: "knowledge", operations: ["search"] }),
     ]) });
 
     // Exercise the operation fence independently of the unavailable runtime activation gate.

@@ -16,6 +16,7 @@ export interface DurableWorkflowHostEnv {
   WORKFLOW_RUN_DO?: DurableObjectNamespace<WorkflowRunDO> | undefined;
   AGENT_SCRIPT_WORKFLOW?: { create(options: { id?: string; params?: unknown }): Promise<WorkflowProviderInstance>; get(id: string): Promise<WorkflowProviderInstance> } | undefined;
   SPACES_WORKER: Fetcher;
+  KNOWLEDGE_WORKER?: Fetcher | undefined;
   AGENTS_WORKER?: Fetcher | undefined;
   BILLING_WORKER?: Fetcher | undefined;
   LOADER?: WorkerLoaderBinding | undefined;
@@ -77,6 +78,20 @@ export async function resolveApprovedJobsGrant(installation: WorkflowInstallatio
   if (!requirement || !requirement.operations.some(item => item.id === operationId)) return null;
   const targets = requirement.binding && "workflowIds" in requirement.binding ? requirement.binding.workflowIds : [];
   if (operationId === "enqueue" && (!targetWorkflowId || !targets.includes(targetWorkflowId))) return null;
+  const manifestSha256 = await workflowHash(JSON.stringify(installation.manifest));
+  const resourceSha256 = await workflowHash(JSON.stringify(requirement));
+  const grant = installation.resource_grants?.find(item => item.requirement_id === requirementId && item.status === "approved"
+    && item.manifest_sha256 === manifestSha256 && item.resource_sha256 === resourceSha256
+    && item.installation_generation === installation.instance.generation && item.operations.includes(operationId) && item.tables.length === 0);
+  return grant ?? null;
+}
+export async function resolveApprovedKnowledgeGrant(installation: WorkflowInstallationGrant | undefined,
+  requirementId: string, operationId: string, publicationId: string): Promise<NonNullable<WorkflowInstallationGrant["resource_grants"]>[number] | null> {
+  if (!installation || installation.instance.status !== "active" || installation.instance.scope !== "PROJECT_BOUND"
+    || !installation.instance.project_id || !installation.instance.instance_id || !Number.isSafeInteger(installation.instance.generation)) return null;
+  const requirement = installation.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === "knowledge" && item.scope === "project");
+  if (!requirement?.binding || !("publicationIds" in requirement.binding) || !requirement.binding.publicationIds.includes(publicationId)
+    || !requirement.operations.some(item => item.id === operationId && item.id === "search")) return null;
   const manifestSha256 = await workflowHash(JSON.stringify(installation.manifest));
   const resourceSha256 = await workflowHash(JSON.stringify(requirement));
   const grant = installation.resource_grants?.find(item => item.requirement_id === requirementId && item.status === "approved"

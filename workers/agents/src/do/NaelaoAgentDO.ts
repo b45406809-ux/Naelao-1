@@ -20,7 +20,7 @@ import { resolveExtensionProjectKnowledge, resolveCurrentExtensionKnowledgeRevis
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { createScaleDownProcessor } from "../shared/scaledown.js";
 import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, validateVoiceExtensionStreamEvent, validateVoiceExtensionStreamResponse,
-  resolveExtensionJobResourceRequest, resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, validateExtensionResourceValue, type DocumentProcessingGateway } from "@naelao/agent-sdk";
+  resolveExtensionJobResourceRequest, resolveExtensionKnowledgeResourceRequest, resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, validateExtensionResourceValue, type DocumentProcessingGateway } from "@naelao/agent-sdk";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
 
 type AssistantApprovalPolicySnapshot = {
@@ -54,7 +54,7 @@ type WorkerMergeOutcome = {
 import { DurableObject } from "cloudflare:workers";
 import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
 import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, resolveExtensionGadgetAppId, resolveApprovedObjectGrant,
-  resolveApprovedJobsGrant, resolveApprovedStructuredDataGrant, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+  resolveApprovedJobsGrant, resolveApprovedKnowledgeGrant, resolveApprovedStructuredDataGrant, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import { enqueueExtensionJob, readExtensionJobStatus, type ExtensionJobQueueMessage } from "../workflows/extension-jobs.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { normalizePreferredLanguage } from "@naelao/types";
@@ -1254,6 +1254,43 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       try { validateExtensionResourceValue(resolved.outputSchema, output, "output"); }
       catch { return Response.json({ error_code: "workflow_structured_data_result_exceeded_schema" }, { status: 502 }); }
       return Response.json(output);
+    }
+    if (body.operation === "extension.resource.knowledge") {
+      if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId
+        || !grant.installation || grant.installation.instance.status !== "active" || grant.installation.instance.scope !== "PROJECT_BOUND")
+        return Response.json({ error_code: "workflow_knowledge_resource_grant_invalid" }, { status: 403 });
+      const requirementId = typeof body.params?.requirement_id === "string" ? body.params.requirement_id : "";
+      const operationId = typeof body.params?.operation === "string" ? body.params.operation : "";
+      const resolved = resolveExtensionKnowledgeResourceRequest({ manifest: grant.installation.manifest, workflowId: identity.definitionId,
+        requirementId, operationId, input: body.params?.input });
+      if (!resolved) return Response.json({ error_code: "workflow_knowledge_resource_operation_not_declared" }, { status: 403 });
+      const approvedGrant = await resolveApprovedKnowledgeGrant(grant.installation, requirementId, operationId, resolved.publicationId);
+      if (!approvedGrant) return Response.json({ error_code: "workflow_knowledge_resource_owner_grant_required" }, { status: 403 });
+      if (!this.env.KNOWLEDGE_WORKER) return Response.json({ error_code: "workflow_knowledge_resource_host_unavailable" }, { status: 503 });
+      const headers = { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, identity.tenantId) };
+      const base = `http://knowledge-worker/internal/spaces/${encodeURIComponent(identity.spaceId)}/kb/projects/${encodeURIComponent(identity.projectId)}`;
+      const publicationsResponse = await this.env.KNOWLEDGE_WORKER.fetch(new Request(`${base}/external-publications`, { headers }));
+      if (!publicationsResponse.ok) return Response.json({ error_code: "workflow_knowledge_publication_unavailable" }, { status: 503 });
+      const directory = await readBoundedResponseJson<{ publications?: Array<{ id?: unknown; revision?: unknown }> }>(publicationsResponse, 64 * 1024).catch(() => null);
+      const publication = directory?.publications?.find(item => item.id === resolved.publicationId);
+      if (!publication || !Number.isSafeInteger(publication.revision) || Number(publication.revision) < 1)
+        return Response.json({ error_code: "workflow_knowledge_publication_unavailable" }, { status: 404 });
+      const pinnedRevision = body.params?.publication_revision;
+      if (!Number.isSafeInteger(pinnedRevision) || Number(pinnedRevision) !== Number(publication.revision))
+        return Response.json({ error_code: "workflow_knowledge_publication_changed" }, { status: 409 });
+      const response = await this.env.KNOWLEDGE_WORKER.fetch(new Request(`${base}/external-search`, { method: "POST", headers,
+        body: JSON.stringify({ publication_id: resolved.publicationId, publication_revision: pinnedRevision,
+          query: resolved.query, top_k: resolved.topK }) }));
+      if (!response.ok) return new Response(response.body, { status: response.status,
+        headers: { "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "private, no-store" } });
+      const result = await readBoundedResponseJson<{ data?: unknown; context_instruction?: unknown }>(response, 24 * 1024).catch(() => null);
+      if (!result || !Array.isArray(result.data) || typeof result.context_instruction !== "string")
+        return Response.json({ error_code: "workflow_knowledge_resource_result_invalid" }, { status: 502 });
+      const output = { resultJson: JSON.stringify({ data: result.data, context_instruction: result.context_instruction }) };
+      try { validateExtensionResourceValue(resolved.outputSchema, output, "output"); }
+      catch { return Response.json({ error_code: "workflow_knowledge_resource_result_exceeded_schema" }, { status: 502 }); }
+      return Response.json(output, { headers: { "cache-control": "private, no-store" } });
     }
     if (body.operation === "extension.resource.objects") {
       if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId

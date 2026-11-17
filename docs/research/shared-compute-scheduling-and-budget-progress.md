@@ -1,5 +1,9 @@
 # Shared compute scheduling and budget progress
 
+## Active SC03 next action — 2026-11-17
+
+TBR07's SpaceDO/Knowledge/extension authority comparison is already recorded below and in the TBR progress record; it found no shared ACL writer and leaves the owner/admin private-Project policy unresolved. Do not repeat the audit or widen access. Implement the missing SC03 durable compute admission/dispatch contract next: persist a bounded non-secret invocation identity and immutable request reference/digest; bind caller/service identity, authorization revision, budget reservation, lifecycle state, retry/deadline and fenced capacity lease; revalidate authority and billing before dispatch; expose owner-scoped status/cancel/retry/recovery; and resume only a still-authorized same request. Inspect whether a reusable encrypted durable request store already exists before choosing the reference contract. Do not persist arbitrary code or secrets in ConcurrencyDO queue state, claim process-memory restoration, or turn a synchronous invocation into a blocking wait. Then integrate with the existing hierarchical queue and continue remaining active plans. Rollout remains disabled.
+
 Source: `docs/research/shared-compute-scheduling-and-budget-plan.md`, fetched from `origin/plan/microapps-ui-sdk-voice` commit `3770193d`; copied SHA-256 `7a03471b4396e5f2e5a35820659957dfb21ba3b756507292c9c7fb8bbe637145`. No planning branch checkout or merge.
 
 ## Current reconciliation — 2026-11-17

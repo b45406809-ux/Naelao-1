@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createExtensionResourceClient, createLocalExtensionResourceHarness, digestExtensionManifest, findUnsupportedExtensionResources, isSharedFilesystemPathAllowed,
-  parseExtensionBundle, parseExtensionPrimitive, resolveExtensionDependencyClosure, resolveExtensionJobResourceRequest, resolveExtensionStructuredDataRequest,
+  parseExtensionBundle, parseExtensionPrimitive, resolveExtensionDependencyClosure, resolveExtensionJobResourceRequest, resolveExtensionKnowledgeResourceRequest, resolveExtensionStructuredDataRequest,
   validateExtensionManifest, validateExtensionSettingsValues } from "./extensions.js";
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
@@ -89,6 +89,31 @@ describe("immutable extension kernel", () => {
       resourceRequirements: [jobsRequirement()] })).toThrow("jobs_target_workflow_invalid_or_recursive");
     expect(() => validateExtensionManifest({ ...valid, resourceRequirements: [{ ...jobsRequirement(), scope: "installation" }] }))
       .toThrow("jobs_project_workflow_binding_required");
+  });
+  it("binds Knowledge search to an owner publication named by a signed Project workflow", () => {
+    const requirement = { id: "knowledge_search", kind: "knowledge", apiVersion: "1.0", scope: "project", binding: { publicationIds: ["owner_docs"] },
+      operations: [{ id: "search", input: { schemaVersion: "1.0", fields: {
+        publicationId: { type: "string", required: true, maxLength: 64 }, query: { type: "string", required: true, maxLength: 1000 },
+        topK: { type: "number", minimum: 1, maximum: 3 },
+      } }, output: { schemaVersion: "1.0", fields: { resultJson: { type: "string", required: true, maxLength: 32768 } } },
+      idempotency: "none", meteringUnit: "request" }], limits: { requestsPerMinute: 10, maxConcurrent: 1, maxBytesPerOperation: 4096 } };
+    const bundle = { schemaVersion: "1.0", kind: "extension_bundle", id: valid.id, version: "1.0.0", primitives: [
+      { schemaVersion: "1.0", kind: "workflow", id: "lookup", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+        executionMode: "headless", entry: "./lookup.ts", steps: ["lookup"], toolNames: ["extension.resource.knowledge"] },
+    ], workerRoles: [{ id: "lookup_role", principal: "project_member", invocation: "workflow_step", execution: "worker",
+      entry: "./lookup.ts", primitiveIds: ["lookup"] }] };
+    const manifest = validateExtensionManifest({ ...valid, capabilityRequirements: ["extension.workflow"], resourceRequirements: [requirement], bundle });
+    expect(manifest.resourceRequirements?.[0]?.binding).toEqual({ publicationIds: ["owner_docs"] });
+    expect(findUnsupportedExtensionResources(manifest.resourceRequirements!)).toEqual([{ requirementId: "knowledge_search", kind: "knowledge", operations: ["search"] }]);
+    expect(resolveExtensionKnowledgeResourceRequest({ manifest, workflowId: "lookup", requirementId: "knowledge_search", operationId: "search",
+      input: { publicationId: "owner_docs", query: "  current policy  ", topK: 2 } })).toMatchObject({ publicationId: "owner_docs", query: "current policy", topK: 2 });
+    expect(resolveExtensionKnowledgeResourceRequest({ manifest, workflowId: "lookup", requirementId: "knowledge_search", operationId: "search",
+      input: { publicationId: "other_docs", query: "current policy" } })).toBeNull();
+    expect(resolveExtensionKnowledgeResourceRequest({ manifest, workflowId: "lookup", requirementId: "knowledge_search", operationId: "search",
+      input: { publicationId: "owner_docs", query: "x", topK: 4 } })).toBeNull();
+    expect(() => validateExtensionManifest({ ...valid, capabilityRequirements: ["extension.workflow"], resourceRequirements: [requirement], bundle: {
+      ...bundle, primitives: [{ ...bundle.primitives[0], toolNames: [] }],
+    } })).toThrow("knowledge_resource_workflow_role_required");
   });
   it("parses versioned resource requirements without treating them as grants", async () => {
     const requirement = { id: "catalog", kind: "objects", apiVersion: "1.0", scope: "project", operations: [

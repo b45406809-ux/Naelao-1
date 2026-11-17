@@ -192,15 +192,16 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
       {!usageError && usage && usage.operations.length > 0 && <ul style={{ margin: "6px 0 0", paddingLeft: 18, color: "var(--text3)" }}>{usage.operations.map(operation =>
         <li key={operation.lease_id}>{operation.requirement_id} · {operation.operation_id} {operation.table_name} · lease {operation.status} · grant revision {operation.grant_revision} · {new Date(operation.created_at).toLocaleString()}</li>)}</ul>}
     </div>
-    {requirements.filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs").map(requirement => {
+    {requirements.filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs" || requirement.kind === "knowledge").map(requirement => {
       const grant = snapshot.grants.find(item => item.requirement_id === requirement.id);
       const blocked = snapshot.installation.status === "active";
       const requiresTables = requirement.kind === "structured_data";
       const requestedTables = requirement.binding && "tables" in requirement.binding ? requirement.binding.tables : [];
       const requestedWorkflows = requirement.binding && "workflowIds" in requirement.binding ? requirement.binding.workflowIds : [];
+      const requestedPublications = requirement.binding && "publicationIds" in requirement.binding ? requirement.binding.publicationIds : [];
       return <div key={requirement.id} style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-          <strong>{requirement.id} · {requirement.kind === "objects" ? "objects" : requirement.kind === "jobs" ? "jobs" : "structured data"}</strong><span style={{ color: grant?.status === "approved" ? "var(--text2)" : "var(--text3)" }}>
+          <strong>{requirement.id} · {requirement.kind === "objects" ? "objects" : requirement.kind === "jobs" ? "jobs" : requirement.kind === "knowledge" ? "published Knowledge" : "structured data"}</strong><span style={{ color: grant?.status === "approved" ? "var(--text2)" : "var(--text3)" }}>
             {grant?.status === "approved" ? `approved · revision ${grant.revision}` : grant?.status === "revoked" ? `revoked · revision ${grant.revision}` : "not approved"}
           </span>
         </div>
@@ -208,6 +209,8 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
           ? <div style={{ marginTop: 5, color: "var(--text3)" }}>Requested tables: {requestedTables.join(", ") || "none"}</div>
           : requirement.kind === "jobs"
             ? <div style={{ marginTop: 5, color: "var(--text3)" }}>Approved workflow targets: {requestedWorkflows.join(", ") || "none"}. Dispatch, retry, deadline, concurrency and status are not active until the host jobs adapter is accepted.</div>
+            : requirement.kind === "knowledge"
+              ? <div style={{ marginTop: 5, color: "var(--text3)" }}>Approved publication targets: {requestedPublications.join(", ") || "none"}. Knowledge search remains unavailable until its host capability and acceptance gates are enabled.</div>
             : <div style={{ marginTop: 5, color: "var(--text3)" }}>Object namespace and access operations are not active until the host object adapter is accepted.</div>}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginTop: 5 }}>
           <div><div style={{ fontWeight: 600 }}>Allow operations</div>{requirement.operations.map(operation => <label key={operation.id} style={{ display: "flex", gap: 5, alignItems: "center" }}>
@@ -1410,7 +1413,7 @@ export function ChannelConnect({
               installationId={app.installationId} appId={app.appId} name={app.name} session={session} />)}
             {projectId && hasReviewableProjectExtensionResources(item.manifest.resourceRequirements) && <ExtensionResourceGrantReview
               spaceId={spaceId} projectId={projectId} instanceId={instanceId}
-              requirements={(item.manifest.resourceRequirements ?? []).filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs")} session={session} />}
+              requirements={(item.manifest.resourceRequirements ?? []).filter(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs" || requirement.kind === "knowledge")} session={session} />}
             {item.instance.status === "staging" && <div style={{ color: "var(--text3)", fontSize: 11 }}>Setup did not finish. This extension is not available to workers or channels. If this was a reviewed Project update, resume its exact durable request here.
               <button type="button" className="btn-ghost" style={{ display: "block", marginTop: 5, fontSize: 11 }} disabled={!!recoveringProjectUpdate || !!removingExtension} onClick={() => void recoverProjectExtensionUpdate(instanceId)}>
                 {recoveringProjectUpdate === instanceId ? "Revalidating and resuming…" : "Resume staged update"}

@@ -1962,13 +1962,13 @@ export function setProjectExtensionEnabled(spaceId: string, projectId: string, i
   return apiFetch<{ instance_id: string; status: "active" | "disabled" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(instanceId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable" }) });
 }
 export interface ProjectExtensionResourceRequirement {
-  id: string; kind: "structured_data" | "objects" | "jobs"; apiVersion?: string; scope: string;
-  binding?: { gadgetId: string; tables: string[] } | { workflowIds: string[] };
+  id: string; kind: "structured_data" | "objects" | "jobs" | "knowledge"; apiVersion?: string; scope: string;
+  binding?: { gadgetId: string; tables: string[] } | { workflowIds: string[] } | { publicationIds: string[] };
   operations: Array<{ id: string; input?: unknown; output?: unknown; idempotency?: string; meteringUnit?: string }>;
 }
 /** Requirements with an owner grant-review flow. A declaration alone never enables a host adapter. */
 export function hasReviewableProjectExtensionResources(requirements: ProjectExtensionResourceRequirement[] | undefined): boolean {
-  return (requirements ?? []).some(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs");
+  return (requirements ?? []).some(requirement => requirement.kind === "structured_data" || requirement.kind === "objects" || requirement.kind === "jobs" || requirement.kind === "knowledge");
 }
 export function projectExtensionSetupStatusLabel(status: string, requirements: ProjectExtensionResourceRequirement[] | undefined) {
   if (status === "active") return "enabled" as const;
@@ -1984,8 +1984,8 @@ export interface ProjectExtensionResourceGrant {
 export interface ProjectExtensionResourceGrantSnapshot {
   installation: { instance_id: string; extension_id: string; tenant_id: string; space_id: string; project_id: string;
     scope: "PROJECT_BOUND"; status: string; generation: number; installed_by: string; manifest_sha256: string; release_version: string };
-  requirements: Array<{ requirement_id: string; kind: "structured_data" | "objects" | "jobs"; scope: string; gadget_id: string | null;
-    requested_tables: string[]; requested_workflows: string[];
+  requirements: Array<{ requirement_id: string; kind: "structured_data" | "objects" | "jobs" | "knowledge"; scope: string; gadget_id: string | null;
+    requested_tables: string[]; requested_workflows: string[]; requested_publications?: string[];
     requested_operations: Array<{ id: string; input: unknown; output: unknown; idempotency: string; metering_unit: string }> }>;
   budget: { max_run_credits: number; monthly_credits: number; revision: number; installation_generation: number;
     approved_by: string; approved_at: string; updated_by: string; updated_at: string } | null;

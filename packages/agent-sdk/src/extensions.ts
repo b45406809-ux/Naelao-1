@@ -22,7 +22,7 @@ export type { AdjustStockInput, AdjustStockOutput, ListLowStockInput, ListLowSto
 
 export interface ExtensionSettingsSchema { schemaVersion: 1 | 2; fields: BlueprintSetupField[] }
 /** Manifest requests are declarations only; the host binds grants to the active caller and scope. */
-export type ExtensionResourceKind = "objects" | "structured_data" | "jobs";
+export type ExtensionResourceKind = "objects" | "structured_data" | "jobs" | "knowledge";
 export type ExtensionResourceScope = "installation" | "project" | "space";
 export type ExtensionResourceValueType = "string" | "number" | "boolean";
 export interface ExtensionResourceFieldSchema { type: ExtensionResourceValueType; required?: boolean; maxLength?: number; minimum?: number; maximum?: number }
@@ -62,11 +62,12 @@ export function isExtensionObjectContentType(value: unknown): value is string {
 export interface ExtensionStructuredDataBinding { gadgetId: string; tables: readonly string[] }
 /** A jobs declaration can target only signed workflows from the same package. */
 export interface ExtensionJobsBinding { workflowIds: readonly string[] }
+export interface ExtensionKnowledgeBinding { publicationIds: readonly string[] }
 export interface ExtensionResourceRequirement {
   id: string; kind: ExtensionResourceKind; apiVersion: "1.0"; scope: ExtensionResourceScope;
   operations: readonly ExtensionResourceOperation[];
   limits: { requestsPerMinute: number; maxConcurrent: number; maxBytesPerOperation: number };
-  binding?: ExtensionStructuredDataBinding | ExtensionJobsBinding;
+  binding?: ExtensionStructuredDataBinding | ExtensionJobsBinding | ExtensionKnowledgeBinding;
 }
 export interface ExtensionResourceCapabilityDescriptor {
   kind: ExtensionResourceKind; apiVersion: "1.0"; status: "unavailable" | "available"; operations: readonly string[];
@@ -76,6 +77,7 @@ export const EXTENSION_RESOURCE_CAPABILITIES = Object.freeze([
   Object.freeze({ kind: "objects" as const, apiVersion: "1.0" as const, status: "unavailable" as const, operations: Object.freeze([] as string[]) }),
   Object.freeze({ kind: "structured_data" as const, apiVersion: "1.0" as const, status: "unavailable" as const, operations: Object.freeze([] as string[]) }),
   Object.freeze({ kind: "jobs" as const, apiVersion: "1.0" as const, status: "unavailable" as const, operations: Object.freeze([] as string[]) }),
+  Object.freeze({ kind: "knowledge" as const, apiVersion: "1.0" as const, status: "unavailable" as const, operations: Object.freeze([] as string[]) }),
 ]);
 export function findUnsupportedExtensionResources(requirements: readonly ExtensionResourceRequirement[],
   capabilities: readonly ExtensionResourceCapabilityDescriptor[] = EXTENSION_RESOURCE_CAPABILITIES): Array<{ requirementId: string; kind: ExtensionResourceKind; operations: string[] }> {
@@ -260,9 +262,9 @@ function parseResourceRequirements(value: unknown): ExtensionResourceRequirement
     assert(Number.isInteger(limits.requestsPerMinute) && Number(limits.requestsPerMinute) >= 1 && Number(limits.requestsPerMinute) <= 1000
       && Number.isInteger(limits.maxConcurrent) && Number(limits.maxConcurrent) >= 1 && Number(limits.maxConcurrent) <= 64
       && Number.isInteger(limits.maxBytesPerOperation) && Number(limits.maxBytesPerOperation) >= 1 && Number(limits.maxBytesPerOperation) <= 10 * 1024 * 1024, "invalid_resource_limits");
-    let binding: ExtensionStructuredDataBinding | ExtensionJobsBinding | undefined;
+    let binding: ExtensionStructuredDataBinding | ExtensionJobsBinding | ExtensionKnowledgeBinding | undefined;
     if (raw.binding !== undefined) {
-      assert((raw.kind === "structured_data" || raw.kind === "jobs") && raw.binding !== null && typeof raw.binding === "object" && !Array.isArray(raw.binding), "resource_binding_kind_mismatch");
+      assert((raw.kind === "structured_data" || raw.kind === "jobs" || raw.kind === "knowledge") && raw.binding !== null && typeof raw.binding === "object" && !Array.isArray(raw.binding), "resource_binding_kind_mismatch");
       const bindingRaw = raw.binding as Record<string, unknown>;
       if (raw.kind === "structured_data") {
         assert(Object.keys(bindingRaw).every(key => key === "gadgetId" || key === "tables"), "invalid_resource_binding_field");
@@ -271,16 +273,23 @@ function parseResourceRequirements(value: unknown): ExtensionResourceRequirement
           && new Set(bindingRaw.tables).size === bindingRaw.tables.length
           && bindingRaw.tables.every(table => typeof table === "string" && /^[a-z][a-z0-9_-]{0,62}$/.test(table)), "invalid_resource_binding_tables");
         binding = Object.freeze({ gadgetId: bindingRaw.gadgetId, tables: Object.freeze([...(bindingRaw.tables as string[])].sort()) });
-      } else {
+      } else if (raw.kind === "jobs") {
         assert(Object.keys(bindingRaw).every(key => key === "workflowIds"), "invalid_resource_binding_field");
         assert(Array.isArray(bindingRaw.workflowIds) && bindingRaw.workflowIds.length > 0 && bindingRaw.workflowIds.length <= 32
           && new Set(bindingRaw.workflowIds).size === bindingRaw.workflowIds.length
           && bindingRaw.workflowIds.every(id => typeof id === "string" && /^[a-z][a-z0-9._-]{1,63}$/.test(id)), "invalid_resource_binding_workflows");
         binding = Object.freeze({ workflowIds: Object.freeze([...(bindingRaw.workflowIds as string[])].sort()) });
+      } else {
+        assert(Object.keys(bindingRaw).every(key => key === "publicationIds"), "invalid_resource_binding_field");
+        assert(Array.isArray(bindingRaw.publicationIds) && bindingRaw.publicationIds.length > 0 && bindingRaw.publicationIds.length <= 16
+          && new Set(bindingRaw.publicationIds).size === bindingRaw.publicationIds.length
+          && bindingRaw.publicationIds.every(id => typeof id === "string" && /^[a-z][a-z0-9_-]{2,63}$/.test(id)), "invalid_resource_binding_publications");
+        binding = Object.freeze({ publicationIds: Object.freeze([...(bindingRaw.publicationIds as string[])].sort()) });
       }
     }
     assert(raw.kind !== "structured_data" || (raw.scope === "project" && binding !== undefined && "gadgetId" in binding), "structured_data_project_gadget_binding_required");
     assert(raw.kind !== "jobs" || (raw.scope === "project" && binding !== undefined && "workflowIds" in binding), "jobs_project_workflow_binding_required");
+    assert(raw.kind !== "knowledge" || (raw.scope === "project" && binding !== undefined && "publicationIds" in binding), "knowledge_project_publication_binding_required");
     assert(raw.kind !== "objects" || binding === undefined, "resource_binding_kind_mismatch");
     if (raw.kind === "structured_data") {
       const allowedOperations = new Set(["list", "get", "insert", "update", "delete"]);
@@ -373,6 +382,22 @@ function parseResourceRequirements(value: unknown): ExtensionResourceRequirement
           "jobs_status_output_invalid");
         }
       }
+    } else if (raw.kind === "knowledge") {
+      assert(operations.length === 1 && operations[0]?.id === "search" && operations[0].idempotency === "none"
+        && operations[0].meteringUnit === "request", "knowledge_operation_unsupported");
+      const operation = operations[0]!;
+      const inputFields = operation.input.fields, outputFields = operation.output.fields;
+      assert(Object.keys(inputFields).every(key => ["publicationId", "query", "topK"].includes(key))
+        && inputFields.publicationId?.type === "string" && inputFields.publicationId.required === true
+        && inputFields.publicationId.maxLength !== undefined && inputFields.publicationId.maxLength <= 64
+        && inputFields.query?.type === "string" && inputFields.query.required === true
+        && inputFields.query.maxLength !== undefined && inputFields.query.maxLength <= 1000
+        && (inputFields.topK === undefined || inputFields.topK.type === "number" && inputFields.topK.required !== true
+          && inputFields.topK.minimum !== undefined && inputFields.topK.minimum >= 1 && inputFields.topK.maximum !== undefined && inputFields.topK.maximum <= 3),
+        "knowledge_search_input_schema_invalid");
+      assert(Object.keys(outputFields).length === 1 && outputFields.resultJson?.type === "string"
+        && outputFields.resultJson.required === true && outputFields.resultJson.maxLength !== undefined
+        && outputFields.resultJson.maxLength <= 32_768, "knowledge_search_output_schema_invalid");
     }
     return Object.freeze({ id: raw.id, kind: raw.kind, apiVersion: "1.0", scope: raw.scope,
       operations: Object.freeze(operations), limits: Object.freeze({ ...limits }), ...(binding ? { binding } : {}) }) as ExtensionResourceRequirement;
@@ -497,6 +522,34 @@ export function resolveExtensionJobResourceRequest(input: {
   if (deadlineSeconds !== undefined && (!Number.isSafeInteger(deadlineSeconds) || Number(deadlineSeconds) < 1 || Number(deadlineSeconds) > 86_400)) return null;
   return { operation, outputSchema: operation.output, targetWorkflowId: target.id, params: params as Record<string, unknown>,
     ...(deadlineSeconds !== undefined ? { deadlineSeconds: Number(deadlineSeconds) } : {}) };
+}
+
+/** Resolve a read-only Knowledge search to an explicitly owner-published collection named by
+ * the signed Project workflow requirement. Current publication and owner grant are rechecked by
+ * the host adapter for every call. */
+export function resolveExtensionKnowledgeResourceRequest(input: {
+  manifest: Pick<ExtensionManifest, "bundle" | "resourceRequirements">;
+  workflowId: string; requirementId: string; operationId: string; input: unknown;
+}): { publicationId: string; query: string; topK: number; operation: ExtensionResourceOperation;
+  outputSchema: ExtensionResourceObjectSchema } | null {
+  const requirement = input.manifest.resourceRequirements?.find(item => item.id === input.requirementId && item.kind === "knowledge");
+  const binding = requirement?.binding;
+  const operation = requirement?.operations.find(item => item.id === input.operationId);
+  if (!requirement || requirement.scope !== "project" || !binding || !("publicationIds" in binding)
+    || input.operationId !== "search" || !operation) return null;
+  let value: Record<string, unknown>;
+  try { value = validateExtensionResourceValue(operation.input, input.input, "input"); } catch { return null; }
+  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > requirement.limits.maxBytesPerOperation
+    || typeof value.publicationId !== "string" || !binding.publicationIds.includes(value.publicationId)
+    || typeof value.query !== "string" || !value.query.trim() || value.query.length > 1000) return null;
+  const bundle = input.manifest.bundle;
+  const workflow = bundle?.primitives.find((part): part is WorkflowContract => part.kind === "workflow" && part.id === input.workflowId);
+  const roles = bundle?.workerRoles?.filter(role => role.principal === "project_member" && role.execution === "worker"
+    && ["workflow_step", "tool"].includes(role.invocation) && role.entry === workflow?.entry && role.primitiveIds.includes(input.workflowId)) ?? [];
+  if (!workflow?.toolNames.includes("extension.resource.knowledge") || roles.length !== 1) return null;
+  const topK = value.topK === undefined ? 3 : value.topK;
+  if (typeof topK !== "number" || !Number.isInteger(topK) || topK < 1 || topK > 3) return null;
+  return { publicationId: value.publicationId, query: value.query.trim(), topK, operation, outputSchema: operation.output };
 }
 
 function sameResourceScope(a: ExtensionResourceExecutionScope, b: ExtensionResourceExecutionScope): boolean {
@@ -749,6 +802,17 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
       assert(target !== undefined && roleCount(target) === 1 && !target.toolNames.includes("extension.resource.jobs"),
         "jobs_target_workflow_invalid_or_recursive");
     }
+  }
+  for (const requirement of resourceRequirements ?? []) {
+    if (requirement.kind !== "knowledge") continue;
+    assert(requirement.scope === "project" && canonicalBundle !== undefined && requirement.binding !== undefined
+      && "publicationIds" in requirement.binding, "knowledge_resource_project_bundle_required");
+    const workflows = canonicalBundle.primitives.filter((item): item is WorkflowContract => item.kind === "workflow");
+    const roles = canonicalBundle.workerRoles ?? [];
+    const authorized = workflows.some(workflow => workflow.toolNames.includes("extension.resource.knowledge")
+      && roles.filter(role => role.principal === "project_member" && role.execution === "worker"
+        && ["workflow_step", "tool"].includes(role.invocation) && role.entry === workflow.entry && role.primitiveIds.includes(workflow.id)).length === 1);
+    assert(authorized, "knowledge_resource_workflow_role_required");
   }
   const scopes = new Set<GadgetScope>(["SPACE_WIDE", "PROJECT_BOUND", "USER_PRIVATE", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
   const ids = new Set<string>();
