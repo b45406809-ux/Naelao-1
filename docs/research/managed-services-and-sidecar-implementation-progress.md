@@ -1,3 +1,9 @@
+## Cross-plan checkpoint — 2026-11-17 (owner extension object usage; `3b867de4` pushed)
+
+The EP06 Project-install inventory now includes exact-scope object count/bytes alongside grant, budget, operation and job receipts; it does not estimate cost. `3b867de4` is pushed; focused Shell/Spaces tests and typechecks pass (**3/3**, **41/41**, plus object install suite **34/34**). No deployment/live provider acceptance. Broader resource/dependency/cost/lifecycle inventory remains partial. K26 privacy-safe telemetry through `ab284ee1` is local-only. TBR06 remains proposal-only with no supported role mapping.
+
+Exact next action: inspect scoped Gadget/MicroAppDO structured data for a safe exact-install read-only usage summary; if unsupported by storage authority, document the precise contract gap and move to another independent requirement. Continue S4–S9/U01–U12 and remaining plans. Rollouts disabled; preserve the unstaged Python cache.
+
 ## Cross-plan checkpoint — 2026-11-17 (Knowledge operation telemetry; `ab284ee1` pushed)
 
 Current K26 work includes retrieval/parse/refresh/authorization/citation/deletion metrics with fixed labels, bounded values and failure isolation (`67719e1a`, `370b99f5`, `9476fc1d`, `3c4242b7`, `0ed5adeb`, `c9e796c7`, `ab284ee1`). Relevant Knowledge suites **62/62**, typecheck and diff check pass. These are local checks; no deployed/live telemetry acceptance. EP06 owner-only exact-generation receipts are implemented at `39b284bc` but full resource dependency/cost/lifecycle inventory remains partial. TBR06 still lacks a safe role-to-effective-grant mapping/outbox.

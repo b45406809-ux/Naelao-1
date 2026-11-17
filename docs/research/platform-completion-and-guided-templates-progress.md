@@ -1,3 +1,9 @@
+## Current checkpoint — 2026-11-17 (extension object usage visible; `3b867de4` pushed)
+
+The owner-only signed-install inventory now includes actual host-object count and bytes, plus current requirements/grants/budget and bounded operation/job activity. No provider cost is inferred. Code `3b867de4` is pushed; Shell resource API **3/3**, Spaces route/install **41/41** and focused install suite **34/34**, typechecks and diff check pass. No deployed/live acceptance.
+
+EP06 remains partial for structured-data usage, wider provider dependencies, invoice-backed cost and cleanup/export receipts. Exact next action: trace scoped Gadget/MicroAppDO data for an exact install-bound read-only row/byte summary; proceed only with a trusted storage-boundary identity check, then continue other plan gaps.
+
 ## Current checkpoint — 2026-11-17 (Knowledge citation and deletion telemetry; `ab284ee1` pushed)
 
 K26 now covers privacy-safe retrieval/parse/scheduled-refresh/access-denial/citation/deletion outcomes with bounded fixed labels and failure isolation. It omits raw identifiers, query/content/citation bodies, and provider cost. `ab284ee1` and prior Knowledge telemetry commits through `c9e796c7` are pushed. Relevant tests **62/62**, Knowledge typecheck and diff check pass. No live/deployed telemetry acceptance.
