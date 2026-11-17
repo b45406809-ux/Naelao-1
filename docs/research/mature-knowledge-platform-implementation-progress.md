@@ -1,15 +1,20 @@
-## Current K03 checkpoint — 2026-11-17 (explicit Markdown table provenance; local verification)
+## Current K03 checkpoint — 2026-11-17 (table provenance reaches citations; local verification)
 
-The shared bounded Markdown chunker now appends stable per-document `Table N` labels to stored
-`heading_path` for explicit Markdown table blocks, while retaining enclosing page/section headings and
-source byte/line spans. This preserves parser-reported structure in Knowledge's existing chunk records;
-it does not claim visual coordinates or validate table extraction accuracy. Local checks: RAG chunking
-suite **8/8**, workflow chunking **1/1**, RAG/Workflows/Knowledge typechecks and `git diff --check`.
-No browser, deployed retrieval or provider acceptance.
+The shared bounded Markdown chunker appends stable per-document `Table N` labels to stored `heading_path`
+for explicit table blocks, preserving enclosing page/section headings and source byte/line spans. The
+path now survives lexical/dense candidate fusion, appears in permissioned search results and exact
+citation responses, is retained in the Agent citation metadata and renders in the authenticated Shell
+source panel. Invalid stored path metadata is omitted; it never changes access decisions. Focused local
+evidence: RAG chunking **8/8**, Workflow chunking **1/1**, Knowledge search/citation/metadata tests **3**
+passed, Agent citation metadata **2/2**, RAG/Workflows/Knowledge/Agents/Shell typechecks and diff hygiene.
+No browser or deployed acceptance. A broader legacy Knowledge lifecycle run exposed three separate
+reindex-fixture 404 failures; the focused citation route passed.
 
-Exact next action: carry persisted `heading_path` through permissioned retrieval and exact citation
-responses, then show it in the authorized Shell citation UI. Continue parser-quality and live acceptance
-gates separately, and proceed through remaining active-plan gaps.
+K03 remains partial: headings and Markdown table labels are parser-derived structure, not typed visual
+coordinates; live Cohere response support, extraction confidence and quality evidence remain unverified.
+Exact next action: reconcile the signed MicroApp runtime Knowledge caller with current installation
+grants, published collection revisions and source lineage; implement only the host-enforced invocation
+bridge supported by those authorities, then continue independent EP/PW/S/U/TBR requirements.
 
 ## Current K02/K03 checkpoint — 2026-11-17 (bounded PPTX table extraction; pushed as `34800a4a`)
 

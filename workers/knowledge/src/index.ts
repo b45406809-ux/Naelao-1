@@ -947,6 +947,16 @@ function chunkCoordinates(document: string, sourceChunks: Array<StructuralChunk 
   return chunkSourceCoordinates(document, sourceChunks);
 }
 
+function safeHeadingPath(value: unknown): string[] | undefined {
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try { parsed = JSON.parse(parsed); } catch { return undefined; }
+  }
+  if (!Array.isArray(parsed) || parsed.length > 16
+    || parsed.some((part) => typeof part !== "string" || !part.trim() || part.length > 200)) return undefined;
+  return parsed.length ? parsed as string[] : undefined;
+}
+
 // Foundry's source-reference checker and explicit cross-Space document-share route call these
 // authenticated service endpoints. They return indexed/sanitized KB content only; callers must
 // perform the source Space capability check before requesting a document body.
@@ -3153,7 +3163,7 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
   }
   const scope = { tenantId, spaceId, projectId, roleRank };
   const row = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end, d.source_revision
+    `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end, heading_path, d.source_revision
      FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
      WHERE k.id=? AND k.document_id=? AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
        AND k.required_role_rank<=? AND k.deleted_at IS NULL AND d.status='indexed'
@@ -3187,10 +3197,11 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
     throw notFound("Citation not found");
   }
   recordCitationMetric(c.env.KNOWLEDGE_ANALYTICS, "delivered");
+  const headingPath = safeHeadingPath(row.heading_path);
   return c.json({ citation: { version: 1, identity: `${row.document_id}:${row.id}:${row.content_hash}`,
     document_id: row.document_id, chunk_id: row.id, content_hash: row.content_hash,
     byte_start: coordinate.byteStart, byte_end: coordinate.byteEnd, line_start: coordinate.lineStart,
-    line_end: coordinate.lineEnd, source_revision: Number(row.source_revision) }, content });
+    line_end: coordinate.lineEnd, source_revision: Number(row.source_revision), ...(headingPath ? { heading_path: headingPath } : {}) }, content });
 });
 
 // ── GET /spaces/:spaceId/kb/search ────────────────────────────────────────────
@@ -3242,13 +3253,17 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     try { return await operation(); }
     finally { telemetry[name] = performance.now() - started; }
   };
-  const rowToHit = (row: Record<string, unknown>, score: number): GroundedSearchHit => ({
-    id: String(row.id), score, content: String(row.content), r2Key: String(row.r2_key),
-    byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end),
-    lineStart: Number(row.line_start), lineEnd: Number(row.line_end), title: String(row.title ?? ""),
-    ...(Number.isSafeInteger(row.source_revision) && Number(row.source_revision) > 0
-      ? { sourceRevision: Number(row.source_revision) } : {}),
-  });
+  const rowToHit = (row: Record<string, unknown>, score: number): GroundedSearchHit => {
+    const headingPath = safeHeadingPath(row.heading_path);
+    return {
+      id: String(row.id), score, content: String(row.content), r2Key: String(row.r2_key),
+      byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end),
+      lineStart: Number(row.line_start), lineEnd: Number(row.line_end), title: String(row.title ?? ""),
+      ...(headingPath ? { headingPath } : {}),
+      ...(Number.isSafeInteger(row.source_revision) && Number(row.source_revision) > 0
+        ? { sourceRevision: Number(row.source_revision) } : {}),
+    };
+  };
   if (useAutoRag) {
     try {
       const autoRagInstance = c.env.AUTORAG_KB_INSTANCE;
@@ -3400,14 +3415,15 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   const citationIndex = new Map(citationHits.map((hit, index) => [hit.id, index + 1]));
   const citations = citationHits.map((hit, index) => ({ index: index + 1, title: hit.title ?? "Untitled",
     docId: hit.id.split("_chunk_")[0], snippet: hit.content.slice(0, 280), r2Key: hit.r2Key,
-    charOffset: hit.byteStart, sourceRevision: hit.sourceRevision,
+    charOffset: hit.byteStart, sourceRevision: hit.sourceRevision, ...(hit.headingPath ? { heading_path: hit.headingPath } : {}),
     url: `/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId ?? SPACE_WIDE_PROJECT_SENTINEL)}/citations/${encodeURIComponent(hit.id.split("_chunk_")[0] ?? "")}/${encodeURIComponent(hit.id)}` }));
   const data = await Promise.all(result.hits.map(async (hit) => ({
     chunk_id: hit.id, doc_id: hit.id.split("_chunk_")[0], content: await wrapContextChunk(hit), score: hit.score,
     citation: hit.r2Key ? { document_id: hit.id.split("_chunk_")[0], chunk_id: hit.id,
       index: citationIndex.get(hit.id), title: hit.title, snippet: hit.content.slice(0, 280),
       content_hash: undefined, byte_start: hit.byteStart, byte_end: hit.byteEnd,
-      line_start: hit.lineStart, line_end: hit.lineEnd, source_revision: hit.sourceRevision } : null,
+      line_start: hit.lineStart, line_end: hit.lineEnd, source_revision: hit.sourceRevision,
+      ...(hit.headingPath ? { heading_path: hit.headingPath } : {}) } : null,
   })));
   const deletionStartedDuringRetrieval = await hasKnowledgeDocumentDeletionSince(
     c.env.PLATFORM_DB, tenantId, spaceId, retrievalStartedAt,

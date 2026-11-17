@@ -560,7 +560,7 @@ export interface Message {
     } }>;
     /** Versioned immutable citation events emitted by the agent stream. Ordinals are assigned
      * once server-side and are never inferred from render order. */
-    citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }>;
+    citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string; heading_path?: string[] }>;
   };
   /** CLIENT-ONLY, never persisted server-side: the "currently doing X" activity trail this run
    *  produced (observe/find/gate/reason/run/answer steps, live while the run was in flight — see
@@ -615,7 +615,7 @@ export async function resolveCitation(
   projectId: string,
   citation: { document_id: string; chunk_id: string },
   session: SessionCredentials
-): Promise<{ citation: Record<string, unknown>; content: string }> {
+): Promise<{ citation: Record<string, unknown> & { heading_path?: string[] }; content: string }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/citations/${encodeURIComponent(citation.document_id)}/${encodeURIComponent(citation.chunk_id)}`, { session });
 }
 

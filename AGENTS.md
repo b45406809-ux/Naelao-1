@@ -8,9 +8,10 @@ past work and do not override the current progress records or require repeating 
 - Start or resume from the newest verified progress records and actual code/worktree. PW05 owner/admin
   per-attempt internal-credit reads are pushed at `c1372b54`. SC03's encrypted receipt (`d3a0f194`)
   persists and expires intent but has no alarm-safe authority revalidation/Billing linkage; disconnected
-  replay stays disabled. The current local K03 slice labels explicit Markdown tables in persisted
-  `heading_path` while retaining page headings and source spans. After verification/push, carry that
-  provenance through retrieval/citation UI and continue every active plan.
+  replay stays disabled. The current local K03 slice carries persisted Markdown table/page/section paths
+  through permissioned search, exact citations, Agent metadata and Shell source display. After
+  verification/push, reconcile the signed MicroApp Knowledge caller against host grants/publications,
+  then continue every active plan.
   After
   the K02 reviewed PNG/JPEG OCR caller (`8a6d5026`), after
   K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
@@ -45,18 +46,21 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (K03 persisted Markdown table provenance; local verification)
+## Current checkpoint — 2026-11-17 (K03 citation provenance; local verification)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
 
-The bounded Markdown chunker now stores an explicit `Table N` label in `heading_path` for each parsed
-table block, preserving enclosing page/section headings and source spans. Local RAG chunking **8/8**,
-Workflow chunking **1/1**, RAG/Workflows/Knowledge typechecks and diff hygiene pass. This is parser-derived
-structure, not visual coordinates or provider accuracy evidence. SC03 remains fail-closed: encrypted
-invocation storage/cleanup has no alarm-safe current-authority revalidator or fresh Billing link.
+The bounded Markdown chunker stores `Table N` labels in `heading_path`; the path now survives permissioned
+retrieval and exact citation resolution, reaches Agent metadata and displays in the authenticated Shell
+source panel. Local RAG chunking **8/8**, Workflow chunking **1/1**, Knowledge citation/search tests **3**,
+Agent citation metadata **2/2**, affected typechecks and diff hygiene pass. A broader Knowledge lifecycle
+run had three unrelated restored-reindex fixture 404s; the focused citation test passed. These labels
+are parser-derived structure, not visual coordinates or provider accuracy evidence. SC03 still lacks an
+alarm-safe current-authority revalidator and fresh Billing link.
 
-Exact next action: carry persisted `heading_path` through permissioned retrieval and citation APIs, then
-show it in the authorized Shell citation UI. Keep rollouts disabled and continue all independent work.
+Exact next action: reconcile the signed MicroApp runtime Knowledge caller with current install grants,
+published collection revisions and source lineage; implement only a host-enforced invocation bridge
+supported by those authority records. Keep rollouts disabled and continue all independent work.
 
 ## Previous checkpoint — 2026-11-17 (K02 PNG/JPEG reviewed OCR caller; pushed as `8a6d5026`)
 

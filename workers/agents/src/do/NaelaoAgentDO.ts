@@ -213,6 +213,7 @@ export function citationsFromTrace(trace: TraceStep[]): Array<{
   document_id: string;
   chunk_id: string;
   label?: string;
+  heading_path?: string[];
 }> {
   const seen = new Set<string>();
   const citations: Array<{
@@ -222,6 +223,7 @@ export function citationsFromTrace(trace: TraceStep[]): Array<{
     document_id: string;
     chunk_id: string;
     label?: string;
+    heading_path?: string[];
   }> = [];
   for (const step of trace) {
     if (step.phase !== "run" || step.name !== "knowledge.search" || step.ok !== true || !step.output) continue;
@@ -237,7 +239,7 @@ export function citationsFromTrace(trace: TraceStep[]): Array<{
     ];
     for (const candidate of candidates) {
       if (!candidate || typeof candidate !== "object") continue;
-      const value = candidate as { document_id?: unknown; chunk_id?: unknown; title?: unknown };
+      const value = candidate as { document_id?: unknown; chunk_id?: unknown; title?: unknown; heading_path?: unknown };
       if (typeof value.document_id !== "string" || typeof value.chunk_id !== "string" || !value.document_id || !value.chunk_id) continue;
       const identity = `${value.document_id}:${value.chunk_id}`;
       if (seen.has(identity)) continue;
@@ -249,6 +251,9 @@ export function citationsFromTrace(trace: TraceStep[]): Array<{
         document_id: value.document_id,
         chunk_id: value.chunk_id,
         ...(typeof value.title === "string" && value.title ? { label: value.title } : {}),
+        ...(Array.isArray(value.heading_path) && value.heading_path.length <= 16
+          && value.heading_path.every((item) => typeof item === "string" && item.length > 0 && item.length <= 200)
+          ? { heading_path: value.heading_path as string[] } : {}),
       });
     }
   }

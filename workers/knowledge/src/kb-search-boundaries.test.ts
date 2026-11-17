@@ -107,7 +107,7 @@ describe("content-free retrieval evaluation trace", () => {
     const row = (id: string, sourceRevision: number) => ({
       id, tenant_id: "tenant-a", space_id: "space-b", project_id: "_space", required_role_rank: 0,
       content: `Synthetic indexed content for ${id}`, r2_key: `kb/${id}.txt`, byte_start: 0, byte_end: 32,
-      line_start: 1, line_end: 1, title: "Synthetic source", source_revision: sourceRevision,
+      line_start: 1, line_end: 1, heading_path: '["Page 2","Table 1"]', title: "Synthetic source", source_revision: sourceRevision,
     });
     const runRoute = async (caseId: string, query: string, id: string, canonicalRows: Array<Record<string, unknown>>) => {
       const env = bindings(true, false, false, {
@@ -118,7 +118,7 @@ describe("content-free retrieval evaluation trace", () => {
       const response = await worker.fetch!(await searchRequest(query), env as never, {} as ExecutionContext);
       expect(response.status).toBe(200);
       const body = await response.json() as {
-        data: Array<{ chunk_id: string; score: number; citation: { chunk_id: string; source_revision?: number } | null }>;
+        data: Array<{ chunk_id: string; score: number; citation: { chunk_id: string; source_revision?: number; heading_path?: string[] } | null }>;
         latency_ms: number;
       };
       return {
@@ -131,6 +131,10 @@ describe("content-free retrieval evaluation trace", () => {
     const stale = await runRoute("synthetic-current-policy", "What is the current policy?", staleId, [row(staleId, 1)]);
     const noAnswer = await runRoute("synthetic-missing-answer", "Is stock guaranteed in 2035?", forbiddenId, []);
     expect(current.result.retrieved.map(({ chunkId }) => chunkId)).toEqual([currentId]);
+    const routeWithProvenance = await worker.fetch!(await searchRequest("Which catalog item uses code RX-0042?"), bindings(true, false, false, {
+      matches: [{ id: currentId, score: 0.98 }], chunkRows: [row(currentId, 2)], ftsRows: [row(currentId, 2)],
+    }) as never, {} as ExecutionContext);
+    await expect(routeWithProvenance.json()).resolves.toMatchObject({ data: [{ citation: { heading_path: ["Page 2", "Table 1"] } }] });
     expect(stale.result.retrieved[0]?.sourceVersion).toBe("1");
     expect(noAnswer.result.retrieved).toEqual([]);
     expect(noAnswer.env.query).toHaveBeenCalled();

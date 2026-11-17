@@ -28,6 +28,7 @@ export function CitationBadges({
   const [open, setOpen] = React.useState<{
     citation: Citation;
     content?: string;
+    headingPath?: string[];
     error?: string;
   } | null>(null);
   async function show(citation: Citation) {
@@ -39,7 +40,8 @@ export function CitationBadges({
         citation,
         session
       );
-      setOpen({ citation, content: resolved.content });
+      setOpen({ citation, content: resolved.content,
+        ...(resolved.citation.heading_path ? { headingPath: resolved.citation.heading_path } : {}) });
       window.dispatchEvent(
         new CustomEvent("naelao:citation-open", {
           detail: { ordinal: citation.ordinal },
@@ -104,7 +106,12 @@ export function CitationBadges({
           ) : open.content === undefined ? (
             <p>Loading source…</p>
           ) : (
-            <pre style={{ whiteSpace: "pre-wrap" }}>{open.content}</pre>
+            <>
+              {open.headingPath?.length ? <p aria-label="Source location" style={{ color: "var(--text3)", fontSize: 12 }}>
+                {open.headingPath.join(" / ")}
+              </p> : null}
+              <pre style={{ whiteSpace: "pre-wrap" }}>{open.content}</pre>
+            </>
           )}
         </dialog>
       )}

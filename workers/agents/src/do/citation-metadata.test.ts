@@ -6,7 +6,8 @@ describe("citationsFromTrace", () => {
     const result = citationsFromTrace([
       {
         seq: 1, phase: "run", name: "knowledge.search", ok: true,
-        output: JSON.stringify({ data: [{ citation: { document_id: "doc-1", chunk_id: "doc-1_chunk_0", title: "Policy" } }] }),
+        output: JSON.stringify({ data: [{ citation: { document_id: "doc-1", chunk_id: "doc-1_chunk_0", title: "Policy",
+          heading_path: ["Page 2", "Table 1"] } }] }),
       },
       {
         seq: 2, phase: "run", name: "knowledge.search", ok: true,
@@ -15,7 +16,8 @@ describe("citationsFromTrace", () => {
       { seq: 3, phase: "run", name: "knowledge.search", ok: false, output: JSON.stringify({ citations: [{ document_id: "ignored", chunk_id: "ignored" }] }) },
     ]);
     expect(result).toEqual([
-      { version: 1, ordinal: 1, identity: "doc-1:doc-1_chunk_0", document_id: "doc-1", chunk_id: "doc-1_chunk_0", label: "Policy" },
+      { version: 1, ordinal: 1, identity: "doc-1:doc-1_chunk_0", document_id: "doc-1", chunk_id: "doc-1_chunk_0", label: "Policy",
+        heading_path: ["Page 2", "Table 1"] },
       { version: 1, ordinal: 2, identity: "doc-2:doc-2_chunk_1", document_id: "doc-2", chunk_id: "doc-2_chunk_1" },
     ]);
   });

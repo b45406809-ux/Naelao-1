@@ -34,6 +34,8 @@ export interface GroundedSearchHit {
   lineEnd?: number;
   /** Current canonical source revision associated with this indexed chunk. */
   sourceRevision?: number;
+  /** Validated parser-derived section/page/table path; never an authorization signal. */
+  headingPath?: string[];
   title?: string;
   url?: string;
 }

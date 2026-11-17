@@ -47,6 +47,16 @@ export function sparseRank(query: string, candidates: GroundedSearchHit[]): Grou
   });
 }
 
+function safeStoredHeadingPath(value: unknown): string[] | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.length > 0 && parsed.length <= 16
+      && parsed.every((part) => typeof part === "string" && part.trim().length > 0 && part.length <= 200)
+      ? parsed as string[] : undefined;
+  } catch { return undefined; }
+}
+
 /** Generate lexical candidates independently from Vectorize. Tenant, Space, Project, role,
  * document publication and user allowlist checks live in the SQL query, before any candidate is
  * returned to the caller or fused with dense results. FTS syntax is built only from bounded
@@ -77,7 +87,7 @@ export async function queryScopedFtsCandidates(input: {
   }
   const scope = buildRetrievalPredicate("k", input);
   const { results } = await input.db.prepare(`
-    SELECT k.id,k.content,k.r2_key,k.byte_start,k.byte_end,k.line_start,k.line_end,d.title,d.source_revision
+    SELECT k.id,k.content,k.r2_key,k.byte_start,k.byte_end,k.line_start,k.line_end,k.heading_path,d.title,d.source_revision
     FROM kb_chunks_fts
     JOIN kb_chunks k ON k.rowid=kb_chunks_fts.rowid
     JOIN kb_documents d ON d.id=k.document_id AND d.tenant_id=k.tenant_id AND d.space_id=k.space_id
@@ -95,18 +105,22 @@ export async function queryScopedFtsCandidates(input: {
     LIMIT ?
   `).bind(matchExpression, ...scope.binds, input.userId, limit).all<{
     id: string; content: string; r2_key: string; byte_start: number; byte_end: number;
-    line_start: number; line_end: number; title: string | null; source_revision: number;
+    line_start: number; line_end: number; heading_path: string; title: string | null; source_revision: number;
   }>();
-  return results.map((row) => ({
-    id: row.id,
-    score: 0,
-    content: row.content,
-    r2Key: row.r2_key,
-    byteStart: row.byte_start,
-    byteEnd: row.byte_end,
-    lineStart: row.line_start,
-    lineEnd: row.line_end,
-    ...(Number.isSafeInteger(row.source_revision) && row.source_revision > 0 ? { sourceRevision: row.source_revision } : {}),
-    title: row.title ?? "",
-  }));
+  return results.map((row) => {
+    const headingPath = safeStoredHeadingPath(row.heading_path);
+    return {
+      id: row.id,
+      score: 0,
+      content: row.content,
+      r2Key: row.r2_key,
+      byteStart: row.byte_start,
+      byteEnd: row.byte_end,
+      lineStart: row.line_start,
+      lineEnd: row.line_end,
+      ...(headingPath ? { headingPath } : {}),
+      ...(Number.isSafeInteger(row.source_revision) && row.source_revision > 0 ? { sourceRevision: row.source_revision } : {}),
+      title: row.title ?? "",
+    };
+  });
 }
