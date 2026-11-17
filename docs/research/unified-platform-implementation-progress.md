@@ -550,3 +550,6 @@ this is at-least-once delivery. There is no email alert or dispatch blocking.
 Focused alert/outbox tests pass **7/7**; Agents/Shell typechecks pass, with full-suite and migration
 rechecks recorded in the managed-services progress log. Tests use a fake Notifications Worker and
 in-memory D1; no push provider or deployed service was contacted.
+## Latest cross-plan update — 2026-11-17 (scheduled approval resume retains principal; `688f69e4` pushed)
+
+Code `688f69e4c9cae6c29986efb17d65a507779134e9` is remote-verified. Approval checkpoints persist scheduled service identity/revision; resume revalidates the identity against its session, reconstructs older checkpoint context only from that authority, and checks the current job target before resuming and before subsequent goal steps. Session-authority outages leave approval retryable. Tests **28/28**, Agents typecheck and diff check pass. This does not provide per-job budget administration or cancellation of an external effect already underway. Exact next action: check current effect/Billing ledgers for a supported per-job budget and cancellation receipt contract, then continue independent S/U/P/PW/K/EP/AP work.
