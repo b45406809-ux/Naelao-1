@@ -438,10 +438,14 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
       return [...seen.values()].sort((a, b) => b.score - a.score).slice(0, limit);
     },
 
-    async forget(id) {
-      opts.sql.exec(`DELETE FROM structured_facts WHERE id = ?`, id);
-      opts.sql.exec(`DELETE FROM episodic_log WHERE id = ?`, id);
-      if (opts.vectorIndex) {
+    async forget(id, userId) {
+      const owner = scope(userId);
+      const ownsFact = opts.sql.exec(`SELECT 1 AS found FROM structured_facts WHERE id = ? AND user_id = ? LIMIT 1`, id, owner).toArray().length > 0;
+      const ownsEpisode = opts.sql.exec(`SELECT 1 AS found FROM episodic_log WHERE id = ? AND user_id = ? LIMIT 1`, id, owner).toArray().length > 0;
+      if (!ownsFact && !ownsEpisode) return;
+      opts.sql.exec(`DELETE FROM structured_facts WHERE id = ? AND user_id = ?`, id, owner);
+      opts.sql.exec(`DELETE FROM episodic_log WHERE id = ? AND user_id = ?`, id, owner);
+      if (ownsEpisode && opts.vectorIndex) {
         try {
           await opts.vectorIndex.deleteByIds([id]);
         } catch {

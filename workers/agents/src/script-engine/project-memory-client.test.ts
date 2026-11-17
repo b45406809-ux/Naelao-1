@@ -42,6 +42,23 @@ describe("project memory Jev/Laya relevance gate", () => {
     expect(new URL(write.url).searchParams.get("role_rank")).toBe("2");
   });
 
+  it("sends current effective rank when deleting a shared project fact", async () => {
+    const fetch = vi.fn(async () => Response.json({ deleted: true }));
+    const store = buildProjectMemoryStore({
+      spacesWorker: { fetch } as unknown as Fetcher,
+      platformSecret: "secret",
+      spaceId: "space",
+      tenantId: "tenant",
+      projectId: "project",
+      mintInternalToken: async () => "signed",
+      roleRank: () => "editor",
+    });
+    await store.forget("fact-1");
+    const request = fetch.mock.calls[0]![0] as Request;
+    expect(request.method).toBe("DELETE");
+    expect(new URL(request.url).searchParams.get("role_rank")).toBe("1");
+  });
+
   it("uses a high-confidence typed score before admitting a fact", async () => {
     const score = vi.fn(async () => ({
       kind: "score" as const,

@@ -149,7 +149,8 @@ export function buildProjectMemoryStore(opts: ProjectMemoryClientOptions): Memor
     },
 
     async forget(id) {
-      await callSpacesWorker(opts, `/memory/facts/${encodeURIComponent(id)}`, "DELETE").catch(() => {});
+      const roleRank = roleRankFor(opts.roleRank?.());
+      await callSpacesWorker(opts, `/memory/facts/${encodeURIComponent(id)}?role_rank=${roleRank}`, "DELETE").catch(() => {});
     },
 
     async recordFabric(entry) {
@@ -245,8 +246,8 @@ export function buildHybridMemoryStore(local: MemoryStore, project: MemoryStore,
       return merged.filter((candidate) => candidate.layer !== "structured_fact" || structuredIds.has(candidate.id));
     },
 
-    async forget(id) {
-      await Promise.all([project.forget(id).catch(() => {}), local.forget(id)]);
+    async forget(id, userId) {
+      await Promise.all([project.forget(id, userId).catch(() => {}), local.forget(id, userId)]);
     },
 
     recordFabric: (entry) => project.recordFabric(entry),

@@ -8,9 +8,9 @@
  * NaelaoAgentDO's Memory OS (structured facts + episodic log + Vectorize semantic layer),
  * injected as `ctx.env.memoryStore`. Degrades honestly when the host hasn't wired it.
  *
- * Defaults to the current run's `userId` (set per /script/run call) so per-user facts never
- * bleed across users in shared-assistant mode — pass `user_id` explicitly to override (e.g.
- * an admin's assistant remembering a space-wide fact with no user scope).
+ * Uses only the authenticated run's `userId` (set per /script/run call). A model-supplied user_id
+ * can confirm that same scope but cannot select another person's namespace. Host service runs
+ * without a user remain in the existing unscoped assistant namespace.
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
@@ -19,8 +19,10 @@ import { gateStructuredFacts } from "../project-memory-client.js";
 
 function userIdFor(args: Record<string, unknown>, ctx: PrebuiltOpContext): string | undefined {
   const explicit = args["user_id"];
-  if (typeof explicit === "string" && explicit) return explicit;
-  return ctx.env.userId;
+  const actor = ctx.env.userId;
+  if (explicit !== undefined && typeof explicit !== "string") throw new Error("memory_scope_invalid");
+  if (typeof explicit === "string" && explicit && explicit !== actor) throw new Error("memory_scope_denied");
+  return actor;
 }
 
 export const memory: PrebuiltScript = {
@@ -73,7 +75,8 @@ export const memory: PrebuiltScript = {
       if (!ctx.env.memoryStore) return { ok: false, reason: "memory store not available in this environment" };
       const id = String(args["id"] ?? "");
       if (!id) throw new Error("memory.forget requires 'id'");
-      await ctx.env.memoryStore.forget(id);
+      const userId = userIdFor(args, ctx);
+      await ctx.env.memoryStore.forget(id, userId);
       return { ok: true };
     },
     // Runs the SAME maintenance pass (decay/promote/prune) the shell UI triggers automatically at

@@ -63,18 +63,20 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (durable task contracts in owner view; local verification)
+## Current checkpoint — 2026-11-17 (memory namespace and deletion scope; local verification)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit, push, or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
 
-Adaptive planner source/guidance are pushed at `c0c0f0fb` and `a1dbeac0`; topology UI is at
-`53edcd3c`. The actor-scoped task journal/view now carries the assigned role, bounded token budget,
-acceptance criteria and host-approved runtime recommendation alongside topology/status. Legacy rows
-remain readable. Route tests **5/5**, Agents/Shell typechecks and diff hygiene pass. No learned
-routing, new permission grants, deployed/live acceptance or rollout is claimed. Exact next action:
-continue APW03/APW04 with current task lineage and scoped memory authority; keep SC03 disconnected
-dispatch fail-closed absent exact invocation authority and fresh Billing. Preserve
-`infra/scripts/__pycache__/` and keep rollout disabled.
+Adaptive planner requirements and task visibility are pushed through `bd2f6087`; routing guidance is
+at `a1dbeac0` and topology visibility is at `53edcd3c`. Personal-memory
+tools now bind `user_id` to the authenticated run actor; local deletion uses the same user predicate
+for SQL facts/episodes and only removes a vector after confirming ownership. Shared Project-fact
+deletion supplies current role rank and the SpaceDO enforces it against `required_role_rank`.
+Verification: Agents memory tests **14/14**, Spaces fact-deletion **1/1**, both typechecks and diff
+hygiene pass. No deployed/live acceptance. Exact next action: safely push this checkpoint, then
+continue remaining APW03/APW04 gaps and other active plans. Preserve `infra/scripts/__pycache__/`;
+keep rollout disabled and SC03 disconnected dispatch fail-closed absent exact invocation authority
+and fresh Billing.
 
 ## Resume checkpoint — 2026-11-17 (K09 owner crawl cancellation; `1e6abd43` pushed)
 

@@ -1,3 +1,14 @@
+## Cross-plan update — 2026-11-17 (memory namespace/deletion scope; pending push)
+
+APW04 memory review found that `memory.*` accepted model-supplied `user_id` values and local
+`forget(id)` deleted rows without a user predicate. The caller now binds personal memory operations to
+the authenticated run actor, local fact/episode deletion checks exact user ownership, and Vectorize
+deletion follows only an owned episodic row. Project-fact deletion now carries effective role rank and
+the SpaceDO filters by `required_role_rank`. Focused Agents tests **14/14**, Spaces test **1/1**,
+Agents/Spaces typechecks pass. No provider/deployed acceptance. This does not define retention,
+review, or cross-layer shared-memory policy; continue those requirements under the Knowledge and
+adaptive-memory ledgers.
+
 ## Current K03 checkpoint — 2026-11-17 (table provenance reaches citations; local verification)
 
 The shared bounded Markdown chunker appends stable per-document `Table N` labels to stored `heading_path`

@@ -719,7 +719,8 @@ export interface MemoryStore {
   recall(query: { userId?: string; text: string; limit?: number }): Promise<
     MemoryRecallResult[]
   >;
-  forget(id: string): Promise<void>;
+  /** Delete only within the current user's personal scope; shared stores may enforce stronger policy. */
+  forget(id: string, userId?: string): Promise<void>;
 
   /**
    * Layer 4 (Fabric) — cross-session context consolidator. Records a post-run summary + key

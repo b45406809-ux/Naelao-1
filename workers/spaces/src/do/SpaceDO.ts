@@ -7032,7 +7032,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         /^\/projects\/([^/]+)\/memory\/facts\/([^/]+)$/
       );
       if (method === "DELETE" && projFactIdMatch?.[1] && projFactIdMatch?.[2])
-        return this.deleteProjectFact(projFactIdMatch[1], projFactIdMatch[2]);
+        return this.deleteProjectFact(projFactIdMatch[1], projFactIdMatch[2], url.searchParams);
 
       const projFabricBriefMatch = url.pathname.match(
         /^\/projects\/([^/]+)\/memory\/fabric\/brief$/
@@ -11246,12 +11246,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ data });
   }
 
-  private deleteProjectFact(projectId: string, factId: string): Response {
+  private deleteProjectFact(projectId: string, factId: string, params: URLSearchParams): Response {
+    const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
     execute(
       this.ctx.storage.sql as never,
-      "DELETE FROM project_facts WHERE id = ? AND project_id = ?",
+      "DELETE FROM project_facts WHERE id = ? AND project_id = ? AND required_role_rank <= ?",
       factId,
-      projectId
+      projectId,
+      roleRank
     );
     return Response.json({ deleted: true });
   }
