@@ -1,3 +1,7 @@
+## Latest cross-plan update — 2026-11-17 (scheduled goal action approval boundary; `2bb067d3` pushed)
+
+Code `2bb067d3f0251c274eef1e559f233152e3fc77f7` is remote-verified. Scheduled goal runs cannot inherit broad Space `yolo` approvals; only enabled operations on the explicit read-safe list remain autonomous and all other tool actions require exact HITL approval, including after live policy refresh. Tests **25/25**, Agents typecheck and diff check pass. This is a conservative action gate, not a durable per-job grant/budget ledger. Exact next action: audit scheduled-service identity/revision through HITL continuation and Billing reservation/settlement, then continue other independent plan gaps.
+
 ## Latest cross-plan update — 2026-11-17 (direct scheduled-script identity fence; `93568569` pushed)
 
 Code `93568569878ca356132a105ba206b4a77d35ff93` is remote-verified. The direct scheduled-script path now carries a persisted heartbeat session bound to `scheduled_job:<id>` and its exact job revision. AgentDO revalidates session scope and current enabled job/script/Project at dispatch. Tests **14/14**, Agents typecheck and diff check pass. This closes an identity/session race only; TBR11 still lacks durable owner-approved effect scopes/budgets, generic customer event principals and in-flight cancellation. No deployment/live acceptance. Exact next action: trace existing action approval and Billing gates for scheduled effects; add grant enforcement only with a supported host contract, and retain gaps/denials for unresolved policy.
