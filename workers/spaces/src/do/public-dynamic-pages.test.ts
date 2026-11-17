@@ -9,10 +9,28 @@ const cursor = <T>(rows: T[] = []) => ({
   [Symbol.iterator]: function* () { for (const row of rows) yield row; },
 });
 
+async function previewAndPublish(instance: MicroAppDO, actorId: string, draft: unknown) {
+  const reviewed = await instance.fetch(new Request("https://do/page/review", {
+    method: "POST", body: JSON.stringify({ actor_id: actorId, draft }),
+  }));
+  if (!reviewed.ok) return { reviewed, published: reviewed, reviewId: "" };
+  const receipt = await reviewed.json() as { review_id: string };
+  const published = await instance.fetch(new Request("https://do/page/publish-reviewed", {
+    method: "POST", body: JSON.stringify({ actor_id: actorId, review_id: receipt.review_id, draft }),
+  }));
+  return { reviewed, published, reviewId: receipt.review_id };
+}
+
 describe("isolated public dynamic pages", () => {
   it("unpublishes the exact page and makes public rendering return not found", async () => {
     const pages = new Map<string, { html: string; actions_json: string }>();
+    const reviews = new Map<string, { actor_id: string; slug: string; artifact_sha256: string; expires_at: number }>();
     const sql = { exec(query: string, ...args: unknown[]) {
+      if (query.startsWith("INSERT INTO public_page_review_receipts")) reviews.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), expires_at: Number(args[4]) });
+      if (query.startsWith("SELECT actor_id,slug,artifact_sha256,expires_at FROM public_page_review_receipts")) {
+        const receipt = reviews.get(String(args[0])); return cursor(receipt ? [receipt] : []);
+      }
+      if (query.startsWith("DELETE FROM public_page_review_receipts WHERE review_id=")) reviews.delete(String(args[0]));
       if (query.startsWith("INSERT INTO gadget_public_pages")) {
         pages.set(String(args[0]), { html: String(args[1]), actions_json: String(args[2]) });
         return { ...cursor(), rowsWritten: 1 };
@@ -27,10 +45,22 @@ describe("isolated public dynamic pages", () => {
       return cursor();
     } };
     const instance = new MicroAppDO({ storage: { sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never, { PLATFORM_SECRET: "test-secret" });
-    const published = await instance.fetch(new Request("https://do/page/publish", { method: "POST", body: JSON.stringify({
+    const draft = {
       slug: "spring-signup", html: "<form>{{NAELAO_ACTION_TOKEN:submit}}</form>", actions: { submit: { key: "signup", fields: ["email"] } },
-    }) }));
+    };
+    const reviewed = await instance.fetch(new Request("https://do/page/review", { method: "POST",
+      body: JSON.stringify({ actor_id: "owner-a", draft }) }));
+    expect(reviewed.status).toBe(200);
+    const reviewId = (await reviewed.json() as { review_id: string }).review_id;
+    const mismatched = await instance.fetch(new Request("https://do/page/publish-reviewed", { method: "POST",
+      body: JSON.stringify({ actor_id: "owner-a", review_id: reviewId, draft: { ...draft, html: "<main>{{NAELAO_ACTION_TOKEN:submit}}</main>" } }) }));
+    expect(mismatched.status).toBe(409);
+    const published = await instance.fetch(new Request("https://do/page/publish-reviewed", { method: "POST",
+      body: JSON.stringify({ actor_id: "owner-a", review_id: reviewId, draft }) }));
     expect(published.status).toBe(201);
+    const replay = await instance.fetch(new Request("https://do/page/publish-reviewed", { method: "POST",
+      body: JSON.stringify({ actor_id: "owner-a", review_id: reviewId, draft }) }));
+    expect(replay.status).toBe(409);
     const takenDown = await instance.fetch(new Request("https://do/page/unpublish?slug=spring-signup", { method: "DELETE" }));
     expect(await takenDown.json()).toEqual({ unpublished: true, removed: true, slug: "spring-signup" });
     expect((await instance.fetch(new Request("https://do/page/render?spaceId=s&slug=spring-signup"))).status).toBe(404);
@@ -40,6 +70,7 @@ describe("isolated public dynamic pages", () => {
     const metadata = new Map<string, string>();
     const pages = new Map<string, { html: string; actions_json: string }>();
     const rateCounts = new Map<string, number>();
+    const reviews = new Map<string, { actor_id: string; slug: string; artifact_sha256: string; expires_at: number }>();
     const consumed = new Set<string>();
     const sql = { exec(query: string, ...args: unknown[]) {
       if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata") && args.length === 5) {
@@ -48,6 +79,11 @@ describe("isolated public dynamic pages", () => {
       if (query.includes("SELECT value FROM gadget_metadata WHERE key = 'app_id'")) return cursor(metadata.has("app_id") ? [{ value: metadata.get("app_id")! }] : []);
       if (query.includes("SELECT value FROM gadget_metadata WHERE key = ?")) return cursor(metadata.has(String(args[0])) ? [{ value: metadata.get(String(args[0]))! }] : []);
       if (query.startsWith("INSERT INTO gadget_public_pages")) pages.set(String(args[0]), { html: String(args[1]), actions_json: String(args[2]) });
+      if (query.startsWith("INSERT INTO public_page_review_receipts")) reviews.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), expires_at: Number(args[4]) });
+      if (query.startsWith("SELECT actor_id,slug,artifact_sha256,expires_at FROM public_page_review_receipts")) {
+        const receipt = reviews.get(String(args[0])); return cursor(receipt ? [receipt] : []);
+      }
+      if (query.startsWith("DELETE FROM public_page_review_receipts WHERE review_id=")) reviews.delete(String(args[0]));
       if (query.includes("SELECT html,actions_json FROM gadget_public_pages")) {
         const page = pages.get(String(args[0])); return cursor(page ? [page] : []);
       }
@@ -67,9 +103,9 @@ describe("isolated public dynamic pages", () => {
     } };
     const instance = new MicroAppDO({ storage: { sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never, { PLATFORM_SECRET: "test-secret" });
     expect((await instance.fetch(new Request("https://do/initialize", { method: "POST", body: JSON.stringify({ appId: "rate_limit", scope: "SPACE_SHARED", gadgetTier: 3 }) }))).status).toBe(201);
-    expect((await instance.fetch(new Request("https://do/page/publish", { method: "POST", body: JSON.stringify({
+    expect((await previewAndPublish(instance, "owner-a", {
       slug: "signup", html: "<form><input name='email'><input type='hidden' value='{{NAELAO_ACTION_TOKEN:submit}}'></form>", actions: { submit: { key: "signup", fields: ["email"] } },
-    }) }))).status).toBe(201);
+    })).published.status).toBe(201);
     for (let i = 0; i < 31; i++) {
       const page = await instance.fetch(new Request("https://do/page/render?spaceId=s&slug=signup"));
       const token = (await page.text()).match(/value='([^']+)'/)?.[1];
@@ -131,6 +167,7 @@ describe("isolated public dynamic pages", () => {
   it("renders single-use signed actions and rejects replay or fields outside the published contract", async () => {
     const metadata = new Map<string, string>();
     const pages = new Map<string, { html: string; actions_json: string }>();
+    const reviews = new Map<string, { actor_id: string; slug: string; artifact_sha256: string; expires_at: number }>();
     const data = new Map<string, string>();
     const consumed = new Set<string>();
     const sql = { exec(query: string, ...args: unknown[]) {
@@ -144,6 +181,11 @@ describe("isolated public dynamic pages", () => {
         metadata.set("app_id", String(args[0])); metadata.set("scope", String(args[1])); metadata.set("gadget_tier", String(args[2])); metadata.set("html", String(args[3])); metadata.set("html_sha256", String(args[4]));
       }
       if (query.startsWith("INSERT INTO gadget_public_pages")) pages.set(String(args[0]), { html: String(args[1]), actions_json: String(args[2]) });
+      if (query.startsWith("INSERT INTO public_page_review_receipts")) reviews.set(String(args[0]), { actor_id: String(args[1]), slug: String(args[2]), artifact_sha256: String(args[3]), expires_at: Number(args[4]) });
+      if (query.startsWith("SELECT actor_id,slug,artifact_sha256,expires_at FROM public_page_review_receipts")) {
+        const receipt = reviews.get(String(args[0])); return cursor(receipt ? [receipt] : []);
+      }
+      if (query.startsWith("DELETE FROM public_page_review_receipts WHERE review_id=")) reviews.delete(String(args[0]));
       if (query.includes("SELECT html,actions_json FROM gadget_public_pages")) {
         const page = pages.get(String(args[0])); return cursor(page ? [page] : []);
       }
@@ -161,12 +203,13 @@ describe("isolated public dynamic pages", () => {
     const unsafeMigration = await instance.fetch(new Request("https://do/initialize", { method: "POST", body: JSON.stringify({ appId: "contracts", scope: "SPACE_SHARED", gadgetTier: 3, migrations: [{ version: 1, description: "drop table", up: "DROP TABLE gadget_data;" }] }) }));
     expect(unsafeMigration.status).toBe(400);
 
-    const unsafe = await instance.fetch(new Request("https://do/page/publish", { method: "POST", body: JSON.stringify({ slug: "sign", html: "<script>alert(1)</script>", actions: { submit: { key: "result", fields: ["email"] } } }) }));
+    const unsafe = await instance.fetch(new Request("https://do/page/review", { method: "POST", body: JSON.stringify({ actor_id: "owner", draft: { slug: "sign", html: "<script>alert(1)</script>", actions: { submit: { key: "result", fields: ["email"] } } } }) }));
     expect(unsafe.status).toBe(400);
-    const published = await instance.fetch(new Request("https://do/page/publish", { method: "POST", body: JSON.stringify({
+    const { reviewed, published } = await previewAndPublish(instance, "owner", {
       slug: "sign", html: "<form action='/p/s/contracts/sign/actions/submit'><input name='email'><input type='hidden' value='{{NAELAO_ACTION_TOKEN:submit}}'></form>",
       actions: { submit: { key: "signed-result", fields: ["email"] } },
-    }) }));
+    });
+    expect(reviewed.status).toBe(200);
     expect(published.status).toBe(201);
 
     const page = await instance.fetch(new Request("https://do/page/render?spaceId=s&slug=sign"));

@@ -7,6 +7,7 @@ import { digestExtensionManifest, validateExtensionManifest, RECEIVE_STOCK_INPUT
   type ExtensionBusinessAction, type ListLowStockInput, type ReceiveStockInput, type AdjustStockInput } from "@naelao/agent-sdk";
 import { decodeMicroAppArchiveValue, encodeMicroAppArchiveValue, isMicroAppArchiveSnapshot,
   MAX_MICRO_APP_ARCHIVE_SNAPSHOT_BYTES, MAX_MICRO_APP_ARCHIVE_TABLE_ROWS, type MicroAppArchiveSnapshot } from "./microapp-archive.js";
+import { publicPageArtifactSha256, validatePublicPageDraft } from "../dynamic-page-review.js";
 
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
 
@@ -143,6 +144,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       CREATE TABLE IF NOT EXISTS gadget_data (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS gadget_schema_migrations (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
       CREATE TABLE IF NOT EXISTS gadget_public_pages (slug TEXT PRIMARY KEY, html TEXT NOT NULL, actions_json TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS public_page_review_receipts (review_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, slug TEXT NOT NULL, artifact_sha256 TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS consumed_public_action_nonces (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS public_page_action_rate_buckets (bucket_key TEXT NOT NULL, window_start INTEGER NOT NULL, request_count INTEGER NOT NULL,
         PRIMARY KEY(bucket_key, window_start));
@@ -220,7 +222,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "POST" && url.pathname === "/internal/archive/restore") return await this.applyArchiveRestore(request);
       if (request.method === "POST" && url.pathname === "/extension-schema-update") return await this.applyExtensionSchemaUpdate(request);
       if (request.method === "GET" && url.pathname === "/app") return await this.renderApp();
-      if (request.method === "POST" && url.pathname === "/page/publish") return await this.publishPage(request);
+      if (request.method === "POST" && url.pathname === "/page/review") return await this.reviewPage(request);
+      if (request.method === "POST" && url.pathname === "/page/publish-reviewed") return await this.publishReviewedPage(request);
       if (request.method === "DELETE" && url.pathname === "/page/unpublish") return this.unpublishPage(url);
       if (request.method === "GET" && url.pathname === "/page/render") return await this.renderPublicPage(url);
       if (request.method === "POST" && url.pathname === "/page/action") return await this.submitPublicAction(request, url);
@@ -1268,28 +1271,43 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     return verifyHmac(bindingPayload, proof.bindingSignature, this.env.PLATFORM_SECRET);
   }
 
-  private async publishPage(request: Request): Promise<Response> {
-    const body = await request.json<{ slug?: string; html?: string; actions?: Record<string, PublicPageAction> }>();
-    if (!body.slug || !pagePathPart(body.slug) || typeof body.html !== "string" || !body.actions || typeof body.actions !== "object" || Array.isArray(body.actions)) {
-      return Response.json({ error: "invalid_public_page" }, { status: 400 });
-    }
-    if (new TextEncoder().encode(body.html).byteLength > 512_000 || /<\s*script\b|\bon[a-z]+\s*=|javascript\s*:/i.test(body.html)) {
-      return Response.json({ error: "active_content_not_allowed" }, { status: 400 });
-    }
-    const storageError = this.storageLimitExceeded(new TextEncoder().encode(body.html + JSON.stringify(body.actions)).byteLength + 512);
+  private async reviewPage(request: Request): Promise<Response> {
+    const body = await request.json<{ actor_id?: unknown; draft?: unknown }>();
+    if (typeof body.actor_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.actor_id)) return Response.json({ error: "public_page_reviewer_required" }, { status: 400 });
+    let draft;
+    try { draft = validatePublicPageDraft(body.draft); }
+    catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_public_page" }, { status: 400 }); }
+    const artifactSha256 = await publicPageArtifactSha256(draft);
+    const reviewId = crypto.randomUUID(), expiresAt = Date.now() + 10 * 60_000;
+    this.ctx.storage.sql.exec("DELETE FROM public_page_review_receipts WHERE expires_at <= ?", Date.now());
+    this.ctx.storage.sql.exec("INSERT INTO public_page_review_receipts(review_id,actor_id,slug,artifact_sha256,expires_at) VALUES (?,?,?,?,?)",
+      reviewId, body.actor_id, draft.slug, artifactSha256, expiresAt);
+    this.ctx.storage.sql.exec(`DELETE FROM public_page_review_receipts WHERE rowid IN (
+      SELECT rowid FROM public_page_review_receipts ORDER BY expires_at DESC LIMIT -1 OFFSET 5000)`);
+    return Response.json({ review_id: reviewId, artifact_sha256: artifactSha256, expires_at: expiresAt, draft });
+  }
+
+  private async publishReviewedPage(request: Request): Promise<Response> {
+    const body = await request.json<{ actor_id?: unknown; review_id?: unknown; draft?: unknown }>();
+    if (typeof body.actor_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.actor_id)
+      || typeof body.review_id !== "string" || !/^[0-9a-f-]{36}$/i.test(body.review_id)) return Response.json({ error: "public_page_review_required" }, { status: 400 });
+    let draft;
+    try { draft = validatePublicPageDraft(body.draft); }
+    catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_public_page" }, { status: 400 }); }
+    const artifactSha256 = await publicPageArtifactSha256(draft);
+    const receipt = [...this.ctx.storage.sql.exec<{ actor_id: string; slug: string; artifact_sha256: string; expires_at: number }>(
+      "SELECT actor_id,slug,artifact_sha256,expires_at FROM public_page_review_receipts WHERE review_id=?", body.review_id)][0];
+    if (!receipt || receipt.actor_id !== body.actor_id || receipt.slug !== draft.slug || receipt.artifact_sha256 !== artifactSha256
+      || receipt.expires_at <= Date.now()) return Response.json({ error: "public_page_review_stale_or_mismatched" }, { status: 409 });
+    const storageError = this.storageLimitExceeded(new TextEncoder().encode(draft.html + JSON.stringify(draft.actions)).byteLength + 512);
     if (storageError) return Response.json({ error: "storage_limit_exceeded", ...storageError }, { status: 413 });
-    const actions: Record<string, PublicPageAction> = {};
-    for (const [name, action] of Object.entries(body.actions)) {
-      if (!pagePathPart(name) || !action || typeof action !== "object" || !pagePathPart(action.key) || !Array.isArray(action.fields) || action.fields.length > 32 ||
-        !action.fields.every(field => typeof field === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(field)) || new Set(action.fields).size !== action.fields.length) {
-        return Response.json({ error: "invalid_public_page_action" }, { status: 400 });
-      }
-      actions[name] = { key: action.key, fields: [...action.fields] };
-    }
-    if (Object.keys(actions).length === 0 || Object.keys(actions).length > 16) return Response.json({ error: "public_page_action_required" }, { status: 400 });
-    for (const name of Object.keys(actions)) if (!body.html.includes(`{{NAELAO_ACTION_TOKEN:${name}}}`)) return Response.json({ error: "action_token_placeholder_missing" }, { status: 400 });
-    this.ctx.storage.sql.exec("INSERT INTO gadget_public_pages(slug,html,actions_json,updated_at) VALUES (?,?,?,?) ON CONFLICT(slug) DO UPDATE SET html=excluded.html,actions_json=excluded.actions_json,updated_at=excluded.updated_at", body.slug, body.html, JSON.stringify(actions), new Date().toISOString());
-    return Response.json({ published: true, slug: body.slug }, { status: 201 });
+    const publish = () => {
+      this.ctx.storage.sql.exec("INSERT INTO gadget_public_pages(slug,html,actions_json,updated_at) VALUES (?,?,?,?) ON CONFLICT(slug) DO UPDATE SET html=excluded.html,actions_json=excluded.actions_json,updated_at=excluded.updated_at", draft.slug, draft.html, JSON.stringify(draft.actions), new Date().toISOString());
+      this.ctx.storage.sql.exec("DELETE FROM public_page_review_receipts WHERE review_id=?", body.review_id);
+    };
+    if (typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(publish);
+    else publish();
+    return Response.json({ published: true, slug: draft.slug, artifact_sha256: artifactSha256 }, { status: 201 });
   }
 
   private unpublishPage(url: URL): Response {

@@ -1,3 +1,15 @@
+## Resume pointer — 2026-11-17 (EP05 immutable owner review/apply; locally verified, push pending)
+
+See the platform completion progress ledger for implementation details. Focused Spaces route/DO
+checks **13/13**, typecheck and diff hygiene pass. No deployed/live acceptance; rollout remains off.
+
+**Reminder to myself:** Continue all active plans after this checkpoint; a verified slice, documentation,
+commit or push is not mission completion.
+
+Exact next action: trace an owner-facing preview/apply caller; implement it if the established surface
+supports a safe exact-digest confirmation. Then advance to the next independent uncoded active-plan
+gap and keep SC03 dispatch denied absent durable authorization and current Billing admission.
+
 ## Latest SC03 checkpoint — 2026-11-17 (membership authorization revisions; `070e0326` pushed)
 
 SpaceDO migration 158 adds monotonic authority revisions for Space and Project membership changes and Project assistant-clamp changes, retaining revisions across removal/re-add. Member API responses expose the revision; native container requests bind it into their signed scope and cancel a waiting retry on revision drift. Local checks: Agents code-runner/capacity/scope **13/13**, SpaceDO migration tests **10/10**, Agents/Spaces typechecks and `git diff --check`. Code `070e0326` is remote-verified on `origin/Mcbt5s-Backup-2`; migration not deployed. This does not yet provide encrypted request recovery, automatic dispatch, owner lifecycle controls or a linked Billing hold.

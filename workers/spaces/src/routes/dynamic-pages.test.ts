@@ -25,14 +25,24 @@ describe("dynamic page isolation boundary", () => {
     const h = harness();
     const path = "/spaces/s/apps/app/pages";
     const token = await mintInternalToken("test-secret", "tenant-a");
-    const denied = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-role": "member" }, body: "{}" }, h.env);
+    const denied = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "member-a", "x-naelao-internal-token": token, "x-naelao-role": "member" }, body: "{}" }, h.env);
     expect(denied.status).toBe(403);
-    const allowed = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-role": "owner" }, body: "{}" }, h.env);
-    expect(await allowed.json()).toEqual({ path: "/page/publish", method: "POST" });
+    const allowed = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-internal-token": token, "x-naelao-role": "owner" }, body: "{}" }, h.env);
+    expect(await allowed.json()).toEqual({ path: "/page/review", method: "POST" });
     expect(h.fetch).toHaveBeenCalledOnce();
-    const forged = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-role": "owner" }, body: "{}" }, h.env);
+    const forged = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-role": "owner" }, body: "{}" }, h.env);
     expect(forged.status).toBe(403);
     expect(h.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("publishes only through a separately owner-authorized reviewed receipt", async () => {
+    const h = harness();
+    const token = await mintInternalToken("test-secret", "tenant-a");
+    const response = await h.app.request("/spaces/s/apps/app/pages/publish", { method: "POST", headers: {
+      "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-internal-token": token, "x-naelao-role": "owner",
+    }, body: JSON.stringify({ review_id: "123e4567-e89b-12d3-a456-426614174000", draft: { slug: "signup" } }) }, h.env);
+    expect(await response.json()).toEqual({ path: "/page/publish-reviewed", method: "POST" });
+    expect(JSON.parse(await h.fetch.mock.calls[0]![0].clone().text())).toMatchObject({ actor_id: "owner-a", review_id: "123e4567-e89b-12d3-a456-426614174000" });
   });
 
   it("allows only a tenant Space owner/admin to take down an exact public page", async () => {

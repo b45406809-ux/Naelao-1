@@ -6,7 +6,8 @@ import { readBoundedRequestBytes, requireInternalHmac } from "@naelao/http";
 import { extensionRuntimeWork, releaseRuntimeWorkAfterResponse, sharedExtensionRuntimeError } from "./gadget-mcp.js";
 
 function identity(c: Context<{ Bindings: Env }>) {
-  return { tenantId: c.req.header("x-naelao-tenant-id") ?? "", role: c.req.header("x-naelao-role") ?? "viewer" };
+  return { tenantId: c.req.header("x-naelao-tenant-id") ?? "", userId: c.req.header("x-naelao-user-id") ?? "",
+    role: c.req.header("x-naelao-role") ?? "viewer" };
 }
 
 function validIdentity(spaceId: string, appId: string, slug: string): boolean {
@@ -58,24 +59,48 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
   // render/action routes below have their own host, origin, and token checks.
   app.use("/spaces/:spaceId/apps/:appId/pages", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
   app.post("/spaces/:spaceId/apps/:appId/pages", async c => {
-    const { tenantId, role } = identity(c);
+    const { tenantId, userId, role } = identity(c);
     const { spaceId, appId } = c.req.param();
-    if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
+    if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
     if (!validIdentity(spaceId, appId, "page")) return c.json({ error_code: "bad_request" }, 400);
     if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Space administrator required" }, 403);
     const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
       WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active' AND o.status = 'active'`).bind(spaceId, tenantId).first();
     if (!owned) return c.notFound();
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
-    let body: Uint8Array;
-    try { body = await readBoundedRequestBytes(c.req.raw, 1024 * 1024); }
+    let draft: unknown;
+    try { draft = JSON.parse(new TextDecoder().decode(await readBoundedRequestBytes(c.req.raw, 1024 * 1024))); }
     catch { return c.json({ error_code: "payload_too_large" }, 413); }
     const lease = await acquirePageRuntime(c.env, tenantId, spaceId, appId);
     if (lease.error) return c.json({ error_code: lease.error }, 409);
     const release = () => releasePageRuntime(c.env, tenantId, spaceId, lease);
     try {
-      const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/page/publish", {
-        method: "POST", body, headers: { "content-type": "application/json" },
+      const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/page/review", {
+        method: "POST", body: JSON.stringify({ actor_id: userId, draft }), headers: { "content-type": "application/json" },
+      }));
+      return await releaseRuntimeWorkAfterResponse(new Response(response.body, { status: response.status, headers: response.headers }), release);
+    } catch (error) { await release(); throw error; }
+  });
+
+  app.post("/spaces/:spaceId/apps/:appId/pages/publish", async c => {
+    const { tenantId, userId, role } = identity(c);
+    const { spaceId, appId } = c.req.param();
+    if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+    if (!validIdentity(spaceId, appId, "publish")) return c.json({ error_code: "bad_request" }, 400);
+    if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Space administrator required" }, 403);
+    const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active' AND o.status = 'active'`).bind(spaceId, tenantId).first();
+    if (!owned) return c.notFound();
+    let publication: unknown;
+    try { publication = JSON.parse(new TextDecoder().decode(await readBoundedRequestBytes(c.req.raw, 1024 * 1024))); }
+    catch { return c.json({ error_code: "payload_too_large" }, 413); }
+    const lease = await acquirePageRuntime(c.env, tenantId, spaceId, appId);
+    if (lease.error) return c.json({ error_code: lease.error }, 409);
+    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
+    const release = () => releasePageRuntime(c.env, tenantId, spaceId, lease);
+    try {
+      const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/page/publish-reviewed", {
+        method: "POST", body: JSON.stringify({ ...(publication as object), actor_id: userId }), headers: { "content-type": "application/json" },
       }));
       return await releaseRuntimeWorkAfterResponse(new Response(response.body, { status: response.status, headers: response.headers }), release);
     } catch (error) { await release(); throw error; }

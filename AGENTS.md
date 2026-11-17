@@ -36,18 +36,19 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (EP05 public-page action abuse control; `c6f7837f` pushed)
+## Latest cross-plan checkpoint — 2026-11-17 (EP05 immutable page review/apply; local verified)
 
-`c6f7837f0a400a0a3a7ecd171af9d99e5f9c2de8` is pushed to `origin/Mcbt5s-Backup-2`. Public form
-actions now require a rate-limit identity HMACed by the Space Worker from Cloudflare's edge client
-address, and enforce 30 accepted actions per client/page per minute. The DO stores no raw address,
-expires old buckets and caps bucket rows at 5,000. Route + DO suites **12/12**, Spaces typecheck and
-`git diff --check` pass. This is local fake evidence; no deployed edge/IP, browser or domain acceptance.
-Owner/admin page takedown is pushed at `1a6920e2`; public site rollout remains disabled.
+Space owners/admins can submit a bounded page draft for a 10-minute review receipt pinned to the
+canonical artifact SHA-256, then publish only that same draft as the same actor. Receipts are
+single-use, actor/slug/digest/expiry bound, and consumed with publication in a DO transaction.
+Public rendering remains gated by the existing disabled host configuration; takedown and per-client
+rate limits remain intact. Focused route/DO tests **13/13**, Spaces typecheck and diff hygiene pass.
+Local mock evidence only; no owner UI/browser or deployed/domain acceptance. Code checkpoint is
+verified locally; recovery push follows this documentation update.
 
-**Reminder to myself:** Continue the entire authorized mission after each checkpoint. Never stop at tests, a progress update, a completed slice, documentation, a commit or a push; immediately move to the next independent unfinished requirement unless the user stops or a genuine blocker prevents all progress.
+**Reminder to myself:** Keep implementing the full mission. Do not stop after a test pass, progress update, commit or push; immediately continue with the next independent unfinished requirement unless the user stops or a real blocker prevents all progress.
 
-Exact next action: implement EP05's immutable page publication review/approval path before any site rollout, preserving exact owner, page and artifact pins plus takedown. Then continue the other active plan requirements. Keep deployment suffixes/rollout off, SC03 fail-closed, and preserve the untracked Python cache.
+Exact next action: after pushing this verified change, reconcile EP05 owner-facing preview/apply UI and the next uncoded EP/P/K/S/U/PW/AP/TBR requirement against the active ledgers; implement one concrete reachable gap. Preserve the untracked Python cache and rollout-disabled flags. SC03 stays fail-closed until a durable invocation identity, exact authority revalidation and pre-dispatch Billing admission exist.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (EP05 owner/admin public-page takedown; `1a6920e2` pushed)
 
