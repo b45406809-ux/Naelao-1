@@ -2,7 +2,9 @@
 
 Scheduled identity/revision now persists in Project spend reservation and settlement receipts through SpaceDO migration 157. Agent goal, document-inference, direct-script and decision reservation/settlement paths pass the exact pair; stale retries conflict, uncertain retries require the original pair, and malformed attribution is rejected. SpaceDO tests **12/12**, Spaces/Agents typechecks and diff check pass. Local only; migration is unapplied. Per-job owner-approved action scopes/budgets and in-flight cancellation remain open.
 
-Exact next action: continue TBR07's effective-authority and assistant-inheritance trace against current host grant stores, implementing a non-granting current-authority caller where the identity mapping is defined; continue TBR08–TBR12 and all remaining S/U/P/PW/K/EP/AP code gaps.
+TBR07 authority comparison is already recorded in `template-business-roles-and-member-onboarding-progress.md` and remains unresolved only where separate Project/Knowledge/extension authorities lack a shared policy; do not repeat it or widen access. The caller-live SC03 revocation race is closed by pushed `c405921fcc829f4d1fad5bac3cff7f2319ae7149` (103 focused tests, Agents typecheck); disconnected execution recovery is still an ordinary code/contract gap, not a provider gate.
+
+Exact next action: implement SC03's durable invocation artifact and authenticated dispatch/status/cancel/retry/recovery contract after verifying whether an encrypted request store is reusable; recheck exact current actor/service authority and budget before any work. Continue remaining S2–S9/U01–U12 and all other active plan code gaps after each checkpoint.
 
 ## Cross-plan checkpoint — 2026-11-17 (`019853ef` pushed)
 
