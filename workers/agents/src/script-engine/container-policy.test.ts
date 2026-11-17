@@ -78,6 +78,8 @@ describe("container capability resolution", () => {
     expect(() => validateContainerScope({ ...base, workspaceRevision: 4 })).toThrow("container_workspace_head_invalid");
     expect(() => validateContainerScope({ ...base, workspaceRevision: 4, workspaceManifestHash: "bad" })).toThrow("container_workspace_head_invalid");
     expect(() => validateContainerScope({ ...base, workspaceRevision: 4, workspaceManifestHash: "d".repeat(64) })).not.toThrow();
+    expect(() => validateContainerScope({ ...base, authorizationRevision: "space:3.project:7" })).not.toThrow();
+    expect(() => validateContainerScope({ ...base, authorizationRevision: "space:0.project:7" })).toThrow("container_authorization_revision_invalid");
   });
 
   it("keeps an installed sidecar identity stable across worker runs but isolates one-off containers", () => {

@@ -3461,6 +3461,47 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE project_spend_run_settlements ADD COLUMN service_identity_id TEXT;
       ALTER TABLE project_spend_run_settlements ADD COLUMN service_authorization_revision TEXT;`,
   },
+  {
+    version: 158,
+    description: "persist monotonic Space and Project membership authority revisions",
+    up: `CREATE TABLE membership_authority_revisions (
+        scope_type TEXT NOT NULL CHECK(scope_type IN ('space','project')),
+        scope_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision > 0),
+        PRIMARY KEY(scope_type,scope_id,user_id)
+      );
+      INSERT INTO membership_authority_revisions(scope_type,scope_id,user_id,revision)
+        SELECT 'space',space_id,user_id,1 FROM space_members;
+      INSERT INTO membership_authority_revisions(scope_type,scope_id,user_id,revision)
+        SELECT 'project',project_id,user_id,1 FROM project_members;
+      CREATE TRIGGER membership_authority_space_insert AFTER INSERT ON space_members BEGIN
+        INSERT INTO membership_authority_revisions(scope_type,scope_id,user_id,revision) VALUES('space',NEW.space_id,NEW.user_id,1)
+          ON CONFLICT(scope_type,scope_id,user_id) DO UPDATE SET revision=revision+1;
+      END;
+      CREATE TRIGGER membership_authority_space_update AFTER UPDATE OF role ON space_members
+        WHEN OLD.role IS NOT NEW.role BEGIN
+        INSERT INTO membership_authority_revisions(scope_type,scope_id,user_id,revision) VALUES('space',NEW.space_id,NEW.user_id,1)
+          ON CONFLICT(scope_type,scope_id,user_id) DO UPDATE SET revision=revision+1;
+      END;
+      CREATE TRIGGER membership_authority_space_delete AFTER DELETE ON space_members BEGIN
+        INSERT INTO membership_authority_revisions(scope_type,scope_id,user_id,revision) VALUES('space',OLD.space_id,OLD.user_id,1)
+          ON CONFLICT(scope_type,scope_id,user_id) DO UPDATE SET revision=revision+1;
+      END;
+      CREATE TRIGGER membership_authority_project_insert AFTER INSERT ON project_members BEGIN
+        INSERT INTO membership_authority_revisions(scope_type,scope_id,user_id,revision) VALUES('project',NEW.project_id,NEW.user_id,1)
+          ON CONFLICT(scope_type,scope_id,user_id) DO UPDATE SET revision=revision+1;
+      END;
+      CREATE TRIGGER membership_authority_project_update AFTER UPDATE OF role,assistant_mode ON project_members
+        WHEN OLD.role IS NOT NEW.role OR OLD.assistant_mode IS NOT NEW.assistant_mode BEGIN
+        INSERT INTO membership_authority_revisions(scope_type,scope_id,user_id,revision) VALUES('project',NEW.project_id,NEW.user_id,1)
+          ON CONFLICT(scope_type,scope_id,user_id) DO UPDATE SET revision=revision+1;
+      END;
+      CREATE TRIGGER membership_authority_project_delete AFTER DELETE ON project_members BEGIN
+        INSERT INTO membership_authority_revisions(scope_type,scope_id,user_id,revision) VALUES('project',OLD.project_id,OLD.user_id,1)
+          ON CONFLICT(scope_type,scope_id,user_id) DO UPDATE SET revision=revision+1;
+      END;`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -9232,11 +9273,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       user_id: string;
       role: string;
       joined_at: string;
+      authorization_revision: number;
     }
     const rows = spaceId
       ? queryAll<MemberRow>(
           this.ctx.storage.sql as never,
-          "SELECT * FROM space_members WHERE space_id = ? ORDER BY joined_at ASC",
+          `SELECT m.*,COALESCE(r.revision,1) AS authorization_revision FROM space_members m
+           LEFT JOIN membership_authority_revisions r ON r.scope_type='space' AND r.scope_id=m.space_id AND r.user_id=m.user_id
+           WHERE m.space_id = ? ORDER BY m.joined_at ASC`,
           spaceId
         )
       : [];
@@ -10656,9 +10700,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       user_id: string;
       role: string;
       added_at: string;
+      assistant_mode: string;
+      authorization_revision: number;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT * FROM project_members WHERE project_id = ? ORDER BY added_at",
+      `SELECT m.*,COALESCE(r.revision,1) AS authorization_revision FROM project_members m
+       LEFT JOIN membership_authority_revisions r ON r.scope_type='project' AND r.scope_id=m.project_id AND r.user_id=m.user_id
+       WHERE m.project_id = ? ORDER BY m.added_at`,
       projectId
     );
     return Response.json({ data: rows, count: rows.length });

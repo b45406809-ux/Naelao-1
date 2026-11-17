@@ -4,6 +4,7 @@ import { parseExtensionPrimitive, type ContainerContract, type InstallationScope
 export interface ContainerInvocationScope {
   tenantId: string; spaceId: string; projectId?: string | undefined; actorId: string; agentId: string;
   runId: string; executionId: string; workspaceBranch?: string | undefined; workspaceRevision?: number | undefined; workspaceManifestHash?: string | undefined;
+  authorizationRevision?: string | undefined;
   installationId?: string | undefined; containerId?: string | undefined; installationScope?: InstallationScope | undefined; image?: string; dynamicImage?: boolean;
   deadline: number; timeoutMs: number;
   sharedFilesystemGrants?: readonly { path: string; access: "READ" | "READ_WRITE" }[];
@@ -52,6 +53,8 @@ export function validateContainerScope(scope: ContainerInvocationScope, now = Da
   if (Boolean(scope.workspaceRevision !== undefined) !== Boolean(scope.workspaceManifestHash !== undefined)
     || scope.workspaceRevision !== undefined && (!Number.isSafeInteger(scope.workspaceRevision) || scope.workspaceRevision < 1)
     || scope.workspaceManifestHash !== undefined && !/^[a-f0-9]{64}$/.test(scope.workspaceManifestHash)) throw new Error("container_workspace_head_invalid");
+  if (scope.authorizationRevision !== undefined && !/^space:[1-9][0-9]{0,15}(?:\.project:[1-9][0-9]{0,15})?$/.test(scope.authorizationRevision))
+    throw new Error("container_authorization_revision_invalid");
   if (scope.installationScope && !["SPACE_SHARED", "SPACE_ASSISTANT", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(scope.installationScope)) throw new Error("container_installation_scope_invalid");
   if (scope.installationScope && !scope.installationId) throw new Error("container_installation_required");
   if (scope.sharedFilesystemGrants !== undefined) {

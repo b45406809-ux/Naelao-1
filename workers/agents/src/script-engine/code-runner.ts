@@ -93,7 +93,7 @@ export interface CodeRunnerOptions {
    *  real Dockerfile + persistence strategy + wrangler binding lands for it. */
   containerImages?: Record<string, DurableObjectNamespace>;
   /** Host resolves the active installation and an approved fixed binding, not model text. */
-  authorizeContainer?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<boolean>;
+  authorizeContainer?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<boolean | string>;
   resolveSidecar?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<{ installation: InstalledContainer; namespace: DurableObjectNamespace; dynamicImage?: boolean }>;
   browserContainerLease?: () => Promise<BrowserContainerLease | undefined>;
   browserCompatible?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<boolean>;
@@ -236,7 +236,10 @@ async function runContainer(
   try { branchScope = workspaceBranchScope(params.workspaceBranch); }
   catch { return fail("container_workspace_branch_invalid"); }
   if (!params.userId || !params.runId || params.userId === "system" || (params.maxTier ?? 6) < 6 || params.signal?.aborted) return fail("container_authorized_actor_run_required");
-  if (!opts.authorizeContainer || !await opts.authorizeContainer(params)) return fail("container_execution_denied");
+  if (!opts.authorizeContainer) return fail("container_execution_denied");
+  const initialAuthorization = await opts.authorizeContainer(params);
+  if (!initialAuthorization) return fail("container_execution_denied");
+  const authorizationRevision = typeof initialAuthorization === "string" ? initialAuthorization : undefined;
   if (opts.airGappedOnly && backend !== "local_workstation") {
     return { ok: false, error: "compliance_violation: air-gapped execution only permits the authorized local workstation backend", tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
   }
@@ -268,9 +271,9 @@ async function runContainer(
         ...(params.workspaceRevision !== undefined && params.workspaceManifestHash ? { workspaceRevision: params.workspaceRevision, workspaceManifestHash: params.workspaceManifestHash } : {}), installationId: params.installationId, containerId: installation.contract.id,
         ...(installation.scope ? { installationScope: installation.scope } : {}), image: installation.contract.image,
         ...(installation.sharedFilesystemGrants?.length ? { sharedFilesystemGrants: installation.sharedFilesystemGrants } : {}),
-        ...(dynamicImage ? { dynamicImage: true } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
+        ...(dynamicImage ? { dynamicImage: true } : {}), ...(authorizationRevision ? { authorizationRevision } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
       const stub = namespace.get(namespace.idFromName(sidecarKey(scope) + branchScope));
-      return runContainerRequest(stub, opts, params, started, false, scope);
+      return runContainerRequest(stub, opts, params, started, false, scope, authorizationRevision);
     } catch (error) { return fail(error instanceof Error ? error.message : "container_registry_unavailable"); }
   }
 
@@ -303,14 +306,14 @@ async function runContainer(
     if (!terminated.ok) return { ok: false, error: `WebContainer SIGTERM failed (${terminated.status})`, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
   }
   if (params.containerOptions?.lockfiles) {
-    const warmed = await runContainerRequest(stub, opts, { ...params, name: "container.prewarm", code: "", args: {} }, started);
+    const warmed = await runContainerRequest(stub, opts, { ...params, name: "container.prewarm", code: "", args: {} }, started, false, undefined, authorizationRevision);
     if (!warmed.ok) return warmed;
     const rehydrated = await runContainerRequest(stub, { ...opts, containerTimeoutMs: 2500 }, {
       ...params, name: "container.rehydrate", code: "", args: { lockfiles: params.containerOptions.lockfiles },
-    }, started);
+    }, started, false, undefined, authorizationRevision);
     if (!rehydrated.ok) return rehydrated;
   }
-  const result = await runContainerRequest(stub, opts, params, started);
+  const result = await runContainerRequest(stub, opts, params, started, false, undefined, authorizationRevision);
   if (result.ok && params.containerOptions?.migration) {
     result.output = { result: result.output, previewTarget: `https://preview.avos.dev/${encodeURIComponent(params.containerOptions.migration.previewId)}` };
   }
@@ -327,13 +330,15 @@ async function runContainerRequest(
   params: Parameters<TieredCodeRunner["run"]>[0],
   started: number,
   localTunnel = false,
-  suppliedScope?: ContainerInvocationScope
+  suppliedScope?: ContainerInvocationScope,
+  authorizationRevision?: string
 ): Promise<ScriptRunResult> {
   const controller = new AbortController();
   const timeoutMs = Math.min(60000, suppliedScope?.timeoutMs ?? opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS);
   const scope: ContainerInvocationScope = suppliedScope ?? { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}),
     actorId: params.userId!, agentId: params.agentId, runId: params.runId!, executionId: params.executionId ?? crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}),
-    ...(params.workspaceRevision !== undefined && params.workspaceManifestHash ? { workspaceRevision: params.workspaceRevision, workspaceManifestHash: params.workspaceManifestHash } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
+    ...(params.workspaceRevision !== undefined && params.workspaceManifestHash ? { workspaceRevision: params.workspaceRevision, workspaceManifestHash: params.workspaceManifestHash } : {}),
+    ...(authorizationRevision ? { authorizationRevision } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
   validateContainerScope(scope);
   const token = opts.platformSecret ? await mintInternalToken(opts.platformSecret, params.tenantId) : undefined;
   const runtimeObjectName = scope.installationId
@@ -395,7 +400,8 @@ async function runContainerRequest(
       // The wait receipt has not started guest execution. Recheck the caller's live grant
       // before retrying; the DO rechecks entitlement and budget before it starts paid work.
       // A revocation cancels this exact waiter so it cannot reserve a slot after access ends.
-      if (!opts.authorizeContainer || !await opts.authorizeContainer(params)) {
+      const currentAuthorization = opts.authorizeContainer ? await opts.authorizeContainer(params) : false;
+      if (!currentAuthorization || authorizationRevision && currentAuthorization !== authorizationRevision) {
         controller.abort(); // finally sends the exact execution cancellation once
         return { ok: false, error: "container_execution_denied", tier: 6, actual_tier: 6, engine: "container",
           duration_ms: Date.now() - started, tokens_used: 0 };

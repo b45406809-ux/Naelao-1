@@ -3086,11 +3086,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return { status: response.status, contentType: response.headers.get("content-type"), body: body + decoder.decode() };
       } finally { reader.releaseLock(); }
     };
-    const nativeGrantActive = async (params: { tenantId: string; spaceId: string; agentId: string; projectId?: string | undefined; userId?: string | undefined; runId?: string | undefined }) => {
-      if (params.tenantId !== tenantId || params.spaceId !== spaceId || params.agentId !== agentId || params.projectId !== projectId || params.userId !== userId || !params.runId || env.effectiveRole === "viewer") return false;
-      const invocation = { tenantId: params.tenantId, spaceId: params.spaceId, agentId: params.agentId, projectId: params.projectId, userId: params.userId, runId: params.runId };
-      return Boolean(env.nativeExecutionAllowed && env.codeGrantIsActive && await env.codeGrantIsActive(invocation));
+    const nativeGrantRevision = async (params: { tenantId: string; spaceId: string; agentId: string; projectId?: string | undefined; userId?: string | undefined; runId?: string | undefined }): Promise<string | false> => {
+      if (params.tenantId !== tenantId || params.spaceId !== spaceId || params.agentId !== agentId || params.projectId !== projectId
+        || params.userId !== userId || !params.runId || env.effectiveRole === "viewer" || !env.nativeExecutionAllowed || !env.codeGrantIsActive
+        || !params.userId || !this.env.SPACES_WORKER) return false;
+      const invocation = { tenantId: params.tenantId, spaceId: params.spaceId, agentId: params.agentId,
+        projectId: params.projectId, userId: params.userId, runId: params.runId };
+      if (!await env.codeGrantIsActive(invocation)) return false;
+      const internal = await this.internalHeaders(params.tenantId);
+      const response = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(params.spaceId)}/members`, { headers: internal }));
+      if (!response.ok) return false;
+      const members = await readBoundedResponseJson<{ data?: Array<{ user_id: string; role: string; authorization_revision?: number }> }>(response, 2 * 1024 * 1024);
+      const member = members.data?.find((entry) => entry.user_id === params.userId);
+      if (!member || roleRankFor(member.role) < memoryRoleRank.value || !Number.isSafeInteger(member.authorization_revision)
+        || Number(member.authorization_revision) < 1) return false;
+      const revision = `space:${member.authorization_revision}`;
+      if (!params.projectId || member.role === "owner" || member.role === "admin") return revision;
+      const projectResponse = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(params.spaceId)}/projects/${encodeURIComponent(params.projectId)}/members`, { headers: internal }));
+      if (!projectResponse.ok) return false;
+      const projectMembers = await readBoundedResponseJson<{ data?: Array<{ user_id: string; role: string; authorization_revision?: number }> }>(projectResponse, 2 * 1024 * 1024);
+      const projectMember = projectMembers.data?.find((entry) => entry.user_id === params.userId);
+      if (!projectMember || roleRankFor(projectMember.role) < memoryRoleRank.value
+        || !Number.isSafeInteger(projectMember.authorization_revision) || Number(projectMember.authorization_revision) < 1) return false;
+      return `${revision}.project:${projectMember.authorization_revision}`;
     };
+    const nativeGrantActive = async (params: Parameters<typeof nativeGrantRevision>[0]): Promise<boolean> => Boolean(await nativeGrantRevision(params));
     const installedContainers = async (): Promise<InstalledContainer[]> => {
       if (!userId || !this.env.SPACES_WORKER) return [];
       const response = await this.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/spaces/" + encodeURIComponent(spaceId) + "/container-installations?" + new URLSearchParams(projectId ? { project_id: projectId } : {}), {
@@ -3184,7 +3204,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         await deployedDynamicImages(this.env.DYNAMIC_SANDBOX, this.env.PLATFORM_SECRET)) });
     env.codeRunner = buildCodeRunner({
       airGappedOnly,
-      authorizeContainer: nativeGrantActive,
+      authorizeContainer: nativeGrantRevision,
       resolveSidecar: async params => {
         if (!await nativeGrantActive({ tenantId: params.tenantId, spaceId: params.spaceId, agentId: params.agentId, projectId: params.projectId, userId: params.userId, runId: params.runId })) throw new Error("container_execution_denied");
         const installation = (await installedContainers()).find(item => item.installationId === params.installationId && item.contract.image === params.containerImage && (!item.projectId || item.projectId === projectId) && (!item.userId || item.userId === userId));

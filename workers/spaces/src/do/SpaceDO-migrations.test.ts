@@ -4,6 +4,30 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { SPACE_DO_MIGRATIONS } from "./SpaceDO";
 
 describe("SpaceDO migration replay", () => {
+  it("keeps membership authority revisions monotonic across role change, removal and re-add", () => {
+    const storage = createDOStorage();
+    const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS);
+    storage.sql.exec("INSERT INTO space_members(space_id,user_id,role,joined_at) VALUES(?,?,?,?)", "space-a", "user-a", "member", "now");
+    expect(storage.sql.exec("SELECT revision FROM membership_authority_revisions WHERE scope_type='space' AND scope_id='space-a' AND user_id='user-a'").toArray())
+      .toEqual([{ revision: 1 }]);
+    storage.sql.exec("UPDATE space_members SET role='admin' WHERE space_id='space-a' AND user_id='user-a'");
+    expect(storage.sql.exec("SELECT revision FROM membership_authority_revisions WHERE scope_type='space' AND scope_id='space-a' AND user_id='user-a'").toArray())
+      .toEqual([{ revision: 2 }]);
+    storage.sql.exec("DELETE FROM space_members WHERE space_id='space-a' AND user_id='user-a'");
+    expect(storage.sql.exec("SELECT revision FROM membership_authority_revisions WHERE scope_type='space' AND scope_id='space-a' AND user_id='user-a'").toArray())
+      .toEqual([{ revision: 3 }]);
+    storage.sql.exec("INSERT INTO space_members(space_id,user_id,role,joined_at) VALUES(?,?,?,?)", "space-a", "user-a", "admin", "later");
+    expect(storage.sql.exec("SELECT revision FROM membership_authority_revisions WHERE scope_type='space' AND scope_id='space-a' AND user_id='user-a'").toArray())
+      .toEqual([{ revision: 4 }]);
+
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,created_by) VALUES(?,?,?,?)", "project-a", "space-a", "Project", "user-a");
+    storage.sql.exec("INSERT INTO project_members(project_id,user_id,role,assistant_mode,added_at) VALUES(?,?,?,?,?)", "project-a", "user-a", "editor", "inherit", "now");
+    storage.sql.exec("UPDATE project_members SET assistant_mode='read_only' WHERE project_id='project-a' AND user_id='user-a'");
+    expect(storage.sql.exec("SELECT revision FROM membership_authority_revisions WHERE scope_type='project' AND scope_id='project-a' AND user_id='user-a'").toArray())
+      .toEqual([{ revision: 2 }]);
+  });
+
   it("adds archive coverage metadata without changing existing verified archive rows", () => {
     const storage = createDOStorage();
     const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
@@ -201,7 +225,7 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(157);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(158);
     const storage = createDOStorage();
     applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, space.SPACE_DO_MIGRATIONS);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('event_triggers')").toArray().map(column => column.name)).toContain("updated_by");
