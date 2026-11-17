@@ -3086,7 +3086,8 @@ original bytes and parser lineage, records storage usage and includes image sour
 OCR uncertainty is disclosed in the preview. The feature flag is explicitly false in development,
 staging and production until current Cohere image support, privacy, quality, billing and live acceptance
 are verified. Local checks: Knowledge suites **21/21**, Shell upload suite **6/6**, both typechecks and
-`git diff --check`. No live provider call or deployment occurred.
+`git diff --check`. No live provider call or deployment occurred. Code
+`8a6d50264a756a87e514a1cb05c478acf6cf074a` is pushed to `origin/Mcbt5s-Backup-2`.
 
 Exact next action: continue Knowledge PDF/page provenance and remaining independent active-plan gaps;
 SC03 disconnected dispatch remains disabled until current host authority and Billing can be rechecked.

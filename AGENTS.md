@@ -6,7 +6,7 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is the K02 reviewed PNG/JPEG OCR caller (local verification; recovery push pending), after
+  checkpoint is the K02 reviewed PNG/JPEG OCR caller (pushed as `8a6d5026`), after
   K02/K03 ledger correction (`def365b3`), EP04 Project update-flow reconciliation (`c2c8f8d0`),
   bounded PPTX tables (`34800a4a`), task OCR settings (`7aee2ef1`) and P04 restore (`946e1881`,
   pointer `084e4f94`) were pushed. Current EP04 review/apply/recovery has exact pin/trust/dependency/
@@ -39,7 +39,7 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (K02 PNG/JPEG reviewed OCR caller; local verification)
+## Current checkpoint — 2026-11-17 (K02 PNG/JPEG reviewed OCR caller; pushed as `8a6d5026`)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
 
@@ -48,7 +48,8 @@ and approval path with validated image signatures/dimensions, 1 MiB/20 MP bounds
 bytes, storage receipts and archive validation. Feature flag `KNOWLEDGE_IMAGE_PARSE_ENABLED` is explicitly
 false in development/staging/production. Provider image support, privacy/egress, quality, billing and live
 acceptance remain gates; no live call or deployment occurred. Local verification: Knowledge **21/21**, Shell
-helper **6/6**, both typechecks and `git diff --check`.
+helper **6/6**, both typechecks and `git diff --check`. Code `8a6d50264a756a87e514a1cb05c478acf6cf074a` is
+pushed to `origin/Mcbt5s-Backup-2`.
 
 The requested TBR07 comparison is already recorded and unchanged. SC03 has no alarm-safe authority
 revalidator for the live Bash surface/role clamp and no durable pre-dispatch Billing hold; keep disconnected

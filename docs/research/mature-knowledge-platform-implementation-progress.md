@@ -400,7 +400,8 @@ expose the path and show OCR review warnings. Development, staging and productio
 `KNOWLEDGE_IMAGE_PARSE_ENABLED=false`; this code does not run against a provider in those environments.
 Enabling it still requires current Cohere image-format contract, privacy/egress, quality, billing and
 live acceptance. No OCR accuracy is claimed. Local verification: Knowledge ingestion/image/archive
-tests **21/21**, Knowledge typecheck, Shell upload tests **6/6**, Shell typecheck and diff hygiene.
+tests **21/21**, Knowledge typecheck, Shell upload tests **6/6**, Shell typecheck and diff hygiene. Code
+`8a6d50264a756a87e514a1cb05c478acf6cf074a` is pushed to `origin/Mcbt5s-Backup-2`.
 
 K02 remains partial for scanned-PDF OCR, PDF/page and richer visual coordinates, and richer presentation
 extraction. K03 remains partial for PDF coordinates, extraction confidence and parser-quality evidence.
