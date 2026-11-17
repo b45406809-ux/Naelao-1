@@ -5,11 +5,12 @@ requirements**, not a single slice or a documentation update. This section is th
 continuation instruction; historical checkpoints and their "next action" paragraphs below describe
 past work and do not override the current progress records or require repeating completed work.
 
-- Start or resume from the newest verified progress records and actual code/worktree. Continue the
-  latest actionable gap, including the staged Project extension update recovery recorded below,
-  then implement the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
-  other incorporated plan ledgers. Follow dependencies, preserve completed work and recheck current
-  authorization, security and billing boundaries.
+- Start or resume from the newest verified progress records and actual code/worktree. The current
+  exact action is SC03 durable compute admission/dispatch in the shared-compute ledger; TBR07 has
+  already been compared, and K02 DOCX/XLSX slices are pushed. Then continue the next unfinished
+  requirement across **all** active S/U/P/PW/K/EP/AP/TBR and incorporated plan ledgers. Follow
+  dependencies, preserve completed work and recheck current authorization, security and billing
+  boundaries.
 - A milestone, local test pass, documentation refresh, status update, user status request, plan
   incorporation, compaction, commit or push is **not mission completion**. After each coherent
   verified checkpoint, update the relevant durable ledger and this runbook's current pointer, commit
@@ -33,13 +34,13 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (K02 bounded DOCX Knowledge ingestion; `0e1a0b06` pushed)
+## Latest cross-plan checkpoint — 2026-11-17 (K02 bounded XLSX Knowledge ingestion; `007b5a8f` pushed)
 
-The Space and Project Knowledge upload paths now accept DOCX, extract bounded main-body text locally, preserve headings/table delimiters and numeric/formula-like strings, show an editable review, and require the scope/source/extraction/parser-bound signed preview receipt before save. Original DOCX bytes and parser lineage persist through synchronous/workflow ingestion and the generic archive export/restore path. Archive validation rejects DOCX source-name mismatch or missing lineage. Extraction uses only `word/document.xml`, limits archive to 5 MiB, entries to 512, XML to 4 MiB and text to 1 MiB; unsupported structures are disclosed (headers, footers, images, layout, comments and tracked changes omitted). It performs no external parser call. Code `0e1a0b06` is pushed to `origin/Mcbt5s-Backup-2`. Local evidence: focused Knowledge DOCX/PDF-ingestion/archive tests **17/17**, Knowledge/workflows/Shell typechecks and `git diff --check` pass. No browser, deployed or provider acceptance. Spreadsheet, presentation and OCR Knowledge ingestion remain uncoded; K03 coordinates/confidence/quality evidence remain partial. Preserve `infra/scripts/__pycache__/`.
+Code `007b5a8f` is pushed to `origin/Mcbt5s-Backup-2`. Knowledge now supports scoped, editable first-worksheet XLSX preview/save. The bounded parser resolves the workbook's first sheet and shared strings, preserves cell values as text, renders formulas as text without cached results, and retains original bytes plus parser/source/extraction/approved-content lineage through workflow ingestion and archive restore. Limits include 5 MiB source, at most 512 archive entries, 4 MiB per selected XML part, 8 MiB metadata expansion per pass, 10,000 rows, 256 columns and 1 MiB output. Extra sheets, formatting, charts, hidden content, external links and formula cached results are disclosed as omitted. DOCX support remains pushed at `0e1a0b06`. Verification: XLSX/DOCX/PDF ingestion/archive/telemetry and Shell preview/file tests **34/34**; Knowledge, Workflows and Shell typechecks plus diff check pass. No browser, deployed or provider acceptance. K02 remains partial for presentation and OCR ingestion; K03 remains partial for page coordinates, extraction confidence and parser/provider quality evidence.
 
 **Reminder to myself:** Keep implementing the full authorized mission after every checkpoint. Do not stop at a status update, slice, test pass, documentation edit, commit or push; immediately move to the next independent unfinished requirement unless the user stops the mission or a real blocker prevents all progress.
 
-Exact next action: continue K02 with bounded XLSX spreadsheet parsing through reviewed preview, source lineage, save and archive recovery, first reconciling whether the existing `fflate` path and package set support a small safe main-sheet XML parser without exposing formulas as executable content. Keep numbers/cell values as text, bound ZIP expansion and worksheet/cell counts, and disclose omitted workbook features. Then continue all other active-plan code gaps. Rollouts stay disabled; this code is committed/pushed only after the verified ledger update, and implementation resumes immediately after push.
+Exact next action: resume SC03 durable compute admission and dispatch from `docs/research/shared-compute-scheduling-and-budget-progress.md`. The TBR07 authority comparison is already recorded; do not repeat it. Inspect only concrete current host authorities and encrypted stores needed to define a durable job receipt, then implement reachable status/cancel/retry/recovery and a fenced dispatcher that revalidates current authorization and Billing admission. Do not persist arbitrary executable payload in ConcurrencyDO or make synchronous work block. If a required retention/product contract is genuinely undecided, record that exact decision and continue another independent gap. Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (SC05 Project sidecar budget receipts; `84dd206f` pushed)
 

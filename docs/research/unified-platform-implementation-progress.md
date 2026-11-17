@@ -1,3 +1,9 @@
+## Latest cross-plan checkpoint — 2026-11-17 (K02 XLSX Knowledge ingestion; `007b5a8f` pushed)
+
+Pushed after DOCX checkpoint `0e1a0b06`, `007b5a8f` adds bounded first-worksheet XLSX parsing through Knowledge preview/review/save, lineage persistence, workflow ingestion and archive restore. XLSX values and formulas remain inert text; source, XML-part, row, column and output limits are enforced. Local affected suites **34/34**, Knowledge/Workflows/Shell typechecks and diff check pass. No browser, deployment or live acceptance. K02 presentation/OCR and K03 coordinates/confidence/quality work remain open.
+
+Exact next action: resume SC03 durable admission/dispatch from the shared-compute ledger; the TBR07 authority comparison is already recorded and must not be repeated. Continue all other independent S/U/P/PW/K/EP/AP/TBR gaps after that checkpoint. Rollouts remain disabled.
+
 ## Current cross-plan checkpoint — 2026-11-17 (Project assistant owner scope; `5de8d73d` pushed)
 
 `5de8d73d04a875d94107b9dbc927ac05f1d236d7` is pushed to `origin/Mcbt5s-Backup-2`. SpaceDO assistant access no longer treats a user who is owner/admin in any Space in the DO as an implicit owner of every Project. When a Project membership row is absent, it now resolves the Project's actual owning Space and applies the existing owner/admin exception only there. Explicit Project membership continues to honor `read_only` and `none`. Local SpaceDO regression: **1/1**; Spaces typecheck and `git diff --check` pass. This fixes cross-Space privilege inheritance but does not settle the same-Space private-Project policy: Knowledge still requires explicit Project membership while SpaceDO permits the owning Space owner/admin. No grant is inferred or changed, and no deployment/live acceptance occurred.

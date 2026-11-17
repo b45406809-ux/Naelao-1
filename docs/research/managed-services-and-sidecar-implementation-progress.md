@@ -1,3 +1,9 @@
+## Latest cross-plan checkpoint — 2026-11-17 (K02 XLSX Knowledge ingestion; `007b5a8f` pushed)
+
+`007b5a8f` is pushed to `origin/Mcbt5s-Backup-2`, following DOCX checkpoint `0e1a0b06`. The XLSX first-worksheet parser is bounded and connected through editable Knowledge preview, signed save approval, source/parser lineage, workflow chunking and archive recovery. Local focused tests **34/34**, Knowledge/Workflows/Shell typechecks and diff hygiene pass. No deployment or live acceptance. K02 still lacks presentation and OCR ingestion; K03 quality evidence remains incomplete.
+
+Exact next action: continue SC03 durable compute admission/dispatch as directed by AGENTS and the shared-compute ledger. TBR07's authority comparison is already recorded; do not repeat or broaden it. Keep rollout disabled and preserve `infra/scripts/__pycache__/`.
+
 ## Current S2 cross-plan checkpoint — 2026-11-17 (UserPort post-grant reauthorization; `8ed15507` pushed)
 
 Code `8ed1550758ea2602015af68a6c9913f27dfe662e` is pushed and remote-verified on `origin/Mcbt5s-Backup-2`. UserPort sync now rechecks the exact alias identity, enabled connector/provider/connection digest, granted scopes and every selected tool after AgentPort account/grant calls; it then rechecks the owner-link consent after that asynchronous discovery and immediately before persisting an active binding. Alias/selection drift revokes the exact account and persists a revoked local binding; consent revocation revokes and records the binding as revoked. Uncertain cleanup retains the exact cleanup request for scheduled reconciliation. Focused UserPort lifecycle suite **20/20**, Agents typecheck and diff hygiene pass. No provider action was issued beyond local AgentPort/MCP fakes; no live provider or deployed acceptance.
