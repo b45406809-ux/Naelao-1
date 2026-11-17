@@ -243,11 +243,13 @@ describe("scoped website Knowledge preview", () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("temporary network failure"); }));
     const f = fixture({ refreshDocument: { id: "doc-1", source_url: "https://docs.example/guide", source_revision: 4,
       source_connection_ref: "connection-1", source_state: "current", source_adapter: "website" } });
+    f.analytics.writeDataPoint.mockImplementation(() => { throw new Error("analytics offline"); });
     const response = await worker.fetch!(await request({ document_id: "doc-1", idempotency_key: "refresh-request-0002",
       url: "https://docs.example/guide" }), f.env, {} as ExecutionContext);
     expect(response.status).toBe(502);
     expect(f.sqlCalls.some((sql) => sql.includes("state='failed'") && sql.includes("next_attempt_at"))).toBe(true);
     expect(f.sqlCalls.some((sql) => sql.includes("source_refresh_failures=source_refresh_failures+1"))).toBe(true);
+    expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_source_refresh", "preview_failure", "preview_failed"], doubles: [1], indexes: [] });
   });
 
   it("blocks a second refresh while the durable operation is fetching", async () => {

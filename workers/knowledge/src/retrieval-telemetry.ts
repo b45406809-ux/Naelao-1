@@ -47,6 +47,20 @@ export function recordWebsiteRefreshRecoveryMetric(dataset: AnalyticsEngineDatas
   } catch { /* Telemetry must not change durable source recovery or backoff. */ }
 }
 
+export function recordWebsiteRefreshFailureMetric(dataset: AnalyticsEngineDataset | undefined, errorCode: string, attempts: number): void {
+  const outcome = errorCode === "website_destination_rejected" ? "destination_rejected"
+    : errorCode === "website_upstream_unavailable" ? "upstream_unavailable"
+      : errorCode === "website_upstream_status" ? "upstream_status"
+        : errorCode === "website_content_type_unsupported" ? "content_type_unsupported"
+          : errorCode === "website_source_too_large" ? "source_too_large"
+            : errorCode === "website_source_empty" ? "source_empty"
+              : errorCode === "website_preview_failed" ? "preview_failed" : "other";
+  try {
+    const boundedAttempts = Number.isFinite(attempts) ? Math.max(0, Math.min(100, Math.round(attempts))) : 0;
+    dataset?.writeDataPoint({ blobs: ["knowledge_source_refresh", "preview_failure", outcome], doubles: [boundedAttempts], indexes: [] });
+  } catch { /* Telemetry must not change durable source state or retries. */ }
+}
+
 /** Produce bounded aggregate telemetry; caller, tenant, Space, Project and query data are omitted. */
 export function buildPrivacySafeRetrievalTelemetry(input: {
   event: GroundedSearchTelemetry;

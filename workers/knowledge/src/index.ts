@@ -24,7 +24,7 @@ import { createWebsitePreviewToken, sha256TextHex, verifyWebsitePreviewToken } f
 import { boundedWebsiteCrawlFrontier, extractWebsiteCrawlLinks, WEBSITE_CRAWL_LIMITS, type WebsiteCrawlPageRef } from "./website-crawl.js";
 import { runScheduledWebsiteRefreshes } from "./website-refresh-scheduler.js";
 import { buildPrivacySafeRetrievalTelemetry, recordCitationMetric, recordPdfPreviewParseMetric, recordProjectAccessMetric,
-  recordWebsiteRefreshRecoveryMetric } from "./retrieval-telemetry.js";
+  recordWebsiteRefreshFailureMetric, recordWebsiteRefreshRecoveryMetric } from "./retrieval-telemetry.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -1489,14 +1489,15 @@ app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/preview", asyn
       const backoffMinutes = Math.min(360, 2 ** Math.min(refreshAttempt - 1, 8));
       const now = new Date();
       const retryAt = new Date(now.getTime() + backoffMinutes * 60_000).toISOString();
-      await c.env.PLATFORM_DB.batch([
+      const persisted = await c.env.PLATFORM_DB.batch([
         c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='failed',error_code=?,next_attempt_at=?,updated_at=?
           WHERE id=? AND state='fetching'`).bind(errorCode, retryAt, now.toISOString(), refreshOperationId),
         c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET source_refresh_failures=source_refresh_failures+1,
           source_last_error_code=?,source_next_attempt_at=? WHERE id=? AND tenant_id=? AND space_id=? AND source_revision=?
             AND source_connection_ref=? AND source_state='current'`)
           .bind(errorCode, retryAt, refreshDocument.id, tenantId, spaceId, refreshDocument.source_revision, connection.id),
-      ]).catch(() => undefined);
+      ]).catch(() => null);
+      if (persisted?.[0]?.meta.changes) recordWebsiteRefreshFailureMetric(c.env.KNOWLEDGE_ANALYTICS, errorCode, refreshAttempt);
     };
     const websiteFetchSignal = AbortSignal.timeout(45_000);
     const authorizeWebsiteTarget = createWebsiteTargetAuthorizer(origins, pathPrefixes, websiteFetchSignal);
@@ -1558,13 +1559,14 @@ app.post("/spaces/:spaceId/kb/projects/:projectId/sources/website/preview", asyn
     if (refreshOperationId && refreshDocument) {
       const now = new Date();
       const retryAt = new Date(now.getTime() + Math.min(360, 2 ** Math.min(refreshAttempt - 1, 8)) * 60_000).toISOString();
-      await c.env.PLATFORM_DB.batch([
+      const persisted = await c.env.PLATFORM_DB.batch([
         c.env.PLATFORM_DB.prepare(`UPDATE kb_source_refresh_operations SET state='failed',error_code='website_preview_failed',
           next_attempt_at=?,updated_at=? WHERE id=? AND state='fetching'`).bind(retryAt, now.toISOString(), refreshOperationId),
         c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET source_refresh_failures=source_refresh_failures+1,
           source_last_error_code='website_preview_failed',source_next_attempt_at=? WHERE id=? AND source_revision=? AND source_state='current'`)
           .bind(retryAt, refreshDocument.id, refreshDocument.source_revision),
-      ]).catch(() => undefined);
+      ]).catch(() => null);
+      if (persisted?.[0]?.meta.changes) recordWebsiteRefreshFailureMetric(c.env.KNOWLEDGE_ANALYTICS, "website_preview_failed", refreshAttempt);
     }
     return c.json({ error_code: "website_preview_unavailable", message: "The website could not be fetched safely. Retry the preview." }, 502);
   }
