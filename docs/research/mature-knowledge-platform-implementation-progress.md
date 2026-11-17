@@ -1,4 +1,4 @@
-## Current K02/K03 checkpoint — 2026-11-17 (bounded PPTX table extraction; locally verified, push pending)
+## Current K02/K03 checkpoint — 2026-11-17 (bounded PPTX table extraction; pushed as `34800a4a`)
 
 The PPTX parser now emits bounded table cells as explicit slide/table/row/cell entries instead of
 flattening them into adjacent slide paragraphs. It limits each table to 256 rows and 64 columns and
@@ -10,7 +10,8 @@ typecheck and `git diff --check` pass. Local tests only; no browser/deployed/pro
 
 This improves structured table text but does not provide visual table coordinates, scanned-image OCR,
 confidence or parser-quality evidence. Task attachment OCR remains a separate host path and is not
-persisted into Knowledge. Exact next action: fetch/push this checkpoint, then continue K02/K03's
+persisted into Knowledge. Code `34800a4a` is pushed to `origin/Mcbt5s-Backup-2`. Exact next action:
+continue K02/K03's
 independent PDF page/table provenance and OCR requirements only through a supported reviewed Knowledge
 preview path; preserve the existing Cohere Parse default and retrieval path.
 

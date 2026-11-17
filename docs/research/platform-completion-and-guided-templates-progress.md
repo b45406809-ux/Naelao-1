@@ -1,4 +1,4 @@
-## Resume pointer — 2026-11-17 (Attachment OCR controls match scanned-PDF behavior; locally verified, push pending)
+## Resume pointer — 2026-11-17 (Attachment OCR controls match scanned-PDF behavior; pushed as `7aee2ef1`)
 
 The existing task-scoped OCR caller already renders at most five pages from a <=1 MiB scanned PDF,
 then OCRs each bounded <=1 MiB/20-megapixel page through the Space-enabled Workers AI path. Settings
@@ -11,9 +11,18 @@ Knowledge OCR/lineage gap.
 
 **Reminder to myself:** Keep implementing the complete mission after tests and each checkpoint; do not stop at this UI correction or its push.
 
-Exact next action: fetch and push this truthful caller/configuration update, then continue the uncoded
-Knowledge ingestion caller work without treating attachment OCR as Knowledge indexing. Preserve all
-rollout-off and provider-acceptance gates.
+Code `7aee2ef1` is pushed to `origin/Mcbt5s-Backup-2`. Attachment OCR remains distinct from Knowledge
+indexing. Continue Knowledge's uncoded ingestion work through its reviewed file path. Preserve rollout
+and provider-acceptance gates.
+
+### Reconciled already-pushed EP05 control — 2026-11-17 (`c6f7837f`)
+
+The public-page action abuse limit is already implemented and remotely present: edge code derives a
+privacy-safe HMAC of the client address, MicroAppDO enforces 30 accepted actions per client/page/minute,
+expires old buckets, caps bucket rows at 5,000, and keeps nonce replay protection. The earlier EP05
+pointer later in this ledger that listed this as the next task is stale; do not reimplement it. The
+original route/DO tests covered the limit and missing identity behavior. No deployed edge-IP/browser/
+domain acceptance; public origin rollout remains disabled.
 
 ## Resume pointer — 2026-11-17 (P04 personal MicroApp restore caller; pushed as `946e1881`)
 
@@ -178,7 +187,9 @@ review is pushed at `87e24bca` (owner display includes before/after operations, 
 
 **Reminder to myself:** Keep implementing the entire mission after each checkpoint. Do not stop after this slice, tests, docs, commit or push; continue with the next independent unfinished requirement unless the user stops or a real blocker prevents progress.
 
-Exact next action: add bounded privacy-safe abuse control to public page actions using durable host-owned accounting; preserve owner takedown and existing single-use token behavior. Then continue EP05 and other uncoded plan requirements. Keep public deployment rollout disabled.
+This rate-limiting action was subsequently completed by pushed code `c6f7837f`; see the reconciliation
+above. Do not repeat it. Continue other uncoded plan requirements. Public deployment rollout remains
+disabled.
 
 ## Resume pointer — 2026-11-17 (full Project extension resource declaration review; `87e24bca` pushed)
 
@@ -681,7 +692,7 @@ Fetched `docs/research/extensible-platform-and-managed-resources-plan.md` from `
 | EP02 host-managed resources | PARTIAL | Exact-manifest owner grant/review/status/revoke, generation and release fences, per-install budget admission and run-scoped usage receipts are local. Objects use the signed Project/install caller, one-use leases, scoped SpaceDO SQLite quotas, cleanup and versioned archive recovery. Structured data uses the existing scoped Gadget store; jobs use the durable D1/R2 ledger and `AGENT_TICKS` dispatcher. | The plan does not require a separate R2 object adapter. Resource descriptors remain unavailable; object/storage pricing, broader inventory/cleanup acceptance and deployed isolation/recovery remain. No provider/live gate is a substitute for remaining independent SDK, authoring, UI or lifecycle code work. |
 | EP03 custom Knowledge extensions | PARTIAL | Owner-published Project membership is revisioned; Space-shared grants pin approved revisions and Agent/Knowledge recheck them around retrieval. K01–K30 cover core Knowledge authority. `@naelao/rag` now exports scope/lineage contracts, chunk/hash/budget validators and a host-authorized, query-egress-gated retrieval wrapper with revoke/deletion fences (`d99f40cb`, `14db839d`, `b4a06736`). Synthetic grant/publish/revoke/delete invalidation tests pass. | No signed-extension runtime invocation/persistence caller yet. Reuse existing Knowledge grants, publication/source lineage and tombstones; wire only when install/release identity is available at the host boundary. Lifecycle dashboard, retention/version integration and actual provider revocation remain. Build on EP01; preserve ACL/tombstone authority. |
 | EP04 AI/developer authoring | PARTIAL | Planner/worker isolated workspace, manifest validation, checked publication and signed install exist. Shell preinstall review displays signed resource declarations, bounded limits, canonical source-payload fingerprint/count/bytes (`c04361e9`, `83d81107`); staged owner review shows validated manifest, host-built artifact and publisher payload pins/key/trust (`d7ae34f4`). Exact-install grant/revoke, budget and usage UI exist. | Project-bound update candidate review with exact pins/migration implications is uncoded; setup recovery and end-to-end proposal receipts remain partial; deployed runtime isolation remains a live gate. Provider byte/storage price is unapproved, so cost is unknown and must not be invented. |
-| EP05 websites | PARTIAL_LOCAL | Bounded publish/review/apply/render/action/takedown routes pin owner+slug+artifact SHA in one-use receipts and immutable publication records. Rendering verifies bytes; Shell Gadget view offers exact-digest sandboxed preview/apply, recent publication integrity/status list and exact-slug takedown. Takedown is actor/digest/time audited transactionally. Codes `a35237d5`, `c6bf77b1`, `f80e1577`, `61161067`; later hardening checkpoints are tracked above. | General static hosting, domain ownership/TLS/provider adapters, public-catalog authorization, pagination beyond the bounded recent list and deployed edge/domain/isolation acceptance remain. Public host suffix/rollout stays disabled. |
+| EP05 websites | PARTIAL_LOCAL | Bounded publish/review/apply/render/action/takedown routes pin owner+slug+artifact SHA in one-use receipts and immutable publication records. Rendering verifies bytes; Shell Gadget view offers exact-digest sandboxed preview/apply, recent publication integrity/status list and exact-slug takedown. Takedown is actor/digest/time audited transactionally. Privacy-safe per-page/client abuse controls are at `c6f7837f`; other codes `a35237d5`, `c6bf77b1`, `f80e1577`, `61161067`; later hardening checkpoints are tracked above. | General static hosting, domain ownership/TLS/provider adapters, public-catalog authorization, pagination beyond the bounded recent list and deployed edge/domain/isolation acceptance remain. Public host suffix/rollout stays disabled. |
 | EP06 billing/safety/operations | PARTIAL | Existing payer/usage/entitlement systems, managed-service receipts, scoped lifecycle controls and audit surfaces are reused. | Cross-resource quotes/reservations, installation-level attribution/caps, inventory/dependency UI, provider outcome reconciliation and complete cleanup/export/uninstall acceptance remain. Live invoice/runtime/deployment checks are external gates only after code is complete. |
 
 Cloudflare AI Search is not selected. K15/K16 remain its dedicated comparison: current Vectorize plus D1 FTS stays authoritative while user/role ACL filtering, update/delete lifecycle, quality, scale and total invoice cost lack accepted proof. Keep it and all new resource/site rollouts disabled. This is a source reconciliation, not live or deployed acceptance.

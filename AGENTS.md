@@ -6,7 +6,7 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is bounded PPTX table extraction for Knowledge (code/docs push pending), after task OCR
+  checkpoint is bounded PPTX table extraction for Knowledge (`34800a4a`) pushed, after task OCR
   settings correction (`7aee2ef1`) and P04 restore (`946e1881`, pointer `084e4f94`) pushed. PPTX now
   has explicit slide/table/row/cell entries, 256-row/64-column/20,000-cell bounds, and a new parser
   version. Focused Knowledge suites 13/13 and typecheck pass. This does not add visual layout or OCR.
@@ -37,7 +37,7 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (bounded PPTX table extraction; push pending)
+## Current checkpoint — 2026-11-17 (bounded PPTX table extraction; pushed as `34800a4a`)
 
 PPTX Knowledge previews now retain cell order and label each cell by slide, table, row and column index
 inside bounded extracted Markdown. The parser version changed, so existing preview receipts cannot
@@ -48,9 +48,11 @@ evidence remain open.
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit or push; continue implementing every independent authorized plan requirement.
 
-Exact next action: fetch and push this parser checkpoint, then continue the Knowledge PDF page/table
-provenance and OCR gaps only through a supported owner-reviewed preview path. Keep attachment OCR
-separate, preserve the current Cohere Parse/default retrieval paths, and keep rollout disabled.
+Code `34800a4a` is pushed to `origin/Mcbt5s-Backup-2`. Exact next action: continue SC03 only through
+an implementable host job boundary that can revalidate exact current authority and reserve Billing;
+the current live `nativeGrantRevision` closure is request-scoped and no alarm-safe job receipt exists.
+If that authority API cannot be safely persisted, advance to another independent requirement without
+repeating TBR07. Keep replay and rollout disabled.
 
 ## Previous cross-plan checkpoint — 2026-11-17 (P04 personal MicroApp restore caller; pushed as `946e1881`)
 
