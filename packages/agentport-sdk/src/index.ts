@@ -61,6 +61,25 @@ export interface ServiceManifest {
   billing?: Record<string, unknown>;
   capabilitySchemas?: Record<string, unknown>;
 }
+/** A provider-authored AgentPort registry record. This describes a provider's claims only;
+ * registration/discovery does not prove Naelao has an adapter, verified capability, region,
+ * entitlement, authorization or successful live operation. */
+export interface AgentPortServiceMetadata {
+  id: string;
+  name: string;
+  service_type: ServiceType;
+  endpoint: string | null;
+  account_models: AccountModel[];
+  capabilities: string[];
+  events: string[];
+  connection_purpose: ServiceManifest["connectionPurpose"];
+  partnership_status: NonNullable<ServiceManifest["partnershipStatus"]>;
+  auth: Record<string, unknown>;
+  provisioning: Record<string, unknown>;
+  capability_schemas: Record<string, unknown>;
+  billing: Record<string, unknown>;
+  status?: "active" | "suspended" | "revoked";
+}
 export class AgentPortError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string, readonly details?: unknown) { super(message); this.name = "AgentPortError"; }
 }
@@ -230,12 +249,15 @@ export class AgentPortClient {
     }
     return data as T;
   }
-  listServices() { return this.request<{ services: unknown[] }>("/services"); }
+  /** Read provider declarations only; do not infer that declared operations are executable or verified. */
+  listServices() { return this.request<{ services: AgentPortServiceMetadata[] }>("/services"); }
   registerService(service: ServiceManifest) { return this.request<{ service: ServiceManifest }>("/services", { method: "POST", body: JSON.stringify(service) }); }
+  /** Filter provider-declared metadata. Naelao authorization and live capability evidence are independent. */
   discoverServices(query?: { type?: ServiceType; capability?: string; accountModel?: AccountModel }) {
     const params = new URLSearchParams(Object.entries(query ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-    return this.request<{ services: ServiceManifest[] }>(`/services${params.size ? `?${params}` : ""}`);
+    return this.request<{ services: AgentPortServiceMetadata[] }>(`/services${params.size ? `?${params}` : ""}`);
   }
+  getServiceMetadata(serviceId: string) { return this.request<{ service: AgentPortServiceMetadata }>(`/services/${encodeURIComponent(serviceId)}`); }
   registerAgent(input: { hostPlatform: string; hostResourceId?: string; runtime?: string }) { return this.request<{ agent: { id: string; principalId: string; status: string } }>("/agents", { method: "POST", body: JSON.stringify(input) }); }
   createAccount(input: { serviceId: string; accountModel: AccountModel; ownerType: string; ownerId: string; parentAccountId?: string; externalAccountId?: string; credentialRef?: string; metadata?: unknown }) { return this.request<{ account: { id: string; status: string } }>("/accounts", { method: "POST", body: JSON.stringify(input) }); }
   provisionEmailAccount(input: { agentId: string; inboundWebhookUrl: string; idempotencyKey: string }) { return this.request<{ account: AgentPortEmailAccount; serviceId?: string; channel?: AgentPortChannel | null; webhookSecret?: string; contentStored?: false; idempotent?: boolean }>("/email/accounts", { method: "POST", body: JSON.stringify(input) }); }

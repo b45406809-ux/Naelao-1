@@ -114,9 +114,12 @@ describe("AgentPort public SDK", () => {
     expect(await verifyAgentCredential({ credential, audience: "https://service.test", trustedIssuer: "https://issuer.test", now: 150_000, fetch: fetcher })).toEqual({ valid: false, reason: "credential_revoked" });
   });
   it("uses the standalone API host and bearer key", async () => {
-    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => new Response(JSON.stringify({ services: [] }), { status: 200, headers: { "content-type": "application/json" } }));
+    const service = { id: "metadata-only", name: "Provider claim", service_type: "api", endpoint: null,
+      account_models: ["agent_native"], capabilities: ["declared.read"], events: [], connection_purpose: "agent_resource",
+      partnership_status: "unaffiliated", auth: {}, provisioning: {}, capability_schemas: {}, billing: {} };
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => new Response(JSON.stringify({ services: [service] }), { status: 200, headers: { "content-type": "application/json" } }));
     const client = new AgentPortClient({ apiKey: "ap_live_example", fetch: fetcher as typeof fetch });
-    await client.listServices();
+    await expect(client.listServices()).resolves.toEqual({ services: [service] });
     expect(fetcher).toHaveBeenCalledOnce();
     const [url, init] = fetcher.mock.calls[0]!;
     expect(String(url)).toBe("https://agentport.naelao.com/v1/services");
