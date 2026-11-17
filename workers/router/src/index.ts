@@ -629,8 +629,8 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
 // treatment projects/threads got before being added (see WS-2/the GET route's own comment):
 // resolveEndUserSpaceRole on the spaces worker now does the real per-caller authorization.
 //
-// Business invite/member and child-business lifecycle APIs were retired with the former
-// Launchpad business surface. Generic platform-member Space creation uses /spaces instead.
+// Authenticated Product-user Space invitations and reviews are identity-routed here; owner/admin
+// authority, verified email and all durable invitation rules are enforced by the Spaces Worker.
 export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/runtime-catalog$/,
   /^\/spaces\/([^/]+)\/runtime-installations$/,
@@ -647,6 +647,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // Product-member role review is owner/admin-only at the Spaces Worker and records a
   // proposal-only assignment against the installed signed template; no resource grant follows.
   /^\/spaces\/([^/]+)\/member-role-reviews(?:\/[^/]+)?$/,
+  /^\/spaces\/([^/]+)\/business-role-options$/,
   /^\/spaces\/([^/]+)\/sub-spaces(?:\/[^/]+(?:\/(?:projects|members)(?:\/[^/]+)?)?)?$/,
   /^\/spaces\/([^/]+)\/preferences$/,
   // The Spaces worker resolves current membership for registry reads and owner/admin for writes;

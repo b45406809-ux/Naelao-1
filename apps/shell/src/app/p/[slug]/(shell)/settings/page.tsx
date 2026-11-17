@@ -33,6 +33,7 @@ import { DomainGlossaryPanel } from "@/components/DomainGlossaryPanel";
 import { ArchiveKeyRotationPanel } from "@/components/ArchiveKeyRotationPanel";
 import { AttachmentOcrSettings } from "@/components/AttachmentOcrSettings";
 import { VideoFrameAnalysisSettings } from "@/components/VideoFrameAnalysisSettings";
+import { SpaceMemberOnboardingPanel } from "@/components/SpaceMemberOnboardingPanel";
 import {
   getMe,
   exportMyProductData,
@@ -193,6 +194,11 @@ export default function SettingsPage() {
         {tab === "members" && isChildSpace && (
           <MembersTab
             members={members}
+            spaceId={activeSpaceId}
+            productSlug={product.slug}
+            session={creds}
+            canManage={canManage}
+            canInviteAdmin={space?.role === "owner"}
           />
         )}
 
@@ -372,8 +378,13 @@ function PresentationSettings() {
 
 // ── Members ─────────────────────────────────────────────────────────────────
 
-function MembersTab({ members }: {
+function MembersTab({ members, spaceId, productSlug, session, canManage, canInviteAdmin }: {
   members: SpaceMember[];
+  spaceId: string;
+  productSlug: string;
+  session: SessionCredentials | null;
+  canManage: boolean;
+  canInviteAdmin: boolean;
 }) {
   return (
     <div>
@@ -397,6 +408,8 @@ function MembersTab({ members }: {
           ))
         )}
       </div>
+
+      <SpaceMemberOnboardingPanel spaceId={spaceId} productSlug={productSlug} session={session} canManage={canManage} canInviteAdmin={canInviteAdmin} />
 
     </div>
   );

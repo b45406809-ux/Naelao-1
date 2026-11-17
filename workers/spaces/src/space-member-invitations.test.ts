@@ -101,6 +101,12 @@ describe("Space Product-user invitations", () => {
       businessRoles: [{ id: "stock_lead", name: { en: "Stock lead" }, recommendedSpaceRole: "member" }],
     };
     const { artifactSha256, platform } = await installRoleBlueprint(env, artifact);
+    const options = await inviteRequest(env, "owner-a", "/spaces/space-a/business-role-options", "GET");
+    expect(options.status).toBe(200);
+    expect(await options.json()).toMatchObject({ grants_applied: false, blueprints: [{ blueprint_id: artifact.id,
+      artifact_sha256: artifactSha256, roles: [{ id: "stock_lead", name: { en: "Stock lead" }, recommended_space_role: "member" }] }] });
+    const hiddenOptions = await inviteRequest(env, "member-a", "/spaces/space-a/business-role-options", "GET");
+    expect(hiddenOptions.status).toBe(403);
     const created = await inviteRequest(env, "owner-a", "/spaces/space-a/member-invitations", "POST", {
       email: "member@example.test", blueprint_id: artifact.id, business_role_id: "stock_lead",
     });

@@ -3511,6 +3511,85 @@ export async function listSpaceMembers(spaceId: string, session: SessionCredenti
   return res.data;
 }
 
+export interface SpaceMemberInvitation {
+  id: string;
+  role: "viewer" | "member" | "admin";
+  status: "pending" | "accepted" | "revoked" | "expired";
+  blueprint_id: string | null;
+  artifact_sha256: string | null;
+  business_role_id: string | null;
+  created_at: string;
+  expires_at: string;
+  redeemed_by: string | null;
+  redeemed_at: string | null;
+  revoked_by: string | null;
+  revoked_at: string | null;
+}
+
+export interface SpaceBusinessRoleReview {
+  id: string;
+  end_user_id: string;
+  membership_created_at: string;
+  membership_role: string;
+  blueprint_id: string;
+  artifact_sha256: string;
+  business_role_id: string;
+  status: "proposal_only" | "revoked";
+  grants_applied: false;
+  reviewed_by: string;
+  reviewed_at: string;
+  revoked_by: string | null;
+  revoked_at: string | null;
+}
+
+export interface SpaceBusinessRoleOptionCatalog {
+  blueprints: Array<{ blueprint_id: string; artifact_sha256: string;
+    roles: Array<{ id: string; name: Record<string, string>; recommended_space_role: string }> }>;
+  grants_applied: false;
+}
+
+export function listSpaceBusinessRoleOptions(spaceId: string, session: SessionCredentials) {
+  return apiFetch<SpaceBusinessRoleOptionCatalog>(`/v1/spaces/${encodeURIComponent(spaceId)}/business-role-options`, { session, cache: "no-store" });
+}
+
+export async function listSpaceMemberInvitations(spaceId: string, session: SessionCredentials): Promise<SpaceMemberInvitation[]> {
+  const result = await apiFetch<{ data: SpaceMemberInvitation[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/member-invitations`, { session, cache: "no-store" });
+  return result.data ?? [];
+}
+
+export function createSpaceMemberInvitation(spaceId: string, session: SessionCredentials, input: {
+  email: string; role: "viewer" | "member" | "admin"; blueprint_id?: string; business_role_id?: string;
+}) {
+  return apiFetch<{ id: string; role: string; status: "pending"; business_role_id: string | null; grants_applied: false;
+    expires_in_seconds: number; delivery: "not_sent"; token: string }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/member-invitations`, { method: "POST", session, body: JSON.stringify(input) });
+}
+
+export function revokeSpaceMemberInvitation(spaceId: string, session: SessionCredentials, invitationId: string) {
+  return apiFetch<{ id: string; status: "revoked" }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/member-invitations/${encodeURIComponent(invitationId)}`,
+    { method: "DELETE", session, body: "{}" });
+}
+
+export function redeemSpaceMemberInvitation(spaceId: string, session: SessionCredentials, invitationId: string, token: string) {
+  return apiFetch<{ id: string; status: "accepted"; role: string; business_role_id: string | null;
+    role_review?: { id: string; status: string; grants_applied: false } | null; grants_applied?: false; replayed: boolean }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/member-invitations/${encodeURIComponent(invitationId)}/redeem`,
+    { method: "POST", session, body: JSON.stringify({ token }) });
+}
+
+export async function listSpaceBusinessRoleReviews(spaceId: string, session: SessionCredentials): Promise<SpaceBusinessRoleReview[]> {
+  const result = await apiFetch<{ data: SpaceBusinessRoleReview[]; grants_applied: false }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/member-role-reviews`, { session, cache: "no-store" });
+  return result.data ?? [];
+}
+
+export function revokeSpaceBusinessRoleReview(spaceId: string, session: SessionCredentials, reviewId: string) {
+  return apiFetch<{ id: string; status: "revoked"; grants_applied: false }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/member-role-reviews/${encodeURIComponent(reviewId)}`,
+    { method: "DELETE", session, body: "{}" });
+}
+
 // Legacy business-plan and credit-pack checkout APIs were removed. Platform subscriptions
 // remain available through the Naelao billing API; FDE template purchases use the marketplace API.
 

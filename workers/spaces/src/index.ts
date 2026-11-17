@@ -4226,6 +4226,30 @@ async function loadActiveBusinessRoleBlueprint(c: Context<{ Bindings: Env }>, sp
   return { artifactSha256: installed.artifact_sha256, blueprint: source.blueprint };
 }
 
+app.use("/spaces/:spaceId/business-role-options", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/spaces/:spaceId/business-role-options", async c => {
+  const spaceId = c.req.param("spaceId"), scope = await memberInviteSpace(c, spaceId);
+  if (!scope) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const stub = await spaceDoStub(c.env, spaceId, scope.identity.tenantId);
+  const response = await stub.fetch(new Request(`http://space-do/blueprint-installations?${new URLSearchParams({
+    tenant_id: scope.identity.tenantId, space_id: spaceId,
+  })}`, { headers: { "x-naelao-tenant-id": scope.identity.tenantId,
+    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, scope.identity.tenantId) } }));
+  if (!response.ok) return c.json({ error_code: "blueprint_installations_unavailable" }, 503);
+  const result = await response.json<{ installations?: Array<{ blueprint_id: string; status: string; lifecycle_state: string }> }>();
+  const active = (result.installations ?? []).filter(item => item.status === "installed" && item.lifecycle_state === "active"
+    && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(item.blueprint_id));
+  if (active.length > 50) return c.json({ error_code: "business_role_catalog_too_large" }, 409);
+  const verified = await Promise.all(active.map(async item => ({ item, result: await loadActiveBusinessRoleBlueprint(c, spaceId, item.blueprint_id) })));
+  const blueprints = verified.flatMap(({ item, result: loaded }) => {
+    if ("error" in loaded || !loaded.blueprint.businessRoles?.length) return [];
+    return [{ blueprint_id: item.blueprint_id, artifact_sha256: loaded.artifactSha256,
+      roles: loaded.blueprint.businessRoles.map(role => ({ id: role.id, name: role.name,
+        recommended_space_role: role.recommendedSpaceRole ?? "member" })) }];
+  });
+  return c.json({ blueprints, grants_applied: false }, { headers: { "cache-control": "private, no-store" } });
+});
+
 app.use("/spaces/:spaceId/member-role-reviews", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/member-role-reviews/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.post("/spaces/:spaceId/member-role-reviews", async c => {

@@ -96,6 +96,7 @@ describe("Space member invitation identity routing", () => {
     "/spaces/s/member-invitations/invite-a/redeem",
     "/spaces/s/member-role-reviews",
     "/spaces/s/member-role-reviews/review-a",
+    "/spaces/s/business-role-options",
   ])("resolves a Product identity for %s so the Space host can enforce owner and verified-email gates", path => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
   });
@@ -104,6 +105,7 @@ describe("Space member invitation identity routing", () => {
     "/spaces/s/member-invitations/invite-a/redeem/other",
     "/spaces/s/member-invitations/invite-a/revoke/other",
     "/spaces/s/member-role-reviews/review-a/approve",
+    "/spaces/s/business-role-options/other",
   ])("does not route unrelated invitation actions: %s", path => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
   });
