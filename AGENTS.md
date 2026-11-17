@@ -6,8 +6,8 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is the Project extension update review resource-diff caller (`e3b5f2bc`) pushed; next
-  continue the next independent platform requirement while SC03 remains fail-closed pending a
+  checkpoint is full Project extension resource-diff details (`87e24bca`) pushed; next continue the
+  next independent platform requirement while SC03 remains fail-closed pending a
   callable durable authority/consent contract. TBR07's authority comparison is already recorded and
   must not be repeated. Membership revisions and K02 PPTX/DOCX/XLSX code are pushed.
   Then continue the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
@@ -36,13 +36,15 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Latest cross-plan checkpoint — 2026-11-17 (Project extension update review resource diff; `e3b5f2bc` pushed)
+## Latest cross-plan checkpoint — 2026-11-17 (full Project extension resource diff; `87e24bca` pushed)
 
-`e3b5f2bca2ca697cb1004ea8354dbfc5edfce04b` is pushed to `origin/Mcbt5s-Backup-2`. The Project
-extension update-review caller now displays the exact host-managed resource declarations added,
-changed or removed by a candidate. It states that declarations request access and do not themselves
-grant it. The signed review/apply and host grant boundaries are unchanged. Shell typecheck and
-resource/update API tests **7/7** pass; no browser/deployed acceptance.
+`87e24bcacc051ed285874177a72e9ff925f912f1` is pushed to `origin/Mcbt5s-Backup-2`. The Project
+extension update-review API now returns full bounded before/after resource declarations for added,
+changed and removed entries, including kind, scope, operations, binding and limits. The owner Shell
+renders those exact reviewed details and states that declaration review does not grant access.
+Spaces/Shell typechecks and focused review/API suites **7/7 each** pass; no browser/deployed
+acceptance. The prior count-only caller checkpoint `e3b5f2bc` remains an ancestor. RAG heading-path
+regression coverage `f3268d22` is also pushed.
 
 **Reminder to myself:** Keep implementing the full authorized mission after each checkpoint. Never stop at a status update, completed slice, test pass, documentation edit, commit or push; immediately continue with the next independent unfinished requirement unless the user stops the mission or a real blocker prevents all progress.
 

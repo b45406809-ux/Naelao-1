@@ -1,11 +1,12 @@
-## Resume pointer — 2026-11-17 (Project extension resource declaration review; `e3b5f2bc` pushed)
+## Resume pointer — 2026-11-17 (full Project extension resource declaration review; `87e24bca` pushed)
 
-The owner Project extension update review now renders exact resource declarations added, changed or
-removed by the signed candidate and clarifies that review does not grant access. Shell typecheck and
-resource/update API suites **7/7** pass. No browser/deployed acceptance. EP04 review visibility is
-improved; independent owner grants remain separate and fail closed. SC03 remains fail-closed: the
-live `Bash` tool surface and role clamp are not available to a disconnected durable dispatcher, and
-Billing is reserved after capacity, not while waiting. TBR07 was already reconciled; see its ledger.
+Code `87e24bcacc051ed285874177a72e9ff925f912f1` is pushed. Project extension review now returns and
+renders full bounded before/after resource declarations for added, changed and removed entries,
+including kind, scope, operations, binding and limits. Review remains non-granting. Spaces/Shell
+typechecks and focused review/API suites **7/7 each** pass. No browser/deployed acceptance. SC03
+remains fail-closed: the live `Bash` tool surface and role clamp are not available to a disconnected
+durable dispatcher, and Billing is reserved after capacity, not while waiting. TBR07 was already
+reconciled; see its ledger. RAG heading-path transition test is pushed at `f3268d22`.
 
 **Reminder to myself:** Continue the entire mission after each checkpoint; do not stop after tests, a ledger update, a commit or a push. Move to the next independent code gap unless the user stops or a real blocker prevents progress.
 
