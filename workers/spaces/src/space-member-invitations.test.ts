@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { createFakeD1 } from "../../../tests/stubs/d1-sqlite.js";
+import type { SpaceBlueprint } from "@naelao/agent-sdk";
+import { certifyStateDeltaArtifact } from "@naelao/security";
 import worker from "./index.js";
 
 const secret = "space-member-invites-test-secret";
@@ -22,6 +24,7 @@ function setup() {
       UNIQUE(space_id,end_user_id))`,
   ]);
   db.exec(readFileSync(join(__dirname, "../../../infra/migrations/0278_space_member_invitations.sql"), "utf8"));
+  db.exec(readFileSync(join(__dirname, "../../../infra/migrations/0279_space_business_role_review_ledger.sql"), "utf8"));
   db.exec("INSERT INTO orgs VALUES('tenant-a','active')");
   db.exec("INSERT INTO products VALUES('product-a','tenant-a','active')");
   db.exec("INSERT INTO spaces VALUES('space-a','tenant-a','product-a','active')");
@@ -62,6 +65,43 @@ describe("Space Product-user invitations", () => {
     const replay = await inviteRequest(env, "member-a", path, "POST", { token: invitation.token });
     expect(await replay.json()).toMatchObject({ status: "accepted", replayed: true });
     expect(db.prepare("SELECT role FROM space_members WHERE space_id='space-a' AND end_user_id='member-a'").get()).toEqual({ role: "member" });
+  });
+
+  it("binds an owner-reviewed role proposal to the installed signed artifact and membership epoch without grants", async () => {
+    const { db, env } = setup();
+    db.exec("INSERT INTO space_members(id,space_id,tenant_id,end_user_id,role) VALUES('member-membership','space-a','tenant-a','member-a','member')");
+    const artifact: SpaceBlueprint = {
+      id: "tpl_roles", schemaVersion: "2.0", metadata: { name: "Roles" }, templateCategory: "other",
+      projects: [], requiredExtensions: [], requiredCredentials: [], businessRolesSchemaVersion: 1,
+      businessRoles: [{ id: "stock_lead", name: { en: "Stock lead" }, recommendedSpaceRole: "member" }],
+    };
+    const certificate = await certifyStateDeltaArtifact(artifact, { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `role-${index}` })) },
+      { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-a");
+    if (!certificate) throw new Error("test_certificate_not_issued");
+    const digestBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(artifact)));
+    const artifactSha256 = [...new Uint8Array(digestBytes)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const platform = env as { SPACE_DO?: unknown; SCRIPTS_R2?: unknown };
+    platform.SPACE_DO = {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: async () => Response.json({ installations: [{ blueprint_id: artifact.id, artifact_sha256: artifactSha256,
+        status: "installed", lifecycle_state: "active", listing_id: null }] }) }),
+    };
+    platform.SCRIPTS_R2 = { get: async () => ({ json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) }) };
+    const path = "/spaces/space-a/member-role-reviews";
+    const response = await inviteRequest(env, "owner-a", path, "POST", { blueprint_id: artifact.id, end_user_id: "member-a", business_role_id: "stock_lead" });
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(201);
+    const review = await response.json() as { id: string; status: string; grants_applied: boolean };
+    expect(review).toMatchObject({ status: "proposal_only", grants_applied: false });
+    expect(db.prepare("SELECT business_role_id,status,grants_applied FROM space_business_role_reviews WHERE id=?").get(review.id))
+      .toEqual({ business_role_id: "stock_lead", status: "proposal_only", grants_applied: 0 });
+    expect(db.prepare("SELECT role FROM space_members WHERE end_user_id='member-a'").get()).toEqual({ role: "member" });
+    platform.SPACE_DO = { idFromName: (name: string) => name, get: () => ({ fetch: async () => Response.json({ installations: [{
+      blueprint_id: artifact.id, artifact_sha256: "f".repeat(64), status: "installed", lifecycle_state: "active", listing_id: null,
+    }] }) }) };
+    const stale = await inviteRequest(env, "owner-a", path, "POST", { blueprint_id: artifact.id, end_user_id: "member-a", business_role_id: "stock_lead" });
+    expect(stale.status).toBe(409);
+    db.exec("UPDATE space_members SET role='viewer' WHERE end_user_id='member-a'");
+    expect(db.prepare("SELECT status FROM space_business_role_reviews WHERE id=?").get(review.id)).toEqual({ status: "revoked" });
   });
 
   it("rejects forwarded tokens, admin escalation, and redemption after inviter revocation", async () => {

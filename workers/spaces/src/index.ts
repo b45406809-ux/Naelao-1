@@ -4121,6 +4121,126 @@ app.post("/spaces/:spaceId/member-invitations/:invitationId/redeem", async (c) =
   return c.json({ id: invitationId, status: "accepted", role: accepted.role, replayed: false });
 });
 
+async function loadActiveBusinessRoleBlueprint(c: Context<{ Bindings: Env }>, spaceId: string, blueprintId: string) {
+  const { tenantId } = getCallerIdentity(c);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const installationsResponse = await stub.fetch(new Request(`http://space-do/blueprint-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId })}`, {
+    headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+  }));
+  if (!installationsResponse.ok) return { error: c.json({ error_code: "blueprint_installations_unavailable" }, 503) };
+  const installations = await installationsResponse.json<{ installations?: Array<{ blueprint_id: string; artifact_sha256: string; status: string; lifecycle_state: string; listing_id: string | null }> }>();
+  const installed = installations.installations?.find(item => item.blueprint_id === blueprintId);
+  if (!installed || installed.status !== "installed" || installed.lifecycle_state !== "active" || !/^[a-f0-9]{64}$/.test(installed.artifact_sha256))
+    return { error: c.json({ error_code: "business_role_blueprint_not_active" }, 409) };
+  const source = await loadCertifiedBlueprint(c.env, tenantId, blueprintId);
+  if (!source) return { error: c.json({ error_code: "business_role_blueprint_unavailable" }, 409) };
+  const artifact = { ...source.blueprint } as SpaceBlueprint & { securityRating?: unknown };
+  delete artifact.securityRating;
+  if (await templateArtifactDigest(artifact) !== installed.artifact_sha256
+    || !await verifyArtifactCertificate(artifact, source.conformanceCertificate, c.env.PLATFORM_SECRET, "state-delta"))
+    return { error: c.json({ error_code: "business_role_blueprint_stale_or_unsigned" }, 409) };
+  if (source.conformanceCertificate.issuerTenantId !== tenantId) {
+    if (!installed.listing_id) return { error: c.json({ error_code: "template_license_required" }, 402) };
+    const fork = await c.env.PLATFORM_DB.prepare(
+      `SELECT f.certificate_json,f.artifact_json FROM marketplace_forks f
+        JOIN marketplace_listings l ON l.id=f.listing_id
+       WHERE f.tenant_id=? AND f.blueprint_id=? AND f.listing_id=? AND l.status='published' LIMIT 1`
+    ).bind(tenantId, blueprintId, installed.listing_id).first<{ certificate_json: string; artifact_json: string }>();
+    if (!fork) return { error: c.json({ error_code: "template_license_required" }, 402) };
+    try {
+      const forkCertificate = JSON.parse(fork.certificate_json) as ConformanceCertificate;
+      if (forkCertificate.signature !== source.conformanceCertificate.signature || JSON.stringify(JSON.parse(fork.artifact_json)) !== JSON.stringify(source.blueprint))
+        return { error: c.json({ error_code: "template_license_mismatch" }, 403) };
+    } catch { return { error: c.json({ error_code: "template_license_mismatch" }, 403) }; }
+  }
+  if (!evaluateBlueprintSecurity(source.blueprint).publishable) return { error: c.json({ error_code: "blueprint_rejected" }, 422) };
+  try { instantiateBlueprint(source.blueprint, spaceId); }
+  catch { return { error: c.json({ error_code: "business_role_blueprint_invalid" }, 422) }; }
+  if (source.blueprint.businessRolesSchemaVersion !== 1 || !source.blueprint.businessRoles?.length)
+    return { error: c.json({ error_code: "business_roles_not_declared" }, 409) };
+  return { artifactSha256: installed.artifact_sha256, blueprint: source.blueprint };
+}
+
+app.use("/spaces/:spaceId/member-role-reviews", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/member-role-reviews/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/spaces/:spaceId/member-role-reviews", async c => {
+  const spaceId = c.req.param("spaceId"), scope = await memberInviteSpace(c, spaceId);
+  if (!scope) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  let body: { blueprint_id?: unknown; end_user_id?: unknown; business_role_id?: unknown };
+  try {
+    const parsed: unknown = JSON.parse(await readBoundedRequestText(c.req.raw, 8192));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+      || Object.keys(parsed).some(key => !["blueprint_id", "end_user_id", "business_role_id"].includes(key))) throw new Error("invalid body");
+    body = parsed as typeof body;
+  } catch (error) {
+    return c.json({ error_code: error instanceof RequestBodyTooLargeError ? "request_body_too_large" : "business_role_review_invalid" }, error instanceof RequestBodyTooLargeError ? 413 : 400);
+  }
+  if (typeof body.blueprint_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.blueprint_id)
+    || typeof body.end_user_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.end_user_id)
+    || typeof body.business_role_id !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.business_role_id))
+    return c.json({ error_code: "business_role_review_invalid" }, 400);
+  const current = await loadActiveBusinessRoleBlueprint(c, spaceId, body.blueprint_id);
+  if ("error" in current) return current.error;
+  const proposal = current.blueprint.businessRoles?.find(role => role.id === body.business_role_id);
+  if (!proposal) return c.json({ error_code: "business_role_unknown" }, 404);
+  const member = await c.env.PLATFORM_DB.prepare(
+    `SELECT sm.created_at,sm.role FROM spaces s JOIN space_members sm
+       ON sm.space_id=s.id AND sm.tenant_id=s.tenant_id AND sm.end_user_id=? AND sm.suspended_at IS NULL
+       JOIN product_end_users u ON u.product_space_id=s.product_id AND u.end_user_id=sm.end_user_id
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND u.email_verified_at IS NOT NULL
+        AND u.suspended_at IS NULL AND u.deleted_at IS NULL AND u.erasure_started_at IS NULL`
+  ).bind(body.end_user_id, spaceId, scope.identity.tenantId).first<{ created_at: string; role: string }>();
+  if (!member) return c.json({ error_code: "active_verified_member_required" }, 404);
+  const existing = await c.env.PLATFORM_DB.prepare(
+    `SELECT id,status FROM space_business_role_reviews WHERE tenant_id=? AND space_id=? AND end_user_id=?
+      AND blueprint_id=? AND artifact_sha256=? AND business_role_id=? AND status='proposal_only' LIMIT 1`
+  ).bind(scope.identity.tenantId, spaceId, body.end_user_id, body.blueprint_id, current.artifactSha256, proposal.id)
+    .first<{ id: string; status: string }>();
+  if (existing) return c.json({ id: existing.id, status: existing.status, business_role_id: proposal.id, grants_applied: false, replayed: true });
+  const id = crypto.randomUUID(), reviewedAt = new Date().toISOString();
+  const inserted = await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO space_business_role_reviews
+      (id,tenant_id,space_id,product_id,end_user_id,membership_created_at,membership_role,blueprint_id,artifact_sha256,business_role_id,status,reviewed_by,reviewed_at)
+     SELECT ?,s.tenant_id,s.id,s.product_id,sm.end_user_id,sm.created_at,sm.role,?,?,?,'proposal_only',?,?
+       FROM spaces s JOIN products p ON p.id=s.product_id AND p.tenant_id=s.tenant_id AND p.status='active'
+       JOIN space_members reviewer ON reviewer.space_id=s.id AND reviewer.tenant_id=s.tenant_id
+         AND reviewer.end_user_id=? AND reviewer.suspended_at IS NULL AND reviewer.role IN ('owner','admin','moderator')
+       JOIN space_members sm ON sm.space_id=s.id AND sm.tenant_id=s.tenant_id
+         AND sm.end_user_id=? AND sm.suspended_at IS NULL
+       JOIN product_end_users u ON u.product_space_id=s.product_id AND u.end_user_id=sm.end_user_id
+         AND u.email_verified_at IS NOT NULL AND u.suspended_at IS NULL AND u.deleted_at IS NULL AND u.erasure_started_at IS NULL
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND sm.created_at=? AND sm.role=?
+        AND (?!='admin' OR reviewer.role='owner')`
+  ).bind(id, body.blueprint_id, current.artifactSha256, proposal.id, scope.identity.userId, reviewedAt,
+    scope.identity.userId, body.end_user_id, spaceId, scope.identity.tenantId, member.created_at, member.role,
+    proposal.recommendedSpaceRole ?? "member").run();
+  if (!inserted.meta.changes) return c.json({ error_code: "business_role_review_conflict" }, 409);
+  return c.json({ id, status: "proposal_only", business_role_id: proposal.id, grants_applied: false, reviewed_at: reviewedAt }, 201);
+});
+
+app.get("/spaces/:spaceId/member-role-reviews", async c => {
+  const spaceId = c.req.param("spaceId"), scope = await memberInviteSpace(c, spaceId);
+  if (!scope) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const result = await c.env.PLATFORM_DB.prepare(
+    `SELECT id,end_user_id,membership_created_at,membership_role,blueprint_id,artifact_sha256,business_role_id,status,grants_applied,reviewed_by,reviewed_at,revoked_by,revoked_at
+      FROM space_business_role_reviews WHERE tenant_id=? AND space_id=? ORDER BY reviewed_at DESC LIMIT 500`
+  ).bind(scope.identity.tenantId, spaceId).all();
+  return c.json({ data: result.results ?? [], grants_applied: false }, { headers: { "cache-control": "private, no-store" } });
+});
+
+app.delete("/spaces/:spaceId/member-role-reviews/:reviewId", async c => {
+  const identity = getCallerIdentity(c), spaceId = c.req.param("spaceId"), reviewId = c.req.param("reviewId");
+  const scope = await memberInviteSpace(c, spaceId);
+  if (!scope) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const changed = await c.env.PLATFORM_DB.prepare(
+    `UPDATE space_business_role_reviews SET status='revoked',revoked_by=?,revoked_at=datetime('now')
+      WHERE id=? AND tenant_id=? AND space_id=? AND status='proposal_only'
+        AND EXISTS (SELECT 1 FROM space_members m WHERE m.space_id=? AND m.tenant_id=?
+          AND m.end_user_id=? AND m.suspended_at IS NULL AND m.role IN ('owner','admin','moderator'))`
+  ).bind(identity.userId, reviewId, identity.tenantId, spaceId, spaceId, identity.tenantId, identity.userId).run();
+  return changed.meta.changes ? c.json({ id: reviewId, status: "revoked", grants_applied: false }) : c.json({ error_code: "business_role_review_not_active" }, 409);
+});
+
 // ── SpaceDO session proxy ────────────────────────────────────────────────────
 // Forward /spaces/:spaceId/sessions/* to the SpaceDO for that space
 // A1.16.10 (layer-3 backstop, bucket B): investigated before gating — the router mounts this

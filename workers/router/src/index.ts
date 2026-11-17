@@ -644,6 +644,9 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // Authenticated Product users may redeem a copy-only owner invitation. The Spaces Worker
   // binds it to the matching verified Product email and rechecks the inviter's live role.
   /^\/spaces\/([^/]+)\/member-invitations(?:\/[^/]+(?:\/redeem)?)?$/,
+  // Product-member role review is owner/admin-only at the Spaces Worker and records a
+  // proposal-only assignment against the installed signed template; no resource grant follows.
+  /^\/spaces\/([^/]+)\/member-role-reviews(?:\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/sub-spaces(?:\/[^/]+(?:\/(?:projects|members)(?:\/[^/]+)?)?)?$/,
   /^\/spaces\/([^/]+)\/preferences$/,
   // The Spaces worker resolves current membership for registry reads and owner/admin for writes;

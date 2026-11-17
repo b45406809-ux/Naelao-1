@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0278_space_member_invitations",
+  "requiredSchemaVersion": "0279_space_business_role_review_ledger",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1115,6 +1115,10 @@
     {
       "filename": "0278_space_member_invitations.sql",
       "sha256": "78e6a13332283b36e35bfc19724b425ab25d687157445efe11c26c2de5745193"
+    },
+    {
+      "filename": "0279_space_business_role_review_ledger.sql",
+      "sha256": "7a8fd48f96fe6df73ab82c8688c56eb5f915ec74cd0f767bf04695c79e4099de"
     }
   ]
 }
