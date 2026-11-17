@@ -16,6 +16,8 @@ Commit `3ef84165546a781ebcde6867d62e563f022385b9` is present locally and directl
 
 Exact next action: add actual AgentDO resume-handler coverage for connector-poll revision change and transient authority outage, then implement provider-neutral setup guidance only from operator-verified capability records. Keep AgentPhone absent/unavailable until its current contract, commercial terms and live behavior have separately verified evidence. Rollouts remain disabled. The independent connector-poll approval clamp is at `503a9d22`; the revision dispatch/action/resume fence is at `0628662b`/`8a7203c1`; these do not imply AgentPhone support.
 
+The planned resume-handler checks have now been added and pushed at `9ecac47f5ea00989f0cd3df356574bb80d3a0a6d` (focused Agents suites **31/31**, typecheck, diff check). They prove stale connector state blocks an approved resume and temporary database authority loss keeps the approval retryable. No AgentPhone behavior, feature, region, or price was exercised or enabled.
+
 ## Current reconciliation — 2026-11-16
 
 Fetched the source plan from `origin/plan/microapps-ui-sdk-voice` commit `3ef84165546a781ebcde6867d62e563f022385b9`; copied it into this branch without switching or merging. SHA-256: `9d457136974d65ac5252123bfc2b67c6aa779c0604a5d845337026e7b63ae83d`. Its requirements are incorporated as AP01–AP06 in platform plan section 18.

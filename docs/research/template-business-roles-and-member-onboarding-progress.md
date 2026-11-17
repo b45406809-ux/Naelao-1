@@ -1,6 +1,6 @@
-## Cross-plan update — 2026-11-17 (connector-poll revision and approval resume fence; `8a7203c1` pushed)
+## Cross-plan update — 2026-11-17 (connector-poll revision resume behavior covered; `9ecac47f` pushed)
 
-Code `8a7203c1cb42ec684cd29cefaad017cba2849ac2` is pushed. The exact connector ID/configuration revision is checked at queue admission, AgentDO ingress, each step and approval resume; paused/edited/removed connectors cannot continue after a checkpoint. Authority outages at resume remain retryable. Focused Agents tests **29/29**, typecheck and diff check pass. TBR11 still lacks general action grants, per-connector budgets and cancellation of effects already underway; do not imply these are implemented. Exact next action: add integration coverage for connector revision changes during HITL resume, then implement only TBR06 role-to-host grants with an existing authoritative mapping. Keep shared-data and private-Project semantics unresolved and non-granting.
+Code `8a7203c1` pins current connector identity/revision through each AgentDO step and approval resume; `9ecac47f5ea00989f0cd3df356574bb80d3a0a6d` tests stale/disabled revision and retryable authority outage. Focused Agents tests **31/31**, typecheck and diff check pass. TBR11 still lacks general action grants, per-connector budgets and cancellation of effects already underway. Exact next action: resume S3/U05–U12 at Agent37 allocation/recovery and close an independent supported retry/authorization gap; then implement only TBR06 role-to-host grants with an existing authoritative mapping. Keep shared-data and private-Project semantics unresolved and non-granting.
 
 ## Previous cross-plan update — 2026-11-17 (scheduled approval checkpoint retains service identity; `688f69e4` pushed)
 
