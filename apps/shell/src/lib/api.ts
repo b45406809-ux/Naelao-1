@@ -1842,6 +1842,20 @@ export function getModalSandboxOperationStatus(spaceId: string, projectId: strin
   return apiFetch<{ operations: ModalSandboxOperationStatus[]; source: "saved_operation_journal"; providerContacted: false }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/modal-operations`, { session, cache: "no-store" });
 }
+export interface ProjectRuntimeBudgetReservation {
+  reservationId: string;
+  status: "held" | "expired" | "released" | "settled" | "unknown";
+  reservedCredits: number;
+  chargedCredits: number | null;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}
+export function listProjectRuntimeBudgetReservations(spaceId: string, projectId: string, session: SessionCredentials) {
+  return apiFetch<{ reservations: ProjectRuntimeBudgetReservation[]; source: "workflow_budget_reservations_and_usage_events";
+    costUnit: "internal_credits"; providerInvoiceVerified: false }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/runtime-budget-reservations`, { session, cache: "no-store" });
+}
 function projectMainRuntimeProfilePath(spaceId: string, projectId: string) {
   return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/main-runtime-profile`;
 }

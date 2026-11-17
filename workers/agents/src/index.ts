@@ -5470,6 +5470,32 @@ app.get("/spaces/:spaceId/projects/:projectId/modal-operations", async c => {
   return c.json({ operations, source: "saved_operation_journal", providerContacted: false }, 200, { "cache-control": "private, no-store" });
 });
 
+app.get("/spaces/:spaceId/projects/:projectId/runtime-budget-reservations", async c => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  const rows = await c.env.PLATFORM_DB.prepare(`SELECT r.id,r.status,r.credits,r.expires_at,r.created_at,r.updated_at,
+      (SELECT u.quantity FROM usage_events u WHERE u.org_id=r.org_id AND u.space_id=r.space_id
+        AND u.project_id=r.project_id AND u.run_id=r.workflow_id AND u.event_type='infra_credits'
+        ORDER BY u.recorded_at DESC LIMIT 1) AS charged_credits
+    FROM workflow_budget_reservations r
+    WHERE r.org_id=? AND r.space_id=? AND r.project_id=? AND r.installation_id IS NULL AND r.runtime_tier=5 AND r.budget_key=?
+    ORDER BY r.created_at DESC LIMIT 50`)
+    .bind(tenantId, spaceId, projectId, `container:${spaceId}:${projectId}`)
+    .all<{ id: string; status: string; credits: number; expires_at: string; created_at: string; updated_at: string; charged_credits: number | null }>();
+  const reservations = (rows.results ?? []).map(row => ({
+    reservationId: row.id,
+    status: row.status === "held" && Date.parse(row.expires_at) <= Date.now() ? "expired"
+      : (["held", "released", "settled"].includes(row.status) ? row.status : "unknown"),
+    reservedCredits: row.credits,
+    chargedCredits: Number.isSafeInteger(row.charged_credits) ? row.charged_credits : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    expiresAt: row.expires_at,
+  }));
+  return c.json({ reservations, source: "workflow_budget_reservations_and_usage_events",
+    costUnit: "internal_credits", providerInvoiceVerified: false }, 200, { "cache-control": "private, no-store" });
+});
+
 function privateStateBackupBindings(env: AgentsEnv): PrivateStateBackupBindings {
   return { ...(env.DYNAMIC_PRIVATE_STATE_BACKUP_ENABLED ? { enabled: env.DYNAMIC_PRIVATE_STATE_BACKUP_ENABLED } : {}),
     ...(env.DYNAMIC_PRIVATE_STATE_BACKUP_KEY ? { key: env.DYNAMIC_PRIVATE_STATE_BACKUP_KEY } : {}),

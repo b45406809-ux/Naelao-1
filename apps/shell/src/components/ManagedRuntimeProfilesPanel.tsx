@@ -20,6 +20,7 @@ import {
   saveSidecarRuntimeExecutionProfile,
   listProjectComputeAdmissions,
   cancelProjectComputeAdmission,
+  listProjectRuntimeBudgetReservations,
   type ManagedRuntimeProfile,
   type ModalSandboxOperationStatus,
   type ProjectMainRuntimeProfile,
@@ -27,6 +28,7 @@ import {
   type SidecarRuntimeExecutionProfile,
   type SidecarArtifactTransferReceipt,
   type ProjectComputeAdmission,
+  type ProjectRuntimeBudgetReservation,
   type SessionCredentials,
   type WorkspaceRetentionPolicy,
 } from "@/lib/api";
@@ -71,6 +73,8 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
   const [branchScope, setBranchScope] = React.useState("");
   const [computeAdmissions, setComputeAdmissions] = React.useState<ProjectComputeAdmission[]>([]);
   const [computeAdmissionsError, setComputeAdmissionsError] = React.useState("");
+  const [runtimeBudgetReservations, setRuntimeBudgetReservations] = React.useState<ProjectRuntimeBudgetReservation[]>([]);
+  const [runtimeBudgetError, setRuntimeBudgetError] = React.useState("");
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
@@ -82,6 +86,8 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     setModalOperationsError("");
     setComputeAdmissions([]);
     setComputeAdmissionsError("");
+    setRuntimeBudgetReservations([]);
+    setRuntimeBudgetError("");
     setPrivateState(null);
     setPrivateStateDraft("");
     setPrivateStateError("");
@@ -92,7 +98,7 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     setRetentionReasonDraft("");
     setRetentionError("");
     try {
-      const [inventory, savedMainProfile, savedRetentionPolicy, savedPrivateState, savedModalOperations, savedComputeAdmissions] = await Promise.all([
+      const [inventory, savedMainProfile, savedRetentionPolicy, savedPrivateState, savedModalOperations, savedComputeAdmissions, savedRuntimeBudget] = await Promise.all([
         listContainerInstallations(spaceId, stableSession, projectId),
         getProjectMainRuntimeProfile(spaceId, projectId, stableSession).catch((failure) => {
           setMainProfileError(failure instanceof Error ? failure.message : "Main computer profile unavailable");
@@ -118,6 +124,10 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
             : "Compute admission status is unavailable.");
           return null;
         }),
+        listProjectRuntimeBudgetReservations(spaceId, projectId, stableSession).catch(() => {
+          setRuntimeBudgetError("Runtime budget reservation history is unavailable.");
+          return null;
+        }),
       ]);
       const { installations } = inventory;
       if (savedMainProfile) {
@@ -137,6 +147,10 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
       if (savedComputeAdmissions) {
         setComputeAdmissions(savedComputeAdmissions.admissions);
         setComputeAdmissionsError("");
+      }
+      if (savedRuntimeBudget) {
+        setRuntimeBudgetReservations(savedRuntimeBudget.reservations);
+        setRuntimeBudgetError("");
       }
       if (savedRetentionPolicy) {
         setRetentionPolicy(savedRetentionPolicy);
@@ -214,6 +228,17 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
         ? "Compute admission status is available to Space owners and administrators."
         : "Compute admission status is unavailable.");
     } finally { setBusy(null); }
+  }
+
+  async function reloadRuntimeBudgetReservations() {
+    if (busy) return;
+    setBusy("runtime-budget-refresh");
+    try {
+      const current = await listProjectRuntimeBudgetReservations(spaceId, projectId, stableSession);
+      setRuntimeBudgetReservations(current.reservations);
+      setRuntimeBudgetError("");
+    } catch { setRuntimeBudgetError("Runtime budget reservation history is unavailable."); }
+    finally { setBusy(null); }
   }
 
   async function saveMainProfile() {
@@ -493,6 +518,32 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
                   disabled={busy !== null} onClick={() => void cancelComputeAdmission(admission)}>
                   {busy === `compute-admission:${admission.execution_id}` ? "Cancelling…" : "Cancel"}
                 </button>}
+              </div>
+            ))}
+          </div>}
+    </div>
+    <div style={{ margin: "8px 0 18px" }}>
+      <div className="section-label">Main runtime budget reservations</div>
+      <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 8px" }}>
+        Amounts cover this Project's main runtime and are internal plan credits from the Billing ledger, not provider invoices or USD estimates.
+      </p>
+      <button type="button" className="btn btn-ghost btn-sm" style={{ marginBottom: 8 }} disabled={busy !== null || loading}
+        onClick={() => void reloadRuntimeBudgetReservations()}>
+        {busy === "runtime-budget-refresh" ? "Refreshing…" : "Refresh reservations"}
+      </button>
+      {runtimeBudgetError ? <p role="status" style={{ color: "var(--text3)", fontSize: 13 }}>{runtimeBudgetError}</p>
+        : runtimeBudgetReservations.length === 0 ? <p style={{ color: "var(--text3)", fontSize: 13 }}>No main runtime budget reservations are recorded.</p>
+          : <div className="settings-block" aria-label="Main runtime budget reservations">
+            {runtimeBudgetReservations.map(reservation => (
+              <div className="settings-row" key={reservation.reservationId}>
+                <div>
+                  <div className="settings-row-label">{reservation.status.replaceAll("_", " ")} · {reservation.reservedCredits} reserved credits</div>
+                  <div className="settings-row-sub">
+                    {reservation.chargedCredits === null ? "No settled usage receipt" : `${reservation.chargedCredits} charged credits`}
+                    {` · created ${new Date(reservation.createdAt).toLocaleString()}`}
+                    {` · expires ${new Date(reservation.expiresAt).toLocaleString()}`}
+                  </div>
+                </div>
               </div>
             ))}
           </div>}

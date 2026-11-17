@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cancelProjectComputeAdmission, listProjectComputeAdmissions } from "./api";
+import { cancelProjectComputeAdmission, listProjectComputeAdmissions, listProjectRuntimeBudgetReservations } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -22,4 +22,17 @@ it("uses authenticated no-store Project queue reads and sends cancellation by op
   const [url, init] = fetchMock.mock.calls.at(-1) ?? [];
   expect(url).toBe("http://localhost:8787/v1/spaces/space%2Fa/projects/project%20b/runtime/compute-admissions");
   expect(init).toEqual(expect.objectContaining({ method: "POST", cache: "no-store", headers: expect.any(Headers), body: JSON.stringify({ execution_id: "exec-a" }) }));
+});
+
+it("reads bounded runtime budget receipts without claiming invoice-backed provider cost", async () => {
+  const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    reservations: [{ reservationId: "container:receipt-a", status: "settled", reservedCredits: 300, chargedCredits: 120,
+      createdAt: "2026-11-17T10:00:00.000Z", updatedAt: "2026-11-17T10:02:00.000Z", expiresAt: "2026-11-17T11:00:00.000Z" }],
+    source: "workflow_budget_reservations_and_usage_events", costUnit: "internal_credits", providerInvoiceVerified: false,
+  }), { status: 200, headers: { "content-type": "application/json" } }));
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(listProjectRuntimeBudgetReservations("space/a", "project b", { sessionToken: "product-session", endUserId: "owner-a" }))
+    .resolves.toMatchObject({ reservations: [{ reservationId: "container:receipt-a", chargedCredits: 120 }], providerInvoiceVerified: false });
+  expect(fetchMock).toHaveBeenCalledWith("http://localhost:8787/v1/spaces/space%2Fa/projects/project%20b/runtime-budget-reservations",
+    expect.objectContaining({ cache: "no-store", headers: expect.any(Headers) }));
 });
