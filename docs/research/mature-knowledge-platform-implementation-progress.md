@@ -1,3 +1,9 @@
+## Current K26 checkpoint — 2026-11-17 (retrieval telemetry excludes private IDs; `67719e1a` pushed)
+
+Knowledge retrieval Analytics Engine and JSON logs now emit allowlisted bounded aggregate metrics with fixed mode/state labels. Raw tenant, Space, Project identifiers and query content are omitted; timings, confidence and counts are clamped and unknown keys dropped. Code `67719e1a` is pushed and remote-verified. Helper test **1/1**, Knowledge typecheck and diff check pass. No deployed/live analytics acceptance; rollouts remain disabled.
+
+K26 remains partial for parse, sync lag, freshness, denials, deletion, cost attribution and provider recovery metrics. Exact next action: instrument current parse/sync boundaries with fixed-label outcomes and failure isolation; continue K10–K30 and all remaining active-plan code gaps. AI Search remains unselected.
+
 # Mature knowledge platform implementation progress
 
 ## Cross-plan checkpoint — 2026-11-16 (TBR01 signed proposals; `9ccd7395` pushed)
