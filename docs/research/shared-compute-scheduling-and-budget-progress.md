@@ -5,15 +5,19 @@
 TBR07's SpaceDO/Knowledge/extension authority comparison is already recorded below and in the
 template-business-roles ledger; no shared ACL writer was found, and private same-Space Project access
 remains an unresolved policy. Do not repeat the audit or widen access. Current mission action is
-SC03: trace the durable capacity waiter through current host authority and Billing admission, and
-implement a dispatcher only if it can revalidate both at dispatch. No disconnected dispatcher or
-Billing reservation link is currently verified. PPTX workflow provenance code checkpoint
-`f2266e64666bc3c375427031074a5ed2622ade5e` is pushed; no rollout or live acceptance. Preserve the
-pre-existing untracked pycache.
+SC03. Source tracing confirms `nativeGrantRevision` is a `buildScriptEngineEnv` closure bound to the
+live run's `Bash` tool surface, caller role clamp, and `codeGrantIsActive`; it is not currently
+addressable as an alarm-safe durable authority check. `ToolSandboxDO` persists an encrypted,
+bounded native request envelope for some waiters, but ConcurrencyDO queues only scoped IDs and
+fences. Capacity is acquired before `reserveWorkflowBudget`; there is no Billing reservation while
+waiting. A caller-independent dispatcher would need an explicit durable consent/job identity and a
+host route that revalidates the exact invocation authority, plus a fresh Billing admission before
+launch. This is a missing code/contract path, not a credential blocker. Keep automatic replay
+disabled until implemented and tested. Project update resource-diff UI code `e3b5f2bca2ca697cb1004ea8354dbfc5edfce04b` and PPTX workflow provenance `f2266e64666bc3c375427031074a5ed2622ade5e` are pushed; no rollout or live acceptance. Preserve the pre-existing untracked pycache.
 
 **Reminder to myself:** Keep implementing the whole mission after this checkpoint. A test pass, ledger update, commit or push is not a stopping point; continue with the next independent authorized requirement unless the user stops or a real blocker prevents all progress.
 
-Exact next action: map current AgentDO/SpaceDO authorization readers and Billing reservation interfaces to determine whether an alarm-safe durable dispatcher can revalidate exact authority and budget; implement a bounded host receipt/caller if supported. If not, document the precise missing host contract and immediately proceed to the next uncoded plan requirement.
+Exact next action: continue an independent uncoded active-plan requirement while keeping SC03 fail-closed; resume SC03 only with an explicitly authorized durable invocation identity, exact authority revalidator, and a dispatcher that obtains current Billing admission before execution. TBR07 has already been reconciled; do not repeat it.
 
 ## Current checkpoint — 2026-11-17 (SC03 encrypted invocation receipt; `d3a0f194` pushed)
 

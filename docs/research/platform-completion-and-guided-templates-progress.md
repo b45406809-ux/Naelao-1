@@ -1,3 +1,16 @@
+## Resume pointer — 2026-11-17 (Project extension resource declaration review; `e3b5f2bc` pushed)
+
+The owner Project extension update review now renders exact resource declarations added, changed or
+removed by the signed candidate and clarifies that review does not grant access. Shell typecheck and
+resource/update API suites **7/7** pass. No browser/deployed acceptance. EP04 review visibility is
+improved; independent owner grants remain separate and fail closed. SC03 remains fail-closed: the
+live `Bash` tool surface and role clamp are not available to a disconnected durable dispatcher, and
+Billing is reserved after capacity, not while waiting. TBR07 was already reconciled; see its ledger.
+
+**Reminder to myself:** Continue the entire mission after each checkpoint; do not stop after tests, a ledger update, a commit or a push. Move to the next independent code gap unless the user stops or a real blocker prevents progress.
+
+Exact next action: continue the next uncoded active-plan requirement after reconciling current callers; do not repeat EP03/TBR07 audits. Keep rollout disabled and preserve the untracked Python cache.
+
 ## Current cross-plan checkpoint — 2026-11-17 (K02 DOCX/XLSX Knowledge ingestion; `007b5a8f` pushed)
 
 `0e1a0b06` wires bounded DOCX main-body extraction through reviewed Knowledge preview/save, source lineage, workflow chunks and archive recovery. `007b5a8f` adds XLSX first-worksheet preview/save using first-sheet relationships and shared strings; all cell values remain text, and formulas appear inert without cached results. Both flows preserve source bytes and parser/extraction/approved-content hashes through archive restore. XLSX limits selected ZIP parts, rows, columns and output; omitted workbook features are disclosed. Local file-ingestion, archive, telemetry and Shell preview/file suites **34/34**, Knowledge/Workflows/Shell typechecks and diff check pass. No browser or deployed acceptance.
