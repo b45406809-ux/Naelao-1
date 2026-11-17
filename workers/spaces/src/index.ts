@@ -996,6 +996,45 @@ app.post("/internal/spaces/:spaceId/artifact-validation/:action", async c => {
   return forwardToSpaceDO(stub,`/artifact-validation/${action}`,"POST",JSON.stringify({...body,space_id:spaceId}));
 });
 
+app.post("/internal/spaces/:spaceId/extension-resource-operation/:action", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "", spaceId = c.req.param("spaceId"), action = c.req.param("action");
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "forbidden" }, 403);
+  if (action !== "claim" && action !== "release") return c.json({ error_code: "not_found" }, 404);
+  let body: Record<string, unknown>;
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)) as Record<string, unknown>; }
+  catch { return c.json({ error_code: "extension_resource_operation_request_invalid" }, 400); }
+  const projectId = typeof body.projectId === "string" ? body.projectId : "";
+  const instanceId = typeof body.instanceId === "string" ? body.instanceId : "";
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
+    || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_resource_operation_request_invalid" }, 400);
+  if (action === "claim" && (typeof body.requirementId !== "string" || !/^[a-z][a-z0-9._-]{1,63}$/.test(body.requirementId)
+    || body.operationId !== "search" || typeof body.publicationId !== "string" || !/^[a-z][a-z0-9_-]{2,63}$/.test(body.publicationId)
+    || typeof body.manifestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.manifestSha256)
+    || typeof body.resourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.resourceSha256)
+    || !Number.isSafeInteger(body.installationGeneration) || Number(body.installationGeneration) < 1
+    || !Number.isSafeInteger(body.grantRevision) || Number(body.grantRevision) < 1))
+    return c.json({ error_code: "extension_resource_operation_request_invalid" }, 400);
+  if (action === "release" && (typeof body.leaseId !== "string" || !/^[a-f0-9-]{36}$/.test(body.leaseId)))
+    return c.json({ error_code: "extension_resource_operation_request_invalid" }, 400);
+  const active = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+    WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
+  if (!active) return c.json({ error_code: "space_not_found" }, 404);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const internalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+  const payload = action === "claim" ? { tenantId, spaceId, projectId, instanceId, requirementId: body.requirementId,
+    operationId: body.operationId, resourceKind: "knowledge", gadgetId: "knowledge", table: body.publicationId,
+    manifestSha256: body.manifestSha256, resourceSha256: body.resourceSha256,
+    installationGeneration: body.installationGeneration, grantRevision: body.grantRevision }
+    : { tenantId, spaceId, projectId, instanceId, leaseId: body.leaseId };
+  const response = await stub.fetch(new Request(`http://space-do/extension-resource-operation${action === "release" ? "/release" : ""}`, {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken },
+    body: JSON.stringify(payload),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json",
+    "cache-control": "private, no-store" } });
+});
+
 app.get("/spaces/:spaceId/blueprints/installations", async c => {
   const identity = getCallerIdentity(c), tenantId = identity.tenantId ?? "", spaceId = c.req.param("spaceId");
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))

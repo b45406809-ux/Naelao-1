@@ -1266,7 +1266,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!resolved) return Response.json({ error_code: "workflow_knowledge_resource_operation_not_declared" }, { status: 403 });
       const approvedGrant = await resolveApprovedKnowledgeGrant(grant.installation, requirementId, operationId, resolved.publicationId);
       if (!approvedGrant) return Response.json({ error_code: "workflow_knowledge_resource_owner_grant_required" }, { status: 403 });
-      if (!this.env.KNOWLEDGE_WORKER) return Response.json({ error_code: "workflow_knowledge_resource_host_unavailable" }, { status: 503 });
+      if (!this.env.KNOWLEDGE_WORKER || !this.env.SPACES_WORKER) return Response.json({ error_code: "workflow_knowledge_resource_host_unavailable" }, { status: 503 });
       const headers = { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
         "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, identity.tenantId) };
       const base = `http://knowledge-worker/internal/spaces/${encodeURIComponent(identity.spaceId)}/kb/projects/${encodeURIComponent(identity.projectId)}`;
@@ -1279,18 +1279,32 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const pinnedRevision = body.params?.publication_revision;
       if (!Number.isSafeInteger(pinnedRevision) || Number(pinnedRevision) !== Number(publication.revision))
         return Response.json({ error_code: "workflow_knowledge_publication_changed" }, { status: 409 });
-      const response = await this.env.KNOWLEDGE_WORKER.fetch(new Request(`${base}/external-search`, { method: "POST", headers,
-        body: JSON.stringify({ publication_id: resolved.publicationId, publication_revision: pinnedRevision,
-          query: resolved.query, top_k: resolved.topK }) }));
-      if (!response.ok) return new Response(response.body, { status: response.status,
-        headers: { "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "private, no-store" } });
-      const result = await readBoundedResponseJson<{ data?: unknown; context_instruction?: unknown }>(response, 24 * 1024).catch(() => null);
-      if (!result || !Array.isArray(result.data) || typeof result.context_instruction !== "string")
-        return Response.json({ error_code: "workflow_knowledge_resource_result_invalid" }, { status: 502 });
-      const output = { resultJson: JSON.stringify({ data: result.data, context_instruction: result.context_instruction }) };
-      try { validateExtensionResourceValue(resolved.outputSchema, output, "output"); }
-      catch { return Response.json({ error_code: "workflow_knowledge_resource_result_exceeded_schema" }, { status: 502 }); }
-      return Response.json(output, { headers: { "cache-control": "private, no-store" } });
+      const spacesBase = `http://spaces-worker/internal/spaces/${encodeURIComponent(identity.spaceId)}/extension-resource-operation`;
+      const claimResponse = await this.env.SPACES_WORKER.fetch(new Request(`${spacesBase}/claim`, { method: "POST", headers,
+        body: JSON.stringify({ projectId: identity.projectId, instanceId: identity.installationId, requirementId, operationId,
+          publicationId: resolved.publicationId, manifestSha256: approvedGrant.manifest_sha256, resourceSha256: approvedGrant.resource_sha256,
+          installationGeneration: approvedGrant.installation_generation, grantRevision: approvedGrant.revision }) }));
+      if (!claimResponse.ok) return new Response(claimResponse.body, { status: claimResponse.status,
+        headers: { "content-type": claimResponse.headers.get("content-type") ?? "application/json", "cache-control": "private, no-store" } });
+      const claim = await readBoundedResponseJson<{ lease_id?: unknown }>(claimResponse, 8 * 1024).catch(() => null);
+      if (typeof claim?.lease_id !== "string") return Response.json({ error_code: "workflow_knowledge_resource_lease_unavailable" }, { status: 503 });
+      try {
+        const response = await this.env.KNOWLEDGE_WORKER.fetch(new Request(`${base}/external-search`, { method: "POST", headers,
+          body: JSON.stringify({ publication_id: resolved.publicationId, publication_revision: pinnedRevision,
+            query: resolved.query, top_k: resolved.topK }) }));
+        if (!response.ok) return new Response(response.body, { status: response.status,
+          headers: { "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "private, no-store" } });
+        const result = await readBoundedResponseJson<{ data?: unknown; context_instruction?: unknown }>(response, 24 * 1024).catch(() => null);
+        if (!result || !Array.isArray(result.data) || typeof result.context_instruction !== "string")
+          return Response.json({ error_code: "workflow_knowledge_resource_result_invalid" }, { status: 502 });
+        const output = { resultJson: JSON.stringify({ data: result.data, context_instruction: result.context_instruction }) };
+        try { validateExtensionResourceValue(resolved.outputSchema, output, "output"); }
+        catch { return Response.json({ error_code: "workflow_knowledge_resource_result_exceeded_schema" }, { status: 502 }); }
+        return Response.json(output, { headers: { "cache-control": "private, no-store" } });
+      } finally {
+        await this.env.SPACES_WORKER.fetch(new Request(`${spacesBase}/release`, { method: "POST", headers,
+          body: JSON.stringify({ projectId: identity.projectId, instanceId: identity.installationId, leaseId: claim.lease_id }) })).catch(() => undefined);
+      }
     }
     if (body.operation === "extension.resource.objects") {
       if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId

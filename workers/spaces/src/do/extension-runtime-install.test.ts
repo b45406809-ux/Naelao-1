@@ -172,7 +172,8 @@ describe("runtime extension installation", () => {
     expect((await approveKnowledge(0, ["search"], ["records"])).status).toBe(400);
     const approvedKnowledge = await approveKnowledge(0);
     expect(approvedKnowledge.status, await approvedKnowledge.clone().text()).toBe(200);
-    expect(await approvedKnowledge.json()).toMatchObject({ status: "approved", revision: 1, operations: ["search"], tables: [] });
+    const approvedKnowledgeBody = await approvedKnowledge.json() as { manifest_sha256: string; resource_sha256: string; installation_generation: number; revision: number };
+    expect(approvedKnowledgeBody).toMatchObject({ installation_generation: 1, revision: 1 });
     const wrongProject = await space.fetch(new Request("http://space/extension-resource-grants?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-b", instance_id: installationId }), { headers }));
     expect(wrongProject.status).toBe(404);
     storage.sql.exec("UPDATE extension_resource_grants SET operations_json='[\"delete\"]' WHERE instance_id=? AND requirement_id='records'", installationId);
@@ -217,13 +218,23 @@ describe("runtime extension installation", () => {
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, requirementId: "background",
         operationId, resourceKind: "jobs", gadgetId: "jobs", table: "jobs", manifestSha256: approvedJobsBody.manifest_sha256,
         resourceSha256: approvedJobsBody.resource_sha256, installationGeneration: 1, grantRevision: 1 }) }));
+    const claimKnowledge = () => space.fetch(new Request("http://space/extension-resource-operation", { method: "POST", headers,
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, requirementId: "knowledge_search",
+        operationId: "search", resourceKind: "knowledge", gadgetId: "knowledge", table: "owner_docs",
+        manifestSha256: approvedKnowledgeBody.manifest_sha256, resourceSha256: approvedKnowledgeBody.resource_sha256,
+        installationGeneration: 1, grantRevision: 1 }) }));
     const jobClaim = await claimJob("enqueue");
     expect(jobClaim.status, await jobClaim.clone().text()).toBe(200);
     const { lease_id: jobLeaseId } = await jobClaim.json() as { lease_id: string };
     expect((await claimJob("enqueue")).status).toBe(429);
+    const knowledgeClaim = await claimKnowledge();
+    expect(knowledgeClaim.status, await knowledgeClaim.clone().text()).toBe(200);
+    const { lease_id: knowledgeLeaseId } = await knowledgeClaim.json() as { lease_id: string };
+    expect((await claimKnowledge()).status).toBe(429);
     const releaseLease = (lease: string) => space.fetch(new Request("http://space/extension-resource-operation/release", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, leaseId: lease }) }));
     expect(await (await releaseLease(jobLeaseId)).json()).toMatchObject({ released: true, status: "released" });
+    expect(await (await releaseLease(knowledgeLeaseId)).json()).toMatchObject({ released: true, status: "released" });
     const jobStatusClaim = await claimJob("status");
     expect(jobStatusClaim.status, await jobStatusClaim.clone().text()).toBe(200);
     const { lease_id: jobStatusLeaseId } = await jobStatusClaim.json() as { lease_id: string };
@@ -232,6 +243,8 @@ describe("runtime extension installation", () => {
     const ownerUsage = await space.fetch(new Request(grantsUrl, { headers }));
     expect(await ownerUsage.json()).toMatchObject({ operation_usage: expect.arrayContaining([
       expect.objectContaining({ lease_id: jobLeaseId, requirement_id: "background", operation_id: "enqueue", table_name: "jobs",
+        grant_revision: 1, status: "released" }),
+      expect.objectContaining({ lease_id: knowledgeLeaseId, requirement_id: "knowledge_search", operation_id: "search", table_name: "owner_docs",
         grant_revision: 1, status: "released" }),
       expect.objectContaining({ lease_id: jobStatusLeaseId, requirement_id: "background", operation_id: "status", table_name: "jobs",
         grant_revision: 1, status: "released" }),

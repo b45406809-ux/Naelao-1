@@ -18190,15 +18190,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const generation = body.installationGeneration, revision = body.grantRevision;
     const objectResource = body.resourceKind === "objects";
     const jobsResource = body.resourceKind === "jobs";
+    const knowledgeResource = body.resourceKind === "knowledge";
     const invalidResourceTarget = objectResource
       ? !["get", "put", "delete"].includes(operationId) || gadgetId !== "objects" || table !== "objects"
       : jobsResource
         ? !["enqueue", "status"].includes(operationId) || gadgetId !== "jobs" || table !== "jobs"
+      : knowledgeResource
+        ? operationId !== "search" || gadgetId !== "knowledge" || !/^[a-z][a-z0-9_-]{2,63}$/.test(table)
       : !["list", "get", "insert", "update", "delete"].includes(operationId)
         || !/^[a-z][a-z0-9_-]{0,62}$/.test(table) || !/^[a-z][a-z0-9_-]{1,63}$/.test(gadgetId);
     if (!tenantId || request.headers.get("x-naelao-tenant-id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
       || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
-      || body.resourceKind !== undefined && body.resourceKind !== "objects" && body.resourceKind !== "structured_data" && body.resourceKind !== "jobs"
+      || body.resourceKind !== undefined && body.resourceKind !== "objects" && body.resourceKind !== "structured_data" && body.resourceKind !== "jobs" && body.resourceKind !== "knowledge"
       || !/^[a-z][a-z0-9._-]{1,63}$/.test(requirementId) || invalidResourceTarget
       || !/^[a-f0-9]{64}$/.test(manifestSha256) || !/^[a-f0-9]{64}$/.test(resourceSha256)
       || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1
@@ -18208,12 +18211,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const target = await this.extensionResourceGrantTarget(tenantId, spaceId, projectId, instanceId);
     if (!target || target.row.status !== "active" || target.row.generation !== generation || target.manifestSha256 !== manifestSha256)
       return Response.json({ error_code: "extension_resource_installation_changed" }, { status: 409 });
-    const expectedKind = objectResource ? "objects" : jobsResource ? "jobs" : "structured_data";
+    const expectedKind = objectResource ? "objects" : jobsResource ? "jobs" : knowledgeResource ? "knowledge" : "structured_data";
     const requirement = target.manifest.resourceRequirements?.find(item => item.id === requirementId && item.kind === expectedKind);
     if (!requirement || requirement.scope !== "project"
       || objectResource && requirement.binding !== undefined
       || jobsResource && (!requirement.binding || !("workflowIds" in requirement.binding))
-      || !objectResource && !jobsResource && (!requirement.binding || !("gadgetId" in requirement.binding)
+      || knowledgeResource && (!requirement.binding || !("publicationIds" in requirement.binding) || !requirement.binding.publicationIds.includes(table))
+      || !objectResource && !jobsResource && !knowledgeResource && (!requirement.binding || !("gadgetId" in requirement.binding)
         || requirement.binding.gadgetId !== gadgetId || !requirement.binding.tables.includes(table))
       || !requirement.operations.some(item => item.id === operationId))
       return Response.json({ error_code: "extension_resource_operation_not_declared" }, { status: 403 });
@@ -18230,7 +18234,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!currentGrant || currentGrant.status !== "approved" || currentGrant.revision !== revision
       || currentGrant.manifest_sha256 !== manifestSha256 || currentGrant.resource_sha256 !== resourceSha256 || resourceDigest !== resourceSha256
       || currentGrant.installation_generation !== generation || !Array.isArray(approvedOperations) || !approvedOperations.includes(operationId)
-      || !Array.isArray(approvedTables) || (objectResource || jobsResource ? approvedTables.length !== 0 : !approvedTables.includes(table)))
+      || !Array.isArray(approvedTables) || (objectResource || jobsResource || knowledgeResource ? approvedTables.length !== 0 : !approvedTables.includes(table)))
       return Response.json({ error_code: "extension_resource_grant_revoked_or_stale" }, { status: 403 });
     const leaseId = crypto.randomUUID(), now = new Date().toISOString(), expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     const outcome: { value: "claimed" | "rate_limit" | "concurrency_limit" | "stale" } = { value: "stale" };
