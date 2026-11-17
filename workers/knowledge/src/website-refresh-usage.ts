@@ -1,9 +1,11 @@
 import { mintInternalToken } from "@naelao/http";
+import { recordWebsiteRefreshUsageReceiptMetric } from "./retrieval-telemetry.js";
 
 interface UsageReceiptEnvironment {
   PLATFORM_DB: D1Database;
   PLATFORM_SECRET: string;
   BILLING_WORKER?: Fetcher;
+  ANALYTICS?: AnalyticsEngineDataset;
 }
 
 interface PendingUsageReceipt {
@@ -12,6 +14,7 @@ interface PendingUsageReceipt {
   space_id: string;
   project_id: string;
   idempotency_key: string;
+  attempt_count: number;
 }
 
 const RECEIPT_BATCH_LIMIT = 50;
@@ -19,11 +22,12 @@ const RECEIPT_BATCH_LIMIT = 50;
 /** Deliver stable, unpriced invocation receipts to Billing and retain failures for retry. */
 export async function flushWebsiteRefreshUsageOutbox(env: UsageReceiptEnvironment, now = new Date()): Promise<number> {
   if (!env.BILLING_WORKER) return 0;
-  const pending = await env.PLATFORM_DB.prepare(`SELECT run_id,tenant_id,space_id,project_id,idempotency_key
+  const pending = await env.PLATFORM_DB.prepare(`SELECT run_id,tenant_id,space_id,project_id,idempotency_key,attempt_count
     FROM kb_website_refresh_usage_outbox WHERE status='pending' ORDER BY created_at,run_id LIMIT ${RECEIPT_BATCH_LIMIT}`)
     .all<PendingUsageReceipt>();
   let sent = 0;
   for (const receipt of pending.results ?? []) {
+    const startedAt = Date.now();
     let errorCode: "billing_usage_unavailable" | "billing_usage_rejected" | null = null;
     try {
       const token = await mintInternalToken(env.PLATFORM_SECRET, receipt.tenant_id);
@@ -46,12 +50,16 @@ export async function flushWebsiteRefreshUsageOutbox(env: UsageReceiptEnvironmen
       await env.PLATFORM_DB.prepare(`UPDATE kb_website_refresh_usage_outbox SET attempt_count=attempt_count+1,
         last_attempt_at=?,last_error_code=?,updated_at=? WHERE run_id=? AND status='pending'`)
         .bind(attemptedAt, errorCode, attemptedAt, receipt.run_id).run();
+      recordWebsiteRefreshUsageReceiptMetric(env.ANALYTICS, "retry", Date.now() - startedAt, receipt.attempt_count + 1);
     } else {
       const updated = await env.PLATFORM_DB.prepare(`UPDATE kb_website_refresh_usage_outbox SET status='sent',
         attempt_count=attempt_count+1,last_attempt_at=?,last_error_code=NULL,sent_at=?,updated_at=?
         WHERE run_id=? AND status='pending'`)
         .bind(attemptedAt, attemptedAt, attemptedAt, receipt.run_id).run();
-      if (Number(updated.meta.changes ?? 0) > 0) sent++;
+      if (Number(updated.meta.changes ?? 0) > 0) {
+        sent++;
+        recordWebsiteRefreshUsageReceiptMetric(env.ANALYTICS, "sent", Date.now() - startedAt, receipt.attempt_count + 1);
+      }
     }
   }
   return sent;

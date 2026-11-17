@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { flushWebsiteRefreshUsageOutbox } from "./website-refresh-usage.js";
 
 const receipt = { run_id: "scheduled_" + "a".repeat(48), tenant_id: "tenant-a", space_id: "space-a",
-  project_id: "project-a", idempotency_key: "knowledge-website-refresh:scheduled_" + "a".repeat(48) };
+  project_id: "project-a", idempotency_key: "knowledge-website-refresh:scheduled_" + "a".repeat(48), attempt_count: 2 };
 
 function fixture(responseStatus = 201) {
   const calls: Array<{ sql: string; args: unknown[] }> = [];
@@ -14,12 +14,14 @@ function fixture(responseStatus = 201) {
     return { ...execute([]), bind: (...args: unknown[]) => execute(args) };
   }) };
   const requests: Request[] = [];
+  const analytics = { writeDataPoint: vi.fn() };
   const env = { PLATFORM_DB: db, PLATFORM_SECRET: "usage-receipt-test-secret",
+    ANALYTICS: analytics,
     BILLING_WORKER: { fetch: vi.fn(async (request: Request) => {
       requests.push(request.clone());
       return new Response(JSON.stringify({ recorded: responseStatus === 201 }), { status: responseStatus });
     }) } };
-  return { env, db, calls, requests };
+  return { env, db, calls, requests, analytics };
 }
 
 describe("scheduled website refresh usage receipts", () => {
@@ -34,6 +36,8 @@ describe("scheduled website refresh usage receipts", () => {
       quantity: 1, unit: "invocations", space_id: "space-a", project_id: "project-a", run_id: receipt.run_id,
       idempotency_key: receipt.idempotency_key });
     expect(f.calls.at(-1)?.sql).toContain("status='sent'");
+    expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_billing_receipt", "website_refresh_invocation", "sent"],
+      doubles: [expect.any(Number), 3], indexes: [] });
   });
 
   it("retains a failed delivery for retry with the exact same idempotency key", async () => {
@@ -41,6 +45,8 @@ describe("scheduled website refresh usage receipts", () => {
     await expect(flushWebsiteRefreshUsageOutbox(f.env as never)).resolves.toBe(0);
     expect(f.calls.at(-1)?.sql).toContain("status='pending'");
     expect(f.calls.at(-1)?.args).toContain("billing_usage_rejected");
+    expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_billing_receipt", "website_refresh_invocation", "retry"],
+      doubles: [expect.any(Number), 3], indexes: [] });
     await expect(flushWebsiteRefreshUsageOutbox(f.env as never)).resolves.toBe(0);
     expect(f.requests).toHaveLength(2);
     await expect(f.requests[0]!.clone().json()).resolves.toMatchObject({ idempotency_key: receipt.idempotency_key,
@@ -54,5 +60,17 @@ describe("scheduled website refresh usage receipts", () => {
     delete (f.env as { BILLING_WORKER?: unknown }).BILLING_WORKER;
     await expect(flushWebsiteRefreshUsageOutbox(f.env as never)).resolves.toBe(0);
     expect(f.db.prepare).not.toHaveBeenCalled();
+  });
+
+  it("does not change durable delivery or retry state when telemetry is unavailable", async () => {
+    const success = fixture();
+    success.env.ANALYTICS.writeDataPoint.mockImplementation(() => { throw new Error("analytics offline"); });
+    await expect(flushWebsiteRefreshUsageOutbox(success.env as never)).resolves.toBe(1);
+    expect(success.calls.at(-1)?.sql).toContain("status='sent'");
+
+    const retry = fixture(503);
+    retry.env.ANALYTICS.writeDataPoint.mockImplementation(() => { throw new Error("analytics offline"); });
+    await expect(flushWebsiteRefreshUsageOutbox(retry.env as never)).resolves.toBe(0);
+    expect(retry.calls.at(-1)?.sql).toContain("status='pending'");
   });
 });

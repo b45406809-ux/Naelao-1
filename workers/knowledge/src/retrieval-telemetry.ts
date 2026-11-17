@@ -30,6 +30,15 @@ export function recordCitationMetric(dataset: AnalyticsEngineDataset | undefined
   catch { /* telemetry failures must not change citation authorization or delivery */ }
 }
 
+export function recordWebsiteRefreshUsageReceiptMetric(dataset: AnalyticsEngineDataset | undefined,
+  outcome: "sent" | "retry", durationMs: number, attempts: number): void {
+  try {
+    const bounded = (value: number, maximum: number) => Number.isFinite(value) ? Math.max(0, Math.min(maximum, Math.round(value))) : 0;
+    dataset?.writeDataPoint({ blobs: ["knowledge_billing_receipt", "website_refresh_invocation", outcome],
+      doubles: [bounded(durationMs, 120_000), bounded(attempts, 100)], indexes: [] });
+  } catch { /* Analytics must not change receipt delivery or retry state. */ }
+}
+
 /** Produce bounded aggregate telemetry; caller, tenant, Space, Project and query data are omitted. */
 export function buildPrivacySafeRetrievalTelemetry(input: {
   event: GroundedSearchTelemetry;
