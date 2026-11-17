@@ -5,7 +5,9 @@
 The full mission also includes `docs/research/adaptive-planner-worker-swarm-memory-plan.md` and its
 ledger `docs/research/adaptive-planner-worker-swarm-memory-progress.md`, alongside every plan and
 progress record already listed in the cross-plan ledgers. After compaction, interruption, or a new
-session, read the applicable active plans and progress records, inspect the actual worktree and
+session, read all active plans and their progress records (including managed-services/sidecar,
+unified-platform, guided templates, planner/worker, Knowledge, extensible resources, business roles,
+resumable workflows, shared compute and adaptive orchestration), inspect the actual worktree and
 branch, and resume the exact next unfinished action recorded there. Preserve the fixed authorization,
 privacy, checked-publication, billing, recovery, and rollout boundaries in all plans.
 
@@ -61,20 +63,18 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (adaptive DAG topology receipt; local verification)
+## Current checkpoint — 2026-11-17 (adaptive routing policy; local verification)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit, push, or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
 
-The adaptive planner plan from `origin/plan/microapps-ui-sdk-voice` commit
-`f991071dbb955423a359dba4cdf3ea2054ce9efc` is copied to the active worktree (SHA-256
-`8845f496b399408592d45670f04ce88e12176d61940cb8e16356a949ae6d3edf`). The durable DAG now
-records single-worker, sequential, or parallel topology and uses one worker for a chain; parallel
-work is bounded by the current host ceiling, which is recalculated on resume. Focused DAG tests
-**51/51**, Agents typecheck, and diff hygiene pass. This does not implement learned routing, dynamic
-task creation, project/Space memory, or deployed/live acceptance. Exact next action: push this
-checkpoint after fetching safely, then continue SC03 durable admission only if exact invocation
-authority and fresh Billing can be revalidated; otherwise move to the next independent code gap.
-Preserve `infra/scripts/__pycache__/` and keep rollout disabled.
+The adaptive planner source and ledger are pushed at `c0c0f0fb`. Planner instructions now explain
+direct versus one-worker/sequential/parallel routing without encouraging extra workers or bypassing
+required capabilities; the durable DAG persists topology and recomputes its worker ceiling from live
+host limits on resume. Focused planner/DAG tests **66/66**, Agents typecheck, and diff hygiene pass.
+No learned routing, arbitrary in-flight task creation, deployed/live acceptance or rollout is claimed.
+Exact next action: continue APW03/APW04 with current task lineage and scoped memory authority; keep
+SC03 disconnected dispatch fail-closed absent exact invocation authority and fresh Billing. Preserve
+`infra/scripts/__pycache__/` and keep rollout disabled.
 
 ## Resume checkpoint — 2026-11-17 (K09 owner crawl cancellation; `1e6abd43` pushed)
 

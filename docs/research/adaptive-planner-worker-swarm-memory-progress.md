@@ -36,3 +36,21 @@ tests, AGENTS.md and this ledger are uncommitted; preserve `infra/scripts/__pyca
 coherent checkpoint without rewriting remote history. Then continue SC03 durable admission only if
 exact invocation authority and fresh Billing can be revalidated; otherwise proceed to the next
 independent code gap in the active ledgers.
+
+## Cross-plan checkpoint — 2026-11-17 (planner topology guidance; `c0c0f0fb` pushed)
+
+`PLANNER_FIRST_PROTOCOL` now instructs the planner to use direct answers only for self-contained
+requests and otherwise choose the smallest useful worker topology: one coherent worker, sequential
+dependencies, or independent DAG work. It prohibits unnecessary workers and topology-based bypasses
+of specialists, permissions, approvals or requested capabilities. Existing host controls continue to
+select models/runtimes and enforce depth, attempts, concurrency and billing. Focused planner/DAG
+tests **66/66**, Agents typecheck and diff hygiene pass. `c0c0f0fb` (including the topology receipt
+and copied plan/ledger) is pushed to `origin/Mcbt5s-Backup-2`.
+
+This guides model planning; it is not measured adaptive quality/cost, dynamic task insertion during a
+running DAG, a new memory store, or live/deployed evidence. Exact next action: reconcile APW03 durable
+task ownership/revisions and APW04 memory provenance with existing workflow journals, project memory,
+Knowledge ACLs and private-Project policy, then implement the next missing reachable boundary.
+SC03 remains independently blocked from disconnected replay because the host cannot yet revalidate
+the exact invocation authority and fresh Billing admission; keep it fail-closed and continue other
+code work. Rollouts remain disabled.

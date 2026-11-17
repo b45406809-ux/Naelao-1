@@ -44,6 +44,12 @@ describe("Batch 04 universal kernel", () => {
   });
 
   it("documents planner-owned project coordination commands", () => {
+    expect(PLANNER_FIRST_PROTOCOL).toContain("choose the smallest useful topology");
+    expect(PLANNER_FIRST_PROTOCOL).toContain("one bounded worker");
+    expect(PLANNER_FIRST_PROTOCOL).toContain("dependency chain for sequential stages");
+    expect(PLANNER_FIRST_PROTOCOL).toContain("independent DAG tasks");
+    expect(PLANNER_FIRST_PROTOCOL).toContain("your topology choice never raises them");
+    expect(PLANNER_FIRST_PROTOCOL).toContain("required specialist");
     expect(PLANNER_FIRST_PROTOCOL).toContain("naelao project agents list");
     expect(PLANNER_FIRST_PROTOCOL).toContain("native AskUser action");
     expect(PLANNER_FIRST_PROTOCOL).toContain("Never put a clarification question in an answer message");
