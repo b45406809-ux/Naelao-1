@@ -1,3 +1,15 @@
+## Current cross-plan checkpoint — 2026-11-17 (EP06 structured usage and K26 receipt retry metrics; `550ee028` pushed)
+
+Code `6fac3fec` adds exact-install Gadget table/row/logical value-byte totals to the owner storage view; the live SpaceDO installation pin is compared with immutable MicroAppDO metadata, and stale IDs fail closed. Code `550ee028` adds fixed-label `sent`/`retry` telemetry for the existing unpriced website-refresh Billing receipt outbox with bounded duration/attempts and failure isolation. Both are remote-verified. Local tests: Spaces **29/29**, Shell **4/4**, Knowledge **9/9**; Spaces/Shell/Knowledge typechecks and diff check pass. No deployment/live acceptance, provider invoice, or rollout.
+
+TBR04 current-grant preview remains a contract gap: the activation preview has symbolic resources/planned Projects while existing grants and published Knowledge are bound to concrete Project/installation IDs. No authority is joined or granted. EP06 remains partial for provider dependency, invoice-backed cost and lifecycle/export inventory. Exact next action: add fixed-label Knowledge source-refresh interruption-recovery and backoff outcomes using existing durable operation state, then continue other uncoded requirements. Rollouts remain disabled.
+
+## Current cross-plan checkpoint — 2026-11-17 (exact-install structured-data inventory; `6fac3fec` pushed)
+
+EP06 now includes an owner-only Project Gadget structured-data summary with user-table count, row count and logical value bytes. Shell pins the request to the installation selected from the active signed installation list; SpaceDO checks that exact ID against current runtime state and forwards it to MicroAppDO; MicroAppDO verifies the stored installation ID before aggregating. A stale installation returns 409. Physical SQLite allocation remains separately reported, and no cost is inferred. `6fac3fec` is remote-verified. Spaces suites **29/29**, Shell storage suite **4/4**, Spaces/Shell typechecks and diff check pass. No deployment/live acceptance.
+
+EP06 remains partial for provider dependency inventory, invoice-backed costs and lifecycle/export receipts. Exact next action: trace current exact-install resource grants and published Knowledge state into the owner activation preview; show only verified active authority, preserve non-granting proposals, and cover stale/revoked state. Then continue uncoded TBR/S/U/P/PW/K/EP/AP gaps. All rollouts remain disabled.
+
 ## Current checkpoint — 2026-11-17 (extension object usage visible; `3b867de4` pushed)
 
 The owner-only signed-install inventory now includes actual host-object count and bytes, plus current requirements/grants/budget and bounded operation/job activity. No provider cost is inferred. Code `3b867de4` is pushed; Shell resource API **3/3**, Spaces route/install **41/41** and focused install suite **34/34**, typechecks and diff check pass. No deployed/live acceptance.

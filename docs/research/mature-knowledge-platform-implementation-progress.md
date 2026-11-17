@@ -1,3 +1,9 @@
+## Current K26 checkpoint — 2026-11-17 (Billing usage receipt retry metrics; `550ee028` pushed)
+
+The existing scheduled website-refresh Billing outbox now emits privacy-safe fixed labels for receipt `sent` or `retry`, with bounded duration and attempt count. Billing receipts remain unpriced and carry no inferred payer or rate; Analytics failure cannot alter delivery or retry persistence. `550ee028` is remote-verified. Focused Knowledge usage/telemetry suites **9/9**, Knowledge typecheck and diff check pass. No deployment, provider invoice, or live telemetry acceptance.
+
+K26 remains partial for source-refresh interrupted recovery/backoff outcomes and deployed telemetry. Exact next action: add fixed-label metrics at the durable source-refresh interruption/backoff boundary, then continue K10–K30 and the other active plans. Cloudflare AI Search remains unselected.
+
 ## Current K26 checkpoint — 2026-11-17 (citation and deletion outcome metrics; `ab284ee1` pushed)
 
 Knowledge metrics now cover retrieval, parse preview, scheduled website refresh/lag, Project-access denial, citation delivery/not-found/integrity/unavailable, and deletion pending/complete/busy/error/attempts. They use fixed labels and bounded values; omit raw identifiers/content; and fail independently of the measured operation. `ab284ee1` plus prior telemetry commits through `c9e796c7` are pushed. Relevant tests **62/62**, Knowledge typecheck and diff check pass. No deployed/live acceptance.

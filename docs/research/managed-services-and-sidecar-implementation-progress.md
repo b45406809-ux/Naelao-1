@@ -1,3 +1,15 @@
+## Cross-plan checkpoint — 2026-11-17 (K26 receipt retry telemetry; `550ee028` pushed)
+
+Following EP06 structured-data inventory `6fac3fec`, K26 code `550ee028` records fixed-label `sent`/`retry` outcomes for durable website-refresh Billing usage receipts, with bounded latency/attempts and failure isolation. These receipts remain unpriced; no customer cost is inferred. Knowledge tests **9/9**, typecheck and diff check pass. Both code SHAs are remote-verified. No deployment or provider activity; preserve `infra/scripts/__pycache__/`.
+
+EP06 provider dependency, invoice cost and lifecycle/export inventory remains partial. Exact next action: add privacy-safe source-refresh interruption-recovery/backoff telemetry from durable operation state; continue S4–S9/U01–U12 and all other active plans. Rollout disabled.
+
+## Cross-plan checkpoint — 2026-11-17 (Project Gadget structured-data usage; `6fac3fec` pushed)
+
+The EP06 owner storage view now reports per-install user-table count, row count and logical value bytes. Current install identity flows from SpaceDO runtime resolution through the route to MicroAppDO, which compares it with immutable stored metadata before measuring. The Shell caller includes the signed installation ID and rejects mismatched results. Code `6fac3fec` is remote-verified; Spaces tests **29/29**, Shell tests **4/4**, both typechecks and diff check pass. No deployment/provider/live acceptance. No costs are inferred. Preserve `infra/scripts/__pycache__/`.
+
+EP06 still lacks full provider dependency, invoice-backed cost and lifecycle/export accounting. Exact next action: trace active extension resource grants and published Knowledge authority into the owner activation preview without granting access; then continue S4–S9/U01–U12 and other active plan code gaps. Keep rollout disabled.
+
 ## Cross-plan checkpoint — 2026-11-17 (owner extension object usage; `3b867de4` pushed)
 
 The EP06 Project-install inventory now includes exact-scope object count/bytes alongside grant, budget, operation and job receipts; it does not estimate cost. `3b867de4` is pushed; focused Shell/Spaces tests and typechecks pass (**3/3**, **41/41**, plus object install suite **34/34**). No deployment/live provider acceptance. Broader resource/dependency/cost/lifecycle inventory remains partial. K26 privacy-safe telemetry through `ab284ee1` is local-only. TBR06 remains proposal-only with no supported role mapping.

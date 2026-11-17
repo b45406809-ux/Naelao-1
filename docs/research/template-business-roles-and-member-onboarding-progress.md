@@ -1,3 +1,15 @@
+## TBR04 contract reconciliation — 2026-11-17 (`550ee028` cross-plan checkpoint)
+
+The read-only trace found no safe join from current host grants or published Knowledge into the Space activation preview: role requests refer to symbolic resources and template Projects, whereas extension resource grants and Knowledge publications require concrete installation and Project IDs. The blueprint contains no approved binding for those IDs. The current UI accurately labels Knowledge as declared-only and says it does not evaluate independent access. TBR04 remains partial; do not infer access from declaration or Space membership. EP06 structured-data usage and K26 unpriced receipt retry telemetry are pushed at `6fac3fec` and `550ee028`.
+
+Exact next action in the cross-plan ledger: instrument Knowledge source-refresh interrupted recovery and backoff outcomes using durable receipt state, then continue independent requirements. TBR06 remains proposal-only (`grants_applied=0`) until an authoritative role-to-grant mapping/outbox exists; private-Project semantics remain unresolved.
+
+## Cross-plan checkpoint — 2026-11-17 (`6fac3fec` pushed)
+
+EP06 now reports exact-install Gadget structured-data table/row/value-byte usage after the host runtime and MicroAppDO identities match; Spaces **29/29**, Shell **4/4**, typechecks and diff check pass. TBR01/TBR02 authoring remain locally implemented. TBR04 still resolves signed package declarations but does not compare the preview with current host-issued extension grants or published Knowledge state; no role grants are applied. TBR06 remains proposal-only because independent grant issuers lack an authoritative role mapping/outbox. Code `6fac3fec` is remote-verified; no deployment or live acceptance.
+
+Exact next action: augment the owner activation preview with read-only exact-install grant and published Knowledge state from the existing authoritative SpaceDO/Knowledge records, with stale/revoked scope tests; preserve `grants_applied: false` and keep unsupported shared-data/private-Project semantics denied. Continue remaining TBR03–TBR12 and all other active plans afterward.
+
 ## Current TBR06 and cross-plan checkpoint — 2026-11-17 (`9476fc1d` pushed)
 
 The TBR06 boundary remains unchanged: schema-constrained proposal-only reviews (`grants_applied=0`), with no current symbolic role-to-effective-host-grant mapping/outbox across Project, Knowledge, extension and provider authorities. This is an uncoded host/product contract gap, not a credential blocker; do not promote generic Space membership into resource grants. Independent K26 work advanced: fixed-label bounded retrieval, scheduled-refresh and PDF-preview metrics are pushed at `67719e1a`, `370b99f5`, `9476fc1d`; tests **9/9**, Knowledge typecheck and diff check pass.
