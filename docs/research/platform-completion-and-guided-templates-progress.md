@@ -115,6 +115,12 @@ Exact next action: TBR06 grant lifecycle trace and smallest specified durable gr
 
 # Platform completion and guided templates progress
 
+## Cross-plan code checkpoint — 2026-11-17 (EP04 Gadget/schema preview; `88f3c34d` pushed)
+
+Code `88f3c34deb8ea4cbc49681a65c7527bc18eaa19e` is remote-verified. The signed install preview now projects bundled and legacy Gadget scope, whether schema is declared, bounded migration version/description summaries, business-action IDs and workflow tool names. Raw SQL is not echoed, and these declarations are not grants. Focused Shell suites **13/13**, Shell typecheck and diff check pass; no browser/deployment/rollout.
+
+EP04 project-bound update review remains uncoded. The current shared-package verifier assumes a narrower Space-shared manifest/artifact set and must not be reused unchanged. Exact next action: bind a non-mutating project update preview to exact current installation ID/generation and manifest/artifact pins; verify the candidate using project package artifact/signature rules and report bounded resource/schema/authority deltas. Continue other cross-plan code requirements afterward. Preserve `infra/scripts/__pycache__/`; rollout remains disabled.
+
 ## Cross-plan fix — 2026-11-17 (rollback requires complete publisher pin; `cc03889f` pushed)
 
 Code `cc03889fc1b5f6dba7584323e32c94f1eddd5335` is remote-verified. Rollback is now unavailable unless the candidate has a verified signature, artifact digest, publisher ID and key fingerprint; incomplete legacy receipts show a clear unavailable reason. Focused rollback helper **2/2**, Shell typecheck and diff check pass. No rollback/deployment/rollout occurred. Exact next action: continue the planned project-bound update-review API/UI work; the existing signed package inspector enforces Space-shared-only constraints, so adapt scope validation intentionally rather than reusing it unchanged. Keep preview non-mutating and continue all other active plan gaps.

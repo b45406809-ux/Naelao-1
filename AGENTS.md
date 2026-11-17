@@ -122,6 +122,12 @@ Exact next action: continue TBR06 by tracing every current Space/Project/extensi
 
 ## Active mission and checkpoint
 
+## Latest cross-plan checkpoint — 2026-11-17 (EP04 Gadget/schema preview; `88f3c34d` pushed)
+
+Code `88f3c34deb8ea4cbc49681a65c7527bc18eaa19e` is pushed and remote-verified. The signed package summary now shows bundled and legacy Gadget scope, schema presence, bounded migration version/description summaries, declared business-action IDs, and workflow tool names before installation. It omits raw SQL and does not imply effective grants. Focused Shell suites **13/13**, Shell typecheck and diff check pass. No browser/deployment or rollout. Preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: implement the project-bound signed update review only on the existing project release/DO authorities. The shared-package inspector is too restrictive for PROJECT_BOUND workflow/Gadget/channel artifacts; adapt its signature/artifact verification with explicit project scope or write a separate verifier, return current/candidate hashes, generation and bounded migration/resource/authority deltas, and keep the preview non-mutating. Then proceed across remaining K/P/PW/S/U/AP/TBR code gaps. Rollouts stay disabled.
+
 ## Latest cross-plan checkpoint — 2026-11-17 (EP04 rollback requires complete publisher pin; `cc03889f` pushed)
 
 `cc03889fc1b5f6dba7584323e32c94f1eddd5335` is remote-verified. Rollback review now also fails closed unless the candidate has a valid artifact digest, publisher ID, and 64-character publisher key fingerprint; the UI explains the missing pin and disables the action. This closes the legacy/incomplete-publisher edge of `79bdc2ef`. Rollback review test **2/2**, Shell typecheck and diff check pass. No rollback, deployment or rollout. Exact next action remains project-bound update review: reuse the signed release inspector only after adjusting for project scope/capabilities, and produce a read-only current/candidate pin and migration/resource diff; don't send project packages through the Space-shared contract. Continue other active requirements afterward.
