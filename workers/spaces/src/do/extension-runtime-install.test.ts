@@ -410,8 +410,14 @@ describe("runtime extension installation", () => {
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
     const bundleManifest = (version: string) => ({ id: "ext_versioned", type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"], gadgets: [], daemons: [], commands: [],
       bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_versioned", version, primitives: [{ schemaVersion: "1.0", kind: "channel", id: "handler", version, permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"] }] } });
-    const call = (version: string, upgrade = false) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ manifest: bundleManifest(version), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["channel.invoke"], artifactSha256: "a".repeat(64), upgrade }) }));
+    const call = async (version: string, upgrade = false) => {
+      const current = upgrade ? storage.sql.exec<{ generation: number; release_version: string; manifest_json: string }>(
+        `SELECT i.generation,i.release_version,m.manifest_json FROM extension_instances i JOIN extension_installation_manifests m ON m.instance_id=i.instance_id WHERE i.extension_id='ext_versioned'`).toArray()[0] : undefined;
+      const expected = current ? { expectedCurrentGeneration: current.generation, expectedCurrentVersion: current.release_version,
+        expectedCurrentManifestSha256: await digestExtensionManifest(validateExtensionManifest(JSON.parse(current.manifest_json))) } : {};
+      return space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ manifest: bundleManifest(version), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["channel.invoke"], artifactSha256: "a".repeat(64), upgrade, ...expected }) }));
+    };
     const first = await call("1.0.0");
     expect(first.status).toBe(201);
     const firstResult = await first.json() as { installationId: string };
@@ -459,8 +465,14 @@ describe("runtime extension installation", () => {
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active'),('project-c','space','C','active')");
     const bundleManifest = (version: string) => ({ id: "ext_pinned", type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"], gadgets: [], daemons: [], commands: [],
       bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_pinned", version, primitives: [{ schemaVersion: "1.0", kind: "channel", id: "handler", version, permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"] }] } });
-    const install = (projectId: string, version: string, upgrade = false) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ manifest: bundleManifest(version), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: ["channel.invoke"], artifactSha256: version.startsWith("1") ? "1".repeat(64) : "2".repeat(64), upgrade }) }));
+    const install = async (projectId: string, version: string, upgrade = false) => {
+      const current = upgrade ? storage.sql.exec<{ generation: number; release_version: string; manifest_json: string }>(
+        "SELECT i.generation,i.release_version,m.manifest_json FROM extension_instances i JOIN extension_installation_manifests m ON m.instance_id=i.instance_id WHERE i.project_id=?", projectId).toArray()[0] : undefined;
+      const expected = current ? { expectedCurrentGeneration: current.generation, expectedCurrentVersion: current.release_version,
+        expectedCurrentManifestSha256: await digestExtensionManifest(validateExtensionManifest(JSON.parse(current.manifest_json))) } : {};
+      return space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ manifest: bundleManifest(version), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: ["channel.invoke"], artifactSha256: version.startsWith("1") ? "1".repeat(64) : "2".repeat(64), upgrade, ...expected }) }));
+    };
     expect((await install("project-a", "1.0.0")).status).toBe(201);
     expect((await install("project-b", "1.0.0")).status).toBe(201);
     storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE extension_id='ext_pinned' AND project_id='project-a'");
@@ -611,9 +623,15 @@ describe("runtime extension installation", () => {
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
     const bundleManifest = (version: string, capabilities: string[]) => ({ id: "ext_access_review", type: "extension", declaredPermissions: capabilities, capabilityRequirements: capabilities, gadgets: [], daemons: [], commands: [],
       bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_access_review", version, primitives: [{ schemaVersion: "1.0", kind: "channel", id: "handler", version, permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "telegram", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"] }] } });
-    const install = (version: string, capabilities: string[], upgrade = false) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ manifest: bundleManifest(version, capabilities), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: capabilities,
-        artifactSha256: version === "2.0.0" ? "2".repeat(64) : version === "1.0.0" ? "1".repeat(64) : "3".repeat(64), upgrade }) }));
+    const install = async (version: string, capabilities: string[], upgrade = false) => {
+      const current = upgrade ? storage.sql.exec<{ generation: number; release_version: string; manifest_json: string }>(
+        "SELECT i.generation,i.release_version,m.manifest_json FROM extension_instances i JOIN extension_installation_manifests m ON m.instance_id=i.instance_id WHERE i.extension_id='ext_access_review'").toArray()[0] : undefined;
+      const expected = current ? { expectedCurrentGeneration: current.generation, expectedCurrentVersion: current.release_version,
+        expectedCurrentManifestSha256: await digestExtensionManifest(validateExtensionManifest(JSON.parse(current.manifest_json))) } : {};
+      return space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ manifest: bundleManifest(version, capabilities), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: capabilities,
+          artifactSha256: version === "2.0.0" ? "2".repeat(64) : version === "1.0.0" ? "1".repeat(64) : "3".repeat(64), upgrade, ...expected }) }));
+    };
     const first = await install("1.0.0", ["channel.invoke"]);
     expect(first.status, await first.clone().text()).toBe(201);
     const instanceId = String(storage.sql.exec("SELECT instance_id FROM extension_instances WHERE extension_id='ext_access_review'").toArray()[0]?.instance_id);
@@ -968,13 +986,25 @@ describe("runtime extension installation", () => {
       body: JSON.stringify({ manifest: canvasManifest("1.0.0", "mentor_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "a".repeat(64) }) }));
     expect(installedResponse.status).toBe(201);
     const installed = await installedResponse.json() as { installationId: string };
+    const currentPin = storage.sql.exec<{ generation: number; release_version: string }>(
+      "SELECT generation,release_version FROM extension_instances WHERE instance_id=?", installed.installationId).toArray()[0]!;
+    const expectedPin = { expectedCurrentGeneration: currentPin.generation, expectedCurrentVersion: currentPin.release_version,
+      expectedCurrentManifestSha256: await digestExtensionManifest(validateExtensionManifest(canvasManifest("1.0.0", "mentor_canvas"))) };
     const check = (appId: string) => space.fetch(new Request("http://space/project-extension-runtime?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", app_id: appId })));
     const activeUpgrade = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ manifest: canvasManifest("2.0.0", "renamed_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "b".repeat(64), upgrade: true }) }));
+      body: JSON.stringify({ manifest: canvasManifest("2.0.0", "renamed_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "b".repeat(64), upgrade: true, ...expectedPin }) }));
     expect(activeUpgrade.status).toBe(409);
     storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", installed.installationId);
+    const staleUpgrade = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: canvasManifest("2.0.0", "renamed_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "b".repeat(64), upgrade: true,
+        ...expectedPin, expectedCurrentGeneration: expectedPin.expectedCurrentGeneration + 1 }) }));
+    expect(staleUpgrade.status).toBe(409);
+    const staleManifest = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: canvasManifest("2.0.0", "renamed_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "b".repeat(64), upgrade: true,
+        ...expectedPin, expectedCurrentManifestSha256: "f".repeat(64) }) }));
+    expect(staleManifest.status).toBe(409);
     const upgrade = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ manifest: canvasManifest("2.0.0", "renamed_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "b".repeat(64), upgrade: true }) }));
+      body: JSON.stringify({ manifest: canvasManifest("2.0.0", "renamed_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "b".repeat(64), upgrade: true, ...expectedPin }) }));
     expect(upgrade.status).toBe(201);
     expect(await (await check("mentor_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false, dependenciesResolved: false });
     expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: true, releaseValid: true, dependenciesResolved: true,

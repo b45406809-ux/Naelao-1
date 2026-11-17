@@ -5872,19 +5872,25 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   const dependencyClosure = await resolveSpaceExtensionDependencies(c.env, identity.tenantId, spaceId, manifest, "PROJECT_BOUND", projectId);
   if (!dependencyClosure.resolved) return c.json({ error_code: `extension_${dependencyClosure.error}` }, dependencyClosure.error === "dependency_registry_unavailable" ? 503 : 409);
+  let expectedUpgradePin: { generation: number; version: string; manifestSha256: string } | null = null;
   if (body.upgrade === true) {
     const current = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({
       tenant_id: identity.tenantId, space_id: spaceId, extension_id: bundle.id,
     })}`));
     if (!current.ok) return c.json({ error_code: "extension_upgrade_preflight_unavailable" }, 503);
     const currentInstalls = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; extension_id: string; project_id: string | null;
-      scope: string; instance_key?: string; status: string; release_version?: string | null; permissions?: string[]; capabilities?: string[] }> }>(current, 2 * 1024 * 1024);
+      scope: string; instance_key?: string; status: string; generation?: number; release_version?: string | null;
+      manifest_sha256?: string | null; permissions?: string[]; capabilities?: string[] }> }>(current, 2 * 1024 * 1024);
     const otherInstances = findUnsafeProjectExtensionUpgrade(currentInstalls.installations ?? [], { extensionId: bundle.id, projectId, instanceKey });
     if (otherInstances.length) return c.json({ error_code: "extension_upgrade_multiple_instances_unsupported",
       message: "A legacy sibling installation has no verified pinned release. Remove or migrate it before upgrading this extension.",
       affected_installations: otherInstances.length }, 409);
     const currentInstall = currentInstalls.installations?.find(item => item.project_id === projectId && item.scope === "PROJECT_BOUND"
       && (item.instance_key ?? "default") === instanceKey && ["active", "disabled", "staging"].includes(item.status));
+    if (!currentInstall || !Number.isSafeInteger(currentInstall.generation) || !currentInstall.release_version
+      || !currentInstall.manifest_sha256) return c.json({ error_code: "extension_upgrade_current_pin_unavailable" }, 409);
+    expectedUpgradePin = { generation: currentInstall.generation!, version: currentInstall.release_version,
+      manifestSha256: currentInstall.manifest_sha256 };
     if (currentInstall) {
       const expansion = extensionReleaseAccessExpansion(currentInstall, { permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements });
       if ((expansion.permissions.length || expansion.capabilities.length) && body.permissionExpansionApproved !== true) {
@@ -5907,7 +5913,9 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: [...requiredCapabilities], artifactSha256: digest, instanceKey,
       publisherId: trustedPublisher.publisher_id, publisherKeyId, publisherSignature, publisherPayloadSha256,
-      ...(mustRemainStaged ? { deferActivation: true } : {}), ...(body.upgrade ? { upgrade: true } : {}) }) }));
+      ...(mustRemainStaged ? { deferActivation: true } : {}), ...(body.upgrade ? { upgrade: true,
+        expectedCurrentGeneration: expectedUpgradePin?.generation, expectedCurrentVersion: expectedUpgradePin?.version,
+        expectedCurrentManifestSha256: expectedUpgradePin?.manifestSha256 } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
   const installedResult = await readBoundedResponseJson<{ installationId?: string; release?: { version?: string; artifactSha256?: string; hostSignature?: string; publisher?: { keyId?: string } } }>(installed.clone(), 64 * 1024);
   const abortStagedInstall = async () => {

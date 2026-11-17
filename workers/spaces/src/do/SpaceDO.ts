@@ -18576,7 +18576,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async installExtension(request: Request): Promise<Response> {
-    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; deferActivation?: boolean; artifactSha256?: string; publisherId?: string; publisherKeyId?: string; publisherSignature?: string; publisherPayloadSha256?: string; approvedSharedFilesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>();
+    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; expectedCurrentGeneration?: number; expectedCurrentVersion?: string; expectedCurrentManifestSha256?: string; deferActivation?: boolean; artifactSha256?: string; publisherId?: string; publisherKeyId?: string; publisherSignature?: string; publisherPayloadSha256?: string; approvedSharedFilesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>();
     if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
     if (body.scope && (!body.tenantId || !body.spaceId)) return Response.json({ error: "tenantId and spaceId are required for scoped installations" }, { status: 400 });
     let manifest: ExtensionManifest;
@@ -18670,6 +18670,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = new Date().toISOString();
     const manifestJson = JSON.stringify(manifest);
     const releaseSignature = manifest.bundle ? await this.signExtensionRelease(manifest.id, manifest.bundle.version, manifestJson, artifactSha256) : undefined;
+    let expectedCurrentManifestJson: string | undefined;
+    if (body.upgrade && body.scope === "PROJECT_BOUND") {
+      if (!body.tenantId || !body.spaceId || !body.projectId || !Number.isSafeInteger(body.expectedCurrentGeneration)
+        || (body.expectedCurrentGeneration ?? 0) < 1 || typeof body.expectedCurrentVersion !== "string"
+        || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(body.expectedCurrentVersion)
+        || typeof body.expectedCurrentManifestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedCurrentManifestSha256))
+        return Response.json({ error_code: "extension_upgrade_current_pin_required" }, { status: 409 });
+      const currentPin = queryOne<{ generation: number; release_version: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
+        `SELECT i.generation,i.release_version,m.manifest_json FROM extension_instances i
+         JOIN extension_installation_manifests m ON m.instance_id=i.instance_id
+         WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope='PROJECT_BOUND'`,
+        instanceId, body.tenantId, body.spaceId, body.projectId);
+      if (!currentPin || currentPin.generation !== body.expectedCurrentGeneration || currentPin.release_version !== body.expectedCurrentVersion)
+        return Response.json({ error_code: "extension_upgrade_current_pin_changed" }, { status: 409 });
+      try {
+        if (await digestExtensionManifest(validateExtensionManifest(JSON.parse(currentPin.manifest_json))) !== body.expectedCurrentManifestSha256)
+          return Response.json({ error_code: "extension_upgrade_current_pin_changed" }, { status: 409 });
+      } catch { return Response.json({ error_code: "extension_upgrade_current_manifest_invalid" }, { status: 409 }); }
+      expectedCurrentManifestJson = currentPin.manifest_json;
+    }
     let reuseVerifiedHistoricalRelease = false;
     if (body.scope && !body.upgrade && manifest.bundle) {
       const previousRelease = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string; publisher_id: string | null; publisher_key_id: string | null; publisher_signature: string | null; publisher_payload_sha256: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
@@ -18734,8 +18754,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
         if (body.scope && body.tenantId && body.spaceId && ownerKey && instanceId) {
           const existingInstance = queryOne<{ extension_id: string; tenant_id: string; space_id: string; project_id: string | null; user_id: string | null;
-            scope: string; instance_key: string; status: string; release_version: string | null }>(
-            this.ctx.storage.sql as never, "SELECT extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,status,release_version FROM extension_instances WHERE instance_id=?", instanceId);
+            scope: string; instance_key: string; status: string; generation: number; release_version: string | null }>(
+            this.ctx.storage.sql as never, "SELECT extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,status,generation,release_version FROM extension_instances WHERE instance_id=?", instanceId);
           if (existingInstance && (existingInstance.extension_id !== manifest.id || existingInstance.tenant_id !== body.tenantId
             || existingInstance.space_id !== body.spaceId || existingInstance.project_id !== (body.projectId ?? null)
             || existingInstance.user_id !== (body.userId ?? null) || existingInstance.scope !== body.scope || existingInstance.instance_key !== instanceKey))
@@ -18745,6 +18765,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
               throw new Error("extension_runtime_update_requires_pause");
             if (this.activeExtensionRuntimeWorkCount(instanceId) > 0)
               throw new Error("extension_runtime_work_not_drained");
+            if (body.scope === "PROJECT_BOUND") {
+              const latestManifest = queryOne<{ manifest_json: string }>(this.ctx.storage.sql as never,
+                "SELECT manifest_json FROM extension_installation_manifests WHERE instance_id=?", instanceId);
+              if (existingInstance.generation !== body.expectedCurrentGeneration
+                || existingInstance.release_version !== body.expectedCurrentVersion
+                || !expectedCurrentManifestJson || latestManifest?.manifest_json !== expectedCurrentManifestJson)
+                throw new Error("extension_upgrade_current_pin_changed");
+            }
           }
           if (existingInstance && (existingInstance.status === "removed" || existingInstance.status === "expired"
             || existingInstance.release_version !== (manifest.bundle?.version ?? null))) {
