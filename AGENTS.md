@@ -6,12 +6,12 @@ continuation instruction; historical checkpoints and their "next action" paragra
 past work and do not override the current progress records or require repeating completed work.
 
 - Start or resume from the newest verified progress records and actual code/worktree. The current
-  checkpoint is EP05 owner publication inventory (`61161067`, pointer docs `16b276ca`) pushed. The
-  immutable review/apply path, publication proof, owner preview/confirmation/takedown and bounded
-  integrity/status listing are implemented locally; host/domain rollout remains disabled. Continue
-  SC03 from its current ledger pointer: durable dispatch still needs explicit consent, exact current
-  authority revalidation and fresh Billing admission. TBR07 is already compared and must not be repeated.
-  Then continue every independent unfinished S/U/P/PW/K/EP/AP/TBR and incorporated-plan requirement.
+  checkpoint is EP05 isolated owner preview (`d7db0499`, pointer docs `1a3f0145`) pushed. The immutable
+  review/apply path, publication proof, exact preview/confirmation/takedown, bounded publication
+  inventory and restrictive preview CSP are implemented locally; host/domain rollout remains disabled.
+  Continue SC03 from its current ledger pointer: durable dispatch still needs explicit consent, exact
+  current authority revalidation and fresh Billing admission. TBR07 is already compared and must not be
+  repeated. Then continue every independent unfinished S/U/P/PW/K/EP/AP/TBR and incorporated-plan item.
   Then continue the next unfinished requirement across **all** active S/U/P/PW/K/EP/AP/TBR and
   incorporated plan ledgers. Follow dependencies, preserve completed work and recheck current
   authorization, security and billing boundaries.
