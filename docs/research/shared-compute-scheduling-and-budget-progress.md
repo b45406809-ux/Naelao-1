@@ -1,6 +1,6 @@
 # Shared compute scheduling and budget progress
 
-## Current SC03/TBR11 continuation — 2026-11-17 (`c64aba7b`, ledger `2e8f34d2` pushed)
+## Current SC03/TBR11 continuation — 2026-11-17 (`c64aba7b`, ledgers through `3f7f6da4` pushed)
 
 TBR07 remains already compared; no grants or role composition were inferred. SC03 source trace confirms
 `ToolSandboxDO` stores a short-lived encrypted path/body receipt only for native project invocations with
@@ -11,8 +11,8 @@ the extension workflow dispatcher is a distinct grant/resource contract and is n
 disconnected dispatch fail-closed.
 
 Code `c64aba7b07bddcd78e0bf789c64ceb667a908f38` hardens the shared session-budget admission read: missing
-or malformed spend status returns 503 instead of admitting zero spend. Ledger checkpoint
-`2e8f34d24265c8e027167fba0b40c9dc4e7f55f9` is pushed. Focused tests **16/16**, Agents typecheck and
+or malformed spend status returns 503 instead of admitting zero spend. Ledger checkpoints
+`2e8f34d24265c8e027167fba0b40c9dc4e7f55f9` and `3f7f6da4b9559a7caa58470f309c2af877f29439` are pushed. Focused tests **16/16**, Agents typecheck and
 `git diff --check` pass locally. A direct scheduled-script credit ceiling remains uncoded:
 the one-shot script runner has no run-level reservation consumption path, so tally-before/run-settlement
 after cannot enforce a maximum in the middle of work. Exact next action: inspect existing supported

@@ -1,11 +1,10 @@
-## Current TBR11 checkpoint — 2026-11-17 (`c64aba7b`, ledger `2e8f34d2` pushed)
+## Current TBR11 checkpoint — 2026-11-17 (`c64aba7b`, ledgers through `3f7f6da4` pushed)
 
 The shared session-budget gate now fails closed when its status read is non-OK or returns malformed
 credits/warning fields. It no longer treats an unavailable tally as zero. Local session-spend validation
 and scheduled identity suites pass **16/16**; Agents typecheck and `git diff --check` pass. Code
-`c64aba7b07bddcd78e0bf789c64ceb667a908f38` and ledger checkpoint
-`2e8f34d24265c8e027167fba0b40c9dc4e7f55f9` are pushed to `origin/Mcbt5s-Backup-2`; no deployed
-acceptance.
+`c64aba7b07bddcd78e0bf789c64ceb667a908f38` and ledger checkpoints `2e8f34d24265c8e027167fba0b40c9dc4e7f55f9`
+and `3f7f6da4b9559a7caa58470f309c2af877f29439` are pushed to `origin/Mcbt5s-Backup-2`; no deployed acceptance.
 
 This is a general admission-safety fix, not completion of TBR11's direct scheduled-script cap. Scheduled
 goal jobs already use the current job's approved actions and session ceiling. Direct scripts still need
