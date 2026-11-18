@@ -13,9 +13,9 @@ privacy acceptance. Rollout remains disabled. The follow-up route-to-store suite
 membership is checked before the DO call, actor identity comes from the authenticated request, and
 exact row identity is preserved. Agents typecheck passes after adding the caller test.
 
-Implementation commit `63e01415` and ledger/runbook commits `82c78b15` and `8d97b66e` are pushed to
-`origin/Mcbt5s-Backup-2`. This remains local/mock verification only, with no deployed privacy
-acceptance.
+Implementation commit `63e01415`, ledger/runbook commits `82c78b15` and `8d97b66e`, and route test
+commit `2161e627` are pushed to `origin/Mcbt5s-Backup-2`. This remains local/mock verification
+only, with no deployed privacy acceptance.
 
 **Exact next action:** continue the bounded APW02 dynamic replanning design by tracing persisted goal
 metadata, blackboard membership/grants and worker admission together; expansion must revalidate IDs,
