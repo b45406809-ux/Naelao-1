@@ -11,12 +11,14 @@ semantic vector cleanup is best-effort after an owned episode is removed. AgentD
 suite **2/2**, Agents and Shell typechecks, and `git diff --check` pass. Local/mock only; no deployed
 privacy acceptance. Rollout remains disabled.
 
-Implementation checkpoint commit: `63e01415` (`feat(memory): add actor-scoped assistant memory
-deletion`); recovery-branch publication follows after this ledger update.
+Implementation commit `63e01415` and ledger/runbook commit `82c78b15` are pushed to
+`origin/Mcbt5s-Backup-2`. This remains local/mock verification only, with no deployed privacy
+acceptance.
 
-**Exact next action:** fetch and push this checkpoint safely, then continue APW02 dynamic replanning
-only where stable task identity and admission can be enforced; otherwise select the next independent
-code gap across the active ledgers. Preserve `infra/scripts/__pycache__/`.
+**Exact next action:** inspect durable goal-DAG mutation, idempotency and dispatch admission to
+determine whether bounded APW02 dynamic replanning can preserve stable task identity and host
+authority; otherwise select the next independent code gap across active ledgers. Preserve
+`infra/scripts/__pycache__/`.
 
 ## APW04 checkpoint — 2026-11-18 (Space Assistant memory scope; `89764820` pushed)
 
