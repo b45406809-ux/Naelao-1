@@ -11,6 +11,9 @@ semantic vector cleanup is best-effort after an owned episode is removed. AgentD
 suite **2/2**, Agents and Shell typechecks, and `git diff --check` pass. Local/mock only; no deployed
 privacy acceptance. Rollout remains disabled.
 
+Implementation checkpoint commit: `63e01415` (`feat(memory): add actor-scoped assistant memory
+deletion`); recovery-branch publication follows after this ledger update.
+
 **Exact next action:** fetch and push this checkpoint safely, then continue APW02 dynamic replanning
 only where stable task identity and admission can be enforced; otherwise select the next independent
 code gap across the active ledgers. Preserve `infra/scripts/__pycache__/`.
