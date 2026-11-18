@@ -1,19 +1,20 @@
 # Adaptive planner, worker coordination and memory progress
 
-## APW04 checkpoint — 2026-11-18 (Space Assistant memory scope; local verification)
+## APW04 checkpoint — 2026-11-18 (Space Assistant memory scope; `89764820` pushed)
 
 The member-facing Space Assistant memory projection now sends the authenticated actor and effective
 Space role to AgentDO. Local structured/episodic memory reads include only that actor's rows and
 explicitly unscoped rows; legacy entries without actor scope are owner/admin-only. Shared Assistant
 facts are listed through an explicit read-only list mode, with required-role filtering derived from
 the caller's current role. Verification: Agent memory projection/ingress suites **5/5**, Spaces
-Project memory suites **3/3**, Agents/Spaces typechecks and `git diff --check`. Local/mock only; no
-deployed privacy acceptance. APW04 remains partial for retention/deletion semantics across stores,
+Project memory suites **3/3**, Agents/Spaces typechecks and `git diff --check`. Code
+`89764820231025acd92395dd2e1f9c7fc9f49505` is pushed to `origin/Mcbt5s-Backup-2`. Local/mock only;
+no deployed privacy acceptance. APW04 remains partial for retention/deletion semantics across stores,
 immutable source revisions, selective-context evaluation and private-project leakage testing.
 
-**Exact next action:** fetch and safely push this privacy checkpoint; then continue APW02's bounded
-replanning or another independent active-plan code gap. Keep rollout flags disabled and preserve the
-untracked Python cache.
+**Exact next action:** implement owner-visible deletion for the current actor's personal memory rows
+with exact row identity, then continue APW02 bounded replanning or another independent gap. Keep
+rollout flags disabled and preserve the untracked Python cache.
 
 ## APW02 checkpoint — 2026-11-18 (progressive concurrency controller; `796182c7` pushed)
 
