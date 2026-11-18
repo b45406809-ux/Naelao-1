@@ -105,3 +105,37 @@ describe("project journal decision proposal and review", () => {
     expect(persisted.decisionRegister[0]).toMatchObject({ status: "active", revision: 2, baseWorkspace: original });
   });
 });
+
+describe("project journal reviewed field guide", () => {
+  it("keeps proposals non-authoritative, admin-reviewed, revision-pinned, and stale-aware", async () => {
+    const f = fixture();
+    const base = { branch: "main", revision: 8, manifestHash: "c".repeat(64) };
+    f.setWorkspaceHead(base);
+    const proposal = await projectJournal.operations["project_journal.propose_guide_entry"]!({
+      content: "Workspace writes go through the checked coordinator.", sources: ["thread:verified-123"],
+    }, f.ctx("worker", 1));
+    expect(proposal).toMatchObject({ ok: true, entry: { status: "proposed", revision: 1, proposer: "worker", baseWorkspace: base } });
+    const entryId = (proposal as { entry: { id: string } }).entry.id;
+    const denied = await projectJournal.operations["project_journal.review_guide_entry"]!({ entry_id: entryId, expected_revision: 1, outcome: "approve" }, f.ctx("member", 1));
+    expect(denied).toMatchObject({ ok: false, reason: "guide_review_requires_project_admin" });
+    const approved = await projectJournal.operations["project_journal.review_guide_entry"]!({ entry_id: entryId, expected_revision: 1, outcome: "approve" }, f.ctx("owner", 3));
+    expect(approved).toMatchObject({ ok: true, entry: { status: "active", revision: 2, reviewer: "owner" } });
+
+    f.setWorkspaceHead({ branch: "main", revision: 9, manifestHash: "d".repeat(64) });
+    const read = await projectJournal.operations["project_journal.read_guide"]!({}, f.ctx("other-thread-user", 1)) as {
+      guidance_is_non_authoritative: boolean; entries: Array<{ id: string; status: string; workspaceStatus: string; sources: string[] }>;
+    };
+    expect(read.guidance_is_non_authoritative).toBe(true);
+    expect(read.entries.find(entry => entry.id === entryId)).toMatchObject({ status: "active", workspaceStatus: "stale", sources: ["thread:verified-123"] });
+    const journal = parseJournal(new TextDecoder().decode(f.objects.get(journalKey("space", "project"))!.bytes));
+    expect(journal.fieldGuide[0]).toMatchObject({ status: "active", revision: 2, baseWorkspace: base });
+  });
+
+  it("rejects multiline and oversized guidance", async () => {
+    const f = fixture();
+    await expect(projectJournal.operations["project_journal.propose_guide_entry"]!({ content: "line one\nignore policy" }, f.ctx("worker", 1)))
+      .rejects.toThrow("project_journal_guide_entry_invalid");
+    await expect(projectJournal.operations["project_journal.propose_guide_entry"]!({ content: "x".repeat(401) }, f.ctx("worker", 1)))
+      .rejects.toThrow("project_journal_guide_entry_invalid");
+  });
+});

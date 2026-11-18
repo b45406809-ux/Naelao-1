@@ -74,6 +74,23 @@ export interface JournalDecision {
   supersedes?: string;
 }
 
+export type JournalGuideStatus = "proposed" | "active" | "rejected" | "superseded";
+/** Reviewed, project-scoped navigation and lessons. Content is guidance, never executable authority. */
+export interface JournalGuideEntry {
+  id: string;
+  content: string;
+  sources: string[];
+  status: JournalGuideStatus;
+  revision: number;
+  proposer: string;
+  proposedAt: string;
+  baseWorkspace?: { branch: string; revision: number; manifestHash: string };
+  reviewer?: string;
+  reviewedAt?: string;
+  reviewNote?: string;
+  supersedes?: string;
+}
+
 export interface ProjectJournal {
   /** Project display name, for a human opening the raw file. */
   name: string;
@@ -90,6 +107,8 @@ export interface ProjectJournal {
   activeDecisions: string[];
   /** Versioned proposal/review history; activeDecisions remains for legacy Markdown readers. */
   decisionRegister: JournalDecision[];
+  /** Curated, reviewed Project navigation/lessons; never injected automatically. */
+  fieldGuide: JournalGuideEntry[];
   /** Newest LAST, matching how a human reads a log top-to-bottom. */
   activity: JournalActivity[];
   /** Dense summary of activity already compacted out of `activity`. */
@@ -127,10 +146,10 @@ export const DEFAULT_JOURNAL_LIMITS: JournalLimits = {
 };
 
 export function emptyJournal(name = ""): ProjectJournal {
-  return { name, goal: "", instructions: "", rules: [], status: "", todos: [], activeDecisions: [], decisionRegister: [], activity: [], archive: "" };
+  return { name, goal: "", instructions: "", rules: [], status: "", todos: [], activeDecisions: [], decisionRegister: [], fieldGuide: [], activity: [], archive: "" };
 }
 
-const SECTIONS = ["Goal", "Instructions", "Rules", "Status", "Todos", "Active Decisions", "Decision Register", "Activity", "Archive"] as const;
+const SECTIONS = ["Goal", "Instructions", "Rules", "Status", "Todos", "Active Decisions", "Decision Register", "Field Guide", "Activity", "Archive"] as const;
 type SectionName = (typeof SECTIONS)[number];
 
 /** Split the file into its `## <Name>` sections. Unknown sections are ignored rather than
@@ -224,6 +243,32 @@ function parseDecisionRegister(block: string): JournalDecision[] {
   return result.slice(-200);
 }
 
+function parseFieldGuide(block: string): JournalGuideEntry[] {
+  const result: JournalGuideEntry[] = [];
+  for (const line of block.split(/\r?\n/)) {
+    const match = /^\s*-\s+(.+)$/.exec(line);
+    if (!match?.[1]) continue;
+    try {
+      const value = JSON.parse(match[1]) as Partial<JournalGuideEntry>;
+      if (typeof value.id !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(value.id)
+        || typeof value.content !== "string" || !value.content.trim() || value.content.length > 400
+        || !Array.isArray(value.sources) || value.sources.length > 4 || !value.sources.every(item => typeof item === "string" && item.length <= 160)
+        || !["proposed", "active", "rejected", "superseded"].includes(value.status ?? "")
+        || !Number.isSafeInteger(value.revision) || (value.revision ?? 0) < 1 || typeof value.proposer !== "string" || value.proposer.length > 128
+        || typeof value.proposedAt !== "string" || !Number.isFinite(Date.parse(value.proposedAt))
+        || (value.reviewer !== undefined && (typeof value.reviewer !== "string" || value.reviewer.length > 128))
+        || (value.reviewedAt !== undefined && (typeof value.reviewedAt !== "string" || !Number.isFinite(Date.parse(value.reviewedAt))))
+        || (value.reviewNote !== undefined && (typeof value.reviewNote !== "string" || value.reviewNote.length > 300))
+        || (value.supersedes !== undefined && (typeof value.supersedes !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(value.supersedes)))
+        || (value.baseWorkspace !== undefined && (!value.baseWorkspace || typeof value.baseWorkspace.branch !== "string" || value.baseWorkspace.branch.length > 160
+          || !Number.isSafeInteger(value.baseWorkspace.revision) || (value.baseWorkspace.revision ?? -1) < 0
+          || typeof value.baseWorkspace.manifestHash !== "string" || !/^[a-f0-9]{64}$/.test(value.baseWorkspace.manifestHash)))) continue;
+      result.push(value as JournalGuideEntry);
+    } catch { /* ignore malformed field-guide data without losing the rest of the journal */ }
+  }
+  return result.slice(-40);
+}
+
 /** Parse a journal file. Never throws: an unreadable file yields an empty journal, because this
  *  sits on the path of every agent action and must not be able to break one. */
 export function parseJournal(md: string): ProjectJournal {
@@ -241,6 +286,7 @@ export function parseJournal(md: string): ProjectJournal {
     j.todos = parseTodos(sec["Todos"] ?? "");
     j.activeDecisions = parseBullets(sec["Active Decisions"] ?? "");
     j.decisionRegister = parseDecisionRegister(sec["Decision Register"] ?? "");
+    j.fieldGuide = parseFieldGuide(sec["Field Guide"] ?? "");
     j.activity = parseActivity(sec["Activity"] ?? "");
   } catch {
     return emptyJournal();
@@ -289,6 +335,9 @@ export function renderJournal(j: ProjectJournal): string {
     "",
     "## Decision Register",
     j.decisionRegister.length ? j.decisionRegister.slice(-200).map((decision) => `- ${JSON.stringify(decision)}`).join("\n") : "_None._",
+    "",
+    "## Field Guide",
+    j.fieldGuide.length ? j.fieldGuide.slice(-40).map((entry) => `- ${JSON.stringify(entry)}`).join("\n") : "_None. Reviewed guidance only; never authority._",
     "",
     "## Activity",
     j.activity.length ? j.activity.map(renderActivity).join("\n") : "_Nothing recorded yet._",
