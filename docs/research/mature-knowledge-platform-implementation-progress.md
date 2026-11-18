@@ -9,6 +9,16 @@ Agents/Spaces typechecks pass. No provider/deployed acceptance. This does not de
 review, or cross-layer shared-memory policy; continue those requirements under the Knowledge and
 adaptive-memory ledgers.
 
+## Cross-plan update — 2026-11-18 (reviewed Project decision register; pending push)
+
+The CAS-backed Project Journal now includes a bounded versioned decision register. Any authenticated
+Project actor may propose; only current Project admin/owner rank can approve/reject at an exact
+revision. Supersession must name the exact active record, and the legacy mutable active_decisions
+field is now read-only to prevent bypass. The planner is directed to read existing decisions before
+creating shared contracts. Local Journal/prebuilt/planner tests **20/20** and Agents typecheck pass.
+This complements Knowledge source grants; it does not change retrieval or promote decisions into
+Knowledge publications. No browser/deployed acceptance.
+
 ## Current K03 checkpoint — 2026-11-17 (table provenance reaches citations; local verification)
 
 The shared bounded Markdown chunker appends stable per-document `Table N` labels to stored `heading_path`

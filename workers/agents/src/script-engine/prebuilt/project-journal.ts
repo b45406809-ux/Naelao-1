@@ -24,8 +24,10 @@ import {
   emptyJournal,
   appendActivity,
   compactJournal,
+  byteLength,
   journalKey,
   DEFAULT_JOURNAL_LIMITS,
+  type JournalDecision,
   type ProjectJournal,
   type JournalSummarizer,
 } from "../project-journal.js";
@@ -100,7 +102,7 @@ function nowIso(): string {
 export const projectJournal: PrebuiltScript = {
   name: "project-journal",
   description:
-    "The project's shared journal: its goal, standing instructions, current status, todos and a bounded log of what every agent in the project has done. Read it to find out what is already done before starting work; log to it after doing something.",
+    "The project's shared journal: its goal, standing instructions, current status, todos, a reviewed versioned decision register, and a bounded log of what every agent in the project has done. Read the decision register before creating new shared contracts; proposals require current Project admin/owner review before they become active.",
   domain: "knowledge",
   requires_tier: 1,
   operations: {
@@ -118,6 +120,7 @@ export const projectJournal: PrebuiltScript = {
           status: j.status,
           todos: j.todos,
           active_decisions: j.activeDecisions,
+          decision_register: j.decisionRegister,
           activity: j.activity,
           archive: j.archive,
         };
@@ -135,6 +138,7 @@ export const projectJournal: PrebuiltScript = {
         status: j.status,
         todos: j.todos,
         active_decisions: j.activeDecisions,
+        decisions: j.decisionRegister,
         // Newest last; a reader wanting "what just happened" reads the tail.
         activity: j.activity,
         archive: j.archive,
@@ -142,17 +146,97 @@ export const projectJournal: PrebuiltScript = {
       };
     },
 
+    async "project_journal.read_decisions"(_args, ctx) {
+      const scope = requireProject(ctx);
+      if ("error" in scope) return { ok: false, reason: scope.error };
+      const { journal } = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      return { ok: true, decisions: journal.decisionRegister, legacy_active_decisions: journal.activeDecisions, legacy_entries_are_unreviewed: true };
+    },
+
+    /** Submit an attributed proposal; only a project admin/owner may activate or supersede it. */
+    async "project_journal.propose_decision"(args, ctx) {
+      const scope = requireProject(ctx);
+      if ("error" in scope) return { ok: false, reason: scope.error };
+      const proposer = ctx.env.userId;
+      if (!proposer) return { ok: false, reason: "decision_proposal_requires_authenticated_actor" };
+      const topicValue = args["topic_key"], proposalValue = args["proposal"], rationaleValue = args["rationale"], interfacesValue = args["interfaces"];
+      if (typeof topicValue !== "string" || typeof proposalValue !== "string" || typeof rationaleValue !== "string"
+        || (interfacesValue !== undefined && (!Array.isArray(interfacesValue) || !interfacesValue.every(value => typeof value === "string"))))
+        throw new Error("project_journal_decision_invalid");
+      const topicKey = topicValue.trim().toLowerCase();
+      const proposal = proposalValue.trim();
+      const rationale = rationaleValue.trim();
+      const interfaces = Array.isArray(interfacesValue) ? interfacesValue.map(value => (value as string).trim()).filter(Boolean) : [];
+      if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(topicKey) || !proposal || proposal.length > 300 || !rationale || rationale.length > 500
+        || interfaces.length > 4 || interfaces.some(value => value.length > 120)) throw new Error("project_journal_decision_invalid");
+      const loaded = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      if (loaded.journal.decisionRegister.some(item => item.topicKey === topicKey && item.status === "proposed"))
+        return { ok: false, reason: "decision_topic_already_open" };
+      const decision: JournalDecision = {
+        id: crypto.randomUUID(), topicKey, proposal, rationale, interfaces,
+        status: "proposed", revision: 1, proposer, proposedAt: nowIso(),
+      };
+      loaded.journal.decisionRegister.push(decision);
+      if (loaded.journal.decisionRegister.length > 200 || byteLength(renderJournal(loaded.journal)) > DEFAULT_JOURNAL_LIMITS.maxBytes)
+        return { ok: false, reason: "decision_register_capacity_exceeded" };
+      await saveJournal(ctx, scope.spaceId, scope.projectId, loaded.journal, loaded.expectedHash);
+      return { ok: true, decision };
+    },
+
+    async "project_journal.review_decision"(args, ctx) {
+      const scope = requireProject(ctx);
+      if ("error" in scope) return { ok: false, reason: scope.error };
+      const reviewer = ctx.env.userId;
+      if (!reviewer || (ctx.env.memoryRoleRank?.value ?? 0) < 2) return { ok: false, reason: "decision_review_requires_project_admin" };
+      const decisionIdValue = args["decision_id"];
+      const decisionId = typeof decisionIdValue === "string" ? decisionIdValue : "";
+      const expectedRevision = args["expected_revision"];
+      const outcome = args["outcome"];
+      const reviewNoteValue = args["review_note"];
+      const reviewNote = typeof reviewNoteValue === "string" ? reviewNoteValue.trim() : "";
+      const supersedes = typeof args["supersedes"] === "string" ? args["supersedes"] : undefined;
+      if (!decisionId || !Number.isSafeInteger(expectedRevision) || (outcome !== "approve" && outcome !== "reject")
+        || (reviewNoteValue !== undefined && typeof reviewNoteValue !== "string") || reviewNote.length > 500)
+        throw new Error("project_journal_decision_review_invalid");
+      const loaded = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const decision = loaded.journal.decisionRegister.find(item => item.id === decisionId);
+      if (!decision || decision.status !== "proposed") return { ok: false, reason: "decision_proposal_unavailable" };
+      if (decision.revision !== expectedRevision) return { ok: false, reason: "decision_revision_conflict", current_revision: decision.revision };
+      const reviewedAt = nowIso();
+      if (outcome === "approve" && supersedes) {
+        const previous = loaded.journal.decisionRegister.find(item => item.id === supersedes);
+        if (!previous || previous.status !== "active" || previous.topicKey !== decision.topicKey)
+          return { ok: false, reason: "superseded_decision_unavailable" };
+        previous.status = "superseded";
+        previous.revision++;
+        previous.reviewer = reviewer;
+        previous.reviewedAt = reviewedAt;
+        previous.reviewNote = `Superseded by ${decision.id}`;
+        loaded.journal.activeDecisions = loaded.journal.activeDecisions.filter(value => value !== previous.proposal);
+        decision.supersedes = previous.id;
+      } else if (outcome === "approve" && loaded.journal.decisionRegister.some(item => item.topicKey === decision.topicKey && item.status === "active")) {
+        return { ok: false, reason: "active_decision_requires_explicit_supersession" };
+      }
+      decision.status = outcome === "approve" ? "active" : "rejected";
+      decision.revision++;
+      decision.reviewer = reviewer;
+      decision.reviewedAt = reviewedAt;
+      decision.reviewNote = reviewNote;
+      if (decision.status === "active" && !loaded.journal.activeDecisions.includes(decision.proposal)) loaded.journal.activeDecisions.push(decision.proposal);
+      if (byteLength(renderJournal(loaded.journal)) > DEFAULT_JOURNAL_LIMITS.maxBytes) return { ok: false, reason: "decision_register_capacity_exceeded" };
+      await saveJournal(ctx, scope.spaceId, scope.projectId, loaded.journal, loaded.expectedHash);
+      return { ok: true, decision };
+    },
+
     /** Atomically update deterministic project truth without accepting arbitrary markdown. */
     async "project_journal.update"(args, ctx) {
       const scope = requireProject(ctx);
       if ("error" in scope) return { ok: false, reason: scope.error };
+      if (args["active_decisions"] !== undefined) return { ok: false, reason: "active_decisions_require_reviewed_decision_register" };
       const loaded = await loadJournal(ctx, scope.spaceId, scope.projectId);
       const j = loaded.journal;
       if (typeof args["goal"] === "string") j.goal = String(args["goal"]).trim();
       if (Array.isArray(args["rules"])) j.rules = args["rules"].map(String).map((v) => v.trim()).filter(Boolean);
-      if (Array.isArray(args["active_decisions"])) {
-        j.activeDecisions = args["active_decisions"].map(String).map((v) => v.trim()).filter(Boolean);
-      }
       if (Array.isArray(args["todos"])) {
         j.todos = args["todos"].map((todo) =>
           typeof todo === "string"
@@ -266,7 +350,10 @@ export const projectJournal: PrebuiltScript = {
   },
   paramHints: {
     "project_journal.read": "no required fields — the project comes from the run itself, never an argument.",
-    "project_journal.update": "any of goal (string), rules (string[]), todos (string[] or {text,done}[]), active_decisions (string[]).",
+    "project_journal.read_decisions": "no arguments. Reads scoped proposal/review history. Legacy active_decisions are unreviewed strings, not approved decision records.",
+    "project_journal.propose_decision": "topic_key (stable lowercase identifier), proposal (up to 300 chars), rationale (up to 500 chars), interfaces? (up to four bounded interface references). Proposals do not become active policy until a Project admin/owner reviews them.",
+    "project_journal.review_decision": "decision_id, expected_revision, outcome (approve|reject), review_note?; supersedes? must name the exact active decision for this topic. Requires current Project admin/owner role.",
+    "project_journal.update": "any of goal (string), rules (string[]), todos (string[] or {text,done}[]). Legacy active_decisions are read-only; use propose_decision and admin/owner review instead.",
     "project_journal.log": "summary (string, REQUIRED — ONE factual line about what you actually DID and what resulted, e.g. \"created the Lead Tracking project and briefed the dev agent\"; the field is `summary`, not `content`/`text`).",
     "project_journal.set": "at least one of goal / instructions / status / name (all strings).",
     "project_journal.add_todo": "text (string, REQUIRED).",

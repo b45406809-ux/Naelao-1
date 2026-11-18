@@ -50,6 +50,8 @@ describe("Batch 04 universal kernel", () => {
     expect(PLANNER_FIRST_PROTOCOL).toContain("independent DAG tasks");
     expect(PLANNER_FIRST_PROTOCOL).toContain("your topology choice never raises them");
     expect(PLANNER_FIRST_PROTOCOL).toContain("required specialist");
+    expect(PLANNER_FIRST_PROTOCOL).toContain("read the existing project_journal decision");
+    expect(PLANNER_FIRST_PROTOCOL).toContain("admin or owner reviews");
     expect(PLANNER_FIRST_PROTOCOL).toContain("naelao project agents list");
     expect(PLANNER_FIRST_PROTOCOL).toContain("native AskUser action");
     expect(PLANNER_FIRST_PROTOCOL).toContain("Never put a clarification question in an answer message");

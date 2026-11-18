@@ -63,19 +63,20 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-17 (worker memory isolation and task usage view; local verification)
+## Current checkpoint — 2026-11-18 (reviewed Project decision register; local verification)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit, push, or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
 
-Adaptive planner requirements and task visibility are pushed through `327eacee` (planner guidance
-`a1dbeac0`, topology and task contracts `bd2f6087`/`53edcd3c`). Personal-memory tools now bind
-`user_id` to the authenticated run actor; local deletion is user-scoped, and Project-fact deletion
-enforces current role rank. The worker task panel now shows internal credits and unknown/unpriced
-events without implying provider USD. Agents memory tests **14/14**, Spaces fact deletion **1/1**,
-Agents/Spaces typechecks, Shell typecheck and diff hygiene pass. No deployed/live acceptance. Exact
-next action: push this usage UI checkpoint, then continue APW03/APW04 and other active-plan code gaps.
-Preserve `infra/scripts/__pycache__/`; keep rollouts disabled and SC03 disconnected dispatch
-fail-closed absent exact invocation authority and fresh Billing.
+Adaptive planner, worker UI and memory-scope checkpoints are pushed through `fe1c7c47`; personal
+memory is actor-scoped, and Project-fact deletion enforces current role rank. Current local APW03
+work adds a bounded versioned Project Journal decision register: proposals are attributed, approvals
+require current admin/owner rank and exact revisions, supersession is explicit, and the legacy
+unreviewed active-decision list cannot bypass review. Planner reads are guided to this register.
+Project Journal/prebuilt/planner tests **20/20**, Agents typecheck and diff hygiene pass. No browser
+or deployed acceptance. Exact next action: fetch and push this coherent decision-register checkpoint,
+then continue APW03 decision-to-workspace revision links and APW04 memory/field-guide gaps; continue
+other active plans as independent work permits. Preserve `infra/scripts/__pycache__/`; keep rollout
+disabled and SC03 disconnected replay fail-closed absent exact invocation authority and fresh Billing.
 
 ## Resume checkpoint — 2026-11-17 (K09 owner crawl cancellation; `1e6abd43` pushed)
 

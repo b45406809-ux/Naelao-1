@@ -55,6 +55,24 @@ export interface JournalTodo {
   at?: string | undefined;
 }
 
+export type JournalDecisionStatus = "proposed" | "active" | "rejected" | "superseded";
+/** A scoped, reviewable project decision. The proposal itself never grants capability. */
+export interface JournalDecision {
+  id: string;
+  topicKey: string;
+  proposal: string;
+  rationale: string;
+  interfaces: string[];
+  status: JournalDecisionStatus;
+  revision: number;
+  proposer: string;
+  proposedAt: string;
+  reviewer?: string;
+  reviewedAt?: string;
+  reviewNote?: string;
+  supersedes?: string;
+}
+
 export interface ProjectJournal {
   /** Project display name, for a human opening the raw file. */
   name: string;
@@ -69,6 +87,8 @@ export interface ProjectJournal {
   todos: JournalTodo[];
   /** Decisions still governing current work; completed decisions move into activity/archive. */
   activeDecisions: string[];
+  /** Versioned proposal/review history; activeDecisions remains for legacy Markdown readers. */
+  decisionRegister: JournalDecision[];
   /** Newest LAST, matching how a human reads a log top-to-bottom. */
   activity: JournalActivity[];
   /** Dense summary of activity already compacted out of `activity`. */
@@ -106,10 +126,10 @@ export const DEFAULT_JOURNAL_LIMITS: JournalLimits = {
 };
 
 export function emptyJournal(name = ""): ProjectJournal {
-  return { name, goal: "", instructions: "", rules: [], status: "", todos: [], activeDecisions: [], activity: [], archive: "" };
+  return { name, goal: "", instructions: "", rules: [], status: "", todos: [], activeDecisions: [], decisionRegister: [], activity: [], archive: "" };
 }
 
-const SECTIONS = ["Goal", "Instructions", "Rules", "Status", "Todos", "Active Decisions", "Activity", "Archive"] as const;
+const SECTIONS = ["Goal", "Instructions", "Rules", "Status", "Todos", "Active Decisions", "Decision Register", "Activity", "Archive"] as const;
 type SectionName = (typeof SECTIONS)[number];
 
 /** Split the file into its `## <Name>` sections. Unknown sections are ignored rather than
@@ -175,6 +195,31 @@ function parseActivity(block: string): JournalActivity[] {
   return out;
 }
 
+function parseDecisionRegister(block: string): JournalDecision[] {
+  const result: JournalDecision[] = [];
+  for (const line of block.split(/\r?\n/)) {
+    const match = /^\s*-\s+(.+)$/.exec(line);
+    if (!match?.[1]) continue;
+    try {
+      const value = JSON.parse(match[1]) as Partial<JournalDecision>;
+      if (typeof value.id !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(value.id)
+        || typeof value.topicKey !== "string" || !/^[a-z0-9][a-z0-9._-]{1,63}$/.test(value.topicKey)
+        || typeof value.proposal !== "string" || !value.proposal.trim() || value.proposal.length > 300
+        || typeof value.rationale !== "string" || !value.rationale.trim() || value.rationale.length > 500
+        || !Array.isArray(value.interfaces) || value.interfaces.length > 4 || !value.interfaces.every(item => typeof item === "string" && item.length <= 120)
+        || !["proposed", "active", "rejected", "superseded"].includes(value.status ?? "")
+        || !Number.isSafeInteger(value.revision) || (value.revision ?? 0) < 1 || typeof value.proposer !== "string" || value.proposer.length > 128
+        || typeof value.proposedAt !== "string" || !Number.isFinite(Date.parse(value.proposedAt))
+        || (value.reviewer !== undefined && (typeof value.reviewer !== "string" || value.reviewer.length > 128))
+        || (value.reviewedAt !== undefined && (typeof value.reviewedAt !== "string" || !Number.isFinite(Date.parse(value.reviewedAt))))
+        || (value.reviewNote !== undefined && (typeof value.reviewNote !== "string" || value.reviewNote.length > 500))
+        || (value.supersedes !== undefined && (typeof value.supersedes !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(value.supersedes)))) continue;
+      result.push(value as JournalDecision);
+    } catch { /* ignore malformed line without losing the rest of the project journal */ }
+  }
+  return result.slice(-200);
+}
+
 /** Parse a journal file. Never throws: an unreadable file yields an empty journal, because this
  *  sits on the path of every agent action and must not be able to break one. */
 export function parseJournal(md: string): ProjectJournal {
@@ -191,6 +236,7 @@ export function parseJournal(md: string): ProjectJournal {
     j.archive = (sec["Archive"] ?? "").trim();
     j.todos = parseTodos(sec["Todos"] ?? "");
     j.activeDecisions = parseBullets(sec["Active Decisions"] ?? "");
+    j.decisionRegister = parseDecisionRegister(sec["Decision Register"] ?? "");
     j.activity = parseActivity(sec["Activity"] ?? "");
   } catch {
     return emptyJournal();
@@ -236,6 +282,9 @@ export function renderJournal(j: ProjectJournal): string {
     "",
     "## Active Decisions",
     j.activeDecisions.length ? j.activeDecisions.map((decision) => `- ${decision}`).join("\n") : "_None._",
+    "",
+    "## Decision Register",
+    j.decisionRegister.length ? j.decisionRegister.slice(-200).map((decision) => `- ${JSON.stringify(decision)}`).join("\n") : "_None._",
     "",
     "## Activity",
     j.activity.length ? j.activity.map(renderActivity).join("\n") : "_Nothing recorded yet._",

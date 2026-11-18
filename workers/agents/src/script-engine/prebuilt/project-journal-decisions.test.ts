@@ -1,0 +1,76 @@
+import { describe, expect, it } from "vitest";
+import { parseJournal, journalKey } from "../project-journal.js";
+import { projectJournal } from "./project-journal.js";
+
+function fixture() {
+  const objects = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();
+  let serial = 0;
+  const bucket = {
+    async head(key: string) {
+      const item = objects.get(key);
+      return item ? { etag: item.etag, size: item.bytes.length, customMetadata: item.customMetadata } : null;
+    },
+    async get(key: string) {
+      const item = objects.get(key);
+      return item ? { etag: item.etag, size: item.bytes.length, customMetadata: item.customMetadata, arrayBuffer: async () => item.bytes.slice().buffer } : null;
+    },
+    async put(key: string, value: Uint8Array, options: { onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string }; customMetadata?: Record<string, string> }) {
+      const existing = objects.get(key);
+      if (options.onlyIf?.etagMatches && existing?.etag !== options.onlyIf.etagMatches) return null;
+      if (options.onlyIf?.etagDoesNotMatch === "*" && existing) return null;
+      const item = { bytes: new Uint8Array(value), etag: `e${++serial}`, customMetadata: options.customMetadata ?? {} };
+      objects.set(key, item);
+      return { etag: item.etag };
+    },
+  };
+  const ctx = (userId: string | undefined, rank: number) => ({ env: {
+    spaceId: "space", projectId: "project", userId, agentId: "agent", memoryRoleRank: { value: rank },
+    scriptsBucket: bucket,
+  } }) as never;
+  const propose = (userId: string, rank = 1, proposal = "Use checked publication.") =>
+    projectJournal.operations["project_journal.propose_decision"]!({ topic_key: "workspace.publication", proposal,
+      rationale: "Avoid stale canonical writes.", interfaces: ["WorkspaceCoordinator.publish"] }, ctx(userId, rank));
+  return { objects, ctx, propose };
+}
+
+describe("project journal decision proposal and review", () => {
+  it("does not allow legacy active_decisions to bypass the review boundary", async () => {
+    const f = fixture();
+    const result = await projectJournal.operations["project_journal.update"]!({ active_decisions: ["Ship without review"] }, f.ctx("editor", 1));
+    expect(result).toMatchObject({ ok: false, reason: "active_decisions_require_reviewed_decision_register" });
+    expect(f.objects.size).toBe(0);
+  });
+
+  it("keeps proposals non-authoritative until an owner/admin approves the exact revision", async () => {
+    const f = fixture();
+    const proposal = await f.propose("editor");
+    expect(proposal).toMatchObject({ ok: true, decision: { status: "proposed", revision: 1, proposer: "editor" } });
+    const decision = (proposal as { decision: { id: string } }).decision;
+    const rejectedReview = await projectJournal.operations["project_journal.review_decision"]!({ decision_id: decision.id, expected_revision: 1, outcome: "approve" }, f.ctx("editor", 1));
+    expect(rejectedReview).toMatchObject({ ok: false, reason: "decision_review_requires_project_admin" });
+    const stale = await projectJournal.operations["project_journal.review_decision"]!({ decision_id: decision.id, expected_revision: 2, outcome: "approve" }, f.ctx("owner", 3));
+    expect(stale).toMatchObject({ ok: false, reason: "decision_revision_conflict", current_revision: 1 });
+    const approved = await projectJournal.operations["project_journal.review_decision"]!({ decision_id: decision.id, expected_revision: 1, outcome: "approve", review_note: "Accepted" }, f.ctx("owner", 3));
+    expect(approved).toMatchObject({ ok: true, decision: { status: "active", revision: 2, reviewer: "owner", reviewNote: "Accepted" } });
+    const key = journalKey("space", "project");
+    const journal = parseJournal(new TextDecoder().decode(f.objects.get(key)!.bytes));
+    expect(journal.activeDecisions).toContain("Use checked publication.");
+    expect(journal.decisionRegister[0]).toMatchObject({ status: "active", proposer: "editor", reviewer: "owner" });
+  });
+
+  it("requires explicit same-topic supersession and preserves the old decision", async () => {
+    const f = fixture();
+    const first = await f.propose("editor");
+    const firstId = (first as { decision: { id: string } }).decision.id;
+    await projectJournal.operations["project_journal.review_decision"]!({ decision_id: firstId, expected_revision: 1, outcome: "approve" }, f.ctx("owner", 3));
+    const second = await f.propose("editor", 1, "Use revision-pinned publication.");
+    const secondId = (second as { decision: { id: string } }).decision.id;
+    const missingSupersession = await projectJournal.operations["project_journal.review_decision"]!({ decision_id: secondId, expected_revision: 1, outcome: "approve" }, f.ctx("admin", 2));
+    expect(missingSupersession).toMatchObject({ ok: false, reason: "active_decision_requires_explicit_supersession" });
+    const approved = await projectJournal.operations["project_journal.review_decision"]!({ decision_id: secondId, expected_revision: 1, outcome: "approve", supersedes: firstId }, f.ctx("admin", 2));
+    expect(approved).toMatchObject({ ok: true, decision: { status: "active", supersedes: firstId } });
+    const journal = parseJournal(new TextDecoder().decode(f.objects.get(journalKey("space", "project"))!.bytes));
+    expect(journal.decisionRegister.map(item => [item.id, item.status])).toEqual([[firstId, "superseded"], [secondId, "active"]]);
+    expect(journal.activeDecisions).toEqual(["Use revision-pinned publication."]);
+  });
+});
