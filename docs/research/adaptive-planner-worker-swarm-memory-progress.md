@@ -1,19 +1,19 @@
 # Adaptive planner, worker coordination and memory progress
 
-## Checkpoint — 2026-11-18 (APW03 decision pins pushed; PW03 checkpoint lineage local)
+## Checkpoint — 2026-11-18 (`5aca9a29` pushed; APW02 next)
 
 APW03 task decision references are pushed in `41c3b886b089d741441bc0d7fb7daf6072decb16` to
-`origin/Mcbt5s-Backup-2`. PW03 local code now writes v2 bounded checkpoint lineage (eight attempt
+`origin/Mcbt5s-Backup-2`. PW03 writes v2 bounded checkpoint lineage (eight attempt
 receipts) and pins progress to the Coordinator worker-branch revision/manifest hash when available.
 Resume and the internal worker-result reader include that payload only if the same branch head still
-matches; stale, legacy or unavailable branch checkpoints are withheld and the worker is told to
-recover from current workspace and disclose missing process memory. Verification: checkpoint/delegation suites **18/18**, Agents typecheck and
-`git diff --check`. Local/mock only; no deployed interruption acceptance. Legacy/R2 branches have no
-Coordinator pin; full result revision lineage remains open.
+matches; stale, legacy or unavailable branch checkpoints are withheld from both resume and internal
+result reads, and the worker is told to recover from current workspace and disclose missing process
+memory. Verification: checkpoint/delegation suites **18/18**, Agents typecheck and `git diff --check`.
+Local/mock only; no deployed interruption acceptance. Legacy/R2 branches have no Coordinator pin;
+full result revision lineage remains open. Code `5aca9a29746307dd60d840b320c39200f83cf67d` is pushed.
 
-**Exact next action:** fetch and safely push the PW03 checkpoint, then continue APW02 bounded dynamic
-host replanning or another independent active-plan code gap. Keep rollouts disabled and preserve
-`infra/scripts/__pycache__/`.
+**Exact next action:** implement APW02 bounded dynamic host replanning in the durable goal DAG, then
+continue the next independent gap. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
 ## Checkpoint — 2026-11-18 (task-level Project decision dependencies; local verification)
 

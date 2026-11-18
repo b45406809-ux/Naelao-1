@@ -12,7 +12,7 @@ Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO a
 
 # Resumable workers, durable workflows and branches progress
 
-## PW03 checkpoint — 2026-11-18 (bounded workspace-pinned attempt lineage; local verification)
+## PW03 checkpoint — 2026-11-18 (bounded workspace-pinned attempt lineage; `5aca9a29` pushed)
 
 Worker checkpoint envelopes are now v2 with at most eight metadata-only prior-attempt receipts.
 For Coordinator-backed worker branches, each checkpoint records exact branch, workspace revision and
@@ -21,13 +21,13 @@ legacy, stale or unavailable branch checkpoints are withheld from both resume pr
 worker-result reader so work resumes from the current authorized workspace and the worker is instructed
 to disclose that process memory was not recovered. The host session-update caller and direct delegation
 completion both persist the pin status. Focused checkpoint/delegation suites **18/18**, Agents typecheck
-and `git diff --check` pass. Local/mock only;
+and `git diff --check` pass. Code `5aca9a29746307dd60d840b320c39200f83cf67d` is pushed to
+`origin/Mcbt5s-Backup-2`. Local/mock only;
 no deployed DO/Workflow interruption acceptance. R2/legacy branches cannot provide immutable
 Coordinator pins, and no process memory is restored.
 
-**Exact next action:** fetch and safely push this checkpoint, then continue APW02 bounded dynamic
-replanning or another independent active-plan gap. Preserve the untracked Python cache and keep
-rollout disabled.
+**Exact next action:** continue APW02 bounded dynamic replanning; preserve the untracked Python cache
+and keep rollout disabled.
 
 ## Cross-plan update — 2026-11-17 (scheduled direct-script stale authorization fence; `93568569` pushed)
 
