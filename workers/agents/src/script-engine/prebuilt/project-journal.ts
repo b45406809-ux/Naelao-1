@@ -111,6 +111,24 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** Add a read-time staleness signal without changing the durable, reviewed decision. */
+async function decisionsWithWorkspaceStatus(ctx: PrebuiltOpContext, decisions: readonly JournalDecision[]) {
+  const activePinned = decisions.some(item => item.status === "active" && item.baseWorkspace);
+  if (!activePinned) return decisions;
+  let current: Awaited<ReturnType<typeof readDecisionWorkspaceHead>>;
+  try { current = await readDecisionWorkspaceHead(ctx); }
+  catch { current = undefined; }
+  return decisions.map(item => {
+    if (item.status !== "active") return { ...item, workspaceStatus: "not_active" as const };
+    if (!item.baseWorkspace) return { ...item, workspaceStatus: "unpinned" as const };
+    if (!current) return { ...item, workspaceStatus: "unavailable" as const };
+    const same = current.branch === item.baseWorkspace.branch
+      && current.revision === item.baseWorkspace.revision
+      && current.manifestHash === item.baseWorkspace.manifestHash;
+    return { ...item, workspaceStatus: same ? "current" as const : "stale" as const };
+  });
+}
+
 export const projectJournal: PrebuiltScript = {
   name: "project-journal",
   description:
@@ -162,7 +180,7 @@ export const projectJournal: PrebuiltScript = {
       const scope = requireProject(ctx);
       if ("error" in scope) return { ok: false, reason: scope.error };
       const { journal } = await loadJournal(ctx, scope.spaceId, scope.projectId);
-      return { ok: true, decisions: journal.decisionRegister, legacy_active_decisions: journal.activeDecisions, legacy_entries_are_unreviewed: true };
+      return { ok: true, decisions: await decisionsWithWorkspaceStatus(ctx, journal.decisionRegister), legacy_active_decisions: journal.activeDecisions, legacy_entries_are_unreviewed: true };
     },
 
     /** Submit an attributed proposal; only a project admin/owner may activate or supersede it. */
@@ -372,7 +390,7 @@ export const projectJournal: PrebuiltScript = {
   },
   paramHints: {
     "project_journal.read": "no required fields — the project comes from the run itself, never an argument.",
-    "project_journal.read_decisions": "no arguments. Reads scoped proposal/review history. Legacy active_decisions are unreviewed strings, not approved decision records.",
+    "project_journal.read_decisions": "no arguments. Reads scoped proposal/review history with a workspaceStatus on decisions: current, stale, unavailable, unpinned or not_active. Revalidate stale/unavailable decisions against current Project code before relying on them. This is a read-time advisory signal and never changes decision authority. Legacy active_decisions are unreviewed strings, not approved decision records.",
     "project_journal.propose_decision": "topic_key (stable lowercase identifier), proposal (up to 300 chars), rationale (up to 500 chars), interfaces? (up to four bounded interface references). Proposals do not become active policy until a Project admin/owner reviews them.",
     "project_journal.review_decision": "decision_id, expected_revision, outcome (approve|reject), review_note?; supersedes? must name the exact active decision for this topic. Requires current Project admin/owner role.",
     "project_journal.update": "any of goal (string), rules (string[]), todos (string[] or {text,done}[]). Legacy active_decisions are read-only; use propose_decision and admin/owner review instead.",

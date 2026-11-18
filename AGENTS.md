@@ -63,21 +63,13 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-18 (workspace-pinned Project decision review; local verification)
+## Current checkpoint — 2026-11-18 (cross-thread Project decision staleness; local verification)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit, push, or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
 
-Adaptive planner, worker UI and memory-scope checkpoints are pushed through `fe1c7c47`; personal
-memory is actor-scoped, and Project-fact deletion enforces current role rank. Current local APW03
-work adds a bounded versioned Project Journal decision register: proposals are attributed, approvals
-require current admin/owner rank and exact revisions, supersession is explicit, and the legacy
-unreviewed active-decision list cannot bypass review. When available, proposals pin the canonical
-workspace branch/revision/manifest hash; stale or unavailable pins block approval. Planner reads are
-guided to this register. Project Journal/prebuilt/planner tests **21/21**, Agents typecheck and diff
-hygiene pass. No browser or deployed acceptance. Exact next action: safely fetch and push this
-checkpoint, then continue APW03 cross-thread decision invalidation and APW04 memory/field-guide gaps;
-continue other active plans as independent work permits. Preserve `infra/scripts/__pycache__/`; keep
-rollout disabled and SC03 disconnected replay fail-closed absent exact invocation authority and fresh Billing.
+The previous workspace-pinned decision checkpoint is pushed as `b3c2453244dd8f5c18012e4b8753a9328aec6398`. This local follow-up adds read-time `workspaceStatus` to the shared Project decision register, letting later threads detect a pinned active decision whose canonical workspace head advanced without mutating its approval record. Focused Project Journal suites **20/20**, Agents typecheck and `git diff --check` pass; no deployment or live acceptance. APW03 remains partial because task records do not yet pin explicit decision ID/revision dependencies or automatically enter review when a decision changes.
+
+Exact next action: fetch `origin/Mcbt5s-Backup-2`, confirm it remains an ancestor, push this coherent checkpoint without rewriting remote history, then trace APW04 context assembly and retention callers and implement the next scoped memory gap. Preserve `infra/scripts/__pycache__/`; keep rollout disabled and SC03 disconnected replay fail-closed absent exact invocation authority and fresh Billing.
 
 ## Resume checkpoint — 2026-11-17 (K09 owner crawl cancellation; `1e6abd43` pushed)
 

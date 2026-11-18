@@ -87,4 +87,21 @@ describe("project journal decision proposal and review", () => {
     const review = await projectJournal.operations["project_journal.review_decision"]!({ decision_id: id, expected_revision: 1, outcome: "approve" }, f.ctx("owner", 3));
     expect(review).toMatchObject({ ok: false, reason: "decision_workspace_revision_stale", current_revision: 5 });
   });
+
+  it("surfaces approved decisions as stale to later project threads without mutating the register", async () => {
+    const f = fixture();
+    const original = { branch: "main", revision: 4, manifestHash: "a".repeat(64) };
+    f.setWorkspaceHead(original);
+    const proposal = await f.propose("editor");
+    const id = (proposal as { decision: { id: string } }).decision.id;
+    await projectJournal.operations["project_journal.review_decision"]!({ decision_id: id, expected_revision: 1, outcome: "approve" }, f.ctx("owner", 3));
+    f.setWorkspaceHead({ branch: "main", revision: 5, manifestHash: "b".repeat(64) });
+
+    const read = await projectJournal.operations["project_journal.read_decisions"]!({}, f.ctx("other-thread-user", 1)) as {
+      decisions: Array<{ id: string; status: string; workspaceStatus: string }>;
+    };
+    expect(read.decisions.find(item => item.id === id)).toMatchObject({ status: "active", workspaceStatus: "stale" });
+    const persisted = parseJournal(new TextDecoder().decode(f.objects.get(journalKey("space", "project"))!.bytes));
+    expect(persisted.decisionRegister[0]).toMatchObject({ status: "active", revision: 2, baseWorkspace: original });
+  });
 });
