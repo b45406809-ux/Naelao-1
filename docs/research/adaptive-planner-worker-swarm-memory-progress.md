@@ -17,11 +17,10 @@ Implementation commit `63e01415`, ledger/runbook commits `82c78b15` and `8d97b66
 commit `2161e627` are pushed to `origin/Mcbt5s-Backup-2`. This remains local/mock verification
 only, with no deployed privacy acceptance.
 
-**Exact next action:** preserve the APW02 expansion gap described in the requirement map, then
-continue SC03 durable compute admission/dispatch from the shared-compute ledger. Current evidence
-shows ConcurrencyDO has persistent admissions, but DynamicSandbox's caller still treats `waiting`
-as an invocation error; assess a safe bounded re-dispatch/resume path without implying a container is
-durable. Preserve `infra/scripts/__pycache__/`.
+**Exact next action:** continue APW02 with a host-owned expansion/admission contract for dynamic
+goal graphs. SC03's bounded synchronous waiter retry is already implemented and recorded in the
+shared-compute ledger; only detached dispatch after caller disconnect remains open without explicit
+durable invocation authority and fresh Billing. Preserve `infra/scripts/__pycache__/`.
 
 ## APW04 refinement — 2026-11-18 (category-qualified exact deletion; local verification)
 

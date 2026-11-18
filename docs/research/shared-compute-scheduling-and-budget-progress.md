@@ -1,5 +1,23 @@
 # Shared compute scheduling and budget progress
 
+## SC03 current-source reconciliation — 2026-11-18 (bounded live waiter retry)
+
+The current source includes more than the older disconnected-dispatch trace recorded below.
+`ConcurrencyDO` persists scoped capacity waiters with ordering, expiry, fencing and owner list/cancel
+state. `ToolSandboxDO.executeScoped` persists the exact invocation as `waiting_capacity` and returns
+`retry_same_invocation` with `execution_started:false`; it does not start a container or reserve
+Billing while waiting. `script-engine/code-runner.ts` retries the same immutable payload/ID at most six
+times, rechecks the live container grant and authorization revision before each retry, and cancels
+that exact waiter on abort/exhaustion. DynamicSandbox tests **4/4** cover wait, exact retry, queue-full
+and cancellation; CodeRunner capacity suite **4/4** covers reauthorization and bounded retry. This
+local evidence updates the 17 November baseline; no deployed acceptance.
+
+This closes bounded retries while the original caller remains alive. It does not implement a
+detached, alarm-safe dispatcher after caller disconnect: the live CodeRunner `authorizeContainer`
+closure (including the exact Bash surface/role clamp) is not persisted as durable authority, and a
+new job still needs explicit invocation consent, a revocable authority revision and fresh Billing
+admission before dispatch. Keep disconnected replay disabled. Continue other independent work.
+
 ## Current SC03/TBR11 continuation — 2026-11-17 (`c64aba7b`, ledgers through `3f7f6da4` pushed)
 
 TBR07 remains already compared; no grants or role composition were inferred. SC03 source trace confirms
