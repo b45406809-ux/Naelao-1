@@ -9,16 +9,17 @@ explicitly unscoped rows and legacy entries remain non-deletable in this panel. 
 current Space membership and an actor identity, then Memory OS uses exact `(id, user_id)` predicates;
 semantic vector cleanup is best-effort after an owned episode is removed. AgentDO projection/delete
 suite **2/2**, Agents and Shell typechecks, and `git diff --check` pass. Local/mock only; no deployed
-privacy acceptance. Rollout remains disabled.
+privacy acceptance. Rollout remains disabled. The follow-up route-to-store suite is **2/2**:
+membership is checked before the DO call, actor identity comes from the authenticated request, and
+exact row identity is preserved. Agents typecheck passes after adding the caller test.
 
-Implementation commit `63e01415` and ledger/runbook commit `82c78b15` are pushed to
+Implementation commit `63e01415` and ledger/runbook commits `82c78b15` and `8d97b66e` are pushed to
 `origin/Mcbt5s-Backup-2`. This remains local/mock verification only, with no deployed privacy
 acceptance.
 
-**Exact next action:** inspect durable goal-DAG mutation, idempotency and dispatch admission to
-determine whether bounded APW02 dynamic replanning can preserve stable task identity and host
-authority; otherwise select the next independent code gap across active ledgers. Preserve
-`infra/scripts/__pycache__/`.
+**Exact next action:** continue the bounded APW02 dynamic replanning design by tracing persisted goal
+metadata, blackboard membership/grants and worker admission together; expansion must revalidate IDs,
+current role/capability and billing before extending the graph. Preserve `infra/scripts/__pycache__/`.
 
 ## APW04 checkpoint — 2026-11-18 (Space Assistant memory scope; `89764820` pushed)
 
