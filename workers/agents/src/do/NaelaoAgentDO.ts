@@ -175,25 +175,31 @@ import { runSpeculativeModelRace, type RacePlan } from "../script-engine/prebuil
 
 const INGRESS_MEMORY_SCORE = 0.8;
 const INGRESS_MEMORY_MAX_ITEMS = 6;
-const INGRESS_MEMORY_MAX_CHARS = 4000;
+const INGRESS_MEMORY_MAX_TOKENS = 900;
 
 /** Render only already-gated recall results into a small, clearly untrusted prompt attachment. */
 export function renderIngressMemory(
-  results: Array<{ text: string; score: number; relevance_score?: number }>,
+  results: Array<{ id?: string; layer?: string; user_id?: string; text: string; score: number; relevance_score?: number }>,
+  actorId?: string,
 ): string | undefined {
   const admitted = results
+    // The store normally scopes these rows. Keep a second boundary at the context assembler so
+    // an adapter regression cannot place another actor's personal memory in this run's prompt.
+    .filter((result) => !result.user_id || result.user_id === actorId)
     .filter((result) => Number.isFinite(result.score) && result.score >= INGRESS_MEMORY_SCORE && result.text.trim())
     .sort((left, right) => right.score - left.score)
     .slice(0, INGRESS_MEMORY_MAX_ITEMS);
   if (admitted.length === 0) return undefined;
   const lines: string[] = [];
-  let chars = 0;
+  let tokens = 0;
   for (const result of admitted) {
     const text = result.text.trim().replace(/[\r\n]+/g, " ").slice(0, 800);
-    const line = `[score=${result.score.toFixed(3)}${result.relevance_score !== undefined ? ` relevance=${result.relevance_score.toFixed(3)}` : ""}] ${text}`;
-    if (chars + line.length > INGRESS_MEMORY_MAX_CHARS) break;
+    const provenance = `${result.layer ? ` layer=${result.layer}` : ""}${result.id ? ` id=${result.id.slice(0, 64)}` : ""}`;
+    const line = `[score=${result.score.toFixed(3)}${result.relevance_score !== undefined ? ` relevance=${result.relevance_score.toFixed(3)}` : ""}${provenance}] ${text}`;
+    const lineTokens = Math.ceil(line.length / 3.85);
+    if (tokens + lineTokens > INGRESS_MEMORY_MAX_TOKENS) break;
     lines.push(line);
-    chars += line.length;
+    tokens += lineTokens;
   }
   return lines.length ? lines.join("\n") : undefined;
 }
@@ -8002,7 +8008,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             text: body.goal,
             limit: INGRESS_MEMORY_MAX_ITEMS,
           });
-          memoryContext = renderIngressMemory(recalled);
+          memoryContext = renderIngressMemory(recalled, userId);
         } catch {
           memoryContext = undefined;
         }

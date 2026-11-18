@@ -20,4 +20,21 @@ describe("renderIngressMemory", () => {
     expect(rendered?.length).toBeLessThanOrEqual(4000);
     expect(rendered?.split("\n").length).toBeLessThanOrEqual(6);
   });
+
+  it("filters personal rows to the active actor and retains bounded source identifiers", () => {
+    const rendered = renderIngressMemory([
+      { id: "own-fact", layer: "structured_fact", user_id: "alice", text: "Alice's permitted preference", score: 0.95 },
+      { id: "other-fact", layer: "episodic", user_id: "bob", text: "Bob's private detail", score: 1 },
+      { id: "space-fact", layer: "structured_fact", text: "Shared approved fact", score: 0.9 },
+    ], "alice");
+    expect(rendered).toContain("id=own-fact");
+    expect(rendered).toContain("layer=structured_fact");
+    expect(rendered).toContain("Shared approved fact");
+    expect(rendered).not.toContain("Bob's private detail");
+    expect(rendered).not.toContain("other-fact");
+  });
+
+  it("excludes actor-attributed personal rows when the run has no actor", () => {
+    expect(renderIngressMemory([{ user_id: "alice", text: "private", score: 1 }])).toBeUndefined();
+  });
 });

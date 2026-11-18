@@ -138,4 +138,19 @@ describe("project journal reviewed field guide", () => {
     await expect(projectJournal.operations["project_journal.propose_guide_entry"]!({ content: "x".repeat(401) }, f.ctx("worker", 1)))
       .rejects.toThrow("project_journal_guide_entry_invalid");
   });
+
+  it("deletes guide content and source pointers only for an admin at the exact revision", async () => {
+    const f = fixture();
+    const proposal = await projectJournal.operations["project_journal.propose_guide_entry"]!({ content: "A reviewed lesson.", sources: ["thread:private-reference"] }, f.ctx("worker", 1));
+    const entryId = (proposal as { entry: { id: string } }).entry.id;
+    const denied = await projectJournal.operations["project_journal.delete_guide_entry"]!({ entry_id: entryId, expected_revision: 1 }, f.ctx("member", 1));
+    expect(denied).toMatchObject({ ok: false, reason: "guide_delete_requires_project_admin" });
+    const stale = await projectJournal.operations["project_journal.delete_guide_entry"]!({ entry_id: entryId, expected_revision: 2 }, f.ctx("owner", 3));
+    expect(stale).toMatchObject({ ok: false, reason: "guide_revision_conflict", current_revision: 1 });
+    const deleted = await projectJournal.operations["project_journal.delete_guide_entry"]!({ entry_id: entryId, expected_revision: 1 }, f.ctx("owner", 3));
+    expect(deleted).toMatchObject({ ok: true, deleted_entry_id: entryId });
+    const journal = parseJournal(new TextDecoder().decode(f.objects.get(journalKey("space", "project"))!.bytes));
+    expect(journal.fieldGuide).toEqual([]);
+    expect(new TextDecoder().decode(f.objects.get(journalKey("space", "project"))!.bytes)).not.toContain("private-reference");
+  });
 });
