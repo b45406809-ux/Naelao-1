@@ -28,7 +28,8 @@ DO deletes only the corresponding table row under exact `(id, actor)` scope; a d
 collision across tables no longer deletes both. Vector cleanup is limited to an owned episodic row.
 AgentDO deletion suite **2/2** includes a cross-table ID collision regression; authenticated
 route-to-store suite **2/2** proves membership gate, actor forwarding and exact target. Agents/Shell
-typechecks and diff hygiene pass. Local/mock only; no deployed acceptance.
+typechecks and diff hygiene pass. Code commit `cba38ee9` is committed locally; recovery push follows
+after recording the exact commit. Local/mock only; no deployed acceptance.
 
 **Exact next action:** continue APW02 graph-expansion design across stable IDs, blackboard authority,
 worker grant resolution and billing admission. Do not wire model-supplied additions until all these
