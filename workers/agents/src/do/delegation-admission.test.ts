@@ -51,6 +51,11 @@ function fixture() {
       if (normalized.startsWith("SELECT worker_attempt,target_branch,target_revision,status,updated_at FROM worker_publication_permits")) {
         return cursor(publicationAttempts.get(String(args[0])) ?? []);
       }
+      if (normalized.startsWith("SELECT configuration_json,workspace_branch,checkpoint_json,attempt FROM sub_agents")) {
+        const row = workers.get(String(args[0]));
+        return cursor(row ? [{ configuration_json: row.configuration_json, workspace_branch: row.workspace_branch,
+          checkpoint_json: row.checkpoint_json, attempt: row.attempt }] : []);
+      }
       if (normalized.startsWith("SELECT configuration_json FROM sub_agents")) {
         const row = workers.get(String(args[0]));
         return cursor(row ? [{ configuration_json: row.configuration_json }] : []);
@@ -185,6 +190,17 @@ describe("host delegation admission", () => {
     f.workers.get(id)!.checkpoint_json = "{malformed";
     const received = await (parent as unknown as { receiveFromSubAgentImpl(id: string): Promise<Record<string, unknown>> }).receiveFromSubAgentImpl(id);
     expect(received).toMatchObject({ ok: false, status: "done", error: "worker_session_checkpoint_invalid" });
+  });
+  it("withholds branch checkpoint payloads when no immutable workspace pin is available", async () => {
+    const f = fixture(), parent = f.host();
+    const run = f.spawn(parent, [{ goal: "persist branch progress", workspace_branch: "workers/unpinned" }]);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    const id = String(f.requests[0]!.context.sub_agent_id);
+    f.finishes[0]!({ result: { ok: true, output: { privateProgress: "must not be trusted" }, tokens_used: 2 } });
+    await run;
+    const received = await (parent as unknown as { receiveFromSubAgentImpl(id: string): Promise<Record<string, unknown>> }).receiveFromSubAgentImpl(id);
+    expect(received).toMatchObject({ checkpoint_state: "unverified" });
+    expect(received).not.toHaveProperty("checkpoint");
   });
   it("denies missing concurrency admission and leaf recursion before dispatch", async () => {
     const f = fixture();

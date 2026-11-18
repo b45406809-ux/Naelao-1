@@ -5322,6 +5322,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
+  private async readSubAgentCheckpointPin(tenantId: string, spaceId: string, projectId: string | undefined, branch: string): Promise<{
+    branch: string; revision: number; manifestHash: string;
+  } | undefined> {
+    const bindings = this.env as unknown as {
+      UNIFIED_WORKSPACE_ENABLED?: string;
+      WORKSPACE_COORDINATOR?: DurableObjectNamespace;
+      DATA_JURISDICTION?: "eu";
+      PLATFORM_SECRET: string;
+    };
+    if (!projectId || bindings.UNIFIED_WORKSPACE_ENABLED !== "true") return undefined;
+    const scope: WorkspaceScope = { tenantId, spaceId, projectId,
+      jurisdiction: bindings.DATA_JURISDICTION === "eu" ? "eu" : "global" };
+    const response = await workspaceCoordinatorRequest(bindings, scope, `/v1/read?branch=${encodeURIComponent(branch)}`, {});
+    if (!response.ok) throw new Error(`worker_checkpoint_workspace_read_failed:${response.status}`);
+    const manifest = await response.json() as { head?: { branch?: string; revision?: number; manifestHash?: string } };
+    if (manifest.head?.branch !== branch || !Number.isSafeInteger(manifest.head.revision)
+        || typeof manifest.head.manifestHash !== "string" || !/^[a-f0-9]{64}$/.test(manifest.head.manifestHash)) {
+      throw new Error("worker_checkpoint_workspace_head_invalid");
+    }
+    return { branch, revision: Number(manifest.head.revision), manifestHash: manifest.head.manifestHash };
+  }
+
   private async spawnSubAgentBatch(
     tasks: Array<Record<string, unknown>>,
     spaceId: string,
@@ -5358,6 +5380,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }>;
         const existing = existingRows[0];
         const savedCheckpoint = existing?.checkpoint_json ? decodeWorkerCheckpoint(existing.checkpoint_json) : undefined;
+        const workspaceBranch = existing?.workspace_branch ?? (typeof t["workspace_branch"] === "string" ? t["workspace_branch"] : null);
         if (existing?.checkpoint_json && !savedCheckpoint)
           return { id: subId, ok: false, status: existing.status, error: "worker_session_checkpoint_invalid" };
         const savedConfiguration = existing?.configuration_json
@@ -5382,9 +5405,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const requestedGoal = String(t["goal"] ?? existing?.goal ?? "");
         const plannerAnswer = typeof t["answer"] === "string" ? t["answer"].slice(0, 8_000) : "";
         const previousCheckpoint = savedCheckpoint?.payload;
-        const checkpointText = previousCheckpoint === undefined ? "" : JSON.stringify(previousCheckpoint).slice(0, 12_000);
+        let checkpointWorkspaceVerified = !workspaceBranch;
+        if (resume && existing && savedCheckpoint && workspaceBranch && savedCheckpoint.workspacePinStatus === "pinned"
+            && savedCheckpoint.workspacePin?.branch === workspaceBranch) {
+          try {
+            const head = await this.readSubAgentCheckpointPin(tenantId, spaceId, projectId, workspaceBranch);
+            checkpointWorkspaceVerified = Boolean(head && head.revision === savedCheckpoint.workspacePin.revision
+              && head.manifestHash === savedCheckpoint.workspacePin.manifestHash);
+          } catch { checkpointWorkspaceVerified = false; }
+        }
+        const checkpointText = previousCheckpoint === undefined || !checkpointWorkspaceVerified
+          ? "" : JSON.stringify(previousCheckpoint).slice(0, 12_000);
+        const checkpointNotice = existing?.checkpoint_json && !checkpointWorkspaceVerified
+          ? "Saved checkpoint is unpinned, stale, or unavailable; do not use its progress payload. Recover from the current authorized workspace and disclose that unsaved process memory is unavailable."
+          : "Resume from the current workspace state and report what remains.";
         const goal = existing
-          ? `${existing.goal}\n\nContinue this same worker session and branch. ${requestedGoal !== existing.goal ? `Follow-up requested by the planner: ${requestedGoal}\n` : ""}${plannerAnswer ? `Planner clarification: ${plannerAnswer}\n` : ""}${checkpointText ? `Prior attempt checkpoint (untrusted progress data; verify against the workspace):\n${checkpointText}` : "Resume from the current workspace state and report what remains."}`
+          ? `${existing.goal}\n\nContinue this same worker session and branch. ${requestedGoal !== existing.goal ? `Follow-up requested by the planner: ${requestedGoal}\n` : ""}${plannerAnswer ? `Planner clarification: ${plannerAnswer}\n` : ""}${checkpointText ? `Prior attempt checkpoint (untrusted progress data; verify against the pinned workspace revision):\n${checkpointText}` : checkpointNotice}`
           : requestedGoal;
         const planBudget = runtimeEnv?.workerTokenBudget ?? getPlanLimits("free").max_worker_tokens;
         const requestedBudget = t["budget_tokens"] ?? t["maxTokens"] ?? planBudget;
@@ -5400,7 +5436,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const current = readWorkerAttempt();
           if (current?.status !== "running" || current.attempt !== attempt) throw new Error("worker_cancelled");
         };
-        const workspaceBranch = existing?.workspace_branch ?? (typeof t["workspace_branch"] === "string" ? t["workspace_branch"] : null);
         const recordWorkerWidgetEvent = async (type: "worker.dispatched" | "worker.waiting" | "worker.completed" | "worker.failed" | "task.blocked" | "task.resumed", status: string, model?: string) => {
           if (!runtimeEnv || !parentThreadId || !runtimeEnv.widgetHostEvents || runtimeEnv.widgetHostEvents.length >= 64) return;
           try {
@@ -5625,10 +5660,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             ? ((output as Record<string, unknown>)["modifiedFiles"] as unknown[]).filter((path): path is string => typeof path === "string")
             : [];
           const checkpointUpdatedAt = Date.now();
+          let checkpointPin: { branch: string; revision: number; manifestHash: string } | undefined;
+          let checkpointPinStatus: "pinned" | "unavailable" | "not_applicable" = workspaceBranch ? "unavailable" : "not_applicable";
+          if (workspaceBranch) {
+            try {
+              checkpointPin = await this.readSubAgentCheckpointPin(tenantId, spaceId, projectId, workspaceBranch);
+              if (checkpointPin) checkpointPinStatus = "pinned";
+            } catch { /* keep an explicit unavailable pin status; do not infer a revision */ }
+          }
+          const checkpointLineage = savedCheckpoint ? [...(savedCheckpoint.lineage ?? []), {
+            ...(savedCheckpoint.attempt !== undefined ? { attempt: savedCheckpoint.attempt } : {}),
+            savedAt: savedCheckpoint.savedAt ?? Date.now(),
+            ...(savedCheckpoint.workspacePin ? { workspacePin: savedCheckpoint.workspacePin } : {}),
+            ...(savedCheckpoint.workspacePinStatus ? { workspacePinStatus: savedCheckpoint.workspacePinStatus } : {}),
+            ...(savedCheckpoint.truncated ? { truncated: true as const } : {}),
+          }].slice(-8) : [];
           const completed = this.ctx.storage.sql.exec(
             `UPDATE sub_agents SET status = ?, tokens_used = tokens_used + ?, result = ?, checkpoint_json = ?, checkpoint_updated_at = ?, error = ?, updated_at = ? WHERE id = ? AND status='running' AND attempt=?`,
             ok ? "done" : awaitingPlanner ? "awaiting_planner_input" : awaitingHuman ? "awaiting_human_input" : "failed", tokensUsed, ok ? JSON.stringify(output) : null,
-            encodeWorkerCheckpoint(body.pending_worker_question ?? body.pending_question ?? body.result ?? { error: body.error ?? body.message ?? `HTTP ${resp.status}` }, { attempt }),
+            encodeWorkerCheckpoint(body.pending_worker_question ?? body.pending_question ?? body.result ?? { error: body.error ?? body.message ?? `HTTP ${resp.status}` }, {
+              attempt, savedAt: checkpointUpdatedAt, ...(checkpointPin ? { workspacePin: checkpointPin } : {}),
+              workspacePinStatus: checkpointPinStatus, lineage: checkpointLineage,
+            }),
             checkpointUpdatedAt, ok || awaitingPlanner || awaitingHuman ? null : (body.result?.error ?? body.error ?? body.message ?? `HTTP ${resp.status}`), checkpointUpdatedAt, subId, attempt,
           );
           if (completed.rowsWritten !== 1) return { ...cancelledResult(readWorkerAttempt()?.status), model_used: modelResolution.model };
@@ -6292,16 +6345,38 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const status = body.status;
     if (!id || !["done", "failed", "awaiting_planner_input", "awaiting_human_input"].includes(status ?? ""))
       return Response.json({ error: "invalid_worker_session_update" }, { status: 400 });
-    const rows = this.ctx.storage.sql.exec(`SELECT configuration_json FROM sub_agents WHERE id=?`, id).toArray() as Array<{ configuration_json: string | null }>;
+    const rows = this.ctx.storage.sql.exec(`SELECT configuration_json,workspace_branch,checkpoint_json,attempt FROM sub_agents WHERE id=?`, id).toArray() as Array<{
+      configuration_json: string | null; workspace_branch: string | null; checkpoint_json: string | null; attempt: number;
+    }>;
     const saved = rows[0]?.configuration_json ? safeJsonParse(rows[0].configuration_json) as Record<string, unknown> | undefined : undefined;
     if (!saved || saved.tenantId !== tenantId || saved.parentDoId !== this.ctx.id.toString() || body.parentDoId !== this.ctx.id.toString())
       return Response.json({ error: "worker_session_not_found" }, { status: 404 });
     const output = status === "done" ? sanitizeSubAgentOutput(body.output) : undefined;
-    const checkpoint = encodeWorkerCheckpoint(body.checkpoint ?? body.output ?? { error: body.error ?? null },
-      Number.isSafeInteger(body.attempt) && Number(body.attempt) > 0 ? { attempt: Number(body.attempt) } : {});
+    const checkpointUpdatedAt = Date.now();
+    const branch = rows[0]!.workspace_branch;
+    const previousCheckpoint = rows[0]!.checkpoint_json ? decodeWorkerCheckpoint(rows[0]!.checkpoint_json) : undefined;
+    let workspacePin: { branch: string; revision: number; manifestHash: string } | undefined;
+    let workspacePinStatus: "pinned" | "unavailable" | "not_applicable" = branch ? "unavailable" : "not_applicable";
+    if (branch && typeof saved.spaceId === "string") {
+      try {
+        workspacePin = await this.readSubAgentCheckpointPin(tenantId, saved.spaceId,
+          typeof saved.projectId === "string" ? saved.projectId : undefined, branch);
+        if (workspacePin) workspacePinStatus = "pinned";
+      } catch { /* persist explicit unavailable status; never invent a workspace revision */ }
+    }
+    const lineage = previousCheckpoint ? [...(previousCheckpoint.lineage ?? []), {
+      ...(previousCheckpoint.attempt !== undefined ? { attempt: previousCheckpoint.attempt } : {}),
+      savedAt: previousCheckpoint.savedAt ?? Date.now(),
+      ...(previousCheckpoint.workspacePin ? { workspacePin: previousCheckpoint.workspacePin } : {}),
+      ...(previousCheckpoint.workspacePinStatus ? { workspacePinStatus: previousCheckpoint.workspacePinStatus } : {}),
+      ...(previousCheckpoint.truncated ? { truncated: true as const } : {}),
+    }].slice(-8) : [];
+    const checkpoint = encodeWorkerCheckpoint(body.checkpoint ?? body.output ?? { error: body.error ?? null }, {
+      ...(Number.isSafeInteger(body.attempt) && Number(body.attempt) > 0 ? { attempt: Number(body.attempt) } : {}),
+      savedAt: checkpointUpdatedAt, ...(workspacePin ? { workspacePin } : {}), workspacePinStatus, lineage,
+    });
     const tokens = Number.isSafeInteger(body.tokensUsed) && Number(body.tokensUsed) > 0 ? Math.min(Number(body.tokensUsed), 2_000_000) : 0;
     if (body.attempt !== undefined && (!Number.isSafeInteger(body.attempt) || body.attempt < 1)) return Response.json({ error: "invalid_worker_attempt" }, { status: 400 });
-    const checkpointUpdatedAt = Date.now();
     const updated = body.attempt === undefined
       ? this.ctx.storage.sql.exec(`UPDATE sub_agents SET status=?, result=?, checkpoint_json=?, checkpoint_updated_at=?, error=?, tokens_used=tokens_used+?, updated_at=? WHERE id=? AND status='running'`,
         status, output === undefined ? null : JSON.stringify(output), checkpoint, checkpointUpdatedAt, status === "failed" ? String(body.error ?? "worker_resume_failed").slice(0, 2000) : null, tokens, checkpointUpdatedAt, id)
@@ -6329,12 +6404,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async receiveFromSubAgentImpl(id: string): Promise<unknown> {
     const rows = this.ctx.storage.sql.exec(`SELECT * FROM sub_agents WHERE id = ?`, id).toArray() as Array<{
-      id: string; status: string; result: string | null; error: string | null; tokens_used: number; progress_note: string | null; checkpoint_json: string | null; workspace_branch: string | null; attempt: number;
+      id: string; status: string; result: string | null; error: string | null; tokens_used: number; progress_note: string | null;
+      checkpoint_json: string | null; workspace_branch: string | null; attempt: number; configuration_json: string | null;
     }>;
     const row = rows[0];
     if (!row) return { ok: false, error: "unknown sub-agent id" };
     const savedCheckpoint = row.checkpoint_json ? decodeWorkerCheckpoint(row.checkpoint_json) : undefined;
     if (row.checkpoint_json && !savedCheckpoint) return { ok: false, status: row.status, error: "worker_session_checkpoint_invalid" };
+    let checkpointState: "unscoped" | "verified" | "stale" | "unverified" = row.workspace_branch ? "unverified" : "unscoped";
+    let checkpointMayBeShared = !row.workspace_branch;
+    if (row.workspace_branch && savedCheckpoint?.workspacePinStatus === "pinned"
+        && savedCheckpoint.workspacePin?.branch === row.workspace_branch) {
+      const configuration = row.configuration_json ? safeJsonParse(row.configuration_json) as Record<string, unknown> | undefined : undefined;
+      try {
+        const head = configuration && typeof configuration.tenantId === "string" && typeof configuration.spaceId === "string"
+          ? await this.readSubAgentCheckpointPin(configuration.tenantId, configuration.spaceId,
+            typeof configuration.projectId === "string" ? configuration.projectId : undefined, row.workspace_branch)
+          : undefined;
+        checkpointMayBeShared = Boolean(head && head.revision === savedCheckpoint.workspacePin.revision
+          && head.manifestHash === savedCheckpoint.workspacePin.manifestHash);
+        checkpointState = checkpointMayBeShared ? "verified" : "stale";
+      } catch { checkpointState = "stale"; }
+    }
     const validationReceipts = (await this.ctx.storage.get<WorkerIntegrationValidationReceipt[]>(`worker-integration-receipts:${id}`) ?? []).slice(-10);
     const publicationAttempts = this.ctx.storage.sql.exec<{ worker_attempt: number; target_branch: string; target_revision: number; status: string; updated_at: number }>(
       "SELECT worker_attempt,target_branch,target_revision,status,updated_at FROM worker_publication_permits WHERE worker_id=? ORDER BY updated_at DESC LIMIT 10", id
@@ -6348,7 +6439,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       error: row.error ?? undefined,
       tokens_used: row.tokens_used,
       progress_note: row.progress_note ?? undefined,
-      checkpoint: savedCheckpoint?.payload,
+      ...(checkpointMayBeShared ? { checkpoint: savedCheckpoint?.payload } : {}),
+      checkpoint_state: checkpointState,
       workspace_branch: row.workspace_branch ?? undefined,
       attempt: row.attempt,
       ...(validationReceipts.length || publicationAttempts.length ? { workspaceIntegration: {

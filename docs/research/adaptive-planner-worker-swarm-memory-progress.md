@@ -1,5 +1,20 @@
 # Adaptive planner, worker coordination and memory progress
 
+## Checkpoint — 2026-11-18 (APW03 decision pins pushed; PW03 checkpoint lineage local)
+
+APW03 task decision references are pushed in `41c3b886b089d741441bc0d7fb7daf6072decb16` to
+`origin/Mcbt5s-Backup-2`. PW03 local code now writes v2 bounded checkpoint lineage (eight attempt
+receipts) and pins progress to the Coordinator worker-branch revision/manifest hash when available.
+Resume and the internal worker-result reader include that payload only if the same branch head still
+matches; stale, legacy or unavailable branch checkpoints are withheld and the worker is told to
+recover from current workspace and disclose missing process memory. Verification: checkpoint/delegation suites **18/18**, Agents typecheck and
+`git diff --check`. Local/mock only; no deployed interruption acceptance. Legacy/R2 branches have no
+Coordinator pin; full result revision lineage remains open.
+
+**Exact next action:** fetch and safely push the PW03 checkpoint, then continue APW02 bounded dynamic
+host replanning or another independent active-plan code gap. Keep rollouts disabled and preserve
+`infra/scripts/__pycache__/`.
+
 ## Checkpoint — 2026-11-18 (task-level Project decision dependencies; local verification)
 
 Goal tasks now accept up to four validated `{id, revision}` references to the Project decision register. The host loads the scoped CAS Journal and rechecks that every referenced decision remains active at the exact revision and that any workspace pin still matches before dispatch, immediately before the external dispatch boundary, after successful worker completion/verification and when resuming saved completed tasks. A missing/stale/unavailable reference holds work as `needs_review`; DAG dependents become blocked. Dispatch race holds are marked in the durable outbox. References/reasons are stored in actor-scoped goal metadata and shown in the authenticated task UI; worker prompts carry the bounded references and tell workers to reread the current register. Verification: goal DAG/Project Journal/goal activity route suites **69/69**, Agents and Shell typechecks, `git diff --check`. Local/mock only; no browser/deployed acceptance. APW03 still lacks full base/result workspace revision linkage, semantic conflict mapping, integration evidence UX and owner review actions.

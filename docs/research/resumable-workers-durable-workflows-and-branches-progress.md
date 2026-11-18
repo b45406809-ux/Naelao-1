@@ -12,6 +12,23 @@ Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO a
 
 # Resumable workers, durable workflows and branches progress
 
+## PW03 checkpoint — 2026-11-18 (bounded workspace-pinned attempt lineage; local verification)
+
+Worker checkpoint envelopes are now v2 with at most eight metadata-only prior-attempt receipts.
+For Coordinator-backed worker branches, each checkpoint records exact branch, workspace revision and
+manifest hash. Resume re-reads the head and includes checkpoint progress only when the pin matches;
+legacy, stale or unavailable branch checkpoints are withheld from both resume prompts and the internal
+worker-result reader so work resumes from the current authorized workspace and the worker is instructed
+to disclose that process memory was not recovered. The host session-update caller and direct delegation
+completion both persist the pin status. Focused checkpoint/delegation suites **18/18**, Agents typecheck
+and `git diff --check` pass. Local/mock only;
+no deployed DO/Workflow interruption acceptance. R2/legacy branches cannot provide immutable
+Coordinator pins, and no process memory is restored.
+
+**Exact next action:** fetch and safely push this checkpoint, then continue APW02 bounded dynamic
+replanning or another independent active-plan gap. Preserve the untracked Python cache and keep
+rollout disabled.
+
 ## Cross-plan update — 2026-11-17 (scheduled direct-script stale authorization fence; `93568569` pushed)
 
 The direct scheduled-script path now has a durable session identity/revision receipt and a final exact current-job revision/script/Project check. Code `93568569878ca356132a105ba206b4a77d35ff93` is remote-verified; local focused suites **14/14**, Agents typecheck and diff check pass. This blocks not-yet-started stale direct scripts; it does not cancel already-running effects or settle per-run effects/costs. No deployed Workflow/DO or runtime isolation acceptance. Exact next action: continue PW's effect cancellation and currency/compute settlement audit alongside the remaining cross-plan code requirements.
