@@ -60,6 +60,18 @@ async function saveJournal(ctx: PrebuiltOpContext, spaceId: string, projectId: s
   await putTextCas(bucket(ctx), journalKey(spaceId, projectId), renderJournal(j), expectedHash);
 }
 
+async function readDecisionWorkspaceHead(ctx: PrebuiltOpContext): Promise<{ branch: string; revision: number; manifestHash: string } | undefined> {
+  if (!ctx.env.workspaceManifestRead) return undefined;
+  const snapshot = await ctx.env.workspaceManifestRead();
+  const head = snapshot?.head;
+  if (!head) return undefined;
+  if (typeof head.branch !== "string" || !head.branch || head.branch.length > 160 || !Number.isSafeInteger(head.revision) || head.revision < 0)
+    throw new Error("project_journal_decision_workspace_revision_unavailable");
+  if (!head.manifestHash) return undefined;
+  if (!/^[a-f0-9]{64}$/.test(head.manifestHash)) throw new Error("project_journal_decision_workspace_revision_unavailable");
+  return { branch: head.branch, revision: head.revision, manifestHash: head.manifestHash };
+}
+
 /** An LLM-backed summariser when one is wired, else undefined so compaction uses its
  *  deterministic rollup. Never throws — compaction treats a failure as "no summary". */
 function summarizerFor(ctx: PrebuiltOpContext): JournalSummarizer | undefined {
@@ -172,9 +184,11 @@ export const projectJournal: PrebuiltScript = {
       const loaded = await loadJournal(ctx, scope.spaceId, scope.projectId);
       if (loaded.journal.decisionRegister.some(item => item.topicKey === topicKey && item.status === "proposed"))
         return { ok: false, reason: "decision_topic_already_open" };
+      const baseWorkspace = await readDecisionWorkspaceHead(ctx);
       const decision: JournalDecision = {
         id: crypto.randomUUID(), topicKey, proposal, rationale, interfaces,
         status: "proposed", revision: 1, proposer, proposedAt: nowIso(),
+        ...(baseWorkspace ? { baseWorkspace } : {}),
       };
       loaded.journal.decisionRegister.push(decision);
       if (loaded.journal.decisionRegister.length > 200 || byteLength(renderJournal(loaded.journal)) > DEFAULT_JOURNAL_LIMITS.maxBytes)
@@ -202,6 +216,14 @@ export const projectJournal: PrebuiltScript = {
       const decision = loaded.journal.decisionRegister.find(item => item.id === decisionId);
       if (!decision || decision.status !== "proposed") return { ok: false, reason: "decision_proposal_unavailable" };
       if (decision.revision !== expectedRevision) return { ok: false, reason: "decision_revision_conflict", current_revision: decision.revision };
+      if (decision.baseWorkspace) {
+        let current: Awaited<ReturnType<typeof readDecisionWorkspaceHead>>;
+        try { current = await readDecisionWorkspaceHead(ctx); }
+        catch { return { ok: false, reason: "decision_workspace_revision_unavailable" }; }
+        if (!current) return { ok: false, reason: "decision_workspace_revision_unavailable" };
+        if (current.branch !== decision.baseWorkspace.branch || current.revision !== decision.baseWorkspace.revision || current.manifestHash !== decision.baseWorkspace.manifestHash)
+          return { ok: false, reason: "decision_workspace_revision_stale", current_revision: current.revision, current_manifest_hash: current.manifestHash };
+      }
       const reviewedAt = nowIso();
       if (outcome === "approve" && supersedes) {
         const previous = loaded.journal.decisionRegister.find(item => item.id === supersedes);

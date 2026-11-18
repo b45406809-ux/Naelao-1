@@ -67,6 +67,7 @@ export interface JournalDecision {
   revision: number;
   proposer: string;
   proposedAt: string;
+  baseWorkspace?: { branch: string; revision: number; manifestHash: string };
   reviewer?: string;
   reviewedAt?: string;
   reviewNote?: string;
@@ -213,7 +214,10 @@ function parseDecisionRegister(block: string): JournalDecision[] {
         || (value.reviewer !== undefined && (typeof value.reviewer !== "string" || value.reviewer.length > 128))
         || (value.reviewedAt !== undefined && (typeof value.reviewedAt !== "string" || !Number.isFinite(Date.parse(value.reviewedAt))))
         || (value.reviewNote !== undefined && (typeof value.reviewNote !== "string" || value.reviewNote.length > 500))
-        || (value.supersedes !== undefined && (typeof value.supersedes !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(value.supersedes)))) continue;
+        || (value.supersedes !== undefined && (typeof value.supersedes !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(value.supersedes)))
+        || (value.baseWorkspace !== undefined && (!value.baseWorkspace || typeof value.baseWorkspace.branch !== "string" || value.baseWorkspace.branch.length > 160
+          || !Number.isSafeInteger(value.baseWorkspace.revision) || (value.baseWorkspace.revision ?? -1) < 0
+          || typeof value.baseWorkspace.manifestHash !== "string" || !/^[a-f0-9]{64}$/.test(value.baseWorkspace.manifestHash)))) continue;
       result.push(value as JournalDecision);
     } catch { /* ignore malformed line without losing the rest of the project journal */ }
   }

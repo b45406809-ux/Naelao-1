@@ -5,6 +5,7 @@ const decision: JournalDecision = {
   id: "decision-1", topicKey: "workspace.publication", proposal: "Publish only through checked CAS.",
   rationale: "Prevents stale writers from replacing the canonical head.", interfaces: ["WorkspaceCoordinator.publish"],
   status: "active", revision: 2, proposer: "user-a", proposedAt: "2026-11-17T00:00:00.000Z",
+  baseWorkspace: { branch: "main", revision: 7, manifestHash: "a".repeat(64) },
   reviewer: "user-owner", reviewedAt: "2026-11-17T01:00:00.000Z", reviewNote: "Approved with current-head check.",
 };
 

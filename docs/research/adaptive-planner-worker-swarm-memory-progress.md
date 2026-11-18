@@ -109,8 +109,11 @@ explicit supersession. Project members with an authenticated actor may propose; 
 admin/owner rank (>=2) is required to approve/reject. Review uses exact expected revision; another
 active decision on the topic requires naming the exact superseded ID. Legacy `active_decisions` are
 read-only through the old update operation and are explicitly labelled unreviewed. The planner is
-instructed to read this register before creating project contracts. Verification: project journal
-round-trip/hostile-data, decision proposal/review/supersession and planner tests **20/20**, Agents
-typecheck, diff hygiene. No browser/deployed acceptance. Exact next action: fetch and push safely,
-then continue APW03's decision-to-workspace revision dependencies and APW04 field-guide/context gaps
-without duplicating the Journal or Knowledge authority. Rollout remains disabled.
+instructed to read this register before creating project contracts. When the canonical workspace
+manifest is available, proposals pin branch, revision and manifest hash; review rechecks that exact
+head and refuses stale/unavailable revisions. Legacy workspaces without a manifest hash remain
+unpinned. Verification: journal round-trip/hostile-data, decision proposal/review/supersession/
+stale-head and planner tests **21/21**, Agents typecheck, diff hygiene. No browser/deployed
+acceptance. Exact next action: fetch and push safely, then continue APW03 cross-thread decision
+invalidation and APW04 field-guide/context gaps without duplicating the Journal or Knowledge
+authority. Rollout remains disabled.

@@ -14,10 +14,11 @@ adaptive-memory ledgers.
 The CAS-backed Project Journal now includes a bounded versioned decision register. Any authenticated
 Project actor may propose; only current Project admin/owner rank can approve/reject at an exact
 revision. Supersession must name the exact active record, and the legacy mutable active_decisions
-field is now read-only to prevent bypass. The planner is directed to read existing decisions before
-creating shared contracts. Local Journal/prebuilt/planner tests **20/20** and Agents typecheck pass.
-This complements Knowledge source grants; it does not change retrieval or promote decisions into
-Knowledge publications. No browser/deployed acceptance.
+field is read-only. When available, proposals pin the canonical workspace branch/revision/manifest;
+review refuses a stale or unavailable head. The planner reads existing decisions before creating
+shared contracts. Local Journal/prebuilt/planner tests **21/21** and Agents typecheck pass. This
+complements Knowledge source grants; it does not change retrieval or promote decisions into Knowledge
+publications. Legacy R2 workspaces without a manifest hash remain unpinned. No browser/deployed acceptance.
 
 ## Current K03 checkpoint — 2026-11-17 (table provenance reaches citations; local verification)
 

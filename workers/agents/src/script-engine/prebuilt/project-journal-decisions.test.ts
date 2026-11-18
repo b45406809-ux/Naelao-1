@@ -5,6 +5,7 @@ import { projectJournal } from "./project-journal.js";
 function fixture() {
   const objects = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();
   let serial = 0;
+  let workspaceHead: { branch: string; revision: number; manifestHash: string } | undefined;
   const bucket = {
     async head(key: string) {
       const item = objects.get(key);
@@ -26,11 +27,12 @@ function fixture() {
   const ctx = (userId: string | undefined, rank: number) => ({ env: {
     spaceId: "space", projectId: "project", userId, agentId: "agent", memoryRoleRank: { value: rank },
     scriptsBucket: bucket,
+    ...(workspaceHead ? { workspaceManifestRead: async () => ({ head: { ...workspaceHead! }, entries: [] }) } : {}),
   } }) as never;
   const propose = (userId: string, rank = 1, proposal = "Use checked publication.") =>
     projectJournal.operations["project_journal.propose_decision"]!({ topic_key: "workspace.publication", proposal,
       rationale: "Avoid stale canonical writes.", interfaces: ["WorkspaceCoordinator.publish"] }, ctx(userId, rank));
-  return { objects, ctx, propose };
+  return { objects, ctx, propose, setWorkspaceHead: (head: typeof workspaceHead) => { workspaceHead = head; } };
 }
 
 describe("project journal decision proposal and review", () => {
@@ -72,5 +74,17 @@ describe("project journal decision proposal and review", () => {
     const journal = parseJournal(new TextDecoder().decode(f.objects.get(journalKey("space", "project"))!.bytes));
     expect(journal.decisionRegister.map(item => [item.id, item.status])).toEqual([[firstId, "superseded"], [secondId, "active"]]);
     expect(journal.activeDecisions).toEqual(["Use revision-pinned publication."]);
+  });
+
+  it("rejects approval when the pinned workspace revision has advanced", async () => {
+    const f = fixture();
+    const original = { branch: "main", revision: 4, manifestHash: "a".repeat(64) };
+    f.setWorkspaceHead(original);
+    const proposal = await f.propose("editor");
+    expect(proposal).toMatchObject({ decision: { baseWorkspace: original } });
+    const id = (proposal as { decision: { id: string } }).decision.id;
+    f.setWorkspaceHead({ branch: "main", revision: 5, manifestHash: "b".repeat(64) });
+    const review = await projectJournal.operations["project_journal.review_decision"]!({ decision_id: id, expected_revision: 1, outcome: "approve" }, f.ctx("owner", 3));
+    expect(review).toMatchObject({ ok: false, reason: "decision_workspace_revision_stale", current_revision: 5 });
   });
 });
