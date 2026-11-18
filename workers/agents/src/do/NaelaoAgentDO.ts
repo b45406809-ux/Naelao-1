@@ -2231,13 +2231,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handleGetMemory(url.searchParams.get("category"), actorId, roleRank);
       }
 
-      // DELETE /memory/:id — exact actor-owned Memory OS row deletion.
-      const memoryDeleteMatch = url.pathname.match(/^\/memory\/([^/]+)$/);
+      // DELETE /memory/:category/:id — exact actor-owned Memory OS row deletion.
+      const memoryDeleteMatch = url.pathname.match(/^\/memory\/(fact|episodic)\/([^/]+)$/);
       if (method === "DELETE" && memoryDeleteMatch?.[1]) {
         const actorId = request.headers.get("x-naelao-user-id")?.slice(0, 160) ?? "";
         if (!actorId) return Response.json({ error: "authenticated_actor_required" }, { status: 403 });
         try {
-          return this.handleForgetMemory(decodeURIComponent(memoryDeleteMatch[1]), actorId);
+          return this.handleForgetMemory(decodeURIComponent(memoryDeleteMatch[2]!), actorId, memoryDeleteMatch[1] as "fact" | "episodic");
         } catch {
           return Response.json({ error: "invalid_memory_id" }, { status: 400 });
         }
@@ -13553,21 +13553,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return Response.json({ entries, count: entries.length });
   }
 
-  private async handleForgetMemory(id: string, actorId: string): Promise<Response> {
+  private async handleForgetMemory(id: string, actorId: string, category: "fact" | "episodic"): Promise<Response> {
     if (!id || id.length > 200) return Response.json({ error: "invalid_memory_id" }, { status: 400 });
     const sql = this.ctx.storage.sql;
-    let ownsFact = false;
-    let ownsEpisode = false;
+    const table = category === "fact" ? "structured_facts" : "episodic_log";
+    let ownsRow = false;
     try {
-      ownsFact = sql.exec("SELECT 1 AS found FROM structured_facts WHERE id = ? AND user_id = ? LIMIT 1", id, actorId).toArray().length > 0;
+      ownsRow = sql.exec(`SELECT 1 AS found FROM ${table} WHERE id = ? AND user_id = ? LIMIT 1`, id, actorId).toArray().length > 0;
     } catch { /* Memory OS tables are initialized lazily. */ }
-    try {
-      ownsEpisode = sql.exec("SELECT 1 AS found FROM episodic_log WHERE id = ? AND user_id = ? LIMIT 1", id, actorId).toArray().length > 0;
-    } catch { /* Memory OS tables are initialized lazily. */ }
-    if (!ownsFact && !ownsEpisode) return Response.json({ deleted: false });
-    if (ownsFact) sql.exec("DELETE FROM structured_facts WHERE id = ? AND user_id = ?", id, actorId);
-    if (ownsEpisode) sql.exec("DELETE FROM episodic_log WHERE id = ? AND user_id = ?", id, actorId);
-    if (ownsEpisode && this.env.MEMORY_VECTORIZE) {
+    if (!ownsRow) return Response.json({ deleted: false });
+    sql.exec(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`, id, actorId);
+    if (category === "episodic" && this.env.MEMORY_VECTORIZE) {
       try { await this.env.MEMORY_VECTORIZE.deleteByIds([id]); } catch { /* best-effort vector cleanup */ }
     }
     return Response.json({ deleted: true });

@@ -21,6 +21,19 @@ only, with no deployed privacy acceptance.
 metadata, blackboard membership/grants and worker admission together; expansion must revalidate IDs,
 current role/capability and billing before extending the graph. Preserve `infra/scripts/__pycache__/`.
 
+## APW04 refinement — 2026-11-18 (category-qualified exact deletion; local verification)
+
+The member-facing delete contract now includes both category (`fact` or `episodic`) and row ID. The
+DO deletes only the corresponding table row under exact `(id, actor)` scope; a defensive same-ID
+collision across tables no longer deletes both. Vector cleanup is limited to an owned episodic row.
+AgentDO deletion suite **2/2** includes a cross-table ID collision regression; authenticated
+route-to-store suite **2/2** proves membership gate, actor forwarding and exact target. Agents/Shell
+typechecks and diff hygiene pass. Local/mock only; no deployed acceptance.
+
+**Exact next action:** continue APW02 graph-expansion design across stable IDs, blackboard authority,
+worker grant resolution and billing admission. Do not wire model-supplied additions until all these
+host boundaries can be revalidated at expansion and dispatch.
+
 ## APW04 checkpoint — 2026-11-18 (Space Assistant memory scope; `89764820` pushed)
 
 The member-facing Space Assistant memory projection now sends the authenticated actor and effective

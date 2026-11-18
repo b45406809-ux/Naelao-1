@@ -2489,8 +2489,8 @@ export async function getAssistantMemory(spaceId: string, session: SessionCreden
   return res.entries;
 }
 
-export async function deleteAssistantMemory(spaceId: string, id: string, session: SessionCredentials): Promise<void> {
-  await apiFetch(`/v1/spaces/${spaceId}/assistant/memory/${encodeURIComponent(id)}`, { method: "DELETE", session });
+export async function deleteAssistantMemory(spaceId: string, category: string, id: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/assistant/memory/${encodeURIComponent(category)}/${encodeURIComponent(id)}`, { method: "DELETE", session });
 }
 
 export interface ScheduledJob {

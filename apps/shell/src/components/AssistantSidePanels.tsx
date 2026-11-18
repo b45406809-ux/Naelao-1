@@ -906,7 +906,7 @@ function MemoryPanel({ spaceId, session }: { spaceId: string; session: SessionCr
                 onClick={() => {
                   setDeletingId(m.id!);
                   setDeleteError(null);
-                  void deleteAssistantMemory(spaceId, m.id!, session)
+                  void deleteAssistantMemory(spaceId, m.category, m.id!, session)
                     .then(reload)
                     .catch(() => setDeleteError("Could not remove this memory."))
                     .finally(() => setDeletingId(null));

@@ -8884,13 +8884,15 @@ app.get("/spaces/:spaceId/assistant/memory", async (c) => {
   return Response.json({ entries, count: entries.length });
 });
 
-// DELETE /spaces/:spaceId/assistant/memory/:id — remove one actor-owned local Memory OS row.
+// DELETE /spaces/:spaceId/assistant/memory/:category/:id — remove one actor-owned local Memory OS row.
 // Shared Project facts, explicitly unscoped rows and legacy owner-only entries have no delete
 // affordance here. The route derives actor identity from the authenticated request and the DO
 // performs an exact (row ID, actor ID) delete.
-app.delete("/spaces/:spaceId/assistant/memory/:id", async (c) => {
+app.delete("/spaces/:spaceId/assistant/memory/:category/:id", async (c) => {
   const spaceId = c.req.param("spaceId");
+  const category = c.req.param("category");
   const id = c.req.param("id");
+  if (category !== "fact" && category !== "episodic") throw badRequest("Invalid personal memory category");
   const tenantId = await requireVerifiedTenant(c);
   if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   const { userId, role: callerRole } = getCallerIdentity(c);
@@ -8898,7 +8900,7 @@ app.delete("/spaces/:spaceId/assistant/memory/:id", async (c) => {
   const effectiveRole = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!effectiveRole) throw forbidden("Space memory access could not be resolved");
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
-  const response = await stub.fetch(new Request(`http://agent-do/memory/${encodeURIComponent(id)}`, {
+  const response = await stub.fetch(new Request(`http://agent-do/memory/${category}/${encodeURIComponent(id)}`, {
     method: "DELETE",
     headers: { "x-naelao-user-id": userId, "x-naelao-role": effectiveRole },
   }));

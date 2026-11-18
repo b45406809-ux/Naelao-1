@@ -32,20 +32,20 @@ function fixture(memberRole: string | null = "member") {
 describe("Space Assistant personal memory deletion route", () => {
   it("forwards exact row identity with the authenticated actor after current membership check", async () => {
     const f = fixture();
-    const response = await app.request("/spaces/space-a/assistant/memory/personal-row-1", {
+    const response = await app.request("/spaces/space-a/assistant/memory/episodic/personal-row-1", {
       method: "DELETE", headers: await auth(),
     }, f.env);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, deleted: true });
     expect(f.requests).toHaveLength(1);
     expect(f.requests[0]?.method).toBe("DELETE");
-    expect(new URL(f.requests[0]!.url).pathname).toBe("/memory/personal-row-1");
+    expect(new URL(f.requests[0]!.url).pathname).toBe("/memory/episodic/personal-row-1");
     expect(f.requests[0]?.headers.get("x-naelao-user-id")).toBe("member-a");
   });
 
   it("rejects a non-member without contacting the memory store", async () => {
     const f = fixture(null);
-    const response = await app.request("/spaces/space-a/assistant/memory/row-1", {
+    const response = await app.request("/spaces/space-a/assistant/memory/fact/row-1", {
       method: "DELETE", headers: await auth(),
     }, f.env);
     expect(response.status).toBe(403);

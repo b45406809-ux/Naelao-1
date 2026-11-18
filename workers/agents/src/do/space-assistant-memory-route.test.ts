@@ -38,20 +38,23 @@ describe("Space Assistant memory projection", () => {
     const agent = new NaelaoAgentDO({ storage, id: { toString: () => "space-agent" } } as never,
       { PLATFORM_SECRET: "space-assistant-memory-test" } as never);
     await agent.fetch(new Request("http://agent/"));
-    storage.sql.exec("INSERT INTO structured_facts(id,user_id,entity,relation,attribute,updated_at) VALUES('alice-fact','alice','tea','prefers','green',10),('bob-fact','bob','tea','prefers','black',20),('shared-fact','','space','timezone','UTC',30)");
-    storage.sql.exec("INSERT INTO episodic_log(id,user_id,text,importance,created_at) VALUES('alice-episode','alice','Alice note',0.9,10),('bob-episode','bob','Bob note',1,20)");
+    storage.sql.exec("INSERT INTO structured_facts(id,user_id,entity,relation,attribute,updated_at) VALUES('alice-fact','alice','tea','prefers','green',10),('bob-fact','bob','tea','prefers','black',20),('shared-fact','','space','timezone','UTC',30),('collision','alice','same','id','fact',40)");
+    storage.sql.exec("INSERT INTO episodic_log(id,user_id,text,importance,created_at) VALUES('alice-episode','alice','Alice note',0.9,10),('bob-episode','bob','Bob note',1,20),('collision','alice','same id episode',0.8,40)");
 
-    const unauthenticated = await agent.fetch(new Request("http://agent/memory/alice-fact", { method: "DELETE" }));
+    const unauthenticated = await agent.fetch(new Request("http://agent/memory/fact/alice-fact", { method: "DELETE" }));
     expect(unauthenticated.status).toBe(403);
-    const otherActor = await agent.fetch(new Request("http://agent/memory/bob-fact", { method: "DELETE", headers: { "x-naelao-user-id": "alice" } }));
+    const otherActor = await agent.fetch(new Request("http://agent/memory/fact/bob-fact", { method: "DELETE", headers: { "x-naelao-user-id": "alice" } }));
     expect(await otherActor.json()).toEqual({ deleted: false });
-    const shared = await agent.fetch(new Request("http://agent/memory/shared-fact", { method: "DELETE", headers: { "x-naelao-user-id": "alice" } }));
+    const shared = await agent.fetch(new Request("http://agent/memory/fact/shared-fact", { method: "DELETE", headers: { "x-naelao-user-id": "alice" } }));
     expect(await shared.json()).toEqual({ deleted: false });
-    const deleted = await agent.fetch(new Request("http://agent/memory/alice-episode", { method: "DELETE", headers: { "x-naelao-user-id": "alice" } }));
+    const deleted = await agent.fetch(new Request("http://agent/memory/episodic/alice-episode", { method: "DELETE", headers: { "x-naelao-user-id": "alice" } }));
     expect(await deleted.json()).toEqual({ deleted: true });
+    expect(storage.sql.exec("SELECT id FROM episodic_log ORDER BY id").toArray()).toEqual([{ id: "bob-episode" }, { id: "collision" }]);
+    const deleteEpisodeByCollidingId = await agent.fetch(new Request("http://agent/memory/episodic/collision", { method: "DELETE", headers: { "x-naelao-user-id": "alice" } }));
+    expect(await deleteEpisodeByCollidingId.json()).toEqual({ deleted: true });
     expect(storage.sql.exec("SELECT id FROM episodic_log ORDER BY id").toArray()).toEqual([{ id: "bob-episode" }]);
     expect(storage.sql.exec("SELECT id FROM structured_facts ORDER BY id").toArray()).toEqual([
-      { id: "alice-fact" }, { id: "bob-fact" }, { id: "shared-fact" },
+      { id: "alice-fact" }, { id: "bob-fact" }, { id: "collision" }, { id: "shared-fact" },
     ]);
   });
 });
