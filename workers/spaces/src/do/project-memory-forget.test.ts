@@ -21,4 +21,16 @@ describe("project memory fact deletion", () => {
     expect((await deleteFact("public", 0)).status).toBe(200);
     expect(storage.sql.exec("SELECT id FROM project_facts WHERE project_id='project'").toArray()).toEqual([{ id: "owner" }]);
   });
+
+  it("returns the authoritative fact update timestamp for memory provenance", async () => {
+    const storage = createDOStorage();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: "project-memory-provenance-test" } as never);
+    await space.fetch(new Request("http://space/"));
+    storage.sql.exec("INSERT INTO spaces(id,name,space_type,depth) VALUES('space','Test','business',0)");
+    storage.sql.exec("INSERT INTO projects(id,space_id,name) VALUES('project','space','Test')");
+    storage.sql.exec("INSERT INTO project_facts(id,project_id,entity,relation,attribute,required_role_rank,created_at,updated_at) VALUES('fact','project','launch','owner','team',0,'2026-11-17T00:00:00.000Z','2026-11-18T00:00:00.000Z')");
+
+    const response = await space.fetch(new Request("http://space/projects/project/memory/facts?q=launch%20team&role_rank=1"));
+    expect(await response.json()).toMatchObject({ data: [{ id: "fact", updated_at: "2026-11-18T00:00:00.000Z" }] });
+  });
 });

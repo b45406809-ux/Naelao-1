@@ -63,13 +63,13 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-18 (memory prompt scope and guide deletion; local verification)
+## Current checkpoint — 2026-11-18 (memory source freshness metadata; local verification)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit, push, or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
 
-The reviewed Project field-guide register is pushed as `48e068bdaa6da29e69add8f86ff9659185efe855`. This local APW04 follow-up adds exact-revision owner/admin deletion that removes the entry and source pointers. The ingress memory renderer now enforces actor attribution as a second prompt boundary, labels bounded layer/record IDs, and caps recall near 900 estimated tokens. Local ingress/Project Journal tests **12/12**, Agents typecheck and `git diff --check` pass; no deployed acceptance. Source revisions and lifecycle/retention across personal, Space and Project memory remain code gaps.
+APW04 guide deletion and actor-scoped prompt assembly are pushed as `2b16d9f7f191619ff23e78378a9008f5b5546c3a`. This local slice carries authoritative update timestamps through local and Project memory retrieval and displays them with bounded source IDs. They are freshness timestamps, not content revisions; legacy Vectorize items may have no timestamp. Agents/Spaces tests **13/13** and **2/2**, both typechecks and `git diff --check` pass. Exact source revision/hash links, full memory retention/deletion policy and evaluation remain gaps.
 
-Exact next action: fetch `origin/Mcbt5s-Backup-2`, confirm it remains an ancestor, push this coherent checkpoint without rewriting history, then implement revision-bearing memory provenance or trace the exact adapter contract, and continue Knowledge retention/context assembly work. Preserve `infra/scripts/__pycache__/`; keep rollout disabled and SC03 disconnected replay fail-closed absent exact invocation authority and fresh Billing.
+Exact next action: fetch `origin/Mcbt5s-Backup-2`, confirm it remains an ancestor, push this coherent checkpoint without rewriting history, then continue the next independent APW/planner/workflow/shared-compute/Knowledge/platform code gap. For memory provenance, add immutable revisions only where the authoritative store supplies them; otherwise record the exact limitation and move on. Preserve `infra/scripts/__pycache__/`; keep rollout disabled and SC03 disconnected replay fail-closed absent exact invocation authority and fresh Billing.
 
 ## Resume checkpoint — 2026-11-17 (K09 owner crawl cancellation; `1e6abd43` pushed)
 

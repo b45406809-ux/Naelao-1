@@ -136,12 +136,13 @@ export function buildProjectMemoryStore(opts: ProjectMemoryClientOptions): Memor
       const roleRank = roleRankFor(opts.roleRank?.());
       const resp = await callSpacesWorker(opts, `/memory/facts?q=${encodeURIComponent(query.text)}&limit=${query.limit ?? 5}&role_rank=${roleRank}`, "GET");
       if (!resp.ok) return [];
-      const { data } = await resp.json<{ data: Array<{ id: string; entity: string; relation: string; attribute: string; trust_score: number; relevance_score?: number; required_role_rank?: number }> }>();
+      const { data } = await resp.json<{ data: Array<{ id: string; entity: string; relation: string; attribute: string; trust_score: number; relevance_score?: number; required_role_rank?: number; updated_at?: string }> }>();
       const candidates = data.map((r): MemoryRecallResult => ({
         id: r.id, layer: "structured_fact", text: `${r.entity} ${r.relation} ${r.attribute}`,
         entity: r.entity, relation: r.relation, attribute: r.attribute,
         score: r.trust_score,
         role_rank: roleRank,
+        ...(typeof r.updated_at === "string" ? { source_updated_at: r.updated_at } : {}),
         ...(r.required_role_rank !== undefined ? { required_role_rank: r.required_role_rank } : {}),
         ...(r.relevance_score !== undefined ? { relevance_score: r.relevance_score } : {}),
       }));

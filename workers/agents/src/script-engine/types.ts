@@ -672,6 +672,8 @@ export interface MemoryRecallResult {
   score: number;
   /** Deterministic query coverage, when a structured-fact adapter can calculate it. */
   relevance_score?: number;
+  /** Store-level freshness timestamp; not a repository/workspace revision. */
+  source_updated_at?: string;
   /** Effective role rank of the caller for this recall (0 viewer, 1 editor/member, 2 admin, 3 owner). */
   role_rank?: number;
   /** Minimum role rank required by a shared project fact. */

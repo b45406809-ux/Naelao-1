@@ -11221,9 +11221,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       attribute: string;
       trust_score: number;
       required_role_rank: number;
+      updated_at: string;
     }>(
       this.ctx.storage.sql as never,
-      `SELECT id, entity, relation, attribute, trust_score, required_role_rank FROM project_facts
+      `SELECT id, entity, relation, attribute, trust_score, required_role_rank, updated_at FROM project_facts
        WHERE project_id = ? AND required_role_rank <= ? AND (${tokenClauses})
        ORDER BY trust_score DESC LIMIT ?`,
       projectId,

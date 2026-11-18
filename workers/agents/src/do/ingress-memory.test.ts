@@ -23,12 +23,13 @@ describe("renderIngressMemory", () => {
 
   it("filters personal rows to the active actor and retains bounded source identifiers", () => {
     const rendered = renderIngressMemory([
-      { id: "own-fact", layer: "structured_fact", user_id: "alice", text: "Alice's permitted preference", score: 0.95 },
+      { id: "own-fact", layer: "structured_fact", user_id: "alice", source_updated_at: "2026-11-18T00:00:00.000Z", text: "Alice's permitted preference", score: 0.95 },
       { id: "other-fact", layer: "episodic", user_id: "bob", text: "Bob's private detail", score: 1 },
       { id: "space-fact", layer: "structured_fact", text: "Shared approved fact", score: 0.9 },
     ], "alice");
     expect(rendered).toContain("id=own-fact");
     expect(rendered).toContain("layer=structured_fact");
+    expect(rendered).toContain("source_updated_at=2026-11-18T00:00:00.000Z");
     expect(rendered).toContain("Shared approved fact");
     expect(rendered).not.toContain("Bob's private detail");
     expect(rendered).not.toContain("other-fact");

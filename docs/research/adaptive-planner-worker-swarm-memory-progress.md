@@ -1,5 +1,11 @@
 # Adaptive planner, worker coordination and memory progress
 
+## Checkpoint — 2026-11-18 (memory source freshness metadata; local verification)
+
+Local structured facts now carry their `updated_at`, episodic and promoted semantic memories carry their creation timestamp when Vectorize metadata is present, and the Project fact endpoint/client passes through the authoritative row `updated_at`. The prompt renderer exposes this bounded freshness timestamp with layer/record identity. This is an update timestamp, not a content revision or hash; legacy vectors without metadata remain unversioned. Verification: Agents memory client/ingress/scope **13/13**, Spaces Project memory route **2/2**, both worker typechecks and `git diff --check` pass. Local/mock only; no deployed acceptance. APW04 exact source revisions, source hashes, retention/deletion policy across all stores and quality/leakage evaluation remain open.
+
+**Exact next action:** safely push this checkpoint to `origin/Mcbt5s-Backup-2`, then continue the next independent requirement. For APW04, add immutable source revision/hash links only where the authoritative store provides them; otherwise keep the gap explicit and move to an independent planner, workflow, shared-compute, Knowledge or extensible-platform code gap. Preserve the Python cache and rollout-disabled boundary.
+
 ## Checkpoint — 2026-11-18 (memory prompt scope and guide deletion; local verification)
 
 The Project field-guide register now has an admin/owner-only deletion operation requiring the exact entry revision; deleting removes both content and source pointers from the shared journal. The ingress memory prompt renderer independently filters actor-attributed recall to the current authenticated actor (and excludes it when there is no actor), retains bounded layer/record IDs for provenance, and limits selected rows to about 900 estimated tokens. This is a second privacy boundary; underlying store authorization remains required. Local ingress and Project Journal tests **12/12**, Agents typecheck and `git diff --check` pass. The renderer does not yet receive canonical source revisions or expiry/retention metadata; shared Project/Space and personal memory review/deletion rules still need reconciliation. No deployed/live acceptance.

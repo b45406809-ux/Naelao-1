@@ -179,7 +179,7 @@ const INGRESS_MEMORY_MAX_TOKENS = 900;
 
 /** Render only already-gated recall results into a small, clearly untrusted prompt attachment. */
 export function renderIngressMemory(
-  results: Array<{ id?: string; layer?: string; user_id?: string; text: string; score: number; relevance_score?: number }>,
+  results: Array<{ id?: string; layer?: string; user_id?: string; text: string; score: number; relevance_score?: number; source_updated_at?: string }>,
   actorId?: string,
 ): string | undefined {
   const admitted = results
@@ -194,7 +194,8 @@ export function renderIngressMemory(
   let tokens = 0;
   for (const result of admitted) {
     const text = result.text.trim().replace(/[\r\n]+/g, " ").slice(0, 800);
-    const provenance = `${result.layer ? ` layer=${result.layer}` : ""}${result.id ? ` id=${result.id.slice(0, 64)}` : ""}`;
+    const safeUpdatedAt = result.source_updated_at && Number.isFinite(Date.parse(result.source_updated_at)) ? result.source_updated_at.slice(0, 40) : undefined;
+    const provenance = `${result.layer ? ` layer=${result.layer}` : ""}${result.id ? ` id=${result.id.slice(0, 64)}` : ""}${safeUpdatedAt ? ` source_updated_at=${safeUpdatedAt}` : ""}`;
     const line = `[score=${result.score.toFixed(3)}${result.relevance_score !== undefined ? ` relevance=${result.relevance_score.toFixed(3)}` : ""}${provenance}] ${text}`;
     const lineTokens = Math.ceil(line.length / 3.85);
     if (tokens + lineTokens > INGRESS_MEMORY_MAX_TOKENS) break;

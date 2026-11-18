@@ -21,7 +21,7 @@ describe("project memory Jev/Laya relevance gate", () => {
   it("propagates the effective rank to the project fact boundary", async () => {
     const fetch = vi.fn(async (request: Request) => {
       if (request.method === "GET") {
-        return Response.json({ data: [{ id: "f1", entity: "launch", relation: "owner", attribute: "team", trust_score: 1, required_role_rank: 2 }] });
+        return Response.json({ data: [{ id: "f1", entity: "launch", relation: "owner", attribute: "team", trust_score: 1, required_role_rank: 2, updated_at: "2026-11-18T00:00:00.000Z" }] });
       }
       return Response.json({ id: "f1" }, { status: 201 });
     });
@@ -36,7 +36,7 @@ describe("project memory Jev/Laya relevance gate", () => {
     });
     const recalled = await store.recall({ text: "launch team", limit: 1 });
     expect(new URL((fetch.mock.calls[0]![0] as Request).url).searchParams.get("role_rank")).toBe("2");
-    expect(recalled[0]).toMatchObject({ role_rank: 2, required_role_rank: 2 });
+    expect(recalled[0]).toMatchObject({ role_rank: 2, required_role_rank: 2, source_updated_at: "2026-11-18T00:00:00.000Z" });
     await store.remember({ entity: "launch", relation: "owner", attribute: "team", text: "" });
     const write = fetch.mock.calls[1]![0] as Request;
     expect(new URL(write.url).searchParams.get("role_rank")).toBe("2");

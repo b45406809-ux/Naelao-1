@@ -183,6 +183,10 @@ function userIdField(v: string): { user_id: string } | Record<string, never> {
   return v ? { user_id: v } : {};
 }
 
+function sourceTimestamp(value: number): string | undefined {
+  return Number.isFinite(value) && value > 0 ? new Date(value).toISOString() : undefined;
+}
+
 interface FabricStoreRow {
   id: string;
   user_id: string;
@@ -356,6 +360,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
         score: r.trust_score,
         role_rank: roleRank,
         relevance_score: projectFactRelevance(query.text, `${r.entity} ${r.relation} ${r.attribute}`),
+        ...(sourceTimestamp(r.updated_at) ? { source_updated_at: sourceTimestamp(r.updated_at)! } : {}),
         ...userIdField(r.user_id),
       }));
 
@@ -377,6 +382,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
         layer: "episodic",
         text: r.text,
         score: r.importance,
+        ...(sourceTimestamp(r.created_at) ? { source_updated_at: sourceTimestamp(r.created_at)! } : {}),
         role_rank: roleRank,
         ...userIdField(r.user_id),
       }));
@@ -417,6 +423,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
                 layer: "semantic" as const,
                 text: String(m.metadata?.["text"] ?? ""),
                 score: m.score,
+                ...(typeof m.metadata?.["sourceUpdatedAt"] === "string" ? { source_updated_at: m.metadata["sourceUpdatedAt"] as string } : {}),
                 role_rank: roleRank,
                 ...userIdField((m.metadata?.["userId"] as string | undefined) ?? ""),
               });
@@ -625,6 +632,7 @@ export async function runMemoryMaintenance(opts: MemoryOSOptions): Promise<Memor
               projectId: opts.projectId ?? "",
               userId: e.user_id,
               text: e.text,
+              sourceUpdatedAt: sourceTimestamp(e.created_at) ?? "",
             },
           },
         ]);
