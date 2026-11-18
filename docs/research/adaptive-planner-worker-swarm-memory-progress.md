@@ -1,5 +1,21 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW02 checkpoint — 2026-11-18 (progressive concurrency controller; local verification)
+
+The durable goal DAG now supports an opt-in `progressive-v1` admission policy. Independent work
+starts with one worker, successful progress ramps concurrency up to the current host/task ceiling,
+ready-frontier narrowing lowers it, and failure/review contracts future admission. Existing
+in-flight workers are not cancelled. AgentDO wires the policy only when
+`GOAL_ADAPTIVE_CONCURRENCY_ENABLED=true`; the flag is absent by default, so rollout remains disabled.
+The goal activity API and Shell display current concurrency and the adjustment reason. Verification:
+goal DAG/architecture suites **59/59**, Agents/Shell typechecks and `git diff --check`; local only.
+APW02 remains partial: no mid-run task insertion, evidence/cost-calibrated routing, safe cancellation,
+or deployed evaluation. Code is local pending push.
+
+**Exact next action:** fetch and safely push this checkpoint; then implement bounded dynamic task
+insertion with stable task identity and host revalidation, or move to another independent active-plan
+gap if planner inference would lack durable billing/admission.
+
 ## Checkpoint — 2026-11-18 (`5aca9a29` pushed; APW02 next)
 
 APW03 task decision references are pushed in `41c3b886b089d741441bc0d7fb7daf6072decb16` to
@@ -62,7 +78,7 @@ plans; it does not replace their IDs or authorities.
 | ID | Requirement | Status and evidence | Remaining work / gate |
 | --- | --- | --- | --- |
 | APW01 | Reconcile planner, DAG, model routing, task memory, branches, recovery, callers and billing against current source. | PARTIAL AUDIT: planner-first protocol is in `workers/agents/src/script-engine/planner-first.ts`; bounded DAG dispatch and recovery are in `goal-dag.ts`; directed scoped task messages use `task-blackboard.ts`; runtime and token limits already apply. Existing ledgers cover PW01–PW06, SC01–SC05, K01–K30 and platform P/AP requirements. | Continue current-source comparisons when implementation reaches a requirement; no baseline task-quality/cost benchmark is recorded. |
-| APW02 | Choose direct, one-worker, sequential or parallel execution; adapt within limits and explain the choice. | PARTIAL: planner guidance and durable DAG topology receipt are pushed; task/worker UI displays topology and host limit. Chains use one worker; independent tasks use only current host-approved concurrency. | Planner selection is still prompt behavior; no evidence-calibrated routing, in-flight graph expansion, hierarchical planner tree, useful cost tradeoff or comparative evaluation. Worker ceiling remains a hard guardrail. |
+| APW02 | Choose direct, one-worker, sequential or parallel execution; adapt within limits and explain the choice. | PARTIAL: planner guidance and durable topology receipt are pushed. Local opt-in `progressive-v1` begins independent graphs at one worker, ramps on success, contracts on failure/review, and persists current concurrency/adjustment reason; Agents/Shell exposes it. Feature gate is absent by default. | No dynamic task insertion/replanning, measured quality/cost policy, hierarchical planner tree, safe cancellation of redundant running work or deployed/comparative evaluation. Worker ceiling remains a hard guardrail. |
 | APW03 | Durable task tree, ownership, decisions, dependency/revision links, scoped blackboard and conflict coordination. | PARTIAL/OVERLAP: goal tasks can carry up to four exact Project decision refs. Host rechecks active status, proposal revision and canonical workspace pin before dispatch, again at dispatch/result/resume; stale work becomes `needs_review` and blocks dependents. Actor-scoped task UI displays refs and the hold reason. | Result-branch/workspace revision lineage, conflict integration/evidence UX and owner decision-review controls remain partial; Journal is bounded at 16 KiB. |
 | APW04 | Scoped memory layers, provenance, context assembly, safe compaction, field guide, privacy and invalidation. | PARTIAL/OVERLAP: current actor is rechecked at ingress memory rendering; bounded memory includes layer/record IDs and available store timestamps; Project guide proposals are reviewed, revision-pinned, stale-aware, deletable and never auto-injected. Existing Knowledge provenance and role-scoped Project memory are reused. | Canonical content revisions/hashes are missing for some stores; legacy vectors lack timestamps; full personal/Space/Project retention policy, selective assembly evaluation and private-project leak testing remain. |
 | APW05 | Hierarchical cost accounting, pre-admission reservations, model/runtime selection, thrash control and fair scheduling. | PARTIAL/OVERLAP: shared-compute/TBR ledgers cover admissions; existing owner usage is now visible beside goal tasks as internal credits plus unpriced or pending states. | Atomic task/run reservations, uncertain-charge reconciliation, planner/integration/reviewer usage, automatic thrash detection, priority/fairness policy and provider USD evidence remain; exact contracts/policy and live billing are separate. |

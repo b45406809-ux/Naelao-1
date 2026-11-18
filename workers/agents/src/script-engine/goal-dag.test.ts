@@ -28,6 +28,27 @@ describe("durable goal DAG", () => {
     const result = await executeGoalDag([task("a"), task("b")], resumed.host);
     expect(result.routing).toEqual({ mode: "parallel", taskCount: 2, selectedConcurrency: 1, hostConcurrencyCeiling: 1 });
   });
+  it("expands after successful progress and contracts future dispatch after a failure", async () => {
+    const f = fixture();
+    f.host.adaptiveConcurrency = true;
+    const resolvers = new Map<string, (result: { id: string; ok: boolean; error?: string }) => void>();
+    f.host.launch = vi.fn((_task, id) => new Promise(resolve => { resolvers.set(id, resolve); }));
+    const run = executeGoalDag([task("a"), task("b"), task("c"), task("d")], f.host);
+    await vi.waitFor(() => expect([...resolvers.keys()]).toEqual(["worker:a"]));
+    resolvers.get("worker:a")!({ id: "worker:a", ok: true });
+    await vi.waitFor(() => expect(resolvers.size).toBe(3));
+    expect(f.snapshot().routing).toMatchObject({ selectedConcurrency: 2, adjustmentReason: "verified_progress" });
+    resolvers.get("worker:b")!({ id: "worker:b", ok: false, error: "worker_failed" });
+    await vi.waitFor(() => expect(f.snapshot().routing).toMatchObject({ selectedConcurrency: 1, adjustmentReason: "failure_or_review" }));
+    expect(resolvers.has("worker:d")).toBe(false);
+    resolvers.get("worker:c")!({ id: "worker:c", ok: true });
+    await vi.waitFor(() => expect(resolvers.has("worker:d")).toBe(true));
+    resolvers.get("worker:d")!({ id: "worker:d", ok: true });
+    const result = await run;
+    expect(result.routing?.hostConcurrencyCeiling).toBe(4);
+    expect(result.routing?.selectedConcurrency).toBeLessThanOrEqual(4);
+    expect(result.routing?.policy).toBe("progressive-v1");
+  });
   it("fails closed without host evidence when verification is required", async () => {
     const f = fixture(); f.host.verificationRequired = true;
     const result = await executeGoalDag([{ ...task("a"), acceptance_criteria: ["verified"] }, task("b", ["a"])], f.host);

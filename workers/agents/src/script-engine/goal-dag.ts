@@ -18,7 +18,7 @@ export interface GoalTaskRuntimeState {
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; dispatchId?: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; decisionReviewReason?: string; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain" | "verification_failed" | "verification_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" | "review_verification" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number } }
+export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number; policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed" } }
 /** Automatic repair is an opt-in, host-budgeted path with a hard kernel ceiling. */
 export const MAX_GOAL_FIXERS_PER_RUN = 2;
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
@@ -36,6 +36,8 @@ export interface GoalDagHost {
   validateTaskDecisions?(task: GoalTask): Promise<{ ok: true } | { ok: false; reason: string }>;
   workerId(taskId: string): string;
   concurrency: number;
+  /** Progressive worker admission stays disabled unless the rollout gate is explicitly enabled. */
+  adaptiveConcurrency?: boolean;
   taskBlackboardEnabled?: boolean;
   fixerEnabled?: boolean;
   maxFixersPerGoal?: number;
@@ -52,11 +54,11 @@ export interface GoalDagHost {
 
 /**
  * Pick the smallest useful topology from the already-authorized task graph. The host ceiling
- * remains the hard maximum. A chain runs one worker at a time; a graph with independent tasks
- * may use the host's bounded concurrency, and the scheduler naturally expands/contracts as its
- * ready frontier changes. This does not create tasks or grant capabilities.
+ * remains the hard maximum. Independent work starts with one worker and ramps up on successful
+ * progress; failures/review contract future admission. A chain always remains sequential.
+ * This does not create tasks or grant capabilities.
  */
-function selectGoalRouting(tasks: GoalTask[], hostConcurrency: number): NonNullable<GoalDagJournal["routing"]> {
+function selectGoalRouting(tasks: GoalTask[], hostConcurrency: number, adaptiveConcurrency: boolean): NonNullable<GoalDagJournal["routing"]> {
   const ancestors = new Map<string, Set<string>>();
   const byId = new Map(tasks.map(task => [task.id, task]));
   const collect = (id: string): Set<string> => {
@@ -85,8 +87,10 @@ function selectGoalRouting(tasks: GoalTask[], hostConcurrency: number): NonNulla
   return {
     mode,
     taskCount: tasks.length,
-    selectedConcurrency: mode === "parallel" ? Math.min(hostConcurrency, tasks.length) : 1,
+    selectedConcurrency: adaptiveConcurrency ? 1 : mode === "parallel" ? Math.min(hostConcurrency, tasks.length) : 1,
     hostConcurrencyCeiling: hostConcurrency,
+    ...(adaptiveConcurrency ? { policy: "progressive-v1" as const,
+      ...(mode === "parallel" ? { adjustmentReason: "initial_probe" as const } : {}) } : {}),
   };
 }
 
@@ -158,7 +162,13 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
   const effectiveFixerLimit = persistedFixerLimit === undefined ? hostFixerLimit : Math.min(persistedFixerLimit, hostFixerLimit);
   const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, fixerEnabled: host.fixerEnabled === true, verificationRequired: host.verificationRequired === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
   // Recompute on every resume so a stale persisted choice can never exceed current host policy.
-  journal.routing = selectGoalRouting(tasks, host.concurrency);
+  const routing = selectGoalRouting(tasks, host.concurrency, host.adaptiveConcurrency === true);
+  if (host.adaptiveConcurrency === true && routing.mode === "parallel" && loaded?.routing?.policy === "progressive-v1"
+      && Number.isSafeInteger(loaded.routing.selectedConcurrency) && loaded.routing.selectedConcurrency > 0) {
+    routing.selectedConcurrency = Math.min(routing.hostConcurrencyCeiling, routing.taskCount, loaded.routing.selectedConcurrency);
+    routing.adjustmentReason = loaded.routing.adjustmentReason ?? "initial_probe";
+  }
+  journal.routing = routing;
   await host.save(structuredClone(journal));
   // The feature flag is a live host kill switch. Persisted opt-in must not override a
   // stricter rollout setting when a graph resumes.
@@ -277,6 +287,11 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       // dependency: the recipient wakes after the sender reaches any terminal state.
       && (!journal.taskBlackboardEnabled || tasks.filter(sender => sender.communication_recipients?.includes(task.id))
         .every(sender => !["pending", "running", "verifying"].includes(journal.tasks[sender.id]!.status))));
+    if (host.adaptiveConcurrency === true && ready.length > 0 && journal.routing.mode === "parallel" && journal.routing.selectedConcurrency > ready.length) {
+      journal.routing.selectedConcurrency = ready.length;
+      journal.routing.adjustmentReason = "frontier_narrowed";
+      await save();
+    }
     for (const task of ready) {
       if (!task.decision_refs?.length) continue;
       let validation: { ok: true } | { ok: false; reason: string };
@@ -457,6 +472,19 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       inFlight.delete(finished.id);
       const finishedTask = tasks.find(task => task.id === finished.id);
       for (const key of finishedTask?.resource_keys ?? []) activeResources.delete(key);
+      const finishedState = journal.tasks[finished.id];
+      if (host.adaptiveConcurrency === true && journal.routing.mode === "parallel" && finishedState) {
+        if (finishedState.status === "completed" && finishedState.result?.ok
+            && (!journal.verificationRequired || finishedState.verification?.outcome === "passed")) {
+          journal.routing.selectedConcurrency = Math.min(journal.routing.hostConcurrencyCeiling, journal.routing.taskCount, journal.routing.selectedConcurrency + 1);
+          journal.routing.adjustmentReason = "verified_progress";
+        } else if (["failed", "needs_review"].includes(finishedState.status)) {
+          journal.routing.selectedConcurrency = Math.max(1, Math.min(journal.routing.selectedConcurrency - 1,
+            Math.floor(journal.routing.selectedConcurrency / 2)));
+          journal.routing.adjustmentReason = "failure_or_review";
+        }
+        await save();
+      }
       if (finished.error !== undefined) {
         const remaining = await Promise.all(inFlight.values());
         for (const item of remaining) inFlight.delete(item.id);

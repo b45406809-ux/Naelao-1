@@ -4793,6 +4793,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           };
           const journal = await executeGoalDag(tasks, {
             concurrency: Math.min(childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true), workerExecutionCapacity, 4),
+            adaptiveConcurrency: (this.env as unknown as { GOAL_ADAPTIVE_CONCURRENCY_ENABLED?: string }).GOAL_ADAPTIVE_CONCURRENCY_ENABLED === "true",
             taskBlackboardEnabled,
             fixerEnabled: this.env.TASK_FIXER_ENABLED === "true",
             maxFixersPerGoal: Math.min(2, workerExecutionCapacity),
@@ -6294,7 +6295,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         && Number.isSafeInteger(routing.selectedConcurrency) && routing.selectedConcurrency > 0
         && Number.isSafeInteger(routing.hostConcurrencyCeiling) && routing.hostConcurrencyCeiling > 0
         && routing.selectedConcurrency <= routing.hostConcurrencyCeiling && routing.selectedConcurrency <= routing.taskCount
-        ? { mode: routing.mode, taskCount: routing.taskCount, selectedConcurrency: routing.selectedConcurrency, hostConcurrencyCeiling: routing.hostConcurrencyCeiling }
+        ? { mode: routing.mode, taskCount: routing.taskCount, selectedConcurrency: routing.selectedConcurrency, hostConcurrencyCeiling: routing.hostConcurrencyCeiling,
+          ...(routing.policy === "progressive-v1" ? { policy: routing.policy } : {}),
+          ...(routing.adjustmentReason && ["initial_probe", "verified_progress", "failure_or_review", "frontier_narrowed"].includes(routing.adjustmentReason)
+            ? { adjustmentReason: routing.adjustmentReason } : {}) }
         : undefined;
       goals.push({ id: hash, ...(safeRouting ? { routing: safeRouting } : {}), verificationRequired: journal.verificationRequired === true, tasks: projected, escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
     }

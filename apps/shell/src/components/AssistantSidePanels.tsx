@@ -705,7 +705,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
     {goalError && <p role="status" className="workspace-tab-empty">Task graph and worker messages could not be loaded.</p>}
     {goals.map(goal => <details key={goal.id} className="settings-block" style={{ padding: 12, marginTop: 8 }}>
       <summary style={{ cursor: "pointer", fontWeight: 600 }}>Task graph · {goal.tasks.length} tasks</summary>
-      {goal.routing && <div role="status" style={{ color: "var(--text3)", fontSize: 11, paddingTop: 4 }}>Selected topology: {goal.routing.mode.replaceAll("_", " ")} · concurrency {goal.routing.selectedConcurrency} of host limit {goal.routing.hostConcurrencyCeiling}</div>}
+      {goal.routing && <div role="status" style={{ color: "var(--text3)", fontSize: 11, paddingTop: 4 }}>Selected topology: {goal.routing.mode.replaceAll("_", " ")} · concurrency {goal.routing.selectedConcurrency} of host limit {goal.routing.hostConcurrencyCeiling}{goal.routing.adjustmentReason ? ` · adaptive ${goal.routing.adjustmentReason.replaceAll("_", " ")}` : ""}</div>}
       {goal.tasks.map(task => <div key={task.id} style={{ padding: "6px 0", overflowWrap: "anywhere" }}>
         <strong>{task.title.slice(0, 240)}</strong> · {workerActivityLabel(task.status)}
         {(task.assigned_role || task.budget_tokens !== undefined) && <div style={{ color: "var(--text3)", fontSize: 11 }}>Worker plan: {task.assigned_role ? `${task.assigned_role.slice(0, 80)} role` : "worker"}{task.budget_tokens !== undefined ? ` · up to ${task.budget_tokens.toLocaleString()} output tokens` : ""}{task.runtime_capability ? ` · ${task.runtime_capability.slice(0, 64)} runtime recommendation` : ""}</div>}
@@ -1752,7 +1752,7 @@ function WorkersPanel({
       {goals.map(goal => (
         <details key={goal.id} style={{ margin: "0 12px 10px", fontSize: 11, color: "var(--text2)" }}>
           <summary style={{ cursor: "pointer", fontWeight: 600 }}>Task coordination ({goal.tasks.length} tasks)</summary>
-          {goal.routing && <div role="status" style={{ color: "var(--text3)", paddingTop: 4 }}>Selected topology: {goal.routing.mode.replaceAll("_", " ")} · concurrency {goal.routing.selectedConcurrency} of host limit {goal.routing.hostConcurrencyCeiling}</div>}
+          {goal.routing && <div role="status" style={{ color: "var(--text3)", paddingTop: 4 }}>Selected topology: {goal.routing.mode.replaceAll("_", " ")} · concurrency {goal.routing.selectedConcurrency} of host limit {goal.routing.hostConcurrencyCeiling}{goal.routing.adjustmentReason ? ` · adaptive ${goal.routing.adjustmentReason.replaceAll("_", " ")}` : ""}</div>}
           {goal.tasks.map(task => <div key={task.id} style={{ padding: "4px 0" }}>
             <strong>{task.title}</strong> · {workerActivityLabel(task.status)}
             {(task.assigned_role || task.budget_tokens !== undefined) && <div>Worker plan: {task.assigned_role ? `${task.assigned_role.slice(0, 80)} role` : "worker"}{task.budget_tokens !== undefined ? ` · up to ${task.budget_tokens.toLocaleString()} output tokens` : ""}{task.runtime_capability ? ` · ${task.runtime_capability.slice(0, 64)} runtime recommendation` : ""}</div>}
