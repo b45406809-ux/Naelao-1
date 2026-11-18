@@ -2226,7 +2226,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       // GET /memory
       if (method === "GET" && url.pathname === "/memory") {
-        return this.handleGetMemory(url.searchParams.get("category"));
+        const actorId = request.headers.get("x-naelao-user-id")?.slice(0, 160) ?? "";
+        const roleRank = roleRankFor(request.headers.get("x-naelao-role") ?? "");
+        return this.handleGetMemory(url.searchParams.get("category"), actorId, roleRank);
       }
 
       // POST /memory
@@ -13497,13 +13499,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   // ── GET /memory ───────────────────────────────────────────────────────────
 
-  private handleGetMemory(category: string | null): Response {
-    const rows = category
-      ? this.ctx.storage.sql.exec(`SELECT * FROM agent_memory WHERE category = ? ORDER BY updated_at DESC`, category)
-          .toArray() as { key: string; category: string; value: string; confidence: number }[]
-      : this.ctx.storage.sql.exec(`SELECT * FROM agent_memory ORDER BY category, updated_at DESC`)
-          .toArray() as { key: string; category: string; value: string; confidence: number }[];
-    const legacy = rows.map(r => ({ ...r, value: (() => { try { return JSON.parse(r.value); } catch { return r.value; } })() }));
+  private handleGetMemory(category: string | null, actorId: string, roleRank: number): Response {
+    const legacyRows = roleRank >= 2
+      ? category
+        ? this.ctx.storage.sql.exec(`SELECT * FROM agent_memory WHERE category = ? ORDER BY updated_at DESC`, category)
+            .toArray() as { key: string; category: string; value: string; confidence: number }[]
+        : this.ctx.storage.sql.exec(`SELECT * FROM agent_memory ORDER BY category, updated_at DESC`)
+            .toArray() as { key: string; category: string; value: string; confidence: number }[]
+      : [];
+    const memoryScopeClause = actorId ? "user_id IN (?, '')" : "user_id = ''";
+    const memoryScopeArgs = actorId ? [actorId] : [];
+    const facts = category && category !== "fact" ? [] : this.safeMemoryRows<{
+      entity: string; relation: string; attribute: string; trust_score: number; updated_at: number;
+    }>(`SELECT entity, relation, attribute, trust_score, updated_at FROM structured_facts WHERE ${memoryScopeClause} ORDER BY updated_at DESC LIMIT 200`, ...memoryScopeArgs)
+      .map((row) => ({ key: `${row.entity} ${row.relation}`, category: "fact", value: row.attribute,
+        confidence: row.trust_score, updated_at: row.updated_at, source: "memory-os" as const }));
+    const episodic = category && category !== "episodic" ? [] : this.safeMemoryRows<{
+      text: string; importance: number; created_at: number;
+    }>(`SELECT text, importance, created_at FROM episodic_log WHERE ${memoryScopeClause} ORDER BY created_at DESC LIMIT 100`, ...memoryScopeArgs)
+      .map((row) => ({ key: row.text.slice(0, 80), category: "episodic", value: row.text,
+        confidence: row.importance, updated_at: row.created_at, source: "memory-os" as const }));
+    const legacy = legacyRows.map(r => ({ ...r, value: (() => { try { return JSON.parse(r.value); } catch { return r.value; } })() }));
 
     // `agent_memory` is the ORIGINAL key/value store, written only by this DO's own POST /memory.
     // Nothing in the script-native agent loop writes there — every real memory the agent forms goes
@@ -13515,39 +13531,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Both are surfaced, tagged by source, so the panel reflects what is genuinely stored. Wrapped
     // per-table: these are created lazily by Memory OS's own init, so a DO that has never run an
     // agent simply has no such table yet, which is "nothing recorded", not an error.
-    const facts = this.safeMemoryRows<{ entity: string; relation: string; attribute: string; trust_score: number; updated_at: number }>(
-      `SELECT entity, relation, attribute, trust_score, updated_at FROM structured_facts ORDER BY updated_at DESC LIMIT 200`
-    ).map((r) => ({
-      key: `${r.entity} ${r.relation}`,
-      category: "fact",
-      value: r.attribute,
-      confidence: r.trust_score,
-      updated_at: r.updated_at,
-      source: "memory-os" as const,
-    }));
-
-    const episodic = this.safeMemoryRows<{ text: string; importance: number; created_at: number }>(
-      `SELECT text, importance, created_at FROM episodic_log ORDER BY created_at DESC LIMIT 100`
-    ).map((r) => ({
-      key: r.text.slice(0, 80),
-      category: "episodic",
-      value: r.text,
-      confidence: r.importance,
-      updated_at: r.created_at,
-      source: "memory-os" as const,
-    }));
-
     const entries = [
       ...legacy.map((e) => ({ ...e, source: "legacy" as const })),
-      ...(category ? [...facts, ...episodic].filter((e) => e.category === category) : [...facts, ...episodic]),
+      ...facts,
+      ...episodic,
     ];
     return Response.json({ entries, count: entries.length });
   }
 
   /** Read a Memory OS table that may not exist yet on a DO that has never run an agent. */
-  private safeMemoryRows<T>(sql: string): T[] {
+  private safeMemoryRows<T>(sql: string, ...params: unknown[]): T[] {
     try {
-      return this.ctx.storage.sql.exec(sql).toArray() as T[];
+      return this.ctx.storage.sql.exec(sql, ...params).toArray() as T[];
     } catch {
       return [];
     }

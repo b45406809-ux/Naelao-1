@@ -11206,7 +11206,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // SQLite. 24 tokens means at most 75 bindings (three LIKEs plus project, role,
       // and result limit), safely below its current 100-variable ceiling.
       .slice(0, 24);
-    if (tokens.length === 0) return Response.json({ data: [] });
     const tokenClauses = tokens
       .map(() => `(entity LIKE ? ESCAPE '\\' OR relation LIKE ? ESCAPE '\\' OR attribute LIKE ? ESCAPE '\\')`)
       .join(" OR ");
@@ -11214,6 +11213,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const like = `%${token.replace(/[%_]/g, (c) => `\\${c}`)}%`;
       return [like, like, like];
     });
+    if (tokens.length === 0) {
+      if (params.get("list") !== "true") return Response.json({ data: [] });
+      const rows = queryAll<{ id: string; entity: string; relation: string; attribute: string; trust_score: number; required_role_rank: number; updated_at: string }>(
+        this.ctx.storage.sql as never,
+        `SELECT id, entity, relation, attribute, trust_score, required_role_rank, updated_at FROM project_facts
+         WHERE project_id = ? AND required_role_rank <= ? ORDER BY updated_at DESC LIMIT ?`,
+        projectId, roleRank, limit,
+      );
+      return Response.json({ data: rows.map(row => ({ ...row, relevance_score: 1 })) });
+    }
     const rows = queryAll<{
       id: string;
       entity: string;

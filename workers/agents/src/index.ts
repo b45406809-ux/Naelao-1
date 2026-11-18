@@ -43,6 +43,7 @@ import { inferWorkspaceContentType, isInlineTextContentType, resolveFileContentT
 import { encodeWorkspaceFileContent } from "./workspace/workspace-file-response.js";
 import { routeAgentRequest } from "agents";
 import { resolveEndUserSpaceRole } from "../../spaces/src/space-auth.js";
+import { roleRankFor } from "./script-engine/project-memory-client.js";
 import { readBoundedResponseJson, errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, parseBoundedInteger, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
@@ -8835,10 +8836,15 @@ app.get("/spaces/:spaceId/assistant/memory", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
   if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  const effectiveRole = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
+  if (!effectiveRole) throw forbidden("Space memory access could not be resolved");
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   const category = c.req.query("category");
   const local = await stub
-    .fetch(new Request(`http://agent-do/memory${category ? `?category=${encodeURIComponent(category)}` : ""}`))
+    .fetch(new Request(`http://agent-do/memory${category ? `?category=${encodeURIComponent(category)}` : ""}`, {
+      headers: { "x-naelao-user-id": userId, "x-naelao-role": effectiveRole },
+    }))
     .then((r) => r.json<{ entries?: unknown[] }>())
     .catch(() => ({ entries: [] as unknown[] }));
 
@@ -8851,7 +8857,7 @@ app.get("/spaces/:spaceId/assistant/memory", async (c) => {
   if (c.env.SPACES_WORKER && category !== "episodic") {
     try {
       const resp = await c.env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/spaces/${spaceId}/projects/${ASSISTANT_MEMORY_SCOPE}/memory/facts?q=&limit=50`,
+        `http://spaces-worker/spaces/${spaceId}/projects/${ASSISTANT_MEMORY_SCOPE}/memory/facts?q=&limit=50&list=true&role_rank=${roleRankFor(effectiveRole)}`,
         {
           headers: {
             "x-naelao-tenant-id": tenantId,

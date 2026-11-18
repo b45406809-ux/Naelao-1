@@ -1,6 +1,21 @@
 # Adaptive planner, worker coordination and memory progress
 
-## APW02 checkpoint — 2026-11-18 (progressive concurrency controller; local verification)
+## APW04 checkpoint — 2026-11-18 (Space Assistant memory scope; local verification)
+
+The member-facing Space Assistant memory projection now sends the authenticated actor and effective
+Space role to AgentDO. Local structured/episodic memory reads include only that actor's rows and
+explicitly unscoped rows; legacy entries without actor scope are owner/admin-only. Shared Assistant
+facts are listed through an explicit read-only list mode, with required-role filtering derived from
+the caller's current role. Verification: Agent memory projection/ingress suites **5/5**, Spaces
+Project memory suites **3/3**, Agents/Spaces typechecks and `git diff --check`. Local/mock only; no
+deployed privacy acceptance. APW04 remains partial for retention/deletion semantics across stores,
+immutable source revisions, selective-context evaluation and private-project leakage testing.
+
+**Exact next action:** fetch and safely push this privacy checkpoint; then continue APW02's bounded
+replanning or another independent active-plan code gap. Keep rollout flags disabled and preserve the
+untracked Python cache.
+
+## APW02 checkpoint — 2026-11-18 (progressive concurrency controller; `796182c7` pushed)
 
 The durable goal DAG now supports an opt-in `progressive-v1` admission policy. Independent work
 starts with one worker, successful progress ramps concurrency up to the current host/task ceiling,
@@ -10,11 +25,11 @@ in-flight workers are not cancelled. AgentDO wires the policy only when
 The goal activity API and Shell display current concurrency and the adjustment reason. Verification:
 goal DAG/architecture suites **59/59**, Agents/Shell typechecks and `git diff --check`; local only.
 APW02 remains partial: no mid-run task insertion, evidence/cost-calibrated routing, safe cancellation,
-or deployed evaluation. Code is local pending push.
+or deployed evaluation. Code `796182c785f18a69c0624d93acee1385cf7201e5` is pushed; rollout gate is off.
 
-**Exact next action:** fetch and safely push this checkpoint; then implement bounded dynamic task
-insertion with stable task identity and host revalidation, or move to another independent active-plan
-gap if planner inference would lack durable billing/admission.
+**Exact next action:** continue bounded dynamic replanning with stable task identity and host
+revalidation, or move to another independent active-plan gap if planner inference would lack durable
+billing/admission.
 
 ## Checkpoint — 2026-11-18 (`5aca9a29` pushed; APW02 next)
 
@@ -78,9 +93,9 @@ plans; it does not replace their IDs or authorities.
 | ID | Requirement | Status and evidence | Remaining work / gate |
 | --- | --- | --- | --- |
 | APW01 | Reconcile planner, DAG, model routing, task memory, branches, recovery, callers and billing against current source. | PARTIAL AUDIT: planner-first protocol is in `workers/agents/src/script-engine/planner-first.ts`; bounded DAG dispatch and recovery are in `goal-dag.ts`; directed scoped task messages use `task-blackboard.ts`; runtime and token limits already apply. Existing ledgers cover PW01–PW06, SC01–SC05, K01–K30 and platform P/AP requirements. | Continue current-source comparisons when implementation reaches a requirement; no baseline task-quality/cost benchmark is recorded. |
-| APW02 | Choose direct, one-worker, sequential or parallel execution; adapt within limits and explain the choice. | PARTIAL: planner guidance and durable topology receipt are pushed. Local opt-in `progressive-v1` begins independent graphs at one worker, ramps on success, contracts on failure/review, and persists current concurrency/adjustment reason; Agents/Shell exposes it. Feature gate is absent by default. | No dynamic task insertion/replanning, measured quality/cost policy, hierarchical planner tree, safe cancellation of redundant running work or deployed/comparative evaluation. Worker ceiling remains a hard guardrail. |
+| APW02 | Choose direct, one-worker, sequential or parallel execution; adapt within limits and explain the choice. | PARTIAL: planner guidance and durable topology receipt are pushed. Opt-in `progressive-v1` begins independent graphs at one worker, ramps on success, contracts on failure/review, and persists current concurrency/adjustment reason; Agents/Shell exposes it. Feature gate is absent by default (`796182c7`). | No dynamic task insertion/replanning, measured quality/cost policy, hierarchical planner tree, safe cancellation of redundant running work or deployed/comparative evaluation. Worker ceiling remains a hard guardrail. |
 | APW03 | Durable task tree, ownership, decisions, dependency/revision links, scoped blackboard and conflict coordination. | PARTIAL/OVERLAP: goal tasks can carry up to four exact Project decision refs. Host rechecks active status, proposal revision and canonical workspace pin before dispatch, again at dispatch/result/resume; stale work becomes `needs_review` and blocks dependents. Actor-scoped task UI displays refs and the hold reason. | Result-branch/workspace revision lineage, conflict integration/evidence UX and owner decision-review controls remain partial; Journal is bounded at 16 KiB. |
-| APW04 | Scoped memory layers, provenance, context assembly, safe compaction, field guide, privacy and invalidation. | PARTIAL/OVERLAP: current actor is rechecked at ingress memory rendering; bounded memory includes layer/record IDs and available store timestamps; Project guide proposals are reviewed, revision-pinned, stale-aware, deletable and never auto-injected. Existing Knowledge provenance and role-scoped Project memory are reused. | Canonical content revisions/hashes are missing for some stores; legacy vectors lack timestamps; full personal/Space/Project retention policy, selective assembly evaluation and private-project leak testing remain. |
+| APW04 | Scoped memory layers, provenance, context assembly, safe compaction, field guide, privacy and invalidation. | PARTIAL/OVERLAP: ingress rendering rechecks actor; the member-facing Space Assistant memory route now scopes personal rows to the current actor, adds only unscoped rows, restricts legacy unscoped entries to owner/admin, and role-filters shared assistant facts. Existing Knowledge provenance and reviewed Project guide controls are reused. | Canonical content revisions/hashes are missing for some stores; legacy vectors lack timestamps; retention/deletion policy across stores, selective assembly evaluation and private-project leakage testing remain. |
 | APW05 | Hierarchical cost accounting, pre-admission reservations, model/runtime selection, thrash control and fair scheduling. | PARTIAL/OVERLAP: shared-compute/TBR ledgers cover admissions; existing owner usage is now visible beside goal tasks as internal credits plus unpriced or pending states. | Atomic task/run reservations, uncertain-charge reconciliation, planner/integration/reviewer usage, automatic thrash detection, priority/fairness policy and provider USD evidence remain; exact contracts/policy and live billing are separate. |
 | APW06 | SDK/template controls, authorized task UI, safe pause/cancel/resume, operations and evaluation. | PARTIAL/OVERLAP: actor-scoped task UI shows topology, role, token budget, acceptance criteria, runtime recommendation, per-task internal-credit usage, status and verification; worker checkpoint/recovery disclosures exist. | Decision/conflict UX, user/admin topology/budget preferences, comprehensive cancel/pause controls, real-runtime/deployed acceptance and controlled one/sequential/adaptive evaluation remain. |
 
