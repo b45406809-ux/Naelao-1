@@ -2479,11 +2479,18 @@ export interface MemoryFact {
   category: string;
   value: unknown;
   confidence: number;
+  id?: string;
+  deletable?: boolean;
+  source?: string;
 }
 
 export async function getAssistantMemory(spaceId: string, session: SessionCredentials): Promise<MemoryFact[]> {
   const res = await apiFetch<{ entries: MemoryFact[]; count: number }>(`/v1/spaces/${spaceId}/assistant/memory`, { session });
   return res.entries;
+}
+
+export async function deleteAssistantMemory(spaceId: string, id: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/assistant/memory/${encodeURIComponent(id)}`, { method: "DELETE", session });
 }
 
 export interface ScheduledJob {

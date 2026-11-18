@@ -1,5 +1,20 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW04 checkpoint — 2026-11-18 (actor-owned memory deletion; local verification)
+
+The member-facing Space Assistant memory route now exposes a delete action only for personal
+structured facts and episodic rows owned by the authenticated actor. Reads include stable row IDs
+and a `deletable` bit only when `user_id` exactly matches that actor; shared Project facts,
+explicitly unscoped rows and legacy entries remain non-deletable in this panel. DELETE requires
+current Space membership and an actor identity, then Memory OS uses exact `(id, user_id)` predicates;
+semantic vector cleanup is best-effort after an owned episode is removed. AgentDO projection/delete
+suite **2/2**, Agents and Shell typechecks, and `git diff --check` pass. Local/mock only; no deployed
+privacy acceptance. Rollout remains disabled.
+
+**Exact next action:** fetch and push this checkpoint safely, then continue APW02 dynamic replanning
+only where stable task identity and admission can be enforced; otherwise select the next independent
+code gap across the active ledgers. Preserve `infra/scripts/__pycache__/`.
+
 ## APW04 checkpoint — 2026-11-18 (Space Assistant memory scope; `89764820` pushed)
 
 The member-facing Space Assistant memory projection now sends the authenticated actor and effective
@@ -99,6 +114,14 @@ plans; it does not replace their IDs or authorities.
 | APW04 | Scoped memory layers, provenance, context assembly, safe compaction, field guide, privacy and invalidation. | PARTIAL/OVERLAP: ingress rendering rechecks actor; the member-facing Space Assistant memory route now scopes personal rows to the current actor, adds only unscoped rows, restricts legacy unscoped entries to owner/admin, and role-filters shared assistant facts. Existing Knowledge provenance and reviewed Project guide controls are reused. | Canonical content revisions/hashes are missing for some stores; legacy vectors lack timestamps; retention/deletion policy across stores, selective assembly evaluation and private-project leakage testing remain. |
 | APW05 | Hierarchical cost accounting, pre-admission reservations, model/runtime selection, thrash control and fair scheduling. | PARTIAL/OVERLAP: shared-compute/TBR ledgers cover admissions; existing owner usage is now visible beside goal tasks as internal credits plus unpriced or pending states. | Atomic task/run reservations, uncertain-charge reconciliation, planner/integration/reviewer usage, automatic thrash detection, priority/fairness policy and provider USD evidence remain; exact contracts/policy and live billing are separate. |
 | APW06 | SDK/template controls, authorized task UI, safe pause/cancel/resume, operations and evaluation. | PARTIAL/OVERLAP: actor-scoped task UI shows topology, role, token budget, acceptance criteria, runtime recommendation, per-task internal-credit usage, status and verification; worker checkpoint/recovery disclosures exist. | Decision/conflict UX, user/admin topology/budget preferences, comprehensive cancel/pause controls, real-runtime/deployed acceptance and controlled one/sequential/adaptive evaluation remain. |
+| APW07 | Exact-revision workspace integration, conflict classification, neutral resolution proposals and checked publication. | PARTIAL/OVERLAP: PW03/EP04 provide isolated worker branches, pinned checkpoint lineage, checked publication, Project decision revision guards and conflict preview/resolve callers. | Semantic/interface conflict classification, full base/result revision and validation receipt linkage, late-result/cancel races and broad integrated behavior evidence remain in the PW/EP ledgers. |
+| APW08 | Durable resume, scoped user-visible task state and SDK/template orchestration declarations. | PARTIAL/OVERLAP: PW01–PW06 persist bounded workflow/checkpoint state; authenticated goal activity exposes topology, decisions, budgets and status; template/business-role and extensible SDK requirements are tracked in their ledgers. | Full user pause/resume/approval controls, stale authorization/budget recovery coverage, adaptive topology declarations for templates/SDK and real interruption acceptance remain. Never claim process-memory restoration. |
+| APW09 | Evaluation, comprehensive economics and runaway/thrash controls before rollout. | PARTIAL/OVERLAP: SC/TBR ledgers cover internal credit admission, usage receipts and concurrency; the adaptive flag is opt-in and absent by default. | Representative comparative task-quality/cost/latency/conflict benchmark, complete planner/integration/reviewer/provider metering, fair scheduling and live acceptance remain; no savings claims. |
+
+The new plan was fetched from `origin/plan/microapps-ui-sdk-voice` at
+`f991071dbb955423a359dba4cdf3ea2054ce9efc` and copied into this worktree. SHA-256:
+`8845f496b399408592d45670f04ce88e12176d61940cb8e16356a949ae6d3edf`. APW07–APW09 explicitly
+reuse PW/EP, workflow/template/SDK and SC/TBR authorities rather than duplicating them.
 
 ## Latest code checkpoint — 2026-11-17 (adaptive DAG topology receipt)
 

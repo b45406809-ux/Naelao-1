@@ -8884,6 +8884,28 @@ app.get("/spaces/:spaceId/assistant/memory", async (c) => {
   return Response.json({ entries, count: entries.length });
 });
 
+// DELETE /spaces/:spaceId/assistant/memory/:id — remove one actor-owned local Memory OS row.
+// Shared Project facts, explicitly unscoped rows and legacy owner-only entries have no delete
+// affordance here. The route derives actor identity from the authenticated request and the DO
+// performs an exact (row ID, actor ID) delete.
+app.delete("/spaces/:spaceId/assistant/memory/:id", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const id = c.req.param("id");
+  const tenantId = await requireVerifiedTenant(c);
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  if (!userId) throw forbidden("Personal memory deletion requires an authenticated actor");
+  const effectiveRole = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
+  if (!effectiveRole) throw forbidden("Space memory access could not be resolved");
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+  const response = await stub.fetch(new Request(`http://agent-do/memory/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { "x-naelao-user-id": userId, "x-naelao-role": effectiveRole },
+  }));
+  if (!response.ok) return new Response(await response.text(), { status: response.status });
+  return Response.json({ ok: true, deleted: (await response.json<{ deleted?: boolean }>()).deleted === true });
+});
+
 // GET /spaces/:spaceId/assistant/channels — which channels are configured for this space (the
 // Channels panel). Read-only projection of channel_links; the signing secret itself never leaves
 // the credentials vault.

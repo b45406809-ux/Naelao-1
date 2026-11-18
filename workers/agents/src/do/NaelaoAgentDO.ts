@@ -2231,6 +2231,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handleGetMemory(url.searchParams.get("category"), actorId, roleRank);
       }
 
+      // DELETE /memory/:id — exact actor-owned Memory OS row deletion.
+      const memoryDeleteMatch = url.pathname.match(/^\/memory\/([^/]+)$/);
+      if (method === "DELETE" && memoryDeleteMatch?.[1]) {
+        const actorId = request.headers.get("x-naelao-user-id")?.slice(0, 160) ?? "";
+        if (!actorId) return Response.json({ error: "authenticated_actor_required" }, { status: 403 });
+        try {
+          return this.handleForgetMemory(decodeURIComponent(memoryDeleteMatch[1]), actorId);
+        } catch {
+          return Response.json({ error: "invalid_memory_id" }, { status: 400 });
+        }
+      }
+
       // POST /memory
       if (method === "POST" && url.pathname === "/memory") {
         return this.handlePostMemory(request);
@@ -13510,15 +13522,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const memoryScopeClause = actorId ? "user_id IN (?, '')" : "user_id = ''";
     const memoryScopeArgs = actorId ? [actorId] : [];
     const facts = category && category !== "fact" ? [] : this.safeMemoryRows<{
-      entity: string; relation: string; attribute: string; trust_score: number; updated_at: number;
-    }>(`SELECT entity, relation, attribute, trust_score, updated_at FROM structured_facts WHERE ${memoryScopeClause} ORDER BY updated_at DESC LIMIT 200`, ...memoryScopeArgs)
+      id: string; user_id: string; entity: string; relation: string; attribute: string; trust_score: number; updated_at: number;
+    }>(`SELECT id, user_id, entity, relation, attribute, trust_score, updated_at FROM structured_facts WHERE ${memoryScopeClause} ORDER BY updated_at DESC LIMIT 200`, ...memoryScopeArgs)
       .map((row) => ({ key: `${row.entity} ${row.relation}`, category: "fact", value: row.attribute,
-        confidence: row.trust_score, updated_at: row.updated_at, source: "memory-os" as const }));
+        id: row.id, deletable: Boolean(actorId && row.user_id === actorId), confidence: row.trust_score,
+        updated_at: row.updated_at, source: "memory-os" as const }));
     const episodic = category && category !== "episodic" ? [] : this.safeMemoryRows<{
-      text: string; importance: number; created_at: number;
-    }>(`SELECT text, importance, created_at FROM episodic_log WHERE ${memoryScopeClause} ORDER BY created_at DESC LIMIT 100`, ...memoryScopeArgs)
+      id: string; user_id: string; text: string; importance: number; created_at: number;
+    }>(`SELECT id, user_id, text, importance, created_at FROM episodic_log WHERE ${memoryScopeClause} ORDER BY created_at DESC LIMIT 100`, ...memoryScopeArgs)
       .map((row) => ({ key: row.text.slice(0, 80), category: "episodic", value: row.text,
-        confidence: row.importance, updated_at: row.created_at, source: "memory-os" as const }));
+        id: row.id, deletable: Boolean(actorId && row.user_id === actorId), confidence: row.importance,
+        updated_at: row.created_at, source: "memory-os" as const }));
     const legacy = legacyRows.map(r => ({ ...r, value: (() => { try { return JSON.parse(r.value); } catch { return r.value; } })() }));
 
     // `agent_memory` is the ORIGINAL key/value store, written only by this DO's own POST /memory.
@@ -13537,6 +13551,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...episodic,
     ];
     return Response.json({ entries, count: entries.length });
+  }
+
+  private async handleForgetMemory(id: string, actorId: string): Promise<Response> {
+    if (!id || id.length > 200) return Response.json({ error: "invalid_memory_id" }, { status: 400 });
+    const sql = this.ctx.storage.sql;
+    let ownsFact = false;
+    let ownsEpisode = false;
+    try {
+      ownsFact = sql.exec("SELECT 1 AS found FROM structured_facts WHERE id = ? AND user_id = ? LIMIT 1", id, actorId).toArray().length > 0;
+    } catch { /* Memory OS tables are initialized lazily. */ }
+    try {
+      ownsEpisode = sql.exec("SELECT 1 AS found FROM episodic_log WHERE id = ? AND user_id = ? LIMIT 1", id, actorId).toArray().length > 0;
+    } catch { /* Memory OS tables are initialized lazily. */ }
+    if (!ownsFact && !ownsEpisode) return Response.json({ deleted: false });
+    if (ownsFact) sql.exec("DELETE FROM structured_facts WHERE id = ? AND user_id = ?", id, actorId);
+    if (ownsEpisode) sql.exec("DELETE FROM episodic_log WHERE id = ? AND user_id = ?", id, actorId);
+    if (ownsEpisode && this.env.MEMORY_VECTORIZE) {
+      try { await this.env.MEMORY_VECTORIZE.deleteByIds([id]); } catch { /* best-effort vector cleanup */ }
+    }
+    return Response.json({ deleted: true });
   }
 
   /** Read a Memory OS table that may not exist yet on a DO that has never run an agent. */

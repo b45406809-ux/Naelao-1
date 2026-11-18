@@ -29,6 +29,7 @@ import {
   getAgentPolicy,
   updateAgentPolicy,
   getAssistantMemory,
+  deleteAssistantMemory,
   listScheduledJobs,
   createScheduledJob,
   updateScheduledJob,
@@ -877,6 +878,9 @@ function ConfigPanel({
 
 function MemoryPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
   const [memory, setMemory] = React.useState<MemoryFact[] | null>(null);
+  const [deletingId, setDeletingId] = React.useState<string | null>(null);
+  const [deleteError, setDeleteError] = React.useState<string | null>(null);
+  const reload = React.useCallback(() => getAssistantMemory(spaceId, session).then(setMemory), [spaceId, session]);
   React.useEffect(() => {
     let cancelled = false;
     getAssistantMemory(spaceId, session).then((m) => { if (!cancelled) setMemory(m); }).catch(() => { if (!cancelled) setMemory([]); });
@@ -891,12 +895,29 @@ function MemoryPanel({ spaceId, session }: { spaceId: string; session: SessionCr
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>No memory recorded yet.</div>
       ) : (
         memory.map((m) => (
-          <div className="memory-item" style={{ padding: "4px 14px" }} key={`${m.category}:${m.key}`}>
+          <div className="memory-item" style={{ padding: "4px 14px" }} key={m.id ?? `${m.source ?? m.category}:${m.key}`}>
             <span className="memory-key">{m.key}</span>
             <span className="memory-val">{typeof m.value === "string" ? m.value : JSON.stringify(m.value)}</span>
+            {m.id && m.deletable ? (
+              <button
+                type="button"
+                disabled={deletingId === m.id}
+                aria-label={`Forget ${m.key}`}
+                onClick={() => {
+                  setDeletingId(m.id!);
+                  setDeleteError(null);
+                  void deleteAssistantMemory(spaceId, m.id!, session)
+                    .then(reload)
+                    .catch(() => setDeleteError("Could not remove this memory."))
+                    .finally(() => setDeletingId(null));
+                }}
+                style={{ marginLeft: 8, fontSize: 11 }}
+              >{deletingId === m.id ? "Removing…" : "Forget"}</button>
+            ) : null}
           </div>
         ))
       )}
+      {deleteError ? <div role="alert" style={{ padding: "4px 14px", fontSize: 11.5, color: "#dc2626" }}>{deleteError}</div> : null}
     </>
   );
 }
