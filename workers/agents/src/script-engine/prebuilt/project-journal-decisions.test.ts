@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseJournal, journalKey } from "../project-journal.js";
+import { parseJournal, journalKey, validateProjectDecisionRefs } from "../project-journal.js";
 import { projectJournal } from "./project-journal.js";
 
 function fixture() {
@@ -36,6 +36,15 @@ function fixture() {
 }
 
 describe("project journal decision proposal and review", () => {
+  it("requires referenced decisions to stay active, exact-revision, and on the pinned workspace head", () => {
+    const base = { branch: "main", revision: 4, manifestHash: "a".repeat(64) };
+    const approved = { id: "decision-1", topicKey: "runtime.policy", proposal: "Use host policy.", rationale: "Keep authority bounded.", interfaces: [], status: "active" as const, revision: 3, proposer: "editor", proposedAt: "2026-11-18T00:00:00.000Z", baseWorkspace: base };
+    const refs = [{ id: approved.id, revision: 3 }];
+    expect(validateProjectDecisionRefs([approved], refs, base)).toMatchObject({ ok: true, statuses: [{ workspaceStatus: "current" }] });
+    expect(validateProjectDecisionRefs([approved], [{ id: approved.id, revision: 2 }], base)).toMatchObject({ ok: false, reason: "decision_revision_changed" });
+    expect(validateProjectDecisionRefs([{ ...approved, status: "superseded" }], refs, base)).toMatchObject({ ok: false, reason: "decision_not_active" });
+    expect(validateProjectDecisionRefs([approved], refs, { ...base, revision: 5, manifestHash: "b".repeat(64) })).toMatchObject({ ok: false, reason: "workspace_revision_stale" });
+  });
   it("does not allow legacy active_decisions to bypass the review boundary", async () => {
     const f = fixture();
     const result = await projectJournal.operations["project_journal.update"]!({ active_decisions: ["Ship without review"] }, f.ctx("editor", 1));

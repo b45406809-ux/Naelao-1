@@ -23,7 +23,7 @@ describe("task blackboard durable object route", () => {
           tenantId: "t",
           spaceId: "s",
           actorId: "u",
-          tasks: [{ id: "a", title: "Task", dependencies: [], assigned_role: "schema-validator", budget_tokens: 2400, acceptance_criteria: ["Return a verified result"] }],
+          tasks: [{ id: "a", title: "Task", dependencies: [], assigned_role: "schema-validator", budget_tokens: 2400, acceptance_criteria: ["Return a verified result"], decision_refs: [{ id: "decision-1", revision: 3 }] }],
         },
       ],
       [
@@ -35,6 +35,7 @@ describe("task blackboard durable object route", () => {
             a: {
               status: "failed",
               workerId: "w",
+              decisionReviewReason: "workspace_revision_stale:decision-1",
               verification: {
                 outcome: "failed",
                 reason: "Independent evidence rejected.",
@@ -100,6 +101,8 @@ describe("task blackboard durable object route", () => {
           assigned_role?: string;
           budget_tokens?: number;
           acceptance_criteria?: string[];
+          decision_refs?: Array<{ id: string; revision: number }>;
+          decision_review_reason?: string;
           verification?: { outcome: string; reason: string };
           dispatch?: { status: string; attempt?: number };
         }>;
@@ -116,6 +119,8 @@ describe("task blackboard durable object route", () => {
             assigned_role: "schema-validator",
             budget_tokens: 2400,
             acceptance_criteria: ["Return a verified result"],
+            decision_refs: [{ id: "decision-1", revision: 3 }],
+            decision_review_reason: "workspace_revision_stale:decision-1",
           verification: {
             outcome: "failed",
             reason: "Independent evidence rejected.",

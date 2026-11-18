@@ -15,7 +15,7 @@ export interface GoalTaskRuntimeState {
   queueWaitMs?: number;
   executionMs?: number;
 }
-export interface GoalTaskState { status: GoalTaskStatus; workerId: string; dispatchId?: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
+export interface GoalTaskState { status: GoalTaskStatus; workerId: string; dispatchId?: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; decisionReviewReason?: string; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain" | "verification_failed" | "verification_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" | "review_verification" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
 export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number } }
@@ -29,9 +29,11 @@ export interface GoalDagHost {
   /** Atomically persist the running task states and their dispatch outbox intents. */
   commitDispatches?(journal: GoalDagJournal, dispatches: readonly { task: GoalTask; workerId: string; dispatchId: string }[]): Promise<void>;
   launch(task: GoalTask, workerId: string, handoffs: GoalHandoff[]): Promise<GoalWorkerResult>;
-  dispatch?(task: GoalTask, workerId: string, handoffs: GoalHandoff[], dispatchId: string): Promise<{ result?: GoalWorkerResult; acknowledged: boolean }>;
+  dispatch?(task: GoalTask, workerId: string, handoffs: GoalHandoff[], dispatchId: string): Promise<{ result?: GoalWorkerResult; acknowledged: boolean; reason?: string }>;
   recover(workerId: string): Promise<GoalWorkerResult | undefined>;
   publish(task: GoalTask, state: GoalTaskState): Promise<void>;
+  /** Recheck active decision identity/revision and its workspace pin before dispatch or reuse. */
+  validateTaskDecisions?(task: GoalTask): Promise<{ ok: true } | { ok: false; reason: string }>;
   workerId(taskId: string): string;
   concurrency: number;
   taskBlackboardEnabled?: boolean;
@@ -212,6 +214,17 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     }
     await save();
   };
+  const revalidateCompletedDecisionRefs = async (task: GoalTask, state: GoalTaskState): Promise<void> => {
+    if (state.status !== "completed" || !task.decision_refs?.length) return;
+    let validation: { ok: true } | { ok: false; reason: string };
+    try { validation = await host.validateTaskDecisions?.(task) ?? { ok: false, reason: "decision_validation_unavailable" }; }
+    catch { validation = { ok: false, reason: "decision_validation_unavailable" }; }
+    if (!validation.ok) {
+      state.status = "needs_review";
+      state.decisionReviewReason = validation.reason.slice(0, 240);
+      await save();
+    }
+  };
   // Existing journals created during the initial rollout may already contain messages.
   if (loaded && journal.taskBlackboardEnabled === undefined) journal.taskBlackboardEnabled = Array.isArray(journal.messages);
   if (tasks.some(task => !journal.tasks[task.id]) || Object.keys(journal.tasks).length !== tasks.length) throw new Error("goal_journal_mismatch");
@@ -230,8 +243,19 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       await save();
     }
     if (state.status === "verifying") { state.status = "needs_review"; state.verification = { outcome: "uncertain", reason: "Verification interrupted" }; await save(); }
-    else if (state.status === "completed" && state.result?.ok && !state.verification && (host.verify || journal.verificationRequired)) await verifyResult(task, state);
+    if ((state.status === "pending" || state.status === "completed") && task.decision_refs?.length) {
+      let validation: { ok: true } | { ok: false; reason: string };
+      try { validation = await host.validateTaskDecisions?.(task) ?? { ok: false, reason: "decision_validation_unavailable" }; }
+      catch { validation = { ok: false, reason: "decision_validation_unavailable" }; }
+      if (!validation.ok) {
+        state.status = "needs_review";
+        state.decisionReviewReason = validation.reason.slice(0, 240);
+        await save();
+      }
+    }
+    if (state.status === "completed" && state.result?.ok && !state.verification && (host.verify || journal.verificationRequired)) await verifyResult(task, state);
     if (state.status === "completed") await observeResult(task, state);
+    await revalidateCompletedDecisionRefs(task, state);
     recordCompletion(task, tasks, journal);
     if (journal.taskBlackboardEnabled && state.status === "completed") await save();
     await host.publish(task, state);
@@ -253,6 +277,19 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       // dependency: the recipient wakes after the sender reaches any terminal state.
       && (!journal.taskBlackboardEnabled || tasks.filter(sender => sender.communication_recipients?.includes(task.id))
         .every(sender => !["pending", "running", "verifying"].includes(journal.tasks[sender.id]!.status))));
+    for (const task of ready) {
+      if (!task.decision_refs?.length) continue;
+      let validation: { ok: true } | { ok: false; reason: string };
+      try { validation = await host.validateTaskDecisions?.(task) ?? { ok: false, reason: "decision_validation_unavailable" }; }
+      catch { validation = { ok: false, reason: "decision_validation_unavailable" }; }
+      if (!validation.ok) {
+        const state = journal.tasks[task.id]!;
+        state.status = "needs_review";
+        state.decisionReviewReason = validation.reason.slice(0, 240);
+        await save();
+        await host.publish(task, state);
+      }
+    }
     if (!ready.length && inFlight.size === 0) {
       const fixers = journal.fixers ??= {};
       // Always reconcile an already-running fixer, even if the feature flag was switched
@@ -303,6 +340,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     const claimedResources = new Set(activeResources);
     for (const task of ready) {
       if (dispatch.length >= slots) break;
+      if (journal.tasks[task.id]!.status !== "pending") continue;
       const resources = task.resource_keys ?? [];
       if (resources.some(key => claimedResources.has(key))) continue;
       dispatch.push(task);
@@ -326,6 +364,18 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       await host.publish(task, state);
       let result: GoalWorkerResult;
       let release: (() => Promise<void>) | undefined;
+      if (task.decision_refs?.length) {
+        let validation: { ok: true } | { ok: false; reason: string };
+        try { validation = await host.validateTaskDecisions?.(task) ?? { ok: false, reason: "decision_validation_unavailable" }; }
+        catch { validation = { ok: false, reason: "decision_validation_unavailable" }; }
+        if (!validation.ok) {
+          state.status = "needs_review";
+          state.decisionReviewReason = validation.reason.slice(0, 240);
+          await save();
+          await host.publish(task, state);
+          return;
+        }
+      }
       try {
         release = await host.acquireResources?.(task, state.workerId, async runtime => {
           state.runtime = runtime;
@@ -352,6 +402,13 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
           const handoffs = dependencyHandoffs(task, journal);
           if (host.dispatch) {
             const receipt = await host.dispatch(task, state.workerId, handoffs, state.dispatchId!);
+            if (!receipt.acknowledged && receipt.reason) {
+              state.status = "needs_review";
+              state.decisionReviewReason = receipt.reason.slice(0, 240);
+              await save();
+              await host.publish(task, state);
+              return;
+            }
             if (!receipt.acknowledged) throw new Error("goal_dispatch_acknowledgement_uncertain");
             if (!receipt.result) throw new Error("goal_dispatch_result_unavailable");
             result = receipt.result;
@@ -371,8 +428,18 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       }
       state.result = result;
       state.status = result.ok ? "completed" : result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" || result.status === "outcome_uncertain" ? "needs_review" : "failed";
-      if (result.ok) await verifyResult(task, state);
+      if (result.ok && task.decision_refs?.length) {
+        let validation: { ok: true } | { ok: false; reason: string };
+        try { validation = await host.validateTaskDecisions?.(task) ?? { ok: false, reason: "decision_validation_unavailable" }; }
+        catch { validation = { ok: false, reason: "decision_validation_unavailable" }; }
+        if (!validation.ok) {
+          state.status = "needs_review";
+          state.decisionReviewReason = validation.reason.slice(0, 240);
+        }
+      }
+      if (result.ok && state.status === "completed") await verifyResult(task, state);
       if (state.status === "completed") await observeResult(task, state);
+      await revalidateCompletedDecisionRefs(task, state);
       if (state.runtime) {
         const completedAt = Date.now();
         const executionMs = state.runtime.startedAt === undefined ? undefined : Math.max(0, completedAt - state.runtime.startedAt);

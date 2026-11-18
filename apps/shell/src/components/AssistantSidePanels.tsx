@@ -710,6 +710,8 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
         <strong>{task.title.slice(0, 240)}</strong> · {workerActivityLabel(task.status)}
         {(task.assigned_role || task.budget_tokens !== undefined) && <div style={{ color: "var(--text3)", fontSize: 11 }}>Worker plan: {task.assigned_role ? `${task.assigned_role.slice(0, 80)} role` : "worker"}{task.budget_tokens !== undefined ? ` · up to ${task.budget_tokens.toLocaleString()} output tokens` : ""}{task.runtime_capability ? ` · ${task.runtime_capability.slice(0, 64)} runtime recommendation` : ""}</div>}
         {task.acceptance_criteria?.length ? <div style={{ color: "var(--text3)", fontSize: 11 }}>Acceptance: {task.acceptance_criteria.map(item => item.slice(0, 240)).join(" · ")}</div> : null}
+        {task.decision_refs?.length ? <div style={{ color: "var(--text3)", fontSize: 11 }}>Project decisions: {task.decision_refs.map(ref => `${ref.id.slice(0, 48)} · revision ${ref.revision}`).join("; ")}</div> : null}
+        {task.decision_review_reason && <div role="status" style={{ color: "var(--danger, #dc2626)", fontSize: 11 }}>Decision reference needs review: {task.decision_review_reason.slice(0, 240)}</div>}
         {task.dispatch && <div style={{ color: "var(--text3)", fontSize: 11 }}>Worker dispatch: {task.dispatch.status.replaceAll("_", " ")}{task.dispatch.attempt ? ` · attempt ${task.dispatch.attempt}` : ""}</div>}
         <div style={{ color: "var(--text3)", fontSize: 11 }}>Verification: {task.verification?.outcome ?? (goal.verificationRequired ? "pending" : "not required")}{task.verification?.reason ? ` · ${task.verification.reason}` : ""}</div>
         {task.dependencies.length > 0 && <div style={{ color: "var(--text3)" }}>Depends on: {task.dependencies.map(id => id.slice(0, 100)).join(", ")}</div>}
@@ -1755,6 +1757,8 @@ function WorkersPanel({
             <strong>{task.title}</strong> · {workerActivityLabel(task.status)}
             {(task.assigned_role || task.budget_tokens !== undefined) && <div>Worker plan: {task.assigned_role ? `${task.assigned_role.slice(0, 80)} role` : "worker"}{task.budget_tokens !== undefined ? ` · up to ${task.budget_tokens.toLocaleString()} output tokens` : ""}{task.runtime_capability ? ` · ${task.runtime_capability.slice(0, 64)} runtime recommendation` : ""}</div>}
             {task.acceptance_criteria?.length ? <div>Acceptance: {task.acceptance_criteria.map(item => item.slice(0, 240)).join(" · ")}</div> : null}
+            {task.decision_refs?.length ? <div>Project decisions: {task.decision_refs.map(ref => `${ref.id.slice(0, 48)} · revision ${ref.revision}`).join("; ")}</div> : null}
+            {task.decision_review_reason && <div role="status" style={{ color: "#dc2626" }}>Decision reference needs review: {task.decision_review_reason.slice(0, 240)}</div>}
             {task.workerId && <div data-technical-detail="billing">{workerUsage?.has(task.workerId)
               ? `${workerUsage.get(task.workerId)!.cost_credits.toLocaleString()} internal credits${workerUsage.get(task.workerId)!.unpriced_event_count ? ` · ${workerUsage.get(task.workerId)!.unpriced_event_count} unpriced events` : ""}`
               : "Internal-credit usage pending or unavailable"}</div>}

@@ -35,6 +35,32 @@ describe("durable goal DAG", () => {
     expect(result.tasks.b?.status).toBe("blocked");
     expect(f.host.launch.mock.calls.map(([t]) => t.id)).toEqual(["a"]);
   });
+  it("holds a task whose referenced Project decision is stale before worker dispatch", async () => {
+    const f = fixture();
+    f.host.validateTaskDecisions = vi.fn(async () => ({ ok: false as const, reason: "decision_revision_changed:decision-1" }));
+    const linked = { ...task("a"), decision_refs: [{ id: "decision-1", revision: 3 }] };
+    const result = await executeGoalDag([linked], f.host);
+    expect(result.tasks.a).toMatchObject({ status: "needs_review", decisionReviewReason: "decision_revision_changed:decision-1" });
+    expect(f.host.launch).not.toHaveBeenCalled();
+  });
+  it("moves completed work to review when its pinned Project decision becomes stale on resume", async () => {
+    const f = fixture({ tasks: { a: { status: "completed", workerId: "worker:a", result: { id: "worker:a", ok: true } } } });
+    f.host.validateTaskDecisions = vi.fn(async () => ({ ok: false as const, reason: "workspace_revision_stale:decision-1" }));
+    const result = await executeGoalDag([{ ...task("a"), decision_refs: [{ id: "decision-1", revision: 3 }] }], f.host);
+    expect(result.tasks.a).toMatchObject({ status: "needs_review", decisionReviewReason: "workspace_revision_stale:decision-1" });
+    expect(f.host.launch).not.toHaveBeenCalled();
+  });
+  it("holds a successful worker result when its Project decision changes during execution", async () => {
+    const f = fixture();
+    let validations = 0;
+    f.host.validateTaskDecisions = vi.fn(async () => ++validations < 4
+      ? { ok: true as const }
+      : { ok: false as const, reason: "decision_revision_changed:decision-1" });
+    f.host.verify = vi.fn(async () => ({ outcome: "passed" as const, reason: "evidence passed" }));
+    const result = await executeGoalDag([{ ...task("a"), decision_refs: [{ id: "decision-1", revision: 3 }] }], f.host);
+    expect(result.tasks.a).toMatchObject({ status: "needs_review", decisionReviewReason: "decision_revision_changed:decision-1" });
+    expect(f.host.verify).not.toHaveBeenCalled();
+  });
   it("allows a dependent only after host evidence passes each criterion", async () => {
     const f = fixture(); f.host.verificationRequired = true;
     f.host.collectEvidence = vi.fn(async t => (t.acceptance_criteria ?? []).map(criterion => ({ criterion, source: "host_check" as const, outcome: "passed" as const, reference: "check:1" })));
@@ -74,6 +100,12 @@ describe("durable goal DAG", () => {
     expect(() => validateGoalDag([{ ...task("a"), acceptance_criteria: ["Tests pass", "Cite sources"] }])).not.toThrow();
     for (const acceptance_criteria of [[], [""], ["x".repeat(501)], Array(9).fill("criterion"), [42]]) {
       expect(() => validateGoalDag([{ ...task("a"), acceptance_criteria } as GoalTask])).toThrow("invalid acceptance_criteria");
+    }
+  });
+  it("accepts only bounded exact Project decision references", () => {
+    expect(() => validateGoalDag([{ ...task("a"), decision_refs: [{ id: "decision-1", revision: 2 }] }])).not.toThrow();
+    for (const decision_refs of [Array(5).fill({ id: "d", revision: 1 }), [{ id: "bad/id", revision: 1 }], [{ id: "d", revision: 0 }], [{ id: "d", revision: 1 }, { id: "d", revision: 2 }]]) {
+      expect(() => validateGoalDag([{ ...task("a"), decision_refs } as GoalTask])).toThrow("invalid decision_refs");
     }
   });
   it("permits bounded, directed peer communication without adding DAG dependencies", () => {

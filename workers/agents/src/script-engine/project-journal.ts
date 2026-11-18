@@ -115,6 +115,28 @@ export interface ProjectJournal {
   archive: string;
 }
 
+export function validateProjectDecisionRefs(
+  decisions: readonly JournalDecision[],
+  refs: readonly { id: string; revision: number }[],
+  currentWorkspace?: { branch: string; revision: number; manifestHash: string },
+): { ok: true; statuses: Array<{ id: string; revision: number; workspaceStatus: "current" | "unpinned" }> } | { ok: false; reason: "decision_unavailable" | "decision_revision_changed" | "decision_not_active" | "workspace_revision_unavailable" | "workspace_revision_stale"; decisionId: string } {
+  const statuses: Array<{ id: string; revision: number; workspaceStatus: "current" | "unpinned" }> = [];
+  for (const ref of refs) {
+    const decision = decisions.find(item => item.id === ref.id);
+    if (!decision) return { ok: false, reason: "decision_unavailable", decisionId: ref.id };
+    if (decision.revision !== ref.revision) return { ok: false, reason: "decision_revision_changed", decisionId: ref.id };
+    if (decision.status !== "active") return { ok: false, reason: "decision_not_active", decisionId: ref.id };
+    if (decision.baseWorkspace) {
+      if (!currentWorkspace) return { ok: false, reason: "workspace_revision_unavailable", decisionId: ref.id };
+      if (decision.baseWorkspace.branch !== currentWorkspace.branch || decision.baseWorkspace.revision !== currentWorkspace.revision
+        || decision.baseWorkspace.manifestHash !== currentWorkspace.manifestHash)
+        return { ok: false, reason: "workspace_revision_stale", decisionId: ref.id };
+      statuses.push({ id: ref.id, revision: ref.revision, workspaceStatus: "current" });
+    } else statuses.push({ id: ref.id, revision: ref.revision, workspaceStatus: "unpinned" });
+  }
+  return { ok: true, statuses };
+}
+
 /** Deterministic final milestone used when a finite DAG reaches its terminal state. */
 export function finalizeCompletedJournal(journal: ProjectJournal, at: string): ProjectJournal {
   const open = journal.todos.filter((todo) => !todo.done);

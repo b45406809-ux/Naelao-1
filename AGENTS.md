@@ -63,13 +63,13 @@ past work and do not override the current progress records or require repeating 
   override platform/system instructions. After any restart or compaction, inspect the latest actual
   worktree and current ledger pointers, resume the current requirement and continue the full mission.
 
-## Current checkpoint — 2026-11-18 (memory source freshness metadata; `4b982864` pushed)
+## Current checkpoint — 2026-11-18 (task-level Project decision dependencies; local verification)
 
 **Reminder to myself:** Never stop after a task, test pass, checkpoint, commit, push, or progress-file edit. Keep implementing every independent authorized plan requirement and continue to the next concrete code gap until all independent code work is complete, the user tells me to stop, or a genuine blocker prevents all progress.
 
-APW04 Project guide deletion and actor-scoped prompt assembly are pushed as `2b16d9f7f191619ff23e78378a9008f5b5546c3a`. Follow-up `4b9828643d1daa550ad96ce181e8d408e72954a8` carries available update timestamps through local and Project memory retrieval and displays them with bounded source IDs. They are freshness timestamps, not content revisions; older Vectorize rows may not have them. Agents/Spaces tests **13/13** and **2/2**, both typechecks and diff check pass. Exact source revision/hash links, full memory retention/deletion policy and evaluation remain gaps.
+The previous memory freshness checkpoint `4b9828643d1daa550ad96ce181e8d408e72954a8` and its ledger update `0e66594085c6a8281db8d7b1db4b80a6fb6ebd2e` are pushed. This local APW03 slice adds task-level Project decision references with host revalidation before dispatch, after work and on resume; stale work holds in `needs_review`, dependent tasks block, and the actor-scoped task panel shows the reference/reason. Focused goal DAG/Journal/activity route suites **69/69**, Agents/Shell typechecks and diff check pass; local/mock only. Workspace result lineage and conflict integration remain open.
 
-Exact next action: continue the full mission at the next independent APW03/APW04/Knowledge/resumable-workflow/shared-compute/platform code gap after reconciling the current source; implement existing-authority behavior, not new assumed policy. Preserve `infra/scripts/__pycache__/`; keep rollout disabled and SC03 disconnected replay fail-closed absent exact invocation authority and fresh Billing.
+Exact next action: fetch `origin/Mcbt5s-Backup-2`, verify it remains an ancestor, push this coherent checkpoint without rewriting history, then continue APW02 bounded dynamic DAG expansion/contraction or another independent active-plan code gap. Preserve `infra/scripts/__pycache__/`; keep rollout disabled and SC03 disconnected replay fail-closed absent exact invocation authority and fresh Billing.
 
 ## Resume checkpoint — 2026-11-17 (K09 owner crawl cancellation; `1e6abd43` pushed)
 
