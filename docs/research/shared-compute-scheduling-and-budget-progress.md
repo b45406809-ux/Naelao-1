@@ -11,6 +11,7 @@ times, rechecks the live container grant and authorization revision before each 
 that exact waiter on abort/exhaustion. DynamicSandbox tests **4/4** cover wait, exact retry, queue-full
 and cancellation; CodeRunner capacity suite **4/4** covers reauthorization and bounded retry. This
 local evidence updates the 17 November baseline; no deployed acceptance.
+This ledger reconciliation is pushed in `f9a2a02a` to `origin/Mcbt5s-Backup-2`.
 
 This closes bounded retries while the original caller remains alive. It does not implement a
 detached, alarm-safe dispatcher after caller disconnect: the live CodeRunner `authorizeContainer`
