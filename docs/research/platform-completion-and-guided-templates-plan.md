@@ -1,8 +1,8 @@
 # Platform completion and guided templates plan
 
-Status: active implementation plan. The plan arrived on `Mcbt5s-Backup-2` in commit `9e1281ce` and is integrated into `autonomous-managed-services-20261111`. Implementation and evidence are tracked in [managed-services progress](managed-services-and-sidecar-implementation-progress.md); the rows below reconcile historical findings against current source and must not be read as live acceptance.
+Status: proposed; no implementation claimed. Prepared against `Mcbt5s-Backup-2` at `02a0cf78` on 2026-11-11. The separate autonomous managed-services worktree was unavailable during this review. Reconcile this plan against its final source, requirement matrix, and commits before implementing; do not repeat completed work.
 
-The original review used `02a0cf78` on 2026-11-11. Its findings and later design sections are research inputs, not current-code claims. Before changing a row, compare its actual caller, persistence, configuration and tests with the current branch; reuse the existing S1–S9/U01–U12 ledgers and implementations. Push authorized coherent checkpoints to `Mcbt5s-Backup-2` after fetching and safely integrating remote advances.
+This document is intended to be integrated onto the remote branch **after the currently running implementation session finishes**. Until then preserve it as local work; do not commit, push, or disturb that session unless the user directs otherwise. When integrating, fetch the latest branch, preserve both sets of changes, and resolve any conflicts against the finished implementation.
 
 ## Outcome
 
@@ -12,18 +12,18 @@ Do not assume that every capability below is required for the first launch. Rele
 
 ## Evidence and reconciliation
 
-The following observations were made on the stated older checkout. Current implementation status, local evidence, named blockers and the next action are recorded in the progress ledger:
+The following observations were made on the stated checkout and must be rechecked after the other session:
 
 | ID | Finding | Evidence and limit |
 | --- | --- | --- |
 | P01 | Production's general migration loop suppresses failures. Some explicit checks follow, but they do not demonstrate all migrations succeeded. | `.github/workflows/deploy-prod.yml`, migration step. |
 | P02 | Evaluation Worker development, staging, and production configuration names the same D1 database ID; staging and production name the same Agents service. Actual deployed bindings were not inspected. | `workers/eval/wrangler.toml`. |
 | P03 | The billing queue's dunning handler logs and acknowledges work without executing the described recovery workflow. Existing D1 entitlement enforcement is separate. | `workers/billing/src/index.ts`, `handleQueue`. |
-| P04 | At the research checkout, archives capped object capture at 2 MiB per object/4 MiB total and retained references without bytes; restore merged missing rows. Current implementation now captures bounded object bytes with v1 compatibility plus v2 encrypted chunks (16 MiB per object/64 MiB aggregate), and still restores rows additively. Live disaster recovery remains unproven. | `docs/space-data-retention-and-backup.md`; `workers/spaces/src/do/SpaceDO.ts`; platform progress P04 ledger. |
+| P04 | Space archive has documented size and row limits, references workspace objects rather than embedding their bytes, and restores missing rows rather than replacing a point-in-time state. Live disaster recovery remains unproven. | `docs/space-data-retention-and-backup.md`; `workers/spaces/src/do/SpaceDO.ts`. |
 | P05 | The restricted customer channel extension receives bounded text and knowledge and supports one reply or grounded answer. Existing channel media ingestion does not establish media access through this extension contract. | `workers/agents/src/do/NaelaoAgentDO.ts`, channel dispatch; `new plan/FOUNDRY-REMAINING.md`. |
 | P06 | Telnyx public extensions support bounded prompt/keypad interactions; streaming is rejected. Managed extension voice billing has an explicit unavailable path. | `workers/agents/src/communications/telnyx-live-calls.ts`. |
 | P07 | Private/local/custom model routes exit worker-pool selection early. This preserves privacy but limits independent worker-model selection. | `workers/agents/src/script-engine/worker-model-routing.ts`. |
-| P08 | The original research checkout supported audio-track transcription only. Current code adds a separate, owner-enabled sampled-frame question path: up to three task-owned frames at 0/10/20 seconds, limited to the first 30 seconds and shared with the OCR/visual-analysis quota. It does not provide full-video or motion understanding; deployed Container and Workers AI acceptance remain. | `workers/agents/src/script-engine/prebuilt/attachments.ts`; `workers/agents/src/index.ts`; `workers/agents/src/channels/attachment-transcription-route.test.ts`. |
+| P08 | Video attachment transcription uses its audio track; video-frame understanding is documented as unavailable. | `workers/agents/src/script-engine/tool-surface.ts`; `workers/agents/src/index.ts`. |
 | P09 | Provider training submission is disabled pending a verified contract. Imported adapter lifecycle features exist. | `workers/spaces/src/do/SpaceDO.ts`, `submit_training`. |
 | P10 | Extension connection declarations and provider connection flows exist; the inspected channel installer still accepts pasted manifests/source. A general declarative onboarding schema was not found in the inspected extension contract. | `packages/agent-sdk/src/extensions.ts`; `apps/shell/src/components/ChannelConnect.tsx`. Broader UI audit remains necessary. |
 
