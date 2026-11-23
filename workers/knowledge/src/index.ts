@@ -7,7 +7,7 @@
 
 import { Hono } from "hono";
 import { HttpError, RequestBodyTooLargeError, requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, mintInternalToken, parseBoundedInteger, readBoundedRequestText, readBoundedResponseJson } from "@naelao/http";
-import { chunkTextWithOffsets, chunkSourceCoordinates, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationSourceSpan, type GroundedSearchHit, type RetrievalScope, type StructuralChunk, type TextChunkWithOffsets } from "@naelao/rag";
+import { chunkTextWithOffsets, chunkSourceCoordinates, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationSourceSpan, type GroundedSearchHit, type RetrievalScope, type StructuralChunk, type TextChunkWithOffsets } from "@naelao/rag";
 import { buildRetrievalPredicate, checkSsrf, isRetrievalRecordAllowed, isSpaceNetworkEgressDenied, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
@@ -3576,23 +3576,10 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     : null;
   const cacheReadsAllowed = cacheEnabled && !deletionPending && cacheGeneration !== null && freshnessGeneration !== null;
   const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${userId}:${mode}:${policyVersion}:source-v3:${cacheGeneration ?? crypto.randomUUID()}:${freshnessGeneration ?? crypto.randomUUID()}`;
-  // Semantic answer cache is checked before any document or web retrieval. Its Vectorize filter
-  // enforces space isolation in hardware and the helper applies the strict >.96 threshold.
+  // The legacy semantic answer index is only Space-scoped. It has no Project, role-rank or
+  // user filter and can therefore return an answer produced from a different retrieval scope.
+  // Keep only the grounded result cache below, whose namespace includes Project, role and user.
   const queryEmbedding = await embedText(c.env.AI, query.trim());
-  const semanticHit = cacheReadsAllowed
-    ? await lookupSemanticCache(
-      { vectors: c.env.SEMANTIC_CACHE_VECTORS, kv: c.env.SEMANTIC_CACHE_KV },
-      queryEmbedding.embedding,
-      { tenantId, spaceId, generation: cacheGeneration!, sourceGeneration: freshnessGeneration! },
-    ).catch(() => null)
-    : null;
-  if (semanticHit && !await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId) &&
-      await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) === cacheGeneration &&
-      await readKnowledgeSearchFreshnessGeneration(c.env.PLATFORM_DB, tenantId, spaceId).catch(() => null) === freshnessGeneration) {
-    return c.json({ answer: semanticHit.text, data: [], citations: [], cached: true,
-      cache_id: semanticHit.id, similarity: semanticHit.score, retrieval_mode: "semantic-cache",
-      confidence: semanticHit.score, live_grounding: false });
-  }
   let lexicalSearchAvailable = true;
   const result = await googleModeSearch(query.trim(), scope, {
     now: Date.now,

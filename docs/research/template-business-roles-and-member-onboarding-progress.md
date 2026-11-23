@@ -208,7 +208,7 @@ Code `9ccd739538f4e0a8751ff9d289385adc5df4661b` is pushed and remote-verified on
 | TBR05 Invitation and identity binding | PARTIAL | Copy-only authenticated Product identity invite/redeem API is implemented. Signed business-role selection/assignment, onboarding UI and delivery remain. |
 | TBR06 Durable membership/grant application | PARTIAL | Membership acceptance and insert are atomic. Reviewed resource-grant application, durable outbox and partial-failure recovery remain uncoded. |
 | TBR07 Effective authorization and role composition | PARTIAL | Host authorities remain separate; no role composition/deny/exception resolver or unified introspection exists. |
-| TBR08 Assistant inheritance | PARTIAL | Project acting-user `inherit`/`read_only`/`none` clamp exists, but universal resource/channel/cache/delegation checks are not established. |
+| TBR08 Assistant inheritance | PARTIAL | Current acting-user Project role is rechecked by `WorkflowRunDO` and Agents `enforceRunGates`; viewer-clamped extension workflow dispatch now permits only exact read operations across typed resources and direct Gadget calls. `/agent/run` no longer returns or stores Space-keyed full assistant responses before those gates; Knowledge search no longer reads the legacy tenant/Space-only semantic answer index. The remaining grounded-result cache is keyed by Project, role-rank and user. Universal channel/provider/cache/delegation enforcement and deployed revocation acceptance remain unestablished. |
 | TBR09 Shared data permissions | PARTIAL | The role contract can request symbolic shared-data collections and actions. Host-enforced per-record/action grants, shared-record ACLs and consistent UI/SDK/assistant callers remain uncoded. |
 | TBR10 Private-Project owner/admin policy | PRODUCT_DECISION_OPEN | SpaceDO grants implicit owner/admin access while Knowledge requires explicit Project membership. Resolve and enforce consistently; do not silently widen either policy. |
 | TBR11 Autonomous service identities | PARTIAL | Scheduled goal jobs have owner-reviewed exact enabled action allowlists, a per-run credit ceiling, persisted `scheduled_job:<id>` identity/revision, current-row checks between steps, and Billing/internal-receipt attribution (code `15b48e03`, migrations 0281/0282/157). Direct scripts recheck their exact scheduled revision before dispatch and can reserve one Project-cap credit when that cap is enabled. | Direct jobs have no owner-settable run ceiling; nested effects are not pre-reserved/consumed against a common run budget, and run settlement does not enforce the one-credit hold. General connector/channel/provider principals, in-flight effect cancellation, Project Steward opt-in and deployed acceptance remain open. |
@@ -249,6 +249,35 @@ semantics changed.
 Exact next action: audit the current acting-member Project role from assistant entry through
 `WorkflowRunDO` and the final extension-resource host mutation gate; fix only a concrete missing check
 bound to current authority.
+
+## TBR08 checkpoint — 2026-11-23 (acting-member workflow dispatch clamp)
+
+Source trace: `readWorkflowGrant` resolves the current actor's Space and Project membership and
+installation; `WorkflowRunDO.authorize` compares that current grant snapshot before every effect.
+The Agents `/internal/workflows/effect` route reaches `NaelaoAgentDO.handleWorkflowEffect`, where
+`enforceRunGates` resolves the acting user's current Project role and `assistant_mode` before the
+resource branches. Those direct `extension.resource.*` and `extension.gadget.*` branches bypassed
+`ScriptToolSurface`'s viewer write filter. They now allow only exact read operations to a viewer
+(`list`/`get`, object `get`, job `status`, Knowledge `search`); writes, unknown operations, and an
+unresolved effective role fail closed. Owner/editor behavior remains subject to the existing
+installation and host grant checks.
+
+The caller trace also found `/agent/run` could return a whole Space-keyed semantic response before
+the AgentDO rechecked current Project membership, assistant mode, spend and revocation. That lookup
+and write-through path is removed. Knowledge search's legacy semantic answer lookup also filtered
+only by tenant, Space and freshness generations, so it could reuse an answer across Project, role
+and user scopes. That lookup is removed; the separate grounded-result cache retains its exact
+Project/role-rank/user namespace. No resource, role, or service grant was added.
+
+Agents and Knowledge typechecks (`corepack pnpm --filter @naelao/agents-worker typecheck` and
+`corepack pnpm --filter @naelao/knowledge-worker typecheck`) and `git diff --check` pass. No tests,
+deployment, migration, provider call or live acceptance ran. TBR08 remains PARTIAL for broader
+channel, provider, cache and delegation checks; this checkpoint closes the current workflow-
+dispatch task only.
+
+Exact next action: continue P05 by tracing the Space-shared provider-connection scope against the
+signed Blueprint, activation and owner connection-selection paths. Record missing beneficiary,
+payer, shared-authority or revocation semantics rather than inferring them.
 
 TBR02 is complete locally in the checkpoint above. Exact next action: implement TBR04's owner-only installed-resource/effective-access preview before adding any invitation or grant lifecycle. Continue other S/U/P/PW/K/EP/AP gaps after this slice.
 

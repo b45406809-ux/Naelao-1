@@ -62,8 +62,8 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Template business roles and member onboarding · TBR08 — audit acting-member assistant clamps at
-extension-resource dispatch.** Trace the current Project role from assistant entry through
-`WorkflowRunDO` and the host mutation gate; close a concrete caller gap only where current actor
-authority is available. Preserve denies for unverified role/resource mappings and keep all rollouts
-disabled.
+**Platform completion and guided templates · P05 — trace Space-shared provider-connection scope.**
+Reconcile signed Blueprint dependencies, activation, owner connection selection and revocation
+against current host authority. Implement only a scope current records can enforce; otherwise record
+the missing beneficiary, payer, shared-authority or drain/revoke contract and continue to the next
+ready task. Keep all rollouts disabled.

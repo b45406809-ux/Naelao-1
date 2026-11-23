@@ -1976,36 +1976,10 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   }
   const voiceExecutionKey=voiceFollowup?`${sessionId}:voice-control`:undefined;
   if (durableVoice && (!c.env.AGENT_TASK_WORKFLOW || !c.env.TASK_DO)) return c.json({error_code:"durable_voice_unavailable"},503);
-  // A voice action must use its own task receipt, never a semantic-cache response.
-  // G-AZ19: Semantic response cache check — skip for async tasks (checked per-request only)
-  if (!durableVoice && c.env.KNOWLEDGE_RESPONSE_CACHE_ENABLED === "true") {
-    try {
-      const cacheResp = await c.env.KNOWLEDGE_WORKER.fetch(
-        new Request("http://knowledge-worker/internal/semantic-cache/lookup", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-naelao-tenant-id": tenantId,
-            "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
-          },
-          body: JSON.stringify({ query: body.goal, spaceId }),
-        })
-      );
-      if (cacheResp.ok) {
-        const cacheData = await cacheResp.json<{ hit: boolean; response?: string; similarity?: number }>();
-        if (cacheData.hit && cacheData.response) {
-          console.log(`[SemanticCache] Cache hit for spaceId=${spaceId} similarity=${cacheData.similarity}`);
-          return c.json(
-            JSON.parse(cacheData.response),
-            200,
-            { "X-Cache": "HIT", "X-Cache-Similarity": String(cacheData.similarity ?? 0) }
-          );
-        }
-      }
-    } catch {
-      // Cache lookup errors must never block the main request
-    }
-  }
+  // Do not serve a whole assistant response from the Space-level semantic cache here. Its key
+  // contains only a Space and approximate query, so a hit can bypass the current Project
+  // assistant_mode, membership, budget and revocation gates below or return another actor's data.
+  // Knowledge's separate retrieval caches run after their current scope and role are resolved.
 
   // §A1.17 Phase Q: "closing the tab should never lose an in-flight run" — the durable
   // Workflow+TaskDO path (G-AX04) is now the DEFAULT for an ordinary chat run whenever it's
@@ -2194,25 +2168,6 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   if (doResponse.ok) c.executionCtx.waitUntil(recordOpenRouterInferenceEvidence(c.env, {
     tenantId, spaceId, model: policyModel, userId, runId: scriptRunId, rawResult: rawDoBody,
   }).catch(() => {}));
-
-  // G-AZ19: Store successful agent response in semantic cache for future hits
-  if (doResponse.ok && c.env.KNOWLEDGE_RESPONSE_CACHE_ENABLED === "true") {
-    c.executionCtx.waitUntil(
-      mintInternalToken(c.env.PLATFORM_SECRET, tenantId).then((token) =>
-        c.env.KNOWLEDGE_WORKER.fetch(
-          new Request("http://knowledge-worker/internal/semantic-cache/store", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-naelao-tenant-id": tenantId,
-              "x-naelao-internal-token": token,
-            },
-            body: JSON.stringify({ query: body.goal, spaceId, response: JSON.stringify(doBody) }),
-          })
-        )
-      ).catch(() => {})
-    );
-  }
 
   // A-2 cutover: handleScriptRun can also return 402 (spend cap / tenant quota gate),
   // 403 (revenue-reporting-lapsed gate), and 503 (script engine unavailable) — handleRun never

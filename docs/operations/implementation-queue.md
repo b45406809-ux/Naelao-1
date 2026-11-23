@@ -201,9 +201,9 @@ Spaces worker and targeted Shell typechecks plus `git diff --check` pass. The fu
 still blocked by stale generated `.next/types` references. No tests, migration, deployment, provider
 call or live acceptance ran; resource gates remain off.
 **Next action:** park EP06's remaining cross-resource pricing/cap and provider/live evidence gates;
-continue with TBR12 after the TBR11 direct-script budget source trace below.
+resume the active plan shown below.
 
-## Active plan
+## Previous plan checkpoint — Template business roles and member onboarding
 
 **Template business roles and member onboarding.** See the [plan](../research/template-business-roles-and-member-onboarding-plan.md)
 and [progress ledger](../research/template-business-roles-and-member-onboarding-progress.md).
@@ -221,17 +221,40 @@ and [progress ledger](../research/template-business-roles-and-member-onboarding-
   locks concurrent invitation/proposal mutations, disables repeated submit/revoke actions, labels
   the active action, and sets `aria-busy` on the active form/button. The targeted Shell typecheck and
   `git diff --check` pass; no tests, browser, deployment or live acceptance ran.
-- [ ] **TBR08 — Audit acting-member assistant clamps at extension-resource dispatch.** Trace current
-  Project role from assistant entry through `WorkflowRunDO` and the host mutation gate. Close a
-  concrete caller gap only where current actor authority is available; preserve denies for
-  unverified role/resource mappings and keep all rollouts disabled.
+- [x] **TBR08 — Audit acting-member assistant clamps at extension-resource dispatch.** The current
+  Project effective role now gates typed workflow resource operations and direct Gadget operations
+  at Agents dispatch: viewers can use only exact read operations; writes and unknown mappings deny.
+  Space-only answer caches were removed from `/agent/run` and Knowledge search because they could
+  return answers across Project/role scopes. The remaining grounded-result cache includes Project,
+  role and user. Agents/Knowledge typechecks and `git diff --check` pass; no tests, deployment,
+  provider call or live acceptance ran.
 
-**Latest TBR12 checkpoint:** `SpaceMemberOnboardingPanel` rejects concurrent mutation attempts with
-a synchronous ref lock, exposes Creating/Saving/Revoking labels, disables the other mutation
-controls while one is pending and sets `aria-busy` on active forms/buttons. TBR11's direct-script
-budget gap is recorded above; no role or spend authority was widened.
-**Next action:** trace a current acting-member Project role through the extension workflow host and
-its final resource mutation gate; implement only a missed exact-authority check.
+**Latest TBR08 checkpoint:** `WorkflowRunDO` revalidates its actor, membership and installation on
+each effect. The Agent host then resolves the current Project role through `enforceRunGates` before
+dispatch. Previously the direct `extension.resource.*` and `extension.gadget.*` branches bypassed
+the viewer filter in `ScriptToolSurface`; they now allow only exact reads for viewers. The
+Space-scoped semantic full-response cache also bypassed that host gate and could return another
+actor's Project data; `/agent/run` no longer reads or writes that shared response cache. Knowledge
+search also stopped reading its legacy tenant/Space-only answer cache, whose Vectorize filter
+omitted Project, role and user. Its grounded-result cache still keys by exact Project, role-rank and
+user. TBR08 remains PARTIAL for other channel, provider, cache and delegation surfaces. TBR11's
+direct-script ceiling remains blocked on an owner-approved per-effect admission contract.
+
+**Next action:** continue with P05 from the ordered platform plan: trace whether current host
+authority can represent Space-shared provider connections across signed dependencies, activation,
+owner selection and revocation; do not infer beneficiary, payer or shared authority.
+
+## Active plan
+
+**Platform completion and guided templates.** See the
+[plan](../research/platform-completion-and-guided-templates-plan.md) and
+[progress ledger](../research/platform-completion-and-guided-templates-progress.md).
+
+- [ ] **P05 — Trace Space-shared provider-connection scope.** Reconcile signed Blueprint
+  dependencies, activation, owner connection selection and revocation against current host
+  authority. Implement only a scope that current records can enforce; otherwise record the exact
+  missing beneficiary, payer, shared-authority or drain/revoke contract and continue to the next
+  ready task. Keep rollouts disabled.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
@@ -435,8 +458,8 @@ ledgers when moving to another plan.
 5. [ ] **Reconciled; no standalone task selected.** [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Code gaps remain tracked in their owning plans; remaining checked-workspace/runtime acceptance requires authorized deployed/provider evidence.
 6. [ ] **Paused; no ready source task.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md). K21 deployed acceptance and the K20 response-cache identity contract remain blocked; K15 waits on exact provider scope/freshness/cleanup evidence.
 7. [ ] **Paused; remaining EP06 billing-price/cap and provider/live acceptance gates have no current local rate/acceptance contract.** [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
-8. [ ] **Active.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md)
-9. [ ] [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Reuse the dedicated ledgers for incorporated PW, K, EP, TBR and AP requirements.
+8. [ ] **Paused; no current code-ready task.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md). TBR08's workflow-resource dispatch slice is locally fixed; broad channel/provider/cache/delegation acceptance remains partial. TBR11's direct-script per-effect ceiling needs an owner-approved admission contract; role-to-resource mapping and private-Project policy remain unresolved.
+9. [ ] **Active.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Reuse the dedicated ledgers for incorporated PW, K, EP, TBR and AP requirements.
 10. [ ] [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md). Reconcile with managed communications before opening implementation tasks.
 11. [ ] [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
 12. [ ] [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Reconcile against channel, extension, identity and platform ledgers first.

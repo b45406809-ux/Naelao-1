@@ -179,6 +179,28 @@ const INGRESS_MEMORY_SCORE = 0.8;
 const INGRESS_MEMORY_MAX_ITEMS = 6;
 const INGRESS_MEMORY_MAX_TOKENS = 900;
 
+type WorkflowExtensionResourceKind = "gadget" | "structured_data" | "objects" | "jobs" | "knowledge";
+const WORKFLOW_EXTENSION_RESOURCE_OPERATIONS: Record<WorkflowExtensionResourceKind, { allowed: ReadonlySet<string>; readOnly: ReadonlySet<string> }> = {
+  gadget: { allowed: new Set(["list", "get", "insert", "update", "delete"]), readOnly: new Set(["list", "get"]) },
+  structured_data: { allowed: new Set(["list", "get", "insert", "update", "delete"]), readOnly: new Set(["list", "get"]) },
+  objects: { allowed: new Set(["get", "put", "delete"]), readOnly: new Set(["get"]) },
+  jobs: { allowed: new Set(["status", "enqueue"]), readOnly: new Set(["status"]) },
+  knowledge: { allowed: new Set(["search"]), readOnly: new Set(["search"]) },
+};
+
+/** Direct extension-resource and gadget workflow branches bypass ScriptToolSurface, so enforce
+ * the same acting-member viewer clamp after resolving the exact manifest operation. Unknown
+ * resource or operation mappings fail closed for every role. */
+function workflowResourceOperationAllowedForRole(
+  role: AssistantEffectiveRole | undefined,
+  resource: WorkflowExtensionResourceKind,
+  operation: string,
+): boolean {
+  const mapping = WORKFLOW_EXTENSION_RESOURCE_OPERATIONS[resource];
+  if (role !== "owner" && role !== "editor" && role !== "viewer") return false;
+  return Boolean(mapping?.allowed.has(operation) && (role !== "viewer" || mapping.readOnly.has(operation)));
+}
+
 /** Render only already-gated recall results into a small, clearly untrusted prompt attachment. */
 export function renderIngressMemory(
   results: Array<{ id?: string; layer?: string; user_id?: string; text: string; score: number; relevance_score?: number; source_updated_at?: string }>,
@@ -1271,6 +1293,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const resolved = resolveExtensionStructuredDataRequest({ manifest: grant.installation.manifest, workflowId: identity.definitionId,
         requirementId, operationId, input: body.params?.input });
       if (!resolved) return Response.json({ error_code: "workflow_structured_data_operation_not_granted" }, { status: 403 });
+      if (!workflowResourceOperationAllowedForRole(gate.effectiveRole, "structured_data", operationId))
+        return Response.json({ error_code: "workflow_resource_assistant_access_denied" }, { status: 403 });
       const approvedGrant = await resolveApprovedStructuredDataGrant(grant.installation, requirementId, operationId, resolved.table);
       if (!approvedGrant) return Response.json({ error_code: "workflow_structured_data_owner_grant_required" }, { status: 403 });
       const response = await this.env.SPACES_WORKER.fetch(new Request(
@@ -1300,6 +1324,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const resolved = resolveExtensionKnowledgeResourceRequest({ manifest: grant.installation.manifest, workflowId: identity.definitionId,
         requirementId, operationId, input: body.params?.input });
       if (!resolved) return Response.json({ error_code: "workflow_knowledge_resource_operation_not_declared" }, { status: 403 });
+      if (!workflowResourceOperationAllowedForRole(gate.effectiveRole, "knowledge", operationId))
+        return Response.json({ error_code: "workflow_resource_assistant_access_denied" }, { status: 403 });
       const approvedGrant = await resolveApprovedKnowledgeGrant(grant.installation, requirementId, operationId, resolved.publicationId);
       if (!approvedGrant) return Response.json({ error_code: "workflow_knowledge_resource_owner_grant_required" }, { status: 403 });
       if (!this.env.KNOWLEDGE_WORKER || !this.env.SPACES_WORKER) return Response.json({ error_code: "workflow_knowledge_resource_host_unavailable" }, { status: 503 });
@@ -1351,6 +1377,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const resolved = resolveExtensionObjectResourceRequest({ manifest: grant.installation.manifest, workflowId: identity.definitionId,
         requirementId, operationId, input: body.params?.input });
       if (!resolved) return Response.json({ error_code: "workflow_object_resource_operation_not_granted" }, { status: 403 });
+      if (!workflowResourceOperationAllowedForRole(gate.effectiveRole, "objects", operationId))
+        return Response.json({ error_code: "workflow_resource_assistant_access_denied" }, { status: 403 });
       const approvedGrant = await resolveApprovedObjectGrant(grant.installation, requirementId, operationId);
       if (!approvedGrant) return Response.json({ error_code: "workflow_object_resource_owner_grant_required" }, { status: 403 });
       if (!this.env.SPACES_WORKER) return Response.json({ error_code: "workflow_object_resource_host_unavailable" }, { status: 503 });
@@ -1380,6 +1408,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const resolved = resolveExtensionJobResourceRequest({ manifest: grant.installation.manifest, workflowId: identity.definitionId,
         requirementId, operationId, input: body.params?.input });
       if (!resolved) return Response.json({ error_code: "workflow_job_resource_operation_not_granted" }, { status: 403 });
+      if (!workflowResourceOperationAllowedForRole(gate.effectiveRole, "jobs", operationId))
+        return Response.json({ error_code: "workflow_resource_assistant_access_denied" }, { status: 403 });
       const approvedGrant = await resolveApprovedJobsGrant(grant.installation, requirementId, operationId, resolved.targetWorkflowId);
       if (!approvedGrant) return Response.json({ error_code: "workflow_job_resource_owner_grant_required" }, { status: 403 });
       if (operationId === "status") {
@@ -1406,11 +1436,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(body.operation)) {
       if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId || !identity.capabilities.includes(body.operation))
         return Response.json({ error: "workflow_gadget_grant_invalid" }, { status: 403 });
+      const operationName = body.operation.slice("extension.gadget.".length);
+      if (!workflowResourceOperationAllowedForRole(gate.effectiveRole, "gadget", operationName))
+        return Response.json({ error_code: "workflow_resource_assistant_access_denied" }, { status: 403 });
       const gadgetId = typeof body.params?.gadget_id === "string" ? body.params.gadget_id : "";
       const table = typeof body.params?.table === "string" ? body.params.table : "";
       if (!resolveExtensionGadgetAppId({ ...(grant.installation ? { installation: grant.installation } : {}), workflowId: identity.definitionId, operation: body.operation, gadgetId, table }))
         return Response.json({ error: "workflow_gadget_not_in_extension" }, { status: 403 });
-      const operationName = body.operation.slice("extension.gadget.".length);
       const args = { ...body.params };
       delete args.gadget_id;
       const response = await this.env.SPACES_WORKER.fetch(new Request(
