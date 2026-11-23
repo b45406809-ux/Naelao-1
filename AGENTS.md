@@ -62,5 +62,5 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**WhatsApp member routing and extension testing — add a customer-service WhatsApp SDK example.**
-Use the active plan and [progress ledger](docs/research/whatsapp-member-routing-and-extension-testing-progress.md). Build a versioned channel-only example that declares owner-approved scoped Knowledge and bounded session state, uses the host inbox for staff escalation, and documents synthetic test/replay behavior without provider credentials or live-effect claims.
+**WhatsApp member routing and extension testing — add bounded WhatsApp member phone testing.**
+Use the active plan and [progress ledger](docs/research/whatsapp-member-routing-and-extension-testing-progress.md). Add an expiring, single-use customer-test entry challenge bound to an authenticated member's verified sender, exact destination, Project and active extension installation. Keep every test turn on the customer handler before privileged routing, support explicit exit/revocation, and show test status in the dashboard and chat.

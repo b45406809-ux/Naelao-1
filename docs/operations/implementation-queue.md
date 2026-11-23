@@ -388,22 +388,27 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
   typecheck reports only stale `.next/types` imports for four missing routes. No tests, migration,
   provider action or deployment ran.
 
-- [ ] **Add a customer-service WhatsApp SDK example.** Build a versioned channel-only package
+- [x] **Add a customer-service WhatsApp SDK example.** Build a versioned channel-only package
   example with owner-approved scoped Knowledge, bounded session state, staff escalation through the
   host inbox and documentation of the synthetic test/replay surfaces. Do not include provider
   credentials or claim unverified live behavior.
 
-**Latest checkpoint:** zero-output WhatsApp handler runs now appear in the synthetic customer test
-and replay as a proposed staff-review handoff. Live dispatch already marks such conversations for
-human review; the simulations create no conversation, inbox item or notification. Agents typecheck
-and `git diff --check` pass. Full Shell typecheck still reports only four stale `.next/types` imports
-for missing routes, with no diagnostics in changed Shell sources. No tests, migration apply, provider
-action or deployment ran. Replay still pins the active signed handler, package version and settings;
-current session state is read through SELECT-only queries and never written back. Detailed evidence
-is in the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
-**Next action:** add the versioned customer-service WhatsApp SDK example, with owner-published
-scoped Knowledge, bounded session state, host-inbox escalation guidance, and accurate synthetic
-test/replay limits; then verify the package and advance the queue.
+- [ ] **Add bounded WhatsApp member phone testing.** Offer an optional, expiring single-use entry
+  challenge for an authenticated member's verified sender, exact destination, Project and active
+  extension installation. Keep every test turn on the customer handler before privileged routing;
+  support explicit exit/revocation and show test status in the dashboard and chat.
+
+**Latest checkpoint:** `packages/agent-sdk/examples/customer-service-whatsapp/` now contains a
+versioned `1.0.0` channel-only package. It declares only owner-published `support_articles`, 1 KiB
+per-conversation state with a 30-day TTL, and no tools, settings, attachments or credentials. The
+handler asks the host for grounded answers to routine questions and produces no channel output for
+cases requiring staff review. SDK and standalone handler typechecks, manifest JSON parsing and
+`git diff --check` pass. No tests or provider actions ran. The prior full Shell typecheck is still
+blocked only by the four known stale `.next/types` route imports. **Next action:** implement the
+optional member phone-test challenge and session; contact verification, member route checks and the
+customer-only mode are already available, but the WhatsApp webhook currently has no test session
+override. Detailed example evidence is in the
+[progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

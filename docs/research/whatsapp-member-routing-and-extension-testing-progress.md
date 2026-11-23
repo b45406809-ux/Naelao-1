@@ -210,3 +210,20 @@ identity model; do not reuse `executive_contacts` or `channel_pairings` as membe
   changed Shell sources. No tests, migration apply, provider operation or deployment ran.
 - Next: add the versioned customer-service WhatsApp SDK example and document the handoff plus the
   active test/replay boundaries accurately.
+
+### Customer-service WhatsApp SDK example — 2026-11-23
+
+- Added `packages/agent-sdk/examples/customer-service-whatsapp/` as release and bundle version
+  `1.0.0`. Its channel-only manifest declares one WhatsApp connection, the exact
+  owner-published-external `support_articles` collection, and per-conversation session state capped
+  at 1 KiB with a 30-day TTL. It requests no tools, settings, attachment reads or credentials.
+- The handler asks the host for grounded responses only to general questions, stores only a bounded
+  counter, and produces no channel output for personal order/account requests, complaints, refunds,
+  safety cases or direct human requests. Current live dispatch routes zero-output cases to review.
+- The README documents owner approval of the exact Knowledge collection, the host inbox handoff,
+  synthetic one-turn test and replay boundaries, customer-only mode, and the lack of live provider
+  acceptance. SDK typecheck, standalone strict handler typecheck, manifest JSON parsing and
+  `git diff --check` passed using pnpm `9.12.0`. No tests, provider action or deployment ran.
+- Next: implement the plan's optional member phone-test mode. Existing verified member contacts,
+  project route checks and customer-only mode provide prerequisites, but the WhatsApp webhook has no
+  challenge-bound active test-session override yet.

@@ -1,0 +1,54 @@
+{
+  "id": "ext_customer_service_whatsapp",
+  "releaseVersion": "1.0.0",
+  "type": "extension",
+  "declaredPermissions": [],
+  "capabilityRequirements": ["channel.invoke"],
+  "gadgets": [],
+  "daemons": [],
+  "commands": [],
+  "bundle": {
+    "schemaVersion": "1.0",
+    "kind": "extension_bundle",
+    "id": "ext_customer_service_whatsapp",
+    "version": "1.0.0",
+    "primitives": [
+      {
+        "schemaVersion": "1.0",
+        "kind": "channel",
+        "id": "customer_support",
+        "version": "1.0.0",
+        "permissions": [],
+        "capabilityRequirements": [],
+        "lifecycle": {},
+        "provider": "whatsapp",
+        "connectionId": "business_whatsapp",
+        "handlerScript": "./handler.ts",
+        "context": "channel_only",
+        "inboundEvents": ["message.received"],
+        "outboundEvents": ["message.reply"],
+        "knowledgeCollections": ["support_articles"],
+        "session": {
+          "enabled": true,
+          "maxBytes": 1024,
+          "ttlDays": 30
+        }
+      }
+    ],
+    "connections": [
+      {
+        "id": "business_whatsapp",
+        "provider": "whatsapp",
+        "purpose": "Receive customer questions for the support extension",
+        "required": true
+      }
+    ],
+    "knowledge": [
+      {
+        "id": "support_articles",
+        "purpose": "Answer general support questions from material the project owner explicitly publishes",
+        "access": "owner_published_external"
+      }
+    ]
+  }
+}
