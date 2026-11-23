@@ -244,7 +244,7 @@ direct-script ceiling remains blocked on an owner-approved per-effect admission 
 authority can represent Space-shared provider connections across signed dependencies, activation,
 owner selection and revocation; do not infer beneficiary, payer or shared authority.
 
-## Active plan
+## Parked plan — Platform completion and guided templates
 
 **Platform completion and guided templates.** See the
 [plan](../research/platform-completion-and-guided-templates-plan.md) and
@@ -280,17 +280,47 @@ owner selection and revocation; do not infer beneficiary, payer or shared author
   explicit `training_unavailable` 501; import remains a separate existing-adapter path. No provider
   training API or billing call is reachable. P09 remains partial pending a verified provider/account,
   consent/data lifecycle, evaluation and billing contract.
-- [ ] **P10 — Reconcile signed extension update recovery.** Trace reachable Space-shared and
+- [x] **P10 — Reconcile signed extension update recovery.** Trace reachable Space-shared and
   Project-bound owner review/apply/status/recovery callers against exact publisher, installation,
   generation, dependency, runtime-drain and update-receipt fences. Implement a missing recovery slice
   only where current records enforce it; preserve unsupported migration/authority changes as gated.
 
-**Latest checkpoint:** P09's owner-only lifecycle caller can import an existing adapter or request
-training, but `submit_training` terminates in SpaceDO with `training_unavailable`/501. There is no
-provider training dispatch. The missing verified provider/account, dataset consent/deletion,
-evaluation, and billing contract is recorded in the P09 ledger entry. No training, import, provider
-call or rollout was started. **Next action:** trace P10 update review/apply/recovery for a current
-owner-facing gap using exact installation and release records.
+**P10 checkpoint:** Space-shared review binds the signed source/candidate and exact installation; apply
+rechecks the current paused version, publisher, candidate artifact, dependency closure and runtime
+drain. Gadget migrations use deterministic operation keys and MicroApp receipts; the final pin change
+and update receipt are atomic. Owner status lists durable receipts, and a retry with the same review
+token returns the matching receipt. Project review/apply binds installation generation, source and
+candidate manifest/artifact, publisher key, request ID and runtime drain. The reachable resume action
+discovers staged receipts and revalidates the exact staged generation, both signed releases, compiled
+artifacts and active publisher key before issuing a fresh token for the same request. Project recovery
+is intentionally bound to the original receipt actor; another owner/admin cannot take over without a
+separate authority contract. No current-record recovery slice was missing, so no code changed. P10/P24
+remain partial for broader authority/connection/price changes, migration policy, cross-tenant artifact
+rights, scanning/retention and deployed/live acceptance. Evidence is in the P ledger's P10 checkpoint.
+
+**Parked requirements:** P01/P02 still need operator-attested resource separation, read-only receipts,
+per-D1 baselines and deployed isolation; P03/P20 need product policy; P05/P06/P09 need verified
+provider/marketplace terms, account and pricing contracts; P07 needs trusted custom-model capability
+profiles; P08/P10/P24 retain provider/deployed acceptance and the broader lifecycle contracts. The
+remaining P01–P24 dependencies are itemized in the linked progress ledger's current status index.
+No additional local source-only P task is ready. Resume when a listed contract/evidence dependency
+changes or relevant source changes.
+
+## Active plan — AgentPort managed messaging providers
+
+See the [plan](../research/agentport-messaging-providers-managed-resale-plan.md). This plan has no
+standalone progress ledger yet; create one after the source-to-caller reconciliation.
+
+- [ ] **Reconcile current AgentPort and messaging callers.** Trace provider adapter and reachable
+  channel/event/session, consent, owner credential, billing, Knowledge and deletion paths against
+  the current managed-services, channel, extension and shared-compute records. Separate code gaps
+  supported by current authority from provider agreement, account, pricing, jurisdiction and live
+  acceptance gates. Do not provision accounts, send messages, buy service or enable a provider.
+
+**Latest checkpoint:** P10 recovery reconciliation found the scoped Space-shared and Project-bound
+signed update journeys already have exact replay/recovery receipts. P10 is checked; the broader P
+requirements remain parked at their recorded dependencies. **Next action:** inspect AgentPort bindings,
+adapters and current messaging callers, then compare only reachable paths with the linked ledgers.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
@@ -495,8 +525,8 @@ ledgers when moving to another plan.
 6. [ ] **Paused; no ready source task.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md). K21 deployed acceptance and the K20 response-cache identity contract remain blocked; K15 waits on exact provider scope/freshness/cleanup evidence.
 7. [ ] **Paused; remaining EP06 billing-price/cap and provider/live acceptance gates have no current local rate/acceptance contract.** [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
 8. [ ] **Paused; no current code-ready task.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md). TBR08's workflow-resource dispatch slice is locally fixed; broad channel/provider/cache/delegation acceptance remains partial. TBR11's direct-script per-effect ceiling needs an owner-approved admission contract; role-to-resource mapping and private-Project policy remain unresolved.
-9. [ ] **Active.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Reuse the dedicated ledgers for incorporated PW, K, EP, TBR and AP requirements.
-10. [ ] [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md). Reconcile with managed communications before opening implementation tasks.
+9. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
+10. [ ] **Active.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md). Reconcile with managed communications before opening implementation tasks.
 11. [ ] [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
 12. [ ] [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Reconcile against channel, extension, identity and platform ledgers first.
 13. [ ] [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md)

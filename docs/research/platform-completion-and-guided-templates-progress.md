@@ -3266,3 +3266,32 @@ Source review and queue diff hygiene only; no tests or typechecks ran.
 Exact next action: P10 — trace owner-facing update review/apply/status/recovery across current
 Space-shared and Project-bound signed installs. Reuse exact publisher, installation-generation,
 dependency and runtime-drain receipts; implement only a recoverable current-source gap.
+
+## P10 checkpoint — 2026-11-23 (signed extension update recovery reconciled)
+
+The reachable Space-shared Shell flow reviews an exact signed candidate, requires a paused and
+drained installation, and applies through an HMAC-bound request ID. The Spaces route rechecks the
+current installation pin, source release, trusted candidate, dependency closure and runtime drain.
+Gadget migrations use deterministic operation keys bound to the reviewed claims, and MicroAppDO
+stores an idempotent migration receipt. SpaceDO atomically advances the release pin and writes the
+matching update receipt. The owner status caller lists these durable receipts; retrying the same
+review token returns the exact prior receipt. A separate recovery endpoint is not needed for this
+transactional Space-shared update path.
+
+The Project-bound Shell resume action lists staged receipts for the exact installation. Recovery is
+owner/admin routed but remains bound to the original receipt actor. Spaces verifies the staged
+installation's exact Project, status, applied generation, version and manifest; verifies the
+candidate and source release pins, source publisher signature, host-compiled artifact digest and
+currently active publisher key; then reissues a short-lived review token for the same request ID.
+SpaceDO checks the staged receipt and generation again before completing activation. If the original
+actor is unavailable, a different owner/admin cannot take over the receipt; a takeover would need an
+explicit approval/authority contract and is not inferred.
+
+Source-to-caller reconciliation found no missing recovery slice that current records authorize.
+P10 is complete as a scoped trace; overall P10/P24 remain PARTIAL for unsupported authority,
+connection, price and broader migration changes, cross-tenant artifact rights, scanning/retention and
+provider/deployed acceptance. Those gates stay closed. Source review only; no tests or typechecks ran.
+
+Exact next action: the P plan has no additional local source-only task ready. Move to the queue's next
+ordered plan and reconcile AgentPort's current messaging callers against managed-services and channel
+contracts before opening implementation tasks.

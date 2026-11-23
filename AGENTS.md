@@ -62,8 +62,8 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Platform completion and guided templates · P10 — reconcile signed extension update recovery.**
-Trace reachable Space-shared and Project-bound owner review/apply/status/recovery callers against
-exact publisher, installation, generation, dependency, runtime-drain and update-receipt fences.
-Implement a missing recovery slice only where current records enforce it; preserve unsupported
-migration/authority changes as gated.
+**AgentPort managed messaging providers — reconcile current provider adapters and callers.**
+Trace AgentPort and reachable messaging callers against the managed-services, channel, extension,
+billing, Knowledge and shared-compute contracts. Record concrete code gaps separately from provider
+terms, account, pricing and live-acceptance gates; open implementation tasks only where current
+host authority and records support a safe change.
