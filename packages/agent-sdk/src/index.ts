@@ -214,6 +214,7 @@ export * from "./tunnel-protocol.js";
 export { parseArtifactLinters, lintArtifact, type ArtifactLinterSpec, type ArtifactDiagnostic } from "./artifact-linters.js";
 
 export * from "./templates/reference-spaces.js";
+export * from "./templates/commercial-cleaning-space.js";
 export { FOUNDRY_SPACE_TEMPLATE } from "./templates/foundry-space.js";
 export * from "./package-inspection.js";
 

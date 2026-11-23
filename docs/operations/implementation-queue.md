@@ -420,7 +420,7 @@ four known stale `.next/types` imports for missing routes. No tests, provider ac
 **Next action:** focused test coverage and authorized live phone-test acceptance remain blocked; the
 queue advances to commercial cleaning template source reconciliation.
 
-## Active plan — Commercial cleaning Space template
+## Paused plan — Commercial cleaning Space template
 
 See the [plan](../research/commercial-cleaning-space-template-plan.md) and [progress ledger](../research/commercial-cleaning-space-template-progress.md).
 
@@ -429,17 +429,43 @@ See the [plan](../research/commercial-cleaning-space-template-plan.md) and [prog
   cleaning template, domain records, or operational integrations exist. Marketplace and runtime
   machinery is generic; it does not prove an installed vertical workflow. The source map and exact
   first slice are recorded in the progress ledger.
-- [ ] **Add the first fictional operations demo Blueprint.** Use one pilot project with synthetic
+- [x] **Add the first fictional operations demo Blueprint.** Use one pilot project with synthetic
   site, scope, shift, inspection and blocked-work records plus a review packet. Keep it data-only:
-  no credentials, connections, access grants, purchases, live sends or safety instructions. Add no
-  test code or run tests; verify with the SDK typecheck and `git diff --check`.
+  no credentials, connections, access grants, purchases, live sends or safety instructions. The SDK
+  typecheck and `git diff --check` pass; no tests or activation ran.
+- [ ] **Blocked — operational workflow and pilot validation.** Resume after practitioner discovery
+  establishes the approved site/visit/correction records and transitions, and focused tests are
+  requested. Partner contact, payment, provider setup and deployed acceptance remain separately
+  unauthorized.
 
-**Latest checkpoint:** source reconciliation found no vertical implementation beyond the plan. The
-existing `SpaceBlueprint`/reference-template contract can carry a fictional, data-only walkthrough;
-current project-template catalogue entries are empty and external integrations require separate
-owner/provider acceptance. **Next action:** add the first-party `COMMERCIAL_CLEANING_OPERATIONS_SPACE_TEMPLATE`
-to the SDK as one synthetic end-to-end shift exception and review flow, then run the SDK typecheck
-and `git diff --check`. Do not contact a design partner, accept payment or enable a provider.
+**Latest checkpoint:** added and exported the private `COMMERCIAL_CLEANING_OPERATIONS_SPACE_TEMPLATE`
+with synthetic site, scope, shift, blocked task, inspection, exception and unsent client-update
+fixtures. It has no credentials, connectors, permissions or live writes. SDK typecheck and
+`git diff --check` pass. No tests, activation, partner contact, payment or provider operation ran.
+**Next action:** wait for practitioner-approved operational records/transitions and requested test
+coverage before extending this vertical workflow. The queue advances to the corporate-recovery
+claims prototype.
+
+## Active plan — Corporate recovery claims prototype
+
+See the [plan](../research/corporate-recovery-claims-prototype-plan.md) and [progress ledger](../research/corporate-recovery-claims-prototype-progress.md).
+
+- [x] **Reconcile the current template, document and evidence source.** No vertical claims register,
+  correction workflow, page-provenance store or brief generator exists. Generic Knowledge, document
+  and artifact services do not establish those behaviors. The source map and partner/legal gates are
+  recorded in the progress ledger.
+- [ ] **Add a private synthetic claims-review demo Blueprint.** Include the fictional claim/ledger
+  variance, duplicate reference, missing document, ambiguous field, second currency and a review
+  packet. Label legal/status conventions illustrative. Keep it data-only without real parsing,
+  persistence, permissions, legal decisions, credentials or external effects. Run the pinned SDK
+  typecheck and `git diff --check`; add and run no tests.
+
+**Latest checkpoint:** source reconciliation found no claims-specific application code. The plan's
+fully fictional scenario fits the existing private `SpaceBlueprint` contract, while register edits,
+provenance enforcement and legal workflow behavior still require their own source design and
+acceptance. **Next action:** add `CORPORATE_RECOVERY_CLAIMS_DEMO_SPACE_TEMPLATE` in the SDK with only
+synthetic fixtures, then run the SDK typecheck and `git diff --check`. Do not contact the named
+practitioner, publish a listing or use real data.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
@@ -648,8 +674,8 @@ ledgers when moving to another plan.
 10. [x] **Reconciled; no provider-adapter task is ready without external terms/API/pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
 11. [x] **Reconciled; no AgentPhone source task is ready without verified API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
 12. [ ] **Paused; source implementation complete; only separate test/live acceptance remains blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). See its acceptance blocker and handoff above.
-13. [ ] **Active.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
-14. [ ] [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md)
+13. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
+14. [ ] **Active.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
 
 ## Checkpoint archive
 

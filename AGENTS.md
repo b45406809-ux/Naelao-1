@@ -62,5 +62,5 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Commercial cleaning Space template — add the first fictional operations demo Blueprint.**
-Use the active plan and [progress ledger](docs/research/commercial-cleaning-space-template-progress.md). Add one data-only Project walkthrough with synthetic site, scope, shift, inspection and blocked-work records plus a review packet. Include no provider connections, credentials, access grants or safety instructions. Verify with the pinned SDK typecheck and `git diff --check`; do not add or run tests, contact a design partner, accept payment or enable a provider.
+**Corporate recovery claims prototype — add a private synthetic claims-review demo Blueprint.**
+Use the active plan and [progress ledger](docs/research/corporate-recovery-claims-prototype-progress.md). Include the fictional claim/ledger variance, duplicate reference, missing document, ambiguous field, second currency and review packet. Keep legal/status labels illustrative and the Blueprint data-only, with no parsing, persistence, permissions, legal decisions or external effects. Verify with the pinned SDK typecheck and `git diff --check`; do not add or run tests, contact the named practitioner, use real data, publish a listing or accept payment.

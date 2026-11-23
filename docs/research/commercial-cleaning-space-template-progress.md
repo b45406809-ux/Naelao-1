@@ -17,6 +17,14 @@ validated requirements.
 | Knowledge, safety and SOPs | Generic published Knowledge exists; no employer-approved cleaning procedures, product labels or SDS material is included. | Do not invent chemical, equipment, emergency or compliance instructions. Any future safety content must come from the employer's approved source. |
 | Pilot, sale and live operation | The plan proposes partner discovery and a four-week prepaid offer but there is no named partner, agreed scope, seller/refund owner or acceptance record. | No outreach, purchase, payment, provider enablement or live pilot is authorized by this plan. Keep pricing experimental and blocked until owners agree the terms. |
 
+## Fictional operations demo Blueprint — 2026-11-23
+
+- Added `COMMERCIAL_CLEANING_OPERATIONS_SPACE_TEMPLATE` in `packages/agent-sdk/src/templates/commercial-cleaning-space.ts` and exported it from the SDK. Its single private, dogfood Project has synthetic site, approved-scope, acknowledged visit, blocked task, inspection, exception and proposed client-update fixtures.
+- The prompt and workflow explicitly keep every record fictional, separate proposed work from verified completion, and refuse to invent site, staffing, client or safety details. No credentials, connections, access grants, writes, notifications, purchasing or provider calls are included.
+- `corepack pnpm@9.12.0 --filter @naelao/agent-sdk run typecheck` and `git diff --check` pass. No tests or activation ran.
+
+The Blueprint is a reviewable static walkthrough. It does not implement operational record persistence or validate real cleaning workflows. Resume the next vertical workflow slice after practitioner discovery establishes approved records, access, transitions and evidence; resume focused tests after requested. A pilot, payment, partner outreach, provider activation and safety content remain separate authorization/source gates.
+
 ## First source slice
 
 Add `COMMERCIAL_CLEANING_OPERATIONS_SPACE_TEMPLATE` as a first-party private SDK reference Blueprint
@@ -26,6 +34,6 @@ fictional and that the Blueprint has no live connectors, credentials, permission
 This provides a reviewable fictional demo surface without claiming that the operational workflow
 or customer requirements have been validated.
 
-**Next action:** implement the Blueprint in `packages/agent-sdk/src/templates/` and export it from
-the SDK. Run only `corepack pnpm@9.12.0 --filter @naelao/agent-sdk run typecheck` and `git diff --check`;
-do not add or run tests. Keep design-partner, payment, provider and deployed acceptance separate.
+**Next action:** no further product workflow is source-ready without practitioner validation of the
+records and transitions. Resume with an approved discovery outcome and requested focused tests;
+keep partner contact, payment, provider and deployed acceptance separate.
