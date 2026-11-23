@@ -274,17 +274,23 @@ owner selection and revocation; do not infer beneficiary, payer or shared author
   and the exact unexpired task attachment before media extraction, after extraction and immediately
   before model dispatch. P08 remains partial for deployed MediaSandbox/Workers AI and provider
   acceptance; no gate was enabled.
-- [ ] **P09 — Reconcile the disabled provider-training action.** Verify imports and every reachable
+- [x] **P09 — Reconcile the disabled provider-training action.** Verify imports and every reachable
   `submit_training` caller against the current provider API/account, consent, dataset deletion,
-  evaluation and billing contract. Keep submission disabled and record the exact missing contract;
-  continue to the next ready item.
+  evaluation and billing contract. The owner lifecycle route reaches SpaceDO, which returns an
+  explicit `training_unavailable` 501; import remains a separate existing-adapter path. No provider
+  training API or billing call is reachable. P09 remains partial pending a verified provider/account,
+  consent/data lifecycle, evaluation and billing contract.
+- [ ] **P10 — Reconcile signed extension update recovery.** Trace reachable Space-shared and
+  Project-bound owner review/apply/status/recovery callers against exact publisher, installation,
+  generation, dependency, runtime-drain and update-receipt fences. Implement a missing recovery slice
+  only where current records enforce it; preserve unsupported migration/authority changes as gated.
 
-**Latest checkpoint:** P08 revalidates current owner opt-in, egress, active Space/tenant and the exact
-unexpired task attachment before media extraction, after extraction and immediately before Workers AI
-dispatch. The 6 MiB input, three timestamped JPEG frame, byte/pixel, and rolling Space quota limits
-remain. Agents typecheck and `git diff --check` pass; no tests, provider call or live acceptance ran.
-No rollout changed. **Next action:** trace P09's disabled training submission and imported-adapter
-paths against a verified provider, consent and dataset-lifecycle contract.
+**Latest checkpoint:** P09's owner-only lifecycle caller can import an existing adapter or request
+training, but `submit_training` terminates in SpaceDO with `training_unavailable`/501. There is no
+provider training dispatch. The missing verified provider/account, dataset consent/deletion,
+evaluation, and billing contract is recorded in the P09 ledger entry. No training, import, provider
+call or rollout was started. **Next action:** trace P10 update review/apply/recovery for a current
+owner-facing gap using exact installation and release records.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

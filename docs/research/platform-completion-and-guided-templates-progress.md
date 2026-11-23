@@ -3248,3 +3248,21 @@ live acceptance.
 Exact next action: P09 — trace `submit_training`, the import-adapter path and their reachable callers.
 Keep submission disabled until an official provider API/account, dataset consent/deletion, evaluation
 and billing contract exists; then continue to the next code-ready requirement.
+
+## P09 checkpoint — 2026-11-23 (provider training remains unavailable)
+
+The owner/admin custom-model lifecycle route forwards only verified actor identity to SpaceDO after
+checking Space ownership and air-gap policy. Its `submit_training` action returns `training_unavailable`
+with HTTP 501 before any external dispatch. `import_adapter` is a distinct route/action for an existing
+adapter; it does not train or provision a provider job. Current source contains no provider training
+API call, provider job receipt, attributable billing path or verified account contract. Submission is
+already fail-closed, so no stub or speculative provider integration was added.
+
+The scoped source trace is complete; P09 remains PARTIAL pending an official provider/account and
+pricing contract, affirmative dataset consent and deletion/revocation semantics, evaluation/activation
+criteria, and attributable billing plus deployed acceptance. No provider request or rollout occurred.
+Source review and queue diff hygiene only; no tests or typechecks ran.
+
+Exact next action: P10 — trace owner-facing update review/apply/status/recovery across current
+Space-shared and Project-bound signed installs. Reuse exact publisher, installation-generation,
+dependency and runtime-drain receipts; implement only a recoverable current-source gap.

@@ -62,7 +62,8 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Platform completion and guided templates · P09 — reconcile the disabled provider-training action.**
-Verify imports and every reachable `submit_training` caller against the current provider API/account,
-consent, dataset deletion, evaluation and billing contract. Keep submission disabled and record the
-exact missing contract; continue to the next ready item.
+**Platform completion and guided templates · P10 — reconcile signed extension update recovery.**
+Trace reachable Space-shared and Project-bound owner review/apply/status/recovery callers against
+exact publisher, installation, generation, dependency, runtime-drain and update-receipt fences.
+Implement a missing recovery slice only where current records enforce it; preserve unsupported
+migration/authority changes as gated.
