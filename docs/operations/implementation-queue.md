@@ -360,7 +360,7 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
   targeted Shell typechecks passed; the full Shell typecheck still reports stale `.next/types`
   imports for missing generated routes. No tests, provider actions or deployment ran.
 
-- [ ] **Add member grants and verified contact routing.** Requires a multi-Space/project sender
+- [x] **Add member grants and verified contact routing.** Requires a multi-Space/project sender
   selection model that preserves the plan's per-member identity and current membership checks; do
   not reuse executive contacts or infer ownership from pairing.
 
@@ -373,25 +373,31 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
     require a sender-scoped, 30-minute `USE` selection. The Agent DO rechecks the exact contact,
     grant, Space membership, channel state, Project membership and current selection before
     transcript persistence, assistant execution and reply delivery.
-  - [ ] Add owner/member setup and route visibility, and an explicit Customer service only versus
-    Staff and customers connection mode. Do not expose member access as ready until the relevant
-    connection mode, grant and verified-contact state are visible.
+  - [x] Add owner/member setup and route visibility, and an explicit Customer service only versus
+    Staff and customers connection mode. The Channels panel manages exact-scope grants, self
+    verification/replacement/revocation, current route selection and last successful use. The
+    connection mode gates member and executive routing; customer-only inbound uses the customer
+    extension path or remains in human review.
 
 - [ ] **Add isolated conversation replay.** Replay a selected customer event into a fresh simulation
   with a pinned installation/settings snapshot and simulated Knowledge/tool adapters. Never alter
   live extension sessions or dispatch provider effects.
 
-**Latest checkpoint:** migration `0287` and signed platform inbound now resolve an HMAC sender
-binding to active grants and current Space/Project memberships before the existing pairing fallback.
-Ambiguous routes require an explicit `USE <space-id> [project-id]` choice stored for 30 minutes;
-selection commands are event-idempotent. The Agent DO rechecks the exact contact id, grant, active
-Space, channel, Project roster and selected route before writing the transcript, running the
-assistant and delivering a reply. Agents typecheck and `git diff --check` passed. No tests,
-migration apply, provider action or deployment ran. The earlier grants and contact-proof evidence
-is in the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
-**Next action:** expose grant, verification and selected-route status to owners and members in the
-Channels UI, add the explicit customer/staff routing mode and enforce it across both member and
-executive routing. Keep executive contacts and customer pairings separate.
+**Latest checkpoint:** migration `0288` adds the explicit Space WhatsApp routing mode, revisioned
+mode audit and a privacy-safe member route-use ledger. The Channels panel now manages Space or
+exact Project grants, shows each member's verification/last-use status, lets members verify,
+replace or revoke only their own contact, displays current route selections, and explains `USE`
+selection. Member dispatch requires `staff_and_customers`, rechecks exact contact/grant/current
+membership/channel state in the Agent DO, and reserves provider events so retries cannot redirect
+to a different selected assistant. `customer_service_only` routes verified staff through the
+customer pairing/extension path and prevents executive commands and contact routing; missing or
+inactive handlers stay in the existing human-review path. Agents typecheck, targeted Shell
+typecheck and `git diff --check` pass. Full Shell typecheck still reports only the four known stale
+`.next/types` imports for missing routes. No tests, migration apply, provider action or deployment
+ran. Detailed evidence is in the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
+**Next action:** implement isolated conversation replay for a selected customer event, pinning the
+installation/settings snapshot and using simulated Knowledge/tool adapters without writing live
+session state or dispatching provider effects.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

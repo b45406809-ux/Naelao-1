@@ -2651,6 +2651,8 @@ export interface ChannelLink {
   project_id?: string | null;
   model_override?: string | null;
   extension_instance_id?: string | null;
+  member_routing_mode?: "customer_service_only" | "staff_and_customers";
+  member_routing_revision?: number;
 }
 
 export interface ChannelMediaCapabilities {
@@ -3101,7 +3103,7 @@ export async function pairAssistantChannel(
 export async function updateAssistantChannel(
   spaceId: string,
   session: SessionCredentials,
-  body: { action: "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension"; channel: string; secret?: string; project_id?: string; extension_instance_id?: string; media_access_token?: string; whatsapp_phone_number_id?: string; whatsapp_access_token?: string; model_override?: string | null }
+  body: { action: "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension" | "set_member_routing_mode"; channel: string; secret?: string; project_id?: string; extension_instance_id?: string; media_access_token?: string; whatsapp_phone_number_id?: string; whatsapp_access_token?: string; model_override?: string | null; member_routing_mode?: "customer_service_only" | "staff_and_customers" }
 ): Promise<ChannelConnectResult> {
   return apiFetch<ChannelConnectResult>(`/v1/spaces/${spaceId}/assistant/channels`, {
     method: "POST",
@@ -3146,14 +3148,18 @@ export interface AssistantChannelMemberAccess {
   granted_by: string;
   created_at: string;
   updated_at: string;
+  contact_verified?: boolean | number;
+  last_used_at?: string | null;
+  selected_until?: string | null;
 }
 
 export async function listAssistantChannelMemberAccess(
   spaceId: string,
   session: SessionCredentials,
+  options?: { mine?: boolean },
 ): Promise<AssistantChannelMemberAccess[]> {
   const result = await apiFetch<{ data?: AssistantChannelMemberAccess[] }>(
-    `/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels?member_access=whatsapp`, { session, cache: "no-store" },
+    `/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels?member_access=whatsapp${options?.mine ? "&mine=1" : ""}`, { session, cache: "no-store" },
   );
   return result.data ?? [];
 }
@@ -3183,6 +3189,26 @@ export async function beginAssistantChannelMemberContactVerification(
 ): Promise<AssistantChannelMemberContactChallenge> {
   return apiFetch<AssistantChannelMemberContactChallenge>(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels`, {
     method: "POST", session, body: JSON.stringify({ action: "begin_member_contact_verification", channel: "whatsapp" }),
+  });
+}
+
+export async function revokeAssistantChannelMemberContact(
+  spaceId: string,
+  session: SessionCredentials,
+): Promise<{ contacts_revoked: number }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels`, {
+    method: "POST", session, body: JSON.stringify({ action: "revoke_member_contact", channel: "whatsapp" }),
+  });
+}
+
+export async function setAssistantChannelMemberRoutingMode(
+  spaceId: string,
+  session: SessionCredentials,
+  mode: "customer_service_only" | "staff_and_customers",
+): Promise<{ member_routing_mode: "customer_service_only" | "staff_and_customers"; member_routing_revision: number }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels`, {
+    method: "POST", session,
+    body: JSON.stringify({ action: "set_member_routing_mode", channel: "whatsapp", member_routing_mode: mode }),
   });
 }
 
@@ -3927,6 +3953,7 @@ export interface SpaceMember {
   role: "member" | "admin" | "owner";
   status: string;
   joined_at: string;
+  display_name?: string | null;
 }
 
 export async function listSpaceMembers(spaceId: string, session: SessionCredentials): Promise<SpaceMember[]> {

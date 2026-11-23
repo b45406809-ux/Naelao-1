@@ -62,5 +62,5 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**WhatsApp member routing and extension testing — add member grants and verified contact routing.**
-Use the active plan and [progress ledger](docs/research/whatsapp-member-routing-and-extension-testing-progress.md). Design a separate multi-Space sender identity and implement admin-granted member access plus self-verified contact bindings. Recheck current Space/project membership on each message. Do not use `executive_contacts` or customer `channel_pairings` as proof of member identity. Keep provider actions and deployment gates disabled.
+**WhatsApp member routing and extension testing — implement isolated conversation replay.**
+Use the active plan and [progress ledger](docs/research/whatsapp-member-routing-and-extension-testing-progress.md). Replay a selected customer event into a fresh simulation with a pinned installation/settings snapshot and simulated Knowledge/tool adapters. Keep provider delivery, side effects, live extension sessions and persistent customer session updates disabled.

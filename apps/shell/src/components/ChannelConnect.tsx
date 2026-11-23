@@ -18,6 +18,7 @@ import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { ExtensionAgentMaintenanceDelegation } from "@/components/ExtensionAgentMaintenanceDelegation";
+import { WhatsAppMemberAccessPanel } from "@/components/WhatsAppMemberAccessPanel";
 import { MicroAppStorageStatus, projectGadgetStorageApps } from "@/components/MicroAppStorageStatus";
 import { extensionResourceCostDisclosure, previewExtensionResourceRequirements } from "@/lib/extension-resource-preview";
 import { previewExtensionPublisherProvenance } from "@/lib/extension-publisher-provenance";
@@ -1571,6 +1572,9 @@ export function ChannelConnect({
                 <span style={{ fontSize: 12, color: "var(--text3)" }}>{on ? "On" : connected ? "Off" : "—"}</span>
               )}
             </div>
+            {ch.id === "whatsapp" && <WhatsAppMemberAccessPanel spaceId={spaceId} projectId={projectId ?? null} session={session}
+              canManage={canManage} connected={connected} enabled={on}
+              routingMode={link?.member_routing_mode ?? "staff_and_customers"} onChanged={onChanged} />}
             {ch.id === "discord" && (() => {
               const attachments = mediaCapabilities?.channels.discord?.inbound_attachments;
               if (!attachments) return <p role="status" style={{ margin: "6px 0 0", fontSize: 11, color: "var(--text3)" }}>

@@ -9384,7 +9384,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND project_id=? AND status='enabled' LIMIT 1`)
         .bind(input.tenantId, input.spaceId, input.userId, projectId).first(),
       db.prepare(`SELECT 1 AS enabled FROM channel_links
-        WHERE tenant_id=? AND space_id=? AND channel='whatsapp' AND enabled=1 LIMIT 1`)
+        WHERE tenant_id=? AND space_id=? AND channel='whatsapp' AND enabled=1
+          AND member_routing_mode='staff_and_customers' LIMIT 1`)
         .bind(input.tenantId, input.spaceId).first(),
       db.prepare(`SELECT 1 AS active FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active'
         WHERE s.id=? AND s.tenant_id=? AND s.status='active' LIMIT 1`)
@@ -9421,7 +9422,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; extensionInstanceId?: string; extensionScriptSha256?: string; providerConnectionId?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate; memberUserId?: string; memberProviderRouteKey?: string; memberContactId?: string; memberRouteSelectionExpiresAt?: string };
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; extensionInstanceId?: string; extensionScriptSha256?: string; providerConnectionId?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate; memberUserId?: string; memberProviderRouteKey?: string; memberContactId?: string; memberRouteSelectionExpiresAt?: string; allowExecutiveRouting?: boolean };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     if (body.spaceId && body.tenantId && this.env.PLATFORM_DB && await this.tenantSpaceSuspended(body.tenantId, body.spaceId)) {
       return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
@@ -9451,7 +9452,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       memberAuthorizedUserId = body.memberUserId;
     }
 
-    if(!memberAuthorizedUserId&&(norm.channel==="whatsapp"||norm.channel==="telegram")&&body.spaceId&&body.tenantId&&/^ad_[a-f0-9]{48}$/.test(norm.text.trim())){
+    if(body.allowExecutiveRouting!==false&&!memberAuthorizedUserId&&(norm.channel==="whatsapp"||norm.channel==="telegram")&&body.spaceId&&body.tenantId&&/^ad_[a-f0-9]{48}$/.test(norm.text.trim())){
       const result=await applyApprovalDecision(this.env as unknown as import("../index.js").AgentsEnv,{tenantId:body.tenantId,spaceId:body.spaceId,channel:norm.channel,contact:norm.channel_user_id,token:norm.text.trim()},promise=>this.ctx.waitUntil(promise));
       return Response.json(result);
     }
@@ -9459,7 +9460,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // against SpaceDO's live owner/admin membership on every message, so removing an admin takes
     // effect immediately. Unknown senders fall through to the quarantined customer plane.
     let verifiedChannelMemberId: string | null = memberAuthorizedUserId;
-    if (!memberAuthorizedUserId && (norm.channel === "whatsapp" || norm.channel === "telegram") && body.spaceId && body.tenantId) {
+    if (body.allowExecutiveRouting !== false && !memberAuthorizedUserId && (norm.channel === "whatsapp" || norm.channel === "telegram") && body.spaceId && body.tenantId) {
       const headers = await this.internalHeaders(body.tenantId, { "content-type": "application/json" });
       let executiveUserId: string | null = null;
       let foundryHandled = false;

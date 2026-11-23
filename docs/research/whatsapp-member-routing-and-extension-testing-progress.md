@@ -141,3 +141,30 @@ identity model; do not reuse `executive_contacts` or `channel_pairings` as membe
 - Agents typecheck and `git diff --check` passed. No tests, migration apply, provider operation or
   deployment ran. Admin/member UI, route visibility and explicit customer-only/staff-and-customer
   mode remain the exact next code slice; rollout gates remain off.
+
+### Owner/member setup, routing mode and route-use visibility — 2026-11-23
+
+- Added migration `0288_whatsapp_member_routing_mode.sql`. Each WhatsApp connection has an explicit
+  `customer_service_only` or `staff_and_customers` mode with a revisioned admin audit. Member route
+  candidates and the Agent DO now require the staff mode at dispatch. The paired inbound path also
+  suppresses executive approvals, desktop/review commands and executive-contact routing in
+  customer-service-only mode. The generic signed WhatsApp endpoint checks its exact connection
+  mode and skips disabled/unconfigured links before dispatch.
+- The Channels panel now provides owner/admin grant, suspend, restore and revoke controls for the
+  Space assistant or exact Project roster. Members see their own grants, verification status,
+  currently selected routes and last successful use. Eligible members can start or replace their
+  own five-minute contact challenge and revoke all their own active contacts; revocation records an
+  audit event, consumes pending challenges and clears route selections. Neither UI path exposes a
+  phone value.
+- Member inbound now reserves the HMAC provider-event identity before dispatch and records
+  dispatched, rejected or uncertain state. A duplicate event cannot be rerouted after the member
+  changes their selected assistant. The Channels API exposes last successful use and the current
+  selection expiry without storing raw provider event IDs or senders.
+- Agents typecheck passed with pnpm `9.12.0`; targeted Shell typecheck for `ChannelConnect.tsx`,
+  `WhatsAppMemberAccessPanel.tsx` and `api.ts` passed; `git diff --check` passed. Full Shell
+  typecheck remains blocked only by four existing stale `.next/types` imports to missing routes.
+  No tests, migration apply, provider action or deployment ran; provider and rollout behavior remain
+  unverified.
+- This completes the source implementation and UI portion of member routing. Next: implement the
+  separate isolated conversation replay path with pinned installation/settings and simulated
+  Knowledge/tool adapters, avoiding live delivery, side effects and session writes.
