@@ -74,6 +74,7 @@ import {
   type ChannelLink,
   type SubAgentSummary,
   type GoalActivity,
+  type GoalWorkspaceLineage,
   type AgentDefinitionSummary,
   type WorkspaceFile,
   type ArtifactSummary,
@@ -552,6 +553,22 @@ function WorkerResultView({ result, maxOutput = 8_000, resolution }: { result: s
   </section>;
 }
 
+function GoalWorkspaceLineageView({ lineage }: { lineage: GoalWorkspaceLineage }) {
+  return <div data-technical-detail="identifiers" style={{ color: "var(--text3)", fontSize: 10, marginTop: 4, overflowWrap: "anywhere" }}>
+    <div>Workspace branch: <code>{lineage.branch}</code> · attempt {lineage.attempt}</div>
+    {lineage.base && <div>Branch base: <code>{lineage.base.parentBranch}</code> revision {lineage.base.revision} · manifest <code>{lineage.base.manifestHash}</code></div>}
+    {lineage.lastCheckpoint
+      ? <div>Last recorded worker checkpoint{lineage.lastCheckpoint.attempt ? ` · attempt ${lineage.lastCheckpoint.attempt}` : ""}: revision {lineage.lastCheckpoint.revision} · manifest <code>{lineage.lastCheckpoint.manifestHash}</code>{lineage.lastCheckpoint.savedAt ? ` · ${new Date(lineage.lastCheckpoint.savedAt).toLocaleString()}` : ""}. Task activity does not recheck whether this saved pin is current.</div>
+      : <div>Worker checkpoint revision unavailable.</div>}
+    {lineage.validationReceipts.map((receipt, index) => <div key={`${receipt.completedAt}:${receipt.commandHash}:${index}`}>
+      Checked integration: validation {receipt.status} on <code>{receipt.branch}</code> revision {receipt.revision} ({receipt.manifestHash}); source <code>{receipt.sourceBranch}</code>@{receipt.sourceCommitId ?? "unavailable"} → candidate <code>{receipt.candidateBranch}</code>@{receipt.candidateCommitId ?? "unavailable"} → target <code>{receipt.targetBranch}</code> revision {receipt.targetRevision} ({receipt.targetManifestHash}) @{receipt.targetCommitId ?? "unavailable"}; publication {receipt.publicationStatus.replaceAll("_", " ")}.
+    </div>)}
+    {lineage.publicationAttempts.map((attempt, index) => <div key={`${attempt.updatedAt}:${attempt.attempt}:${index}`}>
+      Publication attempt {attempt.attempt}: {attempt.status.replaceAll("_", " ")} for <code>{attempt.targetBranch}</code> revision {attempt.targetRevision}.
+    </div>)}
+  </div>;
+}
+
 function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined; agentId?: string | null | undefined; lastRunId?: string | null | undefined; projectId?: string | null | undefined }) {
   const product = useProduct();
   const [tasks, setTasks] = React.useState<DurableAgentTask[]>([]);
@@ -717,6 +734,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
         {task.decision_review_reason && <div role="status" style={{ color: "var(--danger, #dc2626)", fontSize: 11 }}>Decision reference needs review: {task.decision_review_reason.slice(0, 240)}</div>}
         {task.dispatch && <div style={{ color: "var(--text3)", fontSize: 11 }}>Worker dispatch: {task.dispatch.status.replaceAll("_", " ")}{task.dispatch.attempt ? ` · attempt ${task.dispatch.attempt}` : ""}</div>}
         <div style={{ color: "var(--text3)", fontSize: 11 }}>Verification: {task.verification?.outcome ?? (goal.verificationRequired ? "pending" : "not required")}{task.verification?.reason ? ` · ${task.verification.reason}` : ""}</div>
+        {task.workspaceLineage && <GoalWorkspaceLineageView lineage={task.workspaceLineage} />}
         {task.dependencies.length > 0 && <div style={{ color: "var(--text3)" }}>Depends on: {task.dependencies.map(id => id.slice(0, 100)).join(", ")}</div>}
         {task.runtime && <div style={{ color: "var(--text3)", fontSize: 11 }}>Runtime: {task.runtime.capability ?? "worker execution"} · {task.runtime.status}{task.runtime.status === "waiting" && task.runtime.queuePosition !== undefined ? ` · queue position ${task.runtime.queuePosition}` : ""}{task.runtime.queueWaitMs !== undefined ? ` · waited ${formatElapsedTime(task.runtime.queueWaitMs)}` : ""}{task.runtime.executionMs !== undefined ? ` · ran ${formatElapsedTime(task.runtime.executionMs)}` : ""}</div>}
         {goal.fixers[task.id] && <div>Fixer: {workerActivityLabel(goal.fixers[task.id]!.status)}</div>}
@@ -1795,6 +1813,7 @@ function WorkersPanel({
               : "Internal-credit usage pending or unavailable"}</div>}
             {task.dispatch && <div>Worker dispatch: {task.dispatch.status.replaceAll("_", " ")}{task.dispatch.attempt ? ` · attempt ${task.dispatch.attempt}` : ""}</div>}
             <div>Verification: {task.verification?.outcome ?? (goal.verificationRequired ? "pending" : "not required")}{task.verification?.reason ? ` · ${task.verification.reason}` : ""}</div>
+            {task.workspaceLineage && <GoalWorkspaceLineageView lineage={task.workspaceLineage} />}
             {task.dependencies.length > 0 && <div>Depends on: {task.dependencies.join(", ")}</div>}
             {goal.fixers[task.id] && <div>Fixer: {workerActivityLabel(goal.fixers[task.id]!.status)}</div>}
           </div>)}

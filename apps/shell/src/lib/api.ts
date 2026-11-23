@@ -3206,6 +3206,34 @@ export async function resolveWorkerWorkspaceConflict(
   });
 }
 
+export interface GoalWorkspaceLineage {
+  branch: string;
+  attempt: number;
+  base?: { parentBranch: string; revision: number; manifestHash: string };
+  lastCheckpoint?: { attempt?: number; savedAt?: number; revision: number; manifestHash: string; freshness: "recorded_not_rechecked" };
+  validationReceipts: Array<{
+    status: "passed" | "failed" | "uncertain" | "blocked";
+    branch: string;
+    revision: number;
+    manifestHash: string;
+    targetRevision: number;
+    targetManifestHash: string;
+    commandHash: string;
+    durationMs: number;
+    completedAt: string;
+    candidateBranch: string;
+    candidateCommitId: string | null;
+    sourceBranch: string;
+    sourceCommitId: string | null;
+    targetBranch: string;
+    targetCommitId: string | null;
+    publicationStatus: "published" | "not_published" | "uncertain";
+    exitCode?: number;
+  }>;
+  publicationAttempts: Array<{ attempt: number; targetBranch: string; targetRevision: number;
+    status: "authorized" | "published" | "not_published" | "uncertain" | "outcome_unknown"; updatedAt: string }>;
+}
+
 export interface GoalActivity {
   id: string;
   verificationRequired: boolean;
@@ -3213,7 +3241,7 @@ export interface GoalActivity {
     policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed";
     adjustments?: Array<{ fromConcurrency: number | null; toConcurrency: number; reason: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed"; at: number;
       taskId?: string; taskOutcome?: "completed" | "failed" | "needs_review"; verificationOutcome?: "passed" | "failed" | "uncertain" | "not_required" | "unavailable" }> };
-  tasks: Array<{ id: string; title: string; status: string; dependencies: string[]; redundancy_group?: string; workerId?: string; assigned_role?: string; budget_tokens?: number; acceptance_criteria?: string[]; decision_refs?: Array<{ id: string; revision: number }>; decision_review_reason?: string; runtime_capability?: string; dispatch?: { status: "intent" | "delivering" | "acknowledged" | "uncertain" | "review"; cancel_requested?: boolean; attempt?: number }; cancellation?: { status: "not_dispatched" | "requested" | "acknowledged" | "uncertain" | "already_complete" | "late_result"; winner_task_id: string; requested_at: number; acknowledged_at?: number; late_result_at?: number; reason?: string; effects: "none" | "unknown" }; late_result_available?: boolean; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; runtime?: { status: "waiting" | "assigned" | "running" | "completed" | "failed" | "cancelled"; capability?: string; queuePosition?: number; queuedAt?: number; assignedAt?: number; startedAt?: number; completedAt?: number; queueWaitMs?: number; executionMs?: number } }>;
+  tasks: Array<{ id: string; title: string; status: string; dependencies: string[]; redundancy_group?: string; workerId?: string; assigned_role?: string; budget_tokens?: number; acceptance_criteria?: string[]; decision_refs?: Array<{ id: string; revision: number }>; decision_review_reason?: string; runtime_capability?: string; dispatch?: { status: "intent" | "delivering" | "acknowledged" | "uncertain" | "review"; cancel_requested?: boolean; attempt?: number }; cancellation?: { status: "not_dispatched" | "requested" | "acknowledged" | "uncertain" | "already_complete" | "late_result"; winner_task_id: string; requested_at: number; acknowledged_at?: number; late_result_at?: number; reason?: string; effects: "none" | "unknown" }; late_result_available?: boolean; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; workspaceLineage?: GoalWorkspaceLineage; runtime?: { status: "waiting" | "assigned" | "running" | "completed" | "failed" | "cancelled"; capability?: string; queuePosition?: number; queuedAt?: number; assignedAt?: number; startedAt?: number; completedAt?: number; queueWaitMs?: number; executionMs?: number } }>;
   escalations: Array<{ taskId: string; reason: string; nextAction: string; blockedTasks: string[] }>;
   fixers: Record<string, { status: string }>;
   messages: Array<{ id: string; sender: string; recipients: string[]; kind: string; text: string }>;

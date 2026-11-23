@@ -81,10 +81,15 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   thresholds are approved, a powered representative task set and blinded rubric are frozen, and
   provider usage can be reconciled to invoices. Keep progressive routing, dynamic expansion and
   redundant-worker cancellation disabled until separately accepted and authorized.
-- [ ] **Active · APW03 — Decisions and task lineage.** Trace goal task/result projections for exact
-  worker-branch base/result revisions and checked publication validation receipts; implement the
-  smallest missing lineage link and test its host projection. Continue conflict review and owner
-  decision controls against the PW and EP contracts.
+- [x] **APW03 — Goal task branch lineage projection.** Goal activity now joins the exact worker row
+  only after checking parent-run, tenant, Space, actor and Project scope. It shows the branch base,
+  recorded checkpoint pin, checked validation receipts and publication attempt status without
+  exposing worker output. The UI labels the checkpoint as recorded and not rechecked for freshness.
+  See the APW03 ledger follow-up.
+- [ ] **Active · APW03 — Conflict review and owner decision controls.** Inspect the existing worker
+  conflict receipt and Project decision-review callers, then add the next missing owner-facing
+  conflict/review action. Preserve checked publication as the only canonical workspace mutation
+  path and never auto-approve stale decisions.
 - [ ] **APW04 — Memory and context.** Continue provenance, retention and context evaluation from the
   existing actor-scoped memory work and the Knowledge ledger.
 - [ ] **APW05 — Cost and scheduling.** Reconcile reservations, accounting and run limits with the
@@ -93,19 +98,19 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** Added a paired local comparison fixture and its [protocol](../benchmarks/adaptive-goal-routing-comparative-protocol.md).
-Six synthetic code/non-code workloads, two repeats and three routing arms produced 36 runs. All 48
-expected artifacts per arm passed host evidence; synthetic token totals matched. Each run recovered
-one injected lost acknowledgement without redispatch; resource overlaps and duplicate dispatches
-were zero. Agents typecheck and three focused benchmark suites passed (**6 passed, 2 live/provider
-tests skipped**); `git diff --check` passed. These are local control-flow and artifact-evidence
-results only. Actual model/customer quality, failed-worker retry policy, deployed runtime, provider
-invoice and USD spend are still unavailable. APW02 provider/cost acceptance is blocked; all rollout
-flags remain off.
+**Latest checkpoint.** Goal activity now projects exact worker branch base metadata, the last
+recorded worker checkpoint pin, checked integration validation receipts, and publication outcomes
+only for the matching task worker after validating tenant, Space, actor, Project and parent-run
+scope. Shell task panels show these identities and state that checkpoint freshness was not rechecked.
+Worker output and checkpoint payload are not returned. Verification: lineage projection and goal
+activity route suites **7/7**, Agents typecheck, Shell source typecheck excluding stale generated
+`.next/types`, and `git diff --check`; local/mock only. No live Coordinator, restart, or deployed UI/
+privacy acceptance ran. APW02 provider/cost acceptance remains blocked and all rollout flags remain
+off.
 
-**Exact next action:** continue APW03 by tracing exact worker-branch base/result revisions and checked
-publication validation receipts through goal result/activity projections; implement and test the
-smallest missing lineage link. Preserve the cancellation checkpoint and keep rollout disabled.
+**Exact next action:** inspect the existing worker conflict receipt and Project decision-review
+callers, then add the next missing owner-facing conflict/review action. Preserve checked publication
+as the sole canonical workspace mutation path and never auto-approve stale decisions.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).

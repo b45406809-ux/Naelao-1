@@ -5,6 +5,7 @@ import {
   issueDelegationContract,
 } from "../script-engine/delegation-contract.js";
 import { NaelaoAgentDO } from "./NaelaoAgentDO.js";
+import { encodeWorkerCheckpoint } from "./worker-checkpoint.js";
 
 vi.mock("../communications/core.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../communications/core.js")>()),
@@ -14,6 +15,7 @@ vi.mock("../communications/core.js", async (importOriginal) => ({
 describe("task blackboard durable object route", () => {
   it("limits goal activity to the recorded tenant, space and actor", async () => {
     const hash = "a".repeat(64);
+    const workerId = `${hash}:a`;
     const secret = "test-secret";
     const data = new Map<string, unknown>([
       ["goal-activity:index:run", [hash]],
@@ -23,6 +25,8 @@ describe("task blackboard durable object route", () => {
           tenantId: "t",
           spaceId: "s",
           actorId: "u",
+          parentRunId: "run",
+          projectId: null,
           tasks: [
             { id: "a", title: "Task", dependencies: [], assigned_role: "schema-validator", budget_tokens: 2400, acceptance_criteria: ["Return a verified result"], decision_refs: [{ id: "decision-1", revision: 3 }] },
             { id: "b", title: "Second task", dependencies: [] },
@@ -44,7 +48,7 @@ describe("task blackboard durable object route", () => {
           tasks: {
             a: {
               status: "failed",
-              workerId: "w",
+              workerId,
               decisionReviewReason: "workspace_revision_stale:decision-1",
               verification: {
                 outcome: "failed",
@@ -66,17 +70,46 @@ describe("task blackboard durable object route", () => {
           },
         },
       ],
+      [`worker-branch-origin:${workerId}`, { branch: "workers/goal-a", parentBranch: "task/parent", revision: 4, manifestHash: "b".repeat(64) }],
+      [`worker-integration-receipts:${workerId}`, [{
+        status: "passed", branch: "race/validation-a", revision: 2, manifestHash: "c".repeat(64),
+        targetRevision: 5, targetManifestHash: "d".repeat(64), commandHash: "e".repeat(64),
+        durationMs: 800, completedAt: "2026-11-23T00:00:00.000Z", candidateBranch: "race/candidate-a",
+        candidateCommitId: "f".repeat(40), sourceBranch: "workers/goal-a", sourceCommitId: "f".repeat(40),
+        targetBranch: "main", targetCommitId: "f".repeat(40), publicationStatus: "published",
+      }]],
     ]);
     const storage = {
       get: async (key: string) => data.get(key),
       sql: {
         exec: (query: string) => ({
           toArray: () =>
-            query.includes("goal_dag_journals")
-              ? []
+            query.includes("goal_dag_journals") ? []
+              : query.includes("FROM sub_agents") ? [
+                  {
+                    id: workerId,
+                    parent_run_id: "run",
+                    workspace_branch: "workers/goal-a",
+                    attempt: 2,
+                    checkpoint_json: encodeWorkerCheckpoint({ private: "worker output" }, {
+                      attempt: 2, savedAt: 1_800_000_000_000,
+                      workspacePin: { branch: "workers/goal-a", revision: 9, manifestHash: "a".repeat(64) },
+                    }),
+                    configuration_json: JSON.stringify({ tenantId: "t", spaceId: "s", projectId: null, actorId: "u" }),
+                  },
+                  {
+                    id: `${hash}:b`,
+                    parent_run_id: "run",
+                    workspace_branch: "workers/foreign-b",
+                    attempt: 1,
+                    checkpoint_json: null,
+                    configuration_json: JSON.stringify({ tenantId: "t", spaceId: "s", projectId: null, actorId: "other" }),
+                  },
+                ]
+              : query.includes("FROM worker_publication_permits") ? []
               : [
                   {
-                    worker_id: `${hash}:a`,
+                    worker_id: workerId,
                     status: "review",
                     attempt: 2,
                     workspace_branch: "private/branch",
@@ -117,6 +150,12 @@ describe("task blackboard durable object route", () => {
           decision_review_reason?: string;
           verification?: { outcome: string; reason: string };
           dispatch?: { status: string; attempt?: number };
+          workspaceLineage?: {
+            branch: string; attempt: number;
+            base?: { parentBranch: string; revision: number; manifestHash: string };
+            lastCheckpoint?: { attempt?: number; savedAt?: number; revision: number; manifestHash: string; freshness: string };
+            validationReceipts: Array<{ status: string; publicationStatus: string; candidateCommitId: string | null }>;
+          };
         }>;
         fixers: Record<string, { status: string }>;
       }>;
@@ -145,6 +184,13 @@ describe("task blackboard durable object route", () => {
             reason: "Independent evidence rejected.",
           },
           dispatch: { status: "review", attempt: 2 },
+          workspaceLineage: {
+            branch: "workers/goal-a", attempt: 2,
+            base: { parentBranch: "task/parent", revision: 4, manifestHash: "b".repeat(64) },
+            lastCheckpoint: { attempt: 2, savedAt: 1_800_000_000_000, revision: 9, manifestHash: "a".repeat(64), freshness: "recorded_not_rechecked" },
+            validationReceipts: [{ status: "passed", publicationStatus: "published", candidateCommitId: "f".repeat(40) }],
+            publicationAttempts: [],
+          },
         },
         { id: "b", title: "Second task", status: "pending" },
       ],
@@ -153,6 +199,7 @@ describe("task blackboard durable object route", () => {
     expect(JSON.stringify(ownerResponse)).not.toContain(
       "private fixer transcript must not be exposed"
     );
+    expect(JSON.stringify(ownerResponse)).not.toContain("workers/foreign-b");
     expect(JSON.stringify(ownerResponse)).not.toContain("private/branch");
     expect(
       ((await (await get("other", "s")).json()) as { goals: unknown[] }).goals

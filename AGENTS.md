@@ -23,15 +23,16 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW03 — Decisions and task lineage.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). APW02 local comparison
-protocol and deterministic scheduler/evidence fixture are checked off. Real-runtime/provider
-comparison and cost-aware routing remain blocked pending approved spend/quality thresholds, staging
-and provider access, representative task runs, and invoice-reconciled usage. Trace exact worker-branch
-base/result revisions and checked publication validation receipts through goal result/activity
-projections; implement the smallest missing lineage link. Keep progressive routing, dynamic expansion
-and redundant-worker cancellation disabled by default; do not claim live or provider-cost results
-without their applicable evidence.
+**APW03 — Conflict review and owner decision controls.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). Goal activity now
+projects scope-checked worker-branch base/checkpoint lineage, validation receipts and publication
+outcomes. Inspect the existing worker conflict receipt and Project decision-review callers, then add
+the next missing owner-facing conflict/review action. Preserve checked publication as the only
+canonical workspace mutation path and never auto-approve stale decisions. APW02 real-runtime/provider
+comparison and cost-aware routing remain blocked pending approved thresholds, staging/provider
+access, representative task runs, and invoice-reconciled usage. Keep progressive routing, dynamic
+expansion and redundant-worker cancellation disabled by default; do not claim live or provider-cost
+results without their applicable evidence.
 
 ## Save progress inside each task
 

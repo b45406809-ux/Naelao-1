@@ -70,6 +70,7 @@ import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, schedul
   scheduledGoalGrantConfig } from "../scheduled-direct-authorization.js";
 import { parseSessionSpendStatus } from "../session-spend-status.js";
 import { decodeWorkerCheckpoint, encodeWorkerCheckpoint } from "./worker-checkpoint.js";
+import { projectGoalWorkspaceLineage } from "./goal-workspace-lineage.js";
 import type { ScheduledJobGrantConfig } from "@naelao/security";
 import { renderExtensionVoiceResponse } from "../communications/voice-response.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
@@ -4736,7 +4737,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               const ownerHashes = await tx.get<string[]>(ownerIndexKey) ?? [];
               if (!ownerHashes.includes(hash)) await tx.put(ownerIndexKey, [...ownerHashes, hash].slice(-50));
             }
-            await tx.put(`goal-activity:metadata:${hash}`, { tenantId, spaceId, actorId: userId ?? null, tasks: tasks.map(task => ({
+            await tx.put(`goal-activity:metadata:${hash}`, { tenantId, spaceId, actorId: userId ?? null, parentRunId, projectId: projectId ?? null, tasks: tasks.map(task => ({
               id: task.id,
               title: task.title,
               dependencies: task.dependencies ?? [],
@@ -6513,7 +6514,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const goals = [];
     for (const hash of hashes.slice(history ? -20 : -10)) {
       if (!/^[a-f0-9]{64}$/.test(hash)) continue;
-      const metadata = await this.ctx.storage.get<{ tenantId: string; spaceId: string; actorId: string | null; tasks: Array<{ id: string; title: string; dependencies: string[]; redundancy_group?: string; communication_recipients?: string[]; assigned_role?: string; budget_tokens?: number; acceptance_criteria?: string[]; decision_refs?: Array<{ id: string; revision: number }>; runtime_capability?: string }> }>(`goal-activity:metadata:${hash}`);
+      const metadata = await this.ctx.storage.get<{ tenantId: string; spaceId: string; actorId: string | null; parentRunId?: string; projectId?: string | null; tasks: Array<{ id: string; title: string; dependencies: string[]; redundancy_group?: string; communication_recipients?: string[]; assigned_role?: string; budget_tokens?: number; acceptance_criteria?: string[]; decision_refs?: Array<{ id: string; revision: number }>; runtime_capability?: string }> }>(`goal-activity:metadata:${hash}`);
       if (!metadata || metadata.tenantId !== tenantId || metadata.spaceId !== spaceId || metadata.actorId !== actorId) continue;
       // Goal DAG journals are projected into SQLite by the durable scheduler. Older
       // K/V-backed journals remain readable during migration, but a K/V-only lookup makes
@@ -6538,9 +6539,40 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ).toArray()
         : [];
       const dispatchByTask = new Map(dispatchRows.map(row => [row.worker_id, row]));
+      const workspaceLineageByWorker = new Map<string, ReturnType<typeof projectGoalWorkspaceLineage>>();
+      const expectedParentRunId = typeof metadata.parentRunId === "string" ? metadata.parentRunId : runId;
+      if (this.ctx.storage.sql && expectedParentRunId && dispatchWorkerIds.length) {
+        const workerRows = this.ctx.storage.sql.exec<{ id: string; parent_run_id: string; workspace_branch: string | null;
+          attempt: number; checkpoint_json: string | null; configuration_json: string | null }>(
+          `SELECT id,parent_run_id,workspace_branch,attempt,checkpoint_json,configuration_json FROM sub_agents WHERE id IN (${dispatchWorkerIds.map(() => "?").join(",")}) LIMIT 12`,
+          ...dispatchWorkerIds
+        ).toArray();
+        for (const row of workerRows) {
+          if (!dispatchWorkerIds.includes(row.id) || row.parent_run_id !== expectedParentRunId || !row.configuration_json) continue;
+          const workerScope = safeJsonParse(row.configuration_json);
+          if (!workerScope || typeof workerScope !== "object" || Array.isArray(workerScope)) continue;
+          const scope = workerScope as Record<string, unknown>;
+          if (scope.tenantId !== tenantId || scope.spaceId !== spaceId || scope.actorId !== actorId
+            || (scope.projectId ?? null) !== (metadata.projectId ?? null)) continue;
+          try {
+            const branchOrigin = await this.ctx.storage.get<unknown>(`worker-branch-origin:${row.id}`);
+            const validationReceipts = await this.ctx.storage.get<unknown>(`worker-integration-receipts:${row.id}`);
+            const publicationAttempts = this.ctx.storage.sql.exec<{ worker_attempt: number; target_branch: string; target_revision: number; status: string; updated_at: number }>(
+              "SELECT worker_attempt,target_branch,target_revision,status,updated_at FROM worker_publication_permits WHERE worker_id=? ORDER BY updated_at DESC LIMIT 10", row.id
+            ).toArray().map(attempt => ({ attempt: attempt.worker_attempt, targetBranch: attempt.target_branch,
+              targetRevision: attempt.target_revision,
+              status: attempt.status === "authorized" ? "outcome_unknown" : attempt.status,
+              updatedAt: new Date(attempt.updated_at).toISOString() }));
+            const lineage = projectGoalWorkspaceLineage({ branch: row.workspace_branch, attempt: row.attempt,
+              branchOrigin, checkpointJson: row.checkpoint_json, validationReceipts, publicationAttempts });
+            if (lineage) workspaceLineageByWorker.set(row.id, lineage);
+          } catch { /* incomplete optional lineage is omitted; task status remains readable */ }
+        }
+      }
       const projected = metadata.tasks.map(task => {
         const state = journal.tasks[task.id];
-        const dispatch = dispatchByTask.get(`${hash}:${task.id}`);
+        const workerId = `${hash}:${task.id}`;
+        const dispatch = dispatchByTask.get(workerId);
         const status = state?.status === "running" && dispatch?.status === "review" ? "needs_review" : state?.status ?? "pending";
         return { ...task, communication_recipients: task.communication_recipients ?? [],
           ...(typeof task.assigned_role === "string" ? { assigned_role: task.assigned_role.slice(0, 128) } : {}),
@@ -6560,6 +6592,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               ...(Number.isSafeInteger(state.cancellation.lateResultAt) ? { late_result_at: state.cancellation.lateResultAt } : {}) } } : {}),
           ...(state?.lateResult !== undefined ? { late_result_available: true } : {}),
           ...(state?.verification ? { verification: { outcome: state.verification.outcome, reason: state.verification.reason.slice(0, 300) } } : {}),
+          ...(state?.workerId === workerId && workspaceLineageByWorker.has(workerId) ? { workspaceLineage: workspaceLineageByWorker.get(workerId) } : {}),
           ...(state?.runtime ? { runtime: state.runtime } : {}) };
       });
       const projectedById = new Map(projected.map(task => [task.id, task.status]));
