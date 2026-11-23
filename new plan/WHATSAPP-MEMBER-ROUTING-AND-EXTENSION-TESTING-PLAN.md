@@ -8,6 +8,16 @@ An admin may enable WhatsApp access for individual Space members. A permitted me
 
 For example, an admin enables WhatsApp for Tendai, a member with access to the Cleaning project. Tendai verifies their own number and can message their Space assistant or select the Cleaning assistant. A customer messaging the business number reaches the customer service extension. Tendai can use **Test as customer** to try the same extension without their member privileges or effects on the real customer's records.
 
+## Extension SDK and initial templates
+
+Naelao provides a general extension SDK so independent creators and businesses can build, customize and distribute extensions with richer capabilities. Naelao also builds and maintains the first customer service and other starter templates, so users have useful choices when they first open the catalog. A template can assemble an extension, project configuration and an optional micro app dashboard into a guided installation. It must declare its dependencies and requested access so the installing business can review them.
+
+- The first customer service template should demonstrate inbound WhatsApp support, scoped knowledge, a staff-facing session and escalation dashboard, and the test and replay flows in this plan. Voice, outbound calls and other channels can be added where their provider integrations are ready. Show configuration and availability accurately.
+- The SDK should give creators documented, versioned interfaces for channel events and replies, scoped tools and knowledge, settings, session state, micro app UI and storage, events, limits, and human handoff. Host-controlled permissions, tenant and project boundaries, spend caps and approval policies apply equally to Naelao and third-party extensions.
+- Provide local development, synthetic conversations, mocked provider and tool adapters, logs, validation, packaging and installation guidance. The test and replay APIs should be reusable by extensions, with simulated side effects and visible differences between simulation and live provider behavior.
+- Support publishing and discovery through a catalog, version pinning, requested permission review, safe updates and rollback. Define a review and ownership process for published third-party extensions. Plan compatibility and migration for SDK changes, installed versions, settings and persisted data.
+- Build the starter templates with the same public SDK and installation flow available to creators. Document any temporary first-party-only capability and track the work needed to make it available to third parties. Prioritize customer service first and select additional starter templates as their workflows and integrations are ready.
+
 ## Existing behavior and limits
 
 - The shared platform inbound route verifies the provider signature, consumes a channel pairing token, and resolves a paired sender to a Space and optional project. Its pairing table has one row per channel and external ID, so one sender cannot currently hold independent shared-platform pairings for several Spaces. Pairing alone is not proof that an executive contact belongs to a member.
