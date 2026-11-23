@@ -59,8 +59,3 @@ session, or a specific blocker leaves no ready work.
   `live_single_writer` mode. Preserve AgentPort independence, guest isolation, version and
   generation fences, and approved retention. Record external operations before dispatch and
   reconcile uncertain outcomes before retrying.
-
-## Current task
-
-**Corporate recovery claims prototype — add a private synthetic claims-review demo Blueprint.**
-Use the active plan and [progress ledger](docs/research/corporate-recovery-claims-prototype-progress.md). Include the fictional claim/ledger variance, duplicate reference, missing document, ambiguous field, second currency and review packet. Keep legal/status labels illustrative and the Blueprint data-only, with no parsing, persistence, permissions, legal decisions or external effects. Verify with the pinned SDK typecheck and `git diff --check`; do not add or run tests, contact the named practitioner, use real data, publish a listing or accept payment.

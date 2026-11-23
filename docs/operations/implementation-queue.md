@@ -446,7 +446,7 @@ fixtures. It has no credentials, connectors, permissions or live writes. SDK typ
 coverage before extending this vertical workflow. The queue advances to the corporate-recovery
 claims prototype.
 
-## Active plan — Corporate recovery claims prototype
+## Paused plan — Corporate recovery claims prototype
 
 See the [plan](../research/corporate-recovery-claims-prototype-plan.md) and [progress ledger](../research/corporate-recovery-claims-prototype-progress.md).
 
@@ -454,18 +454,26 @@ See the [plan](../research/corporate-recovery-claims-prototype-plan.md) and [pro
   correction workflow, page-provenance store or brief generator exists. Generic Knowledge, document
   and artifact services do not establish those behaviors. The source map and partner/legal gates are
   recorded in the progress ledger.
-- [ ] **Add a private synthetic claims-review demo Blueprint.** Include the fictional claim/ledger
+- [x] **Add a private synthetic claims-review demo Blueprint.** Include the fictional claim/ledger
   variance, duplicate reference, missing document, ambiguous field, second currency and a review
   packet. Label legal/status conventions illustrative. Keep it data-only without real parsing,
-  persistence, permissions, legal decisions, credentials or external effects. Run the pinned SDK
-  typecheck and `git diff --check`; add and run no tests.
+  persistence, permissions, legal decisions, credentials or external effects. The exported SDK
+  Blueprint includes source-indexed fictional fixtures, a USD 6,000 variance, explicit missing
+  delivery record, duplicate candidate, unreadable invoice suffix, separate EUR claim, illustrative
+  status labels and draft meeting brief. SDK typecheck and `git diff --check` pass; no tests ran.
+- [ ] **Blocked — Functional claims register and evidence workflow.** The plan's import, correction
+  history, role isolation, revised brief and export require a separate source design beyond the
+  static data-only Blueprint. Resume after the owner selects that functional scope and practitioners
+  validate the status/checklist language and access contract; request focused tests before making
+  behavioral guarantees. No practitioner contact or real data is authorized.
 
-**Latest checkpoint:** source reconciliation found no claims-specific application code. The plan's
-fully fictional scenario fits the existing private `SpaceBlueprint` contract, while register edits,
-provenance enforcement and legal workflow behavior still require their own source design and
-acceptance. **Next action:** add `CORPORATE_RECOVERY_CLAIMS_DEMO_SPACE_TEMPLATE` in the SDK with only
-synthetic fixtures, then run the SDK typecheck and `git diff --check`. Do not contact the named
-practitioner, publish a listing or use real data.
+**Latest checkpoint:** added and exported `CORPORATE_RECOVERY_CLAIMS_DEMO_SPACE_TEMPLATE` with
+fictional claim and ledger records, page/excerpt references, an explicit missing delivery item,
+ambiguous invoice suffix, duplicate candidate, separate-currency example and simulation-only review
+packet. Ledger rows reconcile to USD 42,000; the displayed variance is USD 6,000. The SDK typecheck
+and `git diff --check` pass. No tests, practitioner contact, real data, listing, payment or live
+effect ran. **Next action:** hold functional workflow work until its scope, practitioner-validated
+status/checklist language and access contract are approved, then request focused test coverage.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
@@ -675,7 +683,7 @@ ledgers when moving to another plan.
 11. [x] **Reconciled; no AgentPhone source task is ready without verified API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
 12. [ ] **Paused; source implementation complete; only separate test/live acceptance remains blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). See its acceptance blocker and handoff above.
 13. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
-14. [ ] **Active.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
+14. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
 
 ## Checkpoint archive
 

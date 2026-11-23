@@ -215,6 +215,7 @@ export { parseArtifactLinters, lintArtifact, type ArtifactLinterSpec, type Artif
 
 export * from "./templates/reference-spaces.js";
 export * from "./templates/commercial-cleaning-space.js";
+export * from "./templates/corporate-recovery-claims.js";
 export { FOUNDRY_SPACE_TEMPLATE } from "./templates/foundry-space.js";
 export * from "./package-inspection.js";
 

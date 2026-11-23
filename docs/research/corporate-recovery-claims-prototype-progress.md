@@ -22,6 +22,20 @@ review before they are presented as operational guidance.
 | Role isolation and legal status | Generic membership exists; no partner/reviewer role map or validated claim statuses are configured. | Requires practitioner review and approved resource/access contract. |
 | Partner meeting, firm pilot and live data | No agreement or authorization is recorded. | Do not contact the named individual, use firm branding, accept data or payment, or claim endorsement. |
 
+## Private synthetic demo Blueprint — 2026-11-23
+
+Added and exported `CORPORATE_RECOVERY_CLAIMS_DEMO_SPACE_TEMPLATE` from
+`packages/agent-sdk/src/templates/corporate-recovery-claims.ts`. The private simulation-only
+Project contains fictional claim forms, a ledger, page/excerpt evidence references, an explicit
+missing delivery record, an ambiguous invoice suffix, a duplicate candidate, separate USD/EUR
+examples, illustrative status labels, a checklist and a draft meeting brief. The ledger rows total
+USD 42,000 against the USD 48,000 claim, so the shown USD 6,000 variance is internally consistent.
+No parsing, persistence, role grants, legal determination or external effect is implemented.
+
+`corepack pnpm@9.12.0 --filter @naelao/agent-sdk run typecheck` and `git diff --check` pass. No
+tests, practitioner contact, real data, listing, payment or live effect ran. This checkpoint is a
+static review fixture, not a functional claims application.
+
 ## First source slice
 
 Add a private simulation-only `SpaceBlueprint` that packages the plan's fictional claim, ledger,
@@ -31,6 +45,7 @@ unvalidated illustrative labels, and state that no legal determination or live e
 Blueprint will not provide real upload parsing, correction persistence, role enforcement, or
 register export.
 
-**Next action:** add and export the `CORPORATE_RECOVERY_CLAIMS_DEMO_SPACE_TEMPLATE` from the SDK,
-then run the pinned SDK typecheck and `git diff --check`. Do not add or run tests, contact the named
-practitioner, use real claims data, publish a listing or accept payment.
+**Next action:** wait for an approved scope for the functional register/review/correction/brief
+workflow, practitioner-validated status and checklist language, and an access contract. Request
+focused tests before claiming behavioral acceptance. Do not contact the named practitioner, use real
+claims data, publish a listing or accept payment.
