@@ -1,4 +1,51 @@
-## Current resume pointer — 2026-11-17 (budget status fail-closed; ledgers through `3f7f6da4` pushed)
+## S/U milestone S1 source reconciliation — 2026-11-23 (U01 and U02)
+
+U01's current retention controls were traced from the owner/admin Project routes in
+`workers/agents/src/index.ts` to `WorkspaceCoordinatorDO`. The durable policy supports staging
+retention and an audited legal hold, and staging/content collection plus project erasure recheck the
+hold. The seven-day default applies only to staging; retained revisions, erasure receipts, backups
+and provider records remain without a newly inferred expiry while product/legal retention policy is
+open. Cloudflare alarm, R2 cursor and jurisdiction behavior still require deployed acceptance.
+
+U02's allocation path was traced through `ToolSandboxDO`: it settles Naelao internal credits and
+emits lifecycle and per-execution metrics for allocation time, startup, workspace bytes, checkpoint
+failures/latency, staging age and the internal rate card. `workers/sandboxes/src/provider-cost-receipts.ts`
+stores operator-imported provider/idle receipts, while `agent37-provider-usage.ts` stores minimized
+Agent37 API observations. These sources do not provide automatic provider-billed allocation/idle
+charges; account-level Agent37 usage may include work outside Naelao. Keep invoice reconciliation,
+real Cloudflare billing and approved alert budgets open.
+
+Evidence is source-to-ledger inspection only; no tests, migrations, deployment or live acceptance
+ran. The S1 queue task remains open.
+
+**Exact next action:** reconcile U03–U05 callers, authority and durable records from current source,
+then continue the U06–U12 matrix before selecting an independent implementation gap.
+
+## S/U milestone S1 source reconciliation — 2026-11-23 (U06 and U10)
+
+Rechecked the latest source after PW checkpoints. U06 remains a genuine code/runtime integration
+gap: `LiveRuntimeControlDO.ts` owns scoped durable request records and reconciles unknown outcomes
+by read-only journal lookup; `WorkspaceCoordinatorDO.ts` requires current capability evidence and
+verified handoff receipts. No `LIVE_RUNTIME_AGENT` handler or Wrangler binding is present. The
+existing ToolSandbox Container/DO paths do not prove a filesystem adapter that can supply bounded
+deltas, stop new writes, drain active operations, flush, or reject stale generations. Continue only
+with a supported runtime transport contract; do not report control-plane receipts as filesystem
+evidence.
+
+U10's core retryable notification path is already implemented: project cleanup enumerates registered
+and known legacy runtime objects in bounded pages, persists per-object retry/error receipts, requires
+runtime tombstones before local-state deletion, and tracks browser profile/session revocation. The
+U10 matrix now records that implementation. Remaining source audit covers feature-off legacy paths,
+restored snapshots and sidecar artifacts, producer registration coverage, regional Sandboxes/D1
+configuration, and provider snapshot purge limits.
+
+Evidence is source-to-ledger inspection only; no tests, migrations, deployment or live acceptance
+ran. The S1 queue task remains open.
+
+**Exact next action:** reconcile U01 and U02 callers, durable rows, migrations and recovery paths from
+current source, then continue the U03–U12 matrix before selecting an independent implementation gap.
+
+## Historical resume pointer — 2026-11-17 (budget status fail-closed; ledgers through `3f7f6da4` pushed)
 
 `checkSessionBudget` now rejects unavailable or malformed session-spend status with 503 instead of
 interpreting it as zero and admitting work. Local focused session/authorization tests **16/16**, Agents

@@ -52,9 +52,19 @@ and [progress ledger](../research/managed-services-and-sidecar-implementation-pr
   coverage for plan sections 1–20 and inherited U01–U12, reusing later implementation evidence and
   marking policy/provider/deployment dependencies precisely. Keep gates disabled and preserve data.
 
-**Exact next action:** trace current callers and durable records for the S/U and U01–U12 requirements
-from the latest pushed source, update the existing matrix without repeating implemented work, and
-select the first independently implementable code gap.
+**Latest S1 slice:** U06's saved gap was rechecked against `LiveRuntimeControlDO.ts` and
+`WorkspaceCoordinatorDO.ts`; the coordinator boundary still has no runtime adapter or configured
+binding, and the existing Container code does not prove live mount, drain or flush behavior. U10's
+retryable runtime and browser erasure registries are implemented in `workspace-project-cleanup.ts`
+and their handlers; the matrix now reflects that and keeps the legacy/restored/sidecar audit open.
+U01's scoped staging policy/legal-hold callers and GC checks were confirmed, while revision and
+backup-retention periods remain a policy dependency. U02's internal Container metering and local
+provider receipts were traced; provider-billed allocation/idle ingestion remains unsupported.
+Source inspection only; no tests or deployment ran.
+
+**Exact next action:** continue S1 with U03–U05 caller, authority and persistence-path reconciliation,
+then finish the remaining U06–U12 audit and activate the first independent code gap whose authority
+and runtime contract are supported by current source.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
