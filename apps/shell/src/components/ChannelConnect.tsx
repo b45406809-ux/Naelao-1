@@ -57,6 +57,10 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
       setMonthlyCredits("");
     }
   }, [spaceId, projectId, instanceId, session]);
+  const loadUsage = React.useCallback(
+    () => getProjectExtensionResourceUsage(spaceId, projectId, instanceId, session),
+    [spaceId, projectId, instanceId, session],
+  );
   React.useEffect(() => {
     let live = true;
     void refresh().catch(err => { if (live) setError(err instanceof Error ? err.message : "Resource grant review is unavailable."); })
@@ -65,11 +69,11 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
   }, [refresh]);
   React.useEffect(() => {
     let live = true;
-    void getProjectExtensionResourceUsage(spaceId, projectId, instanceId, session)
+    void loadUsage()
       .then(value => { if (live) { setUsage(value); setUsageError(null); } })
-      .catch(err => { if (live) setUsageError(err instanceof Error ? err.message : "Resource activity is unavailable."); });
+      .catch(err => { if (live) { setUsage(null); setUsageError(err instanceof Error ? err.message : "Resource activity is unavailable."); } });
     return () => { live = false; };
-  }, [spaceId, projectId, instanceId, session]);
+  }, [loadUsage]);
   const toggle = (current: string[], value: string, checked: boolean) => checked ? [...current, value] : current.filter(item => item !== value);
   async function saveBudget() {
     if (!snapshot) return;
@@ -84,6 +88,11 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
         expected_revision: snapshot.budget?.revision ?? 0, max_run_credits: maxRun, monthly_credits: monthly,
       });
       await refresh();
+      try { setUsage(await loadUsage()); setUsageError(null); }
+      catch (usageErr) {
+        setUsage(null);
+        setUsageError(usageErr instanceof Error ? usageErr.message : "Resource activity is unavailable.");
+      }
     } catch (err) { setError(err instanceof Error ? err.message : "Could not save the installation budget."); }
     finally { setBudgetBusy(false); }
   }
@@ -111,6 +120,7 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
   }
   if (loading) return <div style={{ color: "var(--text3)", fontSize: 11 }}>Loading owner-reviewed resource requests…</div>;
   if (!snapshot) return <div role="alert" style={{ color: "var(--danger, #d33)", fontSize: 11 }}>{error ?? "Resource grant status is unavailable."}</div>;
+  const creditUsage = usage?.credit_usage;
   return <div style={{ marginTop: 8, padding: 8, border: "1px solid var(--border)", borderRadius: 7 }}>
     <strong style={{ fontSize: 11.5 }}>Resource access review</strong>
     <p style={{ margin: "4px 0 8px", color: "var(--text3)", fontSize: 10.5 }}>
@@ -138,6 +148,21 @@ function ExtensionResourceGrantReview({ spaceId, projectId, instanceId, requirem
       <button type="button" className="btn-ghost" disabled={budgetBusy || !maxRunCredits || !monthlyCredits} onClick={() => void saveBudget()} style={{ marginTop: 7 }}>
         {budgetBusy ? "Saving budget…" : snapshot.budget ? "Update installation budget" : "Approve installation budget"}
       </button>
+    </div>
+    <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
+      <strong>Current month credit usage</strong>
+      <p style={{ margin: "4px 0 6px", color: "var(--text3)", fontSize: 10.5 }}>
+        UTC calendar month. Settled credits and active reservations use the same admission window as Billing. Resource units are unpriced; byte totals measure request and response payloads, not current storage.
+      </p>
+      {usageError ? <div role="status" style={{ color: "var(--text3)" }}>Resource usage unavailable.</div>
+        : creditUsage ? <div style={{ color: "var(--text3)", fontSize: 10.5 }}>
+          Since {creditUsage.window_start} UTC · {creditUsage.settled_credits.toLocaleString()} settled · {creditUsage.held_credits.toLocaleString()} held
+          {creditUsage.monthly_cap === null ? " · no approved monthly cap"
+            : ` · ${creditUsage.monthly_cap.toLocaleString()} monthly cap · ${creditUsage.remaining_credits!.toLocaleString()} remaining · budget revision ${creditUsage.budget_revision}`}
+          <div style={{ marginTop: 4 }}>
+            Resource units · {usage!.resource_units.invocations.toLocaleString()} invocations · {usage!.resource_units.job_units.toLocaleString()} job units · {usage!.resource_units.request_response_bytes.toLocaleString()} request/response bytes · unpriced
+          </div>
+        </div> : <div role="status" style={{ color: "var(--text3)" }}>Loading resource usage…</div>}
     </div>
     <div style={{ borderTop: "1px solid var(--border)", paddingTop: 7, marginTop: 7 }}>
       <strong>Signed package dependencies</strong>

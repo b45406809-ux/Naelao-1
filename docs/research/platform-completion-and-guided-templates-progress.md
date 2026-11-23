@@ -705,7 +705,7 @@ Fetched `docs/research/extensible-platform-and-managed-resources-plan.md` from `
 | EP03 custom Knowledge extensions | PARTIAL | Owner-published Project membership is revisioned; Space-shared grants pin approved revisions and Agent/Knowledge recheck them around retrieval. K01–K30 cover core Knowledge authority. `@naelao/rag` now exports scope/lineage contracts, chunk/hash/budget validators and a host-authorized, query-egress-gated retrieval wrapper with revoke/deletion fences (`d99f40cb`, `14db839d`, `b4a06736`). Synthetic grant/publish/revoke/delete invalidation tests pass. | No signed-extension runtime invocation/persistence caller yet. Reuse existing Knowledge grants, publication/source lineage and tombstones; wire only when install/release identity is available at the host boundary. Lifecycle dashboard, retention/version integration and actual provider revocation remain. Build on EP01; preserve ACL/tombstone authority. |
 | EP04 AI/developer authoring | PARTIAL_LOCAL | Planner/worker isolated workspace, manifest validation, checked publication and signed install exist. Shell preinstall review displays signed resource declarations, bounded limits, canonical source-payload fingerprint/count/bytes (`c04361e9`, `83d81107`); staged owner review shows validated manifest, host-built artifact and publisher payload pins/key/trust (`d7ae34f4`). The PROJECT_BOUND update route validates exact source/candidate generation, manifest/artifact digests, publisher trust, dependencies, resource deltas and append-only Gadget migration plan; disabled/drained installs can apply through the signed owner flow, persist a request receipt and recover the exact staged request. ChannelConnect and Shell API expose the review/apply/recovery path. Local focused evidence is recorded below. | This update-review/apply path is implemented locally; do not repeat the earlier uncoded-gap pointer. Setup completion receipts remain partial outside this Project update flow; provider byte/storage price is unknown and unapproved. Deployed runtime isolation and browser/live acceptance remain separate gates. |
 | EP05 websites | PARTIAL_LOCAL | Bounded publish/review/apply/render/action/takedown routes pin owner+slug+artifact SHA in one-use receipts and immutable publication records. Rendering verifies bytes; Shell Gadget view offers exact-digest sandboxed preview/apply, recent publication integrity/status list and exact-slug takedown. Takedown is actor/digest/time audited transactionally. Privacy-safe per-page/client abuse controls are at `c6f7837f`; other codes `a35237d5`, `c6bf77b1`, `f80e1577`, `61161067`; later hardening checkpoints are tracked above. | General static hosting, domain ownership/TLS/provider adapters, public-catalog authorization, pagination beyond the bounded recent list and deployed edge/domain/isolation acceptance remain. Public host suffix/rollout stays disabled. |
-| EP06 billing/safety/operations | PARTIAL | Existing payer/usage/entitlement systems, managed-service receipts, scoped lifecycle controls and audit surfaces are reused. | Cross-resource quotes/reservations, installation-level attribution/caps, inventory/dependency UI, provider outcome reconciliation and complete cleanup/export/uninstall acceptance remain. Live invoice/runtime/deployment checks are external gates only after code is complete. |
+| EP06 billing/safety/operations | PARTIAL_LOCAL | The owner Project/install resource view now shows exact-generation approved monthly/per-run caps, UTC month-to-date settled internal credits and unexpired held reservations from the same exact tenant/Space/Project/installation scope and admission window as Billing, plus unpriced invocation, job-unit and request/response-byte totals. Broader cross-resource quotes/reservations need an approved resource-unit price/cap contract; provider outcome reconciliation and cleanup/export/uninstall need provider and deployed acceptance. Provider prices/invoices are not inferred. |
 
 Cloudflare AI Search is not selected. K15/K16 remain its dedicated comparison: current Vectorize plus D1 FTS stays authoritative while user/role ACL filtering, update/delete lifecycle, quality, scale and total invoice cost lack accepted proof. Keep it and all new resource/site rollouts disabled. This is a source reconciliation, not live or deployed acceptance.
 
@@ -3138,3 +3138,24 @@ are verified. Local checks: Knowledge suites **22/22**, Shell upload suite **6/6
 
 Exact next action: continue Knowledge PDF/page provenance and remaining independent active-plan gaps;
 SC03 disconnected dispatch remains disabled until current host authority and Billing can be rechecked.
+
+## EP06 checkpoint — 2026-11-23 (exact-install credits and unpriced resource units)
+
+The existing owner-only Project installation usage route includes the current signed-install budget
+snapshot and sums settled `infra_credits` for the UTC calendar month plus unexpired held
+`workflow_budget_reservations`. It also totals `extension_resource_requests` as invocations,
+`extension_resource_jobs` as job units and `extension_resource_bytes` as request/response payload
+bytes. Every total is filtered by exact tenant, Space, Project and installation. Settled credits use
+the same legacy-payer filter, month boundary and live-hold rule as Billing admission. Missing or
+malformed totals and a budget from the wrong installation generation fail closed. The Shell labels
+resource units as unpriced and byte totals as payload bytes, not current storage or provider cost.
+
+Spaces typecheck, targeted Shell typecheck of `api.ts`/`ChannelConnect.tsx` and `git diff --check`
+pass. The full Shell typecheck remains blocked by stale `.next/types` imports for four missing routes.
+No tests, deployment, migration, provider call or live acceptance ran. No resource capability or
+rollout gate changed.
+
+Exact next action: keep cross-resource quotes/reservations parked until an approved resource-unit
+price/cap contract exists, and keep provider-cost and deployed lifecycle acceptance separate. The
+queue now activates TBR11 to inspect direct scheduled-script admission and implement a consumed run
+reservation only where an existing exact authority/price contract supports it.

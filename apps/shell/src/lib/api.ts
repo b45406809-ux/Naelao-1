@@ -2045,6 +2045,9 @@ export interface ProjectExtensionResourceGrantSnapshot {
 }
 export interface ProjectExtensionResourceUsageSnapshot {
   installation_id: string; generation: number;
+  credit_usage: { window_start: string; unit: "internal_credits"; settled_credits: number; held_credits: number;
+    monthly_cap: number | null; remaining_credits: number | null; budget_revision: number | null };
+  resource_units: { window_start: string; invocations: number; job_units: number; request_response_bytes: number };
   dependency_inventory: { declared: Array<{ extensionId: string; version: string; manifestSha256: string }>; resolved: boolean;
     active: Array<{ extensionId: string; version: string; manifestSha256: string }> };
   provider_dependencies: { declared: Array<{ connection_id: string; provider: string; purpose: string; required: boolean }>;

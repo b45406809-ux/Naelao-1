@@ -166,25 +166,60 @@ deployed/provider evidence. Preserve `infra/scripts/__pycache__/` and keep rollo
 **Latest K21 checkpoint:** the D1 source-generation fence is implemented locally across current
 content and D1 access/publication mutation paths. The shared Agents response cache remains disabled
 because freshness does not establish safe caller/effect identity. No migration or deployment ran.
-**Next action:** leave K21/K20 rollout acceptance parked and continue with EP06's exact-install
-current-month credit summary using the UTC-month settled-usage and live-held-reservation rules already
-enforced by Billing.
+**Next action:** K21/K20 rollout acceptance remains parked. EP06's exact-install monthly credit and
+unpriced resource-unit views are now complete locally; its remaining resource pricing/cap and
+provider/live acceptance dependencies are recorded below.
 
-## Active plan
+## Paused plan — Extensible platform and managed resources
 
 **Extensible platform and managed resources.** See the [plan](../research/extensible-platform-and-managed-resources-plan.md)
 and [platform progress ledger](../research/platform-completion-and-guided-templates-progress.md).
 
-- [ ] **EP06 — Show exact-install current-month credit usage against its approved cap.** The existing
-  owner resource route already verifies the signed installation, grant, dependency and usage receipt
-  scope. Extend it with the current installation budget and the settled/held credit totals using
-  Billing's `start of month` window and exact tenant/Space/Project/install filters; render internal
-  credits and remaining cap in the Project resource review. Do not infer provider prices or invoices.
+- [x] **EP06 — Show exact-install current-month credit usage against its approved cap.** The owner
+  usage route now returns the exact current installation budget revision, month-to-date settled
+  `infra_credits`, unexpired held reservations and remaining cap under Billing's UTC month window.
+  It uses tenant/Space/Project/install filters. Spaces typecheck and `git diff --check` pass; targeted
+  Shell typecheck passes. Full Shell typecheck remains blocked by four stale `.next/types` route refs.
+  No tests, deployment or live acceptance ran; resource gates remain off.
+- [x] **EP06 — Show exact-install unpriced resource-unit totals.** The owner view now reports this
+  UTC month's `extension_resource_requests` as invocations, `extension_resource_jobs` as job units,
+  and `extension_resource_bytes` as request/response payload bytes, all scoped to the exact
+  tenant/Space/Project/install. No provider cost is inferred.
+- [ ] **Blocked · EP06 — Cross-resource quotes and reservations.** Workflow credits are admitted and
+  settled through Billing, while resource invocations, job units and payload bytes are recorded
+  separately as unpriced usage after the effect. There is no approved resource-unit price or unit-cap
+  contract from which to calculate a safe cross-resource quote. Resume after the owner-approved
+  resource pricing/cap contract exists; do not convert units into credits locally.
+- [ ] **Blocked · EP06 — Provider cost and deployed lifecycle acceptance.** Owner inventory exposes
+  declared/current provider connections, cleanup receipts and bounded job receipts. Provider invoices,
+  shared-overhead reconciliation and deployed cleanup/export/uninstall outcomes need authorized
+  provider and live acceptance evidence.
 
-**Latest checkpoint:** current owner review shows the exact signed installation, approved budget
-limits, storage bytes, declared/resolved dependencies, provider connection/cleanup receipts, and
-operation/job receipts. **Next action:** trace the Billing admission query and current SpaceDO budget
-revision, then add only the matching current-month settled plus unexpired held credit summary.
+**Latest EP06 checkpoint:** the owner view reports exact-install UTC-month settled and held internal
+credits, approved cap/revision, invocation totals, job units and request/response payload bytes. The
+Spaces worker and targeted Shell typechecks plus `git diff --check` pass. The full Shell typecheck is
+still blocked by stale generated `.next/types` references. No tests, migration, deployment, provider
+call or live acceptance ran; resource gates remain off.
+**Next action:** park EP06's remaining cross-resource pricing/cap and provider/live evidence gates;
+activate TBR11's direct scheduled-script run-budget trace.
+
+## Active plan
+
+**Template business roles and member onboarding.** See the [plan](../research/template-business-roles-and-member-onboarding-plan.md)
+and [progress ledger](../research/template-business-roles-and-member-onboarding-progress.md).
+
+- [ ] **TBR11 — Inspect direct scheduled-script run-budget admission.** Trace current AgentDO
+  effect gates and Billing reservations. Implement an atomic consumed run reservation only if the
+  existing authority and price contract support it; otherwise preserve the gap and move to another
+  independent requirement. Do not borrow creator/owner grants or infer provider pricing.
+
+**Latest TBR11 checkpoint:** scheduled identity, revision fences and goal-job action/credit ceilings
+are implemented. Direct scheduled scripts still lack an atomic consumed run reservation; the prior
+ledger checkpoint explicitly calls for checking available per-effect gates before choosing the next
+implementation.
+**Next action:** inspect the direct-script dispatch and Billing reserve/settle paths, then implement
+only a reservation that is consumed at effect admission and bound to the exact scheduled-job identity
+and revision.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
@@ -387,8 +422,8 @@ ledgers when moving to another plan.
 4. [ ] **Paused; no ready source task.** [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md). Resume SC03 when durable invocation consent, exact alarm-safe authority revalidation and pre-dispatch reservation are supported; resume SC04 when owner-approved Space/Project caps exist.
 5. [ ] **Reconciled; no standalone task selected.** [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Code gaps remain tracked in their owning plans; remaining checked-workspace/runtime acceptance requires authorized deployed/provider evidence.
 6. [ ] **Paused; no ready source task.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md). K21 deployed acceptance and the K20 response-cache identity contract remain blocked; K15 waits on exact provider scope/freshness/cleanup evidence.
-7. [ ] **Active.** [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
-8. [ ] [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md)
+7. [ ] **Paused; remaining EP06 billing-price/cap and provider/live acceptance gates have no current local rate/acceptance contract.** [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
+8. [ ] **Active.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md)
 9. [ ] [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Reuse the dedicated ledgers for incorporated PW, K, EP, TBR and AP requirements.
 10. [ ] [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md). Reconcile with managed communications before opening implementation tasks.
 11. [ ] [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)

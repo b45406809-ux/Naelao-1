@@ -62,8 +62,8 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Extensible platform and managed resources · EP06 — show exact-install current-month credit usage.**
-Trace the existing owner resource-usage route to Billing's UTC month-to-date settled-credit and
-unexpired-held-reservation admission query and the current SpaceDO installation budget revision.
-Expose only exact tenant/Space/Project/installation totals and remaining approved credits in the
-owner view; do not infer provider prices or invoices. Keep resource rollout gates disabled.
+**Template business roles and member onboarding · TBR11 — inspect direct scheduled-script run
+budget admission.** Trace current AgentDO effect gates and Billing reservations for direct scheduled
+scripts. Implement an atomic consumed run reservation only if the existing authority and price
+contract support it; otherwise record the precise gap and continue to another independent task. Do
+not borrow creator/owner grants, infer provider prices or enable rollout.

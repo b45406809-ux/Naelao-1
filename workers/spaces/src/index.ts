@@ -6764,6 +6764,7 @@ app.get(projectExtensionResourceUsagePath, async c => {
   const snapshot = await grantResponse.clone().json().catch(() => null) as {
     installation?: { instance_id?: string; extension_id?: string; tenant_id?: string; space_id?: string; project_id?: string;
       generation?: number; manifest_sha256?: string };
+    budget?: { max_run_credits?: number; monthly_credits?: number; revision?: number; installation_generation?: number } | null;
     operation_usage?: Array<{ lease_id: string; requirement_id: string; operation_id: string; table_name: string; grant_revision: number;
       status: string; created_at: string; updated_at: string }>;
     dependency_inventory?: { declared?: Array<{ extensionId: string; version: string; manifestSha256: string }>;
@@ -6772,10 +6773,53 @@ app.get(projectExtensionResourceUsagePath, async c => {
   } | null;
   const install = snapshot?.installation;
   if (!install || install.instance_id !== instanceId || install.tenant_id !== identity.tenantId || install.space_id !== spaceId
-    || install.project_id !== projectId || !install.extension_id || !Number.isSafeInteger(install.generation)
+    || install.project_id !== projectId || !install.extension_id || !Number.isSafeInteger(install.generation) || (install.generation ?? 0) < 1
     || typeof install.manifest_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(install.manifest_sha256))
     return c.json({ error_code: "extension_resource_installation_untrusted" }, 404);
+  const budget = snapshot.budget ?? null;
+  if (budget && (budget.installation_generation !== install.generation
+    || !Number.isSafeInteger(budget.max_run_credits) || (budget.max_run_credits ?? 0) < 1 || (budget.max_run_credits ?? 0) > 10_000_000
+    || !Number.isSafeInteger(budget.monthly_credits) || (budget.monthly_credits ?? 0) < (budget.max_run_credits ?? Number.MAX_SAFE_INTEGER)
+    || (budget.monthly_credits ?? Number.MAX_SAFE_INTEGER) > 10_000_000
+    || !Number.isSafeInteger(budget.revision) || (budget.revision ?? 0) < 1))
+    return c.json({ error_code: "extension_resource_budget_untrusted" }, 503);
   try {
+    const usageRow = await c.env.PLATFORM_DB.prepare(`WITH scoped_month_usage AS (
+        SELECT event_type,unit,quantity,schema_version,payer_kind FROM usage_events
+        WHERE org_id=? AND space_id=? AND project_id=? AND installation_id=?
+          AND recorded_at>=datetime('now','start of month')
+      )
+      SELECT datetime('now','start of month') AS window_start,
+      COALESCE((SELECT SUM(quantity) FROM scoped_month_usage WHERE event_type='infra_credits'
+        AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))),0) AS settled_credits,
+      COALESCE((SELECT SUM(quantity) FROM scoped_month_usage WHERE event_type='extension_resource_requests' AND unit='invocations'),0) AS resource_invocations,
+      COALESCE((SELECT SUM(quantity) FROM scoped_month_usage WHERE event_type='extension_resource_jobs' AND unit='units'),0) AS resource_job_units,
+      COALESCE((SELECT SUM(quantity) FROM scoped_month_usage WHERE event_type='extension_resource_bytes' AND unit='bytes'),0) AS request_response_bytes,
+      COALESCE((SELECT COUNT(*) FROM scoped_month_usage WHERE
+        (event_type='extension_resource_requests' AND unit!='invocations')
+        OR (event_type='extension_resource_jobs' AND unit!='units')
+        OR (event_type='extension_resource_bytes' AND unit!='bytes')),0) AS invalid_resource_unit_rows,
+      (SELECT COALESCE(SUM(r.credits),0) FROM workflow_budget_reservations r
+        WHERE r.org_id=? AND r.space_id=? AND r.project_id=? AND r.installation_id=? AND r.status='held'
+          AND julianday(r.expires_at)>julianday('now')) AS held_credits`)
+      .bind(identity.tenantId, spaceId, projectId, instanceId, identity.tenantId, spaceId, projectId, instanceId)
+      .first<{ window_start: string; settled_credits: number; resource_invocations: number; resource_job_units: number;
+        request_response_bytes: number; invalid_resource_unit_rows: number; held_credits: number }>();
+    const settledCredits = Number(usageRow?.settled_credits);
+    const heldCredits = Number(usageRow?.held_credits);
+    const resourceInvocations = Number(usageRow?.resource_invocations);
+    const resourceJobUnits = Number(usageRow?.resource_job_units);
+    const requestResponseBytes = Number(usageRow?.request_response_bytes);
+    const invalidResourceUnitRows = Number(usageRow?.invalid_resource_unit_rows);
+    if (!usageRow || typeof usageRow.window_start !== "string"
+      || !Number.isSafeInteger(settledCredits) || settledCredits < 0
+      || !Number.isSafeInteger(heldCredits) || heldCredits < 0
+      || !Number.isSafeInteger(settledCredits + heldCredits)
+      || !Number.isSafeInteger(resourceInvocations) || resourceInvocations < 0
+      || !Number.isSafeInteger(resourceJobUnits) || resourceJobUnits < 0
+      || !Number.isSafeInteger(requestResponseBytes) || requestResponseBytes < 0
+      || !Number.isSafeInteger(invalidResourceUnitRows) || invalidResourceUnitRows !== 0)
+      return c.json({ error_code: "extension_resource_usage_unavailable" }, 503);
     const providerResult = await c.env.PLATFORM_DB.prepare(`SELECT connection_id,provider,status,connected_at,last_verified_at
       FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? ORDER BY connection_id LIMIT 64`)
       .bind(identity.tenantId, spaceId, projectId, instanceId)
@@ -6793,7 +6837,14 @@ app.get(projectExtensionResourceUsagePath, async c => {
       .bind(identity.tenantId, spaceId, projectId, instanceId, install.extension_id, install.manifest_sha256, install.generation)
       .all<{ job_id: string; requirement_id: string; status: string; dispatch_attempts: number; payload_bytes: number;
         deadline_at: number; created_at: number; updated_at: number; started_at: number | null; completed_at: number | null }>();
-    return c.json({ installation_id: instanceId, generation: install.generation, operations: snapshot.operation_usage ?? [],
+    return c.json({ installation_id: instanceId, generation: install.generation,
+      credit_usage: { window_start: usageRow.window_start, unit: "internal_credits" as const,
+        settled_credits: settledCredits, held_credits: heldCredits,
+        monthly_cap: budget?.monthly_credits ?? null,
+        remaining_credits: budget ? Math.max(0, budget.monthly_credits! - settledCredits - heldCredits) : null,
+        budget_revision: budget?.revision ?? null },
+      resource_units: { window_start: usageRow.window_start, invocations: resourceInvocations, job_units: resourceJobUnits,
+        request_response_bytes: requestResponseBytes }, operations: snapshot.operation_usage ?? [],
       dependency_inventory: { declared: snapshot.dependency_inventory?.declared ?? [],
         resolved: snapshot.dependency_inventory?.resolved === true, active: snapshot.dependency_inventory?.active ?? [] },
       provider_dependencies: providerInventory,
