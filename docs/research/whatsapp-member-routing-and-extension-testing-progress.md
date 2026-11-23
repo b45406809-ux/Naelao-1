@@ -227,3 +227,22 @@ identity model; do not reuse `executive_contacts` or `channel_pairings` as membe
 - Next: implement the plan's optional member phone-test mode. Existing verified member contacts,
   project route checks and customer-only mode provide prerequisites, but the WhatsApp webhook has no
   challenge-bound active test-session override yet.
+
+### Phone-test challenge control plane — 2026-11-23
+
+- Migration `0289_whatsapp_member_customer_test.sql` adds hashed, five-minute entry challenges and
+  bounded active test-session records. The records bind tenant, Space, member, verified contact,
+  HMAC sender and destination keys, exact Project, and exact extension installation. They store no
+  provider number or plaintext challenge.
+- Authenticated begin/status/end operations now require current Space and Project membership. Begin
+  also rechecks the enabled exact Project grant, active verified contact for the configured
+  destination, `staff_and_customers` mode, exact current channel binding and active installed
+  WhatsApp handler. A partial unique index and a route-level check prevent simultaneous test
+  sessions for the same verified sender/destination.
+- Codes expire in five minutes; a redeemed test will have a 30-minute lifetime. This checkpoint
+  only creates and revokes the challenge/session records; no webhook consumes them yet.
+- Agents typecheck and `git diff --check` passed with pnpm `9.12.0`. No tests, migration apply,
+  provider action or deployment ran.
+- Next: intercept challenge redemption and active test turns before pairing, verification, member
+  route selection or executive commands; forward valid turns only to the pinned Project handler
+  with executive routing disabled, then revalidate that same test identity at Agent DO dispatch.

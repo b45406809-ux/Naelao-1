@@ -398,17 +398,16 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
   extension installation. Keep every test turn on the customer handler before privileged routing;
   support explicit exit/revocation and show test status in the dashboard and chat.
 
-**Latest checkpoint:** `packages/agent-sdk/examples/customer-service-whatsapp/` now contains a
-versioned `1.0.0` channel-only package. It declares only owner-published `support_articles`, 1 KiB
-per-conversation state with a 30-day TTL, and no tools, settings, attachments or credentials. The
-handler asks the host for grounded answers to routine questions and produces no channel output for
-cases requiring staff review. SDK and standalone handler typechecks, manifest JSON parsing and
-`git diff --check` pass. No tests or provider actions ran. The prior full Shell typecheck is still
-blocked only by the four known stale `.next/types` route imports. **Next action:** implement the
-optional member phone-test challenge and session; contact verification, member route checks and the
-customer-only mode are already available, but the WhatsApp webhook currently has no test session
-override. Detailed example evidence is in the
-[progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
+**Latest checkpoint:** migration `0289_whatsapp_member_customer_test.sql` and authenticated status,
+begin and end operations now establish the member phone-test control plane. Starting a test requires
+the current member and Project, exact enabled WhatsApp grant and verified sender, Staff and
+customers mode, the currently bound active WhatsApp installation and destination. Codes are stored
+as hashes, expire after five minutes and can create only one active test per provider sender route;
+the requested test runs for up to 30 minutes after redemption. Agents typecheck and
+`git diff --check` pass. No tests ran; migration `0289` has not been applied. **Next action:** redeem
+the code at the signed WhatsApp webhook, pin active test turns to that exact customer handler
+before member/admin routing, and revalidate the test session at Agent DO dispatch. The SDK example
+is complete in the preceding ledger entry.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

@@ -9482,7 +9482,35 @@ app.get("/spaces/:spaceId/assistant/channels", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   if (c.req.query("member_access") !== undefined) {
-    if (c.req.query("member_access") !== "whatsapp") throw badRequest("member_access must be whatsapp");
+    const memberAccess = c.req.query("member_access");
+    if (memberAccess === "whatsapp_customer_test") {
+      const projectId = c.req.query("project_id") ?? "";
+      const installationId = c.req.query("extension_instance_id") ?? "";
+      const { userId } = getCallerIdentity(c);
+      if (!userId || !projectId || projectId.length > 128 || !/^[A-Za-z0-9_-]{1,128}$/.test(installationId))
+        return c.json({ error_code: "whatsapp_customer_test_scope_invalid" }, 400);
+      const projectMember = await isCurrentProjectMemberForChannel(c.env, {
+        tenant_id: tenantId, space_id: spaceId, user_id: userId, project_id: projectId,
+      });
+      if (projectMember === null) return c.json({ error_code: "project_membership_unavailable" }, 503);
+      if (!projectMember) throw forbidden("Current Project membership is required to view your phone-test status");
+      const route = activePlatformWhatsappRoute(c.env);
+      const now = new Date().toISOString();
+      const test = route ? await c.env.PLATFORM_DB.prepare(`SELECT t.expires_at FROM assistant_channel_member_customer_test_sessions t
+        JOIN assistant_channel_member_contacts contact ON contact.contact_id=t.contact_id AND contact.status='active'
+        JOIN assistant_channel_member_access access ON access.tenant_id=t.tenant_id AND access.space_id=t.space_id
+          AND access.user_id=t.user_id AND access.channel=t.channel AND access.project_id=t.project_id AND access.status='enabled'
+        JOIN channel_links link ON link.tenant_id=t.tenant_id AND link.space_id=t.space_id AND link.channel=t.channel
+          AND link.enabled=1 AND link.member_routing_mode='staff_and_customers'
+          AND link.project_id=t.project_id AND link.extension_instance_id=t.installation_id
+        WHERE t.tenant_id=? AND t.space_id=? AND t.user_id=? AND t.channel='whatsapp'
+          AND t.project_id=? AND t.installation_id=? AND t.provider_route_key=?
+          AND t.status='active' AND t.expires_at>? LIMIT 1`)
+        .bind(tenantId, spaceId, userId, projectId, installationId, await route.routeKey, now)
+        .first<{ expires_at: string }>() : null;
+      return c.json({ active: Boolean(test), expires_at: test?.expires_at ?? null }, 200, { "cache-control": "private, no-store" });
+    }
+    if (memberAccess !== "whatsapp") throw badRequest("member_access must be whatsapp or whatsapp_customer_test");
     const mine = c.req.query("mine");
     if (mine !== undefined && mine !== "1") throw badRequest("mine must be 1 when provided");
     const { userId } = getCallerIdentity(c);
@@ -9877,7 +9905,7 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const { userId } = getCallerIdentity(c);
 
   type ChannelActionBody = {
-    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension" | "simulate_extension" | "replay_extension" | "set_member_access" | "begin_member_contact_verification" | "revoke_member_contact" | "set_member_routing_mode";
+    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension" | "simulate_extension" | "replay_extension" | "set_member_access" | "begin_member_contact_verification" | "revoke_member_contact" | "set_member_routing_mode" | "begin_member_customer_test" | "end_member_customer_test";
     channel?: string;
     model_override?: string | null;
     extension_instance_id?: string;
@@ -9900,6 +9928,100 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const channel = String(body.channel ?? "");
   if (!isChannelType(channel)) throw badRequest("channel must be one of: email, slack, discord, whatsapp, telegram");
   const action = body.action ?? "connect";
+
+  if (action === "begin_member_customer_test") {
+    if (channel !== "whatsapp") return c.json({ error_code: "member_channel_not_supported" }, 400);
+    const projectId = body.project_id ?? "";
+    const installationId = body.extension_instance_id ?? "";
+    if (!userId || !projectId || projectId.length > 128 || !/^[A-Za-z0-9_-]{1,128}$/.test(installationId))
+      return c.json({ error_code: "whatsapp_customer_test_scope_invalid" }, 400);
+    if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
+      throw forbidden("An active Space membership is required to start a customer phone test");
+    const projectMember = await isCurrentProjectMemberForChannel(c.env, {
+      tenant_id: tenantId, space_id: spaceId, user_id: userId, project_id: projectId,
+    });
+    if (projectMember === null) return c.json({ error_code: "project_membership_unavailable" }, 503);
+    if (!projectMember) throw forbidden("Current Project membership is required to start a customer phone test");
+    if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
+
+    const route = activePlatformWhatsappRoute(c.env);
+    if (!route) return c.json({ error_code: "whatsapp_platform_route_unavailable" }, 503);
+    const providerRouteKey = await route.routeKey;
+    const channelLink = await c.env.PLATFORM_DB.prepare(`SELECT enabled,member_routing_mode,project_id,
+        extension_instance_id,extension_script_sha256 FROM channel_links
+      WHERE tenant_id=? AND space_id=? AND channel='whatsapp'`)
+      .bind(tenantId, spaceId).first<{ enabled: number; member_routing_mode: string; project_id: string | null;
+        extension_instance_id: string | null; extension_script_sha256: string | null }>();
+    if (channelLink?.enabled !== 1 || channelLink.project_id !== projectId
+      || channelLink.extension_instance_id !== installationId || !channelLink.extension_script_sha256)
+      return c.json({ error_code: "whatsapp_customer_test_extension_not_active" }, 409);
+    if (channelLink.member_routing_mode !== "staff_and_customers")
+      return c.json({ error_code: "whatsapp_customer_test_requires_staff_and_customers" }, 409);
+
+    const grant = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS enabled FROM assistant_channel_member_access
+      WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND project_id=? AND status='enabled' LIMIT 1`)
+      .bind(tenantId, spaceId, userId, projectId).first();
+    if (!grant) return c.json({ error_code: "whatsapp_member_access_not_granted" }, 403);
+    const contact = await c.env.PLATFORM_DB.prepare(`SELECT contact_id,sender_key FROM assistant_channel_member_contacts
+      WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND provider_route_key=? AND status='active' LIMIT 1`)
+      .bind(tenantId, spaceId, userId, providerRouteKey).first<{ contact_id: string; sender_key: string }>();
+    if (!contact) return c.json({ error_code: "whatsapp_verified_contact_required" }, 403);
+
+    const installation = await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId);
+    if (!installation || installation.instance.status !== "active"
+      || !installation.manifest.channels?.some(item => item.kind === "channel" && item.provider === "whatsapp"
+        && typeof item.handlerScript === "string"))
+      return c.json({ error_code: "whatsapp_customer_test_extension_unavailable" }, 409);
+
+    const now = new Date().toISOString();
+    await c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
+      SET status='expired',ended_at=?,ended_reason='expired',updated_at=?
+      WHERE channel='whatsapp' AND provider_route_key=? AND status='active' AND expires_at<=?`)
+      .bind(now, now, providerRouteKey, now).run();
+    const existingTest = await c.env.PLATFORM_DB.prepare(`SELECT test_session_id FROM assistant_channel_member_customer_test_sessions
+      WHERE channel='whatsapp' AND provider_route_key=? AND sender_key=? AND status='active' AND expires_at>? LIMIT 1`)
+      .bind(providerRouteKey, contact.sender_key, now).first();
+    if (existingTest) return c.json({ error_code: "whatsapp_customer_test_already_active" }, 409);
+
+    const code = [...crypto.getRandomValues(new Uint8Array(8))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const challengeHash = await sha256Hex(code);
+    const challengeExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+    await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_challenges SET consumed_at=?
+        WHERE tenant_id=? AND space_id=? AND user_id=? AND project_id=? AND installation_id=?
+          AND provider_route_key=? AND consumed_at IS NULL`)
+        .bind(now, tenantId, spaceId, userId, projectId, installationId, providerRouteKey),
+      c.env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_customer_test_challenges
+        (challenge_hash,test_session_id,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,
+          contact_id,project_id,installation_id,created_at,expires_at)
+        VALUES(?,?,?,?,?,'whatsapp',?,?,?,?,?,?,?)`)
+        .bind(challengeHash, crypto.randomUUID(), tenantId, spaceId, userId, providerRouteKey, contact.sender_key,
+          contact.contact_id, projectId, installationId, now, challengeExpiresAt),
+    ]);
+    return c.json({ challenge: code, expires_at: challengeExpiresAt,
+      instructions: "Send TEST followed by this code to the WhatsApp number connected to Naelao. The code expires in five minutes and can be used once. The customer test lasts up to 30 minutes; send TEST EXIT to return to member routing." },
+      201, { "cache-control": "private, no-store" });
+  }
+
+  if (action === "end_member_customer_test") {
+    if (channel !== "whatsapp") return c.json({ error_code: "member_channel_not_supported" }, 400);
+    const projectId = body.project_id ?? "";
+    const installationId = body.extension_instance_id ?? "";
+    if (!userId || !projectId || projectId.length > 128 || !/^[A-Za-z0-9_-]{1,128}$/.test(installationId))
+      return c.json({ error_code: "whatsapp_customer_test_scope_invalid" }, 400);
+    if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))
+      throw forbidden("An active Space member is required to end their customer phone test");
+    const now = new Date().toISOString();
+    const result = await c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
+      SET status='revoked',ended_at=?,ended_reason='member_revoked',updated_at=?
+      WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp'
+        AND project_id=? AND installation_id=? AND status='active'`)
+      .bind(now, now, tenantId, spaceId, userId, projectId, installationId).run();
+    await c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_challenges SET consumed_at=?
+      WHERE tenant_id=? AND space_id=? AND user_id=? AND project_id=? AND installation_id=? AND consumed_at IS NULL`)
+      .bind(now, tenantId, spaceId, userId, projectId, installationId).run();
+    return c.json({ tests_ended: result.meta?.changes ?? 0 }, 200, { "cache-control": "private, no-store" });
+  }
 
   if (action === "begin_member_contact_verification") {
     if (channel !== "whatsapp") return c.json({ error_code: "member_channel_not_supported" }, 400);
