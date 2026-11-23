@@ -3228,3 +3228,23 @@ custom-model capability evidence and deployed/provider acceptance.
 Exact next action: trace P08's bounded sampled-frame authorization, owner consent, rollout flag and
 shared quota through its current request and provider paths; implement a source-ready local gap or
 record the remaining provider/deployed acceptance requirement and continue.
+
+## P08 checkpoint — 2026-11-23 (sampled-frame current-authority rechecks)
+
+The existing sampled-video route already revalidated owner enablement, Space status, egress, exact
+task ownership, MIME/size, MediaSandbox scope, timestamps, JPEG byte/pixel bounds and the shared
+20-attempt rolling Space quota. It previously performed the owner/egress/attachment checks only
+before asynchronous frame extraction. The route now repeats those checks immediately before calling
+the MediaSandbox, after extraction before quota admission, and immediately before Workers AI
+dispatch. Each recheck requires an active tenant/Space, the still-enabled owner setting and egress,
+and the exact same unexpired attachment row (key, MIME and size) for the task. Revocation or mutation
+during the extraction await now denies the next effect. The existing quota still reserves up to three
+model-call slots atomically; the route returns the sampled-only/untrusted disclosure unchanged.
+
+Agents typecheck and `git diff --check` pass. No tests, deployment, provider call or live acceptance
+ran; no feature gate changed. P08 remains PARTIAL for deployed MediaSandbox, Workers AI/provider and
+live acceptance.
+
+Exact next action: P09 — trace `submit_training`, the import-adapter path and their reachable callers.
+Keep submission disabled until an official provider API/account, dataset consent/deletion, evaluation
+and billing contract exists; then continue to the next code-ready requirement.

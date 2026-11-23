@@ -268,17 +268,23 @@ owner selection and revocation; do not infer beneficiary, payer or shared author
   unsupported required-capability selections, prevents resumed worker settings from changing a
   local-only or BYOK route, and rechecks current model evidence after restoration. Custom-model
   capability selection itself remains unavailable.
-- [ ] **P08 — Reconcile bounded sampled-frame authorization and quota.** Trace current attachment
+- [x] **P08 — Reconcile bounded sampled-frame authorization and quota.** Trace current attachment
   ownership, owner opt-in, feature gate, egress, size/time limits and OCR/visual quota at the route
-  and provider handoff. Implement a source-ready local gap if found; otherwise record the exact
-  deployed/provider evidence still required. Keep the feature off until acceptance.
+  and provider handoff. The route now rechecks active Space/tenant, current owner opt-in and egress,
+  and the exact unexpired task attachment before media extraction, after extraction and immediately
+  before model dispatch. P08 remains partial for deployed MediaSandbox/Workers AI and provider
+  acceptance; no gate was enabled.
+- [ ] **P09 — Reconcile the disabled provider-training action.** Verify imports and every reachable
+  `submit_training` caller against the current provider API/account, consent, dataset deletion,
+  evaluation and billing contract. Keep submission disabled and record the exact missing contract;
+  continue to the next ready item.
 
-**Latest checkpoint:** P07 now rejects capability-required custom models without a trusted profile and
-rejects private-route or BYOK route changes after a saved worker model is restored. Exact local-machine
-profiles and fresh remote model cards remain the only capability evidence; no new model claim or cloud
-fallback was added. Agents typecheck and `git diff --check` pass. No tests, deployment or provider call
-ran. P07 remains PARTIAL because custom model capability selection lacks evidence. **Next action:**
-reconcile P08's sampled-frame path through its current route, quota and feature gate.
+**Latest checkpoint:** P08 revalidates current owner opt-in, egress, active Space/tenant and the exact
+unexpired task attachment before media extraction, after extraction and immediately before Workers AI
+dispatch. The 6 MiB input, three timestamped JPEG frame, byte/pixel, and rolling Space quota limits
+remain. Agents typecheck and `git diff --check` pass; no tests, provider call or live acceptance ran.
+No rollout changed. **Next action:** trace P09's disabled training submission and imported-adapter
+paths against a verified provider, consent and dataset-lifecycle contract.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

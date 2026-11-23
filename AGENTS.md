@@ -62,8 +62,7 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Platform completion and guided templates · P08 — reconcile bounded sampled-frame authorization and quota.**
-Trace current attachment ownership, owner opt-in, feature gate, egress, size/time limits and
-OCR/visual quota at the route and provider handoff. Implement a source-ready local gap if found;
-otherwise record the exact deployed/provider evidence still required. Keep the feature off until
-acceptance.
+**Platform completion and guided templates · P09 — reconcile the disabled provider-training action.**
+Verify imports and every reachable `submit_training` caller against the current provider API/account,
+consent, dataset deletion, evaluation and billing contract. Keep submission disabled and record the
+exact missing contract; continue to the next ready item.

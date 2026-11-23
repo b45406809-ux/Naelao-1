@@ -8137,6 +8137,29 @@ app.post("/internal/attachments/describe-video", async (c) => {
   ).bind(body.id, tenantId, body.spaceId, body.taskId, new Date().toISOString())
     .first<{ object_key: string; mime_type: string; size_bytes: number }>();
   if (!row) return c.json({ error_code: "attachment_not_found" }, 404);
+  const revalidateFrameAuthority = async (): Promise<Response | null> => {
+    if (!await isActiveTenantSpace(c.env, body.spaceId!, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
+    const currentSpace = await c.env.PLATFORM_DB.prepare("SELECT status,config_json FROM spaces WHERE id=? AND tenant_id=?")
+      .bind(body.spaceId, tenantId).first<{ status: string; config_json: string | null }>();
+    if (!currentSpace || currentSpace.status !== "active") return c.json({ error_code: "space_inactive" }, 409);
+    try {
+      const config = JSON.parse(currentSpace.config_json ?? "{}") as { productConfig?: { attachmentVideoFrameAnalysis?: { enabled?: boolean } } };
+      if (config.productConfig?.attachmentVideoFrameAnalysis?.enabled !== true)
+        return c.json({ error_code: "attachment_video_frame_analysis_not_enabled" }, 403);
+    } catch { return c.json({ error_code: "space_configuration_invalid" }, 409); }
+    if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.spaceId!))
+      return c.json({ error_code: "attachment_video_frame_analysis_egress_denied" }, 403);
+    const currentAttachment = await c.env.PLATFORM_DB.prepare(
+      `SELECT object_key,mime_type,size_bytes FROM channel_attachments
+       WHERE id=? AND tenant_id=? AND space_id=? AND task_id=? AND expires_at>? LIMIT 1`,
+    ).bind(body.id, tenantId, body.spaceId, body.taskId, new Date().toISOString())
+      .first<{ object_key: string; mime_type: string; size_bytes: number }>();
+    if (!currentAttachment) return c.json({ error_code: "attachment_not_found" }, 404);
+    if (currentAttachment.object_key !== row.object_key || currentAttachment.mime_type !== row.mime_type
+      || currentAttachment.size_bytes !== row.size_bytes)
+      return c.json({ error_code: "attachment_changed_during_analysis" }, 409);
+    return null;
+  };
   const mimeType = row.mime_type.toLowerCase().split(";")[0]!.trim();
   if (!["video/mp4", "video/webm", "video/quicktime", "video/x-matroska"].includes(mimeType)) {
     return c.json({ error_code: "attachment_video_frame_analysis_mime_unsupported" }, 415);
@@ -8159,6 +8182,8 @@ app.post("/internal/attachments/describe-video", async (c) => {
       executionId: crypto.randomUUID(), deadline: Date.now() + 45_000, timeoutMs: 40_000,
     };
     try { validateContainerScope(scope); } catch { return c.json({ error_code: "video_frame_scope_invalid" }, 400); }
+    const preExtractionDispatchAuthority = await revalidateFrameAuthority();
+    if (preExtractionDispatchAuthority) return preExtractionDispatchAuthority;
     const sandbox = c.env.MEDIA_SANDBOX.get(c.env.MEDIA_SANDBOX.idFromName(`attachment-media:${body.spaceId}:${body.projectId ?? "_assistant"}`));
     const response = await sandbox.fetch(new Request("http://media-sandbox/media/extract-video-frames", {
       method: "POST",
@@ -8195,10 +8220,14 @@ app.post("/internal/attachments/describe-video", async (c) => {
       return { timestampSeconds: frame.timestampSeconds!, bytes, dimensions };
     }).sort((a, b) => a.timestampSeconds - b.timestampSeconds);
     if (new Set(frames.map(frame => frame.timestampSeconds)).size !== frames.length) return c.json({ error_code: "video_frame_output_invalid" }, 422);
+    const postExtractionAuthority = await revalidateFrameAuthority();
+    if (postExtractionAuthority) return postExtractionAuthority;
     const admitted = await reserveEmailOcrAttempts(c.env.PLATFORM_DB, {
       ids: frames.map(() => crypto.randomUUID()), tenantId, spaceId: body.spaceId, now: new Date(),
     });
     if (!admitted) return c.json({ error_code: "attachment_visual_analysis_daily_limit_reached", max_model_calls_per_rolling_day: 20 }, 429);
+    const preDispatchAuthority = await revalidateFrameAuthority();
+    if (preDispatchAuthority) return preDispatchAuthority;
     const questionSignal = AbortSignal.timeout(15_000);
     const results = await Promise.all(frames.map(async (frame) => ({
       timestamp_seconds: frame.timestampSeconds,
