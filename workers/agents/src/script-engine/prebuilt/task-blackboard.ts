@@ -6,7 +6,7 @@ export const taskBlackboard: PrebuiltScript = {
   paramHints: {
     "task_blackboard.read": "Read messages addressed to this worker or sent by it.",
     "task_blackboard.recipients": "List worker IDs this task is allowed to message.",
-    "task_blackboard.publish": "id (stable retry key), recipients (authorized worker IDs), kind (finding|artifact|question|blocker|risk|completion|verification), text (up to 4000 characters).",
+    "task_blackboard.publish": "id (stable retry key), recipients (authorized worker IDs), kind (finding|artifact|question|blocker|risk|completion|verification), text (up to 4000 characters), optional reply_to (the ID of an earlier question or blocker addressed to this worker).",
   },
   operations: {
     async "task_blackboard.read"(_args, ctx) {

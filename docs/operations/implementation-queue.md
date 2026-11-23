@@ -71,21 +71,28 @@ and [progress ledger](../research/resumable-workers-durable-workflows-and-branch
 - [ ] **Blocked · PW01 — Worker-branch retention and deletion semantics.** The current ledgers do
   not define an approved branch TTL or deletion policy. Preserve staged branch content; resume when
   the applicable owner approves retention, cleanup and recovery semantics.
-- [ ] **Active · PW02 — Correlate directed help requests with durable replies.** Task-blackboard
-  messages are scoped and idempotent but do not link a question/blocker to its reply. Add an
-  authenticated reply reference that retains the original message and enforces the host-granted
-  recipient edge on the response.
+- [x] **PW02 — Correlate directed help requests with durable replies.** Task-blackboard messages can
+  include an authenticated reply reference. The transaction checks the original question/blocker
+  was addressed to the replying worker and the reply includes the original sender; existing host
+  recipient grants still apply. Original and reply messages remain separate durable records, and
+  goal activity UI displays the linked request. Agents typecheck, Shell source-only typecheck and
+  `git diff --check` pass; no tests or deployed acceptance ran.
+- [ ] **Active · PW02 — Recheck private-Project access for goal activity messages.** The
+  goal-activity endpoint checks Space/session access and actor identity, but the AgentDO projection
+  does not recheck current Project access before returning stored blackboard messages. Revalidate
+  the actor's Project read scope for each Project-backed goal and fail closed on revocation or an
+  unavailable authority check.
 
-**Latest checkpoint.** PW01 now refuses Project worker branch creation and dispatch unless the
-unified-workspace rollout flag and Coordinator binding are available. The check runs before
-`reserveTaskBranch`, and `reserveWorkerBranch` repeats it before returning or creating a branch;
-the legacy R2 copy fallback is no longer used to seed a Project worker. Agents typecheck and
-`git diff --check` pass. No tests or deployed acceptance ran. Branch cleanup remains blocked on an
-approved retention policy.
+**Latest checkpoint.** Directed task-blackboard messages can now carry a reply reference to an
+earlier question or blocker. The durable transaction verifies the referenced request was addressed
+to the replying worker, requires the response to include the original sender, and retains both
+messages. Existing delegation signatures and host-granted recipient edges remain in force. The
+goal activity panels show the reply target text when available. Agents typecheck, Shell source-only
+typecheck and `git diff --check` pass. No tests, deployment or live acceptance ran.
 
-**Exact next action:** extend `task-blackboard.ts` with a reply reference and checks that the
-replying worker belongs to the original message's directed recipient edge; keep the original
-request and response as separate durable messages.
+**Exact next action:** recheck current Project read access in `NaelaoAgentDO.handleGoalActivity`
+before returning goal messages for each Project-backed record; fail closed if the current actor's
+membership or Project authority is revoked or unavailable.
 
 ## Parked plan — Adaptive planner, worker coordination and memory
 

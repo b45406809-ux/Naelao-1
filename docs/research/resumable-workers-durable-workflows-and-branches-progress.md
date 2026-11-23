@@ -12,6 +12,22 @@ Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO a
 
 # Resumable workers, durable workflows and branches progress
 
+## PW02 checkpoint — 2026-11-23 (correlate directed help requests and replies)
+
+Task-blackboard messages now accept an optional reply reference. The host transaction requires the
+target to be an earlier question or blocker addressed to the replying worker, and requires the
+response to include the original sender. The normal delegation signature, worker membership and
+host-granted recipient edge checks still apply. The original request and response remain separate
+durable records; idempotency checks include the reply reference. Both Goal Activity panels show the
+referenced request text when available.
+
+Verification: Agents worker typecheck, Shell source-only typecheck and `git diff --check` pass. No
+tests, deployment or live acceptance ran.
+
+**Exact next action:** recheck current Project read access in `NaelaoAgentDO.handleGoalActivity`
+before returning goal messages for each Project-backed record; fail closed if the current actor's
+membership or Project authority is revoked or unavailable.
+
 ## PW01 checkpoint — 2026-11-23 (require a Coordinator base for Project worker dispatch)
 
 Project sub-agent spawning now fails with a capability error unless the unified-workspace rollout
@@ -77,7 +93,7 @@ Current source matches the latest saved implementation summaries for the six PW 
 | Requirement | Current source evidence | Remaining gap or acceptance limit |
 | --- | --- | --- |
 | PW01 branch lifecycle | `NaelaoAgentDO` records worker branch bases, requires the unified-workspace flag plus Coordinator binding before Project sub-agent branch creation/dispatch, and checks exact Coordinator heads; `sandbox-routing.ts` routes delegated `workers/...` branches to separate ToolSandbox identities. | Deployed process, filesystem, package, cache, port and credential isolation is unverified. Retention, revocation and cleanup remain partial; no branch deletion policy was introduced. |
-| PW02 task graph and communication | `goal-dag.ts` bounds graph admission and exact-attempt dispatch; `task-blackboard.ts` uses signed scope and host-granted recipient edges; authorized conversation routes project persisted worker progress. | File/resource hints are advisory; interface ownership, help/conflict/result receipts and all private-Project readers still need broader coverage. |
+| PW02 task graph and communication | `goal-dag.ts` bounds graph admission and exact-attempt dispatch; `task-blackboard.ts` uses signed scope, host-granted recipient edges and durable reply references; Goal Activity renders linked requests and replies. | File/resource hints are advisory; interface ownership, conflict/result receipts and current Project reauthorization across all private-Project readers still need broader coverage. |
 | PW03 selective resource leases | `ConcurrencyDO` implements bounded named leases with fencing; Coordinator writes recheck hashes, generations and fences. | Leases are cooperative. No mandatory lease is enforced at every shared mutable writer; deployed expiry/stale-holder behavior remains unaccepted. |
 | PW04 integration and conflict | `mergeWorkerWorkspace` uses exact source/target pins, bounded merge/review paths, isolated validation branches and expected-head checked publication. | >2 MiB/corrupt object handling, some ambiguous rename cases, complete route/runtime integration coverage and deployed acceptance remain open. |
 | PW05 runtime, cost and UI | Worker attempt run IDs feed normal billing settlement; owner/admin Space and Project reads aggregate exact attempt receipts. | Internal credits are not provider invoices. Process isolation, unknown/no-event explanation, cancellation/recovery UX and deployed acceptance remain partial. Default `AgentTaskWorkflow` still has no atomic per-run credit reservation (cross-reference APW05). |

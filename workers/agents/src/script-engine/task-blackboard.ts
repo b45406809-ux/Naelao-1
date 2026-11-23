@@ -9,20 +9,33 @@ export interface TaskMessage {
   kind: TaskMessageKind;
   text: string;
   createdAt: number;
+  /** The exact earlier question/blocker this message responds to. */
+  replyTo?: string;
 }
 
 const identifier = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value);
 const kinds = new Set<TaskMessageKind>(["finding", "artifact", "question", "blocker", "risk", "completion", "verification"]);
 
 /** The caller must supply the sender from its verified delegation, never from message content. */
-export function createTaskMessage(input: { id: unknown; recipients: unknown; kind: unknown; text: unknown }, sender: string, members: ReadonlySet<string>, now: number): TaskMessage {
+export function createTaskMessage(input: { id: unknown; recipients: unknown; kind: unknown; text: unknown; replyTo?: unknown }, sender: string, members: ReadonlySet<string>, now: number): TaskMessage {
   if (!identifier(sender) || !members.has(sender)) throw new Error("task_blackboard_sender_denied");
   if (!identifier(input.id) || !Array.isArray(input.recipients) || input.recipients.length < 1 || input.recipients.length > 12
       || input.recipients.some(recipient => !identifier(recipient) || !members.has(recipient))
       || new Set(input.recipients).size !== input.recipients.length) throw new Error("task_blackboard_recipients_invalid");
   if (typeof input.kind !== "string" || !kinds.has(input.kind as TaskMessageKind)) throw new Error("task_blackboard_kind_invalid");
   if (typeof input.text !== "string" || !input.text.trim() || input.text.length > 4000 || !Number.isSafeInteger(now) || now < 0) throw new Error("task_blackboard_message_invalid");
-  return { id: input.id, sender, recipients: [...input.recipients] as string[], kind: input.kind as TaskMessageKind, text: input.text, createdAt: now };
+  if (input.replyTo !== undefined && !identifier(input.replyTo)) throw new Error("task_blackboard_reply_reference_invalid");
+  return { id: input.id, sender, recipients: [...input.recipients] as string[], kind: input.kind as TaskMessageKind,
+    text: input.text, createdAt: now, ...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}) };
+}
+
+/** Replies retain both records and must follow the host-granted direction of the original help request. */
+function validateTaskMessageReply(messages: readonly TaskMessage[], message: TaskMessage): void {
+  if (!message.replyTo) return;
+  const target = messages.find(item => item.id === message.replyTo);
+  if (!target || target.id === message.id || !["question", "blocker"].includes(target.kind)
+      || target.sender === message.sender || !target.recipients.includes(message.sender) || !message.recipients.includes(target.sender)
+      || message.createdAt < target.createdAt) throw new Error("task_blackboard_reply_scope_denied");
 }
 
 /** Apply after authenticating task membership; no implicit all-worker broadcast. */
@@ -86,7 +99,7 @@ async function authenticateTaskWorker(contract: DelegationContract, token: strin
 
 export async function appendAuthenticatedTaskMessage(params: {
   contract: DelegationContract; token: string; secret: string; scope: TaskBlackboardScope; store: TaskMessageStore;
-  input: { id: unknown; recipients: unknown; kind: unknown; text: unknown }; now: number;
+  input: { id: unknown; recipients: unknown; kind: unknown; text: unknown; replyTo?: unknown }; now: number;
 }): Promise<TaskMessage> {
   const { contract, scope, input } = params;
   await authenticateTaskWorker(contract, params.token, params.secret, scope);
@@ -96,9 +109,11 @@ export async function appendAuthenticatedTaskMessage(params: {
     const existing = messages.find(item => item.id === message.id);
     if (existing) {
       if (existing.sender !== message.sender || existing.kind !== message.kind || existing.text !== message.text
-          || JSON.stringify(existing.recipients) !== JSON.stringify(message.recipients)) throw new Error("task_blackboard_id_conflict");
+          || JSON.stringify(existing.recipients) !== JSON.stringify(message.recipients)
+          || existing.replyTo !== message.replyTo) throw new Error("task_blackboard_id_conflict");
       return { messages, result: existing };
     }
+    validateTaskMessageReply(messages, message);
     if (messages.length >= 500) throw new Error("task_blackboard_capacity_exceeded");
     return { messages: [...messages, message], result: message };
   });
@@ -109,7 +124,7 @@ export async function appendHostTaskMessage(params: {
   store: TaskMessageStore;
   scope: TaskBlackboardScope;
   sender: string;
-  input: { id: unknown; recipients: unknown; kind: unknown; text: unknown };
+  input: { id: unknown; recipients: unknown; kind: unknown; text: unknown; replyTo?: unknown };
   now: number;
 }): Promise<TaskMessage> {
   const { sender, scope } = params;
@@ -119,9 +134,11 @@ export async function appendHostTaskMessage(params: {
     const existing = messages.find(item => item.id === message.id);
     if (existing) {
       if (existing.sender !== message.sender || existing.kind !== message.kind || existing.text !== message.text
-          || JSON.stringify(existing.recipients) !== JSON.stringify(message.recipients)) throw new Error("task_blackboard_id_conflict");
+          || JSON.stringify(existing.recipients) !== JSON.stringify(message.recipients)
+          || existing.replyTo !== message.replyTo) throw new Error("task_blackboard_id_conflict");
       return { messages, result: existing };
     }
+    validateTaskMessageReply(messages, message);
     if (messages.length >= 500) throw new Error("task_blackboard_capacity_exceeded");
     return { messages: [...messages, message], result: message };
   });

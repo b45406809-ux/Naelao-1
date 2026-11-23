@@ -23,11 +23,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**PW02 — Correlate directed help requests with durable replies.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). Extend
-`task-blackboard.ts` with a reply reference and checks that the replying worker belongs to the
-original message's directed recipient edge; keep the original request and response as separate
-durable messages. Preserve `infra/scripts/__pycache__/` and keep rollout defaults disabled.
+**PW02 — Recheck private-Project access for goal activity messages.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). Recheck current
+Project read access in `NaelaoAgentDO.handleGoalActivity` before returning goal messages for each
+Project-backed record; fail closed if the current actor's membership or Project authority is revoked
+or unavailable. Preserve `infra/scripts/__pycache__/` and keep rollout defaults disabled.
 
 ## Save progress inside each task
 

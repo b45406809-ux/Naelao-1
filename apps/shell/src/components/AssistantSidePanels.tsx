@@ -790,7 +790,13 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
         {goal.fixers[task.id] && <div>Fixer: {workerActivityLabel(goal.fixers[task.id]!.status)}</div>}
       </div>)}
       {goal.escalations.slice(0, 30).map(item => <div key={item.taskId} style={{ color: "var(--danger, #dc2626)", paddingTop: 4 }}>{item.taskId.slice(0, 120)}: {item.nextAction.replaceAll("_", " ").slice(0, 160)}</div>)}
-      {goal.messages.length > 0 && <details style={{ marginTop: 8 }}><summary>Worker messages ({goal.messages.length})</summary>{goal.messages.slice(-50).map(message => <div key={`${message.sender}:${message.id}`} style={{ marginTop: 5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}><strong>{message.kind.slice(0, 40)}</strong>: {message.text.slice(0, 1000)}</div>)}</details>}
+      {goal.messages.length > 0 && <details style={{ marginTop: 8 }}><summary>Worker messages ({goal.messages.length})</summary>{goal.messages.slice(-50).map(message => {
+        const replyTarget = message.replyTo ? goal.messages.find(candidate => candidate.id === message.replyTo) : undefined;
+        return <div key={`${message.sender}:${message.id}`} style={{ marginTop: 5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+          <strong>{message.kind.slice(0, 40)}</strong>: {message.text.slice(0, 1000)}
+          {message.replyTo && <div style={{ color: "var(--text3)", fontSize: 10 }}>↳ Reply to {replyTarget ? `${replyTarget.kind}: ${replyTarget.text.slice(0, 160)}` : message.replyTo}</div>}
+        </div>;
+      })}</details>}
     </details>)}
   </section>;
 }
@@ -1912,7 +1918,13 @@ function WorkersPanel({
             {goal.fixers[task.id] && <div>Fixer: {workerActivityLabel(goal.fixers[task.id]!.status)}</div>}
           </div>)}
           {goal.escalations.map(item => <div key={item.taskId} style={{ color: "#dc2626" }}>{item.taskId}: {item.nextAction.replaceAll("_", " ")}</div>)}
-          {goal.messages.length > 0 && <details><summary>Worker messages ({goal.messages.length})</summary>{goal.messages.map(message => <div key={`${message.sender}:${message.id}`} style={{ marginTop: 5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}><strong>{message.kind}</strong>: {message.text}</div>)}</details>}
+          {goal.messages.length > 0 && <details><summary>Worker messages ({goal.messages.length})</summary>{goal.messages.map(message => {
+            const replyTarget = message.replyTo ? goal.messages.find(candidate => candidate.id === message.replyTo) : undefined;
+            return <div key={`${message.sender}:${message.id}`} style={{ marginTop: 5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+              <strong>{message.kind}</strong>: {message.text}
+              {message.replyTo && <div style={{ color: "var(--text3)", fontSize: 10 }}>↳ Reply to {replyTarget ? `${replyTarget.kind}: ${replyTarget.text.slice(0, 160)}` : message.replyTo}</div>}
+            </div>;
+          })}</details>}
         </details>
       ))}
       <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>

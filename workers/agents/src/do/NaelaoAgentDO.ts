@@ -6682,7 +6682,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if (body.action === "publish") {
         const input = body.input ?? {};
-        return Response.json({ message: await appendAuthenticatedTaskMessage({ ...params, input: { id: input["id"], recipients: input["recipients"], kind: input["kind"], text: input["text"] }, now: Date.now() }), untrusted: true });
+        return Response.json({ message: await appendAuthenticatedTaskMessage({ ...params, input: {
+          id: input["id"], recipients: input["recipients"], kind: input["kind"], text: input["text"],
+          replyTo: input["reply_to"],
+        }, now: Date.now() }), untrusted: true });
       }
       return Response.json({ error: "task_blackboard_action_invalid" }, { status: 400 });
     } catch { return Response.json({ error: "task_blackboard_denied" }, { status: 403 }); }
