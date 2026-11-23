@@ -394,8 +394,8 @@ Statuses describe local code, not deployment or live acceptance. `IN_PROGRESS` m
 | K15 Cloudflare AI Search isolated evaluation | IN_PROGRESS | The 2026-11-23 source reconciliation scopes evaluation to signed extension search over an exact owner-published Project revision; ordinary user/role retrieval stays on D1 FTS and permissioned Vectorize. Cloudflare filters pre-retrieval but `$in` only matches stored scalars, strings are filterable only through byte 64, D1 exposes at most five custom metadata fields, and failed/empty full sync leaves stale items. No AI Search binding, source query, metadata map or cleanup caller exists. Implement only a disabled publication-scoped adapter after exact field/list limits, freshness and deletion handling are verified. |
 | K16 Alternative retrieval/parser evaluation | IN_PROGRESS | Current Vectorize + D1 and existing D1 FTS migration are closest low-migration options; FTS retrieval is uncoded and deployed module/scale evidence is open. Dify/RAGFlow/Docling are candidate isolated parsing services, not Workers-compatible assumptions. Compare verified licensing, isolation, region, limits and total cost before selecting. |
 | K17 Search quality and cost benchmark | IN_PROGRESS | `infra/scripts/knowledge-retrieval-eval.mjs` validates versioned benchmark cases/content-free traces and reports precision/recall, MRR/nDCG, citation/source-version accuracy, forbidden exposure, abstention, p95 latency and recorded cost. Metrics and configured thresholds are stratified overall, by query language, and by query/source-language pair. Version 1 data contain three synthetic English cases for exact ID, current-vs-stale version and no-answer/forbidden scope. Evaluator tests 6/6; the local Knowledge route integration passes 6/6. Human review, representative domain/language data and provider/deployed measurements remain. Evaluator always returns `acceptanceEligible:false`. |
-| K18 No-code Knowledge dashboard | IN_PROGRESS | Space-wide and Project Shell plus builder Dashboard list/add/delete/search; all now offer scoped PDF preview/correction. Named collections, source refresh, test/publish lifecycle, accessibility review and cost view remain. |
-| K19 SDK and extension integration | IN_PROGRESS | Host-mediated APIs and owner-reviewed Project Knowledge selection exist. Versioned generic collection discovery/search/citation SDK, settings migration and broad template handoff remain. |
+| K18 No-code Knowledge dashboard | IN_PROGRESS | Space-wide and Project Shell plus builder Dashboard list/add/delete/search; all now offer scoped PDF preview/correction. Project Shell supports named owner-published collections, indexed-source selection, publish/update/unpublish, archive/restore-as-draft, and content-free history. An owner collection-scoped sample search, accessibility/mobile review and cost view remain. |
+| K19 SDK and extension integration | IN_PROGRESS | `ctx.resources.knowledge.search` is wired through a durable workflow effect and typed SDK result contract. The host checks the active installation, exact owner grant, current publication revision and operation lease; Knowledge prefilters by current published documents and returns current chunks with content hash, source revision/grant revision, coordinates and heading provenance. A separate generic collection discovery or citation re-resolution SDK is still absent. The source audit also found and fixed deletion and publication-revision races before extension results return; deployed/live acceptance remains open. |
 | K20 Assistant/delegated/channel authorization | IN_PROGRESS | Extension grants and scoped search exist. Caller trace found full Agents response cache keys only tenant/Space, omitting principal/project/role and source/grant revision. Response/retrieval cache reads/writes are now disabled by explicit false gates in Agents and Knowledge configs/callers until exact scope and freshness are implemented. Tests cover disabled internal reads/writes. External channel trace remains. |
 | K21 Deletion/revocation fencing | IN_PROGRESS | Durable tombstones, leases, Vectorize/R2 cleanup and citation hash checks exist. Cache generations rotate on deletion; content/grant changes are not fully covered. Cache remains off, but generation/version invalidation is still required before any future enablement. |
 | K22 Backup/restore and provider exit | IN_PROGRESS | Bounded Knowledge archive, restore and explicit reindex exist; deployed isolated restore, grant reauthorization, RPO/RTO drills and external mirror reconciliation remain. |
@@ -557,6 +557,26 @@ as an Analytics Engine double beside latency and confidence. The bounded JSON lo
 contain no caller, tenant, Space, Project, query or source identifiers. RAG and Knowledge worker
 typechecks and `git diff --check` pass. No tests, deployment, provider call or live acceptance ran.
 
-Exact next action: reconcile the signed extension Knowledge search result and durable invocation
-path with K19's remaining collection and citation API requirements; implement only a gap supported by
-current host grants and publication/source lineage.
+Exact next action: add an owner/admin search preview constrained to the exact current published
+collection, reuse the same pre-ranked document filter and deletion fence, and suppress results if the
+publication revision changes during the preview.
+
+## K19 checkpoint — 2026-11-23 (extension retrieval deletion fence)
+
+The signed extension Knowledge API returns bounded result JSON with document/chunk identity, content
+hash, source revision/grant revision and byte/line/heading provenance. WorkflowRunDO pins the current
+publication revision and records the exact install grant in its durable resource receipt;
+NaelaoAgentDO rechecks the active installation and owner grant, claims the scoped operation lease,
+and forwards only that pinned publication to Knowledge. Knowledge prefilters current published
+documents before Vectorize retrieval and rereads current publication membership, source state and
+chunk rows before materialization.
+
+The caller audit found that document deletion or publication replacement could occur after row
+materialization but before the extension result was returned. `external-search` now records its
+start time and rechecks the durable deletion ledger plus the exact current publication revision
+immediately before returning; either change fails the request with 409 and no hits. Knowledge worker
+typecheck and `git diff --check` pass. No tests, deployment, provider call or live acceptance ran.
+
+Exact next action: add an owner/admin search preview constrained to the exact current published
+collection, reusing the same pre-ranked document filter and deletion fence, and return no result if
+the publication revision changes during the preview.

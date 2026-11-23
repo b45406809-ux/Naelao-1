@@ -708,6 +708,7 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
   const { spaceId, projectId } = c.req.param();
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
   if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space not found");
+  const retrievalStartedAt = new Date().toISOString();
   const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, null as { publication_id?: unknown; publication_revision?: unknown; query?: unknown; top_k?: unknown } | null);
   if (!body || typeof body.publication_id !== "string" || !EXTERNAL_PUBLICATION_ID.test(body.publication_id)
     || !Number.isSafeInteger(body.publication_revision) || Number(body.publication_revision) < 1
@@ -770,6 +771,14 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
         byte_start: Number(row.byte_start), byte_end: Number(row.byte_end), line_start: Number(row.line_start), line_end: Number(row.line_end),
         ...(headingPath ? { heading_path: headingPath } : {}) } };
   }))).filter((item): item is NonNullable<typeof item> => item !== null).slice(0, topK);
+  if (await hasKnowledgeDocumentDeletionSince(c.env.PLATFORM_DB, tenantId, spaceId, retrievalStartedAt)) {
+    return c.json({ error_code: "knowledge_source_changed_during_search" }, 409);
+  }
+  const stillCurrent = await c.env.PLATFORM_DB.prepare(
+    `SELECT revision FROM kb_external_publications
+     WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=? AND archived_at IS NULL`
+  ).bind(body.publication_id, tenantId, spaceId, projectId, body.publication_revision).first<{ revision: number }>();
+  if (!stillCurrent) return c.json({ error_code: "knowledge_publication_revision_conflict" }, 409);
   return c.json({ data, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
 });
 

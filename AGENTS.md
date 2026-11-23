@@ -62,8 +62,9 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Mature Knowledge platform · K19 — reconcile the signed extension Knowledge search API.** Compare
-the new SDK result and durable invocation path with current installation grants, publication
-revisions, source lineage, citation support and K19's remaining contract. Implement only a reachable
-host gap supported by those authorities. Keep the managed AI Search adapter blocked on exact
-pre-retrieval scope mapping, freshness/deletion and isolated provider evidence.
+**Mature Knowledge platform · K18 — add an owner-only collection-scoped search preview.** Let
+Project owners/admins test a query against the exact current published collection before granting it
+to an extension. Reuse the pre-ranked publication document fence, current source/chunk rehydration and
+deletion check; do not use general Project search or return stale results after the publication
+revision changes. Keep the managed AI Search adapter blocked on exact pre-retrieval scope mapping,
+freshness/deletion and isolated provider evidence.

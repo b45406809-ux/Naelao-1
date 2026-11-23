@@ -125,21 +125,26 @@ deployed/provider evidence. Preserve `infra/scripts/__pycache__/` and keep rollo
   and uncached search events; Knowledge passes the count through the bounded privacy-safe telemetry
   and records it in Analytics Engine. RAG/Knowledge typechecks and `git diff --check` pass; no tests,
   deployment or live acceptance ran.
-- [ ] **K19 — Reconcile the signed extension Knowledge search API.** Compare the new SDK search
-  result and durable invocation path with current installation grants, publication revisions,
-  source lineage, citation support and the remaining K19 contract; implement only a reachable host
-  gap supported by those authorities.
+- [x] **K19 — Reconcile and fence the signed extension Knowledge search API.** The SDK result includes
+  source content hash/revision and bounded citation coordinates. The Knowledge service now fails
+  closed if document deletion or publication revision changes during retrieval. Knowledge typecheck
+  and `git diff --check` pass; no tests, deployment or live acceptance ran.
+- [ ] **K18 — Add an owner-only collection-scoped search preview.** Let Project owners/admins test a
+  query against the exact current published collection before granting it to an extension. Reuse
+  the pre-ranked publication document fence, current source/chunk rehydration and deletion check; do
+  not use general Project search or return stale results after the publication revision changes.
 - [ ] **Blocked · K15 — Implement and validate isolated managed-index adapter.** Resume after exact
   pre-retrieval scope fields and limits, current publication/source revision mapping, asynchronous
   deletion/retention and isolated cost evidence are established. Keep general user search on its
   current exact D1/Vectorize ACL paths and leave all provider gates off.
 
-**Latest K26 checkpoint:** RAG emits the actual hit count for cache-hit and normal search results.
-The Knowledge Worker passes that value through the existing bounded content-free telemetry builder
-and writes it as a third Analytics Engine measurement beside latency and confidence. RAG and
-Knowledge typechecks and `git diff --check` pass; no tests, deployment or live acceptance ran.
-**Next action:** reconcile the signed extension Knowledge search result and durable invocation path
-with K19's remaining collection/citation API requirements.
+**Latest K19 checkpoint:** the signed workflow search result already carries current source and
+chunk hashes, revisions and coordinates; the durable caller pins installation/grant/publication
+authority. Source review found deletion and publication-change races after D1 materialization, so the
+route now checks the deletion ledger and exact current publication revision before returning and
+fails with 409 if either changed. Knowledge typecheck and `git diff --check` pass; no tests,
+deployment or live acceptance ran. **Next action:** add an owner/admin sample search constrained to
+the exact current published collection and recheck its revision before returning.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
