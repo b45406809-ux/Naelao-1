@@ -62,8 +62,8 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Template business roles and member onboarding · TBR11 — inspect direct scheduled-script run
-budget admission.** Trace current AgentDO effect gates and Billing reservations for direct scheduled
-scripts. Implement an atomic consumed run reservation only if the existing authority and price
-contract support it; otherwise record the precise gap and continue to another independent task. Do
-not borrow creator/owner grants, infer provider prices or enable rollout.
+**Template business roles and member onboarding · TBR12 — prevent duplicate member-onboarding
+actions.** In `SpaceMemberOnboardingPanel`, expose
+pending invitation/proposal creation and revocation with explicit busy states, disable repeated
+submits while an action is pending, and keep screen-reader status feedback clear. Keep the handoff
+copy-only and role records non-granting.

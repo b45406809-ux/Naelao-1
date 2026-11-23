@@ -211,10 +211,29 @@ Code `9ccd739538f4e0a8751ff9d289385adc5df4661b` is pushed and remote-verified on
 | TBR08 Assistant inheritance | PARTIAL | Project acting-user `inherit`/`read_only`/`none` clamp exists, but universal resource/channel/cache/delegation checks are not established. |
 | TBR09 Shared data permissions | PARTIAL | The role contract can request symbolic shared-data collections and actions. Host-enforced per-record/action grants, shared-record ACLs and consistent UI/SDK/assistant callers remain uncoded. |
 | TBR10 Private-Project owner/admin policy | PRODUCT_DECISION_OPEN | SpaceDO grants implicit owner/admin access while Knowledge requires explicit Project membership. Resolve and enforce consistently; do not silently widen either policy. |
-| TBR11 Autonomous service identities | PARTIAL | Scheduled goal jobs have owner-reviewed exact enabled action allowlists, a per-run credit ceiling, persisted `scheduled_job:<id>` identity/revision, current-row checks between steps, and Billing/internal-receipt attribution (code `15b48e03`, migrations 0281/0282/157). Direct-script revision fencing and exact HITL policy remain. | General connector/channel/provider service principals, in-flight effect cancellation, Project Steward initial opt-in and deployed acceptance remain open. |
+| TBR11 Autonomous service identities | PARTIAL | Scheduled goal jobs have owner-reviewed exact enabled action allowlists, a per-run credit ceiling, persisted `scheduled_job:<id>` identity/revision, current-row checks between steps, and Billing/internal-receipt attribution (code `15b48e03`, migrations 0281/0282/157). Direct scripts recheck their exact scheduled revision before dispatch and can reserve one Project-cap credit when that cap is enabled. | Direct jobs have no owner-settable run ceiling; nested effects are not pre-reserved/consumed against a common run budget, and run settlement does not enforce the one-credit hold. General connector/channel/provider principals, in-flight effect cancellation, Project Steward opt-in and deployed acceptance remain open. |
 | TBR12 Onboarding UX, audit and acceptance | PARTIAL | Shell has copy-only invitation creation/status/revoke and existing-member role-proposal controls, a member-facing current-role/onboarding view, and authenticated redemption; all role/resource grants remain unapplied. Responsive/accessibility, audit beyond current invitation/review receipts, and deployed multi-user/revocation acceptance remain. |
 
 The copied plan source and original reconciliation remain below for provenance. The source came from `origin/plan/microapps-ui-sdk-voice` commit `28d7c4601a2cba50fef092040dfe351aa76a3`, supplemented by clarification `cdeb7deff22f23b65e91df0086523313550e640a`. The copied plan SHA-256 is `4cbfe5c7d3d523661ddef1a77df716a37624b350b7ef83bec86d2042ba9c7607`; no planning branch was checked out or merged.
+
+## TBR11 source checkpoint — 2026-11-23 (direct scheduled-script budget boundary)
+
+Direct scheduled-script dispatch verifies the heartbeat session's `scheduled_job:<id>` identity and
+exact enabled `updated_at` revision before invoking `ScriptToolSurface.run`. When a Project daily
+spend cap is active, the AgentDO reserves one credit in SpaceDO before dispatch and attributes the
+hold to that identity/revision. That hold is a Project-cap admission slot, not a per-job ceiling:
+the scheduled-job create/update routes reject positive `max_run_credits` on direct jobs,
+`ScriptToolSurface.run` permits nested operation dispatch, and SpaceDO's `settle_run` path records
+run usage without checking actual credits against held credits. The separate decision-reservation
+settler does enforce its reserved amount, but it is not the direct-script caller or lifecycle.
+
+An atomic run hold by itself therefore cannot cap a script's nested effects. Close this only with an
+owner-approved direct-job ceiling and a per-effect consume/reconcile boundary that preserves actual
+charges and unknown outcomes. No code, test, migration or rollout changed during this trace.
+
+Exact next action: improve TBR12's existing member invitation and role-proposal forms so create and
+revoke actions expose pending state and reject duplicate submissions while an operation is active;
+preserve copy-only delivery and proposal-only access.
 
 TBR02 is complete locally in the checkpoint above. Exact next action: implement TBR04's owner-only installed-resource/effective-access preview before adding any invitation or grant lifecycle. Continue other S/U/P/PW/K/EP/AP gaps after this slice.
 

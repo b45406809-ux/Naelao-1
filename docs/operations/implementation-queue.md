@@ -201,25 +201,34 @@ Spaces worker and targeted Shell typechecks plus `git diff --check` pass. The fu
 still blocked by stale generated `.next/types` references. No tests, migration, deployment, provider
 call or live acceptance ran; resource gates remain off.
 **Next action:** park EP06's remaining cross-resource pricing/cap and provider/live evidence gates;
-activate TBR11's direct scheduled-script run-budget trace.
+continue with TBR12 after the TBR11 direct-script budget source trace below.
 
 ## Active plan
 
 **Template business roles and member onboarding.** See the [plan](../research/template-business-roles-and-member-onboarding-plan.md)
 and [progress ledger](../research/template-business-roles-and-member-onboarding-progress.md).
 
-- [ ] **TBR11 — Inspect direct scheduled-script run-budget admission.** Trace current AgentDO
-  effect gates and Billing reservations. Implement an atomic consumed run reservation only if the
-  existing authority and price contract support it; otherwise preserve the gap and move to another
-  independent requirement. Do not borrow creator/owner grants or infer provider pricing.
+- [x] **TBR11 — Reconcile direct scheduled-script run-budget admission.** Source inspection found
+  the script can invoke nested operations; its Project daily-cap hold is fixed at one credit and is
+  created only when that cap is enabled. `settle_run` does not enforce the hold amount, while direct
+  jobs cannot receive `max_run_credits` through the owner API. A run-only hold cannot bound nested
+  effects, so the scheduled identity/revision alone is insufficient for a consumed per-run ceiling.
+- [ ] **Blocked · TBR11 — Atomic per-effect scheduled-script ceiling.** Resume after a host contract
+  can bind an owner-approved direct-job ceiling to exact current job identity/revision and consume it
+  across nested effects before each effect. Reconciliation must preserve unknown outcomes and actual
+  usage; do not borrow creator/owner grants or treat the current post-run usage tally as admission.
+- [ ] **TBR12 — Prevent duplicate member-onboarding actions.** In `SpaceMemberOnboardingPanel`, add
+  explicit busy states for invitation/proposal creation and revocation, disable repeated submits
+  while a mutation is pending, and keep screen-reader status feedback clear. Keep invitations
+  copy-only and role records non-granting.
 
-**Latest TBR11 checkpoint:** scheduled identity, revision fences and goal-job action/credit ceilings
-are implemented. Direct scheduled scripts still lack an atomic consumed run reservation; the prior
-ledger checkpoint explicitly calls for checking available per-effect gates before choosing the next
-implementation.
-**Next action:** inspect the direct-script dispatch and Billing reserve/settle paths, then implement
-only a reservation that is consumed at effect admission and bound to the exact scheduled-job identity
-and revision.
+**Latest TBR11 checkpoint:** direct dispatch checks the persisted heartbeat session and exact enabled
+job revision immediately before `tools.run`; Project spend reservations serialize against an enabled
+daily cap but settle by run without enforcing the held credit maximum. `ScriptToolSurface.run` can
+nested-dispatch other operations, so whole-run reservation alone cannot safely enforce an owner
+ceiling. No code or tests changed during this source trace.
+**Next action:** add explicit pending/disabled mutation states to the invitation and proposal controls
+in `SpaceMemberOnboardingPanel`, then continue with another independent TBR code gap.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
