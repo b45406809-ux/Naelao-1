@@ -35,6 +35,16 @@ export function recordCitationMetric(dataset: AnalyticsEngineDataset | undefined
   catch { /* telemetry failures must not change citation authorization or delivery */ }
 }
 
+export function recordPublishedCollectionSearchMetric(dataset: AnalyticsEngineDataset | undefined,
+  surface: "extension" | "owner_preview", outcome: "completed" | "source_changed" | "publication_changed" | "error",
+  durationMs: number, resultCount: number): void {
+  const bounded = (value: number, maximum: number) => Number.isFinite(value) ? Math.max(0, Math.min(maximum, Math.round(value))) : 0;
+  try {
+    dataset?.writeDataPoint({ blobs: ["knowledge_retrieval", "published_collection", surface, outcome],
+      doubles: [bounded(durationMs, 120_000), bounded(resultCount, 10)], indexes: [] });
+  } catch { /* Analytics failure must not change authorized search or preview results. */ }
+}
+
 export function recordWebsiteRefreshUsageReceiptMetric(dataset: AnalyticsEngineDataset | undefined,
   outcome: "sent" | "retry", durationMs: number, attempts: number): void {
   try {

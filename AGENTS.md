@@ -62,9 +62,9 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Mature Knowledge platform · K26 — instrument publication-scoped retrieval outcomes.** Add
-privacy-safe fixed-label latency, result-count and outcome telemetry to the shared extension/owner
-preview search helper. Clamp numeric values, omit query and all tenant/Space/Project/publication/
-document/installation identifiers, and isolate Analytics failures from retrieval. Keep response
-caches disabled and the managed AI Search adapter blocked on exact pre-retrieval scope mapping,
-freshness/deletion and isolated provider evidence.
+**Mature Knowledge platform · K21 — reconcile result-cache freshness across source and grant changes.**
+Trace the semantic and response cache callers against source/content, publication/grant and deletion
+mutation paths. Implement a host-owned freshness fence only if current source/grant stores support
+exact invalidation. Keep every cache gate disabled until exact invalidation and deployed freshness
+evidence are accepted; keep managed AI Search blocked on its exact scope, freshness/deletion and
+isolated provider evidence.

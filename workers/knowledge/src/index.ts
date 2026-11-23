@@ -29,7 +29,7 @@ import { boundedWebsiteCrawlFrontier, extractWebsiteCrawlLinks, WEBSITE_CRAWL_LI
 import { runScheduledWebsiteRefreshes } from "./website-refresh-scheduler.js";
 import { searchCloudflareWeb, webSearchSourceUrl, type CloudflareWebSearchConfig } from "./cloudflare-web-search.js";
 import { buildPrivacySafeRetrievalTelemetry, recordCitationMetric, recordKnowledgeFilePreviewParseMetric, recordProjectAccessMetric,
-  recordWebsitePreviewFailureMetric, recordWebsiteRefreshRecoveryMetric } from "./retrieval-telemetry.js";
+  recordPublishedCollectionSearchMetric, recordWebsitePreviewFailureMetric, recordWebsiteRefreshRecoveryMetric } from "./retrieval-telemetry.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -712,6 +712,7 @@ interface PublishedCollectionSearchInput {
   query: string;
   topK: number;
   wrapContext: boolean;
+  surface: "extension" | "owner_preview";
 }
 
 interface PublishedCollectionSearchHit {
@@ -742,92 +743,109 @@ async function searchPublishedCollection(
   env: KnowledgeEnv,
   input: PublishedCollectionSearchInput,
 ): Promise<PublishedCollectionSearchResult> {
-  const retrievalStartedAt = new Date().toISOString();
-  const docs = await env.PLATFORM_DB.prepare(
-    `SELECT d.id,d.title FROM kb_external_publication_documents x JOIN kb_documents d ON d.id=x.document_id
-     JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id
-       AND p.project_id=x.project_id AND p.revision=x.publication_revision AND p.archived_at IS NULL
-     WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND x.publication_revision=? AND d.tenant_id=x.tenant_id
-       AND d.space_id=x.space_id AND d.project_id=x.project_id AND d.status='indexed' AND d.source_state='current'
-       AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
-         SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
-           AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
-       ))) ORDER BY d.id LIMIT 100`
-  ).bind(input.publicationId, input.tenantId, input.spaceId, input.projectId, input.publicationRevision).all<{ id: string; title: string }>();
+  const startedAt = performance.now();
+  let outcome: "completed" | "source_changed" | "publication_changed" | "error" = "error";
+  let resultCount = 0;
+  try {
+    const retrievalStartedAt = new Date().toISOString();
+    const docs = await env.PLATFORM_DB.prepare(
+      `SELECT d.id,d.title FROM kb_external_publication_documents x JOIN kb_documents d ON d.id=x.document_id
+       JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id
+         AND p.project_id=x.project_id AND p.revision=x.publication_revision AND p.archived_at IS NULL
+       WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND x.publication_revision=? AND d.tenant_id=x.tenant_id
+         AND d.space_id=x.space_id AND d.project_id=x.project_id AND d.status='indexed' AND d.source_state='current'
+         AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
+           SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
+             AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
+         ))) ORDER BY d.id LIMIT 100`
+    ).bind(input.publicationId, input.tenantId, input.spaceId, input.projectId, input.publicationRevision).all<{ id: string; title: string }>();
 
-  let data: PublishedCollectionSearchHit[] = [];
-  if (docs.results.length) {
-    const embedding = await embedText(env.AI, input.query.trim());
-    const matches = await env.KB_VECTORS.query(embedding.embedding, {
-      topK: Math.min(100, Math.max(input.topK * 4, input.topK)), returnMetadata: "indexed",
-      filter: {
-        tenant_id: { $eq: input.tenantId }, space_id: { $eq: input.spaceId }, project_id: { $eq: input.projectId },
-        doc_id: { $in: docs.results.map(doc => doc.id) },
-      },
-    });
-    const ids = [...new Set((matches.matches ?? []).map(match => match.id))];
-    if (ids.length) {
-      const placeholders = ids.map(() => "?").join(",");
-      const rows = await env.PLATFORM_DB.prepare(
-        `SELECT k.id,k.document_id,k.content,k.content_hash,k.byte_start,k.byte_end,k.line_start,k.line_end,k.heading_path,
-           d.title,d.source_adapter,d.source_revision,d.source_content_sha256,d.source_grant_revision FROM kb_chunks k
-         JOIN kb_documents d ON d.id=k.document_id
-         JOIN kb_external_publication_documents x ON x.document_id=k.document_id AND x.tenant_id=k.tenant_id AND x.space_id=k.space_id AND x.project_id=k.project_id
-         JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id AND p.project_id=x.project_id
-         WHERE k.id IN (${placeholders}) AND x.publication_id=? AND x.publication_revision=? AND p.revision=? AND p.archived_at IS NULL
-           AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
-           AND d.status='indexed' AND d.source_state='current' AND k.deleted_at IS NULL
-           AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
-             SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
-               AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
-           )))`
-      ).bind(...ids, input.publicationId, input.publicationRevision, input.publicationRevision,
-        input.tenantId, input.spaceId, input.projectId).all<{
-        id: string; document_id: string; content: string; content_hash: string; byte_start: number; byte_end: number;
-        line_start: number; line_end: number; heading_path: string; title: string; source_adapter: string;
-        source_revision: number; source_content_sha256: string | null; source_grant_revision: number | null;
-      }>();
-      const byId = new Map(rows.results.map(row => [row.id, row]));
-      const scoreById = new Map((matches.matches ?? []).map(match => [match.id, match.score ?? 0]));
-      data = (await Promise.all(ids.map(async id => {
-        const row = byId.get(id);
-        if (!row) return null;
-        const headingPath = safeHeadingPath(row.heading_path);
-        return {
-          chunk_id: row.id,
-          document_id: row.document_id,
-          title: row.title,
-          score: scoreById.get(id) ?? 0,
-          content: input.wrapContext ? await wrapContextChunk({ content: row.content }) : row.content,
-          content_hash: row.content_hash,
-          provenance: {
-            source_adapter: row.source_adapter,
-            source_revision: Number(row.source_revision),
-            ...(row.source_content_sha256 ? { source_content_sha256: row.source_content_sha256 } : {}),
-            ...(Number.isSafeInteger(row.source_grant_revision) && Number(row.source_grant_revision) > 0
-              ? { source_grant_revision: Number(row.source_grant_revision) } : {}),
-            byte_start: Number(row.byte_start),
-            byte_end: Number(row.byte_end),
-            line_start: Number(row.line_start),
-            line_end: Number(row.line_end),
-            ...(headingPath ? { heading_path: headingPath } : {}),
-          },
-        };
-      }))).filter((item): item is PublishedCollectionSearchHit => item !== null).slice(0, input.topK);
+    let data: PublishedCollectionSearchHit[] = [];
+    if (docs.results.length) {
+      const embedding = await embedText(env.AI, input.query.trim());
+      const matches = await env.KB_VECTORS.query(embedding.embedding, {
+        topK: Math.min(100, Math.max(input.topK * 4, input.topK)), returnMetadata: "indexed",
+        filter: {
+          tenant_id: { $eq: input.tenantId }, space_id: { $eq: input.spaceId }, project_id: { $eq: input.projectId },
+          doc_id: { $in: docs.results.map(doc => doc.id) },
+        },
+      });
+      const ids = [...new Set((matches.matches ?? []).map(match => match.id))];
+      if (ids.length) {
+        const placeholders = ids.map(() => "?").join(",");
+        const rows = await env.PLATFORM_DB.prepare(
+          `SELECT k.id,k.document_id,k.content,k.content_hash,k.byte_start,k.byte_end,k.line_start,k.line_end,k.heading_path,
+             d.title,d.source_adapter,d.source_revision,d.source_content_sha256,d.source_grant_revision FROM kb_chunks k
+           JOIN kb_documents d ON d.id=k.document_id
+           JOIN kb_external_publication_documents x ON x.document_id=k.document_id AND x.tenant_id=k.tenant_id AND x.space_id=k.space_id AND x.project_id=k.project_id
+           JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id AND p.project_id=x.project_id
+           WHERE k.id IN (${placeholders}) AND x.publication_id=? AND x.publication_revision=? AND p.revision=? AND p.archived_at IS NULL
+             AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
+             AND d.status='indexed' AND d.source_state='current' AND k.deleted_at IS NULL
+             AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
+               SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
+                 AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
+             )))`
+        ).bind(...ids, input.publicationId, input.publicationRevision, input.publicationRevision,
+          input.tenantId, input.spaceId, input.projectId).all<{
+          id: string; document_id: string; content: string; content_hash: string; byte_start: number; byte_end: number;
+          line_start: number; line_end: number; heading_path: string; title: string; source_adapter: string;
+          source_revision: number; source_content_sha256: string | null; source_grant_revision: number | null;
+        }>();
+        const byId = new Map(rows.results.map(row => [row.id, row]));
+        const scoreById = new Map((matches.matches ?? []).map(match => [match.id, match.score ?? 0]));
+        data = (await Promise.all(ids.map(async id => {
+          const row = byId.get(id);
+          if (!row) return null;
+          const headingPath = safeHeadingPath(row.heading_path);
+          return {
+            chunk_id: row.id,
+            document_id: row.document_id,
+            title: row.title,
+            score: scoreById.get(id) ?? 0,
+            content: input.wrapContext ? await wrapContextChunk({ content: row.content }) : row.content,
+            content_hash: row.content_hash,
+            provenance: {
+              source_adapter: row.source_adapter,
+              source_revision: Number(row.source_revision),
+              ...(row.source_content_sha256 ? { source_content_sha256: row.source_content_sha256 } : {}),
+              ...(Number.isSafeInteger(row.source_grant_revision) && Number(row.source_grant_revision) > 0
+                ? { source_grant_revision: Number(row.source_grant_revision) } : {}),
+              byte_start: Number(row.byte_start),
+              byte_end: Number(row.byte_end),
+              line_start: Number(row.line_start),
+              line_end: Number(row.line_end),
+              ...(headingPath ? { heading_path: headingPath } : {}),
+            },
+          };
+        }))).filter((item): item is PublishedCollectionSearchHit => item !== null).slice(0, input.topK);
+      }
     }
-  }
 
-  // Check even empty searches: a deletion or publication update during ranking must not be
-  // mistaken for a valid empty result from the old source boundary.
-  if (await hasKnowledgeDocumentDeletionSince(env.PLATFORM_DB, input.tenantId, input.spaceId, retrievalStartedAt)) {
-    return { ok: false, status: 409, error_code: "knowledge_source_changed_during_search" };
+    // Check even empty searches: a deletion or publication update during ranking must not be
+    // mistaken for a valid empty result from the old source boundary.
+    if (await hasKnowledgeDocumentDeletionSince(env.PLATFORM_DB, input.tenantId, input.spaceId, retrievalStartedAt)) {
+      outcome = "source_changed";
+      return { ok: false, status: 409, error_code: "knowledge_source_changed_during_search" };
+    }
+    const stillCurrent = await env.PLATFORM_DB.prepare(
+      `SELECT revision FROM kb_external_publications
+       WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=? AND archived_at IS NULL`
+    ).bind(input.publicationId, input.tenantId, input.spaceId, input.projectId, input.publicationRevision).first<{ revision: number }>();
+    if (!stillCurrent) {
+      outcome = "publication_changed";
+      return { ok: false, status: 409, error_code: "knowledge_publication_revision_conflict" };
+    }
+    outcome = "completed";
+    resultCount = data.length;
+    return { ok: true, data };
+  } catch (error) {
+    outcome = "error";
+    throw error;
+  } finally {
+    recordPublishedCollectionSearchMetric(env.KNOWLEDGE_ANALYTICS, input.surface, outcome,
+      performance.now() - startedAt, resultCount);
   }
-  const stillCurrent = await env.PLATFORM_DB.prepare(
-    `SELECT revision FROM kb_external_publications
-     WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=? AND archived_at IS NULL`
-  ).bind(input.publicationId, input.tenantId, input.spaceId, input.projectId, input.publicationRevision).first<{ revision: number }>();
-  if (!stillCurrent) return { ok: false, status: 409, error_code: "knowledge_publication_revision_conflict" };
-  return { ok: true, data };
 }
 
 app.post("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId/search-preview", async c => {
@@ -859,6 +877,7 @@ app.post("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publica
     query: body.query,
     topK: body.top_k === undefined ? 3 : Number(body.top_k),
     wrapContext: false,
+    surface: "owner_preview",
   });
   if (!result.ok) return c.json({ error_code: result.error_code }, result.status, { "cache-control": "private, no-store" });
   return c.json({ publication_id: publicationId, revision: publication.revision, data: result.data }, 200,
@@ -888,6 +907,7 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
     query: body.query,
     topK,
     wrapContext: true,
+    surface: "extension",
   });
   if (!result.ok) return c.json({ error_code: result.error_code }, result.status);
   return c.json({ data: result.data, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });

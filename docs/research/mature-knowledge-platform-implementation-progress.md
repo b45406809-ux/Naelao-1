@@ -402,7 +402,7 @@ Statuses describe local code, not deployment or live acceptance. `IN_PROGRESS` m
 | K23 Sensitive data and human handoff | IN_PROGRESS | Prompt-injection handling and air-gap policy exist. Classification/retention policy and pharmacy escalation/human review are not established as a complete workflow. |
 | K24 Metering and usage attribution | IN_PROGRESS | Storage write attribution and authoritative billing components exist. Parsing/OCR/sync/retrieval/provider full-stack attribution and invoice reconciliation remain. |
 | K25 Budgets and limits | NOT_STARTED | Document quota exists; no complete per-Space/project/installation maximum-cost and pause policy found. |
-| K26 Bounded observability | IN_PROGRESS | Retrieval latency/quality and deletion receipts exist. Add parse/sync/freshness/denial/citation/cost/recovery measures without content or private identifiers. |
+| K26 Bounded observability | IN_PROGRESS | Retrieval telemetry now covers cached/uncached normal search and publication-scoped extension/owner preview search with bounded hit counts, latency and fixed surface/outcome labels. Parse, sync/recovery, authorization, citation and deletion measures use fixed labels without content or private identifiers. Provider invoice reconciliation and deployed telemetry acceptance remain open. |
 | K27 Acceptance benchmark and rollout gates | IN_PROGRESS | Numerous local ACL/deletion tests exist; no unified release gate spanning two-tenant ACL, sources, sync races, citations, cost and recovery. Keep every rollout off. |
 | K28 Deployed isolation/revocation | BLOCKED_EXTERNAL | No deployed multi-tenant or cross-user acceptance evidence in this session. Code/test fixtures remain actionable independently. |
 | K29 Live parser/search-provider and invoice tests | BLOCKED_EXTERNAL | No live account/credential or invoice acceptance was exercised. Ordinary adapter and local test gaps remain code work, not a credentials excuse. |
@@ -617,3 +617,19 @@ Exact next action: add privacy-safe fixed-label latency, result-count and outcom
 shared publication-scoped search helper used by extension retrieval and the owner preview. Clamp
 numeric values, omit query and all tenant/Space/Project/publication/document/installation identifiers,
 and isolate Analytics failures from retrieval.
+
+## K26 checkpoint — 2026-11-23 (publication-scoped retrieval telemetry)
+
+The shared retrieval helper used by signed extension search and the owner collection preview now
+records bounded elapsed milliseconds, returned hit count, and fixed surface/outcome labels. Outcomes
+distinguish completed, source changed, publication changed and retrieval error. Hit counts are clamped
+to the helper's maximum of ten, elapsed time to two minutes, and no query or tenant/Space/Project/
+publication/document/installation identifier enters the Analytics point. The telemetry helper catches
+Analytics failures so search results and freshness errors are unchanged.
+
+Knowledge Worker typecheck and `git diff --check` pass. No tests, deployment or live telemetry
+acceptance ran. Provider invoice reconciliation and deployed telemetry evidence remain open.
+
+Exact next action: trace the normal Knowledge and Agents semantic-response cache callers against
+source/content, publication/grant and deletion mutation paths. Implement a host-owned freshness fence
+only where current source/grant stores support exact invalidation, and keep all cache gates disabled.

@@ -141,22 +141,28 @@ deployed/provider evidence. Preserve `infra/scripts/__pycache__/` and keep rollo
   passing passages to the extension runner. A changed or unavailable authority clears all retrieved
   context, records a failed dispatch, and requires human review. Agents typecheck and
   `git diff --check` pass; no tests, deployment or live acceptance ran.
-- [ ] **K26 — Instrument publication-scoped retrieval outcomes.** The shared extension/owner preview
-  retrieval helper does not yet record bounded retrieval latency, outcome or hit count. Add fixed
-  surface/outcome labels and clamped numbers only; never emit query, tenant, Space, Project,
-  publication, document or installation identifiers. Analytics failure must not change retrieval.
+- [x] **K26 — Instrument publication-scoped retrieval outcomes.** The shared extension/owner preview
+  helper records fixed surface/outcome labels plus bounded latency and returned-hit count. It emits
+  no query or tenant/Space/Project/publication/document/installation identifiers, and Analytics
+  errors cannot alter retrieval. Knowledge typecheck and `git diff --check` pass; no tests,
+  deployment or live acceptance ran.
+- [ ] **K21 — Reconcile result-cache freshness across source and grant changes.** Current Knowledge
+  cache namespaces include caller scope and the Space deletion generation, but not source/content or
+  publication/grant revisions. Trace all reachable cache callers and source/grant mutation paths;
+  implement a host-owned freshness fence if the current stores support it. Keep every cache gate off
+  until exact invalidation and deployed freshness evidence are accepted.
 - [ ] **Blocked · K15 — Implement and validate isolated managed-index adapter.** Resume after exact
   pre-retrieval scope fields and limits, current publication/source revision mapping, asynchronous
   deletion/retention and isolated cost evidence are established. Keep general user search on its
   current exact D1/Vectorize ACL paths and leave all provider gates off.
 
-**Latest K20 checkpoint:** the Space-shared channel caller re-reads every used publication revision
-and the current installation grant immediately before passing retrieved passages to its extension
-runner. It clears all passages, fails the dispatch and hands the conversation to a person if authority
-changed or could not be verified. Agents typecheck and `git diff --check` pass. No tests, deployment
-or live acceptance ran. **Next action:** add fixed-label, bounded latency/outcome/hit-count telemetry
-to the shared publication-scoped retrieval helper, with no query or resource identifiers and no
-retrieval failure on Analytics errors.
+**Latest K26 checkpoint:** the shared publication-scoped retrieval helper now records bounded latency,
+returned-hit count and fixed `extension`/`owner_preview` plus outcome labels. Values are clamped;
+queries and all tenant/Space/Project/publication/document/installation identifiers are omitted.
+Analytics failures are isolated from search. Knowledge typecheck and `git diff --check` pass. No
+tests, deployment or live telemetry acceptance ran. **Next action:** trace the semantic and response
+cache callers against current source, content, publication and grant mutation paths, and implement an
+exact host-owned freshness generation if supported; keep cache gates disabled.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
