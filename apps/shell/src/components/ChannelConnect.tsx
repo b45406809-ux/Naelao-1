@@ -1632,7 +1632,8 @@ export function ChannelConnect({
                 <span style={{ fontSize: 12, color: "var(--text3)" }}>{on ? "On" : connected ? "Off" : "—"}</span>
               )}
             </div>
-            {ch.id === "whatsapp" && <WhatsAppMemberAccessPanel spaceId={spaceId} projectId={projectId ?? null} session={session}
+            {ch.id === "whatsapp" && <WhatsAppMemberAccessPanel spaceId={spaceId} projectId={projectId ?? null}
+              extensionInstanceId={boundInstallation?.instance_id ?? null} session={session}
               canManage={canManage} connected={connected} enabled={on}
               routingMode={link?.member_routing_mode ?? "staff_and_customers"} onChanged={onChanged} />}
             {ch.id === "discord" && (() => {

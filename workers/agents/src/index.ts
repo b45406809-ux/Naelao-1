@@ -9496,19 +9496,23 @@ app.get("/spaces/:spaceId/assistant/channels", async (c) => {
       if (!projectMember) throw forbidden("Current Project membership is required to view your phone-test status");
       const route = activePlatformWhatsappRoute(c.env);
       const now = new Date().toISOString();
-      const test = route ? await c.env.PLATFORM_DB.prepare(`SELECT t.expires_at FROM assistant_channel_member_customer_test_sessions t
+      const test = route ? await c.env.PLATFORM_DB.prepare(`SELECT t.expires_at,t.package_version FROM assistant_channel_member_customer_test_sessions t
         JOIN assistant_channel_member_contacts contact ON contact.contact_id=t.contact_id AND contact.status='active'
         JOIN assistant_channel_member_access access ON access.tenant_id=t.tenant_id AND access.space_id=t.space_id
           AND access.user_id=t.user_id AND access.channel=t.channel AND access.project_id=t.project_id AND access.status='enabled'
         JOIN channel_links link ON link.tenant_id=t.tenant_id AND link.space_id=t.space_id AND link.channel=t.channel
           AND link.enabled=1 AND link.member_routing_mode='staff_and_customers'
           AND link.project_id=t.project_id AND link.extension_instance_id=t.installation_id
+          AND link.extension_script_sha256=t.handler_sha256
         WHERE t.tenant_id=? AND t.space_id=? AND t.user_id=? AND t.channel='whatsapp'
           AND t.project_id=? AND t.installation_id=? AND t.provider_route_key=?
           AND t.status='active' AND t.expires_at>? LIMIT 1`)
         .bind(tenantId, spaceId, userId, projectId, installationId, await route.routeKey, now)
-        .first<{ expires_at: string }>() : null;
-      return c.json({ active: Boolean(test), expires_at: test?.expires_at ?? null }, 200, { "cache-control": "private, no-store" });
+        .first<{ expires_at: string; package_version: string }>() : null;
+      const installation = test ? await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId) : null;
+      const stillActive = Boolean(test && installation?.instance.status === "active"
+        && installation.manifest.bundle?.version === test.package_version);
+      return c.json({ active: stillActive, expires_at: stillActive ? test?.expires_at ?? null : null }, 200, { "cache-control": "private, no-store" });
     }
     if (memberAccess !== "whatsapp") throw badRequest("member_access must be whatsapp or whatsapp_customer_test");
     const mine = c.req.query("mine");
@@ -9972,6 +9976,9 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       || !installation.manifest.channels?.some(item => item.kind === "channel" && item.provider === "whatsapp"
         && typeof item.handlerScript === "string"))
       return c.json({ error_code: "whatsapp_customer_test_extension_unavailable" }, 409);
+    const packageVersion = installation.manifest.bundle?.version ?? "";
+    if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(packageVersion))
+      return c.json({ error_code: "whatsapp_customer_test_extension_unavailable" }, 409);
 
     const now = new Date().toISOString();
     await c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
@@ -9993,10 +10000,10 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
         .bind(now, tenantId, spaceId, userId, projectId, installationId, providerRouteKey),
       c.env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_customer_test_challenges
         (challenge_hash,test_session_id,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,
-          contact_id,project_id,installation_id,created_at,expires_at)
-        VALUES(?,?,?,?,?,'whatsapp',?,?,?,?,?,?,?)`)
+          contact_id,project_id,installation_id,package_version,handler_sha256,created_at,expires_at)
+        VALUES(?,?,?,?,?,'whatsapp',?,?,?,?,?,?,?,?,?)`)
         .bind(challengeHash, crypto.randomUUID(), tenantId, spaceId, userId, providerRouteKey, contact.sender_key,
-          contact.contact_id, projectId, installationId, now, challengeExpiresAt),
+          contact.contact_id, projectId, installationId, packageVersion, channelLink.extension_script_sha256, now, challengeExpiresAt),
     ]);
     return c.json({ challenge: code, expires_at: challengeExpiresAt,
       instructions: "Send TEST followed by this code to the WhatsApp number connected to Naelao. The code expires in five minutes and can be used once. The customer test lasts up to 30 minutes; send TEST EXIT to return to member routing." },

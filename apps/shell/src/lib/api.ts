@@ -3219,6 +3219,50 @@ export interface AssistantChannelMemberContactChallenge {
   instructions: string;
 }
 
+export interface AssistantWhatsAppCustomerTestStatus {
+  active: boolean;
+  expires_at: string | null;
+}
+
+export async function getAssistantWhatsAppCustomerTestStatus(
+  spaceId: string,
+  projectId: string,
+  installationId: string,
+  session: SessionCredentials,
+): Promise<AssistantWhatsAppCustomerTestStatus> {
+  const query = new URLSearchParams({ member_access: "whatsapp_customer_test", project_id: projectId,
+    extension_instance_id: installationId });
+  return apiFetch<AssistantWhatsAppCustomerTestStatus>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels?${query}`, { session, cache: "no-store" },
+  );
+}
+
+export async function beginAssistantWhatsAppCustomerTest(
+  spaceId: string,
+  projectId: string,
+  installationId: string,
+  session: SessionCredentials,
+): Promise<AssistantChannelMemberContactChallenge> {
+  return apiFetch<AssistantChannelMemberContactChallenge>(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels`, {
+    method: "POST", session,
+    body: JSON.stringify({ action: "begin_member_customer_test", channel: "whatsapp", project_id: projectId,
+      extension_instance_id: installationId }),
+  });
+}
+
+export async function endAssistantWhatsAppCustomerTest(
+  spaceId: string,
+  projectId: string,
+  installationId: string,
+  session: SessionCredentials,
+): Promise<{ tests_ended: number }> {
+  return apiFetch<{ tests_ended: number }>(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels`, {
+    method: "POST", session,
+    body: JSON.stringify({ action: "end_member_customer_test", channel: "whatsapp", project_id: projectId,
+      extension_instance_id: installationId }),
+  });
+}
+
 /** Begin self-verification for the signed-in member's own WhatsApp sender. */
 export async function beginAssistantChannelMemberContactVerification(
   spaceId: string,

@@ -246,3 +246,17 @@ identity model; do not reuse `executive_contacts` or `channel_pairings` as membe
 - Next: intercept challenge redemption and active test turns before pairing, verification, member
   route selection or executive commands; forward valid turns only to the pinned Project handler
   with executive routing disabled, then revalidate that same test identity at Agent DO dispatch.
+
+### Phone-test issuance UI and exact release pin — 2026-11-23
+
+- The Project Channels panel now lets an eligible member request a code for the currently bound
+  WhatsApp customer handler, displays the five-minute code expiry, polls active status, and ends an
+  active test. UI eligibility requires a verified contact and an enabled grant for that Project.
+- Challenges and eventual test sessions now also pin the active extension's package version and
+  handler hash. Replacing or updating the handler will invalidate the challenge/session rather than
+  silently switching the customer's test behavior.
+- Agents typecheck and `git diff --check` passed with pnpm `9.12.0`. Full Shell typecheck reports
+  only the known four missing generated `.next/types` route imports and no errors in changed Shell
+  sources. No tests, migration apply, provider operation or deployment ran.
+- Next: implement signed platform-webhook redemption, explicit `TEST EXIT`, customer-only forwarding
+  ahead of internal command/member routing, and Agent DO session revalidation.

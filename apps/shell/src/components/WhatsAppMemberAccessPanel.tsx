@@ -2,7 +2,10 @@
 
 import * as React from "react";
 import {
+  beginAssistantWhatsAppCustomerTest,
   beginAssistantChannelMemberContactVerification,
+  endAssistantWhatsAppCustomerTest,
+  getAssistantWhatsAppCustomerTestStatus,
   listAssistantChannelMemberAccess,
   listProjectMembers,
   listSpaceMembers,
@@ -19,6 +22,7 @@ type RosterMember = { user_id: string; label: string; role?: string; active: boo
 export function WhatsAppMemberAccessPanel({
   spaceId,
   projectId,
+  extensionInstanceId,
   session,
   canManage,
   connected,
@@ -28,6 +32,7 @@ export function WhatsAppMemberAccessPanel({
 }: {
   spaceId: string;
   projectId?: string | null;
+  extensionInstanceId?: string | null;
   session: SessionCredentials;
   canManage: boolean;
   connected: boolean;
@@ -49,6 +54,10 @@ export function WhatsAppMemberAccessPanel({
   const [mode, setMode] = React.useState<RoutingMode>(routingMode ?? "staff_and_customers");
   const [modeBusy, setModeBusy] = React.useState(false);
   const [modeError, setModeError] = React.useState<string | null>(null);
+  const [customerTest, setCustomerTest] = React.useState<{ active: boolean; expires_at: string | null } | null>(null);
+  const [customerTestChallenge, setCustomerTestChallenge] = React.useState<{ code: string; instructions: string; expiresAt: string } | null>(null);
+  const [customerTestBusy, setCustomerTestBusy] = React.useState(false);
+  const [customerTestError, setCustomerTestError] = React.useState<string | null>(null);
   const activeScope = projectId ?? null;
 
   const refresh = React.useCallback(async () => {
@@ -60,6 +69,18 @@ export function WhatsAppMemberAccessPanel({
       ]);
       setOwnGrants(mine);
       setScopeGrants(managed.filter(grant => grant.project_id === activeScope));
+      if (projectId && extensionInstanceId) {
+        try {
+          const status = await getAssistantWhatsAppCustomerTestStatus(spaceId, projectId, extensionInstanceId, session);
+          setCustomerTest(status);
+          if (status.active) setCustomerTestChallenge(null);
+        } catch {
+          setCustomerTest(null);
+        }
+      } else {
+        setCustomerTest(null);
+        setCustomerTestChallenge(null);
+      }
       if (canManage) {
         if (projectId) {
           const members = await listProjectMembers(spaceId, projectId, session);
@@ -79,15 +100,28 @@ export function WhatsAppMemberAccessPanel({
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "WhatsApp member access is unavailable.");
     }
-  }, [spaceId, projectId, session, canManage, activeScope]);
+  }, [spaceId, projectId, extensionInstanceId, session, canManage, activeScope]);
 
   React.useEffect(() => { void refresh(); }, [refresh]);
   React.useEffect(() => { setMode(routingMode ?? "staff_and_customers"); }, [routingMode]);
+  React.useEffect(() => {
+    if (!projectId || !extensionInstanceId) return;
+    const timer = window.setInterval(() => {
+      void getAssistantWhatsAppCustomerTestStatus(spaceId, projectId, extensionInstanceId, session)
+        .then(status => {
+          setCustomerTest(status);
+          if (status.active) setCustomerTestChallenge(null);
+        })
+        .catch(() => setCustomerTest(null));
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  }, [spaceId, projectId, extensionInstanceId, session]);
 
   const currentScopeGrants = ownGrants.filter(grant => grant.project_id === activeScope);
   const currentScopeGrantByUser = new Map(scopeGrants.map(grant => [grant.user_id, grant]));
   const hasOwnEnabledGrant = ownGrants.some(grant => grant.status === "enabled");
   const ownContactVerified = ownGrants.some(grant => Boolean(grant.contact_verified));
+  const hasCurrentProjectGrant = !!projectId && currentScopeGrants.some(grant => grant.status === "enabled");
   const scopeLabel = activeScope ? `Project ${activeScope}` : "Space assistant";
 
   async function saveGrant(userId: string, status: AssistantChannelMemberAccess["status"]) {
@@ -147,6 +181,37 @@ export function WhatsAppMemberAccessPanel({
       setChallengeError(error instanceof Error ? error.message : "Your WhatsApp contact could not be revoked.");
     } finally {
       setRevokeBusy(false);
+    }
+  }
+
+  async function startCustomerTest() {
+    if (!projectId || !extensionInstanceId || customerTestBusy) return;
+    setCustomerTestBusy(true);
+    setCustomerTestError(null);
+    setCustomerTestChallenge(null);
+    try {
+      const result = await beginAssistantWhatsAppCustomerTest(spaceId, projectId, extensionInstanceId, session);
+      setCustomerTestChallenge({ code: result.challenge, instructions: result.instructions, expiresAt: result.expires_at });
+      await refresh();
+    } catch (error) {
+      setCustomerTestError(error instanceof Error ? error.message : "A customer phone-test code could not be created.");
+    } finally {
+      setCustomerTestBusy(false);
+    }
+  }
+
+  async function endCustomerTest() {
+    if (!projectId || !extensionInstanceId || customerTestBusy) return;
+    setCustomerTestBusy(true);
+    setCustomerTestError(null);
+    try {
+      await endAssistantWhatsAppCustomerTest(spaceId, projectId, extensionInstanceId, session);
+      setCustomerTestChallenge(null);
+      await refresh();
+    } catch (error) {
+      setCustomerTestError(error instanceof Error ? error.message : "The customer phone test could not be ended.");
+    } finally {
+      setCustomerTestBusy(false);
     }
   }
 
@@ -242,6 +307,27 @@ export function WhatsAppMemberAccessPanel({
         {mode === "staff_and_customers" && enabled && ownContactVerified && <p style={{ margin: "5px 0 0", fontSize: 10.5, color: "var(--text3)", lineHeight: 1.45 }}>
           Message the connected WhatsApp number. If you have multiple routes, send <code>USE &lt;space-id&gt; [project-id]</code>; the selection lasts 30 minutes. Send <code>USE RESET</code> to clear it.
         </p>}
+        {projectId && extensionInstanceId && mode === "staff_and_customers" && enabled && <section style={{ marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--border)" }} aria-label="WhatsApp customer phone test">
+          <strong style={{ fontSize: 11 }}>Customer phone test</strong>
+          {customerTest?.active ? <div role="status" style={{ marginTop: 4, fontSize: 10.5, color: "var(--text2)" }}>
+            Active until {customerTest.expires_at ? new Date(customerTest.expires_at).toLocaleString() : "expiry time unavailable"}. Every message is handled as customer traffic. Send <code>TEST EXIT</code> in WhatsApp or end the test here.
+          </div> : <p style={{ margin: "4px 0 6px", fontSize: 10, color: "var(--text3)" }}>
+            Use your verified WhatsApp contact to try the bound Project customer handler for up to 30 minutes.
+          </p>}
+          {customerTest?.active ? <button type="button" className="btn-ghost" disabled={customerTestBusy} onClick={() => void endCustomerTest()}>
+            {customerTestBusy ? "Ending…" : "End phone test"}
+          </button> : <button type="button" className="btn-ghost" disabled={customerTestBusy || !hasCurrentProjectGrant || !ownContactVerified} onClick={() => void startCustomerTest()}>
+            {customerTestBusy ? "Preparing code…" : "Start phone test"}
+          </button>}
+          {!hasCurrentProjectGrant && <p style={{ margin: "4px 0", fontSize: 10, color: "var(--text3)" }}>An enabled WhatsApp grant for this Project is required.</p>}
+          {!ownContactVerified && <p style={{ margin: "4px 0", fontSize: 10, color: "var(--text3)" }}>Verify your own WhatsApp contact first.</p>}
+          {customerTestChallenge && <div role="status" style={{ marginTop: 6, padding: 7, background: "var(--surface2)", borderRadius: 6, fontSize: 10 }}>
+            <div>{customerTestChallenge.instructions}</div>
+            <code style={{ display: "inline-block", margin: "5px 0", fontSize: 13, userSelect: "all" }}>TEST {customerTestChallenge.code}</code>
+            <div>Entry code expires {new Date(customerTestChallenge.expiresAt).toLocaleString()}.</div>
+          </div>}
+          {customerTestError && <p role="alert" style={{ color: "var(--danger, #d33)", fontSize: 10.5 }}>{customerTestError}</p>}
+        </section>}
       </section>
 
       {loadError && <p role="alert" style={{ margin: "7px 0 0", color: "var(--danger, #d33)", fontSize: 10.5 }}>{loadError}</p>}

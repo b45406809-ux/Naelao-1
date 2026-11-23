@@ -398,15 +398,15 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
   extension installation. Keep every test turn on the customer handler before privileged routing;
   support explicit exit/revocation and show test status in the dashboard and chat.
 
-**Latest checkpoint:** migration `0289_whatsapp_member_customer_test.sql` and authenticated status,
-begin and end operations now establish the member phone-test control plane. Starting a test requires
-the current member and Project, exact enabled WhatsApp grant and verified sender, Staff and
-customers mode, the currently bound active WhatsApp installation and destination. Codes are stored
-as hashes, expire after five minutes and can create only one active test per provider sender route;
-the requested test runs for up to 30 minutes after redemption. Agents typecheck and
-`git diff --check` pass. No tests ran; migration `0289` has not been applied. **Next action:** redeem
-the code at the signed WhatsApp webhook, pin active test turns to that exact customer handler
-before member/admin routing, and revalidate the test session at Agent DO dispatch. The SDK example
+**Latest checkpoint:** the member-facing Project Channels panel can now request a phone-test code,
+show its five-minute expiry, poll the active status and end a running test. The issuance API binds
+the challenge to the verified HMAC sender/destination, exact project extension installation,
+package version and handler hash; it checks current membership, grant and routing mode. Agents
+typecheck and `git diff --check` pass. Full Shell typecheck remains blocked only by the four known
+stale `.next/types` route imports, with no errors in changed Shell sources. No tests ran; migration
+`0289` has not been applied. **Next action:** redeem codes and prioritize active test turns at the
+signed WhatsApp platform webhook before pairing, contact verification, member selection or
+executive-command routing; validate the same session again before Agent DO effects. The SDK example
 is complete in the preceding ledger entry.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
