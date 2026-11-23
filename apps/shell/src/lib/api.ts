@@ -2910,6 +2910,7 @@ export interface ChannelExtensionInboxEvent {
   event_id: string;
   channel: string;
   human_takeover: boolean;
+  customer_test?: boolean;
   text: string;
   status: "queued" | "processing" | "running" | "delivering" | "sent" | "uncertain" | "failed";
   error_code: string | null;

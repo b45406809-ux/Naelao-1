@@ -57,3 +57,16 @@ CREATE INDEX IF NOT EXISTS idx_whatsapp_customer_test_member_scope
 
 CREATE INDEX IF NOT EXISTS idx_whatsapp_customer_test_event_keys
   ON assistant_channel_member_customer_test_sessions (provider_route_key, started_event_key, ended_event_key);
+
+-- Keep short-lived, pseudonymous routing receipts so provider retries of test turns cannot fall
+-- through to member routing after an explicit exit. Raw provider event IDs are never retained.
+CREATE TABLE IF NOT EXISTS assistant_channel_member_customer_test_events (
+  event_key TEXT PRIMARY KEY,
+  test_session_id TEXT NOT NULL,
+  provider_route_key TEXT NOT NULL,
+  sender_key TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_customer_test_event_receipts
+  ON assistant_channel_member_customer_test_events (test_session_id, expires_at);

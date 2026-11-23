@@ -62,5 +62,5 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**WhatsApp member routing and extension testing — add bounded WhatsApp member phone testing.**
-Use the active plan and [progress ledger](docs/research/whatsapp-member-routing-and-extension-testing-progress.md). Add an expiring, single-use customer-test entry challenge bound to an authenticated member's verified sender, exact destination, Project and active extension installation. Keep every test turn on the customer handler before privileged routing, support explicit exit/revocation, and show test status in the dashboard and chat.
+**Commercial cleaning Space template — add the first fictional operations demo Blueprint.**
+Use the active plan and [progress ledger](docs/research/commercial-cleaning-space-template-progress.md). Add one data-only Project walkthrough with synthetic site, scope, shift, inspection and blocked-work records plus a review packet. Include no provider connections, credentials, access grants or safety instructions. Verify with the pinned SDK typecheck and `git diff --check`; do not add or run tests, contact a design partner, accept payment or enable a provider.

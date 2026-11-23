@@ -398,16 +398,48 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
   extension installation. Keep every test turn on the customer handler before privileged routing;
   support explicit exit/revocation and show test status in the dashboard and chat.
 
-**Latest checkpoint:** the member-facing Project Channels panel can now request a phone-test code,
-show its five-minute expiry, poll the active status and end a running test. The issuance API binds
-the challenge to the verified HMAC sender/destination, exact project extension installation,
-package version and handler hash; it checks current membership, grant and routing mode. Agents
-typecheck and `git diff --check` pass. Full Shell typecheck remains blocked only by the four known
-stale `.next/types` route imports, with no errors in changed Shell sources. No tests ran; migration
-`0289` has not been applied. **Next action:** redeem codes and prioritize active test turns at the
-signed WhatsApp platform webhook before pairing, contact verification, member selection or
-executive-command routing; validate the same session again before Agent DO effects. The SDK example
-is complete in the preceding ledger entry.
+  - [x] Implement source routing and status. Redemption runs before pairing, verification, member
+    selection and executive commands. Test turns use their pinned customer handler and an isolated
+    conversation/memory scope; the Agent DO rechecks current membership, grant, contact, destination,
+    channel binding and installed version before handling and delivery. Explicit chat/dashboard exit,
+    access-change revocation, retry receipts, inbox marking and chat labels are wired.
+  - [ ] **Blocked — focused tests and accepted live phone test.** Resume after the user asks for test
+    work and separately authorizes applying migration `0289` plus provider/UI acceptance with a
+    configured test account. No migration, provider message or deployment has run.
+
+**Latest checkpoint:** source implementation now redeems challenges on the signed WhatsApp platform
+webhook before pairing, verification, member route selection or executive commands. Active turns
+forward only to the pinned customer handler with executive routing disabled and a separate Agent DO
+conversation/memory scope. The Agent DO revalidates the contact, grant, Space/Project membership,
+exact channel binding, test expiry and installed package version before handling and again before
+answer, delivery and state persistence. Chat shows active/exit labels, the Project inbox marks test
+events, and contact/grant/mode/channel/extension changes close active sessions and consume pending
+challenges. Provider retry receipts retain only HMAC event keys for seven days. Migration `0289`
+remains unapplied. Agents typecheck and `git diff --check` pass; full Shell typecheck reports only the
+four known stale `.next/types` imports for missing routes. No tests, provider action or deployment ran.
+**Next action:** focused test coverage and authorized live phone-test acceptance remain blocked; the
+queue advances to commercial cleaning template source reconciliation.
+
+## Active plan — Commercial cleaning Space template
+
+See the [plan](../research/commercial-cleaning-space-template-plan.md) and [progress ledger](../research/commercial-cleaning-space-template-progress.md).
+
+- [x] **Reconcile the existing Space Template and extension source.** The SDK has a portable,
+  secret-free `SpaceBlueprint` contract and a private reference-template pattern. No commercial
+  cleaning template, domain records, or operational integrations exist. Marketplace and runtime
+  machinery is generic; it does not prove an installed vertical workflow. The source map and exact
+  first slice are recorded in the progress ledger.
+- [ ] **Add the first fictional operations demo Blueprint.** Use one pilot project with synthetic
+  site, scope, shift, inspection and blocked-work records plus a review packet. Keep it data-only:
+  no credentials, connections, access grants, purchases, live sends or safety instructions. Add no
+  test code or run tests; verify with the SDK typecheck and `git diff --check`.
+
+**Latest checkpoint:** source reconciliation found no vertical implementation beyond the plan. The
+existing `SpaceBlueprint`/reference-template contract can carry a fictional, data-only walkthrough;
+current project-template catalogue entries are empty and external integrations require separate
+owner/provider acceptance. **Next action:** add the first-party `COMMERCIAL_CLEANING_OPERATIONS_SPACE_TEMPLATE`
+to the SDK as one synthetic end-to-end shift exception and review flow, then run the SDK typecheck
+and `git diff --check`. Do not contact a design partner, accept payment or enable a provider.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
@@ -615,8 +647,8 @@ ledgers when moving to another plan.
 9. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
 10. [x] **Reconciled; no provider-adapter task is ready without external terms/API/pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
 11. [x] **Reconciled; no AgentPhone source task is ready without verified API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
-12. [ ] **Active.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Reconcile against channel, extension, identity and platform ledgers first.
-13. [ ] [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md)
+12. [ ] **Paused; source implementation complete; only separate test/live acceptance remains blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). See its acceptance blocker and handoff above.
+13. [ ] **Active.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
 14. [ ] [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md)
 
 ## Checkpoint archive

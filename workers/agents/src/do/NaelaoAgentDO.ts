@@ -1937,8 +1937,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     `);
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_sessions ADD COLUMN channel_extension_instance_id TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_sessions ADD COLUMN provider_connection_id TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_sessions ADD COLUMN customer_test_session_id TEXT`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`DROP INDEX IF EXISTS idx_channel_session_user`);
-    this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_session_user_install ON channel_sessions(channel,channel_user_id,COALESCE(channel_extension_instance_id,''),COALESCE(provider_connection_id,''))`);
+    this.ctx.storage.sql.exec(`DROP INDEX IF EXISTS idx_channel_session_user_install`);
+    this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_session_user_install ON channel_sessions(channel,channel_user_id,COALESCE(channel_extension_instance_id,''),COALESCE(provider_connection_id,''),COALESCE(customer_test_session_id,''))`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_session_project ON channel_sessions(project_id) WHERE project_id IS NOT NULL`);
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS channel_messages (
@@ -9428,12 +9430,46 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
+  private async currentWhatsAppCustomerTest(input: {
+    testSessionId: string; tenantId: string; spaceId: string; projectId: string; senderId: string;
+    providerRouteKey?: string; installationId?: string; handlerSha256?: string;
+  }): Promise<{ userId: string; contactId: string; packageVersion: string; providerRouteKey: string; installationId: string; handlerSha256: string } | null> {
+    const db = this.env.PLATFORM_DB;
+    if (!db) return null;
+    const now = new Date().toISOString();
+    const test = await db.prepare(`SELECT user_id,contact_id,provider_route_key,sender_key,project_id,installation_id,handler_sha256,package_version
+      FROM assistant_channel_member_customer_test_sessions
+      WHERE test_session_id=? AND tenant_id=? AND space_id=? AND project_id=?
+        AND channel='whatsapp' AND status='active' AND expires_at>? LIMIT 1`)
+      .bind(input.testSessionId, input.tenantId, input.spaceId, input.projectId, now)
+      .first<{ user_id: string; contact_id: string; provider_route_key: string; sender_key: string; project_id: string;
+        installation_id: string; handler_sha256: string; package_version: string }>();
+    if (!test || input.providerRouteKey && test.provider_route_key !== input.providerRouteKey
+      || input.installationId && test.installation_id !== input.installationId
+      || input.handlerSha256 && test.handler_sha256 !== input.handlerSha256
+      || !/^[a-f0-9]{64}$/i.test(test.provider_route_key) || !/^[a-f0-9]{64}$/i.test(test.handler_sha256)) return null;
+    const senderDigits = input.senderId.replace(/^whatsapp:/i, "").replace(/\D/g, "");
+    if (!/^\d{7,15}$/.test(senderDigits) || test.sender_key !== await opaqueExternalSubject(this.env.PLATFORM_SECRET,
+      ["whatsapp-member-sender", test.provider_route_key, senderDigits])) return null;
+    const memberCurrent = await this.isWhatsAppMemberRouteCurrent({ tenantId: input.tenantId, spaceId: input.spaceId,
+      userId: test.user_id, projectId: input.projectId, providerRouteKey: test.provider_route_key,
+      senderId: input.senderId, contactId: test.contact_id });
+    if (!memberCurrent) return null;
+    const currentBinding = await db.prepare(`SELECT 1 AS active FROM channel_links
+      WHERE tenant_id=? AND space_id=? AND channel='whatsapp' AND enabled=1
+        AND member_routing_mode='staff_and_customers' AND project_id=? AND extension_instance_id=?
+        AND extension_script_sha256=? LIMIT 1`)
+      .bind(input.tenantId, input.spaceId, input.projectId, test.installation_id, test.handler_sha256).first();
+    return currentBinding ? { userId: test.user_id, contactId: test.contact_id, packageVersion: test.package_version,
+      providerRouteKey: test.provider_route_key, installationId: test.installation_id, handlerSha256: test.handler_sha256 } : null;
+  }
+
   private async handleChannelInbound(type: string, request: Request): Promise<Response> {
     if (!isChannelType(type)) return Response.json({ error: "unknown_channel" }, { status: 400 });
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; extensionInstanceId?: string; extensionScriptSha256?: string; providerConnectionId?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate; memberUserId?: string; memberProviderRouteKey?: string; memberContactId?: string; memberRouteSelectionExpiresAt?: string; allowExecutiveRouting?: boolean };
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; extensionInstanceId?: string; extensionScriptSha256?: string; providerConnectionId?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate; memberUserId?: string; memberProviderRouteKey?: string; memberContactId?: string; memberRouteSelectionExpiresAt?: string; customerTestSessionId?: string; customerTestProviderRouteKey?: string; allowExecutiveRouting?: boolean };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     if (body.spaceId && body.tenantId && this.env.PLATFORM_DB && await this.tenantSpaceSuspended(body.tenantId, body.spaceId)) {
       return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
@@ -9449,6 +9485,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         norm.channel, norm.channel_user_id, norm.external_id]);
       return `channel-event:${await eventTagPromise}:${replySequence++}`;
     };
+
+    let customerTestAuthority: { userId: string; contactId: string; packageVersion: string } | null = null;
+    if (body.customerTestSessionId) {
+      if (norm.channel !== "whatsapp" || !body.spaceId || !body.tenantId || !body.projectId || !body.extensionInstanceId
+        || !body.extensionScriptSha256 || !body.customerTestProviderRouteKey || body.memberUserId
+        || body.allowExecutiveRouting !== false) {
+        return Response.json({ error_code: "customer_test_scope_invalid" }, { status: 403 });
+      }
+      customerTestAuthority = await this.currentWhatsAppCustomerTest({ testSessionId: body.customerTestSessionId,
+        tenantId: body.tenantId, spaceId: body.spaceId, projectId: body.projectId, senderId: norm.channel_user_id,
+        providerRouteKey: body.customerTestProviderRouteKey, installationId: body.extensionInstanceId,
+        handlerSha256: body.extensionScriptSha256 });
+      if (!customerTestAuthority) return Response.json({ error_code: "customer_test_authority_changed" }, { status: 403 });
+    } else if (body.customerTestProviderRouteKey) {
+      return Response.json({ error_code: "customer_test_scope_invalid" }, { status: 403 });
+    }
 
     let memberAuthorizedUserId: string | null = null;
     if (body.memberUserId) {
@@ -9591,21 +9643,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     const rows = this.ctx.storage.sql
-      .exec(`SELECT id FROM channel_sessions WHERE channel = ? AND channel_user_id = ? AND COALESCE(channel_extension_instance_id,'')=COALESCE(?,'') AND COALESCE(provider_connection_id,'')=COALESCE(?,'')`, norm.channel, norm.channel_user_id, body.extensionInstanceId ?? null, body.providerConnectionId ?? null)
+      .exec(`SELECT id FROM channel_sessions WHERE channel = ? AND channel_user_id = ?
+        AND COALESCE(channel_extension_instance_id,'')=COALESCE(?,'')
+        AND COALESCE(provider_connection_id,'')=COALESCE(?)
+        AND COALESCE(customer_test_session_id,'')=COALESCE(?,'')`, norm.channel, norm.channel_user_id,
+        body.extensionInstanceId ?? null, body.providerConnectionId ?? null, body.customerTestSessionId ?? null)
       .toArray() as Array<{ id: string }>;
     let sessionId: string;
     const isNewSession = !rows[0];
     if (rows[0]) {
       sessionId = rows[0].id;
       this.ctx.storage.sql.exec(
-        `UPDATE channel_sessions SET last_seen = ?, project_id = ?,channel_extension_instance_id=?,provider_connection_id=? WHERE id = ?`,
-        Date.now(), body.projectId ?? null, body.extensionInstanceId ?? null, body.providerConnectionId ?? null, sessionId
+        `UPDATE channel_sessions SET last_seen = ?, project_id = ?,channel_extension_instance_id=?,provider_connection_id=?,customer_test_session_id=? WHERE id = ?`,
+        Date.now(), body.projectId ?? null, body.extensionInstanceId ?? null, body.providerConnectionId ?? null,
+        body.customerTestSessionId ?? null, sessionId
       );
     } else {
       sessionId = crypto.randomUUID();
       this.ctx.storage.sql.exec(
-        `INSERT INTO channel_sessions (id, channel, channel_user_id, project_id, created_at, last_seen,channel_extension_instance_id,provider_connection_id) VALUES (?, ?, ?, ?, ?, ?,?,?)`,
-        sessionId, norm.channel, norm.channel_user_id, body.projectId ?? null, Date.now(), Date.now(), body.extensionInstanceId ?? null, body.providerConnectionId ?? null
+        `INSERT INTO channel_sessions (id, channel, channel_user_id, project_id, created_at, last_seen,channel_extension_instance_id,provider_connection_id,customer_test_session_id) VALUES (?, ?, ?, ?, ?, ?,?,?,?)`,
+        sessionId, norm.channel, norm.channel_user_id, body.projectId ?? null, Date.now(), Date.now(), body.extensionInstanceId ?? null,
+        body.providerConnectionId ?? null, body.customerTestSessionId ?? null
       );
     }
 
@@ -9613,7 +9671,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // addressing concept) — only on first sight of this (channel, channel_user_id) pair;
     // createThread is idempotent on channel_session_id anyway, but this avoids a SpaceDO
     // round trip on every single inbound message from an already-known customer.
-    if (isNewSession && body.spaceId && body.tenantId) {
+    if (isNewSession && body.spaceId && body.tenantId && !body.customerTestSessionId) {
       await this.mirrorThread(body.spaceId, body.tenantId, {
         id: crypto.randomUUID(),
         thread_kind: "channel",
@@ -9681,10 +9739,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // replayed event (freshness window bypassed, or delivered twice within it) that hits the
     // unique index is IGNORED, so rowsWritten is 0 — that's the "already handled" signal used
     // below to skip kicking a second drain for a message already in the queue/answered.
-    const mentionDecisionEnv = body.spaceId && body.tenantId
+    const mentionDecisionEnv = !body.customerTestSessionId && body.spaceId && body.tenantId
       ? await this.buildScriptEngineEnv(body.spaceId, "naelao-agent", body.tenantId, undefined, body.projectId)
       : null;
-    const mentionRoute = await routeMentionsWithSentry(envelope.payload.text, mentionDecisionEnv?.fastDecision);
+    const mentionRoute = body.customerTestSessionId ? { turnHolder: null, referents: [] }
+      : await routeMentionsWithSentry(envelope.payload.text, mentionDecisionEnv?.fastDecision);
     const insertResult = this.ctx.storage.sql.exec(
       `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, project_id, channel_extension_instance_id, channel_extension_sha256, provider_connection_id, recipient_id, thread_id, answered, created_at, turn_holder, referents, task_id)
        VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
@@ -9780,7 +9839,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // Space owner review which conversations need a human.
   private handleListChannelSessions(): Response {
     const rows = this.ctx.storage.sql
-      .exec(`SELECT id, channel, channel_user_id, project_id, human_takeover, created_at, last_seen FROM channel_sessions ORDER BY last_seen DESC LIMIT 200`)
+      .exec(`SELECT id, channel, channel_user_id, project_id, human_takeover, created_at, last_seen
+             FROM channel_sessions WHERE customer_test_session_id IS NULL ORDER BY last_seen DESC LIMIT 200`)
       .toArray();
     return Response.json({ sessions: rows, count: rows.length });
   }
@@ -9794,7 +9854,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const limit = Math.min(Math.max(Number.isSafeInteger(rawLimit) ? rawLimit : 50, 1), 100);
     if (!projectId || !installationId || !Number.isSafeInteger(before) || !beforeId || beforeId.length > 160) return Response.json({ error_code: "channel_extension_inbox_scope_required" }, { status: 400 });
     const rows = this.ctx.storage.sql.exec(
-      `SELECT m.id AS event_id,s.channel,s.human_takeover,m.text,m.answered,m.created_at,
+      `SELECT m.id AS event_id,s.channel,s.human_takeover,s.customer_test_session_id IS NOT NULL AS customer_test,m.text,m.answered,m.created_at,
               a.assigned_to,a.assigned_by,a.assigned_at,
               sla.first_response_seconds,
               CASE WHEN sla.first_response_seconds IS NOT NULL AND COALESCE(d.status,'')!='sent' AND COALESCE(h.status,'')!='sent'
@@ -9810,7 +9870,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
          AND (m.created_at<? OR (m.created_at=? AND m.id<?))
        ORDER BY m.created_at DESC,m.id DESC LIMIT ?`, projectId, installationId, before, before, beforeId, limit
     ).toArray();
-    const events = rows.map(row => ({ ...row, human_takeover: Boolean((row as { human_takeover?: number }).human_takeover) }));
+    const events = rows.map(row => ({ ...row,
+      human_takeover: Boolean((row as { human_takeover?: number }).human_takeover),
+      customer_test: Boolean((row as { customer_test?: number }).customer_test),
+    }));
     const last = events[events.length - 1] as { event_id?: string; created_at?: number } | undefined;
     const nextBefore = events.length === limit && last ? Number(last.created_at ?? 0) : null;
     const nextBeforeId = events.length === limit && last ? String(last.event_id ?? "") : null;
@@ -12593,14 +12656,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const channelFilter = body.channel ? " AND s.channel = ?" : "";
     const pending = this.ctx.storage.sql
       .exec(
-        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, COALESCE(m.project_id,s.project_id) AS project_id,
+        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, s.customer_test_session_id,
+                COALESCE(m.project_id,s.project_id) AS project_id,
                 m.channel_extension_instance_id, m.channel_extension_sha256, m.provider_connection_id, m.recipient_id, m.thread_id, m.text, m.task_id, m.created_at
          FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
          WHERE m.direction = 'inbound' AND m.answered = 0 AND s.human_takeover = 0${channelFilter}
          ORDER BY m.created_at ASC LIMIT ?`,
         ...(body.channel ? [body.channel, limit] : [limit])
       )
-      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; project_id: string | null; channel_extension_instance_id: string | null; channel_extension_sha256: string | null; provider_connection_id: string | null; recipient_id: string | null; thread_id: string | null; text: string; task_id: string | null; created_at: number }>;
+      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; customer_test_session_id: string | null; project_id: string | null; channel_extension_instance_id: string | null; channel_extension_sha256: string | null; provider_connection_id: string | null; recipient_id: string | null; thread_id: string | null; text: string; task_id: string | null; created_at: number }>;
 
     if (pending.length === 0) return Response.json({ drained: 0, answered: 0, escalated: 0, rule_handled: 0, spend_capped: 0 });
 
@@ -12636,6 +12700,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // in the in-flight state if the tenant was suspended during that window.
     if (await tenantSuspended()) {
       return stopForSuspension();
+    }
+
+    // A session may be revoked after webhook admission but before heartbeat drain. Validate all
+    // test rows before preparing runtime state or Project configuration, and hold invalid turns
+    // for human review instead of letting them enter a normal route.
+    const authorizedPending: typeof pending = [];
+    for (const msg of pending) {
+      if (!msg.customer_test_session_id) {
+        authorizedPending.push(msg);
+        continue;
+      }
+      const authority = msg.project_id ? await this.currentWhatsAppCustomerTest({ testSessionId: msg.customer_test_session_id,
+        tenantId, spaceId, projectId: msg.project_id, senderId: msg.channel_user_id }).catch(() => null) : null;
+      if (!authority) {
+        this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover=1 WHERE id=?`, msg.session_id);
+        continue;
+      }
+      authorizedPending.push(msg);
+    }
+    if (authorizedPending.length === 0) {
+      releasePendingClaims();
+      return Response.json({ drained: pending.length, answered: 0, escalated: pending.length, rule_handled: 0, spend_capped: 0 });
     }
 
     const engineEnv = await this.buildScriptEngineEnv(spaceId, agentId, tenantId);
@@ -12704,7 +12790,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     // Resolve generic project execution limits once per project in this batch.
     // Preserve found/not_found/error so an unavailable policy record fails closed below.
-    const projectIds = [...new Set(pending.map((m) => m.project_id).filter((id): id is string => !!id))];
+    const projectIds = [...new Set(authorizedPending.map((m) => m.project_id).filter((id): id is string => !!id))];
     const projectConfigs = new Map<string, ProjectConfigResult>();
     for (const pid of projectIds) projectConfigs.set(pid, await this.fetchProjectConfig(spaceId, tenantId, pid));
 
@@ -12712,11 +12798,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let escalated = 0;
     let spendCapped = 0;
 
-    for (const msg of pending) {
+    for (const msg of authorizedPending) {
       let channelRuntimeLeaseAttempted = false;
       try {
       if (await tenantSuspended()) {
         return stopForSuspension();
+      }
+      let customerTestAuthority = msg.customer_test_session_id && msg.project_id
+        ? await this.currentWhatsAppCustomerTest({ testSessionId: msg.customer_test_session_id, tenantId, spaceId,
+          projectId: msg.project_id, senderId: msg.channel_user_id }).catch(() => null)
+        : null;
+      if (msg.customer_test_session_id && !customerTestAuthority) {
+        this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover=1 WHERE id=?`, msg.session_id);
+        escalated++;
+        continue;
       }
       const msgProjectConfig = msg.project_id ? projectConfigs.get(msg.project_id) : undefined;
       channelReservation.enabled = Boolean(msg.project_id && msgProjectConfig?.status === "found" && msgProjectConfig.daily_spend_cap_credits > 0);
@@ -12748,7 +12843,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const projectCfg = projectCfgResult?.status === "found" ? projectCfgResult : undefined;
       // Scope channel extension execution to a pseudonymous identity within this Space and
       // provider connection; this keeps one sender's memory separate from other senders.
-      engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}`;
+      const customerTestUserScope = msg.customer_test_session_id ? `:customer-test:${msg.customer_test_session_id}` : "";
+      const channelUserScope = msg.customer_test_session_id ? `customer-test:${msg.customer_test_session_id}` : msg.channel_user_id;
+      engineEnv.userId = `channel:${msg.channel}:${channelUserScope}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}${customerTestUserScope}`;
       // Bind each inbound event to its own project workspace; one heartbeat can drain
       // messages from several projects.
       if (msg.project_id) engineEnv.projectId = msg.project_id;
@@ -12768,7 +12865,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // The channel transcript is local to this Agent DO, unlike web sessions stored in
       // SpaceDO. The callback is closed over the active session and accepts no model-selected ID.
       engineEnv.loadCurrentConversation = (options) => this.loadChannelTranscript(msg.session_id, options);
-      engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}`;
+      engineEnv.userId = `channel:${msg.channel}:${channelUserScope}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}${customerTestUserScope}`;
 
       // F17 / A1.13: after safe deterministic rules, hold every remaining project message when
       // structural policy is unavailable. Without this gate a normal inbound message could be
@@ -12871,14 +12968,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           takeover("The project's external message limit could not be verified. The extension did not process this message; review the conversation manually.");
           escalated++; continue;
         }
+        if (msg.customer_test_session_id) {
+          customerTestAuthority = await this.currentWhatsAppCustomerTest({ testSessionId: msg.customer_test_session_id,
+            tenantId, spaceId, projectId: msg.project_id, senderId: msg.channel_user_id }).catch(() => null);
+          if (!customerTestAuthority) {
+            this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='customer_test_authority_changed' WHERE message_id=?", msg.id);
+            takeover("The member's customer-test access changed before the customer handler ran. The message was not processed.");
+            escalated++; continue;
+          }
+        }
         const handler = await this.loadActiveChannelHandler({ spaceId, tenantId, projectId: msg.project_id,
           channel: msg.channel, messageId: msg.id, instanceId: msg.channel_extension_instance_id, scriptSha256: msg.channel_extension_sha256,
           providerConnectionId: msg.provider_connection_id });
         const channelRunner = engineEnv.codeRunner?.runChannel;
-        if (!handler || !channelRunner) {
+        if (!handler || customerTestAuthority && handler.version !== customerTestAuthority.packageVersion || !channelRunner) {
           this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='handler_unavailable' WHERE message_id=?", msg.id);
           takeover("The bound extension is unavailable or no longer valid for this project and channel. Rebind an approved extension or handle the conversation manually."); escalated++; continue;
         }
+        const refreshCustomerTestAuthority = async () => {
+          if (!msg.customer_test_session_id) return true;
+          const current = await this.currentWhatsAppCustomerTest({ testSessionId: msg.customer_test_session_id,
+            tenantId, spaceId, projectId: msg.project_id!, senderId: msg.channel_user_id }).catch(() => null);
+          if (!current || current.packageVersion !== handler.version) return false;
+          const currentHandler = await this.loadActiveChannelHandler({ spaceId, tenantId, projectId: msg.project_id!,
+            channel: msg.channel, messageId: msg.id, instanceId: msg.channel_extension_instance_id!,
+            scriptSha256: msg.channel_extension_sha256!, providerConnectionId: msg.provider_connection_id });
+          if (!currentHandler || currentHandler.version !== current.packageVersion) return false;
+          customerTestAuthority = current;
+          return true;
+        };
         const publishedKnowledge: Array<{ collection_id: string; document_id: string; title: string; content: string }> = [];
         const knowledgeCollectionPins: Array<{ collectionId: string; revision: number }> = [];
         if (handler.knowledgeCollections.length) {
@@ -13084,6 +13202,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           limits: handler.limits,
         });
         if (await tenantSuspended()) return stopForSuspension();
+        if (!await refreshCustomerTestAuthority()) {
+          this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='customer_test_authority_changed' WHERE message_id=?", msg.id);
+          takeover("The member's customer-test access or pinned extension changed while the handler was running. The result was not delivered.");
+          escalated++; continue;
+        }
         let replyText = run.ok && run.channel_replies?.length === 1 && !(run.channel_answers?.length)
           ? run.channel_replies[0]!.trim() : "";
         if (run.ok && run.channel_answers?.length === 1 && !(run.channel_replies?.length)) {
@@ -13126,6 +13249,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             if (await tenantSuspended()) {
               return stopForSuspension();
             }
+            if (!await refreshCustomerTestAuthority()) {
+              this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='customer_test_authority_changed' WHERE message_id=?", msg.id);
+              takeover("The member's customer-test access or pinned extension changed before the host answer was generated.");
+              escalated++; continue;
+            }
             answer = await reasoner.answerExternal({ question: answerRequest.question,
               sources: [...publishedKnowledge.map(source => ({ title: source.title, content: source.content })), ...attachmentSources], maxOutputTokens: 320 });
           } catch {
@@ -13167,6 +13295,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             });
           }
         }
+        if (customerTestAuthority && replyText) replyText = `Customer phone test · ${replyText}`;
         if (!replyText || !moderateText(replyText).allowed) {
           this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code=? WHERE message_id=?",
             run.ok ? "handler_reply_invalid" : "handler_failed", msg.id);
@@ -13175,6 +13304,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='delivering',reply_text=? WHERE message_id=? AND status='running'", replyText, msg.id);
       if (await tenantSuspended()) {
         return stopForSuspension();
+      }
+      if (!await refreshCustomerTestAuthority()) {
+        this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='customer_test_authority_changed' WHERE message_id=? AND status='delivering'", msg.id);
+        takeover("The member's customer-test access or pinned extension changed before delivery. The handler reply was not sent.");
+        escalated++; continue;
       }
       const delivery = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText,
         { installationId: msg.channel_extension_instance_id ?? "", providerConnectionId: msg.provider_connection_id, recipientId: msg.recipient_id, threadId: msg.thread_id }));
@@ -13193,7 +13327,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (delivery.ok) {
           this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='sent' WHERE message_id=? AND status='delivering'", msg.id);
           this.markOutbound(msg.session_id, msg.id, replyText);
-          if (handler.session && run.channel_session_update !== undefined) {
+          const canPersistCustomerTestState = await refreshCustomerTestAuthority();
+          if (customerTestAuthority && !canPersistCustomerTestState) {
+            this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET error_code='customer_test_authority_changed_after_delivery' WHERE message_id=?", msg.id);
+            takeover("The customer-test access changed after delivery. The reply was sent, but no test session state was saved.");
+          }
+          if (handler.session && run.channel_session_update !== undefined && canPersistCustomerTestState) {
             try {
               const bytesDelta = writeChannelExtensionSession(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
                 conversationId: msg.session_id, value: run.channel_session_update, maxBytes: handler.session.maxBytes, ttlDays: handler.session.ttlDays });
@@ -13209,7 +13348,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               });
             }
           }
-          if (handler.session && run.channel_session_updates?.length) {
+          if (handler.session && run.channel_session_updates?.length && canPersistCustomerTestState) {
             try {
               const bytesDelta = writeChannelExtensionNamedSessions(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
                 conversationId: msg.session_id, updates: run.channel_session_updates, maxBytes: handler.session.maxBytes, ttlDays: handler.session.ttlDays });

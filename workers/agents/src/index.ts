@@ -850,6 +850,209 @@ async function resolveWhatsappMemberRouteCandidates(
   }
 }
 
+interface WhatsappCustomerTestScope {
+  test_session_id: string;
+  tenant_id: string;
+  space_id: string;
+  user_id: string;
+  provider_route_key: string;
+  sender_key: string;
+  contact_id: string;
+  project_id: string;
+  installation_id: string;
+  package_version: string;
+  handler_sha256: string;
+  expires_at: string;
+  started_event_key: string;
+  ended_event_key?: string | null;
+}
+
+type WhatsappCustomerTestInboundResult =
+  | { kind: "not_test" }
+  | { kind: "handled"; duplicate?: boolean; reply: string }
+  | { kind: "route"; test: WhatsappCustomerTestScope };
+
+async function isWhatsappCustomerTestAuthorityCurrent(
+  env: AgentsEnv,
+  test: Pick<WhatsappCustomerTestScope, "tenant_id" | "space_id" | "user_id" | "provider_route_key" | "sender_key"
+    | "contact_id" | "project_id" | "installation_id" | "package_version" | "handler_sha256">,
+  senderId: string,
+): Promise<boolean> {
+  const senderDigits = whatsappSenderDigits(senderId);
+  if (!/^\d{7,15}$/.test(senderDigits) || await isSpaceNetworkEgressDenied(env.PLATFORM_DB, test.space_id)
+    || !await resolveEndUserSpaceRole(env.PLATFORM_DB, test.space_id, test.user_id, test.tenant_id)) return false;
+  const senderKey = await opaqueExternalSubject(env.PLATFORM_SECRET,
+    ["whatsapp-member-sender", test.provider_route_key, senderDigits]);
+  if (senderKey !== test.sender_key) return false;
+  const [contact, grant, link, space] = await Promise.all([
+    env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM assistant_channel_member_contacts
+      WHERE contact_id=? AND tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp'
+        AND provider_route_key=? AND sender_key=? AND status='active' LIMIT 1`)
+      .bind(test.contact_id, test.tenant_id, test.space_id, test.user_id, test.provider_route_key, test.sender_key).first(),
+    env.PLATFORM_DB.prepare(`SELECT 1 AS enabled FROM assistant_channel_member_access
+      WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND project_id=? AND status='enabled' LIMIT 1`)
+      .bind(test.tenant_id, test.space_id, test.user_id, test.project_id).first(),
+    env.PLATFORM_DB.prepare(`SELECT extension_script_sha256 FROM channel_links
+      WHERE tenant_id=? AND space_id=? AND channel='whatsapp' AND enabled=1
+        AND member_routing_mode='staff_and_customers' AND project_id=? AND extension_instance_id=? LIMIT 1`)
+      .bind(test.tenant_id, test.space_id, test.project_id, test.installation_id).first<{ extension_script_sha256: string | null }>(),
+    env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active'
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' LIMIT 1`)
+      .bind(test.space_id, test.tenant_id).first(),
+  ]);
+  if (!contact || !grant || link?.extension_script_sha256 !== test.handler_sha256 || !space) return false;
+  const projectMember = await isCurrentProjectMemberForChannel(env, {
+    tenant_id: test.tenant_id, space_id: test.space_id, user_id: test.user_id, project_id: test.project_id,
+  });
+  if (!projectMember) return false;
+  const installation = await fetchInstalledConnectionContext(env, test.tenant_id, test.space_id, test.project_id, test.installation_id);
+  return Boolean(installation && installation.instance.status === "active"
+    && installation.manifest.bundle?.version === test.package_version
+    && installation.manifest.channels?.some(item => item.kind === "channel" && item.provider === "whatsapp"
+      && typeof item.handlerScript === "string"));
+}
+
+async function interceptWhatsappCustomerTest(
+  env: AgentsEnv,
+  input: { senderId: string; externalId: string; text: string; transport: "twilio" | "meta" },
+): Promise<WhatsappCustomerTestInboundResult> {
+  const route = activePlatformWhatsappRoute(env);
+  const digits = whatsappSenderDigits(input.senderId);
+  if (!route || route.transport !== input.transport || !/^\d{7,15}$/.test(digits)) return { kind: "not_test" };
+  const providerRouteKey = await route.routeKey;
+  const senderKey = await opaqueExternalSubject(env.PLATFORM_SECRET,
+    ["whatsapp-member-sender", providerRouteKey, digits]);
+  const eventKey = await opaqueExternalSubject(env.PLATFORM_SECRET,
+    ["whatsapp-member-customer-test-event", providerRouteKey, senderKey, input.externalId]);
+  const now = new Date().toISOString();
+  await env.PLATFORM_DB.prepare(`DELETE FROM assistant_channel_member_customer_test_events WHERE expires_at<=?`).bind(now).run();
+  const active = await env.PLATFORM_DB.prepare(`SELECT test_session_id,tenant_id,space_id,user_id,provider_route_key,
+      sender_key,contact_id,project_id,installation_id,package_version,handler_sha256,expires_at,started_event_key,ended_event_key
+    FROM assistant_channel_member_customer_test_sessions
+    WHERE channel='whatsapp' AND provider_route_key=? AND sender_key=? AND status='active' LIMIT 1`)
+    .bind(providerRouteKey, senderKey).first<WhatsappCustomerTestScope>();
+  const priorTestEvent = await env.PLATFORM_DB.prepare(`SELECT test_session_id FROM assistant_channel_member_customer_test_events
+    WHERE event_key=? AND provider_route_key=? AND sender_key=? AND expires_at>? LIMIT 1`)
+    .bind(eventKey, providerRouteKey, senderKey, now).first<{ test_session_id: string }>();
+  if (priorTestEvent && (!active || priorTestEvent.test_session_id !== active.test_session_id))
+    return { kind: "handled", duplicate: true, reply: "" };
+  if (active) {
+    if (active.started_event_key === eventKey || active.ended_event_key === eventKey)
+      return { kind: "handled", duplicate: true, reply: "" };
+    const close = async (status: "exited" | "expired" | "revoked", reason: "member_exit" | "expired" | "access_changed") => {
+      await env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
+        SET status=?,ended_at=?,ended_reason=?,ended_event_key=?,updated_at=?
+        WHERE test_session_id=? AND status='active'`)
+        .bind(status, now, reason, eventKey, now, active.test_session_id).run();
+    };
+    if (/^TEST\s+EXIT$/i.test(input.text.trim())) {
+      await close("exited", "member_exit");
+      return { kind: "handled", reply: "Customer phone test ended. Your next WhatsApp message will use normal member routing." };
+    }
+    if (active.expires_at <= now) {
+      await close("expired", "expired");
+      return { kind: "handled", reply: "Your customer phone test expired. This message was not processed. Start another test from the Project Channels panel if you want to continue." };
+    }
+    if (!await isWhatsappCustomerTestAuthorityCurrent(env, active, input.senderId)) {
+      await close("revoked", "access_changed");
+      return { kind: "handled", reply: "Your customer phone test ended because its contact, grant, routing mode or active Project extension changed. This message was not processed." };
+    }
+    const eventReceiptExpires = new Date(Date.parse(active.expires_at) + 7 * 24 * 60 * 60_000).toISOString();
+    await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_channel_member_customer_test_events
+      (event_key,test_session_id,provider_route_key,sender_key,expires_at) VALUES(?,?,?,?,?)`)
+      .bind(eventKey, active.test_session_id, providerRouteKey, senderKey, eventReceiptExpires).run();
+    return { kind: "route", test: active };
+  }
+
+  if (/^TEST\s+EXIT$/i.test(input.text.trim())) {
+    const previousExit = await env.PLATFORM_DB.prepare(`SELECT 1 AS found FROM assistant_channel_member_customer_test_sessions
+      WHERE channel='whatsapp' AND provider_route_key=? AND sender_key=? AND ended_event_key=? LIMIT 1`)
+      .bind(providerRouteKey, senderKey, eventKey).first();
+    return previousExit ? { kind: "handled", duplicate: true, reply: "" }
+      : { kind: "handled", reply: "No customer phone test is active. Your message will use the current WhatsApp routing mode." };
+  }
+
+  const command = /^TEST\s+([a-f0-9]{16})$/i.exec(input.text.trim());
+  if (!command) return /^TEST(?:\s|$)/i.test(input.text.trim())
+    ? { kind: "handled", reply: "Use TEST <code> from the Project Channels panel to start a customer phone test, or TEST EXIT to end one." }
+    : { kind: "not_test" };
+  const challengeHash = await sha256Hex(command[1]!.toLowerCase());
+  const challenge = await env.PLATFORM_DB.prepare(`SELECT challenge_hash,test_session_id,tenant_id,space_id,user_id,
+      provider_route_key,sender_key,contact_id,project_id,installation_id,package_version,handler_sha256,
+      expires_at,consumed_at,consumed_event_key
+    FROM assistant_channel_member_customer_test_challenges
+    WHERE challenge_hash=? AND channel='whatsapp' AND provider_route_key=? LIMIT 1`)
+    .bind(challengeHash, providerRouteKey).first<{
+      challenge_hash: string; test_session_id: string; tenant_id: string; space_id: string; user_id: string;
+      provider_route_key: string; sender_key: string; contact_id: string; project_id: string; installation_id: string;
+      package_version: string; handler_sha256: string; expires_at: string; consumed_at: string | null;
+      consumed_event_key: string | null;
+    }>();
+  if (challenge?.consumed_at) {
+    return challenge.sender_key === senderKey && challenge.consumed_event_key === eventKey
+      ? { kind: "handled", duplicate: true, reply: "" }
+      : { kind: "handled", reply: "That customer phone-test code is invalid, expired or already used. Request a new code in Naelao." };
+  }
+  if (!challenge || challenge.expires_at <= now || challenge.sender_key !== senderKey
+    || !await isWhatsappCustomerTestAuthorityCurrent(env, challenge, input.senderId)) {
+    return { kind: "handled", reply: "That customer phone-test code is invalid, expired or already used. Check the Project, verified WhatsApp contact and active extension, then request a new code in Naelao." };
+  }
+
+  const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+  try {
+    const results = await env.PLATFORM_DB.batch([
+      env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_customer_test_sessions
+        (test_session_id,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,contact_id,
+          project_id,installation_id,package_version,handler_sha256,status,started_at,expires_at,updated_at,
+          ended_at,ended_reason,started_event_key,ended_event_key)
+        SELECT test_session_id,tenant_id,space_id,user_id,'whatsapp',provider_route_key,sender_key,contact_id,
+          project_id,installation_id,package_version,handler_sha256,'active',?,?,?,NULL,NULL,?,NULL
+        FROM assistant_channel_member_customer_test_challenges
+        WHERE challenge_hash=? AND provider_route_key=? AND sender_key=? AND consumed_at IS NULL AND expires_at>?
+          AND EXISTS (SELECT 1 FROM assistant_channel_member_contacts c
+            WHERE c.contact_id=assistant_channel_member_customer_test_challenges.contact_id
+              AND c.tenant_id=assistant_channel_member_customer_test_challenges.tenant_id
+              AND c.space_id=assistant_channel_member_customer_test_challenges.space_id
+              AND c.user_id=assistant_channel_member_customer_test_challenges.user_id
+              AND c.channel='whatsapp' AND c.provider_route_key=assistant_channel_member_customer_test_challenges.provider_route_key
+              AND c.sender_key=assistant_channel_member_customer_test_challenges.sender_key AND c.status='active')
+          AND EXISTS (SELECT 1 FROM assistant_channel_member_access a
+            WHERE a.tenant_id=assistant_channel_member_customer_test_challenges.tenant_id
+              AND a.space_id=assistant_channel_member_customer_test_challenges.space_id
+              AND a.user_id=assistant_channel_member_customer_test_challenges.user_id
+              AND a.channel='whatsapp' AND a.project_id=assistant_channel_member_customer_test_challenges.project_id
+              AND a.status='enabled')
+          AND EXISTS (SELECT 1 FROM channel_links l
+            WHERE l.tenant_id=assistant_channel_member_customer_test_challenges.tenant_id
+              AND l.space_id=assistant_channel_member_customer_test_challenges.space_id AND l.channel='whatsapp'
+              AND l.enabled=1 AND l.member_routing_mode='staff_and_customers'
+              AND l.project_id=assistant_channel_member_customer_test_challenges.project_id
+              AND l.extension_instance_id=assistant_channel_member_customer_test_challenges.installation_id
+              AND l.extension_script_sha256=assistant_channel_member_customer_test_challenges.handler_sha256)
+          AND EXISTS (SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active'
+            WHERE s.id=assistant_channel_member_customer_test_challenges.space_id
+              AND s.tenant_id=assistant_channel_member_customer_test_challenges.tenant_id AND s.status='active')`)
+        .bind(now, expiresAt, now, eventKey, challengeHash, providerRouteKey, senderKey, now),
+      env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_challenges
+        SET consumed_at=?,consumed_event_key=? WHERE challenge_hash=? AND provider_route_key=?
+          AND sender_key=? AND consumed_at IS NULL AND expires_at>?
+          AND EXISTS (SELECT 1 FROM assistant_channel_member_customer_test_sessions t
+            WHERE t.test_session_id=assistant_channel_member_customer_test_challenges.test_session_id
+              AND t.status='active' AND t.started_event_key=?)`)
+        .bind(now, eventKey, challengeHash, providerRouteKey, senderKey, now, eventKey),
+    ]);
+    if ((results[0]?.meta?.changes ?? 0) !== 1 || (results[1]?.meta?.changes ?? 0) !== 1)
+      return { kind: "handled", reply: "That customer phone-test code could not be activated. Request a new code in Naelao." };
+  } catch {
+    const duplicateStart = await env.PLATFORM_DB.prepare(`SELECT 1 AS found FROM assistant_channel_member_customer_test_sessions
+      WHERE channel='whatsapp' AND provider_route_key=? AND sender_key=? AND started_event_key=? LIMIT 1`)
+      .bind(providerRouteKey, senderKey, eventKey).first();
+    if (duplicateStart) return { kind: "handled", duplicate: true, reply: "" };
+    return { kind: "handled", reply: "A customer phone test is already active for this WhatsApp contact. End it before starting another." };
+  }
+  return { kind: "handled", reply: `Customer phone test is active for Project ${challenge.project_id} until ${new Date(expiresAt).toLocaleTimeString()}. Your messages now go to the customer handler, including admin-like commands. Send TEST EXIT or end it in the Project Channels panel to return to member routing.` };
+}
+
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
@@ -7435,6 +7638,61 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
   let inbound = activeAdapter.normalizeInbound(raw);
   if (!inbound) return c.json({ ok: true, skipped: "not_a_message" });
 
+  // Phone-test commands and active test turns take precedence over every pairing, verification,
+  // member-selection and executive-command route. The customer-test session pins its exact
+  // Project installation and is revalidated again inside the Agent DO before dispatch.
+  const whatsappTransport = viaTwilio ? "twilio" : "meta";
+  const isPlatformWhatsappDestination = channel === "whatsapp"
+    && platformWhatsappInboundRouteMatches(c.env, whatsappTransport, parsed, raw);
+  if (isPlatformWhatsappDestination) {
+    let customerTest: WhatsappCustomerTestInboundResult;
+    try {
+      customerTest = await interceptWhatsappCustomerTest(c.env, {
+        senderId: inbound.channel_user_id, externalId: inbound.external_id, text: inbound.text,
+        transport: whatsappTransport,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Before migration 0289 exists, no test session can exist; keep the pre-feature route
+      // available while making a TEST command clearly unavailable. Other D1 errors fail closed.
+      if (/no such table:\s*assistant_channel_member_customer_test_(?:sessions|challenges|events)/i.test(message)) {
+        if (/^TEST(?:\s|$)/i.test(inbound.text.trim())) {
+          await replyOnPlatformChannel(c.env, "whatsapp", inbound.channel_user_id,
+            "Customer phone testing is not available yet. Ask a Naelao admin to finish the setup.");
+          return c.json({ ok: true, skipped: "customer_test_schema_unavailable" });
+        }
+        customerTest = { kind: "not_test" };
+      } else {
+        return c.json({ error_code: "whatsapp_customer_test_unavailable" }, 503);
+      }
+    }
+    if (customerTest.kind === "handled") {
+      if (customerTest.reply) await replyOnPlatformChannel(c.env, "whatsapp", inbound.channel_user_id, customerTest.reply);
+      return c.json({ ok: true, internal_customer_test: true, duplicate_event: customerTest.duplicate === true });
+    }
+    if (customerTest.kind === "route") {
+      if (!inbound.external_id) return c.json({ error_code: "whatsapp_customer_test_event_id_missing" }, 503);
+      const wakeContext = await resolveWakeContext(c.env, customerTest.test.space_id, customerTest.test.tenant_id, "whatsapp");
+      if (wakeContext.airGappedOnly) return c.json({ ok: true, skipped: "air_gapped" });
+      try {
+        const stub = await getAgentDOForSpace(c.env, customerTest.test.tenant_id, customerTest.test.space_id,
+          "naelao-agent", c.get("requestId"));
+        const response = await stub.fetch(new Request("http://agent-do/channels/whatsapp/inbound", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ raw, projectId: customerTest.test.project_id, spaceId: customerTest.test.space_id,
+            tenantId: customerTest.test.tenant_id, taskId: inbound.external_id, model: wakeContext.model, apiKey: "",
+            extensionInstanceId: customerTest.test.installation_id, extensionScriptSha256: customerTest.test.handler_sha256,
+            customerTestSessionId: customerTest.test.test_session_id, customerTestProviderRouteKey: customerTest.test.provider_route_key,
+            allowExecutiveRouting: false }),
+        }));
+        if (!response.ok) return c.json({ error_code: "whatsapp_customer_test_rejected" }, response.status as 400 | 403 | 409 | 500 | 503);
+      } catch {
+        return c.json({ error_code: "whatsapp_customer_test_unavailable" }, 503);
+      }
+      return c.json({ ok: true, internal_customer_test: true });
+    }
+  }
+
   // A pairing message looks like an ordinary message and must never be treated as one — the token
   // would otherwise be handed to the assistant as a customer's question.
   const token = extractPairingToken(inbound.text);
@@ -9985,10 +10243,28 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       SET status='expired',ended_at=?,ended_reason='expired',updated_at=?
       WHERE channel='whatsapp' AND provider_route_key=? AND status='active' AND expires_at<=?`)
       .bind(now, now, providerRouteKey, now).run();
-    const existingTest = await c.env.PLATFORM_DB.prepare(`SELECT test_session_id FROM assistant_channel_member_customer_test_sessions
+    const existingTest = await c.env.PLATFORM_DB.prepare(`SELECT test_session_id,tenant_id,space_id,user_id,contact_id,project_id,
+        installation_id,package_version,handler_sha256,expires_at
+      FROM assistant_channel_member_customer_test_sessions
       WHERE channel='whatsapp' AND provider_route_key=? AND sender_key=? AND status='active' AND expires_at>? LIMIT 1`)
-      .bind(providerRouteKey, contact.sender_key, now).first();
-    if (existingTest) return c.json({ error_code: "whatsapp_customer_test_already_active" }, 409);
+      .bind(providerRouteKey, contact.sender_key, now).first<{
+        test_session_id: string; tenant_id: string; space_id: string; user_id: string; contact_id: string; project_id: string;
+        installation_id: string; package_version: string; handler_sha256: string; expires_at: string;
+      }>();
+    if (existingTest) {
+      const exactCurrentTest = existingTest.tenant_id === tenantId && existingTest.space_id === spaceId
+        && existingTest.user_id === userId && existingTest.contact_id === contact.contact_id
+        && existingTest.project_id === projectId && existingTest.installation_id === installationId
+        && existingTest.package_version === packageVersion && existingTest.handler_sha256 === channelLink.extension_script_sha256;
+      if (exactCurrentTest) return c.json({ error_code: "whatsapp_customer_test_already_active" }, 409);
+      if (existingTest.project_id !== projectId)
+        return c.json({ error_code: "whatsapp_customer_test_already_active" }, 409);
+      const endedAt = new Date().toISOString();
+      const expired = existingTest.expires_at <= endedAt;
+      await c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
+        SET status=?,ended_at=?,ended_reason=?,updated_at=? WHERE test_session_id=? AND status='active'`)
+        .bind(expired ? "expired" : "revoked", endedAt, expired ? "expired" : "access_changed", endedAt, existingTest.test_session_id).run();
+    }
 
     const code = [...crypto.getRandomValues(new Uint8Array(8))].map(byte => byte.toString(16).padStart(2, "0")).join("");
     const challengeHash = await sha256Hex(code);
@@ -10111,6 +10387,13 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       c.env.PLATFORM_DB.prepare(`DELETE FROM assistant_channel_member_route_selections
         WHERE channel='whatsapp' AND tenant_id=? AND space_id=? AND user_id=?`)
         .bind(tenantId, spaceId, userId),
+      c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
+        SET status='revoked',ended_at=?,ended_reason='access_changed',updated_at=?
+        WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND status='active'`)
+        .bind(occurredAt, occurredAt, tenantId, spaceId, userId),
+      c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_challenges SET consumed_at=?
+        WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND consumed_at IS NULL`)
+        .bind(occurredAt, tenantId, spaceId, userId),
     );
     const results = await c.env.PLATFORM_DB.batch(statements);
     const contactsRevoked = (contacts.results ?? []).reduce((count, _contact, index) =>
@@ -10179,7 +10462,7 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
     const normalizedProjectId = projectId;
     const updatedAt = new Date().toISOString();
     const eventId = crypto.randomUUID();
-    await c.env.PLATFORM_DB.batch([
+    const accessStatements = [
       c.env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_access
         (tenant_id,space_id,user_id,channel,project_id,status,revision,granted_by,created_at,updated_at)
         VALUES(?,?,?,?,?,?,1,?,?,?)
@@ -10193,7 +10476,17 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
         FROM assistant_channel_member_access
         WHERE tenant_id=? AND space_id=? AND user_id=? AND channel=? AND project_id=?`)
         .bind(eventId, userId, updatedAt, tenantId, spaceId, targetUserId, channel, normalizedProjectId),
-    ]);
+    ];
+    if (state !== "enabled") accessStatements.push(
+      c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
+        SET status='revoked',ended_at=?,ended_reason='access_changed',updated_at=?
+        WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND project_id=? AND status='active'`)
+        .bind(updatedAt, updatedAt, tenantId, spaceId, targetUserId, normalizedProjectId),
+      c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_challenges SET consumed_at=?
+        WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND project_id=? AND consumed_at IS NULL`)
+        .bind(updatedAt, tenantId, spaceId, targetUserId, normalizedProjectId),
+    );
+    await c.env.PLATFORM_DB.batch(accessStatements);
     const grant = await c.env.PLATFORM_DB.prepare(
       `SELECT user_id,channel,NULLIF(project_id,'') AS project_id,status,revision,granted_by,created_at,updated_at
        FROM assistant_channel_member_access WHERE tenant_id=? AND space_id=? AND user_id=? AND channel=? AND project_id=?`
@@ -10214,7 +10507,7 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       WHERE tenant_id=? AND space_id=? AND channel='whatsapp'`).bind(tenantId, spaceId).first();
     if (!channelLink) return c.json({ error_code: "whatsapp_channel_not_configured" }, 404);
     const occurredAt = new Date().toISOString();
-    await c.env.PLATFORM_DB.batch([
+    const routingStatements = [
       c.env.PLATFORM_DB.prepare(`UPDATE channel_links SET member_routing_mode=?,member_routing_revision=member_routing_revision+1
         WHERE tenant_id=? AND space_id=? AND channel='whatsapp'`).bind(mode, tenantId, spaceId),
       c.env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_routing_mode_audit
@@ -10222,7 +10515,17 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
         SELECT ?,tenant_id,space_id,channel,member_routing_mode,member_routing_revision,?,?
         FROM channel_links WHERE tenant_id=? AND space_id=? AND channel='whatsapp'`)
         .bind(crypto.randomUUID(), userId, occurredAt, tenantId, spaceId),
-    ]);
+    ];
+    if (mode === "customer_service_only") routingStatements.push(
+      c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
+        SET status='revoked',ended_at=?,ended_reason='access_changed',updated_at=?
+        WHERE tenant_id=? AND space_id=? AND channel='whatsapp' AND status='active'`)
+        .bind(occurredAt, occurredAt, tenantId, spaceId),
+      c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_challenges SET consumed_at=?
+        WHERE tenant_id=? AND space_id=? AND channel='whatsapp' AND consumed_at IS NULL`)
+        .bind(occurredAt, tenantId, spaceId),
+    );
+    await c.env.PLATFORM_DB.batch(routingStatements);
     const current = await c.env.PLATFORM_DB.prepare(`SELECT member_routing_mode,member_routing_revision FROM channel_links
       WHERE tenant_id=? AND space_id=? AND channel='whatsapp'`).bind(tenantId, spaceId)
       .first<{ member_routing_mode: "customer_service_only" | "staff_and_customers"; member_routing_revision: number }>();
@@ -10277,6 +10580,18 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       "UPDATE channel_links SET extension_instance_id=?,extension_script_sha256=? WHERE space_id=? AND tenant_id=? AND channel=? AND enabled=1 AND project_id=?"
     ).bind(instanceId, digest, spaceId, tenantId, channel, projectId).run();
     if ((updated.meta?.changes ?? 0) !== 1) return c.json({ error_code: "channel_project_mismatch" }, 409);
+    if (channel === "whatsapp") {
+      const changedAt = new Date().toISOString();
+      await c.env.PLATFORM_DB.batch([
+        c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
+          SET status='revoked',ended_at=?,ended_reason='access_changed',updated_at=?
+          WHERE tenant_id=? AND space_id=? AND project_id=? AND channel='whatsapp' AND status='active'`)
+          .bind(changedAt, changedAt, tenantId, spaceId, projectId),
+        c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_challenges SET consumed_at=?
+          WHERE tenant_id=? AND space_id=? AND project_id=? AND channel='whatsapp' AND consumed_at IS NULL`)
+          .bind(changedAt, tenantId, spaceId, projectId),
+      ]);
+    }
     return c.json({ channel, project_id: projectId, extension_instance_id: instanceId, script_sha256: digest, bound: true });
   }
 
@@ -10287,6 +10602,18 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       "UPDATE channel_links SET extension_instance_id=NULL,extension_script_sha256=NULL WHERE space_id=? AND tenant_id=? AND channel=? AND project_id=?"
     ).bind(spaceId, tenantId, channel, projectId).run();
     if ((updated.meta?.changes ?? 0) !== 1) return c.json({ error_code: "channel_not_connected" }, 404);
+    if (channel === "whatsapp") {
+      const changedAt = new Date().toISOString();
+      await c.env.PLATFORM_DB.batch([
+        c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
+          SET status='revoked',ended_at=?,ended_reason='access_changed',updated_at=?
+          WHERE tenant_id=? AND space_id=? AND project_id=? AND channel='whatsapp' AND status='active'`)
+          .bind(changedAt, changedAt, tenantId, spaceId, projectId),
+        c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_challenges SET consumed_at=?
+          WHERE tenant_id=? AND space_id=? AND project_id=? AND channel='whatsapp' AND consumed_at IS NULL`)
+          .bind(changedAt, tenantId, spaceId, projectId),
+      ]);
+    }
     return c.json({ channel, project_id: projectId, bound: false });
   }
 
@@ -10367,9 +10694,21 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   if (action === "disconnect" || action === "enable") {
     // Deliberately does NOT delete the vaulted signing secret: disabling is reversible and a
     // re-enable shouldn't force the owner back through their provider's dashboard to re-copy it.
-    await c.env.PLATFORM_DB.prepare(
+    const updateChannel = c.env.PLATFORM_DB.prepare(
       "UPDATE channel_links SET enabled = ? WHERE space_id = ? AND channel = ?"
-    ).bind(action === "enable" ? 1 : 0, spaceId, channel).run();
+    ).bind(action === "enable" ? 1 : 0, spaceId, channel);
+    if (channel === "whatsapp" && action === "disconnect") {
+      const changedAt = new Date().toISOString();
+      await c.env.PLATFORM_DB.batch([updateChannel,
+        c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_sessions
+          SET status='revoked',ended_at=?,ended_reason='access_changed',updated_at=?
+          WHERE tenant_id=? AND space_id=? AND channel='whatsapp' AND status='active'`)
+          .bind(changedAt, changedAt, tenantId, spaceId),
+        c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_customer_test_challenges SET consumed_at=?
+          WHERE tenant_id=? AND space_id=? AND channel='whatsapp' AND consumed_at IS NULL`)
+          .bind(changedAt, tenantId, spaceId),
+      ]);
+    } else await updateChannel.run();
     return c.json({ channel, enabled: action === "enable" });
   }
 

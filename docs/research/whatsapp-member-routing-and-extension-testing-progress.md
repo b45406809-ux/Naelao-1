@@ -260,3 +260,29 @@ identity model; do not reuse `executive_contacts` or `channel_pairings` as membe
   sources. No tests, migration apply, provider operation or deployment ran.
 - Next: implement signed platform-webhook redemption, explicit `TEST EXIT`, customer-only forwarding
   ahead of internal command/member routing, and Agent DO session revalidation.
+
+### Signed phone-test redemption and fenced customer routing — 2026-11-23
+
+- The signed platform WhatsApp webhook now consumes `TEST <code>` before pairing, contact
+  verification, member route selection and executive commands. The code remains single-use and
+  five-minute; the resulting session expires after 30 minutes and pins the verified HMAC sender and
+  destination, exact Project/install, package version and handler hash. Provider retries use HMAC
+  event receipts retained for seven days; raw provider event IDs are not stored.
+- Active test turns are forwarded only to the pinned customer handler with executive routing off.
+  `TEST EXIT`, dashboard end, expiry and current-access changes stop the test. Contact/grant/mode/
+  channel/extension changes close sessions and consume outstanding challenges. The Agent DO checks
+  current contact, grant, Space and Project membership, exact enabled binding, expiry and version at
+  inbound, before handler/model work, before provider delivery and before saving extension state.
+  Test conversations and memory identities are isolated from normal member conversations. Test
+  sessions do not create a regular Space thread or appear in the generic session list; the Project
+  inbox is the review surface and does not expose the sender's phone number.
+- WhatsApp replies label the active test, the member Channels panel shows active status and expiry,
+  and the Project inbox marks test conversations. Migration `0289` now also contains the bounded
+  event-receipt table; it remains unapplied.
+- Agents typecheck and `git diff --check` passed with pnpm `9.12.0`. Full Shell typecheck reports
+  only the four known stale `.next/types` imports for missing generated routes, with no diagnostics
+  in changed Shell sources. No tests, migration apply, provider message, deployment or live
+  acceptance ran.
+- Source implementation is ready. Focused tests and an accepted live phone test remain separate
+  blocked acceptance; resume them after a test request and separate migration/provider
+  authorization. The implementation queue advances to the commercial-cleaning Space Template plan.
