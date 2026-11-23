@@ -23,14 +23,15 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW02 — Comparative evaluation.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). Host admission for
-bounded dynamic expansion, report-only routing evidence, bounded hierarchical planning and safe
-cancellation of explicitly grouped redundant workers are checked off with local/mock coverage.
-Define a controlled comparison of one-worker, sequential and adaptive execution with quality,
-latency, retry, conflict and spend evidence. Keep progressive routing, dynamic expansion and
-redundant-worker cancellation disabled by default; do not claim live or provider-cost results without
-their applicable evidence.
+**APW03 — Decisions and task lineage.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). APW02 local comparison
+protocol and deterministic scheduler/evidence fixture are checked off. Real-runtime/provider
+comparison and cost-aware routing remain blocked pending approved spend/quality thresholds, staging
+and provider access, representative task runs, and invoice-reconciled usage. Trace exact worker-branch
+base/result revisions and checked publication validation receipts through goal result/activity
+projections; implement the smallest missing lineage link. Keep progressive routing, dynamic expansion
+and redundant-worker cancellation disabled by default; do not claim live or provider-cost results
+without their applicable evidence.
 
 ## Save progress inside each task
 

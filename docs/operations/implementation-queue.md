@@ -1,9 +1,10 @@
 # Naelao implementation queue
 
-This is the live checklist for one session working through one plan at a time. The transition
-baseline is `Mcbt5s-Backup-2` at `3a8701a6`. The order below keeps the existing APW02 resume point
-first. The remaining order is a proposed starting point. Use the actual dependencies to determine
-readiness and record a reason here if the order changes.
+This is the live checklist for one session working through one plan at a time. The recovered
+`Mcbt5s-Backup-2` checkpoint is `3a1291ed`. The order below follows the existing APW queue; after
+local APW02 evaluation is recorded, its remaining provider/cost acceptance is blocked, so APW03 is
+the next ready requirement. Use actual dependencies to determine readiness and record a reason if
+the order changes.
 
 ## How to resume and advance
 
@@ -70,11 +71,20 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   stop remaining work after a completed and verified result. Dispatch cancellation is fenced in the
   durable outbox and exact-attempt child start check; late results and uncertain effects remain visible.
   `GOAL_REDUNDANT_CANCELLATION_ENABLED` is off by default.
-- [ ] **Active · APW02 — Comparative evaluation.** Define a controlled baseline and deployed acceptance only
-  after routing metrics and cancellation behavior are ready. Local cancellation/routing evidence is
-  available; provider-cost and live-runtime evidence are not.
-- [ ] **APW03 — Decisions and task lineage.** Reconcile result-branch revision links, conflict review
-  and integration evidence with the PW and EP requirements.
+- [x] **APW02 — Comparative protocol and deterministic fixture.** The paired protocol and local
+  scheduler/evidence fixture compare one-worker, sequential and adaptive arms with synthetic tasks,
+  host evidence, lost-ack recovery, latency and resource exclusion. It records no model-quality,
+  provider-cost or deployed-runtime claim. See the [protocol](../benchmarks/adaptive-goal-routing-comparative-protocol.md)
+  and APW ledger follow-up.
+- [ ] **Blocked · APW02 — Real-runtime/provider comparative acceptance and cost-aware routing.** Resume
+  after staging runtime/provider access is available, a per-goal spend ceiling and quality/latency
+  thresholds are approved, a powered representative task set and blinded rubric are frozen, and
+  provider usage can be reconciled to invoices. Keep progressive routing, dynamic expansion and
+  redundant-worker cancellation disabled until separately accepted and authorized.
+- [ ] **Active · APW03 — Decisions and task lineage.** Trace goal task/result projections for exact
+  worker-branch base/result revisions and checked publication validation receipts; implement the
+  smallest missing lineage link and test its host projection. Continue conflict review and owner
+  decision controls against the PW and EP contracts.
 - [ ] **APW04 — Memory and context.** Continue provenance, retention and context evaluation from the
   existing actor-scoped memory work and the Knowledge ledger.
 - [ ] **APW05 — Cost and scheduling.** Reconcile reservations, accounting and run limits with the
@@ -83,23 +93,19 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** Goal plans can explicitly mark independent alternatives with a validated
-`redundancy_group`; a completed and verified member can cancel its remaining peers. Cancellation is
-guarded by the off-by-default `GOAL_REDUNDANT_CANCELLATION_ENABLED` host flag. The parent persists a
-cancel marker in `goal_dispatch_outbox`, checks it before child admission, fences the exact worker
-attempt, and asks the child runtime to stop. The child start check rejects an attempt stopped before
-execution. Late callback/HTTP results are retained in bounded `sub_agents` receipts, token usage is
-counted once, checked workspace publication evidence remains readable, and UI state says effects can
-already have committed. Cancellation never claims rollback. Verification: focused planner, DAG and
-delegation suites **83/83**, Agents typecheck, Shell source typecheck excluding stale generated
-`.next/types`, and `git diff --check`; local/mock only. The regular Shell typecheck still fails on
-stale `.next/types` references to absent route files. No live Cloudflare cancellation or provider
-cost behavior was exercised; progressive routing, dynamic expansion and redundant cancellation
-remain disabled by default.
+**Latest checkpoint.** Added a paired local comparison fixture and its [protocol](../benchmarks/adaptive-goal-routing-comparative-protocol.md).
+Six synthetic code/non-code workloads, two repeats and three routing arms produced 36 runs. All 48
+expected artifacts per arm passed host evidence; synthetic token totals matched. Each run recovered
+one injected lost acknowledgement without redispatch; resource overlaps and duplicate dispatches
+were zero. Agents typecheck and three focused benchmark suites passed (**6 passed, 2 live/provider
+tests skipped**); `git diff --check` passed. These are local control-flow and artifact-evidence
+results only. Actual model/customer quality, failed-worker retry policy, deployed runtime, provider
+invoice and USD spend are still unavailable. APW02 provider/cost acceptance is blocked; all rollout
+flags remain off.
 
-**Exact next action:** define and implement a controlled one-worker/sequential/adaptive comparison
-with explicit quality, latency, retry, conflict and spend provenance. Separate local/mock evidence
-from any live provider or deployed acceptance, and do not enable rollout flags.
+**Exact next action:** continue APW03 by tracing exact worker-branch base/result revisions and checked
+publication validation receipts through goal result/activity projections; implement and test the
+smallest missing lineage link. Preserve the cancellation checkpoint and keep rollout disabled.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).
