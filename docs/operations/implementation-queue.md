@@ -47,27 +47,21 @@ handoff. Anything that had yet to reach that branch may need to be redone.
 and [progress ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). APW01 was
 reconciled in that ledger. Existing partial implementations remain recorded there.
 
-**Latest checkpoint.** APW02 now has a bounded host-owned expansion path in `goal-expansion.ts`,
-`goal-dag.ts` and `NaelaoAgentDO.ts`; progressive routing and expansion remain disabled unless
-their flags are set. Structured proposals can add at most three one-level children under the
-12-task graph limit. The host derives child identity and authority, checks the parent's unused
-worker-token budget, revalidates scope and decision references, persists task membership/grants,
-and rechecks authorization and Billing path readiness at dispatch. Concurrent admissions serialize
-against the graph limit. Verification: goal expansion/DAG suites **63/63**, Agents typecheck and
-`git diff --check`; local/mock only. Cross-DO persistence is staged and replayable, not a distributed
-transaction; the existing per-inference quota/project-spend path remains authoritative and this slice
-does not reserve aggregate USD/credits for all proposed children.
-
-**Exact next action:** add host-boundary fault/replay coverage for a failure after SpaceDO task
-creation but before the AgentDO metadata/grant transaction, then continue APW02's remaining routing,
-cancellation and evaluation gaps. Keep both rollout flags off by default.
-
-- [ ] **Active · APW02 — Host admission for dynamic goal graph expansion.** Trace the current durable
-  DAG caller and implement the next missing host-owned expansion slice. Preserve stable task identity,
-  bounded graph size, worker membership and blackboard grants, current authorization, and Billing
-  admission at expansion and dispatch. Keep progressive routing gated.
-- [ ] **APW02 follow-ups.** Track measured routing, planner hierarchy, and safe cancellation as
-  separate tasks as their prerequisites become ready.
+- [x] **APW02 — Host admission for dynamic goal graph expansion.** Structured proposals can add at
+  most three one-level children under the 12-task graph limit. The host derives stable child identity
+  and authority, checks the parent's unused worker-token budget, actor scope, decision references and
+  Billing path at admission, then rechecks authorization, decisions and Billing path at dispatch.
+  It persists task membership/grants and serializes admissions against the graph limit. Expansion remains disabled
+  unless explicitly enabled. See the APW ledger's 2026-11-23 checkpoint.
+- [ ] **Active · APW02 — Measured routing evidence and cost-aware selection.** Trace verification,
+  latency, token and credit receipts to one goal run. Establish which existing signals are comparable
+  before changing routing or describing cost/quality effects. Keep progressive routing gated.
+- [ ] **APW02 — Hierarchical planner tree.** Reconcile nested planner limits, authority inheritance
+  and budget accounting before enabling deeper decomposition.
+- [ ] **APW02 — Safe cancellation of redundant workers.** Trace dispatch acknowledgements and late
+  result/workspace effects; cancellation must not imply rollback of committed work.
+- [ ] **APW02 — Comparative evaluation.** Define a controlled baseline and deployed acceptance only
+  after routing metrics and cancellation behavior are ready.
 - [ ] **APW03 — Decisions and task lineage.** Reconcile result-branch revision links, conflict review
   and integration evidence with the PW and EP requirements.
 - [ ] **APW04 — Memory and context.** Continue provenance, retention and context evaluation from the
@@ -77,6 +71,19 @@ cancellation and evaluation gaps. Keep both rollout flags off by default.
 - [ ] **APW06 — Task controls and SDK.** Continue authorized task UI, template controls and evaluation.
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
+
+**Latest checkpoint.** The bounded expansion implementation is pushed as `139c6654`. This
+checkpoint extracts the staged persistence boundary so local tests can fail the AgentDO transaction
+after SpaceDO task creation, then replay the same stable task IDs. The tests prove the pending intent
+survives, remote task creation is idempotent, goal metadata and blackboard grants commit together,
+and wrong-scope metadata is rejected before any remote write. Verification: goal expansion, admission
+and DAG suites **65/65**, Agents typecheck and `git diff --check`; local/mock only. Cross-DO
+persistence remains staged rather than distributed-atomic; per-inference quota/project-spend checks
+remain authoritative where configured, with no aggregate USD/credit reservation for proposed tasks.
+
+**Exact next action:** inspect goal routing's current verification, latency, worker-token and internal
+credit receipts and trace which can be joined to a task/run before implementing a measured routing
+signal. Both progressive routing and dynamic expansion stay off by default.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).

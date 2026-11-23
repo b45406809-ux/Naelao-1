@@ -23,11 +23,12 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW02 — Host admission for dynamic goal graph expansion.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). Reconcile the current
-caller against the APW02 ledger entry, then implement the next missing slice of host-owned
-expansion while preserving task identity, scoped grants and Billing admission. Progressive
-routing stays disabled by default.
+**APW02 — Measured routing evidence and cost-aware selection.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). Host admission for
+bounded dynamic expansion is checked off with local DAG/admission and replay coverage. Trace the
+available verification, latency, token and credit receipts to one goal run; then implement the next
+evidence-backed routing slice without claiming unmeasured savings. Keep progressive routing and
+dynamic expansion disabled by default.
 
 ## Save progress inside each task
 

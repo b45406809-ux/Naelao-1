@@ -7,6 +7,7 @@ import { containerWorkerConcurrency, validateContainerScope, type ContainerInvoc
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
 import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.js";
+import { persistGoalExpansionAdmission } from "../script-engine/goal-expansion-admission.js";
 import { applyGoalCommunicationEdges } from "../script-engine/goal-communication.js";
 import { taskCommunicationRecipients, validateGoalDag, type GoalTask } from "../script-engine/prebuilt/goal-planner.js";
 import { captureWorkerArtifactManifest, collectGoalEvidence, verifyWorkerArtifact, validateGoalEvidenceChecks, type WorkerArtifactManifest } from "../script-engine/goal-evidence.js";
@@ -4860,50 +4861,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 if (!decisionValidation.ok) return { ok: false, reason: decisionValidation.reason };
               }
               const intentKey = `goal-expansion-admission:${hash}:${proposalId}`;
-              const tasksJson = JSON.stringify(additions);
-              const priorIntent = await this.ctx.storage.get<{ proposalId: string; tasksJson: string; status: "pending" | "admitted" }>(intentKey);
-              if (priorIntent && (priorIntent.proposalId !== proposalId || priorIntent.tasksJson !== tasksJson)) throw new Error("goal_expansion_identity_conflict");
-              if (priorIntent?.status === "admitted") return { ok: true };
-              if (!priorIntent) await this.ctx.storage.put(intentKey, { proposalId, tasksJson, status: "pending" });
-
-              const projectedTasks = additions.map(task => ({
-                ...task, id: taskId(task.id), dependencies: (task.dependencies ?? []).map(taskId),
-                communication_recipients: taskCommunicationRecipients(task.id, allTasks).map(taskId),
-              }));
-              // This is a staged cross-DO write, not a distributed transaction: the pending
-              // intent makes remote task creation replayable, and no child dispatch happens
-              // until the matching local metadata and grants commit below.
-              await hooks.persistGoalTasks!(projectedTasks);
-              await this.ctx.storage.transaction(async tx => {
-                const metadataKey = `goal-activity:metadata:${hash}`;
-                const metadata = await tx.get<{ tenantId: string; spaceId: string; actorId: string | null; tasks: Array<Record<string, unknown>> }>(metadataKey);
-                if (!metadata || metadata.tenantId !== tenantId || metadata.spaceId !== spaceId || metadata.actorId !== (userId ?? null)) throw new Error("goal_expansion_activity_scope_unavailable");
-                const byId = new Map(metadata.tasks.map(item => [String(item.id), item]));
-                for (const task of additions) {
-                  const projection = {
-                    id: task.id, title: task.title, dependencies: task.dependencies ?? [],
-                    communication_recipients: taskCommunicationRecipients(task.id, allTasks),
-                    assigned_role: task.assigned_role, budget_tokens: task.budget_tokens,
-                    acceptance_criteria: task.acceptance_criteria ?? [], decision_refs: task.decision_refs ?? [],
-                    ...(task.runtime_capability ? { runtime_capability: task.runtime_capability } : {}),
-                  };
-                  const prior = byId.get(task.id);
-                  if (prior && JSON.stringify(prior) !== JSON.stringify(projection)) throw new Error("goal_expansion_activity_identity_conflict");
-                  byId.set(task.id, projection);
-                }
-                await tx.put(metadataKey, { ...metadata, tasks: [...byId.values()] });
-                if (taskBlackboardEnabled && userId) {
-                  const scopeKey = `task-blackboard:scope:${hash}`;
-                  const savedScope = await tx.get<{ tenantId: string; spaceId: string; projectId: string | null; actorId: string; rootRunId: string; parentDoId: string; members: string[]; grants: Array<[string, string[]]> }>(scopeKey);
-                  if (!savedScope || savedScope.actorId !== userId || savedScope.tenantId !== tenantId || savedScope.spaceId !== spaceId
-                    || (savedScope.projectId ?? null) !== (projectId ?? null)) throw new Error("task_blackboard_scope_unavailable");
-                  await tx.put(scopeKey, {
-                    ...savedScope,
-                    members: allTasks.map(task => taskId(task.id)),
-                    grants: allTasks.map(task => [taskId(task.id), taskCommunicationRecipients(task.id, allTasks).map(taskId)] as [string, string[]]),
-                  });
-                }
-                await tx.put(intentKey, { proposalId, tasksJson, status: "admitted" });
+              await persistGoalExpansionAdmission({
+                storage: this.ctx.storage,
+                goalHash: hash,
+                intentKey,
+                proposalId,
+                additions,
+                allTasks,
+                tenantId,
+                spaceId,
+                actorId: userId ?? null,
+                projectId: projectId ?? null,
+                taskBlackboardEnabled,
+                taskId,
+                persistTasks: projectedTasks => hooks.persistGoalTasks!(projectedTasks),
               });
               return { ok: true };
             },
