@@ -453,7 +453,9 @@ export class ToolSandboxDO extends DurableObject {
     const objectName = request.headers.get("x-naelao-runtime-object-name");
     const expectedObjectName = scope.installationId
       ? sidecarKey(scope) + workspaceBranchScope(scope.workspaceBranch)
-      : sandboxInstanceName(scope.spaceId, scope.projectId, scope.workspaceBranch);
+      : this.workspaceRuntimeKind() === "media_sandbox"
+        ? `attachment-media:${scope.spaceId}:${scope.projectId}`
+        : sandboxInstanceName(scope.spaceId, scope.projectId, scope.workspaceBranch);
     const db = (this.env as SandboxBindings).PLATFORM_DB;
     // Project work must be discoverable by the retryable erasure inventory. Bind the registration
     // to the same identity the host used to address this DO; a missing or mismatched name must not
@@ -461,16 +463,22 @@ export class ToolSandboxDO extends DurableObject {
     if (!objectName || objectName !== expectedObjectName || objectName.length > 1024 || objectName.includes("\0"))
       throw new Error("workspace_runtime_identity_invalid");
     if (!db) throw new Error("workspace_runtime_registry_unavailable");
-    if (this.isProjectMainRuntimeScope(scope, request)) await this.reconcileProjectMainGenerationAttempt(scope, request, db);
     const now = new Date().toISOString();
+    // Make the first-touch check and registry insert one D1 statement. If erasure commits first,
+    // the conditional insert changes no rows; if registration commits first, cleanup's later
+    // inventory query sees this exact runtime before it can acknowledge erasure.
     const inserted = await db.prepare(`INSERT INTO workspace_runtime_registry
       (tenant_id,space_id,project_id,runtime_kind,object_name,branch,installation_id,first_seen_at,last_seen_at)
-      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id,project_id,runtime_kind,object_name)
+      SELECT ?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (
+        SELECT 1 FROM workspace_erasure_tombstones WHERE tenant_id=? AND space_id=? AND project_id=?
+      ) ON CONFLICT(tenant_id,space_id,project_id,runtime_kind,object_name)
       DO UPDATE SET branch=excluded.branch,installation_id=excluded.installation_id,last_seen_at=excluded.last_seen_at,
         erasure_notified_at=NULL,last_erasure_error=NULL`)
       .bind(scope.tenantId, scope.spaceId, scope.projectId, this.workspaceRuntimeKind(), objectName,
-        scope.workspaceBranch ?? "", scope.installationId ?? null, now, now).run();
+        scope.workspaceBranch ?? "", scope.installationId ?? null, now, now,
+        scope.tenantId, scope.spaceId, scope.projectId).run();
     if (!inserted.meta.changes) throw new Error("workspace_runtime_registry_write_failed");
+    if (this.isProjectMainRuntimeScope(scope, request)) await this.reconcileProjectMainGenerationAttempt(scope, request, db);
     if (this.isProjectMainRuntimeScope(scope, request)) {
       const branch = scope.workspaceBranch ?? "main";
       const generation = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
@@ -2100,11 +2108,13 @@ export class ToolSandboxDO extends DurableObject {
       scope.installationScope, scope.workspaceBranch, scope.image]);
     const previousOwner = await this.ctx.storage.get<string>("sidecar_owner");
     if (previousOwner && previousOwner !== owner) return Response.json({ error_code: "container_sidecar_scope_mismatch" }, { status: 409 });
-    await this.ctx.storage.put("sidecar_owner", owner);
     if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
     const erasure = await this.projectErasureState(scope);
     if (erasure === "unavailable") return Response.json({ error_code: "workspace_erasure_check_unavailable" }, { status: 503 });
     if (erasure === "erased") return Response.json({ error_code: "workspace_project_erased" }, { status: 410 });
+    try { await this.registerWorkspaceRuntime(scope, request); }
+    catch { return Response.json({ error_code: "workspace_runtime_registry_unavailable" }, { status: 503 }); }
+    await this.ctx.storage.put("sidecar_owner", owner);
     let body: { direction?: string; path?: string; workspacePath?: string; requestId?: string; digest?: string; expectedHash?: string | null };
     try { body = await request.json<typeof body>(); }
     catch { return Response.json({ error_code: "artifact_transfer_request_invalid" }, { status: 400 }); }
@@ -2217,6 +2227,8 @@ export class ToolSandboxDO extends DurableObject {
     const erasure = await this.projectErasureState(scope);
     if (erasure === "unavailable") return Response.json({ error_code: "workspace_erasure_check_unavailable" }, { status: 503 });
     if (erasure === "erased") return Response.json({ error_code: "workspace_project_erased" }, { status: 410 });
+    try { await this.registerWorkspaceRuntime(scope, request); }
+    catch { return Response.json({ error_code: "workspace_runtime_registry_unavailable" }, { status: 503 }); }
     const recent = await this.ctx.storage.get<string[]>("sidecar_artifact_transfer_recent");
     const ids = Array.isArray(recent) ? recent.slice(-SIDECAR_ARTIFACT_TRANSFER_RECENT_LIMIT) : [];
     const receipts = (await Promise.all(ids.map(id => this.ctx.storage.get<SidecarArtifactTransferReceipt>(`sidecar_artifact_transfer:${id}`))))
@@ -2238,6 +2250,8 @@ export class ToolSandboxDO extends DurableObject {
     const erasure = await this.projectErasureState(scope);
     if (erasure === "unavailable") return Response.json({ error_code: "workspace_erasure_check_unavailable" }, { status: 503 });
     if (erasure === "erased") return Response.json({ error_code: "workspace_project_erased" }, { status: 410 });
+    try { await this.registerWorkspaceRuntime(scope, request); }
+    catch { return Response.json({ error_code: "workspace_runtime_registry_unavailable" }, { status: 503 }); }
     const body = await request.json<{ requestId?: string; outcome?: string; workspacePath?: string; expectedHash?: string | null }>()
       .catch(() => ({} as { requestId?: string; outcome?: string; workspacePath?: string; expectedHash?: string | null }));
     if (typeof body.requestId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(body.requestId)

@@ -5475,6 +5475,7 @@ app.get("/spaces/:spaceId/projects/:projectId/runtime-installations/:installatio
     if (!target.stub) throw new Error("managed_runtime_profiles_unavailable");
     return target.stub.fetch(new Request("http://sandbox/_internal/artifact-transfers", { headers: {
       "x-naelao-container-scope": JSON.stringify(target.scope),
+      "x-naelao-runtime-object-name": sidecarKey(target.scope) + workspaceBranchScope(target.scope.workspaceBranch),
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
     } }));
   } catch (error) { return managedRuntimeProfileFailure(error, c); }
@@ -8065,6 +8066,7 @@ app.post("/internal/attachments/transcribe", async (c) => {
           "x-naelao-tenant-id": tenantId,
           "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
           "x-naelao-container-scope": JSON.stringify(scope),
+          ...(body.projectId ? { "x-naelao-runtime-object-name": `attachment-media:${body.spaceId}:${body.projectId}` } : {}),
           "x-naelao-execution-id": scope.executionId,
           "x-naelao-timeout-ms": String(scope.timeoutMs),
         },
@@ -8210,6 +8212,7 @@ app.post("/internal/attachments/describe-video", async (c) => {
         "x-naelao-tenant-id": tenantId,
         "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
         "x-naelao-container-scope": JSON.stringify(scope),
+        ...(body.projectId ? { "x-naelao-runtime-object-name": `attachment-media:${body.spaceId}:${body.projectId}` } : {}),
         "x-naelao-execution-id": scope.executionId,
         "x-naelao-timeout-ms": String(scope.timeoutMs),
       },
@@ -8519,6 +8522,7 @@ app.post("/internal/attachments/ocr", async (c) => {
           "x-naelao-tenant-id": tenantId,
           "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
           "x-naelao-container-scope": JSON.stringify(scope),
+          ...(projectId ? { "x-naelao-runtime-object-name": `sandbox:${body.spaceId}:${projectId}` } : {}),
           "x-naelao-execution-id": scope.executionId,
           "x-naelao-timeout-ms": String(scope.timeoutMs),
         },

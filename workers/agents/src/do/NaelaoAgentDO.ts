@@ -3357,6 +3357,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const stub = namespace.get(namespace.idFromName(sidecarKey(scope) + workspaceBranchScope(scope.workspaceBranch)));
       return stub.fetch(new Request(`http://sandbox${route}`, { method,
         headers: { ...(body !== undefined ? { "content-type": "application/json" } : {}), "x-naelao-container-scope": JSON.stringify(scope),
+          ...(projectId ? { "x-naelao-runtime-object-name": sidecarKey(scope) + workspaceBranchScope(scope.workspaceBranch) } : {}),
           "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }));
     };

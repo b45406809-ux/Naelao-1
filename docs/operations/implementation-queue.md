@@ -1,10 +1,10 @@
 # Naelao implementation queue
 
-This is the live checklist for one session working through one plan at a time. The recovered
-`Mcbt5s-Backup-2` recovery checkpoint is `b3f7e9aa`. APW05 admission/accounting paths have been
-reconciled; its remaining aggregate cost-policy and provider-USD work is blocked pending the listed
-prerequisites. APW06 is active. Use the active checklist below and the linked ledgers to determine
-readiness and record a reason if the order changes.
+This is the live checklist for one session working through one plan at a time. The latest confirmed
+commit on `origin/Mcbt5s-Backup-2` is the recovery checkpoint; fetch the branch tip before resuming.
+APW05 admission/accounting paths have been reconciled; its remaining aggregate cost-policy and
+provider-USD work is blocked pending the listed prerequisites. Use the checklist below and linked
+ledgers to determine readiness and record a reason if the order changes.
 
 ## How to resume and advance
 
@@ -57,10 +57,22 @@ and [progress ledger](../research/managed-services-and-sidecar-implementation-pr
   and fails closed if the Project runtime registry is unavailable. Agents typecheck and
   `git diff --check` pass; no tests, migration or deployment ran.
 
-- [ ] **Active · S/U · S3/U10 — Finish the Project runtime erasure caller audit.**
-  Trace feature-off/restored private-state paths, sidecar artifact/local-state cleanup and all
-  relevant runtime namespaces. Implement any remaining source-supported erasure gap; distinguish
-  provider snapshot purge, regional configuration and deployed acceptance as external gates.
+- [x] **S/U · S3/U10 — Finish the Project runtime erasure caller audit.**
+  Project execution/workspace and sidecar artifact transfer/list/outcome routes register their exact
+  host-derived Durable Object names. Direct Project video and scanned-PDF attachment routes now do
+  the same for Media and Document sandboxes; Media identity validation matches its
+  `attachment-media:…` name. D1 first-touch registration is conditional on no erasure tombstone.
+  Feature-off private-state backup/restore, runtime snapshot references, cleanup namespaces,
+  provider deletion queues and residual provider/historical namespace limits were reconciled in the
+  progress ledger. Agents typecheck and `git diff --check` pass; no tests, migration or deployment ran.
+
+- [ ] **Blocked · S/U · S3/U10 — Regional and deployed erasure acceptance.** The local caller audit
+  is complete. Resume after jurisdiction-specific Sandboxes/D1/R2 configuration and access policy
+  are approved and an authorized deployed erasure journey verifies each runtime receipt. Cloudflare
+  exposes no supported physical snapshot purge in this code; provider snapshot deletion/expiry
+  evidence remains separate. Historic sidecar Durable Objects created before registry registration
+  cannot be enumerated through a namespace API, so inventory completeness for those objects also
+  needs an accepted migration or provider-supported discovery path.
 
 **S1 checkpoint:** the progress ledger now maps sections 1–20 to their owning implementation and
 evidence records, and the U01–U12 matrix was reconciled against the current branch. U06–U08 remain
@@ -69,13 +81,31 @@ restart metadata remain feature-off; U11's supported cost alerts remain informat
 dependency staging is wired. The source audit found one actionable U10 gap: current Project
 execution/workspace callers send a host-derived object name, but `ToolSandboxDO.registerWorkspaceRuntime`
 silently skips erasure registration if it is missing. Source review only; no tests, migrations,
-deployment or live acceptance ran.
+deployment or live acceptance ran. This historical gap is fixed by the checked U10 checkpoints below.
 
-**Latest S3/U10 checkpoint:** the runtime-name header must equal the deterministic main or sidecar
-Durable Object name derived from the authenticated scope, and D1 registration is mandatory before
-Project work continues. Agents typecheck and `git diff --check` pass. **Next action:** trace
-feature-off/restored private-state paths, sidecar artifact/local-state cleanup and relevant runtime
-namespaces; keep provider snapshot purge and regional deployment gates explicit.
+**Latest S3/U10 checkpoint:** caller search also found direct Project video and scanned-PDF requests
+to MediaSandboxDO and DocumentSandboxDO. Those routes now send the exact runtime identity, and
+MediaSandboxDO validates its actual `attachment-media:…` Durable Object name. Runtime identity and
+tombstone-conditional D1 registration now cover the reachable execution, workspace, artifact and
+attachment paths. The source audit found no further local fix. Regional/deployed acceptance, physical
+provider snapshot deletion evidence and discovery of historical unregistered sidecars remain
+blocked as detailed above. **Next action:** no S/U source-only task is ready; resume this plan when
+one of its recorded runtime, provider, policy or deployment dependencies changes, and recheck the
+parked plans for newly ready work.
+
+**S/U remaining-work review:** supported S2 account, grant and entitlement lanes are implemented
+locally. U05/U06 still require a supported runtime transport contract; U09 backup use requires
+approved key and jurisdiction bindings; U10 has only the regional/deployed/provider limits above;
+U11 lacks authoritative invoice/billed-idle feeds and deployed cost measures; U12 awaits CI event
+and image-parity evidence. Modal has a separately hosted, gated Node service and local journal, but
+no Agents binding/caller or authoritative per-sandbox cost receipt. Its create path remains blocked
+until pricing, metering and provider acceptance are defined. Other open S/U rows retain their exact
+product, provider and live gates in the plan and progress ledger.
+
+**Queue readiness:** PW worker-branch retention is blocked on owner policy. APW open work is blocked
+on cost/quality, retention, task-control or staging acceptance contracts; APW07–APW09 point to
+owning plans. No ready task is currently identified across these plans. Preserve
+`infra/scripts/__pycache__/` and keep rollout defaults disabled.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

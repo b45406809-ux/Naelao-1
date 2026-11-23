@@ -21,14 +21,6 @@ session, or a specific blocker leaves no ready work.
    the commit. If the environment is still starting or reconnecting, wait for readiness and
    resume from the checkout when it returns.
 
-## Current task
-
-**S/U — S3/U10: finish the Project runtime erasure caller audit.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). Trace feature-off and
-restored private-state paths, sidecar artifact/local-state cleanup and all relevant runtime
-namespaces; implement any remaining source-supported erasure gap. Preserve
-`infra/scripts/__pycache__/` and keep rollout defaults disabled.
-
 ## Save progress inside each task
 
 - Break the active task into small slices that can be checked on their own. Commit and push
