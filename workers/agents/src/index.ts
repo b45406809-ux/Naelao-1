@@ -125,6 +125,8 @@ import {
   extractPairingToken, PAIRING_TTL_SECONDS, type PairableChannel,
 } from "./launchpad/channel-pairing.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
+import { projectJournal } from "./script-engine/prebuilt/project-journal.js";
+import type { PrebuiltOpContext } from "./script-engine/prebuilt/index.js";
 import { customAgentToConfig } from "./agent-templates.js";
 import { writeAgentConfig, createAgentConfigLockGateway } from "./script-engine/agent-config.js";
 import { actorAddress, parseExtensionPrimitive, type ContainerContract, type ThreadTier } from "@naelao/agent-sdk";
@@ -364,6 +366,7 @@ export interface AgentsEnv extends Cloudflare.Env {
   KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
   UNIFIED_WORKSPACE_ENABLED?: string;
+  WORKSPACE_DUAL_READ_ENABLED?: string;
   OPENROUTER_API_KEY?: string;
   SYSTEM_ONE_MODEL?: string;
   SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef" | "openrouter";
@@ -5375,6 +5378,45 @@ async function requireProjectAccessForManagedProfile(c: Context<{ Bindings: Agen
   return { tenantId, userId };
 }
 
+async function projectDecisionReviewAccess(c: Context<{ Bindings: AgentsEnv }>, spaceId: string, projectId: string, tenantId: string, userId: string) {
+  if (!c.env.SPACES_WORKER) throw new Error("project_decision_authority_unavailable");
+  const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+  const response = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/members`,
+    { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": getCallerIdentity(c).role, "x-naelao-internal-token": token } },
+  ));
+  if (!response.ok) throw new Error("project_decision_authority_unavailable");
+  const roster = await response.json<{ data?: Array<{ user_id?: string; role?: string }> }>().catch(() => null);
+  const projectRole = roster?.data?.find(member => member.user_id === userId)?.role ?? null;
+  let spaceAdmin = false;
+  try { await requireApprovalAuthority(c, spaceId); spaceAdmin = true; }
+  catch { /* a current project owner can review without Space-owner authority */ }
+  const isProjectMember = projectRole === "owner" || projectRole === "editor" || projectRole === "viewer";
+  if (!isProjectMember && !spaceAdmin) throw forbidden("Project membership required");
+  return { canReview: projectRole === "owner" || spaceAdmin, reviewerRank: projectRole === "owner" ? 3 : spaceAdmin ? 2 : 0 };
+}
+
+function projectJournalDecisionContext(input: { tenantId: string; spaceId: string; projectId: string; userId: string; reviewerRank: number }, env: AgentsEnv): PrebuiltOpContext {
+  const scope: WorkspaceScope = { tenantId: input.tenantId, spaceId: input.spaceId, projectId: input.projectId,
+    jurisdiction: env.DATA_JURISDICTION === "eu" ? "eu" : "global" };
+  const workspaceConfigured = env.UNIFIED_WORKSPACE_ENABLED === "true" || env.WORKSPACE_DUAL_READ_ENABLED === "true";
+  const workspaceManifestRead = async () => {
+    const response = await workspaceCoordinatorRequest(env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/read?branch=main", {});
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`workspace_read_failed:${response.status}`);
+    return response.json() as Promise<{ head: { branch: string; revision: number; manifestHash?: string; updatedAt: string }; entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string; contentType?: string }> }>;
+  };
+  return {
+    env: {
+      spaceId: input.spaceId, projectId: input.projectId, userId: input.userId,
+      agentId: "project-decision-review", memoryRoleRank: { value: input.reviewerRank },
+      scriptsBucket: env.SCRIPTS_R2!,
+      ...(workspaceConfigured ? { workspaceManifestRead } : {}),
+    },
+    run: async () => ({ ok: false, error: "not_available" }),
+  } as unknown as PrebuiltOpContext;
+}
+
 function managedRuntimeProfileFailure(error: unknown, c: Context<{ Bindings: AgentsEnv }>) {
   const code = error instanceof Error ? error.message : "";
   if (code === "managed_runtime_profiles_unavailable") return c.json({ error_code: code }, 503);
@@ -9684,6 +9726,58 @@ app.get("/spaces/:spaceId/assistant/goal-activity", async (c) => {
   const stub = sessionId ? await getAgentDO(c.env, tenantId, agentId ? `${sessionId}:${agentId}` : sessionId, c.get("requestId")) : await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   const query = new URLSearchParams({ space_id: spaceId, ...(runId ? { run_id: runId } : {}), ...(history ? { history: "true" } : {}) });
   return stub.fetch(new Request(`http://agent-do/internal/goal-activity?${query}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": actorId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/assistant/project-journal/decisions", async c => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId, userId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "project_journal_unavailable" }, 503);
+  let authority: Awaited<ReturnType<typeof projectDecisionReviewAccess>>;
+  try { authority = await projectDecisionReviewAccess(c, spaceId, projectId, tenantId, userId); }
+  catch (error) {
+    if (error instanceof Error && error.message === "project_decision_authority_unavailable") return c.json({ error_code: error.message }, 503);
+    throw error;
+  }
+  const context = projectJournalDecisionContext({ tenantId, spaceId, projectId, userId, reviewerRank: authority.reviewerRank }, c.env);
+  const result = await projectJournal.operations["project_journal.read_decisions"]!({}, context);
+  if (!result || typeof result !== "object" || Array.isArray(result)) return c.json({ error_code: "project_journal_unavailable" }, 503);
+  return c.json({ ...(result as Record<string, unknown>), can_review: authority.canReview }, 200, { "cache-control": "no-store" });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/assistant/project-journal/decisions/:decisionId/review", async c => {
+  const { spaceId, projectId, decisionId } = c.req.param();
+  const body = await c.req.json<{ expected_revision?: number; outcome?: string; review_note?: string; supersedes?: string }>().catch(() => null);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(decisionId) || !body || !Number.isSafeInteger(body.expected_revision) ||
+      (body.outcome !== "approve" && body.outcome !== "reject") ||
+      (body.review_note !== undefined && (typeof body.review_note !== "string" || body.review_note.length > 500)) ||
+      (body.supersedes !== undefined && (typeof body.supersedes !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.supersedes))))
+    return c.json({ error_code: "invalid_project_decision_review" }, 400);
+  const { tenantId, userId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "project_journal_unavailable" }, 503);
+  let authority: Awaited<ReturnType<typeof projectDecisionReviewAccess>>;
+  try { authority = await projectDecisionReviewAccess(c, spaceId, projectId, tenantId, userId); }
+  catch (error) {
+    if (error instanceof Error && error.message === "project_decision_authority_unavailable") return c.json({ error_code: error.message }, 503);
+    throw error;
+  }
+  if (!authority.canReview) return c.json({ error_code: "decision_review_requires_project_admin" }, 403);
+  const context = projectJournalDecisionContext({ tenantId, spaceId, projectId, userId, reviewerRank: authority.reviewerRank }, c.env);
+  try {
+    const result = await projectJournal.operations["project_journal.review_decision"]!({
+      decision_id: decisionId, expected_revision: body.expected_revision, outcome: body.outcome,
+      ...(body.review_note === undefined ? {} : { review_note: body.review_note }),
+      ...(body.supersedes === undefined ? {} : { supersedes: body.supersedes }),
+    }, context) as { ok?: boolean; reason?: string };
+    if (result.ok) return c.json(result);
+    const status = result.reason === "decision_review_requires_project_admin" ? 403
+      : result.reason === "decision_proposal_unavailable" ? 404
+        : ["decision_revision_conflict", "decision_workspace_revision_unavailable", "decision_workspace_revision_stale",
+          "active_decision_requires_explicit_supersession", "superseded_decision_unavailable"].includes(result.reason ?? "") ? 409 : 400;
+    return c.json(result, status);
+  } catch (error) {
+    if (error instanceof R2CasConflictError) return c.json({ error_code: "project_decision_write_conflict" }, 409);
+    throw error;
+  }
 });
 
 // GET /spaces/:spaceId/assistant/files — the Space Assistant's own R2 workspace listing (the

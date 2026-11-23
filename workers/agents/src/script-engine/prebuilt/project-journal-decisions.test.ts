@@ -67,6 +67,10 @@ describe("project journal decision proposal and review", () => {
     const journal = parseJournal(new TextDecoder().decode(f.objects.get(key)!.bytes));
     expect(journal.activeDecisions).toContain("Use checked publication.");
     expect(journal.decisionRegister[0]).toMatchObject({ status: "active", proposer: "editor", reviewer: "owner" });
+    const register = await projectJournal.operations["project_journal.read_decisions"]!({}, f.ctx("owner", 3)) as {
+      decisions: Array<{ id: string; status: string; workspaceStatus: string }>;
+    };
+    expect(register.decisions.find(item => item.id === decision.id)).toMatchObject({ status: "active", workspaceStatus: "unpinned" });
   });
 
   it("requires explicit same-topic supersession and preserves the old decision", async () => {
@@ -95,6 +99,24 @@ describe("project journal decision proposal and review", () => {
     f.setWorkspaceHead({ branch: "main", revision: 5, manifestHash: "b".repeat(64) });
     const review = await projectJournal.operations["project_journal.review_decision"]!({ decision_id: id, expected_revision: 1, outcome: "approve" }, f.ctx("owner", 3));
     expect(review).toMatchObject({ ok: false, reason: "decision_workspace_revision_stale", current_revision: 5 });
+  });
+
+  it("surfaces stale proposals for owner review and permits rejection without activating them", async () => {
+    const f = fixture();
+    const original = { branch: "main", revision: 4, manifestHash: "a".repeat(64) };
+    f.setWorkspaceHead(original);
+    const proposal = await f.propose("editor");
+    const id = (proposal as { decision: { id: string } }).decision.id;
+    f.setWorkspaceHead({ branch: "main", revision: 5, manifestHash: "b".repeat(64) });
+
+    const read = await projectJournal.operations["project_journal.read_decisions"]!({}, f.ctx("owner", 3)) as {
+      decisions: Array<{ id: string; status: string; workspaceStatus: string }>;
+    };
+    expect(read.decisions.find(item => item.id === id)).toMatchObject({ status: "proposed", workspaceStatus: "stale" });
+    const rejected = await projectJournal.operations["project_journal.review_decision"]!({ decision_id: id, expected_revision: 1, outcome: "reject" }, f.ctx("owner", 3));
+    expect(rejected).toMatchObject({ ok: true, decision: { status: "rejected", revision: 2 } });
+    const journal = parseJournal(new TextDecoder().decode(f.objects.get(journalKey("space", "project"))!.bytes));
+    expect(journal.activeDecisions).toEqual([]);
   });
 
   it("surfaces approved decisions as stale to later project threads without mutating the register", async () => {

@@ -86,31 +86,41 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   recorded checkpoint pin, checked validation receipts and publication attempt status without
   exposing worker output. The UI labels the checkpoint as recorded and not rechecked for freshness.
   See the APW03 ledger follow-up.
-- [ ] **Active · APW03 — Conflict review and owner decision controls.** Inspect the existing worker
-  conflict receipt and Project decision-review callers, then add the next missing owner-facing
-  conflict/review action. Preserve checked publication as the only canonical workspace mutation
-  path and never auto-approve stale decisions.
-- [ ] **APW04 — Memory and context.** Continue provenance, retention and context evaluation from the
-  existing actor-scoped memory work and the Knowledge ledger.
+- [x] **APW03 — Conflict review and owner decision controls.** The existing worker conflict receipt
+  already has fresh version previews, expected-hash checks, reviewer-authored resolution and checked
+  publication. Added a Project Journal decision register panel with exact-revision approve/reject,
+  explicit supersession and workspace-pin rechecks. Stale proposals can be rejected, never approved.
+  See the APW03 ledger follow-up.
+- [ ] **Active · APW04 — Memory source provenance and selective context.** Trace Project, Space and
+  personal memory adapters plus Knowledge source records; add immutable source revision/hash
+  provenance where the authoritative source provides it, otherwise record the exact adapter gap.
+  Keep actor scope and bounded context assembly intact; timestamps are not immutable revisions.
+  See the APW ledger follow-up.
+- [ ] **APW04 — Retention, invalidation and context evaluation.** Reconcile memory retention/deletion
+  across stores, then evaluate selective context and private-project leakage against existing
+  Knowledge and actor-scope contracts.
 - [ ] **APW05 — Cost and scheduling.** Reconcile reservations, accounting and run limits with the
   shared compute and Billing ledgers.
 - [ ] **APW06 — Task controls and SDK.** Continue authorized task UI, template controls and evaluation.
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** Goal activity now projects exact worker branch base metadata, the last
-recorded worker checkpoint pin, checked integration validation receipts, and publication outcomes
-only for the matching task worker after validating tenant, Space, actor, Project and parent-run
-scope. Shell task panels show these identities and state that checkpoint freshness was not rechecked.
-Worker output and checkpoint payload are not returned. Verification: lineage projection and goal
-activity route suites **7/7**, Agents typecheck, Shell source typecheck excluding stale generated
-`.next/types`, and `git diff --check`; local/mock only. No live Coordinator, restart, or deployed UI/
-privacy acceptance ran. APW02 provider/cost acceptance remains blocked and all rollout flags remain
-off.
+**Latest checkpoint.** Project owners and Space administrators now have a Project page decision
+review panel backed by Agents routes. It reads the existing scoped Project Journal operation, shows
+proposal and active-decision workspace status, requires the exact proposal revision and explicit
+same-topic supersession, and rechecks the workspace pin on the server before approval. Stale or
+unavailable proposals cannot be approved; rejection remains available and cannot activate them. The
+existing worker conflict panel already previews exact current target/worker versions and publishes
+manual resolutions only through checked Coordinator publication. Verification: Project Journal and
+Agents route suites **12/12**, router routing suite **1/1**, Agents typecheck, exact Shell source
+typecheck, and `git diff --check`; local/mock only. Router package typecheck remains blocked by
+existing missing `@naelao/http` exports in `RateLimitDO.ts` and `index.ts`. No browser/deployed
+acceptance ran. APW02 provider/cost acceptance remains blocked and all rollout flags remain off.
 
-**Exact next action:** inspect the existing worker conflict receipt and Project decision-review
-callers, then add the next missing owner-facing conflict/review action. Preserve checked publication
-as the sole canonical workspace mutation path and never auto-approve stale decisions.
+**Exact next action:** trace immutable source identity, revision and hash availability through the
+actor-scoped memory adapters and Knowledge source records. Implement revision-bearing provenance
+where an authoritative store supports it; otherwise record the adapter contract that prevents it,
+then continue retention and selective-context evaluation. Preserve `infra/scripts/__pycache__/`.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).

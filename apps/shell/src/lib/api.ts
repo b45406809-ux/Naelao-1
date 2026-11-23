@@ -3177,6 +3177,48 @@ export interface WorkerWorkspaceConflictResolutionChange {
   copyFrom?: "target" | "worker";
 }
 
+export interface ProjectJournalDecision {
+  id: string;
+  topicKey: string;
+  proposal: string;
+  rationale: string;
+  interfaces: string[];
+  status: "proposed" | "active" | "rejected" | "superseded";
+  revision: number;
+  proposer: string;
+  proposedAt: string;
+  baseWorkspace?: { branch: string; revision: number; manifestHash: string };
+  reviewer?: string;
+  reviewedAt?: string;
+  reviewNote?: string;
+  supersedes?: string;
+  workspaceStatus?: "current" | "stale" | "unavailable" | "unpinned" | "not_active";
+}
+
+export interface ProjectJournalDecisionRegister {
+  ok: boolean;
+  decisions: ProjectJournalDecision[];
+  legacy_active_decisions: string[];
+  legacy_entries_are_unreviewed: true;
+  can_review: boolean;
+}
+
+export function listProjectJournalDecisions(spaceId: string, projectId: string, session: SessionCredentials) {
+  return apiFetch<ProjectJournalDecisionRegister>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/assistant/project-journal/decisions`,
+    { session, cache: "no-store" },
+  );
+}
+
+export function reviewProjectJournalDecision(spaceId: string, projectId: string, decisionId: string, session: SessionCredentials,
+  input: { expectedRevision: number; outcome: "approve" | "reject"; reviewNote?: string; supersedes?: string }) {
+  return apiFetch<{ ok: true; decision: ProjectJournalDecision }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/assistant/project-journal/decisions/${encodeURIComponent(decisionId)}/review`,
+    { method: "POST", session, body: JSON.stringify({ expected_revision: input.expectedRevision, outcome: input.outcome,
+      ...(input.reviewNote ? { review_note: input.reviewNote } : {}), ...(input.supersedes ? { supersedes: input.supersedes } : {}) }) },
+  );
+}
+
 export async function readWorkerWorkspaceConflictPreview(
   spaceId: string,
   workerId: string,

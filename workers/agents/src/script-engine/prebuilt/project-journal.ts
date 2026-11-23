@@ -114,13 +114,14 @@ function nowIso(): string {
 
 /** Add a read-time staleness signal without changing the durable, reviewed decision. */
 async function decisionsWithWorkspaceStatus(ctx: PrebuiltOpContext, decisions: readonly JournalDecision[]) {
-  const activePinned = decisions.some(item => item.status === "active" && item.baseWorkspace);
-  if (!activePinned) return decisions;
+  const reviewablePinned = decisions.some(item => (item.status === "active" || item.status === "proposed") && item.baseWorkspace);
+  if (!reviewablePinned) return decisions.map(item => ({ ...item,
+    workspaceStatus: item.status === "proposed" || item.status === "active" ? "unpinned" as const : "not_active" as const }));
   let current: Awaited<ReturnType<typeof readDecisionWorkspaceHead>>;
   try { current = await readDecisionWorkspaceHead(ctx); }
   catch { current = undefined; }
   return decisions.map(item => {
-    if (item.status !== "active") return { ...item, workspaceStatus: "not_active" as const };
+    if (item.status !== "active" && item.status !== "proposed") return { ...item, workspaceStatus: "not_active" as const };
     if (!item.baseWorkspace) return { ...item, workspaceStatus: "unpinned" as const };
     if (!current) return { ...item, workspaceStatus: "unavailable" as const };
     const same = current.branch === item.baseWorkspace.branch
@@ -346,7 +347,9 @@ export const projectJournal: PrebuiltScript = {
       const decision = loaded.journal.decisionRegister.find(item => item.id === decisionId);
       if (!decision || decision.status !== "proposed") return { ok: false, reason: "decision_proposal_unavailable" };
       if (decision.revision !== expectedRevision) return { ok: false, reason: "decision_revision_conflict", current_revision: decision.revision };
-      if (decision.baseWorkspace) {
+      // Rejecting a stale proposal is safe and gives owners a way to close it. Approval always
+      // requires a fresh workspace pin, and a stale proposal is never promoted automatically.
+      if (outcome === "approve" && decision.baseWorkspace) {
         let current: Awaited<ReturnType<typeof readDecisionWorkspaceHead>>;
         try { current = await readDecisionWorkspaceHead(ctx); }
         catch { return { ok: false, reason: "decision_workspace_revision_unavailable" }; }

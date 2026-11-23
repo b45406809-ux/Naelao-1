@@ -799,6 +799,8 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // Planner/worker review previews and checked resolutions keep the project-scoped authorization
   // checks in Agents while resolving the caller through the product session.
   /^\/spaces\/([^/]+)\/assistant\/sub-agents\/[^/]+\/workspace-conflicts\/(preview|resolve)$/,
+  // Project Journal reviews use current Project/Space authority in Agents and exact journal revisions.
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/assistant\/project-journal\/decisions(?:\/[A-Za-z0-9._:%-]+\/review)?$/,
   // Notifications inbox — end-user-facing (a business admin reading their own business's
   // notifications), additionally gated by requireSpaceMembership on the spaces worker exactly
   // like the routes above (identity here, authorization there).
@@ -1523,6 +1525,12 @@ api.all("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connect
 // Project runtime profiles, artifact receipts, and workspace retention are Agents-owned D1/DO
 // surfaces. They must be registered before `/spaces/*`; otherwise the generic catch-all sends the
 // Shell's profile and retention callers to Spaces, where these paths are not implemented.
+api.all("/spaces/:spaceId/projects/:projectId/assistant/project-journal/decisions", async c =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/projects/:projectId/assistant/project-journal/decisions/:decisionId/review", async c =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
 api.post("/spaces/:spaceId/projects/:projectId/runtime-installations/:installationId/containers/:containerId/profile/reset", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );

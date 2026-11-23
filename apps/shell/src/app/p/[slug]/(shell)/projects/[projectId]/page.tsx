@@ -17,6 +17,7 @@ import { AssistantSidePanelBody } from "@/components/AssistantSidePanels";
 import { ManagedRuntimeProfilesPanel } from "@/components/ManagedRuntimeProfilesPanel";
 import { ProjectComputersPanel } from "@/components/ProjectComputersPanel";
 import { ProjectCoordinationProposalPanel } from "@/components/ProjectCoordinationProposalPanel";
+import { ProjectDecisionReviewPanel } from "@/components/ProjectDecisionReviewPanel";
 import { ProjectKindPanel } from "@/components/ProjectKindPanel";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
@@ -1117,6 +1118,7 @@ export default function ProjectDetailPage() {
 
       <div className="section-label" ref={settingsRef} style={{ marginTop: 24, scrollMarginTop: 16 }}>Settings</div>
       {creds && project && <ProjectCoordinationProposalPanel spaceId={activeSpaceId} projectId={project.id} session={creds} />}
+      {creds && project && <ProjectDecisionReviewPanel spaceId={activeSpaceId} projectId={project.id} session={creds} />}
       <div className="settings-block">
         <div className="settings-row">
           <div>
