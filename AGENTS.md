@@ -23,11 +23,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**PW02 — Recheck private-Project access for goal activity messages.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). Recheck current
-Project read access in `NaelaoAgentDO.handleGoalActivity` before returning goal messages for each
-Project-backed record; fail closed if the current actor's membership or Project authority is revoked
-or unavailable. Preserve `infra/scripts/__pycache__/` and keep rollout defaults disabled.
+**S/U — Reconcile current source and activate the first ready implementation gap.** Resume from the
+checked-in [implementation queue](docs/operations/implementation-queue.md#active-plan). Complete
+milestone S1 against the current `Mcbt5s-Backup-2` source, the managed-services plan and inherited
+U01–U12 gaps; refresh the requirement-to-code matrix and then select the first independently
+implementable gap. Preserve `infra/scripts/__pycache__/` and keep rollout defaults disabled.
 
 ## Save progress inside each task
 

@@ -9729,7 +9729,8 @@ app.get("/spaces/:spaceId/assistant/goal-activity", async (c) => {
   if (!(await requireSpaceMembershipOrSessionAccess(c, spaceId, sessionId))) throw forbidden("You don't have access to this conversation");
   const stub = sessionId ? await getAgentDO(c.env, tenantId, agentId ? `${sessionId}:${agentId}` : sessionId, c.get("requestId")) : await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   const query = new URLSearchParams({ space_id: spaceId, ...(runId ? { run_id: runId } : {}), ...(history ? { history: "true" } : {}) });
-  return stub.fetch(new Request(`http://agent-do/internal/goal-activity?${query}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": actorId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
+  return stub.fetch(new Request(`http://agent-do/internal/goal-activity?${query}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": actorId,
+    "x-naelao-role": getCallerIdentity(c).role, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
 });
 
 app.get("/spaces/:spaceId/projects/:projectId/assistant/project-journal/decisions", async c => {

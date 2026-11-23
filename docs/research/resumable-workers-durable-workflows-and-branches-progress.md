@@ -12,6 +12,21 @@ Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO a
 
 # Resumable workers, durable workflows and branches progress
 
+## PW02 checkpoint — 2026-11-23 (Project reauthorization for Goal Activity)
+
+The goal-activity route now forwards the authenticated caller role to its AgentDO. Before
+projecting each Project-backed record, `handleGoalActivity` invokes `scopeAccess` for the current
+tenant, Space, actor and Project. Denied scopes omit the complete goal, including journal-derived
+tasks and blackboard messages. An authority exception returns 503, so unavailable membership or
+Project authority cannot expose stored activity. Space-only goals retain the existing session and
+actor checks.
+
+Verification: `corepack pnpm@9.12.0 --filter @naelao/agents-worker typecheck` and
+`git diff --check` pass. No tests, deployment or live acceptance ran.
+
+**Plan status:** no ready PW work remains. Worker-branch retention and deletion stays blocked until
+an owner approves TTL, cleanup and recovery semantics. The queue advanced to S/U milestone S1.
+
 ## PW02 checkpoint — 2026-11-23 (correlate directed help requests and replies)
 
 Task-blackboard messages now accept an optional reply reference. The host transaction requires the

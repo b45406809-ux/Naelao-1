@@ -6544,11 +6544,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     await this.reconcileReviewGoalDispatchResources(tenantId);
     const indexKey = history ? `goal-activity:actor-index:${encodeURIComponent(spaceId)}:${encodeURIComponent(actorId)}` : `goal-activity:index:${runId}`;
     const hashes = await this.ctx.storage.get<string[]>(indexKey) ?? [];
+    const callerRole = request.headers.get("x-naelao-role") ?? "";
     const goals = [];
     for (const hash of hashes.slice(history ? -20 : -10)) {
       if (!/^[a-f0-9]{64}$/.test(hash)) continue;
       const metadata = await this.ctx.storage.get<{ tenantId: string; spaceId: string; actorId: string | null; parentRunId?: string; projectId?: string | null; tasks: Array<{ id: string; title: string; dependencies: string[]; redundancy_group?: string; communication_recipients?: string[]; assigned_role?: string; budget_tokens?: number; acceptance_criteria?: string[]; decision_refs?: Array<{ id: string; revision: number }>; runtime_capability?: string }> }>(`goal-activity:metadata:${hash}`);
       if (!metadata || metadata.tenantId !== tenantId || metadata.spaceId !== spaceId || metadata.actorId !== actorId) continue;
+      if (metadata.projectId) {
+        try {
+          const canReadProject = await (await import("../communications/core.js")).scopeAccess(
+            this.env as unknown as import("../index.js").AgentsEnv,
+            { tenantId, spaceId, userId: actorId, role: callerRole, projectId: metadata.projectId }, false
+          );
+          if (!canReadProject) continue;
+        } catch {
+          return Response.json({ error_code: "project_access_unavailable" }, { status: 503, headers: { "cache-control": "no-store" } });
+        }
+      }
       // Goal DAG journals are projected into SQLite by the durable scheduler. Older
       // K/V-backed journals remain readable during migration, but a K/V-only lookup makes
       // completed tasks (including verification receipts) disappear from the dashboard.

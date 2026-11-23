@@ -44,8 +44,22 @@ handoff. Anything that had yet to reach that branch may need to be redone.
 
 ## Active plan
 
-**Resumable workers, durable workflows and branches.** See the [plan](../research/resumable-workers-durable-workflows-and-branches-plan.md)
-and [progress ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md).
+**Managed services and sidecar runtime.** See the [plan](../research/managed-services-and-sidecar-runtime-plan.md)
+and [progress ledger](../research/managed-services-and-sidecar-implementation-progress.md).
+
+- [ ] **Active · S/U — Reconcile current source and activate the first ready implementation gap.**
+  Complete milestone S1 from the managed-services plan using this branch's current source; refresh
+  coverage for plan sections 1–20 and inherited U01–U12, reusing later implementation evidence and
+  marking policy/provider/deployment dependencies precisely. Keep gates disabled and preserve data.
+
+**Exact next action:** trace current callers and durable records for the S/U and U01–U12 requirements
+from the latest pushed source, update the existing matrix without repeating implemented work, and
+select the first independently implementable code gap.
+
+## Previous plan checkpoint — Resumable workers, durable workflows and branches
+
+See the [plan](../research/resumable-workers-durable-workflows-and-branches-plan.md) and
+[progress ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md).
 
 - [x] **PW01–PW06 — Source-to-ledger reconciliation.** Current code matches the saved summaries for
   branch/runtime routing, goal graph and signed communication, named leases, checked integration,
@@ -77,22 +91,23 @@ and [progress ledger](../research/resumable-workers-durable-workflows-and-branch
   recipient grants still apply. Original and reply messages remain separate durable records, and
   goal activity UI displays the linked request. Agents typecheck, Shell source-only typecheck and
   `git diff --check` pass; no tests or deployed acceptance ran.
-- [ ] **Active · PW02 — Recheck private-Project access for goal activity messages.** The
-  goal-activity endpoint checks Space/session access and actor identity, but the AgentDO projection
-  does not recheck current Project access before returning stored blackboard messages. Revalidate
-  the actor's Project read scope for each Project-backed goal and fail closed on revocation or an
-  unavailable authority check.
+- [x] **PW02 — Recheck private-Project access for goal activity messages.** The route now forwards
+  the authenticated caller role and AgentDO rechecks current Project read scope before projecting
+  each Project-backed goal. Revoked/denied scopes omit that complete goal; thrown authority errors
+  return 503. Agents worker typecheck and `git diff --check` pass; no tests or deployed acceptance
+  ran.
 
-**Latest checkpoint.** Directed task-blackboard messages can now carry a reply reference to an
-earlier question or blocker. The durable transaction verifies the referenced request was addressed
-to the replying worker, requires the response to include the original sender, and retains both
-messages. Existing delegation signatures and host-granted recipient edges remain in force. The
-goal activity panels show the reply target text when available. Agents typecheck, Shell source-only
-typecheck and `git diff --check` pass. No tests, deployment or live acceptance ran.
+**PW02 checkpoint.** Goal Activity now revalidates the actor's current Project read scope inside
+`NaelaoAgentDO.handleGoalActivity` before reading and returning a Project-backed journal, task
+projection or blackboard messages. The authenticated route forwards the caller role for the
+membership and Project authority check. A denied scope filters the entire goal; an authority
+exception returns 503. Agents worker typecheck and `git diff --check` pass. No tests, deployment or
+live acceptance ran.
 
-**Exact next action:** recheck current Project read access in `NaelaoAgentDO.handleGoalActivity`
-before returning goal messages for each Project-backed record; fail closed if the current actor's
-membership or Project authority is revoked or unavailable.
+The PW plan has no remaining ready task: worker-branch retention/deletion remains blocked pending
+an approved owner policy. The APW plan remains parked because its open cost, retention and live
+acceptance work has explicit dependencies, while APW07–APW09 overlaps owning plans. The next plan
+in the ordered list is S/U.
 
 ## Parked plan — Adaptive planner, worker coordination and memory
 
@@ -237,8 +252,8 @@ into the active checklist. Keep finished task checkboxes and evidence in the que
 ledgers when moving to another plan.
 
 1. [ ] **Parked.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 overlap later plans.
-2. [ ] **Active.** [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
-3. [ ] [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md)
+2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
+3. [ ] **Active.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Complete S1 reconciliation against current source before selecting a code gap.
 4. [ ] [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md)
 5. [ ] [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Link requirements already owned by managed services.
 6. [ ] [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md)
