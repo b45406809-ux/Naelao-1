@@ -82,3 +82,22 @@ The source reconciliation task is complete at code commit `8b2dcb5642027ea021c50
 Replay, conversation history, Knowledge snapshots and member phone testing remain separate slices.
 Next, implement admin member grants and self-verified contact bindings with a separate multi-Space
 identity model; do not reuse `executive_contacts` or `channel_pairings` as member proof.
+
+### Admin-granted member access — 2026-11-23
+
+- Added migration `0285_whatsapp_member_channel_access.sql` for WhatsApp grants scoped to one Space
+  assistant or one exact Project assistant. Grant status is enabled, suspended or revoked; revisions
+  and actor/time audit rows are recorded. The schema stores no phone or other contact value.
+- The existing Channels API now lists grants for Space owners/admins and lets them grant, suspend or
+  revoke a current Space member. Project-scoped changes also require the acting admin's Project
+  access and an active target Project membership. The Shell API has typed helpers for these calls;
+  there is no user-facing grant panel while member routing remains unavailable.
+- Agents typecheck passed using pinned pnpm `9.12.0`; a targeted Shell API typecheck and
+  `git diff --check` passed. The workspace has Node `24.19.0` while `.nvmrc` specifies Node `20`;
+  the package engine allows Node `>=22.5.0`. No tests, migration apply, provider action or
+  deployment ran.
+- This grants slice is an intermediate checkpoint for the still-open member-routing task. Next:
+  implement authenticated member-started single-use WhatsApp contact challenges, bind a sender to
+  that member and Space separately from pairings, then resolve the binding before unpaired routing
+  and recheck grant, Space membership and Project membership on every message. Design explicit
+  selection when the same sender has verified access to multiple Spaces/projects.

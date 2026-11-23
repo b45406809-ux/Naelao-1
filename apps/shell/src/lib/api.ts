@@ -3137,6 +3137,39 @@ export async function simulateAssistantChannelExtension(
   });
 }
 
+export interface AssistantChannelMemberAccess {
+  user_id: string;
+  channel: "whatsapp";
+  project_id: string | null;
+  status: "enabled" | "suspended" | "revoked";
+  revision: number;
+  granted_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listAssistantChannelMemberAccess(
+  spaceId: string,
+  session: SessionCredentials,
+): Promise<AssistantChannelMemberAccess[]> {
+  const result = await apiFetch<{ data?: AssistantChannelMemberAccess[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels?member_access=whatsapp`, { session, cache: "no-store" },
+  );
+  return result.data ?? [];
+}
+
+export async function setAssistantChannelMemberAccess(
+  spaceId: string,
+  session: SessionCredentials,
+  input: { user_id: string; project_id: string | null; status: AssistantChannelMemberAccess["status"] },
+): Promise<AssistantChannelMemberAccess> {
+  const result = await apiFetch<{ grant: AssistantChannelMemberAccess }>(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels`, {
+    method: "POST", session, body: JSON.stringify({ action: "set_member_access", channel: "whatsapp", user_id: input.user_id,
+      project_id: input.project_id, member_access_state: input.status }),
+  });
+  return result.grant;
+}
+
 export interface SubAgentSummary {
   id: string;
   goal: string;

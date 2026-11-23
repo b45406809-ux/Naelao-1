@@ -9054,8 +9054,18 @@ app.patch("/spaces/:spaceId/assistant/video-frame-analysis", async (c) => {
 
 app.get("/spaces/:spaceId/assistant/channels", async (c) => {
   const spaceId = c.req.param("spaceId");
-  await requireVerifiedTenant(c);
+  const tenantId = await requireVerifiedTenant(c);
   if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
+  if (c.req.query("member_access") !== undefined) {
+    if (c.req.query("member_access") !== "whatsapp") throw badRequest("member_access must be whatsapp");
+    if (!(await requireEndUserSpaceMembership(c, spaceId, "admin"))) throw forbidden("Only a Space owner or admin can manage member channel access");
+    const grants = await c.env.PLATFORM_DB.prepare(
+      `SELECT user_id,channel,NULLIF(project_id,'') AS project_id,status,revision,granted_by,created_at,updated_at
+       FROM assistant_channel_member_access WHERE tenant_id=? AND space_id=? AND channel='whatsapp'
+       ORDER BY project_id,user_id`
+    ).bind(tenantId, spaceId).all();
+    return c.json({ data: grants.results ?? [] }, { headers: { "cache-control": "private, no-store" } });
+  }
   const projectId = c.req.query("project_id");
   const scope = c.req.query("scope");
   const { results } = projectId
@@ -9421,13 +9431,15 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const { userId } = getCallerIdentity(c);
 
   type ChannelActionBody = {
-    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension" | "simulate_extension";
+    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension" | "simulate_extension" | "set_member_access";
     channel?: string;
     model_override?: string | null;
     extension_instance_id?: string;
     test_message?: string;
     secret?: string;
-    project_id?: string;
+    project_id?: string | null;
+    user_id?: string;
+    member_access_state?: "enabled" | "suspended" | "revoked";
     slack_bot_token?: string;
     media_access_token?: string;
     whatsapp_phone_number_id?: string;
@@ -9459,6 +9471,64 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       .bind(body.model_override ?? null, spaceId, channel).run();
     if ((updated.meta?.changes ?? 0) !== 1) return c.json({ error_code: "channel_not_connected" }, 404);
     return c.json({ channel, model_override: body.model_override ?? null, updated: true });
+  }
+
+  if (action === "set_member_access") {
+    if (channel !== "whatsapp") return c.json({ error_code: "member_channel_not_supported" }, 400);
+    const targetUserId = body.user_id ?? "";
+    if (body.project_id !== undefined && body.project_id !== null && typeof body.project_id !== "string")
+      return c.json({ error_code: "member_channel_access_invalid" }, 400);
+    const projectId = body.project_id ?? "";
+    const state = body.member_access_state;
+    if (!targetUserId || targetUserId.length > 160 || projectId.length > 128
+      || !state || !["enabled", "suspended", "revoked"].includes(state)) {
+      return c.json({ error_code: "member_channel_access_invalid" }, 400);
+    }
+    await requireApprovalAuthority(c, spaceId);
+    if (!userId) throw forbidden("An authenticated administrator is required");
+    const targetRole = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, targetUserId, tenantId);
+    if (!targetRole) return c.json({ error_code: "member_channel_user_not_active" }, 404);
+    if (projectId) {
+      await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
+      if (!c.env.SPACES_WORKER) return c.json({ error_code: "project_membership_unavailable" }, 503);
+      const projectMembersResponse = await c.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/members`,
+        { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
+          "x-naelao-role": getCallerIdentity(c).role,
+          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } },
+      ));
+      if (!projectMembersResponse.ok) return c.json({ error_code: "project_membership_unavailable" }, 503);
+      const projectMembers = await readBoundedResponseJson<{ data?: Array<{ user_id?: string; role?: string }> }>(projectMembersResponse, 256 * 1024)
+        .catch(() => ({} as { data?: Array<{ user_id?: string; role?: string }> }));
+      if (!projectMembers.data?.some(member => member.user_id === targetUserId
+        && ["owner", "editor", "viewer"].includes(member.role ?? ""))) {
+        return c.json({ error_code: "member_not_in_project" }, 409);
+      }
+    }
+    const normalizedProjectId = projectId;
+    const updatedAt = new Date().toISOString();
+    const eventId = crypto.randomUUID();
+    await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_access
+        (tenant_id,space_id,user_id,channel,project_id,status,revision,granted_by,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,1,?,?,?)
+        ON CONFLICT(tenant_id,space_id,channel,user_id,project_id) DO UPDATE SET
+          status=excluded.status,revision=assistant_channel_member_access.revision+1,
+          granted_by=excluded.granted_by,updated_at=excluded.updated_at`)
+        .bind(tenantId, spaceId, targetUserId, channel, normalizedProjectId, state, userId, updatedAt, updatedAt),
+      c.env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_access_audit
+        (event_id,tenant_id,space_id,user_id,channel,project_id,status,revision,actor_user_id,occurred_at)
+        SELECT ?,tenant_id,space_id,user_id,channel,project_id,status,revision,?,?
+        FROM assistant_channel_member_access
+        WHERE tenant_id=? AND space_id=? AND user_id=? AND channel=? AND project_id=?`)
+        .bind(eventId, userId, updatedAt, tenantId, spaceId, targetUserId, channel, normalizedProjectId),
+    ]);
+    const grant = await c.env.PLATFORM_DB.prepare(
+      `SELECT user_id,channel,NULLIF(project_id,'') AS project_id,status,revision,granted_by,created_at,updated_at
+       FROM assistant_channel_member_access WHERE tenant_id=? AND space_id=? AND user_id=? AND channel=? AND project_id=?`
+    ).bind(tenantId, spaceId, targetUserId, channel, normalizedProjectId).first();
+    if (!grant) return c.json({ error_code: "member_channel_access_unavailable" }, 503);
+    return c.json({ grant, audit_event_id: eventId }, 200, { "cache-control": "private, no-store" });
   }
 
   if (action === "bind_extension") {
@@ -9560,7 +9630,7 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       return c.json({ error_code: "air_gap_egress_denied" }, 403);
     }
     const { status, body: out } = await startPairing(c.env, {
-      spaceId, tenantId, channel, projectId: body.project_id, userId,
+      spaceId, tenantId, channel, projectId: body.project_id ?? undefined, userId,
     });
     return c.json(out, status as 200 | 503);
   }
