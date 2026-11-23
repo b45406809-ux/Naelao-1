@@ -391,7 +391,7 @@ Statuses describe local code, not deployment or live acceptance. `IN_PROGRESS` m
 | K12 Dense/lexical fusion | IMPLEMENTED_LOCAL | Existing `googleModeSearch` RRF now receives independent FTS candidates alongside Vectorize; compatibility dense path remains on FTS failure and the response exposes lexical availability. Local Knowledge suite 95/95; no deployed quality comparison. |
 | K13 Chunking and citation integrity | IMPLEMENTED_LOCAL | Shared bounded text chunking/source spans now reach sync create, edits, and queued Project Workflows; PDF Markdown retains structural/table chunks. UTF-8/line coordinates survive overlap, repeated text, Unicode, long sentences and CRLF; D1/vector records agree and citation resolution validates the exact bounded chunk hash. RAG 28/28, Knowledge 150/150, Workflow caller 8/8 and three typechecks. AutoRAG remains hard-disabled under K15; no AutoRAG/live provider acceptance is claimed. |
 | K14 Multilingual quality | IN_PROGRESS | K17 report schema v2 reports ranking/citation/safety/latency/cost metrics per query language and query/source-language pair and checks configured thresholds at both levels and aggregate. Checked-in data remain synthetic English only; no representative cross-language results or native-speaker/domain review exist. No language support claim is made. |
-| K15 Cloudflare AI Search isolated evaluation | IN_PROGRESS | Current AutoRAG path is hard-disabled because it lacks metadata filtering. No AI Search adapter exists. Official docs checked 2026-11-15: AI Search supports parallel vector+keyword hybrid, pre-retrieval metadata filters, optional reranking, R2/built-in sources and per-tenant instances/shared filtered indexes. Filters index only the first 64 UTF-8 bytes of strings; stored string arrays are not filterable. User-allowlist arrays therefore cannot be trusted as provider ACL. Implement only a disabled adapter after exact scalar/partition and deletion semantics are tested. |
+| K15 Cloudflare AI Search isolated evaluation | IN_PROGRESS | The 2026-11-23 source reconciliation scopes evaluation to signed extension search over an exact owner-published Project revision; ordinary user/role retrieval stays on D1 FTS and permissioned Vectorize. Cloudflare filters pre-retrieval but `$in` only matches stored scalars, strings are filterable only through byte 64, D1 exposes at most five custom metadata fields, and failed/empty full sync leaves stale items. No AI Search binding, source query, metadata map or cleanup caller exists. Implement only a disabled publication-scoped adapter after exact field/list limits, freshness and deletion handling are verified. |
 | K16 Alternative retrieval/parser evaluation | IN_PROGRESS | Current Vectorize + D1 and existing D1 FTS migration are closest low-migration options; FTS retrieval is uncoded and deployed module/scale evidence is open. Dify/RAGFlow/Docling are candidate isolated parsing services, not Workers-compatible assumptions. Compare verified licensing, isolation, region, limits and total cost before selecting. |
 | K17 Search quality and cost benchmark | IN_PROGRESS | `infra/scripts/knowledge-retrieval-eval.mjs` validates versioned benchmark cases/content-free traces and reports precision/recall, MRR/nDCG, citation/source-version accuracy, forbidden exposure, abstention, p95 latency and recorded cost. Metrics and configured thresholds are stratified overall, by query language, and by query/source-language pair. Version 1 data contain three synthetic English cases for exact ID, current-vs-stale version and no-answer/forbidden scope. Evaluator tests 6/6; the local Knowledge route integration passes 6/6. Human review, representative domain/language data and provider/deployed measurements remain. Evaluator always returns `acceptanceEligible:false`. |
 | K18 No-code Knowledge dashboard | IN_PROGRESS | Space-wide and Project Shell plus builder Dashboard list/add/delete/search; all now offer scoped PDF preview/correction. Named collections, source refresh, test/publish lifecycle, accessibility review and cost view remain. |
@@ -517,3 +517,34 @@ suite **5/5**, both typechecks and `git diff --check` pass. Code
 Exact next action: continue the next independent K/EP/P/PW/S/U/TBR code gap after reconciling current
 callers. K08 provider cursor/pricing contracts and K09 site-terms policy/live acceptance remain open;
 they do not block unrelated implementation.
+
+## K15 current-source reconciliation — 2026-11-23
+
+The current ordinary `/kb/search` path applies tenant/Space/Project/user/role authorization before
+dense candidates can influence ranking, independently scopes lexical FTS in D1, and checks current
+source state and deletion before materializing current chunks. Response caches remain disabled.
+The signed extension workflow path separately rechecks the active Project-bound installation,
+owner-approved resource grant, current publication revision and single-use operation lease. Its
+Knowledge Worker reads at most 100 current publication documents, filters Vectorize candidates by
+tenant/Space/Project and that current document-ID allowlist before ranking, then rechecks the exact
+publication membership, source state, deletion marker and current chunk rows before returning text
+and provenance. These are distinct authority paths; the extension publication is not a general
+user/role ACL.
+
+The latest Cloudflare AI Search docs still support pre-retrieval metadata filters, `$in` against a
+stored scalar (not stored arrays), only the first 64 UTF-8 bytes of indexed strings, up to five D1
+`meta_*` filter fields, and scheduled/explicit asynchronous sync. A failed or empty full D1 sync keeps
+old indexed items. The current branch has no AI Search binding, data-source query, managed candidate
+adapter, scope-to-metadata mapping or provider cleanup caller. A publication-only evaluation could
+reuse the existing exact current document allowlist, but it still needs tested scalar field mapping,
+ID and `$in` limits, revision freshness and deletion/retention behavior. General user search cannot
+use an index that relies on the unsupported stored user-allowlist array or post-retrieval filtering.
+
+**K15 remains in progress.** No adapter or rollout is enabled. Resume the provider slice only after
+the exact pre-retrieval publication filter and successful/current source mapping can be tested end to
+end, with a bounded cleanup path and isolated cost/retention evidence. Current source references:
+[filtering](https://developers.cloudflare.com/ai-search/configuration/retrieval/filtering/),
+[D1 data source](https://developers.cloudflare.com/ai-search/configuration/data-source/d1/), and
+[syncing](https://developers.cloudflare.com/ai-search/configuration/indexing/syncing/).
+Exact next action: correct the reachable Knowledge retrieval result-count telemetry without exposing
+caller, tenant, project, query or source identifiers, then continue the next independent K gap.

@@ -51,11 +51,25 @@ handles page content when snippets are insufficient.
 
 ## Follow-up for managed private indexes
 
-The SDK's Knowledge search uses Naelao's publication-scoped index. To add
-[Cloudflare AI Search](https://developers.cloudflare.com/ai-search/) as an alternate retrieval
-backend, bind a host-managed corpus to a tenant, project and approved publication revision. Keep
-ownership, membership and publication grants in Naelao. Treat provider hits as candidates and
-resolve them back to current authorized source revisions and canonical citations before returning
-text. Keep revoked and stale sources out of results even while provider indexing catches up.
-Verify isolation, source freshness, deletion and cost against an isolated instance before enabling
-it. The legacy shared AutoRAG query path stays disabled.
+The current extension workflow search is the narrow evaluation target. It verifies the exact
+active Project-bound installation and owner grant, pins the current publication revision, obtains
+current published document IDs, and applies tenant, Space, Project and document filters before
+Vectorize ranking. It then rereads the exact publication membership, current source state and
+current chunk rows before returning text. Ordinary user Knowledge search has additional per-user
+and role ACLs and must keep using its current D1-filtered FTS and permissioned Vectorize paths.
+
+Cloudflare AI Search has pre-retrieval metadata filters, but the current worker source has no AI
+Search binding, data-source query, candidate-ID mapping or deletion caller. Do not route general
+search to a shared index. A future disabled evaluation must fit the extension path's exact current
+publication boundary before ranking, return only candidate references to Naelao, and let the host
+resolve current text and citations from D1. It must bind tenant, Space, Project, publication ID and
+revision, and an exact allowlist of currently published document or chunk IDs. Test the metadata
+field budget, scalar ID limits and `$in` page/size limits; do not rely on stored ACL arrays or truncate
+scope IDs into the provider's 64-byte filter prefix.
+
+The provider index remains derived data. Cloudflare's D1 sync processes changes asynchronously;
+rows excluded by a successful full query are deleted, but a failed or empty query leaves old indexed
+items in place. Before any content can be exposed, the host must recheck the pinned publication,
+current document/source state, chunk identity and deletion state after retrieval. The adapter also
+needs an explicit cleanup/retention contract and isolated evidence for freshness, deletion, cost and
+scope separation. Keep AutoRAG and all managed-index rollout paths disabled until those gates pass.

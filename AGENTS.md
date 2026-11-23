@@ -59,3 +59,11 @@ session, or a specific blocker leaves no ready work.
   `live_single_writer` mode. Preserve AgentPort independence, guest isolation, version and
   generation fences, and approved retention. Record external operations before dispatch and
   reconcile uncertain outcomes before retrying.
+
+## Current task
+
+**Mature Knowledge platform · K26 — report actual bounded retrieval result counts.** Replace the
+hard-coded zero in Knowledge retrieval telemetry with the result count returned by the RAG pipeline.
+Keep telemetry content-free and bounded. Reconcile the managed AI Search follow-up in the K ledger;
+its adapter remains blocked on exact pre-retrieval scope mapping, freshness/deletion and isolated
+provider evidence.

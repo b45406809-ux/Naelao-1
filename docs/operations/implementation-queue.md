@@ -42,7 +42,7 @@ the work already saved, and a condition for retrying. Preserve unpushed work whe
 survives. After local data loss, fetch the recovery branch and pick up from its latest saved
 handoff. Anything that had yet to reach that branch may need to be redone.
 
-## Active plan
+## Paused plan
 
 **Managed services and sidecar runtime.** See the [plan](../research/managed-services-and-sidecar-runtime-plan.md)
 and [progress ledger](../research/managed-services-and-sidecar-implementation-progress.md).
@@ -104,8 +104,38 @@ product, provider and live gates in the plan and progress ledger.
 
 **Queue readiness:** PW worker-branch retention is blocked on owner policy. APW open work is blocked
 on cost/quality, retention, task-control or staging acceptance contracts; APW07–APW09 point to
-owning plans. No ready task is currently identified across these plans. Preserve
-`infra/scripts/__pycache__/` and keep rollout defaults disabled.
+owning plans. S/U has no source-only task: regional/deployed erasure acceptance and historical
+namespace discovery need jurisdiction/provider support. SC03 still lacks explicit durable native
+invocation consent, alarm-safe current-authority revalidation and pre-dispatch Billing admission;
+SC04 lacks owner-approved Space/Project caps. The Unified plan's current executable code work is
+tracked by S/U, SC, PW, K, EP, TBR and P; its remaining workspace/runtime acceptance needs authorized
+deployed/provider evidence. Preserve `infra/scripts/__pycache__/` and keep rollout defaults disabled.
+
+## Active plan
+
+**Mature Knowledge platform.** See the [plan](../research/mature-knowledge-platform-plan.md) and
+[progress ledger](../research/mature-knowledge-platform-implementation-progress.md).
+
+- [x] **K15 — Reconcile managed-index follow-up against scoped retrieval/deletion.** Current
+  extension publication filtering and host rehydration are recorded in the K ledger and
+  [follow-up](../extension-search.md#follow-up-for-managed-private-indexes). AI Search remains a
+  disabled candidate; its metadata map, identifier/list limits, freshness and cleanup contract are
+  not proven.
+- [ ] **K26 — Report actual bounded retrieval result counts.** Replace the hard-coded zero in
+  Knowledge retrieval telemetry with the result count from the RAG result, preserving its existing
+  content-free aggregate shape.
+- [ ] **Blocked · K15 — Implement and validate isolated managed-index adapter.** Resume after exact
+  pre-retrieval scope fields and limits, current publication/source revision mapping, asynchronous
+  deletion/retention and isolated cost evidence are established. Keep general user search on its
+  current exact D1/Vectorize ACL paths and leave all provider gates off.
+
+**Latest K15 checkpoint:** current-source review separates user/role Knowledge retrieval from signed
+extension search over an owner-published Project subset. The latter provides a narrow candidate
+boundary to evaluate, but no Cloudflare AI Search binding, metadata mapping, indexing source or
+cleanup caller exists. Current provider docs confirm scalar-only `$in`, a 64-byte filterable prefix,
+a five-field D1 custom-metadata cap and asynchronous sync that can retain stale rows after failed or
+empty syncs. This checkpoint adds no provider path. **Next action:** fix the bounded retrieval
+telemetry's hard-coded result count, then continue the next independent Knowledge code gap.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
@@ -304,10 +334,10 @@ ledgers when moving to another plan.
 
 1. [ ] **Parked.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 overlap later plans.
 2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
-3. [ ] **Active.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Complete S1 reconciliation against current source before selecting a code gap.
-4. [ ] [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md)
-5. [ ] [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Link requirements already owned by managed services.
-6. [ ] [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md). Reconcile the [managed private index follow-up](../extension-search.md#follow-up-for-managed-private-indexes) with the scoped retrieval and deletion work.
+3. [ ] **Paused; no ready source task.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume on the regional, provider or jurisdiction acceptance dependencies above.
+4. [ ] **Paused; no ready source task.** [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md). Resume SC03 when durable invocation consent, exact alarm-safe authority revalidation and pre-dispatch reservation are supported; resume SC04 when owner-approved Space/Project caps exist.
+5. [ ] **Reconciled; no standalone task selected.** [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Code gaps remain tracked in their owning plans; remaining checked-workspace/runtime acceptance requires authorized deployed/provider evidence.
+6. [ ] **Active.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md).
 7. [ ] [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
 8. [ ] [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md)
 9. [ ] [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Reuse the dedicated ledgers for incorporated PW, K, EP, TBR and AP requirements.
