@@ -59,12 +59,15 @@ retryable runtime and browser erasure registries are implemented in `workspace-p
 and their handlers; the matrix now reflects that and keeps the legacy/restored/sidecar audit open.
 U01's scoped staging policy/legal-hold callers and GC checks were confirmed, while revision and
 backup-retention periods remain a policy dependency. U02's internal Container metering and local
-provider receipts were traced; provider-billed allocation/idle ingestion remains unsupported.
+provider receipts were traced; provider-billed allocation/idle ingestion remains unsupported. U03's
+Agent37 owner lifecycle/artifact path and U04's current MIME caller coverage match the implementation
+ledger. U05 still has separate Container and Cloudflare Computer allocation identities, so its
+verifier cannot authorize a Project main Container without an authoritative producer.
 Source inspection only; no tests or deployment ran.
 
-**Exact next action:** continue S1 with U03–U05 caller, authority and persistence-path reconciliation,
-then finish the remaining U06–U12 audit and activate the first independent code gap whose authority
-and runtime contract are supported by current source.
+**Exact next action:** continue S1 with U06–U12 caller, authority and durable-record reconciliation,
+then finish the original sections 1–20 matrix and activate the first independent code gap whose
+authority and runtime contract are supported by current source.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

@@ -1,3 +1,28 @@
+## S/U milestone S1 source reconciliation — 2026-11-23 (U03–U05)
+
+U03 source still matches the local lifecycle record: owner-scoped Agent37 connection checks,
+allocation and operation journals, recovery, selected artifact transfer and checked import/publish
+are reachable through the Sandboxes API and task-filtered Agents prebuilt. Runtime admission remains
+gated off; Agent37 is a specialist and account/template/region/provider acceptance remains open.
+
+U04's currently audited workspace and attachment callers preserve explicit MIME, infer known
+extensions only when the type is absent or generic, and retain opaque/binary handling for unknown
+extensions. The implementation ledger lists the current coordinator, VFS, upload, Git/artifact,
+bridge, web-search and attachment callers. Remaining work is deployed journey/traffic and migration
+acceptance, with new code only for a reachable uncovered path.
+
+U05's internal verifier and operator-gated observation/revocation endpoints still inspect the
+separate `sandbox_computers` live-mount allocation model and require current identity, template/image,
+residency, billing/budget and runtime observations. `project_main_runtime_registry` still represents
+the Container lane and does not produce that evidence. This is an unresolved authority/runtime
+contract, so no bridge or candidate was fabricated.
+
+Evidence is source-to-ledger inspection only; no tests, migrations, deployment or live acceptance
+ran. The S1 queue task remains open.
+
+**Exact next action:** reconcile U06–U12 callers and durable records from current source, then finish
+the original sections 1–20 matrix before selecting an independent implementation gap.
+
 ## S/U milestone S1 source reconciliation — 2026-11-23 (U01 and U02)
 
 U01's current retention controls were traced from the owner/admin Project routes in
