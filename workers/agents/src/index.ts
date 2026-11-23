@@ -69,7 +69,7 @@ import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./conne
 import { deployedContainerCatalogue, deployedDynamicImages } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
 import { isWithinScheduledQuietHours } from "@naelao/types";
-import { claimScheduledJobDispatch, releaseScheduledJobDispatch, scheduledJobDispatchSnapshotCurrent, scheduledJobExecutionIdentity } from "./scheduled-job-dispatch.js";
+import { claimScheduledJobDispatch, markScheduledJobDispatchOutcomeUnknown, releaseScheduledJobDispatch, scheduledJobDispatchSnapshotCurrent, scheduledJobExecutionIdentity } from "./scheduled-job-dispatch.js";
 import { claimProjectStewardRun, finishProjectStewardRun } from "./project-steward-dispatch.js";
 import { enqueueExtensionJobOutbox, handleExtensionJobTick, type ExtensionJobEnvironment } from "./workflows/extension-jobs.js";
 import { rankProjectStewardReviews } from "../../spaces/src/project-steward.js";
@@ -10427,12 +10427,15 @@ interface ScheduledJobRow {
 async function recordScheduledJobRun(
   env: AgentsEnv,
   row: { id: string; space_id: string; tenant_id: string; project_id: string },
-  opts: { ok: boolean; error?: string; durationMs?: number; skippedBusy?: boolean; firedAt: number }
+  opts: { ok: boolean; error?: string; durationMs?: number; skippedBusy?: boolean; firedAt: number;
+    runId?: string; outcomeStatus?: string; attemptReceipt?: string }
 ): Promise<void> {
   try {
     await env.PLATFORM_DB.prepare(
-      `INSERT INTO scheduled_job_runs (id, job_id, space_id, tenant_id, project_id, fired_at, ok, error, duration_ms, skipped_busy)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO scheduled_job_runs
+         (id, job_id, space_id, tenant_id, project_id, fired_at, ok, error, duration_ms, skipped_busy,
+          run_id, outcome_status, attempt_receipt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       crypto.randomUUID(),
       row.id,
@@ -10443,16 +10446,37 @@ async function recordScheduledJobRun(
       opts.ok ? 1 : 0,
       opts.error ? opts.error.slice(0, 2000) : null,
       opts.durationMs ?? null,
-      opts.skippedBusy ? 1 : 0
+      opts.skippedBusy ? 1 : 0,
+      opts.runId ?? null,
+      opts.outcomeStatus ?? (opts.skippedBusy ? "skipped" : opts.ok ? "completed" : "failed"),
+      opts.attemptReceipt ?? null,
     ).run();
     await env.PLATFORM_DB.prepare(
-      `DELETE FROM scheduled_job_runs WHERE job_id = ? AND id NOT IN (
+      `DELETE FROM scheduled_job_runs WHERE job_id = ? AND outcome_status != 'outcome_unknown' AND id NOT IN (
          SELECT id FROM scheduled_job_runs WHERE job_id = ? ORDER BY fired_at DESC LIMIT ?
        )`
     ).bind(row.id, row.id, SCHEDULED_JOB_RUN_HISTORY_LIMIT).run();
   } catch (err) {
     console.error(`[scheduled-jobs] failed to record run history for job=${row.id}:`, (err as Error).message);
   }
+}
+
+/** Resolve the history row after the protected dispatch has persisted its start receipt.
+ * The dispatch remains an unknown blocker if this update fails. */
+async function updateScheduledJobRunOutcome(
+  env: AgentsEnv,
+  runId: string,
+  opts: { outcomeStatus: "completed" | "failed" | "skipped" | "outcome_unknown"; ok: boolean; error?: string;
+    durationMs?: number; attemptReceipt?: string },
+): Promise<void> {
+  const result = await env.PLATFORM_DB.prepare(
+    `UPDATE scheduled_job_runs
+        SET outcome_status = ?, ok = ?, error = ?, duration_ms = COALESCE(?, duration_ms),
+            attempt_receipt = COALESCE(?, attempt_receipt)
+      WHERE run_id = ? AND outcome_status = 'outcome_unknown'`,
+  ).bind(opts.outcomeStatus, opts.ok ? 1 : 0, opts.error ? opts.error.slice(0, 2000) : null,
+    opts.durationMs ?? null, opts.attemptReceipt ?? null, runId).run();
+  if (result.meta.changes !== 1) throw new Error("scheduled_job_run_receipt_missing_or_resolved");
 }
 
 // On a failed fire (or a thrown error, e.g. a malformed cron_expression): the due minute was
@@ -11052,7 +11076,9 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       if (!claimToken) return; // duplicate this sweep, paused during enqueue, or another active run.
       const serviceIdentity = scheduledJobExecutionIdentity({ jobId: row.id, revision: row.updated_at, sweepKey });
       const dispatchStarted = Date.now();
-      let claimStatus: "completed" | "failed" | "skipped" = "failed";
+      let claimStatus: "completed" | "failed" | "skipped" | "outcome_unknown" = "failed";
+      let directEffectMayHaveStarted = false;
+      let directAttemptReceipt: Record<string, unknown> | null = null;
       try {
         // Goal-based scheduled wakes get the compact diagnostics context used by connector polls.
         // This stays outside the persisted job goal, and lookup failure degrades to the standing
@@ -11071,6 +11097,29 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
           await recordScheduledJobRun(env, row, { ok: false, error: "authorization_changed_before_dispatch", firedAt: now });
           claimStatus = "skipped";
           return;
+        }
+        const directParams = row.goal ? undefined : JSON.parse(row.params || "{}") as Record<string, unknown>;
+        if (!row.goal) {
+          // This marker and receipt must be durable before the AgentDO call. A lost queue
+          // acknowledgement after this point blocks all later sweeps until an owner/admin
+          // checks the exact run and records an explicit reconciliation.
+          directAttemptReceipt = {
+            version: 1,
+            job_id: row.id,
+            sweep_key: sweepKey,
+            run_id: serviceIdentity.runId,
+            authorization_revision: row.updated_at,
+            script_name: row.script_name,
+            dispatch_started_at: Date.now(),
+            outcome: "dispatching",
+          };
+          const attemptReceipt = JSON.stringify(directAttemptReceipt);
+          claimStatus = "outcome_unknown";
+          directEffectMayHaveStarted = true;
+          await markScheduledJobDispatchOutcomeUnknown(env.PLATFORM_DB, {
+            jobId: row.id, sweepKey, claimToken, runId: serviceIdentity.runId, attemptReceipt,
+            spaceId: row.space_id, tenantId: row.tenant_id, projectId: row.project_id, firedAt: now,
+          });
         }
         // A goal-based row (migration 0043) wakes the full reasoning loop against the named
         // agent's own DO; everything else keeps the pre-existing direct-script-fire behavior.
@@ -11092,12 +11141,89 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
               ...(row.agent_id ? { agentId: row.agent_id } : {}),
               ...(row.project_id ? { projectId: row.project_id } : {}),
               scriptName: row.script_name,
-              params: JSON.parse(row.params || "{}") as Record<string, unknown>,
+              params: directParams!,
               runId: serviceIdentity.runId,
               serviceIdentity: { id: serviceIdentity.serviceIdentityId, authorizationRevision: serviceIdentity.authorizationRevision },
               ...(wakePolicy.airGappedOnly ? { airGappedOnly: true } : {}),
             });
-        if (doResp.status === 409) {
+        if (!row.goal && !doResp.ok && doResp.status < 500) {
+          // AgentDO returns 4xx for validation, authorization, and admission checks before
+          // tools.run. Those establish that the direct operation did not start.
+          const errText = await doResp.text().catch(() => `HTTP ${doResp.status}`);
+          directAttemptReceipt = {
+            ...directAttemptReceipt,
+            outcome: "failed_before_effect",
+            http_status: doResp.status,
+            error: errText.slice(0, 2000),
+          };
+          const conflict = doResp.status === 409;
+          await updateScheduledJobRunOutcome(env, serviceIdentity.runId, {
+            outcomeStatus: conflict ? "skipped" : "failed", ok: false, error: errText, durationMs: Date.now() - dispatchStarted,
+            attemptReceipt: JSON.stringify(directAttemptReceipt),
+          });
+          directEffectMayHaveStarted = false;
+          if (!conflict) await recordScheduledJobFailure(env, row, now, errText);
+          claimStatus = conflict ? "skipped" : "failed";
+        } else if (!row.goal) {
+          type DirectScriptResponse = { result?: { ok?: unknown; error?: unknown; engine?: unknown; tier?: unknown;
+            duration_ms?: unknown; runtime_receipt?: { execution_id?: unknown; backend?: unknown } } };
+          const parsedPayload: unknown = doResp.ok ? await doResp.clone().json().catch(() => null) : null;
+          const payload: DirectScriptResponse | null = parsedPayload && typeof parsedPayload === "object"
+            ? parsedPayload as DirectScriptResponse : null;
+          const result = payload?.result;
+          if (doResp.ok && result?.ok === true) {
+            directAttemptReceipt = {
+              ...directAttemptReceipt,
+              outcome: "completed",
+              http_status: doResp.status,
+              result: {
+                ok: true,
+                engine: typeof result.engine === "string" ? result.engine : undefined,
+                tier: typeof result.tier === "number" ? result.tier : undefined,
+                duration_ms: typeof result.duration_ms === "number" ? result.duration_ms : undefined,
+                execution_id: typeof result.runtime_receipt?.execution_id === "string" ? result.runtime_receipt.execution_id : undefined,
+                backend: typeof result.runtime_receipt?.backend === "string" ? result.runtime_receipt.backend : undefined,
+              },
+            };
+            const paramsValue = safeParse(row.params);
+            const oneShot = !!paramsValue && typeof paramsValue === "object"
+              && (paramsValue as Record<string, unknown>)._one_shot === true;
+            await env.PLATFORM_DB.prepare(
+              `UPDATE scheduled_jobs SET last_run_at = ?, consecutive_failures = 0, last_error = NULL${oneShot ? ", enabled = 0" : ""} WHERE id = ?`
+            ).bind(now, row.id).run();
+            const receipt = JSON.stringify(directAttemptReceipt);
+            await updateScheduledJobRunOutcome(env, serviceIdentity.runId, {
+              outcomeStatus: "completed", ok: true, durationMs: Date.now() - dispatchStarted, attemptReceipt: receipt,
+            });
+            directEffectMayHaveStarted = false;
+            claimStatus = "completed";
+          } else {
+            const responseError = doResp.ok
+              ? (typeof result?.error === "string" ? result.error.slice(0, 2000) : "scheduled_script_result_unavailable")
+              : await doResp.text().catch(() => `HTTP ${doResp.status}`);
+            directAttemptReceipt = {
+              ...directAttemptReceipt,
+              outcome: "unknown",
+              http_status: doResp.status,
+              error: responseError,
+              ...(result && result.ok === false ? { result: {
+                ok: false,
+                engine: typeof result.engine === "string" ? result.engine : undefined,
+                tier: typeof result.tier === "number" ? result.tier : undefined,
+                duration_ms: typeof result.duration_ms === "number" ? result.duration_ms : undefined,
+                execution_id: typeof result.runtime_receipt?.execution_id === "string" ? result.runtime_receipt.execution_id : undefined,
+                backend: typeof result.runtime_receipt?.backend === "string" ? result.runtime_receipt.backend : undefined,
+              } } : {}),
+            };
+            const receipt = JSON.stringify(directAttemptReceipt);
+            await updateScheduledJobRunOutcome(env, serviceIdentity.runId, {
+              outcomeStatus: "outcome_unknown", ok: false, error: responseError,
+              durationMs: Date.now() - dispatchStarted, attemptReceipt: receipt,
+            });
+            directEffectMayHaveStarted = false;
+            claimStatus = "outcome_unknown";
+          }
+        } else if (doResp.status === 409) {
           // wakeAgentGoal's own pending-run check — the assistant is still working a prior wake.
           // Deliberately not a success OR a failure: last_run_at/consecutive_failures are left
           // exactly as they were so the next due tick retries against a (hopefully) free instance.
@@ -11127,11 +11253,29 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       } catch (err) {
         const message = (err as Error).message;
         console.error(`[scheduled-jobs] job failed id=${row.id} space=${row.space_id}:`, message);
-        await recordScheduledJobFailure(env, row, now, message);
-        await recordScheduledJobRun(env, row, { ok: false, error: message, durationMs: Date.now() - dispatchStarted, firedAt: now });
-        claimStatus = "failed";
+        if (directEffectMayHaveStarted) {
+          directAttemptReceipt = { ...directAttemptReceipt, outcome: "unknown", error: message.slice(0, 2000) };
+          const receipt = JSON.stringify(directAttemptReceipt);
+          try {
+            await updateScheduledJobRunOutcome(env, serviceIdentity.runId, {
+              outcomeStatus: "outcome_unknown", ok: false, error: message,
+              durationMs: Date.now() - dispatchStarted, attemptReceipt: receipt,
+            });
+          } catch (persistError) {
+            console.error(`[scheduled-jobs] unknown receipt update failed job=${row.id}:`, (persistError as Error).message);
+          }
+          claimStatus = "outcome_unknown";
+        } else {
+          await recordScheduledJobFailure(env, row, now, message);
+          await recordScheduledJobRun(env, row, { ok: false, error: message, durationMs: Date.now() - dispatchStarted, firedAt: now });
+          claimStatus = "failed";
+        }
       } finally {
-        await releaseScheduledJobDispatch(env.PLATFORM_DB, { jobId: row.id, sweepKey, claimToken, status: claimStatus });
+        await releaseScheduledJobDispatch(env.PLATFORM_DB, {
+          jobId: row.id, sweepKey, claimToken, status: claimStatus,
+          ...(!row.goal ? { runId: serviceIdentity.runId } : {}),
+          ...(directAttemptReceipt ? { attemptReceipt: JSON.stringify(directAttemptReceipt) } : {}),
+        });
       }
       return;
     }

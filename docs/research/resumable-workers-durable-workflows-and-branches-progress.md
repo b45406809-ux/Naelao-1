@@ -12,6 +12,30 @@ Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO a
 
 # Resumable workers, durable workflows and branches progress
 
+## PW06 checkpoint — 2026-11-23 (scheduled direct-script outcome reconciliation)
+
+The queue now persists an exact direct-script run ID and bounded prior-attempt receipt with
+`outcome_unknown` in a single D1 batch before invoking AgentDO. The status is excluded from dispatch
+retention, blocks claims for all later sweeps of the job, and is surfaced in run history from the
+dispatch row if history needs recovery. Definite pre-effect 4xx responses can become failed/skipped;
+transport/5xx ambiguity, malformed success responses and script-level failures stay unknown because
+the action may have started or partially applied.
+
+An evidence-backed reconciliation endpoint requires Space admin membership plus Project manage
+access, matches the exact job/run identity, and records the caller and evidence note. It supports
+confirmed completion or verified no-effect; only the latter permits a later scheduled sweep to try
+again. The Crons history UI shows the unresolved state and controls for authorized users. The
+receipt is operational evidence only; it does not prove provider rollback, provider completion or
+invoice-reconciled cost.
+
+Verification: Agents worker and Spaces worker typechecks, Shell source-only typecheck and
+`git diff --check` pass. The normal Shell typecheck still reports pre-existing stale imports in
+generated `.next/types`. No tests, provider calls, deployment or live acceptance ran.
+
+**Exact next action:** in `NaelaoAgentDO.ts`, make Project `reserveWorkerBranch` refuse the legacy
+R2 copy fallback when no immutable Coordinator base pin is available; verify rejection occurs
+before branch creation or worker dispatch.
+
 ## PW06 checkpoint — 2026-11-23 (direct scheduled-script pre-effect revision fence)
 
 The direct scheduled-script path already checked the service session and exact job revision at
@@ -41,15 +65,16 @@ Current source matches the latest saved implementation summaries for the six PW 
 | PW03 selective resource leases | `ConcurrencyDO` implements bounded named leases with fencing; Coordinator writes recheck hashes, generations and fences. | Leases are cooperative. No mandatory lease is enforced at every shared mutable writer; deployed expiry/stale-holder behavior remains unaccepted. |
 | PW04 integration and conflict | `mergeWorkerWorkspace` uses exact source/target pins, bounded merge/review paths, isolated validation branches and expected-head checked publication. | >2 MiB/corrupt object handling, some ambiguous rename cases, complete route/runtime integration coverage and deployed acceptance remain open. |
 | PW05 runtime, cost and UI | Worker attempt run IDs feed normal billing settlement; owner/admin Space and Project reads aggregate exact attempt receipts. | Internal credits are not provider invoices. Process isolation, unknown/no-event explanation, cancellation/recovery UX and deployed acceptance remain partial. Default `AgentTaskWorkflow` still has no atomic per-run credit reservation (cross-reference APW05). |
-| PW06 validation and operations | Exact revision receipts and the parent-DO permit fence cancellation against an exact worker attempt/candidate/target; a permitted commit can finish and its actual receipt remains visible. | Cross-DO/Artifact publication races, in-flight effect cancellation/reconciliation, per-run currency/compute settlement and deployed concurrency/recovery acceptance remain open. |
+| PW06 validation and operations | Exact revision receipts and the parent-DO permit fence cancellation against an exact worker attempt/candidate/target; scheduled direct scripts now persist an unknown attempt receipt and require authorized reconciliation before another sweep. | Cross-DO/Artifact publication races, in-flight effect cancellation, per-run currency/compute settlement and deployed concurrency/recovery acceptance remain open. |
 
 Checkpoint and workflow comparison: versioned worker checkpoint lineage and exact Coordinator pins are present; `WorkflowJournal` stores bounded step/artifact receipts; authorized task routes expose content-free recovery summaries; HITL resume revalidates the scheduled service identity and job revision. These do not restore unsaved process/model state. Dynamic extension workflow effects have their own prepared/committed/indeterminate records and budget settlement; those guarantees do not automatically cover static `AgentTaskWorkflow` or direct scheduled scripts.
 
 Scheduled-run caller comparison: the queue rechecks an exact job snapshot after claiming and preparation. Goal runs revalidate the current job at loop boundaries and before approval resume. At the source-audit point, direct scheduled scripts checked the exact enabled job revision and script name at AgentDO ingress but performed config/policy/budget work before `tools.run` without a final source recheck; the final pre-effect fence is implemented in the checkpoint above. It prevents a stale operation from starting, but does not stop an operation already in flight or provide an unknown-outcome effect receipt.
 
-This source audit's pre-effect recheck was completed in the PW06 checkpoint above. In-flight
-cancellation and durable unknown-effect reconciliation remain open until their cross-service
-effect contract is implemented.
+This source audit's pre-effect recheck and the scheduled direct-script unknown-outcome path are
+completed in the PW06 checkpoints above. The scheduled path is code-only and requires human
+evidence for reconciliation; other in-flight effect cancellation and cross-service effect contracts
+remain open.
 
 ## PW03 checkpoint — 2026-11-18 (bounded workspace-pinned attempt lineage; `5aca9a29` pushed)
 

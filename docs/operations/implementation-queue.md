@@ -57,20 +57,30 @@ and [progress ledger](../research/resumable-workers-durable-workflows-and-branch
   attempts zero settlement for the Project spend reservation and fails closed. Agents typecheck and
   `git diff --check` pass; no tests or deployed acceptance ran. This fence cannot cancel an operation
   after it starts.
-- [ ] **Active · PW06 — Scheduled direct-script outcome reconciliation.** Trace `scheduled_job_dispatches`
-  and `scheduled_job_runs` through post-dispatch errors. Add a durable `outcome_unknown` state that
-  prevents a later sweep from silently repeating an effect until an authorized reconciliation
-  path resolves it. Preserve the original attempt and do not infer provider rollback/completion.
-  Preserve the untracked Python cache and keep rollout disabled.
+- [x] **PW06 — Scheduled direct-script outcome reconciliation.** Before direct dispatch, one D1 batch
+  records the exact run identity, authorization revision and bounded attempt receipt in both the
+  dispatch claim and run history with `outcome_unknown`. Later sweeps stay blocked until an
+  owner/admin resolves that exact run with evidence. Ambiguous responses and script-level failures
+  remain unknown; no provider rollback or completion is inferred. Agents and Spaces typechecks,
+  Shell source-only typecheck and `git diff --check` pass; no tests or deployed acceptance ran.
+- [ ] **Active · PW01 — Require an immutable Coordinator base for Project worker branches.**
+  `reserveWorkerBranch` still admits a worker through the legacy R2 copy path when
+  `UNIFIED_WORKSPACE_ENABLED` is off, leaving the base without a Coordinator revision pin. Add a
+  fail-closed capability check before Project worker branch creation/dispatch when an immutable
+  base cannot be established. Keep rollout disabled and preserve the Python cache.
 
-**Latest checkpoint.** PW06 now rechecks the direct scheduled-script service session and exact job
-revision after policy/budget admission and immediately before `tools.run`. If the identity is stale
-or unavailable, it attempts zero settlement for any reserved Project spend and fails closed. Agents typecheck and
-`git diff --check` pass. No tests or deployed acceptance ran. This does not stop an operation already
-started or provide an unknown-outcome receipt.
+**Latest checkpoint.** PW06 now records a stable direct-script run ID and bounded prior-attempt
+receipt atomically with `outcome_unknown` before calling AgentDO. That status survives dispatch
+retention and blocks all later sweeps for the job. The run history exposes the unresolved receipt,
+and a Space-admin plus Project-manager route can resolve the exact run as completed or verified
+no-effect with a required evidence note. The Crons history panel shows the state and resolution
+controls. Agent and Spaces typechecks, Shell source-only typecheck and `git diff --check` pass. The
+normal Shell typecheck still reports stale generated `.next/types` imports. No tests, provider calls,
+deployment or live acceptance ran.
 
-**Exact next action:** trace queue dispatch terminal statuses and scheduled run history after the
-direct operation begins; add durable unknown-outcome handling that prevents blind replay.
+**Exact next action:** in `NaelaoAgentDO.ts`, make Project `reserveWorkerBranch` refuse the legacy
+R2 copy fallback when no immutable Coordinator base pin is available; verify the rejection occurs
+before branch creation or worker dispatch.
 
 ## Parked plan — Adaptive planner, worker coordination and memory
 

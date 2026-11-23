@@ -36,6 +36,7 @@ import {
   toggleScheduledJob,
   deleteScheduledJob,
   listScheduledJobRuns,
+  reconcileScheduledJobRun,
   listAssistantChannels,
   assistantMailApi,
   listSubAgents,
@@ -1114,8 +1115,18 @@ function CronForm({
   );
 }
 
-function CronRunHistory({ spaceId, jobId, session }: { spaceId: string; jobId: string; session: SessionCredentials }) {
+function CronRunHistory({ spaceId, jobId, session, canReconcile }: {
+  spaceId: string; jobId: string; session: SessionCredentials; canReconcile: boolean;
+}) {
   const [runs, setRuns] = React.useState<ScheduledJobRun[] | null>(null);
+  const [evidence, setEvidence] = React.useState<Record<string, string>>({});
+  const [resolvingId, setResolvingId] = React.useState<string | null>(null);
+  const [reconcileError, setReconcileError] = React.useState<string | null>(null);
+  const reload = React.useCallback(() => {
+    listScheduledJobRuns(spaceId, jobId, session, 10)
+      .then(setRuns)
+      .catch(() => setRuns([]));
+  }, [spaceId, jobId, session]);
   React.useEffect(() => {
     let cancelled = false;
     listScheduledJobRuns(spaceId, jobId, session, 10)
@@ -1123,6 +1134,24 @@ function CronRunHistory({ spaceId, jobId, session }: { spaceId: string; jobId: s
       .catch(() => { if (!cancelled) setRuns([]); });
     return () => { cancelled = true; };
   }, [spaceId, jobId, session]);
+  async function resolveRun(run: ScheduledJobRun, resolution: "effect_completed" | "verified_no_effect") {
+    if (!run.run_id) return;
+    const note = (evidence[run.id] ?? "").trim();
+    if (note.length < 20) {
+      setReconcileError("Add at least 20 characters describing the state you checked.");
+      return;
+    }
+    setResolvingId(run.id);
+    setReconcileError(null);
+    try {
+      await reconcileScheduledJobRun(spaceId, session, { jobId, runId: run.run_id, resolution, evidence: note });
+      reload();
+    } catch (error) {
+      setReconcileError(error instanceof Error ? error.message : "Couldn't reconcile this run.");
+    } finally {
+      setResolvingId(null);
+    }
+  }
   if (runs === null) return <div style={{ fontSize: 11, color: "var(--text3)", padding: "4px 0" }}>Loading…</div>;
   if (runs.length === 0) return <div style={{ fontSize: 11, color: "var(--text3)", padding: "4px 0" }}>No fires recorded yet.</div>;
   // Watchdog: is the MOST RECENT run anomalously slow against this job's own recent history?
@@ -1137,22 +1166,37 @@ function CronRunHistory({ spaceId, jobId, session }: { spaceId: string; jobId: s
         </div>
       )}
       {runs.map((r) => (
-        <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5 }}>
-          <span style={{ color: r.skipped_busy ? "var(--text3)" : r.ok ? "#16a34a" : "#dc2626", fontWeight: 500, flexShrink: 0 }}>
-            {r.skipped_busy ? "Skipped (busy)" : r.ok ? "OK" : "Failed"}
-          </span>
-          <span style={{ color: "var(--text3)", flexShrink: 0 }}>{new Date(r.fired_at).toLocaleString()}</span>
-          {r.duration_ms != null && <span style={{ color: "var(--text3)", flexShrink: 0 }}>{r.duration_ms}ms</span>}
-          {r.error && (
-            <span
-              style={{ color: "#dc2626", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-              title={r.error}
-            >
-              {r.error}
+        <div key={r.id} style={{ fontSize: 10.5 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+            <span style={{ color: r.outcome_status === "outcome_unknown" ? "#d97706" : r.skipped_busy || r.outcome_status === "skipped" ? "var(--text3)" : r.ok || r.outcome_status === "reconciled_completed" ? "#16a34a" : "#dc2626", fontWeight: 500, flexShrink: 0 }}>
+              {r.outcome_status === "outcome_unknown" ? "Outcome unknown" : r.outcome_status === "reconciled_completed" ? "Reconciled complete" : r.outcome_status === "reconciled_no_effect" ? "Reconciled: no effect" : r.skipped_busy ? "Skipped (busy)" : r.outcome_status === "skipped" ? "Skipped" : r.ok ? "OK" : "Failed"}
             </span>
+            <span style={{ color: "var(--text3)", flexShrink: 0 }}>{new Date(r.fired_at).toLocaleString()}</span>
+            {r.duration_ms != null && <span style={{ color: "var(--text3)", flexShrink: 0 }}>{r.duration_ms}ms</span>}
+            {r.error && <span style={{ color: r.outcome_status === "outcome_unknown" ? "#b45309" : "#dc2626", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.error}>{r.error}</span>}
+          </div>
+          {r.run_id && <div style={{ color: "var(--text3)", fontFamily: "monospace", fontSize: 9.5, overflowWrap: "anywhere" }}>Run: {r.run_id}</div>}
+          {r.resolution_note && <div style={{ color: "var(--text3)", overflowWrap: "anywhere" }}>Reconciliation evidence: {r.resolution_note}</div>}
+          {r.outcome_status === "outcome_unknown" && canReconcile && (
+            <div style={{ display: "grid", gap: 4, margin: "5px 0", padding: 6, border: "1px solid var(--border)", borderRadius: 6 }}>
+              <div style={{ color: "#b45309" }}>Check the target system before resolving. “No effect” allows the next due sweep to run.</div>
+              <textarea
+                aria-label="Reconciliation evidence"
+                value={evidence[r.id] ?? ""}
+                onChange={(event) => setEvidence((current) => ({ ...current, [r.id]: event.target.value }))}
+                placeholder="Describe what you checked and when (at least 20 characters)."
+                rows={2}
+                style={{ width: "100%", fontSize: 10.5, resize: "vertical" }}
+              />
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                <button type="button" className="btn btn-ghost btn-sm" disabled={resolvingId === r.id} onClick={() => void resolveRun(r, "effect_completed")}>Confirm completed</button>
+                <button type="button" className="btn btn-ghost btn-sm" disabled={resolvingId === r.id} onClick={() => void resolveRun(r, "verified_no_effect")}>Confirm no effect</button>
+              </div>
+            </div>
           )}
         </div>
       ))}
+      {reconcileError && <div role="alert" style={{ color: "#dc2626", fontSize: 10.5 }}>{reconcileError}</div>}
     </div>
   );
 }
@@ -1351,7 +1395,7 @@ function CronsPanel({
                     </>
                   )}
                 </div>
-                {historyId === job.id && <CronRunHistory spaceId={spaceId} jobId={job.id} session={session} />}
+                {historyId === job.id && <CronRunHistory spaceId={spaceId} jobId={job.id} session={session} canReconcile={canEdit} />}
               </div>
             )
           )

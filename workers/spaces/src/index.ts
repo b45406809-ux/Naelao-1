@@ -8969,10 +8969,129 @@ app.get("/spaces/:spaceId/scheduled-job-runs", async (c) => {
   const limitParam = Number.parseInt(c.req.query("limit") ?? "", 10);
   const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 20;
   const { results } = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, fired_at, ok, error, duration_ms, skipped_busy FROM scheduled_job_runs
+    `SELECT id, run_id, fired_at, ok, error, duration_ms, skipped_busy, outcome_status,
+            attempt_receipt, resolved_at, resolved_by, resolution_note FROM scheduled_job_runs
        WHERE job_id = ? AND space_id = ? ORDER BY fired_at DESC LIMIT ?`
   ).bind(jobId, spaceId, limit).all();
-  return c.json({ data: results, count: results.length });
+  const unresolved = await c.env.PLATFORM_DB.prepare(
+    `SELECT sweep_key, run_id, attempt_receipt, created_at FROM scheduled_job_dispatches
+      WHERE job_id = ? AND status = 'outcome_unknown'`
+  ).bind(jobId).all<{ sweep_key: number; run_id: string | null; attempt_receipt: string | null; created_at: number }>();
+  const unresolvedByRunId = new Map(unresolved.results.flatMap((item) => item.run_id ? [[item.run_id, item] as const] : []));
+  const seenRunIds = new Set(results.flatMap((item) => typeof item.run_id === "string" ? [item.run_id] : []));
+  const missingReceipts = unresolved.results.flatMap((item) => item.run_id && !seenRunIds.has(item.run_id) ? [{
+    id: `dispatch:${jobId}:${item.sweep_key}`,
+    run_id: item.run_id,
+    fired_at: item.created_at,
+    ok: 0,
+    error: "history_recovered_from_dispatch_receipt",
+    duration_ms: null,
+    skipped_busy: 0,
+    outcome_status: "outcome_unknown",
+    attempt_receipt: item.attempt_receipt,
+    resolved_at: null,
+    resolved_by: null,
+    resolution_note: null,
+  }] : []);
+  const history = results.map((item) => {
+    const pending = typeof item.run_id === "string" ? unresolvedByRunId.get(item.run_id) : undefined;
+    return pending ? { ...item, ok: 0, outcome_status: "outcome_unknown", attempt_receipt: pending.attempt_receipt ?? item.attempt_receipt } : item;
+  });
+  const data = [...history, ...missingReceipts].sort((left, right) => Number(right.fired_at) - Number(left.fired_at));
+  return c.json({ data, count: data.length });
+});
+
+// Reconcile an indeterminate direct-script run only after an owner/admin has checked the exact
+// attempt against the relevant provider/system. The evidence note is retained beside the
+// original receipt; confirming no effect permits a later scheduled sweep to try again.
+const scheduledJobRunReconciliationsPath = "/spaces/:spaceId/scheduled-job-run-reconciliations";
+app.use(scheduledJobRunReconciliationsPath, requireSpaceMembership({ POST: "admin" }));
+app.post(scheduledJobRunReconciliationsPath, async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const body = await c.req.json<{
+    job_id?: unknown;
+    run_id?: unknown;
+    resolution?: unknown;
+    evidence?: unknown;
+  }>().catch(() => ({} as Record<string, unknown>));
+  if (typeof body.job_id !== "string" || typeof body.run_id !== "string"
+    || (body.resolution !== "effect_completed" && body.resolution !== "verified_no_effect")
+    || typeof body.evidence !== "string" || body.evidence.trim().length < 20 || body.evidence.length > 2000) {
+    return c.json({ error_code: "bad_request", message: "job_id, run_id, a supported resolution, and at least 20 characters of evidence are required" }, 400);
+  }
+  const job = await c.env.PLATFORM_DB.prepare(
+    `SELECT id, project_id, updated_at, params FROM scheduled_jobs
+      WHERE id = ? AND space_id = ? AND tenant_id = ?`
+  ).bind(body.job_id, spaceId, owned.tenantId).first<{ id: string; project_id: string; updated_at: string; params: string }>();
+  if (!job) return c.json({ error_code: "not_found", message: "Scheduled job not found" }, 404);
+  const denied = await requireManageableAutomationProject(c, spaceId, job.project_id);
+  if (denied) return denied;
+  const identity = getCallerIdentity(c);
+  if (!identity.userId) return c.json({ error_code: "user_identity_required" }, 403);
+
+  const dispatch = await c.env.PLATFORM_DB.prepare(
+    `SELECT sweep_key, claim_token, run_id, attempt_receipt, created_at
+       FROM scheduled_job_dispatches
+      WHERE job_id = ? AND run_id = ? AND status = 'outcome_unknown'`
+  ).bind(job.id, body.run_id).first<{
+    sweep_key: number; claim_token: string; run_id: string | null; attempt_receipt: string | null; created_at: number;
+  }>();
+  if (!dispatch?.run_id) return c.json({ error_code: "scheduled_job_run_not_unresolved" }, 409);
+
+  const now = Date.now();
+  const completed = body.resolution === "effect_completed";
+  // Advance last_run_at before removing the retry blocker so a later sweep cannot immediately
+  // repeat a completed effect. Only reset failures or disable a one-shot job if its exact
+  // authorization revision is still current; an edited target keeps its newer control state.
+  let receiptRevision: string | null = null;
+  try {
+    const receipt = JSON.parse(dispatch.attempt_receipt ?? "null") as { authorization_revision?: unknown } | null;
+    if (typeof receipt?.authorization_revision === "string") receiptRevision = receipt.authorization_revision;
+  } catch { /* retain the opaque prior receipt; do not infer its revision */ }
+  if (completed) {
+    const sameRevision = receiptRevision === job.updated_at;
+    let oneShot = false;
+    try {
+      const params = JSON.parse(job.params || "{}") as Record<string, unknown>;
+      oneShot = sameRevision && params?._one_shot === true;
+    } catch { /* leave malformed schedule configuration untouched */ }
+    await c.env.PLATFORM_DB.prepare(
+      `UPDATE scheduled_jobs SET last_run_at = ?,
+         consecutive_failures = CASE WHEN updated_at = ? THEN 0 ELSE consecutive_failures END,
+         last_error = CASE WHEN updated_at = ? THEN NULL ELSE last_error END,
+         enabled = CASE WHEN updated_at = ? AND ? = 1 THEN 0 ELSE enabled END
+        WHERE id = ? AND space_id = ? AND tenant_id = ?`
+    ).bind(now, receiptRevision, receiptRevision, receiptRevision, oneShot ? 1 : 0, job.id, spaceId, owned.tenantId).run();
+  }
+
+  const resolvedStatus = completed ? "reconciled_completed" : "reconciled_no_effect";
+  const runStatus = completed ? "reconciled_completed" : "reconciled_no_effect";
+  const evidence = body.evidence.trim();
+  const db = c.env.PLATFORM_DB;
+  const results = await db.batch([
+    db.prepare(
+      `INSERT OR IGNORE INTO scheduled_job_runs
+         (id, job_id, space_id, tenant_id, project_id, fired_at, ok, error, skipped_busy,
+          run_id, outcome_status, attempt_receipt)
+       VALUES (?, ?, ?, ?, ?, ?, 0, 'history_recovered_from_dispatch_receipt', 0, ?, 'outcome_unknown', ?)`
+    ).bind(crypto.randomUUID(), job.id, spaceId, owned.tenantId, job.project_id, dispatch.created_at,
+      dispatch.run_id, dispatch.attempt_receipt),
+    db.prepare(
+      `UPDATE scheduled_job_dispatches
+          SET status = ?, lease_until = 0, resolved_at = ?, resolved_by = ?, resolution_note = ?, updated_at = ?
+        WHERE job_id = ? AND sweep_key = ? AND run_id = ? AND claim_token = ? AND status = 'outcome_unknown'`
+    ).bind(resolvedStatus, now, identity.userId, evidence, now, job.id, dispatch.sweep_key, dispatch.run_id, dispatch.claim_token),
+    db.prepare(
+      `UPDATE scheduled_job_runs
+          SET outcome_status = ?, ok = ?, resolved_at = ?, resolved_by = ?, resolution_note = ?
+        WHERE job_id = ? AND run_id = ? AND outcome_status IN ('outcome_unknown', 'completed', 'failed')`
+    ).bind(runStatus, completed ? 1 : 0, now, identity.userId, evidence, job.id, dispatch.run_id),
+  ]);
+  if (results[1]?.meta.changes !== 1 || results[2]?.meta.changes !== 1)
+    return c.json({ error_code: "scheduled_job_run_reconciliation_raced" }, 409);
+  return c.json({ job_id: job.id, run_id: dispatch.run_id, outcome_status: runStatus, resolved_at: now });
 });
 
 // Space Assistant approval policy — "same access as the owning user, ask first unless the

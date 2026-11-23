@@ -23,13 +23,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**PW06 — Scheduled direct-script outcome reconciliation.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). Trace
-`scheduled_job_dispatches`, queue error handling and `scheduled_job_runs` after the direct action
-starts. Add a durable `outcome_unknown` status that prevents later sweeps from blindly repeating
-effects until an authorized reconciliation path resolves them; retain exact job/run identity and the
-prior attempt receipt. Preserve `infra/scripts/__pycache__/`; keep rollout defaults disabled and do
-not claim provider rollback, live results or invoice-reconciled costs without applicable evidence.
+**PW01 — Require an immutable Coordinator base for Project worker branches.** Resume from the
+checked-in [implementation queue](docs/operations/implementation-queue.md#active-plan). In
+`NaelaoAgentDO.ts`, make Project `reserveWorkerBranch` refuse the legacy R2 copy fallback when no
+immutable Coordinator base pin is available; verify rejection occurs before branch creation or
+worker dispatch. Preserve `infra/scripts/__pycache__/` and keep rollout defaults disabled.
 
 ## Save progress inside each task
 

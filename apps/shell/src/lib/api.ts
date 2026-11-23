@@ -2601,11 +2601,17 @@ export async function deleteScheduledJob(spaceId: string, jobId: string, session
 
 export interface ScheduledJobRun {
   id: string;
+  run_id: string | null;
   fired_at: number;
   ok: number;
   error: string | null;
   duration_ms: number | null;
   skipped_busy: number;
+  outcome_status: "completed" | "failed" | "skipped" | "outcome_unknown" | "reconciled_completed" | "reconciled_no_effect";
+  attempt_receipt: string | null;
+  resolved_at: number | null;
+  resolved_by: string | null;
+  resolution_note: string | null;
 }
 
 /** Recent fires for one job (migration 0071), newest first. */
@@ -2620,6 +2626,19 @@ export async function listScheduledJobRuns(
     { session }
   );
   return res.data;
+}
+
+/** An owner/admin's evidence-backed resolution for one exact indeterminate scheduled attempt. */
+export async function reconcileScheduledJobRun(
+  spaceId: string,
+  session: SessionCredentials,
+  input: { jobId: string; runId: string; resolution: "effect_completed" | "verified_no_effect"; evidence: string }
+): Promise<{ job_id: string; run_id: string; outcome_status: "reconciled_completed" | "reconciled_no_effect"; resolved_at: number }> {
+  return apiFetch(`/v1/spaces/${spaceId}/scheduled-job-run-reconciliations`, {
+    method: "POST",
+    session,
+    body: JSON.stringify({ job_id: input.jobId, run_id: input.runId, resolution: input.resolution, evidence: input.evidence }),
+  });
 }
 
 export interface ChannelLink {
