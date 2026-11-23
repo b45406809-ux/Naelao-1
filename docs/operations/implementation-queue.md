@@ -250,11 +250,22 @@ owner selection and revocation; do not infer beneficiary, payer or shared author
 [plan](../research/platform-completion-and-guided-templates-plan.md) and
 [progress ledger](../research/platform-completion-and-guided-templates-progress.md).
 
-- [ ] **P05 — Trace Space-shared provider-connection scope.** Reconcile signed Blueprint
+- [x] **P05 — Trace Space-shared provider-connection scope.** Reconcile signed Blueprint
   dependencies, activation, owner connection selection and revocation against current host
-  authority. Implement only a scope that current records can enforce; otherwise record the exact
-  missing beneficiary, payer, shared-authority or drain/revoke contract and continue to the next
-  ready task. Keep rollouts disabled.
+  authority. **Latest checkpoint:** source trace complete; current records cannot express a safe
+  Space-wide connection. See the P05 ledger entry. Keep the broader P05 requirement partial and
+  the provider path gated.
+- [ ] **P06 — Continue the bounded customer voice-package caller.** Reconcile the installed signed
+  phone package's owner dashboard and operations against current installation, line, call-pin and
+  provider records. Implement one missing owner-facing operation only where those records enforce
+  its scope; otherwise record the precise contract/provider gate and advance. Keep streaming,
+  provisioning and rollouts disabled.
+
+**Latest checkpoint:** P05 trace rechecked signed declarations, activation preview, owner connection
+routes and revoke/cleanup records. Required Space-shared connections remain explicitly unsupported;
+the missing authorizer, beneficiary, payer/account-sharing, shared authority and drain/revoke contract
+cannot be inferred from Project-bound connection rows. No code or access grant changed. **Next
+action:** continue P06 from the existing bounded signed phone package and its reachable owner APIs.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

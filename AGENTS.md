@@ -62,8 +62,8 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Platform completion and guided templates · P05 — trace Space-shared provider-connection scope.**
-Reconcile signed Blueprint dependencies, activation, owner connection selection and revocation
-against current host authority. Implement only a scope current records can enforce; otherwise record
-the missing beneficiary, payer, shared-authority or drain/revoke contract and continue to the next
-ready task. Keep all rollouts disabled.
+**Platform completion and guided templates · P06 — continue the bounded customer voice-package caller.**
+Reconcile the installed signed phone package's owner dashboard and operations against current
+installation, line, call-pin and provider records. Implement one missing owner-facing operation only
+where those records enforce its scope; otherwise record the precise contract/provider gate and
+advance. Keep streaming, provisioning and all rollout gates disabled.

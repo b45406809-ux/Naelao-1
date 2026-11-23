@@ -3158,3 +3158,35 @@ rollout gate changed.
 Exact next action: keep cross-resource quotes/reservations parked until an approved resource-unit
 price/cap contract exists, and keep provider-cost and deployed lifecycle acceptance separate. The
 queue's TBR11 source trace and TBR12 onboarding mutation states are complete; TBR08 is now active.
+# P05 checkpoint — 2026-11-23 (Space-shared provider-connection scope trace)
+
+Rechecked signed package declarations, Blueprint activation, owner setup/status/revocation routes and
+the persisted connection/cleanup records against the current checkout. `ExtensionConnectionRequirement`
+allows only `id`, `provider`, `purpose` and `required`; neither its parser nor the Space Blueprint
+review contract carries a connection scope, beneficiary set, payer, shared-account authority or
+drain/revoke policy. `previewBlueprintActivation` derives connections from the verified dependency
+summary, labels every required Space-shared connection `unsupported`, labels optional ones
+`optional_unsupported`, and blocks required ones. The Shell activation review already says these
+links cannot be configured by the template.
+
+The current provider vault has a required `project_id` on
+`extension_provider_connections`; its identity is tenant/Space/installation/connection, while
+`connected_by` identifies only the setup actor. Setup, status, routing and DELETE routes name an
+exact Project installation and revalidate its signed connection declaration. The DELETE path marks
+that installation's link revoked and uses the existing exact-install cleanup journal. There is no
+Space-shared owner-selection path or Space-wide link revocation/drain operation. Dependency closure
+for `SPACE_SHARED` validates active Space-shared package installations, but it does not authorize
+reuse of a Project vault account by all Projects using that package.
+
+No safe implementation can be derived from the current records. The missing contract must specify
+who authorizes and owns the provider account, which Projects/members/channels are beneficiaries, who
+pays and whether account sharing is allowed, what authority each beneficiary receives, and how
+in-flight work is drained plus uncertain external revocation is reconciled. No schema, credential,
+grant or rollout changed. This closes the P05 source-trace task only; P05 remains PARTIAL and blocked
+on that contract (not credentials). Source review and `git diff --check` only; no tests, typechecks,
+provider calls, migration or live acceptance ran.
+
+Exact next action: continue P06 by reconciling the bounded signed phone package's owner dashboard and
+operations against the current installation, line, call-pin and provider records; implement one
+owner-facing operation only where current records enforce its scope, otherwise record the specific
+provider/catalog contract and advance. Keep streaming and provisioning disabled.
