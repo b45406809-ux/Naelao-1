@@ -59,6 +59,101 @@ async function requestEndpoint(
 const request = (url: string, format?: "markdown" | "html") =>
   requestEndpoint("fetch", url, format);
 
+async function searchRequest(extraBindings: Record<string, unknown>, maxResults = 20, snippetsOnly = false) {
+  const token = await mintInternalToken("secret", "tenant");
+  return worker.fetch!(new Request("https://knowledge/internal/web-search/search", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": "tenant",
+      "x-naelao-space-id": "space",
+      "x-naelao-internal-token": token,
+    },
+    body: JSON.stringify({ query: "public documentation", max_results: maxResults, snippets_only: snippetsOnly }),
+  }), bindings(extraBindings), {} as ExecutionContext);
+}
+
+describe("Cloudflare web search", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses the configured provider and billing alias, and returns bounded sources", async () => {
+    const websearch = vi.fn(async () => Response.json({
+      items: [
+        { url: "https://example.com/docs", title: "Docs", description: "Public snippet" },
+        { url: "https://example.com/docs", title: "Duplicate" },
+        { url: "javascript:alert(1)", title: "Invalid" },
+      ],
+    }));
+    const response = await searchRequest({
+      AI: { websearch },
+      CLOUDFLARE_WEB_SEARCH_GATEWAY_ID: "search-gateway",
+      CLOUDFLARE_WEB_SEARCH_PROVIDER: "exa",
+      CLOUDFLARE_WEB_SEARCH_BYOK_ALIAS: "naelao-search",
+    });
+    expect(response.status).toBe(200);
+    expect(websearch).toHaveBeenCalledExactlyOnceWith({
+      gatewayId: "search-gateway", provider: "exa", byokAlias: "naelao-search",
+      query: "public documentation", limit: 10,
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      configured: true, provider: "exa", answer: null, context_instruction: expect.any(String),
+      results: [{ url: "https://example.com/docs", title: "Docs", content: "Public snippet" }],
+    });
+  });
+
+  it("makes no provider request when the gateway lacks a configured billing alias", async () => {
+    const websearch = vi.fn();
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const response = await searchRequest({
+      AI: { websearch }, CLOUDFLARE_WEB_SEARCH_GATEWAY_ID: "search-gateway", TAVILY_API_KEY: "test",
+    });
+    await expect(response.json()).resolves.toMatchObject({ configured: false, results: [] });
+    expect(websearch).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves Tavily when Cloudflare is not selected", async () => {
+    const fetch = vi.fn(async () => Response.json({ answer: "Answer", results: [
+      { url: "https://example.com/docs", title: "Docs", content: "Public snippet", score: 0.9 },
+    ] }));
+    vi.stubGlobal("fetch", fetch);
+    const response = await searchRequest({ TAVILY_API_KEY: "test" }, 1);
+    await expect(response.json()).resolves.toMatchObject({
+      configured: true, provider: "tavily", answer: "Answer",
+      results: [{ url: "https://example.com/docs", score: 0.9 }],
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("blocks Cloudflare requests in an air-gapped Space", async () => {
+    const websearch = vi.fn();
+    const response = await searchRequest({
+      AI: { websearch },
+      CLOUDFLARE_WEB_SEARCH_GATEWAY_ID: "search-gateway",
+      CLOUDFLARE_WEB_SEARCH_BYOK_ALIAS: "naelao-search",
+      PLATFORM_DB: {
+        prepare: () => ({ bind: () => ({ first: async () => ({
+          config_json: '{"compliance":{"airGappedOnly":true}}',
+        }) }) }),
+      },
+    });
+    expect(response.status).toBe(403);
+    expect(websearch).not.toHaveBeenCalled();
+  });
+
+  it("uses bounded snippets and skips Tavily's answer generation for workflow searches", async () => {
+    const outbound = vi.fn(async (_url: string, request: RequestInit) => {
+      expect(JSON.parse(String(request.body))).toMatchObject({ max_results: 1, include_answer: false });
+      return Response.json({ results: [{ url: "https://example.com/", content: "x".repeat(4_000) }] });
+    });
+    vi.stubGlobal("fetch", outbound);
+    const response = await searchRequest({ TAVILY_API_KEY: "test" }, 1, true);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ answer: null, results: [{ content: "x".repeat(2_000) }] });
+  });
+});
+
 describe("guarded Markdown web fetch", () => {
   beforeEach(() => {
     checkSsrf.mockReset().mockResolvedValue({ blocked: false });

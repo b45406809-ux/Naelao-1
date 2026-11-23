@@ -85,6 +85,7 @@ export const webSearch: PrebuiltScript = {
       return proxy(ctx, "/internal/web-search/search", {
         query,
         max_results: maxResults,
+        ...(args["snippets_only"] === true ? { snippets_only: true } : {}),
       });
     },
     async fetch_page(args, ctx) {

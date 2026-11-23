@@ -1452,7 +1452,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const tools = new ScriptToolSurface(env, config.scripts.prebuilt, { role: config.manifest?.role ?? "DEV_OPERATOR" });
     if (!tools.availableOperations().includes(body.operation)) return Response.json({ error: "workflow_operation_not_installed" }, { status: 403 });
     env.orchestration = this.buildOrchestrationHooks(identity.spaceId, identity.agentId, identity.tenantId, "", body.idempotencyKey, identity.runId, identity.projectId, tools, identity.actorId, undefined, undefined, undefined, env);
-    const result = await tools.run(body.operation, body.params);
+    // The SDK uses bounded snippets as structured data inside the workflow.
+    const structuredSearch = body.operation === "search" && body.params.snippets_only === true;
+    const result = await tools.run(body.operation, body.params, structuredSearch ? { codeResult: true } : undefined);
     return Response.json(JSON.parse(JSON.stringify(result)), { status: result.ok ? 200 : 409 });
   }
 

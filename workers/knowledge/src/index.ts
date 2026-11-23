@@ -27,12 +27,13 @@ import { revisionExternalPublicationsForDocument } from "./external-publication-
 import { createWebsitePreviewToken, sha256TextHex, verifyWebsitePreviewToken } from "./website-source-preview.js";
 import { boundedWebsiteCrawlFrontier, extractWebsiteCrawlLinks, WEBSITE_CRAWL_LIMITS, type WebsiteCrawlPageRef } from "./website-crawl.js";
 import { runScheduledWebsiteRefreshes } from "./website-refresh-scheduler.js";
+import { searchCloudflareWeb, webSearchSourceUrl, type CloudflareWebSearchConfig } from "./cloudflare-web-search.js";
 import { buildPrivacySafeRetrievalTelemetry, recordCitationMetric, recordKnowledgeFilePreviewParseMetric, recordProjectAccessMetric,
   recordWebsitePreviewFailureMetric, recordWebsiteRefreshRecoveryMetric } from "./retrieval-telemetry.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
-interface KnowledgeEnv {
+interface KnowledgeEnv extends CloudflareWebSearchConfig {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
@@ -3824,13 +3825,24 @@ async function requireWebToolEgress(c: Parameters<typeof airGapResponse>[0] & {
 app.post("/internal/web-search/search", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
-  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, {} as { query?: string; max_results?: number });
+  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, {} as { query?: string; max_results?: number; snippets_only?: boolean });
   const query = typeof body.query === "string" ? body.query.trim() : "";
   if (!query || query.length > WEB_SEARCH_QUERY_MAX_CHARS)
     return c.json({ error_code: "bad_request", message: "query must be 1..1000 characters" }, 400);
   const maxResults = body.max_results === undefined ? 10 : body.max_results;
   if (!Number.isSafeInteger(maxResults) || Number(maxResults) < 1 || Number(maxResults) > 20)
     return c.json({ error_code: "bad_request", message: "max_results must be 1..20" }, 400);
+
+  if (c.env.CLOUDFLARE_WEB_SEARCH_GATEWAY_ID) {
+    try {
+      const search = await searchCloudflareWeb(c.env.AI, c.env, query, Number(maxResults));
+      if (!search) return c.json({ configured: false, results: [], message: "Cloudflare web search is not configured" });
+      return c.json({ configured: true, query, results: search.results, answer: null,
+        provider: search.provider, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
+    } catch {
+      return c.json({ configured: true, results: [], error: "Cloudflare web search provider failed" }, 502);
+    }
+  }
 
   // Honest degradation: no platform key → report unconfigured, don't fake empty results.
   if (!c.env.TAVILY_API_KEY) {
@@ -3847,20 +3859,25 @@ app.post("/internal/web-search/search", async (c) => {
         query,
         max_results: maxResults,
         search_depth: "basic",
-        include_answer: true,
+        include_answer: body.snippets_only !== true,
       }),
     });
     if (!resp.ok) {
       return c.json({ configured: true, results: [], error: `search provider error (${resp.status})` }, 502);
     }
     const data = await readBoundedResponseJson<{ answer?: string; results?: TavilyResult[] }>(resp, 4 * 1024 * 1024);
-    const results = (data.results ?? []).map((r) => ({
-      title: r.title ?? "",
-      url: r.url ?? "",
-      content: (r.content ?? "").slice(0, WEB_SEARCH_CONTENT_CAP),
-      score: r.score ?? 0,
-    }));
-    return c.json({ configured: true, query, results, answer: data.answer ?? null });
+    const results = (data.results ?? []).slice(0, Number(maxResults)).flatMap((r) => {
+      const url = body.snippets_only === true ? webSearchSourceUrl(r.url) : r.url ?? "";
+      if (url === null) return [];
+      return [{
+        title: (r.title ?? "").slice(0, body.snippets_only === true ? 300 : undefined),
+        url,
+        content: (r.content ?? "").slice(0, body.snippets_only === true ? 2_000 : WEB_SEARCH_CONTENT_CAP),
+        score: r.score ?? 0,
+      }];
+    });
+    return c.json({ configured: true, query, results, answer: body.snippets_only === true ? null : data.answer ?? null,
+      provider: "tavily", context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
   } catch (err) {
     return c.json({ configured: true, results: [], error: String(err) }, 502);
   }

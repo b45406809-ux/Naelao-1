@@ -104,10 +104,49 @@ export interface ExtensionResourceAdapter { execute<T = unknown>(request: Extens
 export interface ExtensionResourceClient {
   execute<T = unknown>(requirementId: string, operation: string, input: unknown, idempotencyKey?: string): Promise<T>;
 }
+
+export type ExtensionWebSearchResult =
+  | { configured: false; results: []; message: string }
+  | {
+    configured: true;
+    query: string;
+    provider: "tavily" | "ceramic" | "exa" | "linkup";
+    results: Array<{ url: string; title: string; content: string; score: number }>;
+    answer: string | null;
+    context_instruction: string;
+  };
+
+/** The Knowledge resource returns JSON within the approved operation's output schema. */
+export interface ExtensionKnowledgeSearchResult {
+  data: Array<{
+    document_id: string;
+    chunk_id: string;
+    title: string;
+    content: string;
+    content_hash: string;
+    score: number;
+    provenance: {
+      source_adapter: string;
+      source_revision: number;
+      source_content_sha256?: string;
+      source_grant_revision?: number;
+      byte_start: number;
+      byte_end: number;
+      line_start: number;
+      line_end: number;
+      heading_path?: string[];
+    };
+  }>;
+  context_instruction: string;
+}
+
 /** `stepKey` is the durable workflow idempotency key for this resource effect. */
 export interface ExtensionWorkflowResources {
   execute<T = unknown>(stepKey: string, requirementId: string, operation: string, input: unknown): Promise<T>;
   objects: { execute<T = unknown>(stepKey: string, requirementId: string, operation: "get" | "put" | "delete", input: unknown): Promise<T> };
+  knowledge: {
+    search(stepKey: string, requirementId: string, input: { publicationId: string; query: string; topK?: number }): Promise<{ resultJson: string }>;
+  };
   jobs: {
     enqueue<T = { jobId: string; status: string }>(stepKey: string, requirementId: string,
       input: { workflowId: string; params?: Record<string, unknown>; deadlineSeconds?: number }): Promise<T>;
@@ -1064,6 +1103,10 @@ export interface ExtensionWorkflowContext<TParams = Record<string, unknown>> {
   readonly params: TParams;
   readonly gadgets: ExtensionWorkflowGadgets;
   readonly resources: ExtensionWorkflowResources;
+  /** Public web search uses the workflow's declared `search` tool and the Space's egress policy. */
+  readonly search: {
+    web(stepKey: string, input: { query: string; limit?: number }): Promise<ExtensionWebSearchResult>;
+  };
   readonly tools: { call<T = unknown>(stepKey: string, operation: string, params: Record<string, unknown>): Promise<T> };
 }
 export type ExtensionPrimitiveManifest = GadgetContract | CanvasContract | ChannelContract | ContainerContract | LinterContract | WorkflowContract;
