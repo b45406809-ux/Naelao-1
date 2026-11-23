@@ -348,20 +348,27 @@ the actual inbound caller and current identity/extension authority before select
 
 See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md).
 
-- [ ] **Reconcile current WhatsApp member, customer and test routing.** Trace the current shared
+- [x] **Reconcile current WhatsApp member, customer and test routing.** Trace the current shared
   inbound pairing, provider webhook, contact verification, membership/Project checks, extension
-  execution, simulation and replay callers. Compare with the plan and channel, extension, identity
-  and platform records, then implement only the first gap supported by current host authority.
+  execution, simulation and replay callers. The source review and first supported inbound-routing
+  fixes are recorded in the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
 
-**Latest checkpoint:** source review confirmed the shared pairing table stores one binding per
-channel/sender, while QR and OAuth pairing previously overwrote collisions; pairing now preserves
-the original Space/project and rejects a conflicting claim. Shared inbound also requires an
-enabled channel link with a matching project scope. `git diff --check` passed; no tests, provider
-actions or deployment ran. Member-specific enrollment is absent from the reviewed path, and
-customer extension dispatch can reach live delivery tools. See the
-[progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
-**Next action:** trace reachable extension simulation, replay, conversation and side-effect callers;
-confirm whether WhatsApp customer tests can use existing adapters without live effects.
+- [ ] **Add one-turn customer extension simulation.** Reuse the no-capability channel isolate for a
+  project-admin-authorized, active installation and stage handler replies, answer requests and
+  session updates for display only. Do not invoke Knowledge/model answering, provider delivery or
+  persistent session writes.
+
+- [ ] **Add member grants and verified contact routing.** Requires a multi-Space/project sender
+  selection model that preserves the plan's per-member identity and current membership checks; do
+  not reuse executive contacts or infer ownership from pairing.
+
+**Latest checkpoint:** commit `8b2dcb56` preserves existing sender-to-Space/project bindings on
+collision and makes shared inbound honor the active channel link and project scope. The full
+current-source reconciliation, owner/admin identity boundary, phone simulation pattern and live
+customer-extension effects are recorded in the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
+`git diff --check` passed; no tests, typechecks, provider actions or deployment ran. **Next action:**
+add a one-turn customer extension simulation using the isolated channel handler and return staged
+outputs only.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

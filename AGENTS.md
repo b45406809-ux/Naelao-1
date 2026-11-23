@@ -62,5 +62,5 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**WhatsApp member routing and extension testing — reconcile current routing and simulation callers.**
-Trace the actual inbound pairing, webhook, contact and membership authority, customer extension, and test/replay flows against the plan and existing channel, extension and identity records. Implement the first gap supported by current host authority; preserve tenant/member/project isolation and keep simulations free of live effects.
+**WhatsApp member routing and extension testing — add an isolated customer extension simulation.**
+Use the active plan and [progress ledger](docs/research/whatsapp-member-routing-and-extension-testing-progress.md). Add a one-turn, project-admin-authorized simulation for the exact active installation using the no-capability channel isolate. Return reply, answer-request and session-update proposals only; do not run Knowledge/model answering, provider delivery or persistent session writes. Keep member grants and multi-Space sender selection as a later scoped slice.

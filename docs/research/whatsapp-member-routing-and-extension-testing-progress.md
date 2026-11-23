@@ -40,8 +40,28 @@ member enrollment, isolated customer simulation and replay acceptance remain unv
 - `channel_pairings` still cannot represent one sender independently paired to multiple Spaces or
   projects. This checkpoint fails closed rather than designing that product/data model.
 
-## Next source action
+### Simulation and replay callers
 
-Trace reachable extension simulation, replay, conversation and side-effect callers in the current
-source. Confirm whether any WhatsApp/customer simulation surface exists and record which existing
-simulation adapters can guarantee no live sends or mutations before selecting the next code slice.
+- No WhatsApp/customer extension test or replay route was found in the reviewed Agent, Space or
+  Shell source. The existing reachable extension handler dispatch is the live path.
+- Phone simulation is a useful bounded pattern but is provider-specific: its authenticated project
+  route selects one active phone binding, pins the handler/settings and creates synthetic phone
+  events. The Agent Durable Object invokes `runChannel` without a provider request or event receipt,
+  rejects `channel.answer`, returns the reply, and does not save session updates.
+- The channel isolate has no RPC capability binding or ambient outbound network. Its bounded host
+  surface stages `reply`, `answer`, and session updates as outputs. For customer extensions, the live
+  host additionally reads approved Knowledge/attachments, executes `channel.answer` through the
+  Gateway reasoner, delivers via `deliveryTools.notify`, and persists session state. A customer
+  simulation must stop at the isolate output boundary and label answer requests and session changes
+  as proposals; it must not enter those live host steps.
+- Member routing remains unimplemented: only the current owner/admin executive-contact path is
+  established, and the shared provider identity row still has one Space/project target. Do not use
+  admin-supplied phone numbers as member proof or infer member routing from pairing.
+
+## Checkpoint and next action
+
+The source reconciliation task is complete at code commit `8b2dcb5642027ea021c5039587cc7e784e5f74bd`.
+`git diff --check` passed; no tests, typechecks, provider actions or deployment ran. Next, add a
+single-turn, project-admin-scoped customer extension simulation that stages reply/answer/session
+outputs without live model, provider, knowledge mutation or session-persistence effects. Replay,
+conversation history, Knowledge snapshots and member phone testing remain separate later slices.
