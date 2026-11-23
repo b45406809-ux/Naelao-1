@@ -303,7 +303,9 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           // UI showed nothing about it whatsoever.
           deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
           created_artifacts?: Array<{ artifact_id: string; filename: string; content_type?: string }>;
-          citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }>;
+          citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string;
+            heading_path?: string[]; provenance?: { source_adapter?: string; source_revision?: number; source_content_sha256?: string;
+              source_grant_revision?: number; chunk_content_sha256?: string } }>;
           host_actions?: Array<{ sequence: number; tool_name: string; call_status: "succeeded" | "failed"; observed_at?: number; duration_ms?: number }>;
         }>();
         return {

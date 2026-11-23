@@ -460,7 +460,8 @@ describe("Knowledge document lifecycle boundaries", () => {
     const key = "kb/space-1/project-1/doc-1/chunk_1.txt";
     const f = fixture({ projectAccess: true,
       citationRow: { id: "doc-1_chunk_1", document_id: "doc-1", r2_key: key, content_hash: contentHash,
-        byte_start: 2_048, byte_end: 2_072, line_start: 5, line_end: 5, heading_path: '["Page 2","Table 1"]', source_revision: 3 },
+        byte_start: 2_048, byte_end: 2_072, line_start: 5, line_end: 5, heading_path: '["Page 2","Table 1"]',
+        source_adapter: "connector", source_revision: 3, source_content_sha256: "a".repeat(64), source_grant_revision: 2 },
       citationObject: { key, content, contentHash },
     });
     const response = await worker.fetch(await request(
@@ -469,7 +470,9 @@ describe("Knowledge document lifecycle boundaries", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ citation: { byte_start: 2_048, byte_end: 2_072, line_start: 5, line_end: 5,
-      source_revision: 3, heading_path: ["Page 2", "Table 1"] }, content });
+      source_revision: 3, heading_path: ["Page 2", "Table 1"], content_hash: contentHash,
+      provenance: { source_adapter: "connector", source_revision: 3, source_content_sha256: "a".repeat(64),
+        source_grant_revision: 2, chunk_content_sha256: contentHash } }, content });
     expect((f.env as unknown as { KB_BUCKET: { get: ReturnType<typeof vi.fn> } }).KB_BUCKET.get).toHaveBeenCalledWith(key);
     expect(f.analytics.writeDataPoint).toHaveBeenCalledWith({ blobs: ["knowledge_citation", "delivered"], doubles: [1], indexes: [] });
   });

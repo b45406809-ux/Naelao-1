@@ -7,7 +7,8 @@ describe("citationsFromTrace", () => {
       {
         seq: 1, phase: "run", name: "knowledge.search", ok: true,
         output: JSON.stringify({ data: [{ citation: { document_id: "doc-1", chunk_id: "doc-1_chunk_0", title: "Policy",
-          heading_path: ["Page 2", "Table 1"] } }] }),
+          heading_path: ["Page 2", "Table 1"], provenance: { source_adapter: "connector", source_revision: 3,
+            source_content_sha256: "a".repeat(64), source_grant_revision: 2, chunk_content_sha256: "b".repeat(64) } } }] }),
       },
       {
         seq: 2, phase: "run", name: "knowledge.search", ok: true,
@@ -17,7 +18,8 @@ describe("citationsFromTrace", () => {
     ]);
     expect(result).toEqual([
       { version: 1, ordinal: 1, identity: "doc-1:doc-1_chunk_0", document_id: "doc-1", chunk_id: "doc-1_chunk_0", label: "Policy",
-        heading_path: ["Page 2", "Table 1"] },
+        heading_path: ["Page 2", "Table 1"], provenance: { source_adapter: "connector", source_revision: 3,
+          source_content_sha256: "a".repeat(64), source_grant_revision: 2, chunk_content_sha256: "b".repeat(64) } },
       { version: 1, ordinal: 2, identity: "doc-2:doc-2_chunk_1", document_id: "doc-2", chunk_id: "doc-2_chunk_1" },
     ]);
   });

@@ -1,5 +1,37 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW04 follow-up — 2026-11-23 (Knowledge source provenance propagation)
+
+The ordinary scoped Knowledge search path previously returned only `source_revision` even though
+canonical source rows also carried `source_adapter`, `source_content_sha256` and optional
+`source_grant_revision`; the exact indexed chunk also had `content_hash`. Dense and FTS results now
+carry all five fields to the search response and canonical citation resolver. Search citations label
+the canonical source hash separately from the exact chunk hash. Agent answer and durable task
+citations preserve validated source provenance from the successful `knowledge.search` trace.
+Grounded-search cache keys use a new version prefix, preventing old cached hit records from silently
+omitting the new fields. Search authorization predicates and result bounds were unchanged.
+
+The memory adapter audit found these exact versioning gaps: SpaceDO Project facts use stable row IDs
+but update the same `(project_id, entity, relation)` row and expose only `updated_at`; Project Wiki
+upserts the same `(project_id, concept)` row and exposes only `updated_at`; Project Fabric inserts
+rows with stable IDs and `created_at` but stores no content hash. The personal/local Memory OS has
+the same pattern: structured facts update the same `(user_id, entity, relation)` row and expose
+`updated_at`; episodic notes and Fabric entries use stable row IDs and creation timestamps; Wiki
+overwrites `(user_id, concept)` with `updated_at`; promoted semantic vectors retain the episodic ID
+and text plus `sourceUpdatedAt`, but no content hash or source revision. These timestamps are
+freshness signals, not immutable revisions; row IDs identify records, not their changing content.
+Actor scope and the bounded ingress memory renderer were not changed.
+
+Verification: Knowledge sparse-search tests **5/5**, scoped search provenance route **1/1**,
+canonical citation resolver **1/1**, Agents citation metadata **2/2**, Knowledge and Agents
+typechecks, exact Shell source typecheck and `git diff --check`; local/mock only. The broader
+Knowledge focused run passed **61/64**; three unrelated restored-chunk reindex cases returned 404
+instead of expected 200/409/410. No deployed/live acceptance. APW04 remains partial for retention,
+invalidation, selective-context evaluation and private-project leakage checks.
+
+**Exact next action:** reconcile retention and deletion/invalidation across the personal, Project,
+Space and Knowledge adapters; then evaluate bounded selective context and private-project isolation.
+
 ## APW03 follow-up — 2026-11-23 (Project decision review caller and UI)
 
 The Project page now includes the missing owner-facing Project Journal decision register. The

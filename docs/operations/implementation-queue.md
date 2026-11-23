@@ -91,10 +91,12 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   publication. Added a Project Journal decision register panel with exact-revision approve/reject,
   explicit supersession and workspace-pin rechecks. Stale proposals can be rejected, never approved.
   See the APW03 ledger follow-up.
-- [ ] **Active · APW04 — Memory source provenance and selective context.** Trace Project, Space and
-  personal memory adapters plus Knowledge source records; add immutable source revision/hash
-  provenance where the authoritative source provides it, otherwise record the exact adapter gap.
-  Keep actor scope and bounded context assembly intact; timestamps are not immutable revisions.
+- [ ] **Active · APW04 — Memory source provenance and selective context.** Knowledge source adapter,
+  source revision, source hash, grant revision and chunk hash now flow through scoped search,
+  citations and agent citation metadata. Project, Space and personal memory adapters expose stable
+  row IDs and update/create timestamps but no content revision/hash; those exact gaps are in the APW
+  ledger. Continue with retention/invalidation and bounded selective-context evaluation; timestamps
+  remain freshness metadata, not immutable revisions.
   See the APW ledger follow-up.
 - [ ] **APW04 — Retention, invalidation and context evaluation.** Reconcile memory retention/deletion
   across stores, then evaluate selective context and private-project leakage against existing
@@ -105,22 +107,27 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** Project owners and Space administrators now have a Project page decision
-review panel backed by Agents routes. It reads the existing scoped Project Journal operation, shows
-proposal and active-decision workspace status, requires the exact proposal revision and explicit
-same-topic supersession, and rechecks the workspace pin on the server before approval. Stale or
-unavailable proposals cannot be approved; rejection remains available and cannot activate them. The
-existing worker conflict panel already previews exact current target/worker versions and publishes
-manual resolutions only through checked Coordinator publication. Verification: Project Journal and
-Agents route suites **12/12**, router routing suite **1/1**, Agents typecheck, exact Shell source
-typecheck, and `git diff --check`; local/mock only. Router package typecheck remains blocked by
-existing missing `@naelao/http` exports in `RateLimitDO.ts` and `index.ts`. No browser/deployed
-acceptance ran. APW02 provider/cost acceptance remains blocked and all rollout flags remain off.
+**Latest checkpoint.** Knowledge search and its canonical citation resolver now preserve the
+source adapter, source revision, canonical source SHA-256, external-grant revision and exact chunk
+SHA-256 already stored by Knowledge. Agent citations retain this bounded source pin in answer/task
+metadata. Search cache keys were versioned so old cached hits cannot omit the new fields. Existing
+memory adapters were traced: Project facts and Project Wiki overwrite rows in place and expose only
+IDs plus `updated_at`; Project Fabric is insert-only with ID and `created_at`; personal structured
+facts and Wiki overwrite actor-scoped rows and expose only IDs/timestamps; personal episodic/Fabric
+records are insert-only with IDs and `created_at`, and promoted semantic vectors keep the episodic
+ID/text plus `sourceUpdatedAt`. None has a content revision/hash field. Actor filtering and bounded
+context assembly were not changed.
 
-**Exact next action:** trace immutable source identity, revision and hash availability through the
-actor-scoped memory adapters and Knowledge source records. Implement revision-bearing provenance
-where an authoritative store supports it; otherwise record the adapter contract that prevents it,
-then continue retention and selective-context evaluation. Preserve `infra/scripts/__pycache__/`.
+Verification: Knowledge sparse search **5/5**, scoped search provenance route **1/1**, canonical
+citation resolver **1/1**, Agents citation metadata **2/2**, Knowledge and Agents typechecks, exact
+Shell source typecheck and `git diff --check`; local/mock only. A broader combined Knowledge run
+passed **61/64**; three unrelated restored-chunk reindex cases returned 404 instead of their expected
+200/409/410. No deployed/live acceptance. APW04 remains open for retention/invalidation reconciliation,
+selective-context evaluation and private-project leakage checks.
+
+**Exact next action:** reconcile memory retention and deletion behavior across personal, Project,
+Space and Knowledge stores, then evaluate actor/project-bounded selective context and invalidation
+against the existing Knowledge and ingress memory tests. Preserve `infra/scripts/__pycache__/`.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).

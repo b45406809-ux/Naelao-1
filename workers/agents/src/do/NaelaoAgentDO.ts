@@ -207,7 +207,15 @@ export function renderIngressMemory(
   return lines.length ? lines.join("\n") : undefined;
 }
 
-/** Extract only server-issued knowledge coordinates from successful tool traces. */
+type CitationSourceProvenance = {
+  source_adapter?: string;
+  source_revision?: number;
+  source_content_sha256?: string;
+  source_grant_revision?: number;
+  chunk_content_sha256?: string;
+};
+
+/** Extract only server-issued knowledge coordinates and source pins from successful tool traces. */
 export function citationsFromTrace(trace: TraceStep[]): Array<{
   version: 1;
   ordinal: number;
@@ -216,6 +224,7 @@ export function citationsFromTrace(trace: TraceStep[]): Array<{
   chunk_id: string;
   label?: string;
   heading_path?: string[];
+  provenance?: CitationSourceProvenance;
 }> {
   const seen = new Set<string>();
   const citations: Array<{
@@ -226,6 +235,7 @@ export function citationsFromTrace(trace: TraceStep[]): Array<{
     chunk_id: string;
     label?: string;
     heading_path?: string[];
+    provenance?: CitationSourceProvenance;
   }> = [];
   for (const step of trace) {
     if (step.phase !== "run" || step.name !== "knowledge.search" || step.ok !== true || !step.output) continue;
@@ -241,11 +251,25 @@ export function citationsFromTrace(trace: TraceStep[]): Array<{
     ];
     for (const candidate of candidates) {
       if (!candidate || typeof candidate !== "object") continue;
-      const value = candidate as { document_id?: unknown; chunk_id?: unknown; title?: unknown; heading_path?: unknown };
+      const value = candidate as { document_id?: unknown; chunk_id?: unknown; title?: unknown; heading_path?: unknown; provenance?: unknown };
       if (typeof value.document_id !== "string" || typeof value.chunk_id !== "string" || !value.document_id || !value.chunk_id) continue;
       const identity = `${value.document_id}:${value.chunk_id}`;
       if (seen.has(identity)) continue;
       seen.add(identity);
+      const source = value.provenance && typeof value.provenance === "object" && !Array.isArray(value.provenance)
+        ? value.provenance as Record<string, unknown> : {};
+      const provenance: CitationSourceProvenance = {
+        ...(typeof source.source_adapter === "string" && source.source_adapter.length > 0 && source.source_adapter.length <= 32
+          ? { source_adapter: source.source_adapter } : {}),
+        ...(Number.isSafeInteger(source.source_revision) && Number(source.source_revision) > 0
+          ? { source_revision: Number(source.source_revision) } : {}),
+        ...(typeof source.source_content_sha256 === "string" && /^[a-f0-9]{64}$/.test(source.source_content_sha256)
+          ? { source_content_sha256: source.source_content_sha256 } : {}),
+        ...(Number.isSafeInteger(source.source_grant_revision) && Number(source.source_grant_revision) > 0
+          ? { source_grant_revision: Number(source.source_grant_revision) } : {}),
+        ...(typeof source.chunk_content_sha256 === "string" && /^[a-f0-9]{64}$/.test(source.chunk_content_sha256)
+          ? { chunk_content_sha256: source.chunk_content_sha256 } : {}),
+      };
       citations.push({
         version: 1,
         ordinal: citations.length + 1,
@@ -256,6 +280,7 @@ export function citationsFromTrace(trace: TraceStep[]): Array<{
         ...(Array.isArray(value.heading_path) && value.heading_path.length <= 16
           && value.heading_path.every((item) => typeof item === "string" && item.length > 0 && item.length <= 200)
           ? { heading_path: value.heading_path as string[] } : {}),
+        ...(Object.keys(provenance).length ? { provenance } : {}),
       });
     }
   }

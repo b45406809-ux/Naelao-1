@@ -3269,7 +3269,8 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
   }
   const scope = { tenantId, spaceId, projectId, roleRank };
   const row = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end, heading_path, d.source_revision
+    `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end, heading_path,
+       d.source_adapter,d.source_revision,d.source_content_sha256,d.source_grant_revision
      FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
      WHERE k.id=? AND k.document_id=? AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
        AND k.required_role_rank<=? AND k.deleted_at IS NULL AND d.status='indexed' AND d.source_state='current'
@@ -3307,7 +3308,17 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
   return c.json({ citation: { version: 1, identity: `${row.document_id}:${row.id}:${row.content_hash}`,
     document_id: row.document_id, chunk_id: row.id, content_hash: row.content_hash,
     byte_start: coordinate.byteStart, byte_end: coordinate.byteEnd, line_start: coordinate.lineStart,
-    line_end: coordinate.lineEnd, source_revision: Number(row.source_revision), ...(headingPath ? { heading_path: headingPath } : {}) }, content });
+    line_end: coordinate.lineEnd, source_revision: Number(row.source_revision),
+    provenance: {
+      ...(typeof row.source_adapter === "string" ? { source_adapter: row.source_adapter } : {}),
+      ...(Number.isSafeInteger(row.source_revision) && Number(row.source_revision) > 0 ? { source_revision: Number(row.source_revision) } : {}),
+      ...(typeof row.source_content_sha256 === "string" && /^[a-f0-9]{64}$/.test(row.source_content_sha256)
+        ? { source_content_sha256: row.source_content_sha256 } : {}),
+      ...(Number.isSafeInteger(row.source_grant_revision) && Number(row.source_grant_revision) > 0
+        ? { source_grant_revision: Number(row.source_grant_revision) } : {}),
+      chunk_content_sha256: String(row.content_hash),
+    },
+    ...(headingPath ? { heading_path: headingPath } : {}) }, content });
 });
 
 // ── GET /spaces/:spaceId/kb/search ────────────────────────────────────────────
@@ -3368,6 +3379,14 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       ...(headingPath ? { headingPath } : {}),
       ...(Number.isSafeInteger(row.source_revision) && Number(row.source_revision) > 0
         ? { sourceRevision: Number(row.source_revision) } : {}),
+      ...(typeof row.source_adapter === "string" && row.source_adapter.length > 0 && row.source_adapter.length <= 32
+        ? { sourceAdapter: row.source_adapter } : {}),
+      ...(typeof row.source_content_sha256 === "string" && /^[a-f0-9]{64}$/.test(row.source_content_sha256)
+        ? { sourceContentSha256: row.source_content_sha256 } : {}),
+      ...(Number.isSafeInteger(row.source_grant_revision) && Number(row.source_grant_revision) > 0
+        ? { sourceGrantRevision: Number(row.source_grant_revision) } : {}),
+      ...(typeof row.content_hash === "string" && /^[a-f0-9]{64}$/.test(row.content_hash)
+        ? { contentHash: row.content_hash } : {}),
     };
   };
   if (useAutoRag) {
@@ -3435,7 +3454,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       lookup: async (q, _scope, nowMs) => timed("cache_lookup_ms", async () => {
         if (!cacheReadsAllowed || await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId) ||
             await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) !== cacheGeneration) return null;
-        const key = `grounded:${await sha256Hex(`${namespace}:${q}`)}`;
+        const key = `grounded:v2:${await sha256Hex(`${namespace}:${q}`)}`;
         const value = await c.env.KB_CACHE.get(key, "json") as { createdAt: number; expiresAt: number; hits: GroundedSearchHit[] } | null;
         if (!value) return null;
         if (value.expiresAt <= nowMs || value.createdAt > nowMs) { await c.env.KB_CACHE.delete(key); return null; }
@@ -3445,7 +3464,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
         if (!hits.length || !cacheReadsAllowed ||
             await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId) ||
             await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) !== cacheGeneration) return;
-        const key = `grounded:${await sha256Hex(`${namespace}:${q}`)}`;
+        const key = `grounded:v2:${await sha256Hex(`${namespace}:${q}`)}`;
         await safeKvPut(c.env.KB_CACHE, key, JSON.stringify({ createdAt: Date.now(), expiresAt, hits }), { expirationTtl: 3600 });
       },
     },
@@ -3461,7 +3480,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       if (!ids.length) return [];
       const placeholders = ids.map(() => "?").join(",");
       const rows = await c.env.PLATFORM_DB.prepare(
-        `SELECT k.*, d.title FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
+        `SELECT k.*, d.title,d.source_adapter,d.source_revision,d.source_content_sha256,d.source_grant_revision FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
          WHERE k.id IN (${placeholders}) AND ${retrievalPredicate.sql} AND k.deleted_at IS NULL AND d.status='indexed' AND d.source_state='current'
            AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
              SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
@@ -3519,16 +3538,25 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
 
   const citationHits = result.hits.filter((hit) => hit.r2Key);
   const citationIndex = new Map(citationHits.map((hit, index) => [hit.id, index + 1]));
+  const sourceProvenance = (hit: GroundedSearchHit) => ({
+    ...(hit.sourceAdapter ? { source_adapter: hit.sourceAdapter } : {}),
+    ...(hit.sourceRevision !== undefined ? { source_revision: hit.sourceRevision } : {}),
+    ...(hit.sourceContentSha256 ? { source_content_sha256: hit.sourceContentSha256 } : {}),
+    ...(hit.sourceGrantRevision !== undefined ? { source_grant_revision: hit.sourceGrantRevision } : {}),
+    ...(hit.contentHash ? { chunk_content_sha256: hit.contentHash } : {}),
+  });
   const citations = citationHits.map((hit, index) => ({ index: index + 1, title: hit.title ?? "Untitled",
     docId: hit.id.split("_chunk_")[0], snippet: hit.content.slice(0, 280), r2Key: hit.r2Key,
-    charOffset: hit.byteStart, sourceRevision: hit.sourceRevision, ...(hit.headingPath ? { heading_path: hit.headingPath } : {}),
+    charOffset: hit.byteStart, sourceRevision: hit.sourceRevision, provenance: sourceProvenance(hit),
+    ...(hit.headingPath ? { heading_path: hit.headingPath } : {}),
     url: `/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId ?? SPACE_WIDE_PROJECT_SENTINEL)}/citations/${encodeURIComponent(hit.id.split("_chunk_")[0] ?? "")}/${encodeURIComponent(hit.id)}` }));
   const data = await Promise.all(result.hits.map(async (hit) => ({
     chunk_id: hit.id, doc_id: hit.id.split("_chunk_")[0], content: await wrapContextChunk(hit), score: hit.score,
     citation: hit.r2Key ? { document_id: hit.id.split("_chunk_")[0], chunk_id: hit.id,
       index: citationIndex.get(hit.id), title: hit.title, snippet: hit.content.slice(0, 280),
-      content_hash: undefined, byte_start: hit.byteStart, byte_end: hit.byteEnd,
+      content_hash: hit.contentHash, byte_start: hit.byteStart, byte_end: hit.byteEnd,
       line_start: hit.lineStart, line_end: hit.lineEnd, source_revision: hit.sourceRevision,
+      provenance: sourceProvenance(hit),
       ...(hit.headingPath ? { heading_path: hit.headingPath } : {}) } : null,
   })));
   const deletionStartedDuringRetrieval = await hasKnowledgeDocumentDeletionSince(

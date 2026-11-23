@@ -34,6 +34,14 @@ export interface GroundedSearchHit {
   lineEnd?: number;
   /** Current canonical source revision associated with this indexed chunk. */
   sourceRevision?: number;
+  /** Adapter that supplied the canonical source record, when available. */
+  sourceAdapter?: string;
+  /** SHA-256 of the canonical source content recorded by Knowledge. */
+  sourceContentSha256?: string;
+  /** Revision of the external grant used to publish the source, when applicable. */
+  sourceGrantRevision?: number;
+  /** SHA-256 of this indexed chunk's exact content. */
+  contentHash?: string;
   /** Validated parser-derived section/page/table path; never an authorization signal. */
   headingPath?: string[];
   title?: string;

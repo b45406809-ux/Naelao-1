@@ -253,7 +253,9 @@ function taskCreatedArtifacts(task: DurableAgentTask): Array<{ artifact_id: stri
   }).slice(0, 20);
 }
 
-function taskCitations(task: DurableAgentTask): Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }> {
+function taskCitations(task: DurableAgentTask): Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string;
+  provenance?: { source_adapter?: string; source_revision?: number; source_content_sha256?: string;
+    source_grant_revision?: number; chunk_content_sha256?: string } }> {
   if (!task.result || typeof task.result !== "object" || Array.isArray(task.result)) return [];
   const value = (task.result as Record<string, unknown>).citations;
   if (!Array.isArray(value)) return [];
@@ -263,7 +265,23 @@ function taskCitations(task: DurableAgentTask): Array<{ version: 1; ordinal: num
     if (citation.version !== 1 || !Number.isSafeInteger(citation.ordinal) || typeof citation.document_id !== "string" || !citation.document_id
         || typeof citation.chunk_id !== "string" || !citation.chunk_id) return [];
     const documentId = citation.document_id.slice(0, 200), chunkId = citation.chunk_id.slice(0, 200);
-    return [{ version: 1 as const, ordinal: citation.ordinal as number, identity: `${documentId}:${chunkId}`, document_id: documentId, chunk_id: chunkId, ...(typeof citation.label === "string" ? { label: citation.label.slice(0, 200) } : {}) }];
+    const rawProvenance = citation.provenance && typeof citation.provenance === "object" && !Array.isArray(citation.provenance)
+      ? citation.provenance as Record<string, unknown> : {};
+    const provenance = {
+      ...(typeof rawProvenance.source_adapter === "string" && rawProvenance.source_adapter.length > 0 && rawProvenance.source_adapter.length <= 32
+        ? { source_adapter: rawProvenance.source_adapter } : {}),
+      ...(Number.isSafeInteger(rawProvenance.source_revision) && Number(rawProvenance.source_revision) > 0
+        ? { source_revision: Number(rawProvenance.source_revision) } : {}),
+      ...(typeof rawProvenance.source_content_sha256 === "string" && /^[a-f0-9]{64}$/.test(rawProvenance.source_content_sha256)
+        ? { source_content_sha256: rawProvenance.source_content_sha256 } : {}),
+      ...(Number.isSafeInteger(rawProvenance.source_grant_revision) && Number(rawProvenance.source_grant_revision) > 0
+        ? { source_grant_revision: Number(rawProvenance.source_grant_revision) } : {}),
+      ...(typeof rawProvenance.chunk_content_sha256 === "string" && /^[a-f0-9]{64}$/.test(rawProvenance.chunk_content_sha256)
+        ? { chunk_content_sha256: rawProvenance.chunk_content_sha256 } : {}),
+    };
+    return [{ version: 1 as const, ordinal: citation.ordinal as number, identity: `${documentId}:${chunkId}`, document_id: documentId, chunk_id: chunkId,
+      ...(typeof citation.label === "string" ? { label: citation.label.slice(0, 200) } : {}),
+      ...(Object.keys(provenance).length ? { provenance } : {}) }];
   }).slice(0, 50);
 }
 

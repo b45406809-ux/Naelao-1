@@ -22,7 +22,7 @@ function bindings(owned: boolean, pendingDeletion = false, ftsFails = false, sea
       all: vi.fn(async () => {
         if (ftsFails && sql.includes("kb_chunks_fts")) throw new Error("FTS unavailable");
         if (sql.includes("kb_chunks_fts")) return { results: (searchFixture.ftsRows ?? []).filter(row => row.source_state !== "stale" || !sql.includes("d.source_state='current'")) };
-        if (sql.includes("SELECT k.*, d.title FROM kb_chunks")) return { results: (searchFixture.chunkRows ?? []).filter(row => row.source_state !== "stale" || !sql.includes("d.source_state='current'")) };
+        if (sql.includes("FROM kb_chunks k JOIN kb_documents d")) return { results: (searchFixture.chunkRows ?? []).filter(row => row.source_state !== "stale" || !sql.includes("d.source_state='current'")) };
         return { results: [] };
       }),
       run: vi.fn(async () => ({ meta: { changes: 1 } })),
@@ -108,6 +108,7 @@ describe("content-free retrieval evaluation trace", () => {
       id, tenant_id: "tenant-a", space_id: "space-b", project_id: "_space", required_role_rank: 0,
       content: `Synthetic indexed content for ${id}`, r2_key: `kb/${id}.txt`, byte_start: 0, byte_end: 32,
       line_start: 1, line_end: 1, heading_path: '["Page 2","Table 1"]', title: "Synthetic source", source_revision: sourceRevision,
+      content_hash: "b".repeat(64), source_adapter: "connector", source_content_sha256: "a".repeat(64), source_grant_revision: 3,
       source_state: sourceState,
     });
     const runRoute = async (caseId: string, query: string, id: string, canonicalRows: Array<Record<string, unknown>>) => {
@@ -135,7 +136,13 @@ describe("content-free retrieval evaluation trace", () => {
     const routeWithProvenance = await worker.fetch!(await searchRequest("Which catalog item uses code RX-0042?"), bindings(true, false, false, {
       matches: [{ id: currentId, score: 0.98 }], chunkRows: [row(currentId, 2)], ftsRows: [row(currentId, 2)],
     }) as never, {} as ExecutionContext);
-    await expect(routeWithProvenance.json()).resolves.toMatchObject({ data: [{ citation: { heading_path: ["Page 2", "Table 1"] } }] });
+    await expect(routeWithProvenance.json()).resolves.toMatchObject({
+      data: [{ citation: { heading_path: ["Page 2", "Table 1"], content_hash: "b".repeat(64),
+        provenance: { source_adapter: "connector", source_revision: 2, source_content_sha256: "a".repeat(64),
+          source_grant_revision: 3, chunk_content_sha256: "b".repeat(64) } } }],
+      citations: [{ provenance: { source_adapter: "connector", source_revision: 2, source_content_sha256: "a".repeat(64),
+        source_grant_revision: 3, chunk_content_sha256: "b".repeat(64) } }],
+    });
     expect(stale.result.retrieved[0]?.sourceVersion).toBe("1");
     expect(noAnswer.result.retrieved).toEqual([]);
     expect(noAnswer.env.query).toHaveBeenCalled();

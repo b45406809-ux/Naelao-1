@@ -560,7 +560,9 @@ export interface Message {
     } }>;
     /** Versioned immutable citation events emitted by the agent stream. Ordinals are assigned
      * once server-side and are never inferred from render order. */
-    citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string; heading_path?: string[] }>;
+    citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string; heading_path?: string[];
+      provenance?: { source_adapter?: string; source_revision?: number; source_content_sha256?: string;
+        source_grant_revision?: number; chunk_content_sha256?: string } }>;
   };
   /** CLIENT-ONLY, never persisted server-side: the "currently doing X" activity trail this run
    *  produced (observe/find/gate/reason/run/answer steps, live while the run was in flight — see

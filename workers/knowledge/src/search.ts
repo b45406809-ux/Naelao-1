@@ -87,7 +87,8 @@ export async function queryScopedFtsCandidates(input: {
   }
   const scope = buildRetrievalPredicate("k", input);
   const { results } = await input.db.prepare(`
-    SELECT k.id,k.content,k.r2_key,k.byte_start,k.byte_end,k.line_start,k.line_end,k.heading_path,d.title,d.source_revision
+    SELECT k.id,k.content,k.content_hash,k.r2_key,k.byte_start,k.byte_end,k.line_start,k.line_end,k.heading_path,
+      d.title,d.source_adapter,d.source_revision,d.source_content_sha256,d.source_grant_revision
     FROM kb_chunks_fts
     JOIN kb_chunks k ON k.rowid=kb_chunks_fts.rowid
     JOIN kb_documents d ON d.id=k.document_id AND d.tenant_id=k.tenant_id AND d.space_id=k.space_id
@@ -105,8 +106,9 @@ export async function queryScopedFtsCandidates(input: {
     ORDER BY bm25(kb_chunks_fts) ASC,k.id ASC
     LIMIT ?
   `).bind(matchExpression, ...scope.binds, input.userId, limit).all<{
-    id: string; content: string; r2_key: string; byte_start: number; byte_end: number;
-    line_start: number; line_end: number; heading_path: string; title: string | null; source_revision: number;
+    id: string; content: string; content_hash: string; r2_key: string; byte_start: number; byte_end: number;
+    line_start: number; line_end: number; heading_path: string; title: string | null; source_adapter: string;
+    source_revision: number; source_content_sha256: string | null; source_grant_revision: number | null;
   }>();
   return results.map((row) => {
     const headingPath = safeStoredHeadingPath(row.heading_path);
@@ -114,6 +116,7 @@ export async function queryScopedFtsCandidates(input: {
       id: row.id,
       score: 0,
       content: row.content,
+      ...(typeof row.content_hash === "string" && /^[a-f0-9]{64}$/.test(row.content_hash) ? { contentHash: row.content_hash } : {}),
       r2Key: row.r2_key,
       byteStart: row.byte_start,
       byteEnd: row.byte_end,
@@ -121,6 +124,12 @@ export async function queryScopedFtsCandidates(input: {
       lineEnd: row.line_end,
       ...(headingPath ? { headingPath } : {}),
       ...(Number.isSafeInteger(row.source_revision) && row.source_revision > 0 ? { sourceRevision: row.source_revision } : {}),
+      ...(typeof row.source_adapter === "string" && row.source_adapter.length > 0 && row.source_adapter.length <= 32
+        ? { sourceAdapter: row.source_adapter } : {}),
+      ...(typeof row.source_content_sha256 === "string" && /^[a-f0-9]{64}$/.test(row.source_content_sha256)
+        ? { sourceContentSha256: row.source_content_sha256 } : {}),
+      ...(Number.isSafeInteger(row.source_grant_revision) && Number(row.source_grant_revision) > 0
+        ? { sourceGrantRevision: Number(row.source_grant_revision) } : {}),
       title: row.title ?? "",
     };
   });
