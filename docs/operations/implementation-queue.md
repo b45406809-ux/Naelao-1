@@ -47,26 +47,27 @@ handoff. Anything that had yet to reach that branch may need to be redone.
 **Resumable workers, durable workflows and branches.** See the [plan](../research/resumable-workers-durable-workflows-and-branches-plan.md)
 and [progress ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md).
 
-- [ ] **Active · PW01–PW06 — Source-to-ledger reconciliation.** Audit current worker spawn, branch
-  mount, checkpoint/resume, dynamic workflow and effect callers against saved evidence. Reuse
-  newer evidence, assign stable IDs to remaining gaps, and identify the first ready code slice.
+- [x] **PW01–PW06 — Source-to-ledger reconciliation.** Current code matches the saved summaries for
+  branch/runtime routing, goal graph and signed communication, named leases, checked integration,
+  per-attempt usage receipts, and exact-attempt publication permits. Remaining gaps and the source
+  evidence are in the PW ledger. No runtime/deployed acceptance is inferred.
+- [ ] **Active · PW06 — Direct scheduled-script pre-effect revision fence.** Revalidate the exact
+  scheduled job identity, revision, enablement and script target immediately before the direct
+  `tools.run` call, after policy and budget admission. If authority changed, release any project
+  spend hold and fail closed. This does not claim cancellation or outcome reconciliation after an
+  external operation starts; preserve that as a separate effect-journal/cancellation gap.
   Preserve the untracked Python cache and keep rollout disabled.
 
-**Latest checkpoint.** APW06 conversation stop remains limited to processing tasks in an authorized
-conversation. Its UI now states that cancellation can interrupt an in-flight operation, cannot undo
-committed effects, and requires checking the final task result before retry. Project task activity is
-read-only for run controls: list/detail APIs authorize viewing, while the conversation cancellation
-endpoint checks exact session access. The generic `WorkflowRunDO.cancel` path is not exposed to users
-and does not reconcile `TaskDO` status, so it was not wired into Project activity. No Project
-cancellation, pause or resume action was added.
+**Latest checkpoint.** PW01–PW06 source-to-ledger reconciliation confirms the saved code summaries
+for branch routing, graph/communication, leases, integration, worker cost receipts and exact-attempt
+publication permits. The direct scheduled-script caller checks the exact job revision at ingress
+but performs policy/budget setup before `tools.run` without a final recheck. No source code changed in
+this audit slice. `git diff --check` passes; the source-only Shell typecheck passed in the preceding
+APW06 UI checkpoint (`09758676`), while the standard typecheck still hits stale `.next/types` imports
+for missing routes. No tests or runtime/deployed acceptance ran.
 
-Verification: source-only Shell TypeScript check and `git diff --check` pass. The standard Shell
-typecheck remains blocked by stale `.next/types` imports for missing routes. No tests or browser/
-deployed acceptance ran. APW's remaining work is dependency-blocked or owned by later plans; APW
-remains unchecked.
-
-**Exact next action:** complete PW01–PW06 source-to-ledger reconciliation using current code and saved
-evidence; name the first actionable requirement and resume condition for each blocked gap.
+**Exact next action:** implement the pre-effect revalidation in `NaelaoAgentDO`'s direct scheduled
+script handler, then typecheck and record the still-open in-flight effect/recovery gap.
 
 ## Parked plan — Adaptive planner, worker coordination and memory
 

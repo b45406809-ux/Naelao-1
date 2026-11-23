@@ -12,6 +12,25 @@ Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO a
 
 # Resumable workers, durable workflows and branches progress
 
+## PW01–PW06 source reconciliation — 2026-11-23
+
+Current source matches the latest saved implementation summaries for the six PW areas:
+
+| Requirement | Current source evidence | Remaining gap or acceptance limit |
+| --- | --- | --- |
+| PW01 branch lifecycle | `NaelaoAgentDO` records worker branch bases and checks the exact Coordinator head; `sandbox-routing.ts` routes delegated `workers/...` branches to separate ToolSandbox identities. | Legacy R2 has no immutable Coordinator revision; deployed process, filesystem, package, cache, port and credential isolation is unverified. Retention, revocation and cleanup remain partial. |
+| PW02 task graph and communication | `goal-dag.ts` bounds graph admission and exact-attempt dispatch; `task-blackboard.ts` uses signed scope and host-granted recipient edges; authorized conversation routes project persisted worker progress. | File/resource hints are advisory; interface ownership, help/conflict/result receipts and all private-Project readers still need broader coverage. |
+| PW03 selective resource leases | `ConcurrencyDO` implements bounded named leases with fencing; Coordinator writes recheck hashes, generations and fences. | Leases are cooperative. No mandatory lease is enforced at every shared mutable writer; deployed expiry/stale-holder behavior remains unaccepted. |
+| PW04 integration and conflict | `mergeWorkerWorkspace` uses exact source/target pins, bounded merge/review paths, isolated validation branches and expected-head checked publication. | >2 MiB/corrupt object handling, some ambiguous rename cases, complete route/runtime integration coverage and deployed acceptance remain open. |
+| PW05 runtime, cost and UI | Worker attempt run IDs feed normal billing settlement; owner/admin Space and Project reads aggregate exact attempt receipts. | Internal credits are not provider invoices. Process isolation, unknown/no-event explanation, cancellation/recovery UX and deployed acceptance remain partial. Default `AgentTaskWorkflow` still has no atomic per-run credit reservation (cross-reference APW05). |
+| PW06 validation and operations | Exact revision receipts and the parent-DO permit fence cancellation against an exact worker attempt/candidate/target; a permitted commit can finish and its actual receipt remains visible. | Cross-DO/Artifact publication races, in-flight effect cancellation/reconciliation, per-run currency/compute settlement and deployed concurrency/recovery acceptance remain open. |
+
+Checkpoint and workflow comparison: versioned worker checkpoint lineage and exact Coordinator pins are present; `WorkflowJournal` stores bounded step/artifact receipts; authorized task routes expose content-free recovery summaries; HITL resume revalidates the scheduled service identity and job revision. These do not restore unsaved process/model state. Dynamic extension workflow effects have their own prepared/committed/indeterminate records and budget settlement; those guarantees do not automatically cover static `AgentTaskWorkflow` or direct scheduled scripts.
+
+Scheduled-run caller comparison: the queue rechecks an exact job snapshot after claiming and preparation. Goal runs revalidate the current job at loop boundaries and before approval resume. Direct scheduled scripts check the exact enabled job revision and script name at AgentDO ingress, then perform config/policy/budget work before `tools.run` without a final source recheck. The immediate code slice is a final pre-effect revision fence. It will only prevent a stale operation from starting; it does not stop an operation already in flight or provide an unknown-outcome effect receipt.
+
+**Exact next action:** add that final scheduled-job recheck in the direct-script path after budget admission and immediately before `tools.run`; release any project reservation on denial. Keep in-flight cancellation and durable unknown-effect reconciliation open until their cross-service effect contract is implemented.
+
 ## PW03 checkpoint — 2026-11-18 (bounded workspace-pinned attempt lineage; `5aca9a29` pushed)
 
 Worker checkpoint envelopes are now v2 with at most eight metadata-only prior-attempt receipts.

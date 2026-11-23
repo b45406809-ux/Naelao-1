@@ -44,9 +44,7 @@ Verification: `git diff --check` and source-only Shell typecheck pass. The ordin
 remains blocked by stale generated `.next/types` imports for missing route files. Local UI/source
 evidence only; no browser/deployed acceptance. No component-specific tests exist and none were added.
 
-**Exact next action:** trace `StopDurableTaskButton`, `cancelRun`, Project activity APIs and durable
-goal dispatch cancellation fences to determine which safe pause/cancel/status actions existing
-authorization and recovery contracts support. Preserve uncertain external effects for review.
+This checkpoint's next action was completed in the following APW06 conversation-stop follow-up above.
 
 ## APW05 follow-up — 2026-11-23 (goal/task and runtime admission reconciliation)
 

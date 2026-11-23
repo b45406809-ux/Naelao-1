@@ -23,11 +23,12 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**PW01–PW06 — Source-to-ledger reconciliation.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). Audit current worker
-spawn, branch mount, checkpoint/resume, dynamic workflow and effect callers against saved PW
-evidence; preserve newer evidence, assign stable IDs to remaining gaps and select the first ready
-code slice. APW is parked with explicit policy/authority/live-acceptance dependencies. Preserve
+**PW06 — Direct scheduled-script pre-effect revision fence.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). In `NaelaoAgentDO`'s
+direct scheduled-script handler, revalidate the exact job identity/revision/script after policy and
+budget admission, immediately before `tools.run`; release any spend hold if authority changed.
+Record that this fence does not cancel an already-started effect or reconcile an unknown outcome.
+APW is parked with explicit policy/authority/live-acceptance dependencies. Preserve
 `infra/scripts/__pycache__/`; keep rollout defaults disabled and do not claim live or provider-cost
 results without their applicable evidence.
 
