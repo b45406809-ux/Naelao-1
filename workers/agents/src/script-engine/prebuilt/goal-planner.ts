@@ -1,6 +1,7 @@
 import type { UniversalAgentRole } from "@naelao/agent-sdk";
 import type { PrebuiltScript } from "./index.js";
 import { DEFAULT_SUB_AGENT_BUDGET_TOKENS, MAX_SUB_AGENT_BUDGET_TOKENS } from "../sub-agent-output.js";
+import { childFanout } from "../delegation-contract.js";
 
 /** Advisory patterns: the planner still supplies task specifications and authorized capabilities. */
 export const COORDINATION_PATTERNS = [
@@ -50,6 +51,7 @@ export interface GoalTask {
 }
 
 export const MAX_GOAL_TASKS = 12;
+export const MAX_GOAL_PLANNER_CHILDREN = childFanout(1, true);
 
 /** Directed host grant set: DAG successors plus Decisions-selected peer recipients. */
 export function taskCommunicationRecipients(taskId: string, tasks: readonly GoalTask[]): string[] {
@@ -106,24 +108,40 @@ export function validateGoalDag(tasks: GoalTask[]): void {
   for (const id of ids) visitCommunication(id);
 }
 
-function parseTasks(value: unknown, planBudget: number): GoalTask[] {
+function normalizeTaskBudget(value: unknown, taskId: string, planBudget: number): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > MAX_SUB_AGENT_BUDGET_TOKENS) {
+    throw new Error(`task '${taskId}' has an invalid budget_tokens`);
+  }
+  return Math.min(planBudget, value);
+}
+
+function parseTasks(value: unknown, planBudget: number, nestedBudgetPool: boolean): GoalTask[] {
   if (!Array.isArray(value)) throw new Error("tasks must be an array");
-  const tasks = value.map((raw, index) => {
+  if (!Number.isSafeInteger(planBudget) || planBudget < 1 || planBudget > MAX_SUB_AGENT_BUDGET_TOKENS) throw new Error("goal_plan_budget_invalid");
+  const records = value.map((raw, index) => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid goal task");
-    const task = raw as Record<string, unknown>;
+    return raw as Record<string, unknown>;
+  });
+  const unspecifiedCount = nestedBudgetPool ? records.filter(task => task.budget_tokens === undefined).length : 0;
+  const explicitBudgetTotal = nestedBudgetPool ? records.reduce((sum, task, index) => task.budget_tokens === undefined
+    ? sum
+    : sum + normalizeTaskBudget(task.budget_tokens, String(task.id ?? index + 1), planBudget), 0) : 0;
+  if (nestedBudgetPool && explicitBudgetTotal > planBudget) throw new Error("goal_plan_budget_exceeded");
+  const remainingNestedBudget = nestedBudgetPool ? planBudget - explicitBudgetTotal : 0;
+  if (nestedBudgetPool && unspecifiedCount > remainingNestedBudget) throw new Error("goal_plan_budget_exhausted");
+  const defaultNestedBudget = nestedBudgetPool && unspecifiedCount > 0
+    ? Math.floor(remainingNestedBudget / unspecifiedCount) : planBudget;
+  const tasks = records.map((task, index) => {
     const filePaths = Array.isArray(task.file_paths) ? task.file_paths.map(String) : [];
     const contextAffinity: GoalTask["context_affinity"] = task.context_affinity === "shared" || task.context_affinity === "isolated"
       ? task.context_affinity
       : filePaths.length > 0 ? "shared" : "isolated";
-    const requestedBudget = task.budget_tokens === undefined ? planBudget : task.budget_tokens;
-    if (typeof requestedBudget !== "number" || !Number.isSafeInteger(requestedBudget)
-      || requestedBudget < 1 || requestedBudget > MAX_SUB_AGENT_BUDGET_TOKENS) {
-      throw new Error(`task '${String(task.id ?? index + 1)}' has an invalid budget_tokens`);
-    }
+    const taskId = String(task.id ?? `task-${index + 1}`);
+    const budgetTokens = normalizeTaskBudget(task.budget_tokens === undefined ? defaultNestedBudget : task.budget_tokens, taskId, planBudget);
     const subtaskSpec = String(task.subtask_spec ?? "");
     const declaredResources = Array.isArray(task.resource_keys) ? task.resource_keys.map(String) : undefined;
     return {
-      id: String(task.id ?? `task-${index + 1}`), title: String(task.title ?? ""),
+      id: taskId, title: String(task.title ?? ""),
       subtask_spec: subtaskSpec,
       ...(task.acceptance_criteria !== undefined ? { acceptance_criteria: task.acceptance_criteria as string[] } : {}),
       ...(task.evidence_checks !== undefined ? { evidence_checks: task.evidence_checks as Array<{ criterion: string; operation: string }> } : {}),
@@ -139,16 +157,17 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
       dependencies: Array.isArray(task.dependencies) ? task.dependencies.map(String) : [],
       // Peer grants are selected by the host Decisions service after planning. Ignore
       // planner/model-supplied recipients so a plan cannot grant its own access.
-      budget_tokens: Math.min(planBudget, requestedBudget),
+      budget_tokens: budgetTokens,
     };
   });
+  if (nestedBudgetPool && tasks.reduce((sum, task) => sum + task.budget_tokens, 0) > planBudget) throw new Error("goal_plan_budget_exceeded");
   validateGoalDag(tasks); return tasks;
 }
 
 export const goalPlanner: PrebuiltScript = {
   name: "goal-planner", domain: "orchestration", requires_tier: 2,
   description: "Persist a frontier-planned task DAG and concurrently dispatch isolated edge workers.",
-  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, acceptance_criteria? (1-8 concrete outcomes, each at most 500 characters), evidence_checks? (bounded host operations only), decision_refs? (up to four {id,revision} references to currently active Project Journal decisions; host revalidates before dispatch and resume; stale references hold work for review), human_review_required? (list any acceptance criteria that require a human judgment or sign-off; these cannot pass until the host provides an approved human-review receipt), priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host Decisions service may grant bounded one-way peer blackboard sharing; the planner cannot choose recipients, and sharing never creates execution dependencies or grants authority. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
+  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, acceptance_criteria? (1-8 concrete outcomes, each at most 500 characters), evidence_checks? (bounded host operations only), decision_refs? (up to four {id,revision} references to currently active Project Journal decisions; host revalidates before dispatch and resume; stale references hold work for review), human_review_required? (list any acceptance criteria that require a human judgment or sign-off; these cannot pass until the host provides an approved human-review receipt), priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), agent_id? (own configured worker), planner? (request a depth-2 subplanner; at most four planner children per root graph, with no deeper planner children), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. A nested planner's child-task budgets share the parent task's assigned worker-token ceiling; omitted budgets split the remaining pool across those tasks. The host Decisions service may grant bounded one-way peer blackboard sharing; the planner cannot choose recipients, and sharing never creates execution dependencies or grants authority. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
   operations: {
     async "engine.coordination_patterns"() {
       return { patterns: structuredClone(COORDINATION_PATTERNS), advisory: true };
@@ -157,7 +176,13 @@ export const goalPlanner: PrebuiltScript = {
       const objective = String(args.objective ?? "").trim();
       if (!objective) throw new Error("objective is required");
       const planBudget = ctx.env.workerTokenBudget ?? DEFAULT_SUB_AGENT_BUDGET_TOKENS;
-      const tasks = parseTasks(args.tasks, planBudget);
+      const delegationDepth = ctx.env.delegationDepth ?? 1;
+      const tasks = parseTasks(args.tasks, planBudget, delegationDepth > 1);
+      const plannerTasks = tasks.filter(task => task.planner === true);
+      if (delegationDepth > 1 && plannerTasks.length > 0) throw new Error("goal_plan_depth_exceeded");
+      const maxPlannerChildren = delegationDepth === 1 && ctx.env.delegationPlanner !== false
+        ? MAX_GOAL_PLANNER_CHILDREN : childFanout(delegationDepth, ctx.env.delegationPlanner ?? true);
+      if (plannerTasks.length > maxPlannerChildren) throw new Error("goal_plan_planner_fanout_exceeded");
       // Predict runtime needs against the host's current worker tools and approved runtime
       // catalogue. The model recommends only a declared capability; grants and execution remain
       // host-controlled. This replaces brittle keyword matching with task-graph classification.

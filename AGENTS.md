@@ -23,12 +23,12 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW02 — Hierarchical planner tree.** Resume from the checked-in
+**APW02 — Safe cancellation of redundant workers.** Resume from the checked-in
 [implementation queue](docs/operations/implementation-queue.md#active-plan). Host admission for
-bounded dynamic expansion and report-only routing evidence are checked off with local DAG,
-admission, replay and projection coverage. Reconcile nested planner limits, authority inheritance
-and budget accounting before implementing deeper decomposition. Keep progressive routing and
-dynamic expansion disabled by default.
+bounded dynamic expansion, report-only routing evidence and bounded hierarchical planning are
+checked off with local DAG, admission, replay and delegation coverage. Trace durable dispatch
+acknowledgements and late result/workspace effects; cancellation must not imply rollback of committed
+work. Keep progressive routing and dynamic expansion disabled by default.
 
 ## Save progress inside each task
 

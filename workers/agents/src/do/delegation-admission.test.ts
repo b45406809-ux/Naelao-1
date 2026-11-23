@@ -162,6 +162,17 @@ describe("host delegation admission", () => {
       maxTier: 6, localOnly: true, localModelMachine: "authorized-machine" }, body.context.delegation_token, "test-signing-key");
     f.finishes.forEach(finish => finish()); await run;
   });
+  it("inherits the assigned task budget as a delegated planner's child budget ceiling", async () => {
+    const f = fixture();
+    f.runtime.delegationDepth = 1;
+    f.runtime.delegationPlanner = true;
+    f.runtime.workerTokenBudget = 1_000;
+    const run = f.spawn(f.host(), [{ goal: "plan a bounded subtask", planner: true, budget_tokens: 256 }]);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    expect(f.requests[0]!.context).toMatchObject({ max_tokens: 256, worker_token_budget: 256, delegation_depth: 2, delegation_planner: true });
+    f.finishes[0]!();
+    await run;
+  });
   it("lists a saved progress checkpoint timestamp without exposing checkpoint payload", async () => {
     const f = fixture(), parent = f.host();
     const run = f.spawn(parent, [{ goal: "persist progress" }]);

@@ -5706,7 +5706,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 sub_agent_id: subId,
                 max_steps: maxSteps,
                 max_tokens: budgetTokens,
-                worker_token_budget: planBudget,
+                // A delegated planner may only distribute the budget allocated to its own task.
+                worker_token_budget: budgetTokens,
                 // Worker sessions are durable background work. Their session and workspace
                 // branch persist independently, so they do not inherit the interactive deadline.
                 long_running: true,

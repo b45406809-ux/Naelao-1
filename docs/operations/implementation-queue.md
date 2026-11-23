@@ -62,9 +62,11 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   current receipts are observable, but include unpriced events and do not represent provider invoices.
   Resume after the comparative evaluation contract supplies those inputs; keep progressive routing
   disabled meanwhile.
-- [ ] **Active · APW02 — Hierarchical planner tree.** Reconcile nested planner limits, authority
-  inheritance and budget accounting before implementing deeper decomposition.
-- [ ] **APW02 — Safe cancellation of redundant workers.** Trace dispatch acknowledgements and late
+- [x] **APW02 — Hierarchical planner tree.** Root graphs admit at most four depth-two planners;
+  nested planners can create leaf tasks only. Each graph remains capped at 12 tasks, and nested child
+  task-token allocations sum within the assigned parent-task ceiling. The delegated child receives
+  that assigned ceiling in its host context; signed scope and caller authorization remain inherited.
+- [ ] **Active · APW02 — Safe cancellation of redundant workers.** Trace dispatch acknowledgements and late
   result/workspace effects; cancellation must not imply rollback of committed work.
 - [ ] **APW02 — Comparative evaluation.** Define a controlled baseline and deployed acceptance only
   after routing metrics and cancellation behavior are ready.
@@ -78,20 +80,22 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** Progressive routing now records a bounded 32-entry, report-only history in
-the goal journal. Each actual concurrency change records its prior/new value, reason and time; changes
-triggered by a task completion also record that task's outcome and verification outcome. Goal activity
-validates and projects the history, and the Shell displays it beside the existing per-task
-verification, runtime, token and internal-credit receipts. The receipt join fix is in the preceding
-checkpoint. Verification: goal DAG **60/60**, goal activity projection **5/5**, Agents typecheck,
-Shell source typecheck excluding stale `.next/types`, and `git diff --check`; local/mock only. The
-regular Shell typecheck still reports stale `.next/types` references to absent route files. Routing
-behavior and gates are unchanged; there is no controlled cost/quality baseline or savings claim.
+**Latest checkpoint.** Hierarchical planner admission is now bounded at the goal-planner boundary:
+root graphs permit no more than four planner-marked children, depth-two planners cannot create a
+third planner level, and each nested plan's child-task token allocations fit within its inherited
+parent-task ceiling. Delegated planner workers now receive that task allocation in
+`worker_token_budget` instead of the parent's broader ceiling. Each goal graph remains capped at 12
+tasks; signed tenant/Space/Project/actor and caller-role scope is still bound by the delegation
+contract and rechecked by the child run gate. Verification: planner, DAG/kernel, delegation and
+assistant-swarm suites **38/38**, Agents typecheck and `git diff --check`; local/mock only. These are
+planned token ceilings, not aggregate provider-spend reservations; progressive routing and dynamic
+expansion remain disabled by default. The regular Shell typecheck still has stale `.next/types`
+references to absent route files; the Shell source-only typecheck passed in the preceding checkpoint.
 
-**Exact next action:** reconcile nested planner depth, task-count and token-budget limits across
-`goal-planner.ts`, goal expansion and delegated worker contracts. Identify the smallest host-enforced
-tree boundary that prevents deeper planner recursion from exceeding inherited authority or budget;
-keep deeper decomposition disabled until that boundary is verified.
+**Exact next action:** trace `goal_dispatch_outbox`, `sub_agents` acknowledgements, runtime cancel
+calls and workspace publication for redundant workers. Implement cancellation that blocks future
+dispatch, preserves late-result reconciliation and reports uncertain/committed effects without
+claiming rollback.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).
