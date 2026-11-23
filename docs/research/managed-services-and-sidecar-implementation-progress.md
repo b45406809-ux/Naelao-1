@@ -1,3 +1,57 @@
+## S/U milestone S1 source reconciliation — 2026-11-23 (U06–U12 and sections 1–20)
+
+The current-source recheck closes the remaining inherited-gap rows for S1. `LiveRuntimeControlDO`
+has a scoped durable operation journal and read-only reconciliation, but `LIVE_RUNTIME_AGENT` has
+no adapter implementation or Wrangler binding; pinned Cloudflare Computer source is experimental
+and does not establish authenticated write admission, bounded filesystem delta, drain, flush,
+generation-fenced reconnect or handoff. `WorkspaceCoordinatorDO` persists branch-scoped checkpoint
+jobs and rechecks session authority/generation/fence, but no first-party Shell, SDK, template or
+provider-ingress caller requests live checkpoints. The pinned daemon workflow verifies source,
+builds the daemon, emits an SBOM and provenance, and retains its artifacts; it does not publish an
+image. These are unsupported runtime-contract dependencies, not credential-only blockers.
+
+U09's stable project registry/generation fencing, migration 0255 encrypted private-state capture,
+restore and retryable expiry/erasure deletion, plus owner-visible inert restart metadata, remain
+local and feature-off. U10's tombstone, bounded retryable runtime registry and browser profile/session
+cleanup are implemented, but the reachable Project runtime identity gap remains: `code-runner.ts`
+and `container-workspace.ts` send host-derived names, while `ToolSandboxDO.registerWorkspaceRuntime`
+silently returns when the name is absent. Repository-wide source search found no other non-test
+caller that sends Project runtime requests to this DO. U11 has owner-scoped threshold evaluation,
+durable alerts, opted-in push/email delivery and supported-source cost observations; it neither
+stops dispatch nor creates provider invoices. U12's pinned dependency staging is wired into the
+Agents build and two CI workflows; no new CI event or deployment was triggered.
+
+The section crosswalk below maps the full plan scope to its current implementation owner and the
+remaining acceptance boundary. Detailed code receipts and older local verification remain in the
+linked progress records; this S1 pass adds no live/provider claim.
+
+| Plan section | Current source/evidence owner | S1 disposition and remaining boundary |
+| --- | --- | --- |
+| 1. Product outcome and decisions | `execution-ladder.ts`, `code-runner.ts`, §17 and U03–U09 | The main-runtime/specialist boundary is reflected in current callers. Main runtime admission and live guarantees remain gated. |
+| 2. Existing baseline | `code-runner.ts`, `environments.ts`, Agent37 adapter ledger | Current execution ladder and explicit external-machine transfer remain; no automatic local filesystem sync is claimed. |
+| 3. Ownership, identity and trust | Current scoped host routes and S2/S6 lifecycle records | Local identity, grant and reauthorization paths are tracked; generic channel identity proof and external acceptance remain partial. |
+| 4. Connector and managed-account model | UserPort/AgentPort sync and provider capability records | Supported adapters remain owner-scoped. Provisioning, regions, commercial terms and provider-specific isolation remain per-provider gates. |
+| 5. Plans, credits and pricing | Billing reservation/settlement records; U02/U11 | Internal credits, provider observations and operator imports remain distinct. Invoice reconciliation and approved spend enforcement remain open. |
+| 6. Main runtime and specialized sidecars | U03, U05–U09 and `ToolSandboxDO` | Agent37 is an explicit specialist; the Cloudflare main runtime remains feature-off pending authoritative allocation and runtime contracts. |
+| 7. Filesystems, artifacts and consistency | Workspace Coordinator, MIME/U04, Agent37 checked handoff | Checked staging/publication and explicit artifact transfer are local. Live mount/sync/drain/flush and deployed acceptance are absent. |
+| 8. AgentPort and managed-service lifecycle | AgentPort routes, UserPort sync and provider-specific lifecycle records | Supported account/grant/revocation lanes are local; generic providers and live provider acceptance remain partial. |
+| 9. Phased delivery and acceptance | §19 S0–S9 and this implementation queue | S1 is complete after this crosswalk; S2–S9 remain tracked at their implementation, policy and live gates. |
+| 10. Verification and operating evidence | This progress ledger and linked local check records | Local mocks/typechecks are labeled as such. No new tests, migrations, deployment or live acceptance ran in this S1 pass. |
+| 11. Open decisions | §11 and the U01/U02/U05/U09/U11 rows | Retention, provider terms/pricing, spend policy, runtime lane, regions and wallet product decisions remain explicit dependencies. |
+| 12. Provider dashboard, extensions and delegated billing | Managed-services owner routes/Shell and platform completion ledger | Supported owner views and lifecycle controls exist; provider-neutral registration, entitlements and live provider acceptance remain partial. |
+| 13. Cloudflare email | `workers/agentport/README.md`, `channels/cloudflare-email.ts`, AgentMail records | Ingress/provisioning foundations exist and are disabled pending domain/binding/abuse setup. Live delivery, content storage/search, attachment and cost acceptance remain open. |
+| 14. Managed credits and agent wallet payments | Billing core and AgentPort payer/mandate records | Supported reservation and parent-funded lanes are local; independent agent wallets, Coinbase product, settlement and fee policy remain unresolved. |
+| 15. Initial channel providers | Channel adapters and provider-specific ledgers | Existing email/SMS/voice/bot integrations are scoped to implemented capabilities. Provider terms, regions and live delivery are not inferred. |
+| 16. Shared channels and multiple assistants | AgentMail per-conversation routing record; channel dispatch paths | AgentMail owner overrides are local. Generic identity linking, switching, deterministic consumer persistence and shared-channel acceptance remain partial. |
+| 17. Cloudflare persistent project computer | U05–U10, `DynamicSandboxDO`, private-state backup and restart-profile records | Registry, generation fencing and private-state metadata exist locally. Live adapter, key/region configuration, restart health and provider purge remain unsupported or unverified. |
+| 18. Inherited unified-platform gaps | Current U01–U12 matrix in the plan | All rows were refreshed against current code; U10 project runtime registration is selected as the first local S3 implementation task. |
+| 19. Autonomous delivery and handoff | `AGENTS.md`, implementation queue and progress ledger | Queue/pointer now advances from S1 to U10, preserves cache/data and rollout gates, and requires a remote-verified checkpoint. |
+| 20. Planner/worker branch conflicts | PW progress ledger and latest PW01/PW02 checkpoints | Checked publication and Project goal access reauthorization are local; worker-branch retention/deletion remains blocked on owner policy. |
+
+Evidence is source inspection and reconciliation with the linked local ledgers only. No tests,
+migrations, deployment, provider actions, or live acceptance ran. S1 is complete; the next active task
+is the fail-closed U10 registry identity guard in `ToolSandboxDO.registerWorkspaceRuntime`.
+
 ## S/U milestone S1 source reconciliation — 2026-11-23 (U03–U05)
 
 U03 source still matches the local lifecycle record: owner-scoped Agent37 connection checks,

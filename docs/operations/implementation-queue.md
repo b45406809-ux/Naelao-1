@@ -47,27 +47,29 @@ handoff. Anything that had yet to reach that branch may need to be redone.
 **Managed services and sidecar runtime.** See the [plan](../research/managed-services-and-sidecar-runtime-plan.md)
 and [progress ledger](../research/managed-services-and-sidecar-implementation-progress.md).
 
-- [ ] **Active · S/U — Reconcile current source and activate the first ready implementation gap.**
+- [x] **S/U · S1 — Reconcile current source and activate the first ready implementation gap.**
   Complete milestone S1 from the managed-services plan using this branch's current source; refresh
   coverage for plan sections 1–20 and inherited U01–U12, reusing later implementation evidence and
   marking policy/provider/deployment dependencies precisely. Keep gates disabled and preserve data.
 
-**Latest S1 slice:** U06's saved gap was rechecked against `LiveRuntimeControlDO.ts` and
-`WorkspaceCoordinatorDO.ts`; the coordinator boundary still has no runtime adapter or configured
-binding, and the existing Container code does not prove live mount, drain or flush behavior. U10's
-retryable runtime and browser erasure registries are implemented in `workspace-project-cleanup.ts`
-and their handlers; the matrix now reflects that and keeps the legacy/restored/sidecar audit open.
-U01's scoped staging policy/legal-hold callers and GC checks were confirmed, while revision and
-backup-retention periods remain a policy dependency. U02's internal Container metering and local
-provider receipts were traced; provider-billed allocation/idle ingestion remains unsupported. U03's
-Agent37 owner lifecycle/artifact path and U04's current MIME caller coverage match the implementation
-ledger. U05 still has separate Container and Cloudflare Computer allocation identities, so its
-verifier cannot authorize a Project main Container without an authoritative producer.
-Source inspection only; no tests or deployment ran.
+- [ ] **Active · S/U · S3/U10 — Require registered host identity before Project runtime work.**
+  The S1 caller audit found that reachable Project callers send a host-derived runtime name, but
+  `ToolSandboxDO.registerWorkspaceRuntime` silently skips registration when it is absent. Require
+  and validate the exact expected object name and successful D1 inventory write before project
+  execution/workspace operations; preserve per-project cleanup and keep runtime gates disabled.
 
-**Exact next action:** continue S1 with U06–U12 caller, authority and durable-record reconciliation,
-then finish the original sections 1–20 matrix and activate the first independent code gap whose
-authority and runtime contract are supported by current source.
+**S1 checkpoint:** the progress ledger now maps sections 1–20 to their owning implementation and
+evidence records, and the U01–U12 matrix was reconciled against the current branch. U06–U08 remain
+blocked on the absent supported runtime adapter/flush contract; U09's local private-state and
+restart metadata remain feature-off; U11's supported cost alerts remain informational; U12's
+dependency staging is wired. The source audit found one actionable U10 gap: current Project
+execution/workspace callers send a host-derived object name, but `ToolSandboxDO.registerWorkspaceRuntime`
+silently skips erasure registration if it is missing. Source review only; no tests, migrations,
+deployment or live acceptance ran.
+
+**Next active task · S/U S3/U10:** require and validate the host-derived Project runtime object
+identity and durable registry write before project-scoped ToolSandbox work. Verify every reachable
+caller and keep rollout disabled.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

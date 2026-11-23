@@ -23,11 +23,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**S/U — Reconcile current source and activate the first ready implementation gap.** Resume from the
-checked-in [implementation queue](docs/operations/implementation-queue.md#active-plan). Complete
-milestone S1 against the current `Mcbt5s-Backup-2` source, the managed-services plan and inherited
-U01–U12 gaps; refresh the requirement-to-code matrix and then select the first independently
-implementable gap. Preserve `infra/scripts/__pycache__/` and keep rollout defaults disabled.
+**S/U — S3/U10: require registered host identity before Project runtime work.** Resume from the
+checked-in [implementation queue](docs/operations/implementation-queue.md#active-plan). Require
+the exact host-derived runtime object name and a successful D1 registry write before a Project
+ToolSandbox execution or workspace operation can proceed. Recheck all reachable callers, preserve
+`infra/scripts/__pycache__/`, and keep rollout defaults disabled.
 
 ## Save progress inside each task
 
