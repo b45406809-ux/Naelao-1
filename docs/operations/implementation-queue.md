@@ -306,21 +306,25 @@ remaining P01–P24 dependencies are itemized in the linked progress ledger's cu
 No additional local source-only P task is ready. Resume when a listed contract/evidence dependency
 changes or relevant source changes.
 
-## Active plan — AgentPort managed messaging providers
+## Reconciled plan — AgentPort managed messaging providers
 
-See the [plan](../research/agentport-messaging-providers-managed-resale-plan.md). This plan has no
-standalone progress ledger yet; create one after the source-to-caller reconciliation.
+See the [plan](../research/agentport-messaging-providers-managed-resale-plan.md) and [progress
+ledger](../research/agentport-messaging-providers-managed-resale-progress.md).
 
-- [ ] **Reconcile current AgentPort and messaging callers.** Trace provider adapter and reachable
+- [x] **Reconcile current AgentPort and messaging callers.** Trace provider adapter and reachable
   channel/event/session, consent, owner credential, billing, Knowledge and deletion paths against
   the current managed-services, channel, extension and shared-compute records. Separate code gaps
   supported by current authority from provider agreement, account, pricing, jurisdiction and live
   acceptance gates. Do not provision accounts, send messages, buy service or enable a provider.
 
-**Latest checkpoint:** P10 recovery reconciliation found the scoped Space-shared and Project-bound
-signed update journeys already have exact replay/recovery receipts. P10 is checked; the broader P
-requirements remain parked at their recorded dependencies. **Next action:** inspect AgentPort bindings,
-adapters and current messaging callers, then compare only reachable paths with the linked ledgers.
+**Latest checkpoint:** current source has declaration-only generic provider metadata, a disabled
+native Cloudflare Email lane, and reachable AgentMail and Telnyx-specific paths. AgentMail event
+dispatch carries references and checks owner-selected routes; local unlink clears saved credentials
+and revokes AgentPort access but does not erase upstream provider data. No ClawMessenger, Linq, Photon
+or Sendblue adapter exists, and no current authority or records support implementing one. No tests or
+typechecks ran; `git diff --check` passed. Evidence: the AgentPort messaging progress ledger.
+**Next action:** reconcile AP01–AP06 against this branch's provider-neutral SDK, verified-capability
+UI and AgentPhone gates. Keep AgentPhone absent and unavailable without verified provider evidence.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
@@ -526,8 +530,8 @@ ledgers when moving to another plan.
 7. [ ] **Paused; remaining EP06 billing-price/cap and provider/live acceptance gates have no current local rate/acceptance contract.** [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
 8. [ ] **Paused; no current code-ready task.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md). TBR08's workflow-resource dispatch slice is locally fixed; broad channel/provider/cache/delegation acceptance remains partial. TBR11's direct-script per-effect ceiling needs an owner-approved admission contract; role-to-resource mapping and private-Project policy remain unresolved.
 9. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
-10. [ ] **Active.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md). Reconcile with managed communications before opening implementation tasks.
-11. [ ] [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
+10. [x] **Reconciled; no provider-adapter task is ready without external terms/API/pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
+11. [ ] **Active.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md). Reconcile AP01–AP06 against current provider-neutral SDK, verified-capability UI and provider gates; do not add AgentPhone support from vendor claims.
 12. [ ] [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Reconcile against channel, extension, identity and platform ledgers first.
 13. [ ] [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md)
 14. [ ] [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md)

@@ -62,8 +62,8 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**AgentPort managed messaging providers — reconcile current provider adapters and callers.**
-Trace AgentPort and reachable messaging callers against the managed-services, channel, extension,
-billing, Knowledge and shared-compute contracts. Record concrete code gaps separately from provider
-terms, account, pricing and live-acceptance gates; open implementation tasks only where current
-host authority and records support a safe change.
+**AgentPhone and AgentPort adapter evaluation — reconcile AP01–AP06 with current source.**
+Inspect the current provider-neutral AgentPort SDK and verified-capability setup surfaces against the
+AgentPhone progress ledger. Separate generic host support from provider claims, and open implementation
+only where current verified capability evidence and host authority support a safe change. Keep
+AgentPhone unavailable without current API, commercial, regional and live acceptance evidence.
