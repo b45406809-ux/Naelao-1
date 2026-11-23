@@ -101,3 +101,24 @@ identity model; do not reuse `executive_contacts` or `channel_pairings` as membe
   that member and Space separately from pairings, then resolve the binding before unpaired routing
   and recheck grant, Space membership and Project membership on every message. Design explicit
   selection when the same sender has verified access to multiple Spaces/projects.
+
+### Member self-verification and contact binding — 2026-11-23
+
+- Migration `0286_whatsapp_member_contact_verification.sql` stores active/replaced/revoked contact
+  bindings, pending single-use challenges and audit events. It stores HMACs of both the configured
+  platform destination and normalized sender; phone numbers are not copied into this map. A sender
+  may bind independently in several Spaces, while one active sender cannot be claimed by two
+  members in the same Space.
+- A signed-in Space member can request a five-minute code only while they have an active member
+  grant and WhatsApp is enabled. They send `VERIFY <code>` to the configured platform WhatsApp
+  destination. The signed inbound handler verifies that the message reached the configured
+  destination, consumes the challenge once, rechecks membership/grant/channel state, records
+  replacement and verification events, and replies with a status. Duplicate delivery of the same
+  webhook event is idempotent.
+- Contact bindings are not yet used to select or route an assistant. Ordinary inbound messages
+  still use existing pairings, so this verification checkpoint alone does not provide member
+  assistant access. Route selection, per-message access checks and an explicit multi-Space/project
+  chooser are the exact next code slice.
+- Agents typecheck, targeted Shell API typecheck and `git diff --check` passed with pnpm `9.12.0`.
+  The workspace uses Node `24.19.0` (`package.json` permits `>=22.5.0`) while `.nvmrc` says `20`.
+  No tests, migration apply, provider operation or deployment ran.

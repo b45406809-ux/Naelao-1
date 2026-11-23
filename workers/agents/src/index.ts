@@ -30,6 +30,7 @@ import { privateStateBackupAvailability, readPrivateStateSelection, savePrivateS
   sweepPrivateStateBackupRetention, type PrivateStateBackupBindings } from "./workspace/private-state-backup.js";
 import { listModalSandboxOperationStatus } from "./script-engine/modal-sandbox-journal.js";
 import { publishProjectChatUpload, MAX_COORDINATOR_UPLOAD_BYTES, type ChatUploadManifestSnapshot } from "./channels/workspace-chat-uploads.js";
+import { opaqueExternalSubject } from "./channel-external-quota.js";
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
 // Fulfills G-D01 through G-D25: Agent worker routes with DO forwarding
 //
@@ -586,6 +587,134 @@ interface SpaceRow {
   name: string;
   status: string;
   config_json: string;
+}
+
+function activePlatformWhatsappRoute(env: AgentsEnv): { transport: "twilio" | "meta"; routeKey: Promise<string> } | null {
+  const viaTwilio = Boolean(env.TWILIO_AUTH_TOKEN && env.TWILIO_WHATSAPP_NUMBER);
+  if (viaTwilio) {
+    const account = (env.TWILIO_WHATSAPP_NUMBER ?? "").replace(/\D/g, "");
+    if (!account) return null;
+    return { transport: "twilio", routeKey: opaqueExternalSubject(env.PLATFORM_SECRET, ["whatsapp-platform-destination", "twilio", account]) };
+  }
+  if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) return null;
+  return { transport: "meta", routeKey: opaqueExternalSubject(env.PLATFORM_SECRET, ["whatsapp-platform-destination", "meta", env.WHATSAPP_PHONE_NUMBER_ID]) };
+}
+
+function whatsappSenderDigits(senderId: string): string {
+  return senderId.replace(/^whatsapp:/i, "").replace(/\D/g, "");
+}
+
+function platformWhatsappInboundRouteMatches(
+  env: AgentsEnv,
+  transport: "twilio" | "meta",
+  parsed: Record<string, unknown>,
+  raw: Record<string, unknown>,
+): boolean {
+  const route = activePlatformWhatsappRoute(env);
+  if (!route || route.transport !== transport) return false;
+  if (transport === "twilio") {
+    const to = typeof parsed["To"] === "string" ? whatsappSenderDigits(parsed["To"] as string) : "";
+    return Boolean(to && to === (env.TWILIO_WHATSAPP_NUMBER ?? "").replace(/\D/g, ""));
+  }
+  const entries = raw["entry"];
+  if (!Array.isArray(entries)) return false;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const changes = (entry as Record<string, unknown>)["changes"];
+    if (!Array.isArray(changes)) continue;
+    for (const change of changes) {
+      if (!change || typeof change !== "object") continue;
+      const value = (change as Record<string, unknown>)["value"];
+      if (!value || typeof value !== "object") continue;
+      const metadata = (value as Record<string, unknown>)["metadata"];
+      if (metadata && typeof metadata === "object"
+        && (metadata as Record<string, unknown>)["phone_number_id"] === env.WHATSAPP_PHONE_NUMBER_ID) return true;
+    }
+  }
+  return false;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function completeWhatsappMemberContactChallenge(
+  env: AgentsEnv,
+  code: string,
+  senderId: string,
+  externalId: string,
+  transport: "twilio" | "meta",
+): Promise<"verified" | "invalid" | "membership_removed" | "grant_revoked" | "channel_disabled" | "air_gapped" | "binding_conflict" | "unavailable"> {
+  const route = activePlatformWhatsappRoute(env);
+  const senderDigits = whatsappSenderDigits(senderId);
+  if (!route || route.transport !== transport || !/^\d{7,15}$/.test(senderDigits)) return "invalid";
+  const providerRouteKey = await route.routeKey;
+  const challengeHash = await sha256Hex(code.toLowerCase());
+  const challenge = await env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,user_id,provider_route_key,expires_at,consumed_at,sender_key,consumed_event_id
+    FROM assistant_channel_member_contact_challenges WHERE challenge_hash=? AND channel='whatsapp' AND provider_route_key=?`)
+    .bind(challengeHash, providerRouteKey).first<{ tenant_id: string; space_id: string; user_id: string; provider_route_key: string;
+      expires_at: string; consumed_at: string | null; sender_key: string | null; consumed_event_id: string | null }>();
+  if (challenge?.consumed_at) {
+    const senderKey = await opaqueExternalSubject(env.PLATFORM_SECRET, ["whatsapp-member-sender", providerRouteKey, senderDigits]);
+    return challenge.sender_key === senderKey && challenge.consumed_event_id === externalId ? "verified" : "invalid";
+  }
+  if (!challenge || challenge.expires_at <= new Date().toISOString()) return "invalid";
+  if (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, challenge.space_id)) return "air_gapped";
+  if (!await resolveEndUserSpaceRole(env.PLATFORM_DB, challenge.space_id, challenge.user_id, challenge.tenant_id)) return "membership_removed";
+  const grant = await env.PLATFORM_DB.prepare(`SELECT 1 AS granted FROM assistant_channel_member_access
+    WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND status='enabled' LIMIT 1`)
+    .bind(challenge.tenant_id, challenge.space_id, challenge.user_id).first();
+  if (!grant) return "grant_revoked";
+  const channel = await env.PLATFORM_DB.prepare(`SELECT cl.enabled FROM channel_links cl
+    JOIN spaces s ON s.id=cl.space_id AND s.tenant_id=cl.tenant_id
+    JOIN orgs o ON o.id=s.tenant_id AND o.status='active'
+    WHERE cl.tenant_id=? AND cl.space_id=? AND cl.channel='whatsapp' AND s.status='active'`)
+    .bind(challenge.tenant_id, challenge.space_id).first<{ enabled: number }>();
+  if (channel?.enabled !== 1) return "channel_disabled";
+
+  const senderKey = await opaqueExternalSubject(env.PLATFORM_SECRET, ["whatsapp-member-sender", providerRouteKey, senderDigits]);
+  const now = new Date().toISOString();
+  const contactId = crypto.randomUUID();
+  try {
+    const results = await env.PLATFORM_DB.batch([
+      env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_contact_audit
+        (event_id,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,action,actor_user_id,occurred_at)
+        SELECT ?,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,'replaced',user_id,?
+        FROM assistant_channel_member_contacts WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp'
+          AND provider_route_key=? AND status='active' AND sender_key<>?`)
+        .bind(crypto.randomUUID(), now, challenge.tenant_id, challenge.space_id, challenge.user_id, providerRouteKey, senderKey),
+      env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_contacts SET status='replaced',updated_at=?
+        WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND provider_route_key=?
+          AND status='active' AND sender_key<>? AND EXISTS (
+            SELECT 1 FROM assistant_channel_member_contact_challenges WHERE challenge_hash=? AND consumed_at IS NULL AND expires_at>?)`)
+        .bind(now, challenge.tenant_id, challenge.space_id, challenge.user_id, providerRouteKey, senderKey, challengeHash, now),
+      env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_contacts
+        (contact_id,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,status,verified_at,created_at,updated_at)
+        SELECT ?,tenant_id,space_id,user_id,'whatsapp',provider_route_key,?,'active',?,?,?
+        FROM assistant_channel_member_contact_challenges c WHERE c.challenge_hash=? AND c.consumed_at IS NULL AND c.expires_at>?
+          AND NOT EXISTS (SELECT 1 FROM assistant_channel_member_contacts active WHERE active.tenant_id=c.tenant_id
+            AND active.space_id=c.space_id AND active.user_id=c.user_id AND active.channel='whatsapp'
+            AND active.provider_route_key=c.provider_route_key AND active.status='active')`)
+        .bind(contactId, senderKey, now, now, now, challengeHash, now),
+      env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_contact_audit
+        (event_id,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,action,actor_user_id,occurred_at)
+        SELECT ?,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,'verified',user_id,?
+        FROM assistant_channel_member_contacts WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp'
+          AND provider_route_key=? AND sender_key=? AND status='active'`)
+        .bind(crypto.randomUUID(), now, challenge.tenant_id, challenge.space_id, challenge.user_id, providerRouteKey, senderKey),
+      env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_contact_challenges SET consumed_at=?,sender_key=?,consumed_event_id=?
+        WHERE challenge_hash=? AND channel='whatsapp' AND provider_route_key=? AND consumed_at IS NULL AND expires_at>?
+          AND EXISTS (SELECT 1 FROM assistant_channel_member_contacts WHERE tenant_id=? AND space_id=? AND user_id=?
+            AND channel='whatsapp' AND provider_route_key=? AND sender_key=? AND status='active')`)
+        .bind(now, senderKey, externalId, challengeHash, providerRouteKey, now, challenge.tenant_id, challenge.space_id,
+          challenge.user_id, providerRouteKey, senderKey),
+    ]);
+    return results[4]?.meta?.changes === 1 ? "verified" : "invalid";
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return /constraint|unique/i.test(reason) ? "binding_conflict" : "unavailable";
+  }
 }
 
 
@@ -7197,6 +7326,28 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
     return c.json({ ok: true, paired: true });
   }
 
+  const memberVerificationCode = channel === "whatsapp" ? /^VERIFY\s+([a-f0-9]{16})$/i.exec(inbound.text.trim())?.[1] : undefined;
+  if (memberVerificationCode) {
+    const transport = viaTwilio ? "twilio" : "meta";
+    if (!platformWhatsappInboundRouteMatches(c.env, transport, parsed, raw)) {
+      return c.json({ ok: true, skipped: "whatsapp_destination_mismatch" });
+    }
+    const result = await completeWhatsappMemberContactChallenge(c.env, memberVerificationCode, inbound.channel_user_id,
+      inbound.external_id, transport).catch(() => "unavailable" as const);
+    if (result === "air_gapped") return c.json({ ok: true, skipped: "air_gapped" });
+    const messages: Record<typeof result, string> = {
+      verified: "Your WhatsApp number is verified for this Space. Member message routing will become available when the channel setup is complete.",
+      invalid: "That verification code is invalid, expired, or already used. Request a new code in Naelao and try again.",
+      membership_removed: "Your Space membership changed before verification completed. Ask a Space admin to review your access.",
+      grant_revoked: "WhatsApp member access is no longer enabled for this Space. Ask a Space admin to review your grant.",
+      channel_disabled: "WhatsApp is disabled for this Space. Ask a Space admin to enable the channel before verifying.",
+      binding_conflict: "This WhatsApp number is already linked to another member in this Space. Ask a Space admin to review the contact binding.",
+      unavailable: "WhatsApp contact verification is temporarily unavailable. Request a new code and try again.",
+    };
+    await replyOnPlatformChannel(c.env, "whatsapp", inbound.channel_user_id, messages[result]);
+    return c.json({ ok: true, member_contact_verification: result });
+  }
+
   const paired = await resolvePairedSpace(c.env, channel, inbound.channel_user_id);
   if (!paired) {
     // Someone found the bot without pairing. Say so rather than silently ignoring them.
@@ -9425,13 +9576,10 @@ app.post("/internal/channel-extensions/session-state", async c => {
 app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
-  if (!(await requireEndUserSpaceMembership(c, spaceId, "admin"))) {
-    throw forbidden("Only a Space owner or admin can change how this business is reached");
-  }
   const { userId } = getCallerIdentity(c);
 
   type ChannelActionBody = {
-    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension" | "simulate_extension" | "set_member_access";
+    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension" | "simulate_extension" | "set_member_access" | "begin_member_contact_verification";
     channel?: string;
     model_override?: string | null;
     extension_instance_id?: string;
@@ -9450,6 +9598,48 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const channel = String(body.channel ?? "");
   if (!isChannelType(channel)) throw badRequest("channel must be one of: email, slack, discord, whatsapp, telegram");
   const action = body.action ?? "connect";
+
+  if (action === "begin_member_contact_verification") {
+    if (channel !== "whatsapp") return c.json({ error_code: "member_channel_not_supported" }, 400);
+    if (!userId || !(await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId))) {
+      throw forbidden("An active Space membership is required to verify your own channel contact");
+    }
+    const route = activePlatformWhatsappRoute(c.env);
+    if (!route) return c.json({ error_code: "whatsapp_platform_route_unavailable" }, 503);
+    const channelLink = await c.env.PLATFORM_DB.prepare(
+      "SELECT enabled FROM channel_links WHERE tenant_id=? AND space_id=? AND channel='whatsapp'"
+    ).bind(tenantId, spaceId).first<{ enabled: number }>();
+    if (channelLink?.enabled !== 1) return c.json({ error_code: "whatsapp_channel_disabled" }, 409);
+    if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
+    const grant = await c.env.PLATFORM_DB.prepare(
+      `SELECT 1 AS granted FROM assistant_channel_member_access
+       WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND status='enabled' LIMIT 1`
+    ).bind(tenantId, spaceId, userId).first();
+    if (!grant) return c.json({ error_code: "whatsapp_member_access_not_granted" }, 403);
+
+    const codeBytes = crypto.getRandomValues(new Uint8Array(8));
+    const code = [...codeBytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const challengeHash = await sha256Hex(code);
+    const providerRouteKey = await route.routeKey;
+    const createdAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+    await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`UPDATE assistant_channel_member_contact_challenges SET consumed_at=?
+        WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND provider_route_key=? AND consumed_at IS NULL`)
+        .bind(createdAt, tenantId, spaceId, userId, providerRouteKey),
+      c.env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_contact_challenges
+        (challenge_hash,tenant_id,space_id,user_id,channel,provider_route_key,created_at,expires_at)
+        VALUES(?,?,?,?,'whatsapp',?,?,?)`)
+        .bind(challengeHash, tenantId, spaceId, userId, providerRouteKey, createdAt, expiresAt),
+    ]);
+    return c.json({ challenge: code, expires_at: expiresAt,
+      instructions: "Send VERIFY followed by this code to the WhatsApp number connected to Naelao. The code expires in five minutes and can be used once." },
+      201, { "cache-control": "private, no-store" });
+  }
+
+  if (!(await requireEndUserSpaceMembership(c, spaceId, "admin"))) {
+    throw forbidden("Only a Space owner or admin can change how this business is reached");
+  }
 
   if (action === "set_model") {
     if (body.model_override !== null && (typeof body.model_override !== "string" || !isAllowedModel(body.model_override))) {

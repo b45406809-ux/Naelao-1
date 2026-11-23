@@ -3170,6 +3170,22 @@ export async function setAssistantChannelMemberAccess(
   return result.grant;
 }
 
+export interface AssistantChannelMemberContactChallenge {
+  challenge: string;
+  expires_at: string;
+  instructions: string;
+}
+
+/** Begin self-verification for the signed-in member's own WhatsApp sender. */
+export async function beginAssistantChannelMemberContactVerification(
+  spaceId: string,
+  session: SessionCredentials,
+): Promise<AssistantChannelMemberContactChallenge> {
+  return apiFetch<AssistantChannelMemberContactChallenge>(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels`, {
+    method: "POST", session, body: JSON.stringify({ action: "begin_member_contact_verification", channel: "whatsapp" }),
+  });
+}
+
 export interface SubAgentSummary {
   id: string;
   goal: string;

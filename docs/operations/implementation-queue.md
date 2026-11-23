@@ -366,23 +366,30 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
 
   - [x] Add admin-managed WhatsApp member grants for Space or exact Project scope, including
     revisioned audit events. This grants record is not yet used to route inbound messages.
-  - [ ] Add member-started, single-use contact verification and a separate multi-Space sender map;
-    route only after current Space membership, grant and selected Project membership checks.
+  - [x] Add member-started, short-lived single-use contact verification and a separate hashed
+    multi-Space sender map. The signed inbound code proves contact control and binds the sender to
+    the requesting member and Space; it does not use pairing or executive-contact records.
+  - [ ] Route verified senders to an explicit Space/Project selection after current membership,
+    grant and Project membership checks; recheck the same authority on each message.
 
 - [ ] **Add isolated conversation replay.** Replay a selected customer event into a fresh simulation
   with a pinned installation/settings snapshot and simulated Knowledge/tool adapters. Never alter
   live extension sessions or dispatch provider effects.
 
-**Latest checkpoint:** migration `0285` and the Channels API now manage revocable WhatsApp member
-grants at Space or exact Project scope, validate current target membership (and Project membership
-for Project grants), and write revisioned audit events. The Shell API exposes the admin list/set
-calls, but no UI advertises the grant yet because inbound contact proof and routing are not wired.
-Agents typecheck, targeted Shell API typecheck and `git diff --check` passed. No tests, migration
-apply, provider actions or deployment ran. The earlier simulation and inbound scope evidence is in
-the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
-**Next action:** implement member-initiated, single-use WhatsApp sender verification and a separate
-multi-Space contact map; consume it before the unpaired sender response, rechecking membership and
-the matching grant on each inbound message. Keep executive contacts and customer pairings separate.
+**Latest checkpoint:** migration `0286` and the Channels API now issue five-minute verification
+challenges to a signed-in member with an active grant and enabled WhatsApp channel. The signed
+platform inbound consumes an exact `VERIFY <code>` message once, checks the destination, active
+membership, grant and channel, then stores only HMACs of the destination and normalized sender in a
+separate contact map that permits the same sender in several Spaces. Re-verification replaces a
+prior active sender only after the new sender proves control; an active sender cannot be claimed by
+a second member in the same Space. Agents typecheck, targeted Shell API typecheck and
+`git diff --check` passed. No tests, migration apply, provider action or deployment ran. Contact
+proof is stored but not yet used for inbound assistant routing. Evidence is in the
+[progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
+**Next action:** add route resolution for these bindings before unpaired fallback, implement
+member-scoped `USE <space> [project]` selection for ambiguous bindings, and recheck membership,
+grant, channel state and Project membership on every message and before assistant dispatch. Keep
+executive contacts and customer pairings separate.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
