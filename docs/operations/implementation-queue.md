@@ -121,21 +121,25 @@ deployed/provider evidence. Preserve `infra/scripts/__pycache__/` and keep rollo
   [follow-up](../extension-search.md#follow-up-for-managed-private-indexes). AI Search remains a
   disabled candidate; its metadata map, identifier/list limits, freshness and cleanup contract are
   not proven.
-- [ ] **K26 — Report actual bounded retrieval result counts.** Replace the hard-coded zero in
-  Knowledge retrieval telemetry with the result count from the RAG result, preserving its existing
-  content-free aggregate shape.
+- [x] **K26 — Report actual bounded retrieval result counts.** RAG now emits hit counts on cached
+  and uncached search events; Knowledge passes the count through the bounded privacy-safe telemetry
+  and records it in Analytics Engine. RAG/Knowledge typechecks and `git diff --check` pass; no tests,
+  deployment or live acceptance ran.
+- [ ] **K19 — Reconcile the signed extension Knowledge search API.** Compare the new SDK search
+  result and durable invocation path with current installation grants, publication revisions,
+  source lineage, citation support and the remaining K19 contract; implement only a reachable host
+  gap supported by those authorities.
 - [ ] **Blocked · K15 — Implement and validate isolated managed-index adapter.** Resume after exact
   pre-retrieval scope fields and limits, current publication/source revision mapping, asynchronous
   deletion/retention and isolated cost evidence are established. Keep general user search on its
   current exact D1/Vectorize ACL paths and leave all provider gates off.
 
-**Latest K15 checkpoint:** current-source review separates user/role Knowledge retrieval from signed
-extension search over an owner-published Project subset. The latter provides a narrow candidate
-boundary to evaluate, but no Cloudflare AI Search binding, metadata mapping, indexing source or
-cleanup caller exists. Current provider docs confirm scalar-only `$in`, a 64-byte filterable prefix,
-a five-field D1 custom-metadata cap and asynchronous sync that can retain stale rows after failed or
-empty syncs. This checkpoint adds no provider path. **Next action:** fix the bounded retrieval
-telemetry's hard-coded result count, then continue the next independent Knowledge code gap.
+**Latest K26 checkpoint:** RAG emits the actual hit count for cache-hit and normal search results.
+The Knowledge Worker passes that value through the existing bounded content-free telemetry builder
+and writes it as a third Analytics Engine measurement beside latency and confidence. RAG and
+Knowledge typechecks and `git diff --check` pass; no tests, deployment or live acceptance ran.
+**Next action:** reconcile the signed extension Knowledge search result and durable invocation path
+with K19's remaining collection/citation API requirements.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

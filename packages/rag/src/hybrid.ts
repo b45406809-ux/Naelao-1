@@ -78,6 +78,7 @@ export interface GroundedSearchTelemetry {
   liveGrounding: boolean;
   confidence: number;
   latencyMs: number;
+  resultCount?: number;
 }
 
 export interface GoogleModeSearchResult {
@@ -141,6 +142,7 @@ export async function googleModeSearch(
       liveGrounding: false,
       confidence: result.confidence,
       latencyMs: result.latencyMs,
+      resultCount: result.hits.length,
     });
     return result;
   }
@@ -174,6 +176,7 @@ export async function googleModeSearch(
     liveGrounding,
     confidence,
     latencyMs: result.latencyMs,
+    resultCount: hits.length,
   });
   return result;
 }

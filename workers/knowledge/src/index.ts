@@ -3530,9 +3530,9 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     }),
     emitTelemetry: (event) => {
       const payload = buildPrivacySafeRetrievalTelemetry({ event, timings: telemetry, retrievalMode: mode,
-        lexicalSearch: lexicalSearchAvailable ? "available" : "unavailable", resultCount: 0 });
+        lexicalSearch: lexicalSearchAvailable ? "available" : "unavailable", resultCount: event.resultCount ?? 0 });
       c.env.KNOWLEDGE_ANALYTICS?.writeDataPoint({ blobs: [policyVersion, payload.retrieval_mode, payload.lexical_search],
-        doubles: [payload.latency_ms, payload.confidence] });
+        doubles: [payload.latency_ms, payload.confidence, payload.result_count] });
       console.log(JSON.stringify({ event: "knowledge.retrieval", ...payload }));
     },
   }, { confidenceThreshold: Number(c.env.RETRIEVAL_CONFIDENCE_THRESHOLD ?? "0.85"), limit: topK });

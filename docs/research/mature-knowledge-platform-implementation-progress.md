@@ -546,5 +546,17 @@ end, with a bounded cleanup path and isolated cost/retention evidence. Current s
 [filtering](https://developers.cloudflare.com/ai-search/configuration/retrieval/filtering/),
 [D1 data source](https://developers.cloudflare.com/ai-search/configuration/data-source/d1/), and
 [syncing](https://developers.cloudflare.com/ai-search/configuration/indexing/syncing/).
-Exact next action: correct the reachable Knowledge retrieval result-count telemetry without exposing
-caller, tenant, project, query or source identifiers, then continue the next independent K gap.
+The result-count telemetry follow-up is complete in the K26 checkpoint below. Continue with the
+signed extension Knowledge API reconciliation and its current host grant/source lineage.
+
+## K26 checkpoint — 2026-11-23 (bounded retrieval result count)
+
+RAG now includes result count in its telemetry event for cached and uncached search. The Knowledge
+Worker passes the count through the existing privacy-safe bounded telemetry builder and records it
+as an Analytics Engine double beside latency and confidence. The bounded JSON log and data point
+contain no caller, tenant, Space, Project, query or source identifiers. RAG and Knowledge worker
+typechecks and `git diff --check` pass. No tests, deployment, provider call or live acceptance ran.
+
+Exact next action: reconcile the signed extension Knowledge search result and durable invocation
+path with K19's remaining collection and citation API requirements; implement only a gap supported by
+current host grants and publication/source lineage.
