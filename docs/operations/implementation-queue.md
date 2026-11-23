@@ -44,6 +44,32 @@ handoff. Anything that had yet to reach that branch may need to be redone.
 
 ## Active plan
 
+**Resumable workers, durable workflows and branches.** See the [plan](../research/resumable-workers-durable-workflows-and-branches-plan.md)
+and [progress ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md).
+
+- [ ] **Active · PW01–PW06 — Source-to-ledger reconciliation.** Audit current worker spawn, branch
+  mount, checkpoint/resume, dynamic workflow and effect callers against saved evidence. Reuse
+  newer evidence, assign stable IDs to remaining gaps, and identify the first ready code slice.
+  Preserve the untracked Python cache and keep rollout disabled.
+
+**Latest checkpoint.** APW06 conversation stop remains limited to processing tasks in an authorized
+conversation. Its UI now states that cancellation can interrupt an in-flight operation, cannot undo
+committed effects, and requires checking the final task result before retry. Project task activity is
+read-only for run controls: list/detail APIs authorize viewing, while the conversation cancellation
+endpoint checks exact session access. The generic `WorkflowRunDO.cancel` path is not exposed to users
+and does not reconcile `TaskDO` status, so it was not wired into Project activity. No Project
+cancellation, pause or resume action was added.
+
+Verification: source-only Shell TypeScript check and `git diff --check` pass. The standard Shell
+typecheck remains blocked by stale `.next/types` imports for missing routes. No tests or browser/
+deployed acceptance ran. APW's remaining work is dependency-blocked or owned by later plans; APW
+remains unchecked.
+
+**Exact next action:** complete PW01–PW06 source-to-ledger reconciliation using current code and saved
+evidence; name the first actionable requirement and resume condition for each blocked gap.
+
+## Parked plan — Adaptive planner, worker coordination and memory
+
 **Adaptive planner, worker coordination and memory.** See the [plan](../research/adaptive-planner-worker-swarm-memory-plan.md)
 and [progress ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). APW01 was
 reconciled in that ledger. Existing partial implementations remain recorded there.
@@ -129,10 +155,18 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   The link does not mutate or resume the task; the existing Project route rechecks current access,
   proposal revision and workspace pin. Source-only Shell typecheck and `git diff --check` pass;
   local UI evidence only, no browser/deployed acceptance.
-- [ ] **Active · APW06 — Safe task pause/cancel controls.** Trace conversation and Project activity
-  controls against existing task APIs, durable workflow cleanup and worker dispatch fences. Add
-  only actions supported by current actor/owner authorization and recovery contracts; preserve
-  uncertain external effects for review.
+- [x] **APW06 — Authorized conversation stop control.** The processing-task stop sends the task/run
+  ID through the existing conversation-scoped cancel route. The route requires Space membership or
+  access to that exact session; AgentDO persists `cancelling`, signals the active operation and the
+  loop checks cancellation at step boundaries. The UI warns that in-flight work may finish or be
+  interrupted, committed external effects are not undone, and the final result must be reviewed
+  before retry. Project task activity remains read-only for run control.
+- [ ] **Blocked · APW06 — Project task pause/cancel controls.** Project list/detail authorization
+  permits status viewing, not mutation. The generic `WorkflowRunDO.cancel` path is not public and
+  can terminate a workflow without reconciling `TaskDO`; goal-DAG cancellation is only for redundant
+  workers. Resume after an owner/admin authority contract and a durable task/workflow cancellation
+  receipt define status reconciliation and uncertain-effect review. Keep Project task controls
+  read-only until then.
 - [ ] **Blocked · APW06 — Topology and budget preferences.** User/admin preferences need an approved
   authority and precedence contract before changing worker count, model/runtime routing or budget.
   Resume when that contract is approved; keep existing rollout defaults unchanged.
@@ -142,11 +176,11 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** APW06 goal decision-hold remediation adds a status explanation with exact
-decision references and revisions plus a direct link to the Project decision review panel. It adds
-no review write or task-resume path; the existing Project route retains access, exact-revision and
-workspace-pin checks. Source-only Shell typecheck passes. The normal Shell typecheck still reports
-stale generated `.next/types` imports for absent route files; no browser/deployed acceptance ran.
+**APW checkpoint history.** APW06 goal decision-hold remediation adds a status explanation with
+exact decision references and revisions plus a direct link to the Project decision review panel. It
+adds no review write or task-resume path; the existing Project route retains access, exact-revision
+and workspace-pin checks. APW06 conversation stop semantics and Project-control limits are recorded
+above and in the APW ledger.
 
 APW05 source reconciliation confirms that goal tasks have bounded token budgets; ordinary model
 calls reserve against configured Project spend caps or plan token quotas, and System One decisions
@@ -157,16 +191,12 @@ post-run tally increment rather than an atomic reservation. Existing shared-comp
 and hierarchical promotion do not include task priority weights. Exact blockers and evidence are in
 the APW ledger. APW05 remains partial and unchecked.
 
-APW06 verification: source-only Shell TypeScript check and `git diff --check`; the normal Shell
-typecheck is blocked by stale `.next/types` references to missing routes. Local UI evidence only;
-no browser/deployed acceptance. APW05 comparison is source inspection only, with no deployed Billing
-or provider acceptance. The APW04 local test evidence remains in its ledger; no retention schedule
-was invented.
+APW05 comparison is source inspection only, with no deployed Billing or provider acceptance. The
+APW04 local test evidence remains in its ledger; no retention schedule was invented.
 
-**Exact next action:** trace `StopDurableTaskButton`, `cancelRun`, Project activity APIs and the
-durable goal dispatch cancellation fences. Determine which cancellation/status actions can be
-exposed with current scope checks; preserve uncertain external effects for review and preserve
-`infra/scripts/__pycache__/`.
+**APW resume conditions:** return when an approved aggregate cost/priority policy, retention
+schedule, task-control authority/recovery contract, or staging acceptance access becomes available.
+APW07–APW09 implementation remains owned by PW, EP, workflow, platform, SC and TBR plans.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).
@@ -180,8 +210,8 @@ contain substantial implementation. Activate one entry at a time. Copy only the 
 into the active checklist. Keep finished task checkboxes and evidence in the queue or its linked
 ledgers when moving to another plan.
 
-1. [ ] **Active.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md)
-2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
+1. [ ] **Parked.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 overlap later plans.
+2. [ ] **Active.** [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
 3. [ ] [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md)
 4. [ ] [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md)
 5. [ ] [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Link requirements already owned by managed services.

@@ -1,5 +1,35 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW06 follow-up — 2026-11-23 (authorized conversation stop; Project controls remain blocked)
+
+The existing `StopDurableTaskButton` passes the task ID to `cancelRun` only for processing tasks
+opened from a conversation. The route verifies Space ownership and requires either Space membership
+or access to that exact session before forwarding the stop to its AgentDO. AgentDO stores the
+`cancelling` state in durable `run_state`, aborts the execution signal and the script loop checks the
+request at step boundaries. Since an active operation may be aborted, the Shell now says it may
+finish or be interrupted, committed external effects are not undone, and the final result should be
+reviewed before retry.
+
+Project-scoped task listing and detail routes support authorized status viewing but expose no
+cancel/pause/resume mutation. A Project viewer is not automatically authorized for the task's
+conversation. The internal generic `WorkflowRunDO.cancel(actorId)` method is not used: its cleanup
+can terminate the static AgentTaskWorkflow without persisting a matching terminal TaskDO status.
+The goal-DAG redundant-worker cancellation contract is separate and does not authorize stopping an
+entire user task. Project controls remain blocked pending approved owner/admin authority plus a
+durable TaskDO/workflow status and uncertain-effect recovery receipt. No new public endpoint or
+mutation was added.
+
+Verification: source-only Shell TypeScript check and `git diff --check` pass. The normal Shell
+typecheck still fails only on stale generated `.next/types` imports to absent route files. No tests,
+browser/deployed acceptance or provider operation was run.
+
+APW06's supported conversation stop slice is complete. APW remains partial: aggregate cost policy,
+retention approval, Project task-control authority/recovery and real-runtime acceptance remain
+blocked; APW07–APW09 work stays with its owning plans.
+
+**Exact next action:** reconcile PW01–PW06 source and ledger evidence; identify the first ready PW
+code requirement and the explicit resume condition for each blocked requirement.
+
 ## APW06 follow-up — 2026-11-23 (goal decision-hold remediation link)
 
 Goal activity already projected the host's bounded `decision_review_reason` and exact referenced

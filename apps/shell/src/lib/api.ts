@@ -975,9 +975,9 @@ export async function getActiveRun(
 /**
  * Ask a run to stop.
  *
- * Cooperative, not a kill: the agent finishes whatever action it is inside and stops at the next
- * step boundary. Tearing it down mid-action would leave a side effect — an email, a payment, a
- * created project — in a state nobody could report on afterwards.
+ * Cooperative cancellation persists a stop request and aborts the active operation signal. The
+ * worker checks the request at step boundaries; an in-flight external effect may have completed
+ * before interruption, so callers must inspect the final task/run record before retrying.
  */
 export async function cancelRun(
   spaceId: string,

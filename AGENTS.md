@@ -23,14 +23,13 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW06 — Safe task pause/cancel controls.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). Trace conversation and
-Project task controls against the durable dispatch/cancellation fences, then expose only actions
-supported by current actor/owner authorization and recovery contracts. Goal decision-hold status now
-links to the existing Project Journal review panel; review still rechecks exact revisions and
-workspace pins. Keep topology/budget preferences and APW05 aggregate cost policy blocked until their
-authority is approved. Keep progressive routing, dynamic expansion and redundant-worker cancellation
-disabled by default; do not claim live or provider-cost results without their applicable evidence.
+**PW01–PW06 — Source-to-ledger reconciliation.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). Audit current worker
+spawn, branch mount, checkpoint/resume, dynamic workflow and effect callers against saved PW
+evidence; preserve newer evidence, assign stable IDs to remaining gaps and select the first ready
+code slice. APW is parked with explicit policy/authority/live-acceptance dependencies. Preserve
+`infra/scripts/__pycache__/`; keep rollout defaults disabled and do not claim live or provider-cost
+results without their applicable evidence.
 
 ## Save progress inside each task
 

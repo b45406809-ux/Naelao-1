@@ -311,7 +311,7 @@ function StopDurableTaskButton({ spaceId, sessionId, taskId, session, onStopped 
     try {
       await cancelRun(spaceId, sessionId, taskId, session);
       setRequested(true);
-      setMessage("Stop requested; the worker will stop at its next safe boundary.");
+      setMessage("Stop requested. The current operation may finish or be interrupted; completed external changes are not undone. Check the final task result before retrying.");
       onStopped();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not request stop.");
@@ -319,6 +319,7 @@ function StopDurableTaskButton({ spaceId, sessionId, taskId, session, onStopped 
   }
   return <div style={{ marginTop: 6 }}>
     <button type="button" className="btn btn-ghost btn-sm" onClick={() => void stop()} disabled={busy || requested}>{busy ? "Requesting stop…" : requested ? "Stop requested" : "Stop task"}</button>
+    <p style={{ color: "var(--text3)", fontSize: 11 }}>Stopping is cooperative. An in-flight operation may finish or be interrupted, and stopping does not undo external changes already committed.</p>
     {message && <p role="status" style={{ color: "var(--text3)", fontSize: 11 }}>{message}</p>}
   </div>;
 }
@@ -697,7 +698,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
   }, [refresh]);
   return <section aria-label="Durable tasks">
     <div className="tp-section">{projectId && !sessionId ? "Project activity" : "Conversation tasks"}</div>
-    <p className="workspace-tab-empty">{projectId && !sessionId ? "Most recent background tasks in this project. Open a task’s conversation to answer approvals or questions." : "Background work remains available after leaving this page. Status refreshes every five seconds."}</p>
+    <p className="workspace-tab-empty">{projectId && !sessionId ? "Most recent background tasks in this project. Project activity is read-only for run controls; open a task’s conversation to review it or answer approvals if you have access there." : "Background work remains available after leaving this page. Status refreshes every five seconds."}</p>
     {loading && <p className="workspace-tab-empty">Loading task history…</p>}
     {error && <p role="status" className="workspace-tab-empty">{error}</p>}
     {!loading && !error && tasks.length === 0 && <p className="workspace-tab-empty">No durable tasks for this {projectId && !sessionId ? "project" : "conversation"} yet.</p>}
