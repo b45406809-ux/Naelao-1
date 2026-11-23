@@ -63,24 +63,29 @@ and [progress ledger](../research/resumable-workers-durable-workflows-and-branch
   owner/admin resolves that exact run with evidence. Ambiguous responses and script-level failures
   remain unknown; no provider rollback or completion is inferred. Agents and Spaces typechecks,
   Shell source-only typecheck and `git diff --check` pass; no tests or deployed acceptance ran.
-- [ ] **Active · PW01 — Require an immutable Coordinator base for Project worker branches.**
-  `reserveWorkerBranch` still admits a worker through the legacy R2 copy path when
-  `UNIFIED_WORKSPACE_ENABLED` is off, leaving the base without a Coordinator revision pin. Add a
-  fail-closed capability check before Project worker branch creation/dispatch when an immutable
-  base cannot be established. Keep rollout disabled and preserve the Python cache.
+- [x] **PW01 — Require an immutable Coordinator base for Project worker branches.** Project worker
+  spawning now requires the unified-workspace flag and Coordinator binding before reserving the
+  parent task branch; worker-branch reservation repeats the guard. The legacy R2 seed path cannot
+  dispatch a Project worker. Agents typecheck and `git diff --check` pass; no tests or deployed
+  acceptance ran.
+- [ ] **Blocked · PW01 — Worker-branch retention and deletion semantics.** The current ledgers do
+  not define an approved branch TTL or deletion policy. Preserve staged branch content; resume when
+  the applicable owner approves retention, cleanup and recovery semantics.
+- [ ] **Active · PW02 — Correlate directed help requests with durable replies.** Task-blackboard
+  messages are scoped and idempotent but do not link a question/blocker to its reply. Add an
+  authenticated reply reference that retains the original message and enforces the host-granted
+  recipient edge on the response.
 
-**Latest checkpoint.** PW06 now records a stable direct-script run ID and bounded prior-attempt
-receipt atomically with `outcome_unknown` before calling AgentDO. That status survives dispatch
-retention and blocks all later sweeps for the job. The run history exposes the unresolved receipt,
-and a Space-admin plus Project-manager route can resolve the exact run as completed or verified
-no-effect with a required evidence note. The Crons history panel shows the state and resolution
-controls. Agent and Spaces typechecks, Shell source-only typecheck and `git diff --check` pass. The
-normal Shell typecheck still reports stale generated `.next/types` imports. No tests, provider calls,
-deployment or live acceptance ran.
+**Latest checkpoint.** PW01 now refuses Project worker branch creation and dispatch unless the
+unified-workspace rollout flag and Coordinator binding are available. The check runs before
+`reserveTaskBranch`, and `reserveWorkerBranch` repeats it before returning or creating a branch;
+the legacy R2 copy fallback is no longer used to seed a Project worker. Agents typecheck and
+`git diff --check` pass. No tests or deployed acceptance ran. Branch cleanup remains blocked on an
+approved retention policy.
 
-**Exact next action:** in `NaelaoAgentDO.ts`, make Project `reserveWorkerBranch` refuse the legacy
-R2 copy fallback when no immutable Coordinator base pin is available; verify the rejection occurs
-before branch creation or worker dispatch.
+**Exact next action:** extend `task-blackboard.ts` with a reply reference and checks that the
+replying worker belongs to the original message's directed recipient edge; keep the original
+request and response as separate durable messages.
 
 ## Parked plan — Adaptive planner, worker coordination and memory
 

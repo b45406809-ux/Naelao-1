@@ -23,11 +23,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**PW01 — Require an immutable Coordinator base for Project worker branches.** Resume from the
-checked-in [implementation queue](docs/operations/implementation-queue.md#active-plan). In
-`NaelaoAgentDO.ts`, make Project `reserveWorkerBranch` refuse the legacy R2 copy fallback when no
-immutable Coordinator base pin is available; verify rejection occurs before branch creation or
-worker dispatch. Preserve `infra/scripts/__pycache__/` and keep rollout defaults disabled.
+**PW02 — Correlate directed help requests with durable replies.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). Extend
+`task-blackboard.ts` with a reply reference and checks that the replying worker belongs to the
+original message's directed recipient edge; keep the original request and response as separate
+durable messages. Preserve `infra/scripts/__pycache__/` and keep rollout defaults disabled.
 
 ## Save progress inside each task
 

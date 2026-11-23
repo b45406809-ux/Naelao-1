@@ -3902,6 +3902,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const coordinatorScope: WorkspaceScope | undefined = unifiedProjectWorkspace ? {
       tenantId, spaceId, projectId: projectId!, jurisdiction: workspaceBindings.DATA_JURISDICTION === "eu" ? "eu" : "global",
     } : undefined;
+    const requireImmutableProjectWorkerBase = () => {
+      if (projectId && (!unifiedProjectWorkspace || !workspaceBindings.WORKSPACE_COORDINATOR))
+        throw new Error("worker_branch_coordinator_base_required");
+    };
     const readCoordinatorBranch = async (branch: string) => {
       if (!coordinatorScope) throw new Error("workspace_coordinator_branch_unavailable");
       const response = await workspaceCoordinatorRequest(workspaceBindings, coordinatorScope, `/v1/read?branch=${encodeURIComponent(branch)}`, {});
@@ -4044,6 +4048,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // the root task branch once; the baseline is retained in this parent DO so later sessions
     // can resume and merges can detect writes made concurrently by the planner or sibling workers.
     const reserveWorkerBranch = async (subId: string, baseBranch: string | undefined): Promise<string | undefined> => {
+      requireImmutableProjectWorkerBase();
       if (!runtimeEnv) return undefined;
       if (projectId && !this.env.ARTIFACT_WORKER) throw new Error("worker_branch_repository_required");
       const branch = `workers/${subId.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 96)}`;
@@ -4587,6 +4592,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (dispatchCancelled()) return cancelledDispatchReceipt();
         const fanout = childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true);
         if (!rawTasks.length || rawTasks.length > fanout) throw new Error(`sub-agent fan-out must be within 1..${fanout}`);
+        // Project workers need a Coordinator revision pin. Reject before reserving the parent
+        // task branch, copying a legacy R2 tree, or admitting a child dispatch.
+        requireImmutableProjectWorkerBase();
         const branch = await reserveTaskBranch();
         const tasks = await Promise.all(rawTasks.map(async task => {
           const id = typeof task["sub_agent_id"] === "string" ? task["sub_agent_id"] : crypto.randomUUID();

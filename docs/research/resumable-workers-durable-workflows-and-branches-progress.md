@@ -12,6 +12,22 @@ Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO a
 
 # Resumable workers, durable workflows and branches progress
 
+## PW01 checkpoint — 2026-11-23 (require a Coordinator base for Project worker dispatch)
+
+Project sub-agent spawning now fails with a capability error unless the unified-workspace rollout
+flag and Coordinator binding are available. The check runs after input/fan-out validation but before
+`reserveTaskBranch`, so the legacy R2 copy path cannot create either the task branch or worker
+branch for an unpinned Project run. `reserveWorkerBranch` repeats the check before reusing or
+creating a branch. Non-Project behavior is unchanged. The rollout remains disabled by default.
+
+Verification: Agents worker typecheck and `git diff --check` pass. No tests, deployment or runtime
+isolation acceptance ran. This does not establish deployed process/filesystem/package/cache/port or
+credential isolation. Worker-branch retention and deletion remain open pending an approved policy.
+
+**Exact next action:** extend `task-blackboard.ts` with a reply reference and checks that the
+replying worker belongs to the original message's directed recipient edge; keep the original
+request and response as separate durable messages.
+
 ## PW06 checkpoint — 2026-11-23 (scheduled direct-script outcome reconciliation)
 
 The queue now persists an exact direct-script run ID and bounded prior-attempt receipt with
@@ -60,7 +76,7 @@ Current source matches the latest saved implementation summaries for the six PW 
 
 | Requirement | Current source evidence | Remaining gap or acceptance limit |
 | --- | --- | --- |
-| PW01 branch lifecycle | `NaelaoAgentDO` records worker branch bases and checks the exact Coordinator head; `sandbox-routing.ts` routes delegated `workers/...` branches to separate ToolSandbox identities. | Legacy R2 has no immutable Coordinator revision; deployed process, filesystem, package, cache, port and credential isolation is unverified. Retention, revocation and cleanup remain partial. |
+| PW01 branch lifecycle | `NaelaoAgentDO` records worker branch bases, requires the unified-workspace flag plus Coordinator binding before Project sub-agent branch creation/dispatch, and checks exact Coordinator heads; `sandbox-routing.ts` routes delegated `workers/...` branches to separate ToolSandbox identities. | Deployed process, filesystem, package, cache, port and credential isolation is unverified. Retention, revocation and cleanup remain partial; no branch deletion policy was introduced. |
 | PW02 task graph and communication | `goal-dag.ts` bounds graph admission and exact-attempt dispatch; `task-blackboard.ts` uses signed scope and host-granted recipient edges; authorized conversation routes project persisted worker progress. | File/resource hints are advisory; interface ownership, help/conflict/result receipts and all private-Project readers still need broader coverage. |
 | PW03 selective resource leases | `ConcurrencyDO` implements bounded named leases with fencing; Coordinator writes recheck hashes, generations and fences. | Leases are cooperative. No mandatory lease is enforced at every shared mutable writer; deployed expiry/stale-holder behavior remains unaccepted. |
 | PW04 integration and conflict | `mergeWorkerWorkspace` uses exact source/target pins, bounded merge/review paths, isolated validation branches and expected-head checked publication. | >2 MiB/corrupt object handling, some ambiguous rename cases, complete route/runtime integration coverage and deployed acceptance remain open. |
