@@ -47,6 +47,7 @@ import { roleRankFor } from "./script-engine/project-memory-client.js";
 import { readBoundedResponseJson, errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, parseBoundedInteger, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
+import { isValidWorkerUsageSelector } from "./worker-usage-selector.js";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { expireToolOutputs } from "./script-engine/tool-output-expiry.js";
@@ -9582,7 +9583,7 @@ app.get("/spaces/:spaceId/projects/:projectId/assistant/worker-usage", async (c)
   await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
   if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_unavailable" }, 503);
   const workerIds = c.req.queries("worker_id") ?? [];
-  if (!workerIds.length || workerIds.length > 50 || workerIds.some((id) => !/^[A-Za-z0-9_-]{1,128}$/.test(id)))
+  if (!workerIds.length || workerIds.length > 50 || workerIds.some((id) => !isValidWorkerUsageSelector(id)))
     return c.json({ error_code: "bad_request" }, 400);
   const query = new URLSearchParams({ space_id: spaceId, project_id: projectId });
   for (const id of [...new Set(workerIds)]) query.append("worker_id", id);
@@ -9597,7 +9598,7 @@ app.get("/spaces/:spaceId/assistant/worker-usage", async (c) => {
   const tenantId = await requireApprovalAuthority(c, spaceId);
   if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_unavailable" }, 503);
   const workerIds = c.req.queries("worker_id") ?? [];
-  if (!workerIds.length || workerIds.length > 50 || workerIds.some((id) => !/^[A-Za-z0-9_-]{1,128}$/.test(id)))
+  if (!workerIds.length || workerIds.length > 50 || workerIds.some((id) => !isValidWorkerUsageSelector(id)))
     return c.json({ error_code: "bad_request" }, 400);
   const query = new URLSearchParams({ space_id: spaceId });
   for (const id of [...new Set(workerIds)]) query.append("worker_id", id);

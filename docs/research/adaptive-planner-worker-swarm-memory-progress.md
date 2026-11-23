@@ -1,5 +1,28 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW02 follow-up — 2026-11-23 (goal usage joins; local verification)
+
+Goal activity already projects each task's stable worker ID, verification result, queue wait and
+execution duration. The corresponding `sub_agents` row stores reported model tokens and allocated
+token budget, while Billing aggregates exact worker and `:attempt:` usage-event run IDs into
+internal credits plus an unpriced-event count. The Shell joins these values by worker ID beside the
+goal topology and task status. A route-validation mismatch had prevented this join for goal IDs:
+the host derives IDs as a 64-character goal hash, colon, and a task ID up to 64 characters, while
+the Agents and Billing usage selectors rejected colons and lengths above 128. Selectors now admit
+the bounded namespaced IDs. Billing escapes `_` in the attempt prefix so `task_1` cannot match a
+neighboring `taskX1`; the regression exercises the actual usage-summary route.
+
+Verification: worker selector suite **2/2**, Billing worker-usage suite **25/25**, Agents typecheck
+and `git diff --check`; local/mock only. These receipts can now be observed together for a goal
+task, but they do not constitute a controlled quality/cost comparison. Queue/execution durations
+are worker runtime measurements; credits are internal accounting and may include unpriced events;
+provider invoices are not reported. No savings claim is supported. Progressive routing and dynamic
+expansion remain disabled by default.
+
+**Exact next action:** add a bounded report-only history of progressive concurrency adjustments to
+the goal journal and activity projection, each associated with its triggering task completion and
+verification outcome. Preserve selection behavior and keep the rollout gate off.
+
 ## APW02 follow-up — 2026-11-23 (staged persistence replay; local verification)
 
 The cross-DO expansion persistence path is now isolated in `goal-expansion-admission.ts`. It
@@ -175,7 +198,7 @@ plans; it does not replace their IDs or authorities.
 | ID | Requirement | Status and evidence | Remaining work / gate |
 | --- | --- | --- | --- |
 | APW01 | Reconcile planner, DAG, model routing, task memory, branches, recovery, callers and billing against current source. | PARTIAL AUDIT: planner-first protocol is in `workers/agents/src/script-engine/planner-first.ts`; bounded DAG dispatch and recovery are in `goal-dag.ts`; directed scoped task messages use `task-blackboard.ts`; runtime and token limits already apply. Existing ledgers cover PW01–PW06, SC01–SC05, K01–K30 and platform P/AP requirements. | Continue current-source comparisons when implementation reaches a requirement; no baseline task-quality/cost benchmark is recorded. |
-| APW02 | Choose direct, one-worker, sequential or parallel execution; adapt within limits and explain the choice. | PARTIAL: planner-first routing is in `script-engine/planner-first.ts`; the bounded topology controller and durable receipt are in `script-engine/goal-dag.ts`. Opt-in `progressive-v1` begins independent graphs at one worker, ramps on verified progress, contracts after failure/review and narrows to the ready frontier (`796182c7`). A gated host path supports structured one-level expansion, deterministic namespaced IDs, a 12-task ceiling, parent-budget inheritance, scoped metadata/blackboard updates, and authorization/Billing-path checks at admission and dispatch (`139c6654`). Persistence replay is unit-tested across an injected local transaction failure (2026-11-23 follow-up above). Default flags remain off. | Trace verification, latency, worker-token and internal-credit receipts to stable goal/task IDs before measured routing; still missing planner hierarchy, safe cancellation of redundant running work and deployed/comparative evaluation. No aggregate USD/credit escrow is added for expansions; current per-inference quota/project-spend admission remains authoritative where configured. |
+| APW02 | Choose direct, one-worker, sequential or parallel execution; adapt within limits and explain the choice. | PARTIAL: planner-first routing is in `script-engine/planner-first.ts`; the bounded topology controller and durable receipt are in `script-engine/goal-dag.ts`. Opt-in `progressive-v1` begins independent graphs at one worker, ramps on verified progress, contracts after failure/review and narrows to the ready frontier (`796182c7`). A gated host path supports structured one-level expansion, deterministic namespaced IDs, a 12-task ceiling, parent-budget inheritance, scoped metadata/blackboard updates, and authorization/Billing-path checks at admission and dispatch (`139c6654`). Persistence replay is unit-tested across an injected local transaction failure (2026-11-23 follow-up above). Goal verification/runtime, worker token budget/usage and internal-credit receipts are now joinable by stable task worker ID; usage selector and SQL-prefix regressions are covered in the 2026-11-23 follow-up above. Default flags remain off. | Add report-only history of concurrency adjustments with their triggering task/verification evidence; then evaluate measured selection without claiming savings. Planner hierarchy, safe cancellation of redundant running work and deployed/comparative evaluation remain open. Credit receipts are internal and may be unpriced; no provider invoice comparison or aggregate USD/credit escrow is added for expansions. Per-inference quota/project-spend admission remains authoritative where configured. |
 | APW03 | Durable task tree, ownership, decisions, dependency/revision links, scoped blackboard and conflict coordination. | PARTIAL/OVERLAP: goal tasks can carry up to four exact Project decision refs. Host rechecks active status, proposal revision and canonical workspace pin before dispatch, again at dispatch/result/resume; stale work becomes `needs_review` and blocks dependents. Actor-scoped task UI displays refs and the hold reason. | Result-branch/workspace revision lineage, conflict integration/evidence UX and owner decision-review controls remain partial; Journal is bounded at 16 KiB. |
 | APW04 | Scoped memory layers, provenance, context assembly, safe compaction, field guide, privacy and invalidation. | PARTIAL/OVERLAP: ingress rendering rechecks actor; Space Assistant reads scope rows to the current actor and restricts legacy entries to owner/admin; personal fact/episode UI deletion is member-gated and exact on category, row ID and actor (`cba38ee9`); shared facts are role-filtered. Existing Knowledge provenance and reviewed Project guide controls are reused. | Canonical content revisions/hashes are missing for some stores; legacy vectors lack timestamps; retention/deletion policy across stores, selective assembly evaluation and private-project leakage testing remain. |
 | APW05 | Hierarchical cost accounting, pre-admission reservations, model/runtime selection, thrash control and fair scheduling. | PARTIAL/OVERLAP: shared-compute/TBR ledgers cover admissions; existing owner usage is now visible beside goal tasks as internal credits plus unpriced or pending states. | Atomic task/run reservations, uncertain-charge reconciliation, planner/integration/reviewer usage, automatic thrash detection, priority/fairness policy and provider USD evidence remain; exact contracts/policy and live billing are separate. |

@@ -1668,17 +1668,20 @@ app.get("/internal/usage/worker-summary", async (c) => {
   const workerIds = c.req.queries("worker_id") ?? [];
   if (!orgId || !spaceId || spaceId.length > 128 || projectId.length > 128
     || workerIds.length < 1 || workerIds.length > 50
-    || workerIds.some((id) => !/^[A-Za-z0-9_-]{1,128}$/.test(id))) return c.json({ error_code: "bad_request" }, 400);
+    || workerIds.some((id) => !/^[A-Za-z0-9._:-]{1,160}$/.test(id))) return c.json({ error_code: "bad_request" }, 400);
   const uniqueWorkerIds = [...new Set(workerIds)];
   const clauses: string[] = [];
   const filterBindings: unknown[] = [];
   const caseBindings: unknown[] = [];
   const labels: string[] = [];
   for (const id of uniqueWorkerIds) {
-    clauses.push("(run_id=? OR run_id LIKE ?)");
-    filterBindings.push(id, `${id}:attempt:%`);
-    labels.push("WHEN run_id=? THEN ? WHEN run_id LIKE ? THEN ?");
-    caseBindings.push(id, id, `${id}:attempt:%`, id);
+    // The worker ID is a literal prefix. Escape SQL LIKE metacharacters (especially `_`, which
+    // appears in planner task IDs) so usage from a neighboring task cannot be attributed here.
+    const attemptPattern = `${id.replaceAll("!", "!!").replaceAll("%", "!%").replaceAll("_", "!_")}:attempt:%`;
+    clauses.push("(run_id=? OR run_id LIKE ? ESCAPE '!')");
+    filterBindings.push(id, attemptPattern);
+    labels.push("WHEN run_id=? THEN ? WHEN run_id LIKE ? ESCAPE '!' THEN ?");
+    caseBindings.push(id, id, attemptPattern, id);
   }
   const projectFilter = projectId ? "project_id=?" : "project_id IS NULL";
   const rows = await c.env.PLATFORM_DB.prepare(`SELECT CASE ${labels.join(" ")} END AS worker_id,

@@ -72,18 +72,21 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** The bounded expansion implementation is pushed as `139c6654`. This
-checkpoint extracts the staged persistence boundary so local tests can fail the AgentDO transaction
-after SpaceDO task creation, then replay the same stable task IDs. The tests prove the pending intent
-survives, remote task creation is idempotent, goal metadata and blackboard grants commit together,
-and wrong-scope metadata is rejected before any remote write. Verification: goal expansion, admission
-and DAG suites **65/65**, Agents typecheck and `git diff --check`; local/mock only. Cross-DO
-persistence remains staged rather than distributed-atomic; per-inference quota/project-spend checks
-remain authoritative where configured, with no aggregate USD/credit reservation for proposed tasks.
+**Latest checkpoint.** APW02's goal-run evidence trace now joins the existing receipts through the
+stable task worker ID: goal activity stores verification and queue/execution timing; the worker row
+stores model tokens and its budget; Billing aggregates internal-credit events by worker ID and
+attempt. The usage selectors now accept the 64-character goal hash plus task ID (up to 129
+characters), and Billing treats underscores literally so a task such as `task_1` cannot collect
+`taskX1`'s attempt receipts. Shell already displays topology, task verification/timing, tokens and
+internal credits together. Verification: selector test **2/2**, Billing usage test **25/25**, Agents
+typecheck and `git diff --check`; local/mock only. The usage endpoint explicitly reports internal
+credits and unpriced events, not provider invoices. This enables joined observation; it establishes
+no quality/cost baseline or savings claim. Progressive routing and dynamic expansion remain off.
 
-**Exact next action:** inspect goal routing's current verification, latency, worker-token and internal
-credit receipts and trace which can be joined to a task/run before implementing a measured routing
-signal. Both progressive routing and dynamic expansion stay off by default.
+**Exact next action:** add a bounded report-only history of progressive concurrency adjustments to
+the goal journal and activity projection, linked to the task completion and verification outcome
+that caused each adjustment. Preserve the current selection behavior and rollout gate; do not infer
+cost savings from a concurrency change.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).

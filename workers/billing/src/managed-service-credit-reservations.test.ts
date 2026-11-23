@@ -179,6 +179,27 @@ describe("owner-scoped delegated worker usage summary", () => {
       workers: [{ worker_id: "worker-space", event_count: 1, cost_credits: 3 }] });
   });
 
+  it("joins namespaced goal worker IDs and treats task underscores literally", async () => {
+    const h = harness();
+    const workerId = `${"a".repeat(64)}:task_1`;
+    const neighborId = `${"a".repeat(64)}:taskX1`;
+    const insert = (eventId: string, runId: string, credits: number) => h.db.db.prepare(
+      `INSERT INTO usage_events(id,org_id,space_id,event_type,quantity,project_id,run_id,cost_credits)
+       VALUES(?, 'org-a', 'space-a', 'infra_credits', 1, 'project-a', ?, ?)`).run(eventId, runId, credits);
+    insert("goal-worker-base", workerId, 4);
+    insert("goal-worker-attempt", `${workerId}:attempt:2`, 6);
+    insert("neighbor-worker-attempt", `${neighborId}:attempt:2`, 500);
+    const token = await mintInternalToken(secret, "org-a");
+    const query = new URLSearchParams({ space_id: "space-a", project_id: "project-a", worker_id: workerId });
+    const response = await worker.fetch(new Request(`https://billing.test/internal/usage/worker-summary?${query}`, {
+      headers: { "x-naelao-tenant-id": "org-a", "x-naelao-internal-token": token },
+    }), h.env as never, {} as never);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ workers: [
+      { worker_id: workerId, event_count: 2, cost_credits: 10, unpriced_event_count: 0 },
+    ] });
+  });
+
   it("rejects unbounded or unsafe worker selectors", async () => {
     const h = harness();
     const token = await mintInternalToken(secret, "org-a");
