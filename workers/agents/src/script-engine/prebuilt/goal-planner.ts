@@ -40,12 +40,16 @@ export interface GoalTask {
   runtime_resource_key?: string;
   /** Bounded queue priority; host caps and ages it to prevent starvation. */
   priority?: number;
+  /** Host-owned depth marker for the opt-in, one-level goal expansion path. */
+  expansion_depth?: number;
   file_paths: string[];
   dependencies?: string[];
   /** Host-selected, bounded blackboard peers; planner input for this field is discarded. */
   communication_recipients?: string[];
   budget_tokens: number;
 }
+
+export const MAX_GOAL_TASKS = 12;
 
 /** Directed host grant set: DAG successors plus Decisions-selected peer recipients. */
 export function taskCommunicationRecipients(taskId: string, tasks: readonly GoalTask[]): string[] {
@@ -58,7 +62,7 @@ export function taskCommunicationRecipients(taskId: string, tasks: readonly Goal
 }
 
 export function validateGoalDag(tasks: GoalTask[]): void {
-  if (tasks.length > 12) throw new Error("goal plan exceeds 12 tasks");
+  if (tasks.length > MAX_GOAL_TASKS) throw new Error(`goal plan exceeds ${MAX_GOAL_TASKS} tasks`);
   if (!tasks.length) throw new Error("goal plan must contain at least one task");
   const ids = new Set(tasks.map((task) => task.id));
   if (ids.size !== tasks.length) throw new Error("goal task ids must be unique");
@@ -78,6 +82,7 @@ export function validateGoalDag(tasks: GoalTask[]): void {
     if (task.runtime_confidence !== undefined && (!Number.isFinite(task.runtime_confidence) || task.runtime_confidence < 0 || task.runtime_confidence > 1)) throw new Error(`task '${task.id}' has an invalid runtime_confidence`);
     if (task.runtime_resource_key !== undefined && (typeof task.runtime_resource_key !== "string" || !/^runtime\.[a-z-]+\.[a-f0-9]{40}$/.test(task.runtime_resource_key))) throw new Error(`task '${task.id}' has an invalid runtime_resource_key`);
     if (task.priority !== undefined && (!Number.isSafeInteger(task.priority) || task.priority < -10 || task.priority > 10)) throw new Error(`task '${task.id}' priority must be within -10..10`);
+    if (task.expansion_depth !== undefined && (!Number.isSafeInteger(task.expansion_depth) || task.expansion_depth < 0 || task.expansion_depth > 1)) throw new Error(`task '${task.id}' has an invalid expansion_depth`);
     for (const dependency of task.dependencies ?? []) if (!ids.has(dependency) || dependency === task.id) throw new Error(`task '${task.id}' has invalid dependency '${dependency}'`);
     if (task.communication_recipients !== undefined && (!Array.isArray(task.communication_recipients) || task.communication_recipients.length > 8 || task.communication_recipients.some(id => typeof id !== "string" || !ids.has(id) || id === task.id) || new Set(task.communication_recipients).size !== task.communication_recipients.length)) throw new Error(`task '${task.id}' has invalid communication_recipients`);
   }

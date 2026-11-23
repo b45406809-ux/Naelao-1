@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { executeGoalDag, type GoalDagHost, type GoalDagJournal } from "./goal-dag.js";
 import { COORDINATION_PATTERNS, goalPlanner, taskCommunicationRecipients, validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { MAX_SUB_AGENT_BUDGET_TOKENS } from "./sub-agent-output.js";
+import { GOAL_EXPANSION_OUTPUT_KEY } from "./goal-expansion.js";
 const task = (id: string, dependencies: string[] = []): GoalTask => ({ id, dependencies, title: id, subtask_spec: `do ${id}`, assigned_role: "schema-validator", file_paths: [`src/${id}.ts`], budget_tokens: 1800 });
 function fixture(initial?: GoalDagJournal) {
   let saved = initial;
@@ -264,6 +265,70 @@ describe("durable goal DAG", () => {
     const restart = fixture(f.snapshot());
     expect((await executeGoalDag(tasks, restart.host)).tasks.b?.status).toBe("completed");
     expect(restart.host.launch).not.toHaveBeenCalled();
+  });
+  it("admits one bounded expansion, gives children only parent-derived authority, and resumes the saved graph", async () => {
+    const f = fixture();
+    f.host.dynamicExpansionEnabled = true;
+    f.host.remainingTaskBudgetTokens = vi.fn(async () => 400);
+    f.host.admitExpansion = vi.fn(async () => ({ ok: true as const }));
+    f.host.launch = vi.fn(async (candidate, id) => candidate.id === "root"
+      ? { id, ok: true, output: { [GOAL_EXPANSION_OUTPUT_KEY]: { version: 1, tasks: [
+        { id: "verify", title: "Verify", subtask_spec: "Verify the parent's result", budget_tokens: 300 },
+      ] } } }
+      : { id, ok: true, output: "verified" });
+    const tasks = [task("root")];
+    const result = await executeGoalDag(tasks, f.host);
+    const childId = result.expansionReceipts?.root?.taskIds[0];
+    expect(result.expansionReceipts?.root).toMatchObject({ status: "admitted", taskIds: [expect.any(String)] });
+    expect(result.tasks[childId!]?.status).toBe("completed");
+    expect(result.taskDefinitions?.map(candidate => candidate.id)).toEqual(["root", childId]);
+    expect(f.host.admitExpansion).toHaveBeenCalledWith(expect.objectContaining({
+      parent: expect.objectContaining({ id: "root" }),
+      tasks: [expect.objectContaining({ id: childId, assigned_role: "schema-validator", dependencies: ["root"], planner: false, expansion_depth: 1, budget_tokens: 300 })],
+      allTasks: expect.arrayContaining([expect.objectContaining({ id: "root" }), expect.objectContaining({ id: childId })]),
+    }));
+    expect(f.host.launch.mock.calls.map(([candidate]) => candidate.id)).toEqual(["root", childId]);
+
+    const resumed = fixture(result);
+    const resumedResult = await executeGoalDag([task("root")], resumed.host);
+    expect(resumedResult.tasks[childId!]?.status).toBe("completed");
+    expect(resumed.host.launch).not.toHaveBeenCalled();
+  });
+  it("keeps the completed goal when host expansion admission rejects and records the decision", async () => {
+    const f = fixture();
+    f.host.dynamicExpansionEnabled = true;
+    f.host.remainingTaskBudgetTokens = vi.fn(async () => 200);
+    f.host.admitExpansion = vi.fn(async () => ({ ok: false as const, reason: "scope_revoked" }));
+    f.host.launch = vi.fn(async (_candidate, id) => ({ id, ok: true, output: { [GOAL_EXPANSION_OUTPUT_KEY]: { version: 1, tasks: [
+      { id: "follow-up", title: "Follow up", subtask_spec: "Perform the bounded follow-up", budget_tokens: 100 },
+    ] } } }));
+    const result = await executeGoalDag([task("root")], f.host);
+    expect(result.tasks.root?.status).toBe("completed");
+    expect(result.expansionReceipts?.root).toMatchObject({ status: "rejected", reason: "scope_revoked", taskIds: [] });
+    expect(f.host.launch).toHaveBeenCalledOnce();
+  });
+  it("serializes simultaneous expansions against the 12-task graph ceiling", async () => {
+    const f = fixture();
+    f.host.concurrency = 2;
+    f.host.dynamicExpansionEnabled = true;
+    f.host.remainingTaskBudgetTokens = vi.fn(async () => 1_000);
+    f.host.admitExpansion = vi.fn(async () => ({ ok: true as const }));
+    f.host.launch = vi.fn(async (candidate, id) => candidate.id === "root-a" || candidate.id === "root-b"
+      ? { id, ok: true, output: { [GOAL_EXPANSION_OUTPUT_KEY]: { version: 1, tasks: [
+        { id: "follow-up", title: "Follow up", subtask_spec: `Follow up ${candidate.id}`, budget_tokens: 300 },
+      ] } } }
+      : { id, ok: true });
+    const roots = [task("root-a"), task("root-b")];
+    const dependents = Array.from({ length: 9 }, (_, index) => task(`wait-${index}`, ["root-a", "root-b"]));
+
+    const result = await executeGoalDag([...roots, ...dependents], f.host);
+    const receipts = Object.values(result.expansionReceipts ?? {});
+    expect(Object.keys(result.tasks)).toHaveLength(12);
+    expect(receipts.filter(receipt => receipt.status === "admitted")).toHaveLength(1);
+    expect(receipts.filter(receipt => receipt.status === "rejected")).toMatchObject([
+      expect.objectContaining({ reason: "goal_expansion_graph_limit_exceeded", taskIds: [] }),
+    ]);
+    expect(f.host.admitExpansion).toHaveBeenCalledOnce();
   });
   it("keeps independent work bounded and blocks descendants of failed workers", async () => {
     const f = fixture(); let active = 0, maximum = 0;

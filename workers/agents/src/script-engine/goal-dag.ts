@@ -1,6 +1,7 @@
-import { taskCommunicationRecipients, validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
+import { MAX_GOAL_TASKS, taskCommunicationRecipients, validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task-blackboard.js";
 import { evaluateGoalEvidence, type GoalEvidence, type GoalEvidenceCheck } from "./goal-evidence.js";
+import { fingerprintGoalExpansionProposal, prepareGoalExpansion, readGoalExpansionProposal } from "./goal-expansion.js";
 
 export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string; status?: string }
 export type GoalTaskStatus = "pending" | "running" | "verifying" | "completed" | "failed" | "blocked" | "needs_review";
@@ -18,7 +19,8 @@ export interface GoalTaskRuntimeState {
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; dispatchId?: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; decisionReviewReason?: string; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain" | "verification_failed" | "verification_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" | "review_verification" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number; policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed" } }
+export interface GoalExpansionReceipt { proposalId: string; taskIds: string[]; status: "admitted" | "rejected"; reason?: string }
+export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; taskDefinitions?: GoalTask[]; expansionReceipts?: Record<string, GoalExpansionReceipt>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number; policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed" } }
 /** Automatic repair is an opt-in, host-budgeted path with a hard kernel ceiling. */
 export const MAX_GOAL_FIXERS_PER_RUN = 2;
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
@@ -34,6 +36,10 @@ export interface GoalDagHost {
   publish(task: GoalTask, state: GoalTaskState): Promise<void>;
   /** Recheck active decision identity/revision and its workspace pin before dispatch or reuse. */
   validateTaskDecisions?(task: GoalTask): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /** Dynamic expansion is host-gated and remains disabled unless both the feature flag and these callbacks are present. */
+  dynamicExpansionEnabled?: boolean;
+  remainingTaskBudgetTokens?(task: GoalTask, workerId: string): Promise<number>;
+  admitExpansion?(input: { proposalId: string; parent: GoalTask; tasks: GoalTask[]; allTasks: GoalTask[] }): Promise<{ ok: true } | { ok: false; reason: string }>;
   workerId(taskId: string): string;
   concurrency: number;
   /** Progressive worker admission stays disabled unless the rollout gate is explicitly enabled. */
@@ -157,10 +163,26 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
   const hostFixerLimit = host.maxFixersPerGoal ?? 1;
   if (!Number.isSafeInteger(hostFixerLimit) || hostFixerLimit < 0 || hostFixerLimit > MAX_GOAL_FIXERS_PER_RUN) throw new Error("invalid_goal_fixer_limit");
   const loaded = await host.load();
+  if (loaded?.taskDefinitions !== undefined) {
+    if (!Array.isArray(loaded.taskDefinitions) || loaded.taskDefinitions.length > MAX_GOAL_TASKS) throw new Error("goal_journal_invalid_task_definitions");
+    const persistedById = new Map(loaded.taskDefinitions.map(task => [task.id, task]));
+    for (const task of tasks) {
+      const persisted = persistedById.get(task.id);
+      if (!persisted || persisted.title !== task.title || persisted.subtask_spec !== task.subtask_spec
+        || persisted.assigned_role !== task.assigned_role || persisted.budget_tokens !== task.budget_tokens
+        || JSON.stringify(persisted.file_paths) !== JSON.stringify(task.file_paths)
+        || JSON.stringify(persisted.dependencies ?? []) !== JSON.stringify(task.dependencies ?? [])) throw new Error("goal_journal_mismatch");
+    }
+    const existingIds = new Set(tasks.map(task => task.id));
+    tasks.push(...loaded.taskDefinitions.filter(task => !existingIds.has(task.id)).map(task => structuredClone(task)));
+    validateGoalDag(tasks);
+  }
   const persistedFixerLimit = loaded?.maxFixersPerGoal;
   if (persistedFixerLimit !== undefined && (!Number.isSafeInteger(persistedFixerLimit) || persistedFixerLimit < 0 || persistedFixerLimit > MAX_GOAL_FIXERS_PER_RUN)) throw new Error("goal_journal_invalid_fixer_limit");
   const effectiveFixerLimit = persistedFixerLimit === undefined ? hostFixerLimit : Math.min(persistedFixerLimit, hostFixerLimit);
   const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, fixerEnabled: host.fixerEnabled === true, verificationRequired: host.verificationRequired === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
+  journal.taskDefinitions = structuredClone(tasks);
+  journal.expansionReceipts ??= {};
   // Recompute on every resume so a stale persisted choice can never exceed current host policy.
   const routing = selectGoalRouting(tasks, host.concurrency, host.adaptiveConcurrency === true);
   if (host.adaptiveConcurrency === true && routing.mode === "parallel" && loaded?.routing?.policy === "progressive-v1"
@@ -178,9 +200,64 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
   // earlier write cannot replace a newer journal with stale task states.
   let saveTail: Promise<void> = Promise.resolve();
   const save = (): Promise<void> => {
+    journal.taskDefinitions = structuredClone(tasks);
     const snapshot = structuredClone(journal);
     saveTail = saveTail.then(() => host.save(snapshot));
     return saveTail;
+  };
+  let expansionAdmissionTail: Promise<void> = Promise.resolve();
+  const processGoalExpansion = async (parent: GoalTask, state: GoalTaskState): Promise<void> => {
+    if (host.dynamicExpansionEnabled !== true || state.status !== "completed" || !state.result?.ok) return;
+    const predecessor = expansionAdmissionTail;
+    let release!: () => void;
+    expansionAdmissionTail = new Promise<void>(resolve => { release = resolve; });
+    await predecessor;
+    try {
+      const proposal = readGoalExpansionProposal(state.result.output);
+      if (!proposal) return;
+      const priorReceipt = journal.expansionReceipts?.[parent.id];
+      if (priorReceipt) return;
+
+      const reject = async (proposalId: string, reason: string): Promise<void> => {
+        (journal.expansionReceipts ??= {})[parent.id] = {
+          proposalId, taskIds: [], status: "rejected", reason: reason.slice(0, 240),
+        };
+        await save();
+      };
+      const proposalFingerprint = await fingerprintGoalExpansionProposal(parent.id, proposal);
+      if (!host.remainingTaskBudgetTokens || !host.admitExpansion) {
+        await reject(proposalFingerprint, "goal_expansion_host_admission_unavailable");
+        return;
+      }
+
+      let prepared;
+      try {
+        const remainingBudgetTokens = await host.remainingTaskBudgetTokens(parent, state.workerId);
+        prepared = await prepareGoalExpansion({ parent, existingTasks: tasks, proposedTasks: proposal, remainingBudgetTokens });
+      } catch (error) {
+        await reject(proposalFingerprint, error instanceof Error ? error.message : String(error));
+        return;
+      }
+      const nextTasks = [...tasks, ...prepared.tasks];
+      const admission = await host.admitExpansion({ proposalId: prepared.proposalId, parent, tasks: prepared.tasks, allTasks: nextTasks });
+      if (!admission.ok) {
+        await reject(prepared.proposalId, admission.reason);
+        return;
+      }
+      for (const task of prepared.tasks) {
+        if (journal.tasks[task.id]) throw new Error("goal_expansion_task_identity_conflict");
+        journal.tasks[task.id] = { status: "pending", workerId: host.workerId(task.id) };
+      }
+      tasks.push(...prepared.tasks);
+      (journal.expansionReceipts ??= {})[parent.id] = {
+        proposalId: prepared.proposalId, taskIds: prepared.tasks.map(task => task.id), status: "admitted",
+      };
+      journal.routing = selectGoalRouting(tasks, host.concurrency, host.adaptiveConcurrency === true);
+      await save();
+      for (const task of prepared.tasks) await host.publish(task, journal.tasks[task.id]!);
+    } finally {
+      release();
+    }
   };
   const verifyResult = async (task: GoalTask, state: GoalTaskState): Promise<void> => {
     if (!state.result?.ok || (!host.verify && !journal.verificationRequired)) return;
@@ -266,6 +343,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     if (state.status === "completed" && state.result?.ok && !state.verification && (host.verify || journal.verificationRequired)) await verifyResult(task, state);
     if (state.status === "completed") await observeResult(task, state);
     await revalidateCompletedDecisionRefs(task, state);
+    if (state.status === "completed") await processGoalExpansion(task, state);
     recordCompletion(task, tasks, journal);
     if (journal.taskBlackboardEnabled && state.status === "completed") await save();
     await host.publish(task, state);
@@ -455,6 +533,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       if (result.ok && state.status === "completed") await verifyResult(task, state);
       if (state.status === "completed") await observeResult(task, state);
       await revalidateCompletedDecisionRefs(task, state);
+      if (state.status === "completed") await processGoalExpansion(task, state);
       if (state.runtime) {
         const completedAt = Date.now();
         const executionMs = state.runtime.startedAt === undefined ? undefined : Math.max(0, completedAt - state.runtime.startedAt);

@@ -47,13 +47,20 @@ handoff. Anything that had yet to reach that branch may need to be redone.
 and [progress ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). APW01 was
 reconciled in that ledger. Existing partial implementations remain recorded there.
 
-**Latest checkpoint.** APW02 progressive admission landed in `796182c7` with the default rollout
-disabled. The [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md) records
-59 local goal DAG and architecture checks and the Agents and Shell typechecks for that slice.
-The next missing slice is host-owned dynamic expansion. Start by tracing
-`validateGoalDag` and `executeGoalDag` through the persisted task IDs, scoped worker grants,
-and Billing admission in the Agents worker. Use the current code and ledger to avoid repeating
-the progressive routing work.
+**Latest checkpoint.** APW02 now has a bounded host-owned expansion path in `goal-expansion.ts`,
+`goal-dag.ts` and `NaelaoAgentDO.ts`; progressive routing and expansion remain disabled unless
+their flags are set. Structured proposals can add at most three one-level children under the
+12-task graph limit. The host derives child identity and authority, checks the parent's unused
+worker-token budget, revalidates scope and decision references, persists task membership/grants,
+and rechecks authorization and Billing path readiness at dispatch. Concurrent admissions serialize
+against the graph limit. Verification: goal expansion/DAG suites **63/63**, Agents typecheck and
+`git diff --check`; local/mock only. Cross-DO persistence is staged and replayable, not a distributed
+transaction; the existing per-inference quota/project-spend path remains authoritative and this slice
+does not reserve aggregate USD/credits for all proposed children.
+
+**Exact next action:** add host-boundary fault/replay coverage for a failure after SpaceDO task
+creation but before the AgentDO metadata/grant transaction, then continue APW02's remaining routing,
+cancellation and evaluation gaps. Keep both rollout flags off by default.
 
 - [ ] **Active · APW02 — Host admission for dynamic goal graph expansion.** Trace the current durable
   DAG caller and implement the next missing host-owned expansion slice. Preserve stable task identity,

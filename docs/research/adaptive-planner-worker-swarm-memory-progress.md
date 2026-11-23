@@ -1,5 +1,31 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW02 checkpoint — 2026-11-23 (host-owned bounded expansion; local verification)
+
+The durable goal DAG now accepts only an explicit structured worker result as an expansion proposal.
+The host derives deterministic 96-bit namespaced task IDs, allows at most three children at one
+additional depth, enforces the shared 12-task ceiling and confines child file paths and worker
+authority to the completed parent. Child budgets must fit the parent's unused worker-token budget.
+Expansion admissions serialize so concurrent completions cannot each pass the graph limit against
+the same old task count. Invalid or refused proposals get durable rejection receipts while completed
+parent work remains completed; admitted task definitions and receipts resume from the DAG journal.
+
+`NaelaoAgentDO` keeps expansion off unless `GOAL_DYNAMIC_EXPANSION_ENABLED=true`. Admission checks
+the durable parent worker's run/tenant/space/project/actor scope, current actor authorization,
+current Project decision references and the configured Billing path. It creates explicit stable
+SpaceDO task IDs behind a durable pending intent, then commits matching goal metadata and blackboard
+membership/grants in the AgentDO transaction. Dispatch rechecks current authorization, decision
+references and Billing path readiness. Verification: goal expansion and DAG suites **63/63**,
+Agents typecheck and `git diff --check`; local/mock only, with no deployed acceptance. The SpaceDO
+write and AgentDO transaction are a replayable staged boundary rather than one distributed atomic
+transaction, so a failed local commit can leave a visible pending SpaceDO row until replay. Existing
+per-inference quota/project-spend reservations remain in force where configured; this slice adds no
+aggregate USD/credit reservation for all proposed children. Rollout remains disabled.
+
+**Exact next action:** add host-boundary fault/replay coverage for the SpaceDO-write/AgentDO-commit
+gap, then continue APW02's remaining routing, cancellation and evaluation requirements. Preserve
+`infra/scripts/__pycache__/`.
+
 ## APW04 checkpoint — 2026-11-18 (actor-owned memory deletion; local verification)
 
 The member-facing Space Assistant memory route now exposes a delete action only for personal
@@ -130,7 +156,7 @@ plans; it does not replace their IDs or authorities.
 | ID | Requirement | Status and evidence | Remaining work / gate |
 | --- | --- | --- | --- |
 | APW01 | Reconcile planner, DAG, model routing, task memory, branches, recovery, callers and billing against current source. | PARTIAL AUDIT: planner-first protocol is in `workers/agents/src/script-engine/planner-first.ts`; bounded DAG dispatch and recovery are in `goal-dag.ts`; directed scoped task messages use `task-blackboard.ts`; runtime and token limits already apply. Existing ledgers cover PW01–PW06, SC01–SC05, K01–K30 and platform P/AP requirements. | Continue current-source comparisons when implementation reaches a requirement; no baseline task-quality/cost benchmark is recorded. |
-| APW02 | Choose direct, one-worker, sequential or parallel execution; adapt within limits and explain the choice. | PARTIAL: planner-first routing is in `script-engine/planner-first.ts`; the bounded topology controller and durable receipt are in `script-engine/goal-dag.ts`. Opt-in `progressive-v1` begins independent graphs at one worker, ramps on verified progress, contracts after failure/review and narrows to the ready frontier. Feature gate remains absent by default (`796182c7`). | Dynamic graph expansion requires a new billing-aware host admission callback: `validateGoalDag` caps a graph at 12, `executeGoalDag` requires exact persisted task IDs/count, `NaelaoAgentDO` hashes the full initial objective+task list, and actor-scoped blackboard member/grant plus goal-activity metadata are materialized from that same list. No current callback can extend worker identity, grants and billing reservations atomically. Also missing measured quality/cost routing, hierarchical planner tree, safe cancellation of redundant running work and deployed/comparative evaluation. |
+| APW02 | Choose direct, one-worker, sequential or parallel execution; adapt within limits and explain the choice. | PARTIAL: planner-first routing is in `script-engine/planner-first.ts`; the bounded topology controller and durable receipt are in `script-engine/goal-dag.ts`. Opt-in `progressive-v1` begins independent graphs at one worker, ramps on verified progress, contracts after failure/review and narrows to the ready frontier (`796182c7`). A gated host path now supports structured one-level expansion, deterministic namespaced IDs, a 12-task ceiling, parent-budget inheritance, scoped metadata/blackboard updates and authorization/Billing-path checks at admission and dispatch (2026-11-23 checkpoint above). Default flags remain off. | Add host-boundary failure/replay coverage for the staged SpaceDO/AgentDO persistence boundary. No aggregate USD/credit escrow is added for expansions; current per-inference quota/project-spend admission remains authoritative where configured. Also missing measured quality/cost routing, planner hierarchy, safe cancellation of redundant running work and deployed/comparative evaluation. |
 | APW03 | Durable task tree, ownership, decisions, dependency/revision links, scoped blackboard and conflict coordination. | PARTIAL/OVERLAP: goal tasks can carry up to four exact Project decision refs. Host rechecks active status, proposal revision and canonical workspace pin before dispatch, again at dispatch/result/resume; stale work becomes `needs_review` and blocks dependents. Actor-scoped task UI displays refs and the hold reason. | Result-branch/workspace revision lineage, conflict integration/evidence UX and owner decision-review controls remain partial; Journal is bounded at 16 KiB. |
 | APW04 | Scoped memory layers, provenance, context assembly, safe compaction, field guide, privacy and invalidation. | PARTIAL/OVERLAP: ingress rendering rechecks actor; Space Assistant reads scope rows to the current actor and restricts legacy entries to owner/admin; personal fact/episode UI deletion is member-gated and exact on category, row ID and actor (`cba38ee9`); shared facts are role-filtered. Existing Knowledge provenance and reviewed Project guide controls are reused. | Canonical content revisions/hashes are missing for some stores; legacy vectors lack timestamps; retention/deletion policy across stores, selective assembly evaluation and private-project leakage testing remain. |
 | APW05 | Hierarchical cost accounting, pre-admission reservations, model/runtime selection, thrash control and fair scheduling. | PARTIAL/OVERLAP: shared-compute/TBR ledgers cover admissions; existing owner usage is now visible beside goal tasks as internal credits plus unpriced or pending states. | Atomic task/run reservations, uncertain-charge reconciliation, planner/integration/reviewer usage, automatic thrash detection, priority/fairness policy and provider USD evidence remain; exact contracts/policy and live billing are separate. |
