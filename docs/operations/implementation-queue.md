@@ -353,22 +353,29 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
   execution, simulation and replay callers. The source review and first supported inbound-routing
   fixes are recorded in the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
 
-- [ ] **Add one-turn customer extension simulation.** Reuse the no-capability channel isolate for a
-  project-admin-authorized, active installation and stage handler replies, answer requests and
-  session updates for display only. Do not invoke Knowledge/model answering, provider delivery or
-  persistent session writes.
+- [x] **Add one-turn customer extension simulation.** The Channels panel now runs the exact active
+  WhatsApp handler through the no-capability isolate for an owner/admin with project access. Reply,
+  answer-request and session-update outputs are staged for display; Knowledge/model answering,
+  attachment reads, provider delivery and persistent session writes are excluded. Agent and
+  targeted Shell typechecks passed; the full Shell typecheck still reports stale `.next/types`
+  imports for missing generated routes. No tests, provider actions or deployment ran.
 
 - [ ] **Add member grants and verified contact routing.** Requires a multi-Space/project sender
   selection model that preserves the plan's per-member identity and current membership checks; do
   not reuse executive contacts or infer ownership from pairing.
 
-**Latest checkpoint:** commit `8b2dcb56` preserves existing sender-to-Space/project bindings on
-collision and makes shared inbound honor the active channel link and project scope. The full
-current-source reconciliation, owner/admin identity boundary, phone simulation pattern and live
-customer-extension effects are recorded in the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
-`git diff --check` passed; no tests, typechecks, provider actions or deployment ran. **Next action:**
-add a one-turn customer extension simulation using the isolated channel handler and return staged
-outputs only.
+- [ ] **Add isolated conversation replay.** Replay a selected customer event into a fresh simulation
+  with a pinned installation/settings snapshot and simulated Knowledge/tool adapters. Never alter
+  live extension sessions or dispatch provider effects.
+
+**Latest checkpoint:** the shared inbound scope protections and one-turn customer simulation are
+recorded in the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
+The simulation runs only the exact active channel handler in the isolated no-capability runtime and
+returns staged outputs. Agent and targeted Shell typechecks plus `git diff --check` passed; the full
+Shell check reports stale `.next/types` imports. No tests, provider actions or deployment ran.
+**Next action:** add admin member grants and a separately verified, multi-Space sender identity;
+preserve current membership/project checks and leave executive contacts and customer pairings
+separate.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

@@ -23,7 +23,7 @@ import { extensionResourceCostDisclosure, previewExtensionResourceRequirements }
 import { previewExtensionPublisherProvenance } from "@/lib/extension-publisher-provenance";
 import { projectInstalledExtensionReleaseProvenance } from "@/lib/extension-release-provenance";
 import { projectExtensionRollbackReview } from "@/lib/extension-rollback-review";
-import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type ProjectExtensionUpdateReview, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, getProjectExtensionUpdateReceipt, recoverStagedProjectExtensionUpdate, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, reviewProjectExtensionUpdate, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type CustomerChannelSimulationResult, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type ProjectExtensionUpdateReview, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, getProjectExtensionUpdateReceipt, recoverStagedProjectExtensionUpdate, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, simulateAssistantChannelExtension, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, reviewProjectExtensionUpdate, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -784,6 +784,10 @@ export function ChannelConnect({
   const [whatsappAccessToken, setWhatsappAccessToken] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [customerTestMessage, setCustomerTestMessage] = React.useState("");
+  const [customerTestResult, setCustomerTestResult] = React.useState<CustomerChannelSimulationResult | null>(null);
+  const [customerTestError, setCustomerTestError] = React.useState<string | null>(null);
+  const [customerTestBusy, setCustomerTestBusy] = React.useState(false);
   const [webhookUrl, setWebhookUrl] = React.useState<{ channel: string; url: string } | null>(null);
   const [extensionInstallations, setExtensionInstallations] = React.useState<ChannelExtensionInstallation[]>([]);
   const [publisherKeys, setPublisherKeys] = React.useState<ExtensionPublisherKey[]>([]);
@@ -821,6 +825,12 @@ export function ChannelConnect({
   const [canvasPublisherKeyId, setCanvasPublisherKeyId] = React.useState("");
   const [canvasPublisherSignature, setCanvasPublisherSignature] = React.useState("");
   const [canvasProvenance, setCanvasProvenance] = React.useState<{ manifest: string; artifacts: string; digest: string; sourceCount: number; sourceBytes: number } | null>(null);
+
+  React.useEffect(() => {
+    setCustomerTestMessage("");
+    setCustomerTestResult(null);
+    setCustomerTestError(null);
+  }, [spaceId, projectId]);
 
   React.useEffect(() => {
     let current = true;
@@ -1007,6 +1017,22 @@ export function ChannelConnect({
     }
   }
 
+  async function runCustomerExtensionSimulation(instanceId: string) {
+    if (!projectId || !customerTestMessage.trim() || customerTestBusy) return;
+    setCustomerTestBusy(true);
+    setCustomerTestError(null);
+    setCustomerTestResult(null);
+    try {
+      setCustomerTestResult(await simulateAssistantChannelExtension(spaceId, session, {
+        project_id: projectId, extension_instance_id: instanceId, test_message: customerTestMessage.trim(),
+      }));
+    } catch (err) {
+      setCustomerTestError(err instanceof Error ? err.message : "Customer extension simulation failed.");
+    } finally {
+      setCustomerTestBusy(false);
+    }
+  }
+
   async function setChannelModel(channel: ChannelId, model: string) {
     setBusy(true); setError(null);
     try {
@@ -1020,6 +1046,7 @@ export function ChannelConnect({
   async function bindExtension(channel: ChannelId, instanceId: string) {
     if (!projectId) return;
     setBusy(true); setError(null);
+    setCustomerTestResult(null); setCustomerTestError(null);
     try {
       await updateAssistantChannel(spaceId, session, {
         action: instanceId ? "bind_extension" : "unbind_extension",
@@ -1496,6 +1523,7 @@ export function ChannelConnect({
         const on = !!link?.enabled;
         const boundInstallation = extensionInstallations.find((installation) => installation.instance_id === link?.extension_instance_id);
         const connectionRequirements = (boundInstallation && boundInstallation.status === "active" ? boundInstallation.connections ?? [] : []).filter((connection) => connection.required);
+        const currentCustomerTestResult = customerTestResult?.installation_id === boundInstallation?.instance_id ? customerTestResult : null;
         const showing = open === ch.id;
         return (
           <div key={ch.id} className="settings-row" style={{ display: "block" }}>
@@ -1587,6 +1615,42 @@ export function ChannelConnect({
                     {index > 0 ? "; " : ""}{connection.purpose} ({connection.provider}: {configured ? "configured" : "not configured"})
                   </React.Fragment>;
                 })}
+              </div>
+            )}
+
+            {ch.id === "whatsapp" && connected && on && canManage && projectId && boundInstallation?.status === "active"
+              && boundInstallation.channels.some(declaration => declaration.provider === "whatsapp") && (
+              <div aria-label="Test WhatsApp customer handler" style={{ marginTop: 10, padding: 9, border: "1px solid var(--border)", borderRadius: 7 }}>
+                <strong style={{ fontSize: 11.5 }}>Test as customer · one synthetic message</strong>
+                <p style={{ margin: "4px 0 7px", color: "var(--text3)", fontSize: 10.5, lineHeight: 1.5 }}>
+                  Runs the active signed WhatsApp handler in an isolated turn. No provider message is sent, Knowledge or model answer is run, attachment is read, or session state saved. Answer requests and session changes are shown as proposals.
+                </p>
+                <label htmlFor="whatsapp-customer-test-message" style={{ display: "block", fontSize: 11, color: "var(--text2)" }}>Synthetic customer message</label>
+                <textarea id="whatsapp-customer-test-message" value={customerTestMessage} maxLength={2_000}
+                  onChange={event => { setCustomerTestMessage(event.target.value); setCustomerTestResult(null); setCustomerTestError(null); }}
+                  placeholder="For example, I need help with my order" disabled={customerTestBusy}
+                  style={{ display: "block", boxSizing: "border-box", width: "100%", minHeight: 64, margin: "4px 0 7px", background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8, font: "inherit", fontSize: 12 }} />
+                <button type="button" className="btn-ghost" disabled={customerTestBusy || busy || !customerTestMessage.trim()}
+                  onClick={() => void runCustomerExtensionSimulation(boundInstallation.instance_id)}>
+                  {customerTestBusy ? "Running isolated handler…" : "Run customer simulation"}
+                </button>
+                {customerTestError && <p role="alert" style={{ color: "var(--danger, #d33)", fontSize: 11 }}>{customerTestError}</p>}
+                {currentCustomerTestResult && <div role="status" aria-label="WhatsApp customer simulation result" style={{ marginTop: 8, fontSize: 11 }}>
+                  {currentCustomerTestResult.reply && <>
+                    <strong>Handler reply · not sent</strong>
+                    <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "4px 0 8px", padding: 7, background: "var(--surface2)", borderRadius: 6 }}>{currentCustomerTestResult.reply.text}</pre>
+                  </>}
+                  {currentCustomerTestResult.answer_request && <div style={{ marginBottom: 8 }}>
+                    <strong>Generated answer requested · not run</strong>
+                    <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "4px 0", padding: 7, background: "var(--surface2)", borderRadius: 6 }}>{currentCustomerTestResult.answer_request.question}</pre>
+                    {currentCustomerTestResult.answer_request.attachment_count > 0 && <span>{currentCustomerTestResult.answer_request.attachment_count} attachment(s) were requested but not read.</span>}
+                  </div>}
+                  {!!currentCustomerTestResult.staged_session_updates && <details style={{ marginBottom: 8 }}>
+                    <summary>Session changes · not saved</summary>
+                    <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 180, overflow: "auto" }}>{JSON.stringify(currentCustomerTestResult.staged_session_updates, null, 2)}</pre>
+                  </details>}
+                  <div style={{ color: "var(--text3)" }}>{currentCustomerTestResult.disclosure}</div>
+                </div>}
               </div>
             )}
 

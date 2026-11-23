@@ -2168,6 +2168,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.ctx.storage.transaction(tx=>receiveSteering(new Request(request.url,{method:"POST",headers:request.headers,body:text}),this.env.PLATFORM_SECRET,tx));
       }
       if(method==='POST'&&url.pathname==='/phone-extension')return this.handlePhoneExtension(request);
+      if(method==='POST'&&url.pathname==='/channel-extension-simulation')return this.handleChannelExtensionSimulation(request);
       // POST /warm — pre-warm DO (creates tables, returns status)
       if (method === "POST" && url.pathname === "/warm") {
         return Response.json({ status: "warm", ts: Date.now() });
@@ -12065,6 +12066,100 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } finally {
       if (runtimeLeaseHeld) await this.extensionRuntimeWork({ action: "release", tenantId: tenant, spaceId: body.spaceId,
         projectId: row.project_id, instanceId: row.installation_id, workId, workKind });
+    }
+  }
+
+  private async handleChannelExtensionSimulation(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const body = await readBoundedResponseJson<{
+      spaceId?: unknown; projectId?: unknown; channel?: unknown; instanceId?: unknown; message?: unknown;
+    }>(new Response(request.body), 16_384).catch(() => ({} as {
+      spaceId?: unknown; projectId?: unknown; channel?: unknown; instanceId?: unknown; message?: unknown;
+    }));
+    const message = typeof body.message === "string" ? body.message.trim() : "";
+    if (typeof body.spaceId !== "string" || !body.spaceId || body.spaceId.length > 128
+      || typeof body.projectId !== "string" || !body.projectId || body.projectId.length > 128
+      || body.channel !== "whatsapp" || typeof body.instanceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.instanceId)
+      || !message || message.length > 2_000 || new TextEncoder().encode(message).byteLength > 8_000) {
+      return Response.json({ error_code: "channel_simulation_input_invalid" }, { status: 400 });
+    }
+    if (!this.env.PLATFORM_DB) return Response.json({ error_code: "database_unavailable" }, { status: 503 });
+    const spaceId = body.spaceId, projectId = body.projectId, instanceId = body.instanceId;
+    if (await this.tenantSpaceSuspended(tenantId, spaceId)) return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
+    const link = await this.env.PLATFORM_DB.prepare(
+      "SELECT enabled,project_id,extension_instance_id,extension_script_sha256 FROM channel_links WHERE space_id=? AND tenant_id=? AND channel=?"
+    ).bind(spaceId, tenantId, "whatsapp").first<{
+      enabled: number; project_id: string | null; extension_instance_id: string | null; extension_script_sha256: string | null;
+    }>();
+    if (!link || link.enabled !== 1 || link.project_id !== projectId || link.extension_instance_id !== instanceId
+      || !link.extension_script_sha256) return Response.json({ error_code: "channel_extension_not_active" }, { status: 409 });
+
+    const workId = `simulation-${crypto.randomUUID()}`;
+    const lease = await this.extensionRuntimeWork({ action: "acquire", tenantId, spaceId, projectId,
+      instanceId, workId, workKind: "channel" });
+    if (lease.acquired !== true) return Response.json({ error_code: lease.errorCode === "extension_installation_inactive"
+      ? "channel_extension_paused" : "channel_runtime_admission_unavailable" }, { status: 409 });
+    try {
+      const eventId = `simulation-${crypto.randomUUID()}`;
+      const handler = await this.loadActiveChannelHandler({ spaceId, tenantId, projectId, channel: "whatsapp",
+        messageId: eventId, instanceId, scriptSha256: link.extension_script_sha256 });
+      if (!handler) return Response.json({ error_code: "channel_handler_unavailable" }, { status: 409 });
+      const engine = await this.buildScriptEngineEnv(spaceId, "naelao-agent", tenantId, undefined, projectId);
+      const runChannel = engine?.codeRunner?.runChannel;
+      if (!runChannel) return Response.json({ error_code: "channel_runtime_unavailable" }, { status: 503 });
+      const result = await runChannel.call(engine.codeRunner, {
+        name: handler.name, code: handler.code, args: {}, tenantId, spaceId, agentId: "naelao-agent",
+        installationId: instanceId, maxConcurrency: handler.maxConcurrency, limits: handler.limits,
+        channel: { provider: "whatsapp",
+          event: { id: eventId, type: "message.received", occurredAt: new Date().toISOString(), payload: { text: message } },
+          conversation: { id: `simulation:${crypto.randomUUID()}` },
+          ...(handler.settings ? { settings: { schemaVersion: handler.settings.schemaVersion,
+            revision: handler.settings.revision, values: handler.settings.values } } : {}),
+          ...(handler.session ? { session: { state: null, maxBytes: handler.session.maxBytes },
+            sessions: { states: {}, maxBytes: handler.session.maxBytes } } : {}) },
+      });
+      if (await this.tenantSpaceSuspended(tenantId, spaceId)) return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
+      if (!result.ok) return Response.json({ error_code: "channel_simulation_handler_failed" }, { status: 409 });
+      const replies = result.channel_replies ?? [];
+      const answers = result.channel_answers ?? [];
+      if (replies.length + answers.length !== 1) return Response.json({ error_code: "channel_simulation_output_invalid" }, { status: 409 });
+      let stagedReply: { text: string; delivery: "not_sent" } | undefined;
+      let stagedAnswer: { question: string; attachment_count: number; execution: "not_run" } | undefined;
+      if (replies.length === 1) {
+        const text = replies[0]!.trim();
+        if (!text || text.length > 2_000 || !moderateText(text).allowed)
+          return Response.json({ error_code: "channel_extension_reply_blocked" }, { status: 409 });
+        stagedReply = { text, delivery: "not_sent" };
+      } else {
+        const answer = answers[0]!;
+        const question = answer.question.trim();
+        if (!question || question.length > 2_000 || (answer.attachmentIds?.length ?? 0) > 3)
+          return Response.json({ error_code: "channel_simulation_output_invalid" }, { status: 409 });
+        stagedAnswer = { question, attachment_count: answer.attachmentIds?.length ?? 0, execution: "not_run" };
+      }
+      const sessionUpdates = {
+        ...(result.channel_session_update !== undefined ? { default: result.channel_session_update } : {}),
+        ...(result.channel_session_updates?.length ? { named: result.channel_session_updates } : {}),
+      };
+      const responseBody = {
+        simulation: true, provider: "whatsapp", installation_id: instanceId, extension_id: handler.extensionId,
+        handler_sha256: link.extension_script_sha256, settings_source: "active",
+        ...(stagedReply ? { reply: stagedReply } : {}), ...(stagedAnswer ? { answer_request: stagedAnswer } : {}),
+        ...(Object.keys(sessionUpdates).length ? { staged_session_updates: sessionUpdates } : {}),
+        omitted_context: [
+          ...(handler.knowledgeCollections.length ? ["published_knowledge"] : []),
+          ...(handler.attachmentAccess ? ["message_attachments"] : []),
+          ...(stagedAnswer ? ["answer_request_not_executed"] : []),
+        ],
+        disclosure: "Synthetic one-turn handler run. Replies were not sent; answer requests and session updates were not executed or saved.",
+      };
+      if (new TextEncoder().encode(JSON.stringify(responseBody)).byteLength > 16_384)
+        return Response.json({ error_code: "channel_simulation_output_too_large" }, { status: 409 });
+      return Response.json(responseBody, { headers: { "cache-control": "private, no-store" } });
+    } finally {
+      await this.extensionRuntimeWork({ action: "release", tenantId, spaceId, projectId, instanceId, workId, workKind: "channel" });
     }
   }
 

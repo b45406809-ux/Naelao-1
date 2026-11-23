@@ -9421,10 +9421,11 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const { userId } = getCallerIdentity(c);
 
   type ChannelActionBody = {
-    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension";
+    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension" | "simulate_extension";
     channel?: string;
     model_override?: string | null;
     extension_instance_id?: string;
+    test_message?: string;
     secret?: string;
     project_id?: string;
     slack_bot_token?: string;
@@ -9518,6 +9519,31 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
     ).bind(spaceId, tenantId, channel, projectId).run();
     if ((updated.meta?.changes ?? 0) !== 1) return c.json({ error_code: "channel_not_connected" }, 404);
     return c.json({ channel, project_id: projectId, bound: false });
+  }
+
+  if (action === "simulate_extension") {
+    const projectId = body.project_id ?? "";
+    const instanceId = body.extension_instance_id ?? "";
+    const message = body.test_message?.trim() ?? "";
+    if (channel !== "whatsapp") return c.json({ error_code: "channel_simulation_not_supported" }, 400);
+    if (!projectId || !instanceId || !message || message.length > 2_000
+      || new TextEncoder().encode(message).byteLength > 8_000) {
+      return c.json({ error_code: "channel_simulation_input_invalid" }, 400);
+    }
+    await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
+    const channelLink = await c.env.PLATFORM_DB.prepare(
+      "SELECT project_id, extension_instance_id FROM channel_links WHERE space_id=? AND tenant_id=? AND channel=? AND enabled=1"
+    ).bind(spaceId, tenantId, channel).first<{ project_id: string | null; extension_instance_id: string | null }>();
+    if (!channelLink || channelLink.project_id !== projectId || channelLink.extension_instance_id !== instanceId) {
+      return c.json({ error_code: "channel_extension_not_active" }, 409);
+    }
+    const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+    return stub.fetch(new Request("http://agent-do/channel-extension-simulation", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+      body: JSON.stringify({ spaceId, projectId, channel, instanceId, message }),
+    }));
   }
 
   // The default path: hand back a link (and something to scan) for Naelao's OWN app on that

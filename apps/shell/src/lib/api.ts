@@ -3110,6 +3110,33 @@ export async function updateAssistantChannel(
   });
 }
 
+export interface CustomerChannelSimulationResult {
+  simulation: true;
+  provider: "whatsapp";
+  installation_id: string;
+  extension_id: string;
+  handler_sha256: string;
+  settings_source: "active";
+  reply?: { text: string; delivery: "not_sent" };
+  answer_request?: { question: string; attachment_count: number; execution: "not_run" };
+  staged_session_updates?: { default?: unknown; named?: Array<{ sessionId: string; value: unknown }> };
+  omitted_context: string[];
+  disclosure: string;
+}
+
+/** Run one synthetic message through the exact active WhatsApp customer handler. */
+export async function simulateAssistantChannelExtension(
+  spaceId: string,
+  session: SessionCredentials,
+  input: { project_id: string; extension_instance_id: string; test_message: string },
+): Promise<CustomerChannelSimulationResult> {
+  return apiFetch<CustomerChannelSimulationResult>(`/v1/spaces/${spaceId}/assistant/channels`, {
+    method: "POST",
+    body: JSON.stringify({ action: "simulate_extension", channel: "whatsapp", ...input }),
+    session,
+  });
+}
+
 export interface SubAgentSummary {
   id: string;
   goal: string;

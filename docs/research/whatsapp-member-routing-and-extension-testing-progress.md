@@ -61,7 +61,24 @@ member enrollment, isolated customer simulation and replay acceptance remain unv
 ## Checkpoint and next action
 
 The source reconciliation task is complete at code commit `8b2dcb5642027ea021c5039587cc7e784e5f74bd`.
-`git diff --check` passed; no tests, typechecks, provider actions or deployment ran. Next, add a
-single-turn, project-admin-scoped customer extension simulation that stages reply/answer/session
-outputs without live model, provider, knowledge mutation or session-persistence effects. Replay,
-conversation history, Knowledge snapshots and member phone testing remain separate later slices.
+
+### One-turn WhatsApp customer simulation implementation
+
+- Added an owner/admin-only action on the existing Channels route. It also requires current project
+  membership and the exact enabled channel link bound to the requested active installation.
+- The Agent Durable Object rechecks the binding, handler digest and active installation, acquires
+  the installation runtime lease, and runs one synthetic `message.received` through the channel
+  isolate with a fresh conversation and empty session state.
+- The isolate has no RPC capabilities or ambient outbound network. The simulation does not query
+  Knowledge, read attachments, invoke model answering, send a provider message, write session
+  state, create a transcript or save a replay. It returns a staged reply or answer request plus any
+  session updates, labelled as not delivered/not executed/not saved. The Shell shows this beside
+  the active WhatsApp handler and explains the omitted context.
+- `corepack pnpm@9.12.0 --filter @naelao/agents-worker run typecheck` passed. A targeted Shell
+  typecheck of `ChannelConnect.tsx` and `api.ts` passed. The full Shell typecheck still reports
+  stale `.next/types` imports for missing generated route pages; no changed source file was among
+  those errors. `git diff --check` passed. No tests, provider actions or deployment ran.
+
+Replay, conversation history, Knowledge snapshots and member phone testing remain separate slices.
+Next, implement admin member grants and self-verified contact bindings with a separate multi-Space
+identity model; do not reuse `executive_contacts` or `channel_pairings` as member proof.
