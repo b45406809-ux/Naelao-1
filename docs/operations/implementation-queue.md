@@ -353,10 +353,15 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
   execution, simulation and replay callers. Compare with the plan and channel, extension, identity
   and platform records, then implement only the first gap supported by current host authority.
 
-**Latest checkpoint:** the plan's 2026-11-16 baseline is stale and explicitly requires current-source
-review. No current-source conclusion has been recorded in this queue. **Next action:** trace the
-WhatsApp webhook and pairing route from provider receipt through inbound dispatch and owner/member
-identity resolution, then check the reachable extension simulation APIs.
+**Latest checkpoint:** source review confirmed the shared pairing table stores one binding per
+channel/sender, while QR and OAuth pairing previously overwrote collisions; pairing now preserves
+the original Space/project and rejects a conflicting claim. Shared inbound also requires an
+enabled channel link with a matching project scope. `git diff --check` passed; no tests, provider
+actions or deployment ran. Member-specific enrollment is absent from the reviewed path, and
+customer extension dispatch can reach live delivery tools. See the
+[progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
+**Next action:** trace reachable extension simulation, replay, conversation and side-effect callers;
+confirm whether WhatsApp customer tests can use existing adapters without live effects.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

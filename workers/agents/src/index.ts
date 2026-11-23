@@ -7041,27 +7041,50 @@ async function resolvePairedSpace(
   return { spaceId: row.space_id, tenantId: row.tenant_id, projectId: row.project_id };
 }
 
-/** Record a binding and make sure the space also has a channel_links row, so the Channels panel
- *  and the heartbeat roster both see the channel as connected. */
-async function bindPairedChannel(
+/** Claim the provider sender for one exact Space/project scope. The schema currently supports one
+ *  binding per channel and external ID; callers must not turn a collision into an implicit move. */
+async function claimPairedChannel(
   env: AgentsEnv,
   ticket: { spaceId: string; tenantId: string; channel: string; projectId?: string | undefined; userId: string },
   externalId: string
-): Promise<void> {
+): Promise<boolean> {
   await env.PLATFORM_DB.prepare(
     `INSERT INTO channel_pairings (channel, external_id, space_id, tenant_id, project_id, paired_by)
      VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT (channel, external_id) DO UPDATE SET
-       space_id = excluded.space_id, tenant_id = excluded.tenant_id,
-       project_id = excluded.project_id, paired_by = excluded.paired_by`
+     ON CONFLICT (channel, external_id) DO NOTHING`
   ).bind(ticket.channel, externalId, ticket.spaceId, ticket.tenantId, ticket.projectId ?? null, ticket.userId).run();
 
+  // A provider account can currently resolve to only one Space. Treat retries for that exact
+  // binding as idempotent, but never let a second Space silently take over its inbound traffic.
+  const binding = await env.PLATFORM_DB.prepare(
+    "SELECT space_id, tenant_id, project_id FROM channel_pairings WHERE channel=? AND external_id=?"
+  ).bind(ticket.channel, externalId).first<{ space_id: string; tenant_id: string; project_id: string | null }>();
+  if (!binding || binding.space_id !== ticket.spaceId || binding.tenant_id !== ticket.tenantId
+    || binding.project_id !== (ticket.projectId ?? null)) return false;
+
+  return true;
+}
+
+async function activatePairedChannelLink(
+  env: AgentsEnv,
+  ticket: { spaceId: string; tenantId: string; channel: string; projectId?: string | undefined }
+): Promise<void> {
   await env.PLATFORM_DB.prepare(
     `INSERT INTO channel_links (space_id, tenant_id, channel, enabled, project_id) VALUES (?, ?, ?, 1, ?)
      ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1, project_id = excluded.project_id,
        extension_instance_id = CASE WHEN channel_links.project_id IS excluded.project_id THEN channel_links.extension_instance_id ELSE NULL END,
        extension_script_sha256 = CASE WHEN channel_links.project_id IS excluded.project_id THEN channel_links.extension_script_sha256 ELSE NULL END`
   ).bind(ticket.spaceId, ticket.tenantId, ticket.channel, ticket.projectId ?? null).run();
+}
+
+async function bindPairedChannel(
+  env: AgentsEnv,
+  ticket: { spaceId: string; tenantId: string; channel: string; projectId?: string | undefined; userId: string },
+  externalId: string
+): Promise<boolean> {
+  if (!await claimPairedChannel(env, ticket, externalId)) return false;
+  await activatePairedChannelLink(env, ticket);
+  return true;
 }
 
 /**
@@ -7163,7 +7186,12 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
     if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, ticket.spaceId)) {
       return c.json({ ok: true, paired: false, skipped: "air_gapped" });
     }
-    await bindPairedChannel(c.env, ticket, inbound.channel_user_id);
+    const bound = await bindPairedChannel(c.env, ticket, inbound.channel_user_id);
+    if (!bound) {
+      await replyOnPlatformChannel(c.env, channel, inbound.channel_user_id,
+        "This account is already paired to a different Space or project. Multi-Space/project pairing is not available yet, so no routing was changed.");
+      return c.json({ ok: true, paired: false, skipped: "sender_already_paired" });
+    }
     await replyOnPlatformChannel(c.env, channel, inbound.channel_user_id,
       "Connected. Messages here now reach your business — go ahead and say something.");
     return c.json({ ok: true, paired: true });
@@ -7176,6 +7204,12 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
       "This chat isn't connected to a business yet. Open your Naelao dashboard, choose Channels, and scan the code there.");
     return c.json({ ok: true, skipped: "unpaired" });
   }
+
+  const channelLink = await c.env.PLATFORM_DB.prepare(
+    "SELECT enabled, project_id FROM channel_links WHERE space_id=? AND tenant_id=? AND channel=?"
+  ).bind(paired.spaceId, paired.tenantId, channel).first<{ enabled: number; project_id: string | null }>();
+  if (!channelLink || channelLink.enabled !== 1) return c.json({ ok: true, skipped: "channel_disabled" });
+  if (channelLink.project_id !== paired.projectId) return c.json({ ok: true, skipped: "channel_scope_mismatch" });
 
   const space = await c.env.PLATFORM_DB.prepare(
     "SELECT s.status FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id = ?"
@@ -7350,6 +7384,10 @@ app.get("/channels/pair-callback/:channel", async (c) => {
     if (!install?.externalId) {
       return c.html(pairingPage("That didn't complete.", "The provider didn't confirm the install. Try again from Channels."));
     }
+    if (!await claimPairedChannel(c.env, ticket, install.externalId)) {
+      return c.html(pairingPage("Already connected elsewhere.",
+        "The provider confirmed the install, but this account is already paired to another Space or project. No new routing was added; multi-Space/project pairing is not available yet."));
+    }
     if (channel === "slack") {
       if (!install.botToken) throw new Error("Slack did not return a bot token for the requested file-read scope.");
       if (!c.env.CREDENTIALS_WORKER) throw new Error("The credential vault is unavailable, so Slack file access was not saved.");
@@ -7360,7 +7398,7 @@ app.get("/channels/pair-callback/:channel", async (c) => {
       });
       if (!saved.ok && saved.status !== 409) throw new Error("Slack connected, but its file access credential could not be saved safely. Try pairing again.");
     }
-    await bindPairedChannel(c.env, ticket, install.externalId);
+    await activatePairedChannelLink(c.env, ticket);
     return c.html(pairingPage("Connected.",
       `Your assistant is now reachable on ${channel === "slack" ? "Slack" : "Discord"}. You can close this tab.`));
   } catch (err) {
