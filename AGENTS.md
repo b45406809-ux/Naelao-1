@@ -62,8 +62,8 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Platform completion and guided templates · P06 — continue the bounded customer voice-package caller.**
-Reconcile the installed signed phone package's owner dashboard and operations against current
-installation, line, call-pin and provider records. Implement one missing owner-facing operation only
-where those records enforce its scope; otherwise record the precise contract/provider gate and
-advance. Keep streaming, provisioning and all rollout gates disabled.
+**Platform completion and guided templates · P07 — fail closed on custom worker-model capability claims.**
+Reconcile the custom-model manifest and worker-selection/resume paths. A custom model has no trusted
+modality/context/tool profile today; do not infer capability from its base model or adapter ID.
+Enforce current private-route and required-capability fences after saved-session model restoration,
+without adding cloud fallback or owner capability claims.

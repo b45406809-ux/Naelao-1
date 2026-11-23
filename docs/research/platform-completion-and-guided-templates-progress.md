@@ -3190,3 +3190,20 @@ Exact next action: continue P06 by reconciling the bounded signed phone package'
 operations against the current installation, line, call-pin and provider records; implement one
 owner-facing operation only where current records enforce its scope, otherwise record the specific
 provider/catalog contract and advance. Keep streaming and provisioning disabled.
+
+## P06 checkpoint — 2026-11-23 (bounded phone-package owner surface reconciled)
+
+The current signed `bounded-phone-menu` example already exposes the local owner operations available
+under its present contract: owner-published installation settings, revision history and rollback
+drafts; a synthetic exact-handler scenario suite; exact active-line selection; and per-installation
+phone/call/provider-reported-cost status. The host path verifies the active signed installation and
+declared `assistant.phone.read`/`assistant.phone.simulate` capabilities, and simulation checks the
+owner's exact active line without creating a carrier call or call session. P06's saved source evidence
+matches current code; no additional owner operation could be added without inventing a distribution,
+provisioning, price/quality or live-provider contract. P06 remains PARTIAL for those gates and for a
+customer conversational voice agent. Public streaming and provisioning stay disabled. Source review
+only; no code, tests, provider calls or live acceptance ran.
+
+Exact next action: P07 — check worker model capability and privacy constraints after both automatic
+selection and saved-session model restoration. Custom-model manifests currently expose only model ID,
+base model and LoRA adapter ID; do not infer modality/context/tool support.

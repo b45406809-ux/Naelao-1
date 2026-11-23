@@ -255,17 +255,26 @@ owner selection and revocation; do not infer beneficiary, payer or shared author
   authority. **Latest checkpoint:** source trace complete; current records cannot express a safe
   Space-wide connection. See the P05 ledger entry. Keep the broader P05 requirement partial and
   the provider path gated.
-- [ ] **P06 — Continue the bounded customer voice-package caller.** Reconcile the installed signed
+- [x] **P06 — Continue the bounded customer voice-package caller.** Reconcile the installed signed
   phone package's owner dashboard and operations against current installation, line, call-pin and
-  provider records. Implement one missing owner-facing operation only where those records enforce
-  its scope; otherwise record the precise contract/provider gate and advance. Keep streaming,
-  provisioning and rollouts disabled.
+  provider records. The source trace found the existing bounded scope already covers owner-published
+  settings, revision history/rollback drafts, synthetic scenarios and exact-install line/call/cost
+  status. P06 remains partial for first-party signed distribution/catalog, managed provisioning,
+  verified cost/quality and deployed carrier acceptance; those need publisher/provider evidence.
+- [ ] **P07 — Fail closed on custom worker-model capability claims.** Reconcile the custom-model
+  manifest and worker-selection/resume paths. A custom model has no trusted modality/context/tool
+  profile today; do not infer capability from its base model or adapter ID. Enforce current private
+  route and required-capability fences after saved-session model restoration, without adding cloud
+  fallback or owner capability claims.
 
-**Latest checkpoint:** P05 trace rechecked signed declarations, activation preview, owner connection
-routes and revoke/cleanup records. Required Space-shared connections remain explicitly unsupported;
-the missing authorizer, beneficiary, payer/account-sharing, shared authority and drain/revoke contract
-cannot be inferred from Project-bound connection rows. No code or access grant changed. **Next
-action:** continue P06 from the existing bounded signed phone package and its reachable owner APIs.
+**Latest checkpoint:** P06 trace rechecked the signed `bounded-phone-menu` example and its host APIs.
+The package is a bounded IVR, not a conversational voice agent; its existing owner caller already
+publishes per-installation settings, reviews history and rollback drafts, runs synthetic exact-handler
+scenarios, and reads exact-line/call/provider-cost status. No missing operation was safe to add within
+that contract. First-party release signing/catalog distribution, managed number provisioning, trusted
+rates/quality and live carrier acceptance remain external contract/evidence gates. No code, provider
+call or rollout changed. **Next action:** enforce P07 capability/private-route constraints after model
+selection and saved-session restoration.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
