@@ -23,6 +23,7 @@ import { createScaleDownProcessor } from "../shared/scaledown.js";
 import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, validateVoiceExtensionStreamEvent, validateVoiceExtensionStreamResponse,
   resolveExtensionJobResourceRequest, resolveExtensionKnowledgeResourceRequest, resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, validateExtensionResourceValue, type DocumentProcessingGateway } from "@naelao/agent-sdk";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
+import { resolveEndUserSpaceRole } from "../../../spaces/src/space-auth.js";
 
 type AssistantApprovalPolicySnapshot = {
   approval_mode: "always_ask" | "yolo";
@@ -9362,12 +9363,65 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // the SAME script-first loop /script/run uses — channels are an ingress, not a parallel
   // reply mechanism (CLAUDE.md: "channels, heartbeats are scripts").
 
+  private async isWhatsAppMemberRouteCurrent(input: {
+    tenantId: string; spaceId: string; userId: string; projectId?: string; providerRouteKey: string; senderId: string;
+    contactId: string; routeSelectionExpiresAt?: string;
+  }): Promise<boolean> {
+    const db = this.env.PLATFORM_DB;
+    if (!db || !/^[a-f0-9]{64}$/i.test(input.providerRouteKey) || !this.env.PLATFORM_SECRET
+      || !await resolveEndUserSpaceRole(db, input.spaceId, input.userId, input.tenantId)) return false;
+    const senderDigits = input.senderId.replace(/^whatsapp:/i, "").replace(/\D/g, "");
+    if (!/^\d{7,15}$/.test(senderDigits)) return false;
+    const senderKey = await opaqueExternalSubject(this.env.PLATFORM_SECRET,
+      ["whatsapp-member-sender", input.providerRouteKey, senderDigits]);
+    const projectId = input.projectId ?? "";
+    const [contact, grant, channel, space] = await Promise.all([
+      db.prepare(`SELECT 1 AS active FROM assistant_channel_member_contacts
+        WHERE contact_id=? AND tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND provider_route_key=?
+          AND sender_key=? AND status='active' LIMIT 1`)
+        .bind(input.contactId, input.tenantId, input.spaceId, input.userId, input.providerRouteKey, senderKey).first(),
+      db.prepare(`SELECT 1 AS enabled FROM assistant_channel_member_access
+        WHERE tenant_id=? AND space_id=? AND user_id=? AND channel='whatsapp' AND project_id=? AND status='enabled' LIMIT 1`)
+        .bind(input.tenantId, input.spaceId, input.userId, projectId).first(),
+      db.prepare(`SELECT 1 AS enabled FROM channel_links
+        WHERE tenant_id=? AND space_id=? AND channel='whatsapp' AND enabled=1 LIMIT 1`)
+        .bind(input.tenantId, input.spaceId).first(),
+      db.prepare(`SELECT 1 AS active FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active'
+        WHERE s.id=? AND s.tenant_id=? AND s.status='active' LIMIT 1`)
+        .bind(input.spaceId, input.tenantId).first(),
+    ]);
+    if (!contact || !grant || !channel || !space) return false;
+    if (input.routeSelectionExpiresAt) {
+      const selection = await db.prepare(`SELECT 1 AS selected FROM assistant_channel_member_route_selections
+        WHERE channel='whatsapp' AND provider_route_key=? AND sender_key=? AND tenant_id=? AND space_id=?
+          AND user_id=? AND project_id=? AND expires_at=? AND expires_at>? LIMIT 1`)
+        .bind(input.providerRouteKey, senderKey, input.tenantId, input.spaceId, input.userId, projectId,
+          input.routeSelectionExpiresAt, new Date().toISOString()).first();
+      if (!selection) return false;
+    }
+    if (!projectId) return true;
+    if (!this.env.SPACES_WORKER) return false;
+    try {
+      const response = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(input.spaceId)}/projects/${encodeURIComponent(projectId)}/members`,
+        { headers: { "x-naelao-tenant-id": input.tenantId, "x-naelao-user-id": input.userId,
+          "x-naelao-role": "product_end_user", "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, input.tenantId) } },
+      ));
+      if (!response.ok) return false;
+      const members = await readBoundedResponseJson<{ data?: Array<{ user_id?: string; role?: string }> }>(response, 256 * 1024);
+      return Boolean(members.data?.some(member => member.user_id === input.userId
+        && ["owner", "editor", "viewer"].includes(member.role ?? "")));
+    } catch {
+      return false;
+    }
+  }
+
   private async handleChannelInbound(type: string, request: Request): Promise<Response> {
     if (!isChannelType(type)) return Response.json({ error: "unknown_channel" }, { status: 400 });
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; extensionInstanceId?: string; extensionScriptSha256?: string; providerConnectionId?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; extensionInstanceId?: string; extensionScriptSha256?: string; providerConnectionId?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate; memberUserId?: string; memberProviderRouteKey?: string; memberContactId?: string; memberRouteSelectionExpiresAt?: string };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     if (body.spaceId && body.tenantId && this.env.PLATFORM_DB && await this.tenantSpaceSuspended(body.tenantId, body.spaceId)) {
       return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
@@ -9384,15 +9438,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return `channel-event:${await eventTagPromise}:${replySequence++}`;
     };
 
-    if((norm.channel==="whatsapp"||norm.channel==="telegram")&&body.spaceId&&body.tenantId&&/^ad_[a-f0-9]{48}$/.test(norm.text.trim())){
+    let memberAuthorizedUserId: string | null = null;
+    if (body.memberUserId) {
+      if (norm.channel !== "whatsapp" || !body.spaceId || !body.tenantId || !body.memberProviderRouteKey
+        || !body.memberContactId
+        || !await this.isWhatsAppMemberRouteCurrent({ tenantId: body.tenantId, spaceId: body.spaceId,
+          userId: body.memberUserId, ...(body.projectId ? { projectId: body.projectId } : {}), providerRouteKey: body.memberProviderRouteKey,
+          senderId: norm.channel_user_id, contactId: body.memberContactId,
+          ...(body.memberRouteSelectionExpiresAt ? { routeSelectionExpiresAt: body.memberRouteSelectionExpiresAt } : {}) })) {
+        return Response.json({ error_code: "member_channel_authority_changed" }, { status: 403 });
+      }
+      memberAuthorizedUserId = body.memberUserId;
+    }
+
+    if(!memberAuthorizedUserId&&(norm.channel==="whatsapp"||norm.channel==="telegram")&&body.spaceId&&body.tenantId&&/^ad_[a-f0-9]{48}$/.test(norm.text.trim())){
       const result=await applyApprovalDecision(this.env as unknown as import("../index.js").AgentsEnv,{tenantId:body.tenantId,spaceId:body.spaceId,channel:norm.channel,contact:norm.channel_user_id,token:norm.text.trim()},promise=>this.ctx.waitUntil(promise));
       return Response.json(result);
     }
     // WhatsApp/Telegram owner contacts form a private control plane. Verification is performed
     // against SpaceDO's live owner/admin membership on every message, so removing an admin takes
     // effect immediately. Unknown senders fall through to the quarantined customer plane.
-    let verifiedChannelMemberId: string | null = null;
-    if ((norm.channel === "whatsapp" || norm.channel === "telegram") && body.spaceId && body.tenantId) {
+    let verifiedChannelMemberId: string | null = memberAuthorizedUserId;
+    if (!memberAuthorizedUserId && (norm.channel === "whatsapp" || norm.channel === "telegram") && body.spaceId && body.tenantId) {
       const headers = await this.internalHeaders(body.tenantId, { "content-type": "application/json" });
       let executiveUserId: string | null = null;
       let foundryHandled = false;
@@ -9408,8 +9475,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const verification: { verified?: boolean; member?: { user_id?: string; role?: string } } = response.ok
             ? await readBoundedResponseJson<{ verified?: boolean; member?: { user_id?: string; role?: string } }>(response, 2 * 1024 * 1024).catch(() => ({} as { verified?: boolean; member?: { user_id?: string; role?: string } }))
             : {};
-          executiveUserId = verification.verified && (verification.member?.role === "owner" || verification.member?.role === "admin")
+          const verifiedUserId = verification.verified && (verification.member?.role === "owner" || verification.member?.role === "admin")
             ? verification.member.user_id ?? null : null;
+          executiveUserId = verifiedUserId && (!memberAuthorizedUserId || verifiedUserId === memberAuthorizedUserId)
+            ? verifiedUserId : null;
           return Boolean(executiveUserId);
         },
         freeze: async (input) => {
@@ -9506,7 +9575,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       });
       if (executive.emergencyStopped) return Response.json({ handled: true, emergency_stopped: true });
       if (foundryHandled) return Response.json({ handled: true, foundry: true });
-      verifiedChannelMemberId = executiveUserId;
+      if (executiveUserId) verifiedChannelMemberId = executiveUserId;
     }
 
     const rows = this.ctx.storage.sql
@@ -9548,6 +9617,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // channel extension with the restricted ctx.channel host context.
     if (verifiedChannelMemberId && body.spaceId && body.tenantId && (norm.channel === "whatsapp" || norm.channel === "telegram")) {
       if (!this.env.AGENTS_WORKER || !this.env.NOTIFICATIONS_WORKER) return Response.json({ error_code: "internal_channel_runtime_unavailable" }, { status: 503 });
+      const memberRouteStillCurrent = () => memberAuthorizedUserId
+        ? this.isWhatsAppMemberRouteCurrent({ tenantId: body.tenantId!, spaceId: body.spaceId!, userId: memberAuthorizedUserId,
+          ...(body.projectId ? { projectId: body.projectId } : {}), providerRouteKey: body.memberProviderRouteKey!, senderId: norm.channel_user_id,
+          contactId: body.memberContactId!, ...(body.memberRouteSelectionExpiresAt ? { routeSelectionExpiresAt: body.memberRouteSelectionExpiresAt } : {}) })
+        : Promise.resolve(true);
+      if (!await memberRouteStillCurrent()) return Response.json({ error_code: "member_channel_authority_changed" }, { status: 403 });
       if (!claimFoundryChannelEvent(this.ctx.storage.sql, { spaceId: body.spaceId, channel: norm.channel, senderId: norm.channel_user_id, externalId: norm.external_id })) {
         return Response.json({ session_id: sessionId, queued: false, duplicate: true, internal: true });
       }
@@ -9555,8 +9630,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       sessionId=await (await import("../communications/conversations.js")).assistantConversation(this.env as unknown as import("../index.js").AgentsEnv,{tenantId,spaceId,userId:verifiedChannelMemberId!,role:"product_end_user",...projectId?{projectId}:{}});
 
       this.ctx.waitUntil((async () => {
+        if (!await memberRouteStillCurrent()) return;
         const saved=await this.env.SPACES_WORKER.fetch(new Request(`http://spaces/spaces/${spaceId}/sessions/${sessionId}/messages`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-user-id":verifiedChannelMemberId!,"x-naelao-role":"product_end_user","x-naelao-internal-token":await mintInternalToken(this.env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({role:"user",content:norm.text.slice(0,8000),client_message_id:`${norm.channel}:${norm.external_id}`})}));
         if(!saved.ok)throw new Error("assistant_channel_transcript_unavailable");
+        if (!await memberRouteStillCurrent()) return;
         const response = await this.env.AGENTS_WORKER!.fetch(new Request(
           `http://agents-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/agent/run`,
           { method: "POST", headers: {
@@ -9577,6 +9654,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const reply = output.trim() && moderateText(output).allowed
           ? (output.length > 3500 ? `${output.slice(0, 3500)}…` : output)
           : "I couldn't complete that response just now. Please continue in the Naelao app or try again shortly.";
+        if (!await memberRouteStillCurrent()) return;
         await this.env.NOTIFICATIONS_WORKER!.fetch(new Request("http://notifications-worker/internal/notify", {
           method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
           body: JSON.stringify({ channel: norm.channel, space_id: spaceId, to: norm.recipient_id ?? norm.channel_user_id, body: reply,

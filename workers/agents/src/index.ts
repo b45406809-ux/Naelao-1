@@ -717,6 +717,86 @@ async function completeWhatsappMemberContactChallenge(
   }
 }
 
+interface WhatsappMemberRouteCandidate {
+  contact_id: string;
+  tenant_id: string;
+  space_id: string;
+  user_id: string;
+  project_id: string;
+  provider_route_key: string;
+  sender_key: string;
+}
+
+async function isCurrentProjectMemberForChannel(
+  env: AgentsEnv,
+  route: Pick<WhatsappMemberRouteCandidate, "tenant_id" | "space_id" | "user_id"> & { project_id: string },
+): Promise<boolean | null> {
+  if (!env.SPACES_WORKER) return null;
+  try {
+    const response = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(route.space_id)}/projects/${encodeURIComponent(route.project_id)}/members`,
+      { headers: { "x-naelao-tenant-id": route.tenant_id, "x-naelao-user-id": route.user_id,
+        "x-naelao-role": "product_end_user", "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, route.tenant_id) } },
+    ));
+    if (!response.ok) return null;
+    const members = await readBoundedResponseJson<{ data?: Array<{ user_id?: string; role?: string }> }>(response, 256 * 1024);
+    return Boolean(members.data?.some(member => member.user_id === route.user_id
+      && ["owner", "editor", "viewer"].includes(member.role ?? "")));
+  } catch {
+    return null;
+  }
+}
+
+async function resolveWhatsappMemberRouteCandidates(
+  env: AgentsEnv,
+  senderId: string,
+  transport: "twilio" | "meta",
+): Promise<{ bound: boolean; routes: WhatsappMemberRouteCandidate[]; unavailable: boolean; providerRouteKey?: string; senderKey?: string }> {
+  const route = activePlatformWhatsappRoute(env);
+  const senderDigits = whatsappSenderDigits(senderId);
+  if (!route || route.transport !== transport || !/^\d{7,15}$/.test(senderDigits)) {
+    return { bound: false, routes: [], unavailable: false };
+  }
+  const providerRouteKey = await route.routeKey;
+  const senderKey = await opaqueExternalSubject(env.PLATFORM_SECRET, ["whatsapp-member-sender", providerRouteKey, senderDigits]);
+  try {
+    const identity = await env.PLATFORM_DB.prepare(`SELECT 1 AS found FROM assistant_channel_member_contacts
+      WHERE channel='whatsapp' AND provider_route_key=? AND sender_key=? AND status='active' LIMIT 1`)
+      .bind(providerRouteKey, senderKey).first();
+    if (!identity) return { bound: false, routes: [], unavailable: false, providerRouteKey, senderKey };
+    const result = await env.PLATFORM_DB.prepare(`SELECT c.contact_id,c.tenant_id,c.space_id,c.user_id,a.project_id,c.provider_route_key,c.sender_key
+      FROM assistant_channel_member_contacts c
+      JOIN assistant_channel_member_access a ON a.tenant_id=c.tenant_id AND a.space_id=c.space_id
+        AND a.user_id=c.user_id AND a.channel=c.channel AND a.status='enabled'
+      JOIN channel_links l ON l.tenant_id=c.tenant_id AND l.space_id=c.space_id AND l.channel=c.channel AND l.enabled=1
+      JOIN spaces s ON s.id=c.space_id AND s.tenant_id=c.tenant_id AND s.status='active'
+      JOIN orgs o ON o.id=c.tenant_id AND o.status='active'
+      WHERE c.channel='whatsapp' AND c.provider_route_key=? AND c.sender_key=? AND c.status='active'
+      ORDER BY c.tenant_id,c.space_id,a.project_id LIMIT 65`)
+      .bind(providerRouteKey, senderKey).all<WhatsappMemberRouteCandidate>();
+    if ((result.results ?? []).length > 64) return { bound: true, routes: [], unavailable: true, providerRouteKey, senderKey };
+    const routes: WhatsappMemberRouteCandidate[] = [];
+    const projectMemberships = new Map<string, boolean | null>();
+    for (const candidate of result.results ?? []) {
+      if (!await resolveEndUserSpaceRole(env.PLATFORM_DB, candidate.space_id, candidate.user_id, candidate.tenant_id)) continue;
+      if (candidate.project_id) {
+        const key = `${candidate.tenant_id}\u001f${candidate.space_id}\u001f${candidate.project_id}\u001f${candidate.user_id}`;
+        let projectMember = projectMemberships.get(key);
+        if (projectMember === undefined) {
+          projectMember = await isCurrentProjectMemberForChannel(env, candidate);
+          projectMemberships.set(key, projectMember);
+        }
+        if (projectMember === null) return { bound: true, routes: [], unavailable: true, providerRouteKey, senderKey };
+        if (!projectMember) continue;
+      }
+      routes.push(candidate);
+    }
+    return { bound: true, routes, unavailable: false, providerRouteKey, senderKey };
+  } catch {
+    return { bound: true, routes: [], unavailable: true, providerRouteKey, senderKey };
+  }
+}
+
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
@@ -7346,6 +7426,117 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
     };
     await replyOnPlatformChannel(c.env, "whatsapp", inbound.channel_user_id, messages[result]);
     return c.json({ ok: true, member_contact_verification: result });
+  }
+
+  const whatsappMemberRoute = channel === "whatsapp"
+    && platformWhatsappInboundRouteMatches(c.env, viaTwilio ? "twilio" : "meta", parsed, raw)
+    ? await resolveWhatsappMemberRouteCandidates(c.env, inbound.channel_user_id, viaTwilio ? "twilio" : "meta")
+    : null;
+  if (whatsappMemberRoute?.unavailable) return c.json({ error_code: "whatsapp_member_route_unavailable" }, 503);
+  if (whatsappMemberRoute?.bound) {
+    const memberSenderId = inbound.channel_user_id;
+    const memberMessageText = inbound.text;
+    const memberExternalId = inbound.external_id;
+    const routes = whatsappMemberRoute.routes;
+    const senderKey = whatsappMemberRoute.senderKey!;
+    const providerRouteKey = whatsappMemberRoute.providerRouteKey!;
+    const replyChooser = async () => {
+      const options = routes.map(candidate => `- ${candidate.space_id}${candidate.project_id ? ` / Project ${candidate.project_id}` : " / Space assistant"}`);
+      const message = `This number has access to several assistants. Choose one by sending USE <space-id> [project-id].\n${options.join("\n")}`;
+      await replyOnPlatformChannel(c.env, "whatsapp", memberSenderId, message.slice(0, 3400));
+    };
+    if (routes.length === 0) {
+      await replyOnPlatformChannel(c.env, "whatsapp", memberSenderId,
+        "A WhatsApp member contact is verified, but no current Space or Project grant is available. Ask a Space admin to review your access.");
+      return c.json({ ok: true, skipped: "member_route_not_authorized" });
+    }
+    if (!memberMessageText.trim()) {
+      await replyOnPlatformChannel(c.env, "whatsapp", memberSenderId,
+        "The member assistant currently accepts text messages only. Send a typed message to continue.");
+      return c.json({ ok: true, skipped: "member_text_required" });
+    }
+    const routeSelectionCommand = /^USE\s+([A-Za-z0-9._:-]{1,160})(?:\s+([A-Za-z0-9._:-]{1,160}))?$/i.exec(memberMessageText.trim());
+    if (/^USE\s+RESET$/i.test(memberMessageText.trim())) {
+      const now = new Date().toISOString();
+      await c.env.PLATFORM_DB.batch([
+        c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_channel_member_route_selection_audit
+          (event_id,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,project_id,action,command_event_id,occurred_at)
+          SELECT ?,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,project_id,'cleared',?,?
+          FROM assistant_channel_member_route_selections WHERE channel='whatsapp' AND provider_route_key=? AND sender_key=?`)
+          .bind(crypto.randomUUID(), memberExternalId, now, providerRouteKey, senderKey),
+        c.env.PLATFORM_DB.prepare(`DELETE FROM assistant_channel_member_route_selections
+          WHERE channel='whatsapp' AND provider_route_key=? AND sender_key=?`).bind(providerRouteKey, senderKey),
+      ]);
+      if (routes.length > 1) await replyChooser();
+      else await replyOnPlatformChannel(c.env, "whatsapp", memberSenderId, "Assistant selection cleared. Send your message to continue.");
+      return c.json({ ok: true, member_route_selection: "cleared" });
+    }
+    if (routeSelectionCommand) {
+      const selected = routes.find(candidate => candidate.space_id === routeSelectionCommand[1]
+        && candidate.project_id === (routeSelectionCommand[2] ?? ""));
+      if (!selected) {
+        await replyOnPlatformChannel(c.env, "whatsapp", memberSenderId,
+          "That assistant route is not currently available to this member. Send USE RESET to see current choices.");
+        return c.json({ ok: true, skipped: "member_route_selection_invalid" });
+      }
+      const selectedAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+      await c.env.PLATFORM_DB.batch([
+        c.env.PLATFORM_DB.prepare(`INSERT INTO assistant_channel_member_route_selections
+          (channel,provider_route_key,sender_key,tenant_id,space_id,user_id,project_id,selected_at,expires_at,last_command_event_id)
+          VALUES('whatsapp',?,?,?,?,?,?,?,?,?) ON CONFLICT(channel,provider_route_key,sender_key) DO UPDATE SET
+            tenant_id=excluded.tenant_id,space_id=excluded.space_id,user_id=excluded.user_id,project_id=excluded.project_id,
+            selected_at=excluded.selected_at,expires_at=excluded.expires_at,last_command_event_id=excluded.last_command_event_id
+            WHERE assistant_channel_member_route_selections.last_command_event_id<>excluded.last_command_event_id`)
+          .bind(providerRouteKey, senderKey, selected.tenant_id, selected.space_id, selected.user_id, selected.project_id, selectedAt, expiresAt, memberExternalId),
+        c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_channel_member_route_selection_audit
+          (event_id,tenant_id,space_id,user_id,channel,provider_route_key,sender_key,project_id,action,command_event_id,occurred_at)
+          VALUES(?,?,?,?,'whatsapp',?,?,?,'selected',?,?)`)
+          .bind(crypto.randomUUID(), selected.tenant_id, selected.space_id, selected.user_id, providerRouteKey, senderKey,
+            selected.project_id, memberExternalId, selectedAt),
+      ]);
+      await replyOnPlatformChannel(c.env, "whatsapp", memberSenderId,
+        `Selected ${selected.project_id ? `Project ${selected.project_id}` : "the Space assistant"}. Send your next message to continue. Selection expires in 30 minutes.`);
+      return c.json({ ok: true, member_route_selection: "selected", expires_at: expiresAt });
+    }
+
+    let selectedRoute: WhatsappMemberRouteCandidate | undefined;
+    let memberRouteSelectionExpiresAt: string | undefined;
+    if (routes.length > 1) {
+      const selection = await c.env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,user_id,project_id,expires_at FROM assistant_channel_member_route_selections
+        WHERE channel='whatsapp' AND provider_route_key=? AND sender_key=? AND expires_at>?`)
+        .bind(providerRouteKey, senderKey, new Date().toISOString())
+        .first<{ tenant_id: string; space_id: string; user_id: string; project_id: string; expires_at: string }>();
+      const matchedRoute = selection && routes.find(candidate => candidate.tenant_id === selection.tenant_id
+        && candidate.space_id === selection.space_id && candidate.user_id === selection.user_id
+        && candidate.project_id === selection.project_id);
+      selectedRoute = matchedRoute ?? undefined;
+      if (selectedRoute && selection) memberRouteSelectionExpiresAt = selection.expires_at;
+      if (!selectedRoute) {
+        await replyChooser();
+        return c.json({ ok: true, member_route_selection_required: true });
+      }
+    } else {
+      selectedRoute = routes[0];
+    }
+    if (!selectedRoute) return c.json({ error_code: "whatsapp_member_route_unavailable" }, 503);
+    const wakeContext = await resolveWakeContext(c.env, selectedRoute.space_id, selectedRoute.tenant_id, "whatsapp");
+    if (wakeContext.airGappedOnly) return c.json({ ok: true, skipped: "air_gapped" });
+    try {
+      const stub = await getAgentDOForSpace(c.env, selectedRoute.tenant_id, selectedRoute.space_id,
+        "naelao-agent", c.get("requestId"));
+      const response = await stub.fetch(new Request("http://agent-do/channels/whatsapp/inbound", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ raw, projectId: selectedRoute.project_id || undefined, spaceId: selectedRoute.space_id,
+          tenantId: selectedRoute.tenant_id, taskId: memberExternalId, model: wakeContext.model, apiKey: "",
+          memberUserId: selectedRoute.user_id, memberProviderRouteKey: providerRouteKey, memberContactId: selectedRoute.contact_id,
+          ...(memberRouteSelectionExpiresAt ? { memberRouteSelectionExpiresAt } : {}) }),
+      }));
+      if (!response.ok) return c.json({ error_code: "whatsapp_member_route_rejected" }, response.status as 400 | 403 | 409 | 500 | 503);
+    } catch {
+      return c.json({ error_code: "whatsapp_member_route_unavailable" }, 503);
+    }
+    return c.json({ ok: true, internal_member_route: true });
   }
 
   const paired = await resolvePairedSpace(c.env, channel, inbound.channel_user_id);

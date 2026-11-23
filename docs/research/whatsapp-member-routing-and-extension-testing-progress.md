@@ -122,3 +122,22 @@ identity model; do not reuse `executive_contacts` or `channel_pairings` as membe
 - Agents typecheck, targeted Shell API typecheck and `git diff --check` passed with pnpm `9.12.0`.
   The workspace uses Node `24.19.0` (`package.json` permits `>=22.5.0`) while `.nvmrc` says `20`.
   No tests, migration apply, provider operation or deployment ran.
+
+### Verified member route resolution — 2026-11-23
+
+- Migration `0287_whatsapp_member_route_selection.sql` stores an expiring explicit selection keyed
+  by the HMAC sender and destination; selected/cleared events include a unique provider event id so
+  webhook redelivery cannot extend a selection or duplicate its audit event.
+- Signed platform inbound resolves active contact bindings to enabled WhatsApp grants, current
+  Space membership, active Space/channel state and exact current Project membership. It supports
+  the Space assistant or exact Project assistant. A sender with multiple routes receives a
+  deterministic ID-based chooser and selects with `USE <space-id> [project-id]`; selection expires
+  after 30 minutes and can be cleared with `USE RESET`. A known contact with no current route fails
+  closed instead of falling back to customer pairing.
+- The exact active contact id and selected-route expiry/scope are passed to the Agent Durable Object.
+  It rechecks the binding, grant, membership, channel and Project roster before transcript write,
+  assistant run and outbound reply. Executive-only commands and approval tokens are not enabled
+  through a member grant, even when the same phone also has a legacy executive contact.
+- Agents typecheck and `git diff --check` passed. No tests, migration apply, provider operation or
+  deployment ran. Admin/member UI, route visibility and explicit customer-only/staff-and-customer
+  mode remain the exact next code slice; rollout gates remain off.
