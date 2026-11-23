@@ -43,4 +43,15 @@ describe("goal planner hierarchy limits", () => {
     await expect(nested.run([task("too-deep", { planner: true })])).rejects.toThrow("goal_plan_depth_exceeded");
     expect(nested.executeGoalDag).not.toHaveBeenCalled();
   });
+
+  it("preserves explicitly declared alternative groups and rejects non-string labels", async () => {
+    const h = harness(1, 1_000);
+    await h.run([task("a", { redundancy_group: "lookup" }), task("b", { redundancy_group: "lookup" })]);
+    expect(h.executeGoalDag.mock.calls[0]![1].map(item => item.redundancy_group)).toEqual(["lookup", "lookup"]);
+
+    const invalid = harness(1, 1_000);
+    await expect(invalid.run([task("a", { redundancy_group: 5 }), task("b", { redundancy_group: 5 })]))
+      .rejects.toThrow("invalid redundancy_group");
+    expect(invalid.executeGoalDag).not.toHaveBeenCalled();
+  });
 });

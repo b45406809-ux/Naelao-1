@@ -23,12 +23,14 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW02 — Safe cancellation of redundant workers.** Resume from the checked-in
+**APW02 — Comparative evaluation.** Resume from the checked-in
 [implementation queue](docs/operations/implementation-queue.md#active-plan). Host admission for
-bounded dynamic expansion, report-only routing evidence and bounded hierarchical planning are
-checked off with local DAG, admission, replay and delegation coverage. Trace durable dispatch
-acknowledgements and late result/workspace effects; cancellation must not imply rollback of committed
-work. Keep progressive routing and dynamic expansion disabled by default.
+bounded dynamic expansion, report-only routing evidence, bounded hierarchical planning and safe
+cancellation of explicitly grouped redundant workers are checked off with local/mock coverage.
+Define a controlled comparison of one-worker, sequential and adaptive execution with quality,
+latency, retry, conflict and spend evidence. Keep progressive routing, dynamic expansion and
+redundant-worker cancellation disabled by default; do not claim live or provider-cost results without
+their applicable evidence.
 
 ## Save progress inside each task
 

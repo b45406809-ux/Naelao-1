@@ -8,12 +8,14 @@ type MergeOutcome = { conflicts: Array<{ path: string; reason: string }>; valida
 type Host = { spawnSubAgentBatch(tasks: Record<string, unknown>[], space: string, agent: string, tenant: string, key: string,
   parent: string, thread: string, project: string, namespace: DurableObjectNamespace, actor: string, model: string,
   effort: string, signal: undefined, runtime: ScriptEngineEnv,
-  merge?: (subId: string, branch: string, attempt: number) => Promise<MergeOutcome>): Promise<{ results: Array<{ id?: string; ok: boolean; status?: string; error?: string }> }> };
+  merge?: (subId: string, branch: string, attempt: number) => Promise<MergeOutcome>, goalDispatchId?: string): Promise<{ results: Array<{ id?: string; ok: boolean; status?: string; error?: string }> }> };
 function fixture() {
   type WorkerRow = { id: string; parent_run_id: string; status: string; goal: string; workspace_branch: string | null; configuration_json: string | null;
-    attempt: number; checkpoint_json: string | null; checkpoint_updated_at: number | null; result: string | null; error: string | null; updated_at: number; budget_tokens: number; tokens_used: number };
+    attempt: number; checkpoint_json: string | null; checkpoint_updated_at: number | null; result: string | null; error: string | null; updated_at: number; budget_tokens: number; tokens_used: number;
+    late_result_json: string | null; late_result_at: number | null; late_result_attempt: number | null };
   const active = new Set<string>(), requests: Record<string, any>[] = [], finishes: Array<(body?: Record<string, any>, status?: number) => void> = [];
   const workers = new Map<string, WorkerRow>();
+  const dispatches = new Map<string, { status: string; worker_id: string; parent_run_id: string; cancel_requested_at: number | null; attempt?: number; workspace_branch?: string }>();
   const storageValues = new Map<string, unknown>();
   const publicationAttempts = new Map<string, Array<{ worker_attempt: number; target_branch: string; target_revision: number; status: string; updated_at: number }>>();
   const concurrency = { idFromName: (name: string) => name, get: (name: string) => ({ fetch: async (request: Request) => {
@@ -35,6 +37,14 @@ function fixture() {
         const row = workers.get(String(args[0]));
         return cursor(row ? [{ status: row.status, attempt: row.attempt }] : []);
       }
+      if (normalized.startsWith("SELECT status,attempt,parent_run_id,configuration_json FROM sub_agents")) {
+        const row = workers.get(String(args[0]));
+        return cursor(row ? [{ status: row.status, attempt: row.attempt, parent_run_id: row.parent_run_id, configuration_json: row.configuration_json }] : []);
+      }
+      if (normalized.startsWith("SELECT status,worker_id,parent_run_id,cancel_requested_at FROM goal_dispatch_outbox")) {
+        const row = dispatches.get(String(args[0]));
+        return cursor(row ? [{ ...row }] : []);
+      }
       if (normalized.startsWith("SELECT id, parent_run_id, goal, status, budget_tokens")) {
         const parentRunId = String(args[0]);
         return cursor([...workers.values()].filter(row => !parentRunId || row.parent_run_id === parentRunId).map(row => ({
@@ -51,10 +61,14 @@ function fixture() {
       if (normalized.startsWith("SELECT worker_attempt,target_branch,target_revision,status,updated_at FROM worker_publication_permits")) {
         return cursor(publicationAttempts.get(String(args[0])) ?? []);
       }
-      if (normalized.startsWith("SELECT configuration_json,workspace_branch,checkpoint_json,attempt FROM sub_agents")) {
+      if (normalized.startsWith("SELECT configuration_json,workspace_branch,checkpoint_json,attempt,status FROM sub_agents")) {
         const row = workers.get(String(args[0]));
         return cursor(row ? [{ configuration_json: row.configuration_json, workspace_branch: row.workspace_branch,
-          checkpoint_json: row.checkpoint_json, attempt: row.attempt }] : []);
+          checkpoint_json: row.checkpoint_json, attempt: row.attempt, status: row.status }] : []);
+      }
+      if (normalized.startsWith("SELECT late_result_json FROM sub_agents")) {
+        const row = workers.get(String(args[0]));
+        return cursor(row ? [{ late_result_json: row.late_result_json }] : []);
       }
       if (normalized.startsWith("SELECT configuration_json FROM sub_agents")) {
         const row = workers.get(String(args[0]));
@@ -67,8 +81,25 @@ function fixture() {
       if (normalized.startsWith("INSERT INTO sub_agents")) {
         const [id, parentRunId, goal, budget, branch, , , updated] = args as [string, string, string, number, string | null, number, number, number];
         workers.set(id, { id, parent_run_id: parentRunId, status: "running", goal, workspace_branch: branch, configuration_json: null,
-          attempt: 1, checkpoint_json: null, checkpoint_updated_at: null, result: null, error: null, updated_at: updated, budget_tokens: budget, tokens_used: 0 });
+          attempt: 1, checkpoint_json: null, checkpoint_updated_at: null, result: null, error: null, updated_at: updated, budget_tokens: budget, tokens_used: 0,
+          late_result_json: null, late_result_at: null, late_result_attempt: null });
         return cursor([], 1);
+      }
+      if (normalized.startsWith("UPDATE sub_agents SET late_result_json=CASE WHEN late_result_attempt")) {
+        const [lateJson, lateAt, tokens, updated, id, attempt] = args;
+        const row = workers.get(String(id));
+        if (!row || row.status !== "terminated" || row.attempt !== Number(attempt)) return cursor();
+        if (row.late_result_attempt !== Number(attempt)) {
+          row.late_result_json = String(lateJson); row.late_result_at = Number(lateAt);
+          row.late_result_attempt = Number(attempt); row.tokens_used += Number(tokens);
+        }
+        row.updated_at = Number(updated);
+        return cursor([], 1);
+      }
+      if (normalized.startsWith("UPDATE goal_dispatch_outbox SET status='acknowledged',attempt=?")) {
+        const [attempt, branch, , id] = args, row = dispatches.get(String(id));
+        if (!row || row.status !== "delivering" || row.cancel_requested_at !== null) return cursor();
+        row.status = "acknowledged"; row.attempt = Number(attempt); row.workspace_branch = String(branch); return cursor([], 1);
       }
       const rowId = normalized.startsWith("UPDATE sub_agents SET status = 'terminated'") ? args[1]
         : normalized.startsWith("UPDATE sub_agents SET status='running'") ? args[2]
@@ -123,7 +154,7 @@ function fixture() {
       }
       return cursor();
     } };
-    const storage = { sql, put: async (key: string, value: unknown) => { storageValues.set(key, value); },
+    const storage = { sql, transactionSync: (callback: () => void) => callback(), put: async (key: string, value: unknown) => { storageValues.set(key, value); },
       get: async (key: string) => storageValues.get(key) };
     return new NaelaoAgentDO({ storage, id: { toString: () => "parent-do" } } as never,
       { PLATFORM_SECRET: "test-signing-key", ...(bound ? { CONCURRENCY_DO: concurrency } : {}) } as never) as unknown as Host;
@@ -131,10 +162,11 @@ function fixture() {
   const runtime = { scriptsBucket: {}, tenantId: "tenant", spaceId: "space", agentId: "parent", rootRunId: "root",
     delegationDepth: 2, delegationPlanner: true, effectiveRole: "editor", callerRole: "product_end_user",
     maxTier: 6, airGappedOnly: true, localModelMachine: "authorized-machine" } as ScriptEngineEnv;
-  const spawn = (parent: Host, tasks: Record<string, unknown>[], merge?: Host["spawnSubAgentBatch"] extends (...args: infer A) => unknown ? A[14] : never) => parent.spawnSubAgentBatch(tasks, "space", "parent", "tenant", "", "parent-run", "parent-thread", "project", children,
-    "person", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "low", undefined, runtime, merge);
+  const spawn = (parent: Host, tasks: Record<string, unknown>[], merge?: Host["spawnSubAgentBatch"] extends (...args: infer A) => unknown ? A[14] : never,
+    goalDispatchId?: string) => parent.spawnSubAgentBatch(tasks, "space", "parent", "tenant", "", "parent-run", "parent-thread", "project", children,
+    "person", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "low", undefined, runtime, merge, goalDispatchId);
   const terminate = (parent: Host, id: string) => (parent as unknown as { terminateSubAgentImpl(id: string): Promise<void> }).terminateSubAgentImpl(id);
-  return { active, requests, finishes, workers, storageValues, publicationAttempts, host, runtime, spawn, terminate };
+  return { active, requests, finishes, workers, dispatches, storageValues, publicationAttempts, host, runtime, spawn, terminate };
 }
 describe("host delegation admission", () => {
   it("caps active leaves across different subplanners of one root and releases slots after completion", async () => {
@@ -172,6 +204,32 @@ describe("host delegation admission", () => {
     expect(f.requests[0]!.context).toMatchObject({ max_tokens: 256, worker_token_budget: 256, delegation_depth: 2, delegation_planner: true });
     f.finishes[0]!();
     await run;
+  });
+  it("fences child session start against the exact parent worker attempt", async () => {
+    const f = fixture(), parent = f.host();
+    const run = f.spawn(parent, [{ goal: "start only while admitted" }]);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    const id = String(f.requests[0]!.context.sub_agent_id);
+    const check = async () => (parent as unknown as { fetch(request: Request): Promise<Response> }).fetch(new Request("http://agent-do/internal/sub-agents/start-check", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": await mintInternalToken("test-signing-key", "tenant") },
+      body: JSON.stringify({ workerId: id, parentDoId: "parent-do", parentRunId: "parent-run", attempt: 1, runId: id,
+        spaceId: "space", projectId: "project", actorId: "person" }),
+    }));
+    expect(await (await check()).json()).toEqual({ active: true });
+    await f.terminate(parent, id);
+    expect(await (await check()).json()).toEqual({ active: false });
+    f.finishes[0]!();
+    await run;
+  });
+  it("does not admit a goal worker session after the durable dispatch cancel bit wins", async () => {
+    const f = fixture(), parent = f.host();
+    f.dispatches.set("dispatch-1", { status: "delivering", worker_id: "worker-1", parent_run_id: "parent-run", cancel_requested_at: Date.now() });
+    const result = await f.spawn(parent, [{ sub_agent_id: "worker-1", goal: "must not start" }], undefined, "dispatch-1");
+    expect(result.results[0]).toMatchObject({ id: "worker-1", ok: false, status: "terminated", error: "worker_cancelled" });
+    expect(f.workers.has("worker-1")).toBe(false);
+    expect(f.requests).toHaveLength(0);
+    expect(f.dispatches.get("dispatch-1")?.status).toBe("delivering");
   });
   it("lists a saved progress checkpoint timestamp without exposing checkpoint payload", async () => {
     const f = fixture(), parent = f.host();
@@ -233,7 +291,8 @@ describe("host delegation admission", () => {
     f.finishes[0]!(response);
     const result = (await run).results[0];
     expect(result).toMatchObject({ ok: false, status: "terminated", error: "worker_cancelled" });
-    expect(f.workers.get(id)).toMatchObject({ status: "terminated", tokens_used: 10 });
+    expect(f.workers.get(id)).toMatchObject({ status: "terminated", tokens_used: 10, late_result_at: expect.any(Number), late_result_attempt: 1 });
+    expect(JSON.parse(f.workers.get(id)!.late_result_json!)).toMatchObject({ attempt: 1, status: response.result.ok ? "done" : "failed", effects: "unknown" });
   });
 
   it("does not overwrite termination when cancellation lands during checked integration", async () => {
@@ -278,7 +337,7 @@ describe("host delegation admission", () => {
     expect(f.workers.get(id)?.status).toBe("terminated");
   });
 
-  it("rejects a late internal session update for a terminated worker attempt", async () => {
+  it("retains a late internal session update without replacing a terminated worker", async () => {
     const f = fixture(), parent = f.host();
     const run = f.spawn(parent, [{ goal: "isolated task" }]);
     await vi.waitFor(() => expect(f.requests).toHaveLength(1));
@@ -289,11 +348,22 @@ describe("host delegation admission", () => {
         "x-naelao-internal-token": await mintInternalToken("test-signing-key", "tenant") },
       body: JSON.stringify({ id, parentDoId: "parent-do", attempt: 1, status: "done", output: "too late", tokensUsed: 10 }),
     }));
-    expect(response.status).toBe(409);
-    expect(f.workers.get(id)).toMatchObject({ status: "terminated", result: null, tokens_used: 0 });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, late_result: true });
+    expect(f.workers.get(id)).toMatchObject({ status: "terminated", result: null, tokens_used: 10, late_result_at: expect.any(Number) });
+    expect(JSON.parse(f.workers.get(id)!.late_result_json!)).toMatchObject({ status: "done", output: "<untrusted_subagent_result>\ntoo late\n</untrusted_subagent_result>", effects: "unknown" });
+    const repeated = await (parent as unknown as { fetch(request: Request): Promise<Response> }).fetch(new Request("http://agent-do/internal/sub-agents/session-update", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": await mintInternalToken("test-signing-key", "tenant") },
+      body: JSON.stringify({ id, parentDoId: "parent-do", attempt: 1, status: "done", output: "replacement", tokensUsed: 10 }),
+    }));
+    expect(repeated.status).toBe(200);
+    expect(f.workers.get(id)).toMatchObject({ status: "terminated", tokens_used: 10 });
+    const view = await (parent as unknown as { receiveFromSubAgentImpl(workerId: string): Promise<Record<string, any>> }).receiveFromSubAgentImpl(id);
+    expect(view).toMatchObject({ status: "terminated", late_result: { status: "done", effects: "unknown" } });
     f.finishes[0]!();
     await run;
-    expect(f.workers.get(id)?.status).toBe("terminated");
+    expect(f.workers.get(id)).toMatchObject({ status: "terminated", tokens_used: 10 });
   });
 
   it("rejects a session update from a superseded attempt", async () => {

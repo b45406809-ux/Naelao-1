@@ -32,6 +32,8 @@ export interface GoalTask {
   context_affinity?: "shared" | "isolated";
   agent_id?: string;
   planner?: boolean;
+  /** Explicit alternatives; a verified completion can make other members unnecessary. */
+  redundancy_group?: string;
   /** Scheduling hint for a shared mutable environment; host controls remain authoritative. */
   resource_keys?: string[];
   /** System One recommendation from the installed, host-approved runtime catalogue. */
@@ -84,6 +86,7 @@ export function validateGoalDag(tasks: GoalTask[]): void {
     if (task.runtime_confidence !== undefined && (!Number.isFinite(task.runtime_confidence) || task.runtime_confidence < 0 || task.runtime_confidence > 1)) throw new Error(`task '${task.id}' has an invalid runtime_confidence`);
     if (task.runtime_resource_key !== undefined && (typeof task.runtime_resource_key !== "string" || !/^runtime\.[a-z-]+\.[a-f0-9]{40}$/.test(task.runtime_resource_key))) throw new Error(`task '${task.id}' has an invalid runtime_resource_key`);
     if (task.priority !== undefined && (!Number.isSafeInteger(task.priority) || task.priority < -10 || task.priority > 10)) throw new Error(`task '${task.id}' priority must be within -10..10`);
+    if (task.redundancy_group !== undefined && (typeof task.redundancy_group !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(task.redundancy_group))) throw new Error(`task '${task.id}' has an invalid redundancy_group`);
     if (task.expansion_depth !== undefined && (!Number.isSafeInteger(task.expansion_depth) || task.expansion_depth < 0 || task.expansion_depth > 1)) throw new Error(`task '${task.id}' has an invalid expansion_depth`);
     for (const dependency of task.dependencies ?? []) if (!ids.has(dependency) || dependency === task.id) throw new Error(`task '${task.id}' has invalid dependency '${dependency}'`);
     if (task.communication_recipients !== undefined && (!Array.isArray(task.communication_recipients) || task.communication_recipients.length > 8 || task.communication_recipients.some(id => typeof id !== "string" || !ids.has(id) || id === task.id) || new Set(task.communication_recipients).size !== task.communication_recipients.length)) throw new Error(`task '${task.id}' has invalid communication_recipients`);
@@ -97,6 +100,32 @@ export function validateGoalDag(tasks: GoalTask[]): void {
     visiting.delete(id); visited.add(id);
   };
   for (const id of ids) visit(id);
+  const ancestry = new Map<string, Set<string>>();
+  const ancestors = (id: string): Set<string> => {
+    const cached = ancestry.get(id);
+    if (cached) return cached;
+    const result = new Set<string>();
+    for (const dependency of byId.get(id)?.dependencies ?? []) {
+      result.add(dependency);
+      for (const ancestor of ancestors(dependency)) result.add(ancestor);
+    }
+    ancestry.set(id, result);
+    return result;
+  };
+  for (const id of ids) ancestors(id);
+  const redundancyGroups = new Map<string, GoalTask[]>();
+  for (const task of tasks) if (task.redundancy_group) {
+    const group = redundancyGroups.get(task.redundancy_group) ?? [];
+    group.push(task);
+    redundancyGroups.set(task.redundancy_group, group);
+  }
+  for (const [groupId, members] of redundancyGroups) {
+    if (members.length < 2) throw new Error(`redundancy group '${groupId}' must contain at least two tasks`);
+    for (let left = 0; left < members.length; left++) for (let right = left + 1; right < members.length; right++) {
+      const a = members[left]!, b = members[right]!;
+      if (ancestry.get(a.id)!.has(b.id) || ancestry.get(b.id)!.has(a.id)) throw new Error(`redundancy group '${groupId}' cannot contain dependent tasks`);
+    }
+  }
   const communicationVisiting = new Set<string>(), communicationVisited = new Set<string>();
   const visitCommunication = (id: string): void => {
     if (communicationVisiting.has(id)) throw new Error("goal plan contains a communication cycle");
@@ -132,6 +161,9 @@ function parseTasks(value: unknown, planBudget: number, nestedBudgetPool: boolea
   const defaultNestedBudget = nestedBudgetPool && unspecifiedCount > 0
     ? Math.floor(remainingNestedBudget / unspecifiedCount) : planBudget;
   const tasks = records.map((task, index) => {
+    if (task.redundancy_group !== undefined && typeof task.redundancy_group !== "string") {
+      throw new Error(`task '${String(task.id ?? index + 1)}' has an invalid redundancy_group`);
+    }
     const filePaths = Array.isArray(task.file_paths) ? task.file_paths.map(String) : [];
     const contextAffinity: GoalTask["context_affinity"] = task.context_affinity === "shared" || task.context_affinity === "isolated"
       ? task.context_affinity
@@ -151,6 +183,7 @@ function parseTasks(value: unknown, planBudget: number, nestedBudgetPool: boolea
       context_affinity: contextAffinity,
       ...(typeof task.agent_id === "string" ? { agent_id: task.agent_id } : {}),
       ...(task.planner === true ? { planner: true } : {}),
+      ...(typeof task.redundancy_group === "string" ? { redundancy_group: task.redundancy_group } : {}),
       ...(declaredResources ? { resource_keys: declaredResources } : {}),
       ...(typeof task.priority === "number" ? { priority: task.priority } : {}),
       file_paths: filePaths,
@@ -167,7 +200,7 @@ function parseTasks(value: unknown, planBudget: number, nestedBudgetPool: boolea
 export const goalPlanner: PrebuiltScript = {
   name: "goal-planner", domain: "orchestration", requires_tier: 2,
   description: "Persist a frontier-planned task DAG and concurrently dispatch isolated edge workers.",
-  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, acceptance_criteria? (1-8 concrete outcomes, each at most 500 characters), evidence_checks? (bounded host operations only), decision_refs? (up to four {id,revision} references to currently active Project Journal decisions; host revalidates before dispatch and resume; stale references hold work for review), human_review_required? (list any acceptance criteria that require a human judgment or sign-off; these cannot pass until the host provides an approved human-review receipt), priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), agent_id? (own configured worker), planner? (request a depth-2 subplanner; at most four planner children per root graph, with no deeper planner children), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. A nested planner's child-task budgets share the parent task's assigned worker-token ceiling; omitted budgets split the remaining pool across those tasks. The host Decisions service may grant bounded one-way peer blackboard sharing; the planner cannot choose recipients, and sharing never creates execution dependencies or grants authority. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
+  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, acceptance_criteria? (1-8 concrete outcomes, each at most 500 characters), evidence_checks? (bounded host operations only), decision_refs? (up to four {id,revision} references to currently active Project Journal decisions; host revalidates before dispatch and resume; stale references hold work for review), human_review_required? (list any acceptance criteria that require a human judgment or sign-off; these cannot pass until the host provides an approved human-review receipt), priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), redundancy_group? (explicitly mark at least two independent tasks as interchangeable investigations; the first completed-and-verified result makes the remaining group members redundant and eligible for cancellation), agent_id? (own configured worker), planner? (request a depth-2 subplanner; at most four planner children per root graph, with no deeper planner children), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. A nested planner's child-task budgets share the parent task's assigned worker-token ceiling; omitted budgets split the remaining pool across those tasks. The host Decisions service may grant bounded one-way peer blackboard sharing; the planner cannot choose recipients, and sharing never creates execution dependencies or grants authority. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
   operations: {
     async "engine.coordination_patterns"() {
       return { patterns: structuredClone(COORDINATION_PATTERNS), advisory: true };

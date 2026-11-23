@@ -233,14 +233,14 @@ export class TaskDO extends DurableObject {
         escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown; shadow_review_count?: unknown; shadow_uncertain_count?: unknown;
         verification_passed_count?: unknown; verification_failed_count?: unknown; verification_review_count?: unknown; dispatch_blocked_count?: unknown; decision_budget?: unknown;
       }>().catch((): { graph_id?: unknown; task_count?: unknown; statuses?: unknown; escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown; shadow_review_count?: unknown; shadow_uncertain_count?: unknown; verification_passed_count?: unknown; verification_failed_count?: unknown; verification_review_count?: unknown; dispatch_blocked_count?: unknown; decision_budget?: unknown } => ({}));
-      const statusKeys = ["pending", "running", "verifying", "completed", "failed", "blocked", "needs_review"] as const;
+      const statusKeys = ["pending", "running", "cancelling", "cancelled", "verifying", "completed", "failed", "blocked", "needs_review"] as const;
       const statuses = body.statuses && typeof body.statuses === "object" && !Array.isArray(body.statuses)
         ? body.statuses as Record<string, unknown>
         : undefined;
       const runtimeWorkers = body.runtime_workers === undefined ? []
         : Array.isArray(body.runtime_workers) && body.runtime_workers.length <= 200
           ? body.runtime_workers as Array<Record<string, unknown>> : undefined;
-      const runtimeStatuses = new Set(["waiting", "assigned", "running", "completed", "failed"]);
+      const runtimeStatuses = new Set(["waiting", "assigned", "running", "completed", "failed", "cancelled"]);
       const invalidRuntimeWorkers = !runtimeWorkers || runtimeWorkers.some(worker =>
         typeof worker.task_id !== "string" || worker.task_id.length > 64 ||
         typeof worker.status !== "string" || !runtimeStatuses.has(worker.status) ||

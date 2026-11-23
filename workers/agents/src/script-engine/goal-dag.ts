@@ -3,10 +3,10 @@ import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task
 import { evaluateGoalEvidence, type GoalEvidence, type GoalEvidenceCheck } from "./goal-evidence.js";
 import { fingerprintGoalExpansionProposal, prepareGoalExpansion, readGoalExpansionProposal } from "./goal-expansion.js";
 
-export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string; status?: string }
-export type GoalTaskStatus = "pending" | "running" | "verifying" | "completed" | "failed" | "blocked" | "needs_review";
+export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string; status?: string; late_result?: unknown }
+export type GoalTaskStatus = "pending" | "running" | "cancelling" | "cancelled" | "verifying" | "completed" | "failed" | "blocked" | "needs_review";
 export interface GoalTaskRuntimeState {
-  status: "waiting" | "assigned" | "running" | "completed" | "failed";
+  status: "waiting" | "assigned" | "running" | "completed" | "failed" | "cancelled";
   capability?: string;
   queuePosition?: number;
   queuedAt?: number;
@@ -16,7 +16,16 @@ export interface GoalTaskRuntimeState {
   queueWaitMs?: number;
   executionMs?: number;
 }
-export interface GoalTaskState { status: GoalTaskStatus; workerId: string; dispatchId?: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; decisionReviewReason?: string; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
+export interface GoalTaskCancellation {
+  status: "not_dispatched" | "requested" | "acknowledged" | "uncertain" | "already_complete" | "late_result";
+  winnerTaskId: string;
+  requestedAt: number;
+  acknowledgedAt?: number;
+  reason?: string;
+  effects: "none" | "unknown";
+  lateResultAt?: number;
+}
+export interface GoalTaskState { status: GoalTaskStatus; workerId: string; dispatchId?: string; result?: GoalWorkerResult; lateResult?: unknown; cancellation?: GoalTaskCancellation; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; decisionReviewReason?: string; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain" | "verification_failed" | "verification_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" | "review_verification" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
 export interface GoalExpansionReceipt { proposalId: string; taskIds: string[]; status: "admitted" | "rejected"; reason?: string }
@@ -36,12 +45,21 @@ export const MAX_GOAL_FIXERS_PER_RUN = 2;
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
 export interface GoalHandoff { taskId: string; workerId: string; output: string; truncated: boolean }
 export interface GoalDagHost {
+  /** Redundant-worker stop behavior remains disabled until its rollout gate is enabled. */
+  redundantCancellationEnabled?: boolean;
   load(): Promise<GoalDagJournal | undefined>;
   save(journal: GoalDagJournal): Promise<void>;
   /** Atomically persist the running task states and their dispatch outbox intents. */
   commitDispatches?(journal: GoalDagJournal, dispatches: readonly { task: GoalTask; workerId: string; dispatchId: string }[]): Promise<void>;
   launch(task: GoalTask, workerId: string, handoffs: GoalHandoff[]): Promise<GoalWorkerResult>;
   dispatch?(task: GoalTask, workerId: string, handoffs: GoalHandoff[], dispatchId: string): Promise<{ result?: GoalWorkerResult; acknowledged: boolean; reason?: string }>;
+  /** Idempotently prevent dispatch or request a stop; requested is not proof of rollback. */
+  cancel?(task: GoalTask, workerId: string, dispatchId: string, reason: { winnerTaskId: string }): Promise<{
+    outcome: "prevented" | "requested" | "already_complete" | "uncertain";
+    effects?: "none" | "unknown";
+    result?: GoalWorkerResult;
+    reason?: string;
+  }>;
   recover(workerId: string): Promise<GoalWorkerResult | undefined>;
   publish(task: GoalTask, state: GoalTaskState): Promise<void>;
   /** Recheck active decision identity/revision and its workspace pin before dispatch or reuse. */
@@ -364,15 +382,73 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
   if (tasks.some(task => !journal.tasks[task.id]) || Object.keys(journal.tasks).length !== tasks.length) throw new Error("goal_journal_mismatch");
   for (const task of tasks) {
     const state = journal.tasks[task.id]!;
-    if (state.status === "running") {
-      const result = await host.recover(state.workerId);
-      state.status = result ? (result.ok ? "completed" : result.status === "outcome_uncertain" || result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" ? "needs_review" : "failed") : "needs_review";
-      if (result) state.result = result;
-      if (state.runtime && result) {
+    if (state.status === "running" || state.status === "cancelling") {
+      let result: GoalWorkerResult | undefined;
+      try { result = await host.recover(state.workerId); } catch { /* unknown worker outcome stays visible */ }
+      const cancellation = state.cancellation;
+      if (result && cancellation && (result.status === "terminated" || result.status === "cancelled" || result.error === "worker_cancelled")) {
+        state.status = "cancelled";
+        state.result = result;
+        if (result.late_result !== undefined) state.lateResult = result.late_result;
+        cancellation.status = "acknowledged";
+        cancellation.acknowledgedAt = Date.now();
+        cancellation.effects = "unknown";
+      } else if (result) {
+        state.result = result;
+        state.status = result.ok ? "completed" : result.status === "outcome_uncertain" || result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" ? "needs_review" : "failed";
+        if (cancellation) {
+          cancellation.status = "late_result";
+          cancellation.lateResultAt = Date.now();
+          cancellation.effects = "unknown";
+        }
+      } else if (cancellation && host.cancel) {
+        let receipt: Awaited<ReturnType<NonNullable<GoalDagHost["cancel"]>>> | undefined;
+        try { receipt = await host.cancel(task, state.workerId, state.dispatchId ?? `dispatch:${state.workerId}:1`, { winnerTaskId: cancellation.winnerTaskId }); }
+        catch { /* retain an explicit uncertain cancellation */ }
+        if (receipt?.outcome === "prevented") {
+          state.status = "cancelled";
+          cancellation.status = "not_dispatched";
+          cancellation.acknowledgedAt = Date.now();
+          cancellation.effects = receipt.effects ?? "none";
+        } else if (receipt?.outcome === "already_complete" && receipt.result) {
+          state.result = receipt.result;
+          state.status = receipt.result.ok ? "completed" : "needs_review";
+          cancellation.status = "already_complete";
+          cancellation.effects = "unknown";
+        } else if (receipt?.outcome === "requested") {
+          state.status = "cancelling";
+          cancellation.status = receipt.outcome;
+          cancellation.effects = "unknown";
+        } else if (receipt?.outcome === "already_complete") {
+          state.status = "needs_review";
+          cancellation.status = "uncertain";
+          cancellation.reason = "completed_worker_result_unavailable";
+          cancellation.effects = "unknown";
+        } else {
+          state.status = "needs_review";
+          cancellation.status = "uncertain";
+          cancellation.reason = (receipt?.reason ?? "worker_cancellation_unavailable").slice(0, 240);
+          cancellation.effects = "unknown";
+        }
+      } else {
+        state.status = "needs_review";
+        if (cancellation) {
+          cancellation.status = "uncertain";
+          cancellation.reason = "worker_cancellation_unavailable";
+          cancellation.effects = "unknown";
+        }
+      }
+      const recoveredRuntimeResult = result ?? state.result;
+      if (state.runtime && recoveredRuntimeResult) {
         const completedAt = Date.now();
         const executionMs = state.runtime.startedAt === undefined ? undefined : Math.max(0, completedAt - state.runtime.startedAt);
-        state.runtime = { ...state.runtime, status: result.ok ? "completed" : "failed", completedAt, ...(executionMs !== undefined ? { executionMs } : {}) };
-        host.recordRuntimeMetrics?.({ ...(state.runtime.capability ? { capability: state.runtime.capability } : {}), status: result.ok ? "completed" : "failed", ...(state.runtime.queueWaitMs !== undefined ? { queueWaitMs: state.runtime.queueWaitMs } : {}), ...(executionMs !== undefined ? { executionMs } : {}) });
+        const runtimeStatus = state.status === "cancelled" ? "cancelled" : recoveredRuntimeResult.ok ? "completed" : "failed";
+        state.runtime = { ...state.runtime, status: runtimeStatus, completedAt, ...(executionMs !== undefined ? { executionMs } : {}) };
+        if (runtimeStatus !== "cancelled") host.recordRuntimeMetrics?.({ ...(state.runtime.capability ? { capability: state.runtime.capability } : {}), status: runtimeStatus, ...(state.runtime.queueWaitMs !== undefined ? { queueWaitMs: state.runtime.queueWaitMs } : {}), ...(executionMs !== undefined ? { executionMs } : {}) });
+      } else if (state.runtime && state.status === "cancelled") {
+        const completedAt = Date.now();
+        const executionMs = state.runtime.startedAt === undefined ? undefined : Math.max(0, completedAt - state.runtime.startedAt);
+        state.runtime = { ...state.runtime, status: "cancelled", completedAt, ...(executionMs !== undefined ? { executionMs } : {}) };
       }
       await save();
     }
@@ -397,10 +473,81 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
   }
   const inFlight = new Map<string, Promise<{ id: string; error?: unknown }>>();
   const activeResources = new Set<string>();
+  const finishCancelled = async (task: GoalTask, state: GoalTaskState, outcome: "not_dispatched" | "acknowledged", effects: "none" | "unknown"): Promise<void> => {
+    state.status = "cancelled";
+    if (state.cancellation) {
+      state.cancellation.status = outcome;
+      state.cancellation.acknowledgedAt = Date.now();
+      state.cancellation.effects = effects;
+    }
+    if (state.runtime) {
+      const completedAt = Date.now();
+      const executionMs = state.runtime.startedAt === undefined ? undefined : Math.max(0, completedAt - state.runtime.startedAt);
+      state.runtime = { ...state.runtime, status: "cancelled", completedAt, ...(executionMs !== undefined ? { executionMs } : {}) };
+    }
+    await save();
+    await host.publish(task, state);
+  };
+  const cancelRedundantSiblings = async (winner: GoalTask): Promise<void> => {
+    const groupId = winner.redundancy_group;
+    const winnerState = journal.tasks[winner.id]!;
+    if (host.redundantCancellationEnabled !== true || !groupId || winnerState.status !== "completed" || winnerState.cancellation) return;
+    for (const task of tasks) {
+      if (task.id === winner.id || task.redundancy_group !== groupId) continue;
+      const state = journal.tasks[task.id]!;
+      if (["completed", "failed", "blocked", "cancelled", "verifying"].includes(state.status)) continue;
+      const requestedAt = state.cancellation?.requestedAt ?? Date.now();
+      state.cancellation = {
+        status: "requested", winnerTaskId: winner.id, requestedAt,
+        effects: state.status === "pending" ? "none" : "unknown",
+      };
+      if (state.status === "pending") {
+        await finishCancelled(task, state, "not_dispatched", "none");
+        continue;
+      }
+      state.status = "cancelling";
+      await save();
+      await host.publish(task, state);
+      let receipt: Awaited<ReturnType<NonNullable<GoalDagHost["cancel"]>>> | undefined;
+      try {
+        receipt = await host.cancel?.(task, state.workerId, state.dispatchId ?? `dispatch:${state.workerId}:1`, { winnerTaskId: winner.id });
+      } catch { /* persist the uncertain state below */ }
+      if (receipt?.outcome === "prevented") {
+        await finishCancelled(task, state, "not_dispatched", receipt.effects ?? "none");
+      } else if (receipt?.outcome === "requested") {
+        state.cancellation.status = "requested";
+        state.cancellation.effects = "unknown";
+        await save();
+        await host.publish(task, state);
+      } else if (receipt?.outcome === "already_complete") {
+        state.cancellation.status = "already_complete";
+        state.cancellation.effects = "unknown";
+        if (receipt.result) {
+          state.result = receipt.result;
+          state.status = receipt.result.ok ? "completed" : "needs_review";
+        } else {
+          state.status = "needs_review";
+          state.cancellation.status = "uncertain";
+          state.cancellation.reason = "completed_worker_result_unavailable";
+        }
+        await save();
+        await host.publish(task, state);
+      } else {
+        state.status = "needs_review";
+        state.cancellation.status = "uncertain";
+        state.cancellation.reason = (receipt?.reason ?? "worker_cancellation_unavailable").slice(0, 240);
+        state.cancellation.effects = "unknown";
+        await save();
+        await host.publish(task, state);
+      }
+    }
+  };
+  // A completed alternative can survive a restart while its peers are still active.
+  for (const winner of tasks) if (journal.tasks[winner.id]!.status === "completed") await cancelRedundantSiblings(winner);
   for (;;) {
     const pending = tasks.filter(task => journal.tasks[task.id]!.status === "pending");
     for (const task of pending) {
-      if ((task.dependencies ?? []).some(id => ["failed", "blocked", "needs_review"].includes(journal.tasks[id]!.status))) {
+      if ((task.dependencies ?? []).some(id => ["failed", "blocked", "needs_review", "cancelled"].includes(journal.tasks[id]!.status))) {
         journal.tasks[task.id]!.status = "blocked";
         await save();
         await host.publish(task, journal.tasks[task.id]!);
@@ -411,7 +558,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       // A host-selected peer edge is a message-availability barrier, not a success
       // dependency: the recipient wakes after the sender reaches any terminal state.
       && (!journal.taskBlackboardEnabled || tasks.filter(sender => sender.communication_recipients?.includes(task.id))
-        .every(sender => !["pending", "running", "verifying"].includes(journal.tasks[sender.id]!.status))));
+        .every(sender => !["pending", "running", "cancelling", "verifying"].includes(journal.tasks[sender.id]!.status))));
     if (host.adaptiveConcurrency === true && ready.length > 0 && journal.routing.mode === "parallel" && journal.routing.selectedConcurrency > ready.length) {
       const fromConcurrency = journal.routing.selectedConcurrency;
       journal.routing.selectedConcurrency = ready.length;
@@ -548,8 +695,12 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
           if (host.dispatch) {
             const receipt = await host.dispatch(task, state.workerId, handoffs, state.dispatchId!);
             if (!receipt.acknowledged && receipt.reason) {
-              state.status = "needs_review";
-              state.decisionReviewReason = receipt.reason.slice(0, 240);
+              if (receipt.reason === "goal_dispatch_cancelled_before_start" && state.cancellation) {
+                await finishCancelled(task, state, "not_dispatched", state.cancellation.effects ?? "unknown");
+              } else {
+                state.status = "needs_review";
+                state.decisionReviewReason = receipt.reason.slice(0, 240);
+              }
               await save();
               await host.publish(task, state);
               return;
@@ -570,6 +721,36 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
           return;
         }
         result = recovered;
+      }
+      if (state.status === "cancelled") {
+        state.lateResult = result;
+        if (state.cancellation) {
+          state.cancellation.status = "late_result";
+          state.cancellation.lateResultAt = Date.now();
+          state.cancellation.effects = "unknown";
+        }
+        if (state.runtime) {
+          const completedAt = Date.now();
+          const executionMs = state.runtime.startedAt === undefined ? undefined : Math.max(0, completedAt - state.runtime.startedAt);
+          state.runtime = { ...state.runtime, status: "cancelled", completedAt, ...(executionMs !== undefined ? { executionMs } : {}) };
+        }
+        await save();
+        await host.publish(task, state);
+        return;
+      }
+      if (state.cancellation && state.cancellation.status !== "not_dispatched") {
+        if (result.status === "terminated" || result.status === "cancelled" || result.error === "worker_cancelled") {
+          state.result = result;
+          if (result.late_result !== undefined) state.lateResult = result.late_result;
+          await finishCancelled(task, state, "acknowledged", "unknown");
+          return;
+        }
+        // A result after the stop request is still evidence of work. Preserve it and leave
+        // committed or externally visible effects as unknown; cancellation is not rollback.
+        state.cancellation.status = "late_result";
+        state.cancellation.lateResultAt = Date.now();
+        state.cancellation.effects = "unknown";
+        state.lateResult = result;
       }
       state.result = result;
       state.status = result.ok ? "completed" : result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" || result.status === "outcome_uncertain" ? "needs_review" : "failed";
@@ -611,6 +792,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
           verificationOutcome: finishedState.verification?.outcome ?? (journal.verificationRequired ? "unavailable" : "not_required"),
         };
       }
+      if (finishedState?.status === "completed") await cancelRedundantSiblings(finishedTask!);
       if (host.adaptiveConcurrency === true && journal.routing.mode === "parallel" && finishedState) {
         const fromConcurrency = journal.routing.selectedConcurrency;
         let reason: GoalRoutingAdjustment["reason"] | undefined;

@@ -384,7 +384,7 @@ describe("durable goal DAG", () => {
     });
     const run = executeGoalDag([task("slow"), task("fast"), task("dependent", ["fast"])], f.host);
     await started;
-    for (let i = 0; i < 20 && !launched.includes("dependent"); i++) await Promise.resolve();
+    await vi.waitFor(() => expect(launched).toContain("dependent"));
     expect(launched).toContain("dependent");
     expect(slowCompleted).toBe(false);
     releaseSlow();
@@ -412,6 +412,96 @@ describe("durable goal DAG", () => {
     releaseContainer();
     await run;
     expect(launched).toContain("container-b");
+  });
+  it("cancels only explicitly grouped redundant work and preserves a late stop outcome", async () => {
+    const f = fixture();
+    f.host.concurrency = 2;
+    f.host.redundantCancellationEnabled = true;
+    f.host.acquireResources = async (_candidate, _id, onState) => {
+      await onState?.({ status: "running", startedAt: Date.now() });
+      return async () => {};
+    };
+    let releaseSlow!: () => void;
+    const stop = new Promise<void>(resolve => { releaseSlow = resolve; });
+    const launched: string[] = [];
+    f.host.launch = vi.fn(async (candidate, id) => {
+      launched.push(candidate.id);
+      if (candidate.id === "slow") {
+        await stop;
+        return { id, ok: false, status: "terminated", error: "worker_cancelled" };
+      }
+      return { id, ok: true, output: "verified alternative" };
+    });
+    f.host.cancel = vi.fn(async () => { releaseSlow(); return { outcome: "requested" as const }; });
+    const candidates = [
+      { ...task("winner"), redundancy_group: "same-investigation" },
+      { ...task("slow"), redundancy_group: "same-investigation" },
+      { ...task("queued"), redundancy_group: "same-investigation" },
+    ];
+
+    const result = await executeGoalDag(candidates, f.host);
+    expect(launched).toEqual(["winner", "slow"]);
+    expect(f.host.cancel).toHaveBeenCalledOnce();
+    expect(result.tasks.winner?.status).toBe("completed");
+    expect(result.tasks.slow).toMatchObject({ status: "cancelled", runtime: { status: "cancelled" }, cancellation: { status: "acknowledged", winnerTaskId: "winner", effects: "unknown" } });
+    expect(result.tasks.queued).toMatchObject({ status: "cancelled", cancellation: { status: "not_dispatched", winnerTaskId: "winner", effects: "none" } });
+  });
+  it("does not cancel alternative work when the first result fails verification", async () => {
+    const f = fixture();
+    f.host.concurrency = 1;
+    f.host.redundantCancellationEnabled = true;
+    f.host.verify = vi.fn(async taskValue => taskValue.id === "bad"
+      ? ({ outcome: "failed" as const, reason: "evidence failed" })
+      : ({ outcome: "passed" as const, reason: "evidence passed" }));
+    f.host.cancel = vi.fn(async () => ({ outcome: "prevented" as const }));
+    const result = await executeGoalDag([
+      { ...task("bad"), redundancy_group: "same-investigation" },
+      { ...task("good"), redundancy_group: "same-investigation" },
+    ], f.host);
+    expect(result.tasks.bad?.status).toBe("failed");
+    expect(result.tasks.good?.status).toBe("completed");
+    expect(f.host.cancel).not.toHaveBeenCalled();
+  });
+  it("keeps redundant-worker cancellation off unless the host rollout gate is enabled", async () => {
+    const f = fixture();
+    f.host.concurrency = 2;
+    f.host.cancel = vi.fn(async () => ({ outcome: "prevented" as const }));
+    const result = await executeGoalDag([
+      { ...task("left"), redundancy_group: "same-investigation" },
+      { ...task("right"), redundancy_group: "same-investigation" },
+    ], f.host);
+    expect(result.tasks.left?.status).toBe("completed");
+    expect(result.tasks.right?.status).toBe("completed");
+    expect(f.host.cancel).not.toHaveBeenCalled();
+  });
+  it("records a dispatch prevention receipt when cancellation wins during outbox delivery", async () => {
+    const f = fixture();
+    f.host.concurrency = 2;
+    f.host.redundantCancellationEnabled = true;
+    let releaseDispatch!: () => void;
+    let signalDispatchStarted!: () => void;
+    const dispatchStarted = new Promise<void>(resolve => { signalDispatchStarted = resolve; });
+    const dispatchGate = new Promise<void>(resolve => { releaseDispatch = resolve; });
+    f.host.dispatch = vi.fn(async (candidate, id) => {
+      if (candidate.id === "slow") {
+        signalDispatchStarted();
+        await dispatchGate;
+        return { acknowledged: false, reason: "goal_dispatch_cancelled_before_start" };
+      }
+      return { acknowledged: true, result: { id, ok: true } };
+    });
+    f.host.cancel = vi.fn(async () => {
+      releaseDispatch();
+      return { outcome: "prevented" as const, effects: "unknown" as const };
+    });
+    const run = executeGoalDag([
+      { ...task("winner"), redundancy_group: "same-investigation" },
+      { ...task("slow"), redundancy_group: "same-investigation" },
+    ], f.host);
+    await dispatchStarted;
+    const result = await run;
+    expect(result.tasks.slow).toMatchObject({ status: "cancelled", cancellation: { status: "not_dispatched", effects: "unknown" } });
+    expect(f.host.cancel).toHaveBeenCalledOnce();
   });
   it("runs workers assigned to different containers concurrently and records scheduling state", async () => {
     const f = fixture(); f.host.concurrency = 2;
@@ -691,6 +781,11 @@ describe("durable goal DAG", () => {
     expect(() => validateGoalDag([task("a")])).not.toThrow();
     expect(() => validateGoalDag([task("a", ["b"]), task("b", ["a"])])).toThrow("cycle");
     expect(() => validateGoalDag([task("a", ["missing"])])).toThrow("dependency");
+    expect(() => validateGoalDag([{ ...task("a"), redundancy_group: "alone" }])).toThrow("at least two tasks");
+    expect(() => validateGoalDag([
+      { ...task("a"), redundancy_group: "same" },
+      { ...task("b", ["a"]), redundancy_group: "same" },
+    ])).toThrow("dependent tasks");
     for (const budget_tokens of [NaN, Infinity, 1.5, MAX_SUB_AGENT_BUDGET_TOKENS + 1, 0]) expect(() => validateGoalDag([{ ...task("a"), budget_tokens }])).toThrow("budget");
   });
 });

@@ -20,7 +20,7 @@ import Link from "next/link";
 import { detectRuntimeAnomaly, isJobOverdue } from "@naelao/events";
 import { presentAutonomyPolicy } from "@naelao/agent-sdk";
 import { isWithinScheduledQuietHours } from "@naelao/types";
-import { workerActivityLabel } from "../lib/worker-activity";
+import { goalCancellationLabel, workerActivityLabel } from "../lib/worker-activity";
 import { formatWorkerOutput, parseWorkerMergeResult, type WorkerMergeConflictView } from "../lib/worker-merge-result";
 import { ChannelConnect, CHANNELS } from "./ChannelConnect";
 import {
@@ -710,6 +710,8 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       {goal.tasks.map(task => <div key={task.id} style={{ padding: "6px 0", overflowWrap: "anywhere" }}>
         <strong>{task.title.slice(0, 240)}</strong> · {workerActivityLabel(task.status)}
         {(task.assigned_role || task.budget_tokens !== undefined) && <div style={{ color: "var(--text3)", fontSize: 11 }}>Worker plan: {task.assigned_role ? `${task.assigned_role.slice(0, 80)} role` : "worker"}{task.budget_tokens !== undefined ? ` · up to ${task.budget_tokens.toLocaleString()} output tokens` : ""}{task.runtime_capability ? ` · ${task.runtime_capability.slice(0, 64)} runtime recommendation` : ""}</div>}
+        {task.redundancy_group && <div style={{ color: "var(--text3)", fontSize: 11 }}>Alternative investigation group: {task.redundancy_group}</div>}
+        {task.cancellation && <div role="status" style={{ color: "var(--text3)", fontSize: 11 }}>{goalCancellationLabel(task.cancellation.status)}. {task.cancellation.effects === "unknown" ? "Effects may already have committed; cancellation does not reverse them." : "No worker dispatch was recorded."}{task.cancellation.reason ? ` ${task.cancellation.reason}` : ""}{task.late_result_available ? " A late worker result was retained." : ""}</div>}
         {task.acceptance_criteria?.length ? <div style={{ color: "var(--text3)", fontSize: 11 }}>Acceptance: {task.acceptance_criteria.map(item => item.slice(0, 240)).join(" · ")}</div> : null}
         {task.decision_refs?.length ? <div style={{ color: "var(--text3)", fontSize: 11 }}>Project decisions: {task.decision_refs.map(ref => `${ref.id.slice(0, 48)} · revision ${ref.revision}`).join("; ")}</div> : null}
         {task.decision_review_reason && <div role="status" style={{ color: "var(--danger, #dc2626)", fontSize: 11 }}>Decision reference needs review: {task.decision_review_reason.slice(0, 240)}</div>}
@@ -1783,6 +1785,8 @@ function WorkersPanel({
           {goal.tasks.map(task => <div key={task.id} style={{ padding: "4px 0" }}>
             <strong>{task.title}</strong> · {workerActivityLabel(task.status)}
             {(task.assigned_role || task.budget_tokens !== undefined) && <div>Worker plan: {task.assigned_role ? `${task.assigned_role.slice(0, 80)} role` : "worker"}{task.budget_tokens !== undefined ? ` · up to ${task.budget_tokens.toLocaleString()} output tokens` : ""}{task.runtime_capability ? ` · ${task.runtime_capability.slice(0, 64)} runtime recommendation` : ""}</div>}
+            {task.redundancy_group && <div>Alternative investigation group: {task.redundancy_group}</div>}
+            {task.cancellation && <div role="status">{goalCancellationLabel(task.cancellation.status)}. {task.cancellation.effects === "unknown" ? "Effects may already have committed; cancellation does not reverse them." : "No worker dispatch was recorded."}{task.cancellation.reason ? ` ${task.cancellation.reason}` : ""}{task.late_result_available ? " A late worker result was retained." : ""}</div>}
             {task.acceptance_criteria?.length ? <div>Acceptance: {task.acceptance_criteria.map(item => item.slice(0, 240)).join(" · ")}</div> : null}
             {task.decision_refs?.length ? <div>Project decisions: {task.decision_refs.map(ref => `${ref.id.slice(0, 48)} · revision ${ref.revision}`).join("; ")}</div> : null}
             {task.decision_review_reason && <div role="status" style={{ color: "#dc2626" }}>Decision reference needs review: {task.decision_review_reason.slice(0, 240)}</div>}

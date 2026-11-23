@@ -66,10 +66,13 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   nested planners can create leaf tasks only. Each graph remains capped at 12 tasks, and nested child
   task-token allocations sum within the assigned parent-task ceiling. The delegated child receives
   that assigned ceiling in its host context; signed scope and caller authorization remain inherited.
-- [ ] **Active · APW02 — Safe cancellation of redundant workers.** Trace dispatch acknowledgements and late
-  result/workspace effects; cancellation must not imply rollback of committed work.
-- [ ] **APW02 — Comparative evaluation.** Define a controlled baseline and deployed acceptance only
-  after routing metrics and cancellation behavior are ready.
+- [x] **APW02 — Safe cancellation of redundant workers.** Explicit independent `redundancy_group`s can
+  stop remaining work after a completed and verified result. Dispatch cancellation is fenced in the
+  durable outbox and exact-attempt child start check; late results and uncertain effects remain visible.
+  `GOAL_REDUNDANT_CANCELLATION_ENABLED` is off by default.
+- [ ] **Active · APW02 — Comparative evaluation.** Define a controlled baseline and deployed acceptance only
+  after routing metrics and cancellation behavior are ready. Local cancellation/routing evidence is
+  available; provider-cost and live-runtime evidence are not.
 - [ ] **APW03 — Decisions and task lineage.** Reconcile result-branch revision links, conflict review
   and integration evidence with the PW and EP requirements.
 - [ ] **APW04 — Memory and context.** Continue provenance, retention and context evaluation from the
@@ -80,22 +83,23 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** Hierarchical planner admission is now bounded at the goal-planner boundary:
-root graphs permit no more than four planner-marked children, depth-two planners cannot create a
-third planner level, and each nested plan's child-task token allocations fit within its inherited
-parent-task ceiling. Delegated planner workers now receive that task allocation in
-`worker_token_budget` instead of the parent's broader ceiling. Each goal graph remains capped at 12
-tasks; signed tenant/Space/Project/actor and caller-role scope is still bound by the delegation
-contract and rechecked by the child run gate. Verification: planner, DAG/kernel, delegation and
-assistant-swarm suites **38/38**, Agents typecheck and `git diff --check`; local/mock only. These are
-planned token ceilings, not aggregate provider-spend reservations; progressive routing and dynamic
-expansion remain disabled by default. The regular Shell typecheck still has stale `.next/types`
-references to absent route files; the Shell source-only typecheck passed in the preceding checkpoint.
+**Latest checkpoint.** Goal plans can explicitly mark independent alternatives with a validated
+`redundancy_group`; a completed and verified member can cancel its remaining peers. Cancellation is
+guarded by the off-by-default `GOAL_REDUNDANT_CANCELLATION_ENABLED` host flag. The parent persists a
+cancel marker in `goal_dispatch_outbox`, checks it before child admission, fences the exact worker
+attempt, and asks the child runtime to stop. The child start check rejects an attempt stopped before
+execution. Late callback/HTTP results are retained in bounded `sub_agents` receipts, token usage is
+counted once, checked workspace publication evidence remains readable, and UI state says effects can
+already have committed. Cancellation never claims rollback. Verification: focused planner, DAG and
+delegation suites **83/83**, Agents typecheck, Shell source typecheck excluding stale generated
+`.next/types`, and `git diff --check`; local/mock only. The regular Shell typecheck still fails on
+stale `.next/types` references to absent route files. No live Cloudflare cancellation or provider
+cost behavior was exercised; progressive routing, dynamic expansion and redundant cancellation
+remain disabled by default.
 
-**Exact next action:** trace `goal_dispatch_outbox`, `sub_agents` acknowledgements, runtime cancel
-calls and workspace publication for redundant workers. Implement cancellation that blocks future
-dispatch, preserves late-result reconciliation and reports uncertain/committed effects without
-claiming rollback.
+**Exact next action:** define and implement a controlled one-worker/sequential/adaptive comparison
+with explicit quality, latency, retry, conflict and spend provenance. Separate local/mock evidence
+from any live provider or deployed acceptance, and do not enable rollout flags.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).
