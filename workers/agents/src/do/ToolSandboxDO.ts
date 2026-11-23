@@ -42,7 +42,8 @@ import { readBoundedRequestBytes, readBoundedResponseText, RequestBodyTooLargeEr
 import { BILLING_CORE_RATE_CARD_VERSION, infraTimeToCredits } from "@naelao/billing-core";
 import { deriveKek, encryptAuthenticated } from "@naelao/crypto";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
-import { validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
+import { sidecarKey, validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
+import { sandboxInstanceName, workspaceBranchScope } from "../script-engine/sandbox-routing.js";
 import type { InstallationScope } from "@naelao/agent-sdk";
 import type { Env } from "../env.js";
 import { TRUSTED_PACKAGE_HOSTS } from "../script-engine/package-egress.js";
@@ -450,11 +451,16 @@ export class ToolSandboxDO extends DurableObject {
   private async registerWorkspaceRuntime(scope: ContainerInvocationScope, request: Request): Promise<void> {
     if (!scope.projectId) return;
     const objectName = request.headers.get("x-naelao-runtime-object-name");
+    const expectedObjectName = scope.installationId
+      ? sidecarKey(scope) + workspaceBranchScope(scope.workspaceBranch)
+      : sandboxInstanceName(scope.spaceId, scope.projectId, scope.workspaceBranch);
     const db = (this.env as SandboxBindings).PLATFORM_DB;
-    // Older internal callers do not yet supply a host-derived object name. They remain protected
-    // by the D1 tombstone check, but are not eligible for proactive private-state erasure yet.
-    if (!objectName || objectName.length > 1024 || !db) return;
-    if (objectName.includes("\0")) throw new Error("workspace_runtime_identity_invalid");
+    // Project work must be discoverable by the retryable erasure inventory. Bind the registration
+    // to the same identity the host used to address this DO; a missing or mismatched name must not
+    // silently turn a reachable runtime into an untracked erasure target.
+    if (!objectName || objectName !== expectedObjectName || objectName.length > 1024 || objectName.includes("\0"))
+      throw new Error("workspace_runtime_identity_invalid");
+    if (!db) throw new Error("workspace_runtime_registry_unavailable");
     if (this.isProjectMainRuntimeScope(scope, request)) await this.reconcileProjectMainGenerationAttempt(scope, request, db);
     const now = new Date().toISOString();
     const inserted = await db.prepare(`INSERT INTO workspace_runtime_registry

@@ -23,11 +23,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**S/U — S3/U10: require registered host identity before Project runtime work.** Resume from the
-checked-in [implementation queue](docs/operations/implementation-queue.md#active-plan). Require
-the exact host-derived runtime object name and a successful D1 registry write before a Project
-ToolSandbox execution or workspace operation can proceed. Recheck all reachable callers, preserve
-`infra/scripts/__pycache__/`, and keep rollout defaults disabled.
+**S/U — S3/U10: finish the Project runtime erasure caller audit.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). Trace feature-off and
+restored private-state paths, sidecar artifact/local-state cleanup and all relevant runtime
+namespaces; implement any remaining source-supported erasure gap. Preserve
+`infra/scripts/__pycache__/` and keep rollout defaults disabled.
 
 ## Save progress inside each task
 

@@ -52,11 +52,15 @@ and [progress ledger](../research/managed-services-and-sidecar-implementation-pr
   coverage for plan sections 1–20 and inherited U01–U12, reusing later implementation evidence and
   marking policy/provider/deployment dependencies precisely. Keep gates disabled and preserve data.
 
-- [ ] **Active · S/U · S3/U10 — Require registered host identity before Project runtime work.**
-  The S1 caller audit found that reachable Project callers send a host-derived runtime name, but
-  `ToolSandboxDO.registerWorkspaceRuntime` silently skips registration when it is absent. Require
-  and validate the exact expected object name and successful D1 inventory write before project
-  execution/workspace operations; preserve per-project cleanup and keep runtime gates disabled.
+- [x] **S/U · S3/U10 — Require registered host identity before Project runtime work.**
+  `ToolSandboxDO.registerWorkspaceRuntime` now rejects a missing or mismatched host-derived name
+  and fails closed if the Project runtime registry is unavailable. Agents typecheck and
+  `git diff --check` pass; no tests, migration or deployment ran.
+
+- [ ] **Active · S/U · S3/U10 — Finish the Project runtime erasure caller audit.**
+  Trace feature-off/restored private-state paths, sidecar artifact/local-state cleanup and all
+  relevant runtime namespaces. Implement any remaining source-supported erasure gap; distinguish
+  provider snapshot purge, regional configuration and deployed acceptance as external gates.
 
 **S1 checkpoint:** the progress ledger now maps sections 1–20 to their owning implementation and
 evidence records, and the U01–U12 matrix was reconciled against the current branch. U06–U08 remain
@@ -67,9 +71,11 @@ execution/workspace callers send a host-derived object name, but `ToolSandboxDO.
 silently skips erasure registration if it is missing. Source review only; no tests, migrations,
 deployment or live acceptance ran.
 
-**Next active task · S/U S3/U10:** require and validate the host-derived Project runtime object
-identity and durable registry write before project-scoped ToolSandbox work. Verify every reachable
-caller and keep rollout disabled.
+**Latest S3/U10 checkpoint:** the runtime-name header must equal the deterministic main or sidecar
+Durable Object name derived from the authenticated scope, and D1 registration is mandatory before
+Project work continues. Agents typecheck and `git diff --check` pass. **Next action:** trace
+feature-off/restored private-state paths, sidecar artifact/local-state cleanup and relevant runtime
+namespaces; keep provider snapshot purge and regional deployment gates explicit.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

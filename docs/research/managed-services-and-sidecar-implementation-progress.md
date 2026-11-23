@@ -1,3 +1,20 @@
+## S/U S3/U10 — require registered host identity before Project runtime work
+
+`ToolSandboxDO.registerWorkspaceRuntime` now derives the expected main or sidecar Durable Object
+name from the validated invocation scope and requires the authenticated host header to match it.
+For every Project-scoped execution or workspace request, missing/mismatched identity and an
+unavailable D1 runtime registry fail before the execution is admitted to the Container. Current
+host callers in `code-runner.ts` and `container-workspace.ts` already send the matching name. This
+removes the prior path that let the runtime proceed while absent from the retryable project-erasure
+inventory.
+
+Agents worker typecheck and `git diff --check` pass. No tests, migrations, deployment or live
+acceptance ran. Project main/sidecar rollout remains disabled.
+
+**Exact next action:** finish the U10 feature-off/restored private-state and sidecar artifact/local
+state erasure audit across all relevant runtime namespaces; implement any remaining source-supported
+gap and record provider purge/regional/deployed gates separately.
+
 ## S/U milestone S1 source reconciliation — 2026-11-23 (U06–U12 and sections 1–20)
 
 The current-source recheck closes the remaining inherited-gap rows for S1. `LiveRuntimeControlDO`
