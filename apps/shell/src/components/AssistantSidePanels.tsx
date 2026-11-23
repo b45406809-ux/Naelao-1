@@ -587,6 +587,35 @@ function GoalWorkspaceLineageView({ lineage }: { lineage: GoalWorkspaceLineage }
   </div>;
 }
 
+function goalDecisionHoldMessage(reason: string): string {
+  switch (reason.split(":", 1)[0]) {
+    case "decision_revision_changed": return "The referenced decision changed after this task was planned.";
+    case "decision_not_active": return "The referenced Project decision is no longer active.";
+    case "decision_unavailable": return "A referenced Project decision is missing from the current register.";
+    case "workspace_revision_stale": return "The Project workspace has moved past this decision’s pinned revision.";
+    case "workspace_revision_unavailable": return "The current Project workspace revision could not be verified.";
+    case "decision_project_scope_unavailable": return "The task’s Project scope could not be verified.";
+    case "decision_journal_unavailable":
+    case "decision_validation_unavailable": return "The current Project decision register could not be verified.";
+    default: return "A Project decision reference could not be verified.";
+  }
+}
+
+function GoalDecisionHoldNotice({ reason, decisionRefs, projectId, productSlug }: {
+  reason: string;
+  decisionRefs?: Array<{ id: string; revision: number }> | undefined;
+  projectId?: string | null | undefined;
+  productSlug: string;
+}) {
+  return <div role="status" style={{ color: "var(--danger, #dc2626)", fontSize: 11, marginTop: 3 }}>
+    <div><strong>Task held for Project decision review.</strong> {goalDecisionHoldMessage(reason)}</div>
+    {decisionRefs?.length ? <div>Referenced decisions: {decisionRefs.map(ref => `${ref.id.slice(0, 48)} · revision ${ref.revision}`).join("; ")}</div> : null}
+    {projectId
+      ? <div><Link href={`/p/${encodeURIComponent(productSlug)}/projects/${encodeURIComponent(projectId)}#project-decision-review-heading`} style={{ color: "var(--accent)" }}>Open the Project decision register</Link>. Review does not change or resume this task.</div>
+      : <div>Open this task from its authorized Project conversation to inspect the current decision.</div>}
+  </div>;
+}
+
 function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined; agentId?: string | null | undefined; lastRunId?: string | null | undefined; projectId?: string | null | undefined }) {
   const product = useProduct();
   const [tasks, setTasks] = React.useState<DurableAgentTask[]>([]);
@@ -748,8 +777,9 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
         {task.redundancy_group && <div style={{ color: "var(--text3)", fontSize: 11 }}>Alternative investigation group: {task.redundancy_group}</div>}
         {task.cancellation && <div role="status" style={{ color: "var(--text3)", fontSize: 11 }}>{goalCancellationLabel(task.cancellation.status)}. {task.cancellation.effects === "unknown" ? "Effects may already have committed; cancellation does not reverse them." : "No worker dispatch was recorded."}{task.cancellation.reason ? ` ${task.cancellation.reason}` : ""}{task.late_result_available ? " A late worker result was retained." : ""}</div>}
         {task.acceptance_criteria?.length ? <div style={{ color: "var(--text3)", fontSize: 11 }}>Acceptance: {task.acceptance_criteria.map(item => item.slice(0, 240)).join(" · ")}</div> : null}
-        {task.decision_refs?.length ? <div style={{ color: "var(--text3)", fontSize: 11 }}>Project decisions: {task.decision_refs.map(ref => `${ref.id.slice(0, 48)} · revision ${ref.revision}`).join("; ")}</div> : null}
-        {task.decision_review_reason && <div role="status" style={{ color: "var(--danger, #dc2626)", fontSize: 11 }}>Decision reference needs review: {task.decision_review_reason.slice(0, 240)}</div>}
+        {task.decision_review_reason
+          ? <GoalDecisionHoldNotice reason={task.decision_review_reason} decisionRefs={task.decision_refs} projectId={projectId} productSlug={product.slug} />
+          : task.decision_refs?.length ? <div style={{ color: "var(--text3)", fontSize: 11 }}>Project decisions: {task.decision_refs.map(ref => `${ref.id.slice(0, 48)} · revision ${ref.revision}`).join("; ")}</div> : null}
         {task.dispatch && <div style={{ color: "var(--text3)", fontSize: 11 }}>Worker dispatch: {task.dispatch.status.replaceAll("_", " ")}{task.dispatch.attempt ? ` · attempt ${task.dispatch.attempt}` : ""}</div>}
         <div style={{ color: "var(--text3)", fontSize: 11 }}>Verification: {task.verification?.outcome ?? (goal.verificationRequired ? "pending" : "not required")}{task.verification?.reason ? ` · ${task.verification.reason}` : ""}</div>
         {task.workspaceLineage && <GoalWorkspaceLineageView lineage={task.workspaceLineage} />}
@@ -1824,8 +1854,9 @@ function WorkersPanel({
             {task.redundancy_group && <div>Alternative investigation group: {task.redundancy_group}</div>}
             {task.cancellation && <div role="status">{goalCancellationLabel(task.cancellation.status)}. {task.cancellation.effects === "unknown" ? "Effects may already have committed; cancellation does not reverse them." : "No worker dispatch was recorded."}{task.cancellation.reason ? ` ${task.cancellation.reason}` : ""}{task.late_result_available ? " A late worker result was retained." : ""}</div>}
             {task.acceptance_criteria?.length ? <div>Acceptance: {task.acceptance_criteria.map(item => item.slice(0, 240)).join(" · ")}</div> : null}
-            {task.decision_refs?.length ? <div>Project decisions: {task.decision_refs.map(ref => `${ref.id.slice(0, 48)} · revision ${ref.revision}`).join("; ")}</div> : null}
-            {task.decision_review_reason && <div role="status" style={{ color: "#dc2626" }}>Decision reference needs review: {task.decision_review_reason.slice(0, 240)}</div>}
+            {task.decision_review_reason
+              ? <GoalDecisionHoldNotice reason={task.decision_review_reason} decisionRefs={task.decision_refs} projectId={projectId} productSlug={product.slug} />
+              : task.decision_refs?.length ? <div>Project decisions: {task.decision_refs.map(ref => `${ref.id.slice(0, 48)} · revision ${ref.revision}`).join("; ")}</div> : null}
             {task.workerId && <div data-technical-detail="billing">{workerUsage?.has(task.workerId)
               ? `${workerUsage.get(task.workerId)!.cost_credits.toLocaleString()} internal credits${workerUsage.get(task.workerId)!.unpriced_event_count ? ` · ${workerUsage.get(task.workerId)!.unpriced_event_count} unpriced events` : ""}`
               : "Internal-credit usage pending or unavailable"}</div>}

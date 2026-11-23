@@ -1,10 +1,10 @@
 # Naelao implementation queue
 
 This is the live checklist for one session working through one plan at a time. The recovered
-`Mcbt5s-Backup-2` recovery checkpoint is `b3f7e9aa`. APW05 admission/accounting paths have now
-been reconciled; its remaining aggregate cost-policy and provider-USD work is blocked pending the
-listed prerequisites. APW06 is the next ready requirement. Use the active checklist below and the
-linked ledgers to determine readiness and record a reason if the order changes.
+`Mcbt5s-Backup-2` recovery checkpoint is `b3f7e9aa`. APW05 admission/accounting paths have been
+reconciled; its remaining aggregate cost-policy and provider-USD work is blocked pending the listed
+prerequisites. APW06 is active. Use the active checklist below and the linked ledgers to determine
+readiness and record a reason if the order changes.
 
 ## How to resume and advance
 
@@ -124,34 +124,49 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   snapshots are not invoice-reconciled provider charges. Resume with staging/provider access,
   representative controlled task runs, approved thresholds and reconciled invoices; reuse the APW02
   comparative protocol and blocker rather than duplicating its evaluation.
-- [ ] **Active · APW06 — Goal decision-hold remediation.** Trace actor-scoped goal activity and the
-  existing Project decision-review route, then add a task-specific status/remediation path that
-  preserves current membership, exact-revision and workspace-pin checks. Keep reviewer actions on
-  the Project Journal authority.
-- [ ] **APW06 — Pause/cancel and owner preferences.** Reconcile task controls with durable dispatch
-  fences and existing queue APIs; add only actions supported by current authorization and recovery
-  contracts. Keep topology and budget preferences explicit until their policy is approved.
+- [x] **APW06 — Goal decision-hold remediation.** Goal task rows map stale/missing decision reasons,
+  display the exact referenced IDs/revisions and link directly to the Project Journal review panel.
+  The link does not mutate or resume the task; the existing Project route rechecks current access,
+  proposal revision and workspace pin. Source-only Shell typecheck and `git diff --check` pass;
+  local UI evidence only, no browser/deployed acceptance.
+- [ ] **Active · APW06 — Safe task pause/cancel controls.** Trace conversation and Project activity
+  controls against existing task APIs, durable workflow cleanup and worker dispatch fences. Add
+  only actions supported by current actor/owner authorization and recovery contracts; preserve
+  uncertain external effects for review.
+- [ ] **Blocked · APW06 — Topology and budget preferences.** User/admin preferences need an approved
+  authority and precedence contract before changing worker count, model/runtime routing or budget.
+  Resume when that contract is approved; keep existing rollout defaults unchanged.
 - [ ] **Blocked · APW06 — Real-runtime/deployed acceptance.** Resume with staging runtime access and
   separately accepted pause/cancel and task-control behavior; do not treat local/mock UI evidence
   as live acceptance.
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** APW05 source reconciliation confirms that goal tasks have bounded token
-budgets and per-inference Billing/Project spend holds, but no approved aggregate goal credit ceiling.
-Dynamic extension workflows have owner-approved per-run/monthly budgets and durable reservations;
-default AgentTaskWorkflow has no run-credit hold, and its optional session ceiling is a pre-run
-check plus post-run tally increment rather than an atomic reservation. Existing shared-compute
-capacity limits and hierarchical promotion do not include task priority weights. Exact blockers
-and evidence are in the APW ledger. APW05 remains partial and unchecked.
+**Latest checkpoint.** APW06 goal decision-hold remediation adds a status explanation with exact
+decision references and revisions plus a direct link to the Project decision review panel. It adds
+no review write or task-resume path; the existing Project route retains access, exact-revision and
+workspace-pin checks. Source-only Shell typecheck passes. The normal Shell typecheck still reports
+stale generated `.next/types` imports for absent route files; no browser/deployed acceptance ran.
 
-Verification: source inspection only; no code changed and no tests were run for this documentation-
-only audit. Local/mock source evidence only; no deployed Billing or provider acceptance. The APW04
-local test evidence remains recorded above and in its ledger; no retention schedule was invented.
+APW05 source reconciliation confirms that goal tasks have bounded token budgets; ordinary model
+calls reserve against configured Project spend caps or plan token quotas, and System One decisions
+use durable per-call Billing holds. These do not define an aggregate goal credit ceiling. Dynamic
+extension workflows have owner-approved per-run/monthly budgets and durable reservations; default
+AgentTaskWorkflow has no run-credit hold, and its optional session ceiling is a pre-run check plus
+post-run tally increment rather than an atomic reservation. Existing shared-compute capacity limits
+and hierarchical promotion do not include task priority weights. Exact blockers and evidence are in
+the APW ledger. APW05 remains partial and unchecked.
 
-**Exact next action:** trace actor-scoped goal activity and Project decision-review routes for APW06
-task-specific decision-hold remediation. Preserve exact revision and workspace-pin authorization,
-keep review actions on the Project Journal, and preserve `infra/scripts/__pycache__/`.
+APW06 verification: source-only Shell TypeScript check and `git diff --check`; the normal Shell
+typecheck is blocked by stale `.next/types` references to missing routes. Local UI evidence only;
+no browser/deployed acceptance. APW05 comparison is source inspection only, with no deployed Billing
+or provider acceptance. The APW04 local test evidence remains in its ledger; no retention schedule
+was invented.
+
+**Exact next action:** trace `StopDurableTaskButton`, `cancelRun`, Project activity APIs and the
+durable goal dispatch cancellation fences. Determine which cancellation/status actions can be
+exposed with current scope checks; preserve uncertain external effects for review and preserve
+`infra/scripts/__pycache__/`.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).

@@ -23,14 +23,14 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW06 — Task controls and SDK.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). Start with the
-actor-scoped goal task decision-hold remediation UX, using the existing Project decision review
-route and preserving its exact-revision and workspace-pin checks. APW05 admission/accounting paths
-are reconciled in the APW ledger; aggregate goal-credit policy, priority weights and provider USD
-acceptance remain blocked there. Keep progressive routing, dynamic expansion and redundant-worker
-cancellation disabled by default; do not claim live or provider-cost results without their
-applicable evidence.
+**APW06 — Safe task pause/cancel controls.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). Trace conversation and
+Project task controls against the durable dispatch/cancellation fences, then expose only actions
+supported by current actor/owner authorization and recovery contracts. Goal decision-hold status now
+links to the existing Project Journal review panel; review still rechecks exact revisions and
+workspace pins. Keep topology/budget preferences and APW05 aggregate cost policy blocked until their
+authority is approved. Keep progressive routing, dynamic expansion and redundant-worker cancellation
+disabled by default; do not claim live or provider-cost results without their applicable evidence.
 
 ## Save progress inside each task
 
