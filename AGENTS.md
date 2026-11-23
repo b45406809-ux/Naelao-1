@@ -1,5 +1,24 @@
 # Active mission: continue the full implementation
 
+## Planning branch documents incorporated on 2026-11-23
+
+The committed plans on `plan/microapps-ui-sdk-voice` through `f469e179` are available here.
+The additional plans are `docs/research/agentport-messaging-providers-managed-resale-plan.md`,
+`docs/research/commercial-cleaning-space-template-plan.md`,
+`docs/research/corporate-recovery-claims-prototype-plan.md`,
+`docs/research/planner-worker-isolation-and-conflict-resolution-plan.md`, and
+`new plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md`. The WhatsApp plan includes
+admin-approved member access to each member's assistants and authorized projects, customer routing,
+isolated testing and replay, an extension SDK for creators, and Naelao-built starter templates.
+
+The adaptive planner, AgentPhone, extensible resources, resumable workflows, shared compute and
+business roles plans were already present with identical contents. The current Knowledge and guided
+templates plans contain later implementation evidence; their exact planning-branch versions are
+preserved in `docs/research/planning-branch-snapshots/` for comparison. Reconcile any remaining
+requirements in those snapshots against the current plans, code and progress ledgers before
+implementation. Treat historical status, references and deployment instructions in those snapshots
+as historical. Do not overwrite newer evidence or claim that copying a plan implements it.
+
 ## Active adaptive-planner requirements
 
 The full mission also includes `docs/research/adaptive-planner-worker-swarm-memory-plan.md` and its
