@@ -9,6 +9,7 @@ export interface SemanticCacheScope {
   tenantId: string;
   spaceId: string;
   generation?: string;
+  sourceGeneration?: number;
 }
 
 export async function lookupSemanticCache(
@@ -26,6 +27,9 @@ export async function lookupSemanticCache(
       tenant_id: { $eq: scope.tenantId },
       space_id: { $eq: scope.spaceId },
       generation: { $eq: scope.generation ?? "0" },
+      // Legacy callers that do not provide the host freshness fence must miss safely.
+      source_generation: { $eq: Number.isSafeInteger(scope.sourceGeneration) && Number(scope.sourceGeneration) >= 0
+        ? Number(scope.sourceGeneration) : -1 },
     },
     returnMetadata: "indexed",
   });

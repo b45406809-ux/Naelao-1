@@ -111,7 +111,7 @@ SC04 lacks owner-approved Space/Project caps. The Unified plan's current executa
 tracked by S/U, SC, PW, K, EP, TBR and P; its remaining workspace/runtime acceptance needs authorized
 deployed/provider evidence. Preserve `infra/scripts/__pycache__/` and keep rollout defaults disabled.
 
-## Active plan
+## Paused plan — Mature Knowledge platform
 
 **Mature Knowledge platform.** See the [plan](../research/mature-knowledge-platform-plan.md) and
 [progress ledger](../research/mature-knowledge-platform-implementation-progress.md).
@@ -146,23 +146,45 @@ deployed/provider evidence. Preserve `infra/scripts/__pycache__/` and keep rollo
   no query or tenant/Space/Project/publication/document/installation identifiers, and Analytics
   errors cannot alter retrieval. Knowledge typecheck and `git diff --check` pass; no tests,
   deployment or live acceptance ran.
-- [ ] **K21 — Reconcile result-cache freshness across source and grant changes.** Current Knowledge
-  cache namespaces include caller scope and the Space deletion generation, but not source/content or
-  publication/grant revisions. Trace all reachable cache callers and source/grant mutation paths;
-  implement a host-owned freshness fence if the current stores support it. Keep every cache gate off
-  until exact invalidation and deployed freshness evidence are accepted.
+- [x] **K21 — Add D1-backed result-cache freshness fencing.** Migration 0284 seeds and advances a
+  per-tenant/Space source generation for canonical content, Space/member access, Project ACL,
+  publication and website connection changes. Grounded KV and semantic-vector caches bind to the
+  exact generation while preserving the separate deletion generation. Knowledge/RAG typechecks and
+  `git diff --check` pass. No tests, migration apply, deployment or live acceptance ran; cache gates
+  remain false.
+- [ ] **Blocked · K21 — Deployed freshness acceptance.** Resume after separately authorized migration
+  apply and deployed update/revocation/delete race evidence. Keep cache flags false until accepted.
+- [ ] **Blocked · K20 — Agent semantic response-cache identity/effect contract.** Its caller currently
+  provides only tenant/Space and query; session memory, Project/user/role and effect/extension-grant
+  scope are absent. Resume when a host-owned contract can identify reusable read-only responses and
+  their exact authority revisions. Keep both Agents and Knowledge cache flags false meanwhile.
 - [ ] **Blocked · K15 — Implement and validate isolated managed-index adapter.** Resume after exact
   pre-retrieval scope fields and limits, current publication/source revision mapping, asynchronous
   deletion/retention and isolated cost evidence are established. Keep general user search on its
   current exact D1/Vectorize ACL paths and leave all provider gates off.
 
-**Latest K26 checkpoint:** the shared publication-scoped retrieval helper now records bounded latency,
-returned-hit count and fixed `extension`/`owner_preview` plus outcome labels. Values are clamped;
-queries and all tenant/Space/Project/publication/document/installation identifiers are omitted.
-Analytics failures are isolated from search. Knowledge typecheck and `git diff --check` pass. No
-tests, deployment or live telemetry acceptance ran. **Next action:** trace the semantic and response
-cache callers against current source, content, publication and grant mutation paths, and implement an
-exact host-owned freshness generation if supported; keep cache gates disabled.
+**Latest K21 checkpoint:** the D1 source-generation fence is implemented locally across current
+content and D1 access/publication mutation paths. The shared Agents response cache remains disabled
+because freshness does not establish safe caller/effect identity. No migration or deployment ran.
+**Next action:** leave K21/K20 rollout acceptance parked and continue with EP06's exact-install
+current-month credit summary using the UTC-month settled-usage and live-held-reservation rules already
+enforced by Billing.
+
+## Active plan
+
+**Extensible platform and managed resources.** See the [plan](../research/extensible-platform-and-managed-resources-plan.md)
+and [platform progress ledger](../research/platform-completion-and-guided-templates-progress.md).
+
+- [ ] **EP06 — Show exact-install current-month credit usage against its approved cap.** The existing
+  owner resource route already verifies the signed installation, grant, dependency and usage receipt
+  scope. Extend it with the current installation budget and the settled/held credit totals using
+  Billing's `start of month` window and exact tenant/Space/Project/install filters; render internal
+  credits and remaining cap in the Project resource review. Do not infer provider prices or invoices.
+
+**Latest checkpoint:** current owner review shows the exact signed installation, approved budget
+limits, storage bytes, declared/resolved dependencies, provider connection/cleanup receipts, and
+operation/job receipts. **Next action:** trace the Billing admission query and current SpaceDO budget
+revision, then add only the matching current-month settled plus unexpired held credit summary.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
@@ -364,8 +386,8 @@ ledgers when moving to another plan.
 3. [ ] **Paused; no ready source task.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume on the regional, provider or jurisdiction acceptance dependencies above.
 4. [ ] **Paused; no ready source task.** [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md). Resume SC03 when durable invocation consent, exact alarm-safe authority revalidation and pre-dispatch reservation are supported; resume SC04 when owner-approved Space/Project caps exist.
 5. [ ] **Reconciled; no standalone task selected.** [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Code gaps remain tracked in their owning plans; remaining checked-workspace/runtime acceptance requires authorized deployed/provider evidence.
-6. [ ] **Active.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md).
-7. [ ] [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
+6. [ ] **Paused; no ready source task.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md). K21 deployed acceptance and the K20 response-cache identity contract remain blocked; K15 waits on exact provider scope/freshness/cleanup evidence.
+7. [ ] **Active.** [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
 8. [ ] [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md)
 9. [ ] [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Reuse the dedicated ledgers for incorporated PW, K, EP, TBR and AP requirements.
 10. [ ] [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md). Reconcile with managed communications before opening implementation tasks.

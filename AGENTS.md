@@ -62,9 +62,8 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Mature Knowledge platform · K21 — reconcile result-cache freshness across source and grant changes.**
-Trace the semantic and response cache callers against source/content, publication/grant and deletion
-mutation paths. Implement a host-owned freshness fence only if current source/grant stores support
-exact invalidation. Keep every cache gate disabled until exact invalidation and deployed freshness
-evidence are accepted; keep managed AI Search blocked on its exact scope, freshness/deletion and
-isolated provider evidence.
+**Extensible platform and managed resources · EP06 — show exact-install current-month credit usage.**
+Trace the existing owner resource-usage route to Billing's UTC month-to-date settled-credit and
+unexpired-held-reservation admission query and the current SpaceDO installation budget revision.
+Expose only exact tenant/Space/Project/installation totals and remaining approved credits in the
+owner view; do not infer provider prices or invoices. Keep resource rollout gates disabled.

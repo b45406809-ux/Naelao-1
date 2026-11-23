@@ -397,7 +397,7 @@ Statuses describe local code, not deployment or live acceptance. `IN_PROGRESS` m
 | K18 No-code Knowledge dashboard | IN_PROGRESS | Space-wide and Project Shell plus builder Dashboard list/add/delete/search; all now offer scoped PDF preview/correction. Project Shell supports named owner-published collections, indexed-source selection, publish/update/unpublish, archive/restore-as-draft, content-free history, and an owner/admin search preview for the exact current collection revision. Accessibility/mobile review and a cost view remain. |
 | K19 SDK and extension integration | IN_PROGRESS | `ctx.resources.knowledge.search` is wired through a durable workflow effect and typed SDK result contract. The host checks the active installation, exact owner grant, current publication revision and operation lease; Knowledge prefilters by current published documents and returns current chunks with content hash, source revision/grant revision, coordinates and heading provenance. A separate generic collection discovery or citation re-resolution SDK is still absent. The source audit also found and fixed deletion and publication-revision races before extension results return; deployed/live acceptance remains open. |
 | K20 Assistant/delegated/channel authorization | IN_PROGRESS | Extension grants and scoped search exist. Full Agents response caches had incomplete tenant/Space-only keys, so response/retrieval cache reads/writes remain disabled behind explicit false gates. Space-shared channel retrieval now rechecks the exact current publication revisions and owner installation grant immediately before handing passages to the extension runner; changed or unavailable authority clears context and requires human review. Deployed/live acceptance remains open. |
-| K21 Deletion/revocation fencing | IN_PROGRESS | Durable tombstones, leases, Vectorize/R2 cleanup and citation hash checks exist. Cache generations rotate on deletion; content/grant changes are not fully covered. Cache remains off, but generation/version invalidation is still required before any future enablement. |
+| K21 Deletion/revocation fencing | IMPLEMENTED_LOCAL + DEPLOYMENT ACCEPTANCE OPEN | Migration 0284 seeds and advances a host-owned per-tenant/Space cache generation for Space lifecycle and membership, canonical documents/chunks, project ACLs, owner publications/membership and website connection changes. Grounded KV results use a new source-generation namespace and semantic-vector entries carry/filter the exact D1 generation; missing generation fails closed and legacy entries cannot match. Existing deletion generation and tombstone cleanup remain intact. All cache gates remain false; the migration is unapplied and deployed freshness acceptance remains open. The Agents full-response cache has a separate K20 caller-identity/effect-scope gap and remains disabled. |
 | K22 Backup/restore and provider exit | IN_PROGRESS | Bounded Knowledge archive, restore and explicit reindex exist; deployed isolated restore, grant reauthorization, RPO/RTO drills and external mirror reconciliation remain. |
 | K23 Sensitive data and human handoff | IN_PROGRESS | Prompt-injection handling and air-gap policy exist. Classification/retention policy and pharmacy escalation/human review are not established as a complete workflow. |
 | K24 Metering and usage attribution | IN_PROGRESS | Storage write attribution and authoritative billing components exist. Parsing/OCR/sync/retrieval/provider full-stack attribution and invoice reconciliation remain. |
@@ -633,3 +633,33 @@ acceptance ran. Provider invoice reconciliation and deployed telemetry evidence 
 Exact next action: trace the normal Knowledge and Agents semantic-response cache callers against
 source/content, publication/grant and deletion mutation paths. Implement a host-owned freshness fence
 only where current source/grant stores support exact invalidation, and keep all cache gates disabled.
+
+## K21 checkpoint — 2026-11-23 (D1-backed result-cache freshness generation)
+
+Migration `0284_kb_search_cache_freshness_generation.sql` seeds an exact generation for existing
+Spaces and advances it on Space insertion/status/deletion, end-user membership changes, canonical
+document/chunk changes, Project ACL changes, publication and publication-membership changes, and
+website connection changes. Scope moves advance both old and new Space generations. A missing or
+invalid generation fails closed.
+
+Ordinary Knowledge search now keys grounded KV results by a new `source-v3`/`grounded:v3` namespace,
+checks the generation at lookup, storage and final handoff, and returns no hits if it changes during
+retrieval. Semantic-vector entries record and filter `source_generation` alongside the existing
+deletion generation; the shared RAG helper forces a miss when a caller omits a valid source
+generation. Pre-migration entries cannot match. Existing erasure generation remains separate so
+the durable Vectorize cleanup cursor continues to work.
+
+The Agents full-response cache caller is separately unsafe to enable: its current query key has no
+user, Project, role, conversation/effect or extension-grant identity. The Workers configuration
+keeps both Agents and Knowledge cache flags false. D1 freshness does not solve that K20 scope gap or
+SpaceDO grant changes for a whole Agent response.
+
+Knowledge and RAG typechecks and `git diff --check` pass. No tests, migration apply, deployment or
+live acceptance ran. The code slice is implemented locally; exact deployed invalidation acceptance
+remains a separate blocked gate. Keep every cache gate false. No managed AI Search selection or
+rollout changes.
+
+Exact next action: proceed to EP06's owner-visible, exact-install current-month credit summary using
+the current SpaceDO cap and the same `start of month`/held-reservation semantics enforced by Billing;
+show internal credits only and do not infer provider prices. Keep cache rollout acceptance parked
+until an authorized migration/deployed freshness review.

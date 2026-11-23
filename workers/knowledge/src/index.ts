@@ -3569,9 +3569,13 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     }
   }
   const deletionPending = await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId);
+  const cacheEnabled = c.env.KNOWLEDGE_RESPONSE_CACHE_ENABLED === "true";
   const cacheGeneration = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null);
-  const cacheReadsAllowed = c.env.KNOWLEDGE_RESPONSE_CACHE_ENABLED === "true" && !deletionPending && cacheGeneration !== null;
-  const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${userId}:${mode}:${policyVersion}:${cacheGeneration ?? crypto.randomUUID()}`;
+  const freshnessGeneration = cacheEnabled
+    ? await readKnowledgeSearchFreshnessGeneration(c.env.PLATFORM_DB, tenantId, spaceId).catch(() => null)
+    : null;
+  const cacheReadsAllowed = cacheEnabled && !deletionPending && cacheGeneration !== null && freshnessGeneration !== null;
+  const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${userId}:${mode}:${policyVersion}:source-v3:${cacheGeneration ?? crypto.randomUUID()}:${freshnessGeneration ?? crypto.randomUUID()}`;
   // Semantic answer cache is checked before any document or web retrieval. Its Vectorize filter
   // enforces space isolation in hardware and the helper applies the strict >.96 threshold.
   const queryEmbedding = await embedText(c.env.AI, query.trim());
@@ -3579,11 +3583,12 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     ? await lookupSemanticCache(
       { vectors: c.env.SEMANTIC_CACHE_VECTORS, kv: c.env.SEMANTIC_CACHE_KV },
       queryEmbedding.embedding,
-      { tenantId, spaceId, generation: cacheGeneration! },
+      { tenantId, spaceId, generation: cacheGeneration!, sourceGeneration: freshnessGeneration! },
     ).catch(() => null)
     : null;
   if (semanticHit && !await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId) &&
-      await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) === cacheGeneration) {
+      await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) === cacheGeneration &&
+      await readKnowledgeSearchFreshnessGeneration(c.env.PLATFORM_DB, tenantId, spaceId).catch(() => null) === freshnessGeneration) {
     return c.json({ answer: semanticHit.text, data: [], citations: [], cached: true,
       cache_id: semanticHit.id, similarity: semanticHit.score, retrieval_mode: "semantic-cache",
       confidence: semanticHit.score, live_grounding: false });
@@ -3594,8 +3599,9 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     cache: {
       lookup: async (q, _scope, nowMs) => timed("cache_lookup_ms", async () => {
         if (!cacheReadsAllowed || await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId) ||
-            await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) !== cacheGeneration) return null;
-        const key = `grounded:v2:${await sha256Hex(`${namespace}:${q}`)}`;
+            await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) !== cacheGeneration ||
+            await readKnowledgeSearchFreshnessGeneration(c.env.PLATFORM_DB, tenantId, spaceId).catch(() => null) !== freshnessGeneration) return null;
+        const key = `grounded:v3:${await sha256Hex(`${namespace}:${q}`)}`;
         const value = await c.env.KB_CACHE.get(key, "json") as { createdAt: number; expiresAt: number; hits: GroundedSearchHit[] } | null;
         if (!value) return null;
         if (value.expiresAt <= nowMs || value.createdAt > nowMs) { await c.env.KB_CACHE.delete(key); return null; }
@@ -3604,8 +3610,9 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       store: async (q, _scope, hits, expiresAt) => {
         if (!hits.length || !cacheReadsAllowed ||
             await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId) ||
-            await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) !== cacheGeneration) return;
-        const key = `grounded:v2:${await sha256Hex(`${namespace}:${q}`)}`;
+            await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) !== cacheGeneration ||
+            await readKnowledgeSearchFreshnessGeneration(c.env.PLATFORM_DB, tenantId, spaceId).catch(() => null) !== freshnessGeneration) return;
+        const key = `grounded:v3:${await sha256Hex(`${namespace}:${q}`)}`;
         await safeKvPut(c.env.KB_CACHE, key, JSON.stringify({ createdAt: Date.now(), expiresAt, hits }), { expirationTtl: 3600 });
       },
     },
@@ -3704,7 +3711,10 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     c.env.PLATFORM_DB, tenantId, spaceId, retrievalStartedAt,
   );
   const finalCacheGeneration = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null);
-  if (deletionStartedDuringRetrieval || (cacheGeneration !== null && finalCacheGeneration !== cacheGeneration)) {
+  const finalFreshnessGeneration = freshnessGeneration === null ? null
+    : await readKnowledgeSearchFreshnessGeneration(c.env.PLATFORM_DB, tenantId, spaceId).catch(() => null);
+  if (deletionStartedDuringRetrieval || (cacheGeneration !== null && finalCacheGeneration !== cacheGeneration)
+    || (freshnessGeneration !== null && finalFreshnessGeneration !== freshnessGeneration)) {
     return c.json({ data: [], citations: [], context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION,
       cached: false, retrieval_mode: mode, confidence: 0, live_grounding: false, latency_ms: result.latencyMs });
   }
@@ -3738,6 +3748,15 @@ async function readSemanticCacheGeneration(kv: KVNamespace, tenantId: string, sp
   return generation && generation.length <= 128 ? generation : "0";
 }
 
+async function readKnowledgeSearchFreshnessGeneration(db: D1Database, tenantId: string, spaceId: string): Promise<number> {
+  const row = await db.prepare(
+    "SELECT generation FROM kb_search_cache_freshness WHERE tenant_id=? AND space_id=?"
+  ).bind(tenantId, spaceId).first<{ generation: number }>();
+  const generation = Number(row?.generation);
+  if (!row || !Number.isSafeInteger(generation) || generation < 1) throw new Error("knowledge_cache_freshness_unavailable");
+  return generation;
+}
+
 // A1.16.9 (layer-3 backstop): these routes had NO auth check at all — not even a truthy
 // header, just an open POST/DELETE anyone reaching this worker could call. Covers lookup,
 // store, and the DELETE invalidation route below (prefix wildcard).
@@ -3764,11 +3783,15 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
 
   try {
     const generation = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, body.spaceId);
+    const freshnessGeneration = await readKnowledgeSearchFreshnessGeneration(c.env.PLATFORM_DB, tenantId, body.spaceId)
+      .catch(() => null);
+    if (freshnessGeneration === null) return c.json({ hit: false, reason: "cache_freshness_unavailable" });
     const embedding = await embedText(c.env.AI, body.query);
 
     const results = await c.env.SEMANTIC_CACHE_VECTORS.query(embedding.embedding, {
       topK: 1,
-      filter: { tenant_id: { $eq: tenantId }, space_id: { $eq: body.spaceId }, generation: { $eq: generation } },
+      filter: { tenant_id: { $eq: tenantId }, space_id: { $eq: body.spaceId }, generation: { $eq: generation },
+        source_generation: { $eq: freshnessGeneration } },
       returnMetadata: "indexed",
     });
 
@@ -3795,6 +3818,12 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
     if (cachedResponse.length > 1_048_576) {
       c.executionCtx.waitUntil(c.env.SEMANTIC_CACHE_KV.delete(`sc:${cacheId}`));
       return c.json({ hit: false });
+    }
+
+    if (await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, body.spaceId)
+      || await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, body.spaceId) !== generation
+      || await readKnowledgeSearchFreshnessGeneration(c.env.PLATFORM_DB, tenantId, body.spaceId).catch(() => null) !== freshnessGeneration) {
+      return c.json({ hit: false, reason: "cache_freshness_changed" });
     }
 
     console.log(`[SemanticCache] HIT spaceId=${body.spaceId} similarity=${top.score?.toFixed(4)} cacheId=${cacheId}`);
@@ -3827,12 +3856,19 @@ app.post("/internal/semantic-cache/store", async (c) => {
 
   try {
     const generation = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, body.spaceId);
+    const freshnessGeneration = await readKnowledgeSearchFreshnessGeneration(c.env.PLATFORM_DB, tenantId, body.spaceId)
+      .catch(() => null);
+    if (freshnessGeneration === null) return c.json({ stored: false, reason: "cache_freshness_unavailable" });
     const cacheId = crypto.randomUUID();
     const embedding = await embedText(c.env.AI, body.query);
     // Pair the generation read with a final tombstone check. If deletion begins after this
     // check, its generation rotation makes this write unreachable; if it began before, reject.
     if (await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, body.spaceId)) {
       return c.json({ stored: false, reason: "knowledge_deletion_pending" });
+    }
+    if (await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, body.spaceId) !== generation
+      || await readKnowledgeSearchFreshnessGeneration(c.env.PLATFORM_DB, tenantId, body.spaceId).catch(() => null) !== freshnessGeneration) {
+      return c.json({ stored: false, reason: "cache_freshness_changed" });
     }
     const expiresAt = Date.now() + SEMANTIC_CACHE_TTL_SECS * 1000;
 
@@ -3843,6 +3879,7 @@ app.post("/internal/semantic-cache/store", async (c) => {
         tenant_id: tenantId,
         space_id: body.spaceId,
         generation,
+        source_generation: freshnessGeneration,
         expires_at: expiresAt,
       },
     }]);
