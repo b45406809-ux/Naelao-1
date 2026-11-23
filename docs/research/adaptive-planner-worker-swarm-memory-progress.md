@@ -1,5 +1,39 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW04 follow-up — 2026-11-23 (semantic-vector deletion invalidation)
+
+Deleting an actor-owned episodic record removes its SQLite source row and attempts best-effort
+Vectorize cleanup. Recall previously trusted matching vector IDs even if cleanup failed, so an old
+semantic copy could return after deletion. Recall now checks only its bounded vector candidates
+against the live `episodic_log` rows using the exact candidate IDs and current `(actor, unscoped)`
+scope, requires `promoted=1`, and takes actor ownership from SQLite instead of vector metadata. A
+deleted or cross-actor row cannot re-enter recall from a stale vector. The ordinary score/relevance
+gate and bounded ingress renderer remain unchanged.
+
+Verification: memory scope/invalidation, ingress context and Space Assistant memory suites **9/9**,
+Agents typecheck and `git diff --check`; local/mock only. No deployed deletion acceptance ran. No
+expiry duration or retention cap was added without an approved retention policy. APW04 remains open
+for remaining retention/deletion reconciliation and private-project/selective-context evaluation.
+
+The lifecycle inventory confirms the limited existing policy surface: personal structured facts
+decay after a day of inactivity and are removed below the trust floor; only unpromoted episodic
+notes have a 500-row cap. Promoted semantic copies, personal Fabric/Wiki and SpaceDO Project
+facts/Fabric/Wiki have no TTL or equivalent retention cap in their schemas. Knowledge uses an
+explicit tombstone and retryable, cache-invalidating deletion workflow rather than a memory TTL.
+Do not add expiry to the stores without an approved retention duration and corresponding erase
+contract.
+
+Follow-up evaluation: Agents memory/context scope suites **16/16**, Spaces Project memory deletion
+**3/3**, and Knowledge search/deletion boundaries **18/18**. This includes actor-filtered ingress,
+effective-role gates, a Project Knowledge search denial before retrieval when membership is absent,
+foreign-tenant denial, connector-source invalidation, and Knowledge deletion/cache cleanup behavior.
+All are local/mock evidence; no deployed/private-project acceptance ran.
+
+**Exact next action:** reconcile existing fact decay and unpromoted-episode pruning with Project,
+Space, Fabric, Wiki, promoted-vector and Knowledge deletion rules; evaluate bounded actor/project
+context and private-project leakage before deciding whether any additional policy or code change is
+supported.
+
 ## APW04 follow-up — 2026-11-23 (Knowledge source provenance propagation)
 
 The ordinary scoped Knowledge search path previously returned only `source_revision` even though

@@ -7,18 +7,20 @@ function bindings(owned: boolean, pendingDeletion = false, ftsFails = false, sea
   matches?: Array<{ id: string; score: number }>;
   chunkRows?: Array<Record<string, unknown>>;
   ftsRows?: Array<Record<string, unknown>>;
-} = {}) {
+} = {}, projectRoleRank: number | null = 20) {
   const run = vi.fn(async () => ({ data: [[0.1, 0.2]] }));
   const query = vi.fn(async () => ({ matches: searchFixture.matches ?? [] }));
   const cacheQuery = vi.fn(async () => ({ matches: [{ id: "cached-answer", score: 0.999 }] }));
   const groundedCacheGet = vi.fn(async () => ({ createdAt: Date.now(), expiresAt: Date.now() + 60_000, hits: [{ id: "doc-1_chunk_0", content: "deleted content" }] }));
   const prepare = vi.fn((sql: string) => ({
     bind: vi.fn(() => ({
-      first: vi.fn(async () => sql.includes("SELECT 1 FROM spaces")
-        ? owned ? { owned: 1 } : null
-        : sql.includes("kb_document_deletion_operations")
-          ? pendingDeletion ? { document_id: "doc-1" } : null
-          : { config_json: "{}" }),
+      first: vi.fn(async () => sql.includes("FROM project_access")
+        ? projectRoleRank === null ? null : { role_rank: projectRoleRank }
+        : sql.includes("SELECT 1 FROM spaces")
+          ? owned ? { owned: 1 } : null
+          : sql.includes("kb_document_deletion_operations")
+            ? pendingDeletion ? { document_id: "doc-1" } : null
+            : { config_json: "{}" }),
       all: vi.fn(async () => {
         if (ftsFails && sql.includes("kb_chunks_fts")) throw new Error("FTS unavailable");
         if (sql.includes("kb_chunks_fts")) return { results: (searchFixture.ftsRows ?? []).filter(row => row.source_state !== "stale" || !sql.includes("d.source_state='current'")) };
@@ -44,9 +46,9 @@ function bindings(owned: boolean, pendingDeletion = false, ftsFails = false, sea
   };
 }
 
-async function searchRequest(query: string) {
+async function searchRequest(query: string, projectId?: string) {
   const token = await mintInternalToken("secret", "tenant-a");
-  return new Request(`https://knowledge/spaces/space-b/kb/search?q=${encodeURIComponent(query)}`, {
+  return new Request(`https://knowledge/spaces/space-b/kb/search?q=${encodeURIComponent(query)}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ""}`, {
     headers: {
       "x-naelao-tenant-id": "tenant-a",
       "x-naelao-internal-token": token,
@@ -69,6 +71,14 @@ describe("knowledge search tenant and query bounds", () => {
     const env = bindings(true);
     const response = await worker.fetch!(await searchRequest("x".repeat(1_001)), env as never, {} as ExecutionContext);
     expect(response.status).toBe(400);
+    expect(env.run).not.toHaveBeenCalled();
+    expect(env.query).not.toHaveBeenCalled();
+  });
+
+  it("refuses a private Project search without current Project membership before retrieval", async () => {
+    const env = bindings(true, false, false, {}, null);
+    const response = await worker.fetch!(await searchRequest("private project notes", "project-secret"), env as never, {} as ExecutionContext);
+    expect(response.status).toBe(404);
     expect(env.run).not.toHaveBeenCalled();
     expect(env.query).not.toHaveBeenCalled();
   });

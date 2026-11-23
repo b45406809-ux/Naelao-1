@@ -429,6 +429,32 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
               });
             }
           }
+          // SQLite is the source of truth for promoted semantic rows. Vector cleanup is
+          // best-effort on forget, so a stale Vectorize match must not restore a deleted note.
+          // Keep the authoritative check scoped to the active actor and explicitly shared rows.
+          const semanticCandidates = semanticResults
+            .filter((result) => Number.isFinite(result.score))
+            .sort((left, right) => right.score - left.score)
+            .slice(0, limit);
+          const candidateIds = semanticCandidates.map((result) => result.id);
+          const sourceRows: Array<{ id: string; user_id: string }> = [];
+          // Cloudflare SQLite has a small bind-variable ceiling; 90 ids plus both scope values
+          // stays below it even when the recall limit is 100.
+          for (let offset = 0; offset < candidateIds.length; offset += 90) {
+            const batch = candidateIds.slice(offset, offset + 90);
+            const placeholders = batch.map(() => "?").join(",");
+            sourceRows.push(...opts.sql.exec(
+              `SELECT id,user_id FROM episodic_log WHERE promoted=1 AND user_id IN (?,?) AND id IN (${placeholders})`,
+              userId, UNSCOPED, ...batch
+            ).toArray() as Array<{ id: string; user_id: string }>);
+          }
+          const sourceById = new Map(sourceRows.map((row) => [row.id, row]));
+          semanticResults = semanticCandidates.flatMap((candidate) => {
+            const source = sourceById.get(candidate.id);
+            if (!source) return [];
+            // The SQLite owner is authoritative; do not trust userId metadata from a vector.
+            return [{ ...candidate, ...userIdField(source.user_id) }];
+          });
           semanticResults = await gateMemory(vec, semanticResults);
         } catch {
           /* semantic recall is best-effort */

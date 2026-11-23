@@ -23,14 +23,15 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW04 — Memory source provenance and selective context.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan) and APW ledger. Trace the
-current Project, Space and personal memory adapters plus Knowledge source records; add immutable
-source revision/hash provenance where an authoritative source provides it, otherwise record the
-exact adapter gap. Keep actor scope and bounded context assembly intact, and never present update
-timestamps as immutable revisions. APW02 real-runtime/provider comparison and cost-aware routing
-remain blocked pending approved thresholds, staging/provider access, representative task runs, and
-invoice-reconciled usage. Keep progressive routing, dynamic expansion and redundant-worker
+**APW04 — Retention, invalidation and context evaluation.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan) and APW ledger. Local
+semantic recall now validates promoted vectors against the current actor-scoped SQLite source row,
+so failed best-effort Vectorize deletion cannot resurrect an actor-deleted episode. Continue
+reconciling retention and deletion across memory and Knowledge stores, then evaluate bounded
+selective context and private-project leakage. Preserve actor scope and do not invent retention
+durations where no approved policy exists. APW02 real-runtime/provider comparison and cost-aware
+routing remain blocked pending approved thresholds, staging/provider access, representative task
+runs, and invoice-reconciled usage. Keep progressive routing, dynamic expansion and redundant-worker
 cancellation disabled by default; do not claim live or provider-cost results without their applicable
 evidence.
 
