@@ -23,14 +23,13 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**PW06 — Direct scheduled-script pre-effect revision fence.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan). In `NaelaoAgentDO`'s
-direct scheduled-script handler, revalidate the exact job identity/revision/script after policy and
-budget admission, immediately before `tools.run`; release any spend hold if authority changed.
-Record that this fence does not cancel an already-started effect or reconcile an unknown outcome.
-APW is parked with explicit policy/authority/live-acceptance dependencies. Preserve
-`infra/scripts/__pycache__/`; keep rollout defaults disabled and do not claim live or provider-cost
-results without their applicable evidence.
+**PW06 — Scheduled direct-script outcome reconciliation.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). Trace
+`scheduled_job_dispatches`, queue error handling and `scheduled_job_runs` after the direct action
+starts. Add a durable `outcome_unknown` status that prevents later sweeps from blindly repeating
+effects until an authorized reconciliation path resolves them; retain exact job/run identity and the
+prior attempt receipt. Preserve `infra/scripts/__pycache__/`; keep rollout defaults disabled and do
+not claim provider rollback, live results or invoice-reconciled costs without applicable evidence.
 
 ## Save progress inside each task
 

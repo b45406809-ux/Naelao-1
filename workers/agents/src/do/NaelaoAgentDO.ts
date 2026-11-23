@@ -7685,6 +7685,40 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       projectSpendReserved = true;
     }
 
+    // Direct scheduled scripts have one owner-configured operation rather than the goal
+    // loop's per-step shouldCancel check. Revalidate the persisted service session and exact job
+    // revision after policy/budget admission and immediately before dispatching that operation.
+    // Once tools.run starts, this fence cannot cancel an in-flight external effect.
+    if (body.context?.trigger === "scheduled_job") {
+      const identityId = body.context.service_identity_id;
+      const revision = body.context.authorization_revision;
+      const rejectStaleScheduledRun = async (errorCode: string, status: 403 | 409 | 503) => {
+        if (projectSpendReserved && body.projectId && typeof identityId === "string" && typeof revision === "string") {
+          await this.settleProjectSpendReservation(body.spaceId, body.tenantId ?? "", body.projectId, runId, 0,
+            { serviceIdentityId: identityId, serviceAuthorizationRevision: revision });
+        }
+        return Response.json({ error_code: errorCode }, { status });
+      };
+      if (typeof identityId !== "string" || typeof revision !== "string" || !body.tenantId || !body.projectId || !body.sessionId) {
+        return rejectStaleScheduledRun("scheduled_script_authorization_unavailable", 503);
+      }
+      try {
+        await verifyHeartbeatSession(this.env.SPACES_WORKER, this.env.PLATFORM_SECRET, body.tenantId, body.spaceId,
+          body.sessionId, body.projectId, { id: identityId, authorizationRevision: revision });
+      } catch {
+        return rejectStaleScheduledRun("scheduled_script_session_mismatch", 403);
+      }
+      let current: ScheduledJobGrantConfig | null = null;
+      try {
+        current = await scheduledDirectScriptGrantConfig(this.env.PLATFORM_DB!, { tenantId: body.tenantId,
+          spaceId: body.spaceId, projectId: body.projectId, scriptName: body.scriptName,
+          serviceIdentityId: identityId, authorizationRevision: revision });
+      } catch {
+        return rejectStaleScheduledRun("scheduled_script_authorization_unavailable", 503);
+      }
+      if (!current) return rejectStaleScheduledRun("scheduled_script_authorization_changed", 409);
+    }
+
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
     let result: Awaited<ReturnType<ScriptToolSurface["run"]>>;
     try {

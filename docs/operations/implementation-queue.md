@@ -51,23 +51,26 @@ and [progress ledger](../research/resumable-workers-durable-workflows-and-branch
   branch/runtime routing, goal graph and signed communication, named leases, checked integration,
   per-attempt usage receipts, and exact-attempt publication permits. Remaining gaps and the source
   evidence are in the PW ledger. No runtime/deployed acceptance is inferred.
-- [ ] **Active · PW06 — Direct scheduled-script pre-effect revision fence.** Revalidate the exact
-  scheduled job identity, revision, enablement and script target immediately before the direct
-  `tools.run` call, after policy and budget admission. If authority changed, release any project
-  spend hold and fail closed. This does not claim cancellation or outcome reconciliation after an
-  external operation starts; preserve that as a separate effect-journal/cancellation gap.
+- [x] **PW06 — Direct scheduled-script pre-effect revision fence.** After policy and Project spend
+  admission, the direct scheduled-script path rechecks the persisted service session and exact
+  enabled job revision/script immediately before `tools.run`. A stale or unavailable authority
+  attempts zero settlement for the Project spend reservation and fails closed. Agents typecheck and
+  `git diff --check` pass; no tests or deployed acceptance ran. This fence cannot cancel an operation
+  after it starts.
+- [ ] **Active · PW06 — Scheduled direct-script outcome reconciliation.** Trace `scheduled_job_dispatches`
+  and `scheduled_job_runs` through post-dispatch errors. Add a durable `outcome_unknown` state that
+  prevents a later sweep from silently repeating an effect until an authorized reconciliation
+  path resolves it. Preserve the original attempt and do not infer provider rollback/completion.
   Preserve the untracked Python cache and keep rollout disabled.
 
-**Latest checkpoint.** PW01–PW06 source-to-ledger reconciliation confirms the saved code summaries
-for branch routing, graph/communication, leases, integration, worker cost receipts and exact-attempt
-publication permits. The direct scheduled-script caller checks the exact job revision at ingress
-but performs policy/budget setup before `tools.run` without a final recheck. No source code changed in
-this audit slice. `git diff --check` passes; the source-only Shell typecheck passed in the preceding
-APW06 UI checkpoint (`09758676`), while the standard typecheck still hits stale `.next/types` imports
-for missing routes. No tests or runtime/deployed acceptance ran.
+**Latest checkpoint.** PW06 now rechecks the direct scheduled-script service session and exact job
+revision after policy/budget admission and immediately before `tools.run`. If the identity is stale
+or unavailable, it attempts zero settlement for any reserved Project spend and fails closed. Agents typecheck and
+`git diff --check` pass. No tests or deployed acceptance ran. This does not stop an operation already
+started or provide an unknown-outcome receipt.
 
-**Exact next action:** implement the pre-effect revalidation in `NaelaoAgentDO`'s direct scheduled
-script handler, then typecheck and record the still-open in-flight effect/recovery gap.
+**Exact next action:** trace queue dispatch terminal statuses and scheduled run history after the
+direct operation begins; add durable unknown-outcome handling that prevents blind replay.
 
 ## Parked plan — Adaptive planner, worker coordination and memory
 

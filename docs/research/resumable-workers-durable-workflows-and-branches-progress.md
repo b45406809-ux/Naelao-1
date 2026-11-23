@@ -12,6 +12,24 @@ Autonomous `wakeAgentGoal` now requires a valid idle response from the AgentDO a
 
 # Resumable workers, durable workflows and branches progress
 
+## PW06 checkpoint — 2026-11-23 (direct scheduled-script pre-effect revision fence)
+
+The direct scheduled-script path already checked the service session and exact job revision at
+AgentDO ingress. It now repeats both checks after policy/budget admission and immediately before
+`tools.run`. A changed, disabled, retargeted or unavailable job fails closed and attempts to settle
+any reserved Project spend to zero under the same service identity/revision. Settlement uses the
+existing best-effort helper; its failed outcomes rely on the current reservation expiry. This fences
+work that has not started yet. It does not cancel an operation after dispatch or reconcile an
+unknown provider result.
+
+Verification: `corepack pnpm@9.12.0 --filter @naelao/agents-worker typecheck` and
+`git diff --check` pass. The attempted filter `@naelao/agents` matched no workspace package; the
+correct package check above passed. No tests, provider calls, deployment or live acceptance ran.
+
+**Exact next action:** trace `scheduled_job_dispatches`, queue error handling and `scheduled_job_runs`
+to determine how a post-dispatch lost/ambiguous response can be stored as `outcome_unknown` and kept
+from replay on a later sweep until an authorized reconciliation path resolves it.
+
 ## PW01–PW06 source reconciliation — 2026-11-23
 
 Current source matches the latest saved implementation summaries for the six PW areas:
@@ -27,9 +45,11 @@ Current source matches the latest saved implementation summaries for the six PW 
 
 Checkpoint and workflow comparison: versioned worker checkpoint lineage and exact Coordinator pins are present; `WorkflowJournal` stores bounded step/artifact receipts; authorized task routes expose content-free recovery summaries; HITL resume revalidates the scheduled service identity and job revision. These do not restore unsaved process/model state. Dynamic extension workflow effects have their own prepared/committed/indeterminate records and budget settlement; those guarantees do not automatically cover static `AgentTaskWorkflow` or direct scheduled scripts.
 
-Scheduled-run caller comparison: the queue rechecks an exact job snapshot after claiming and preparation. Goal runs revalidate the current job at loop boundaries and before approval resume. Direct scheduled scripts check the exact enabled job revision and script name at AgentDO ingress, then perform config/policy/budget work before `tools.run` without a final source recheck. The immediate code slice is a final pre-effect revision fence. It will only prevent a stale operation from starting; it does not stop an operation already in flight or provide an unknown-outcome effect receipt.
+Scheduled-run caller comparison: the queue rechecks an exact job snapshot after claiming and preparation. Goal runs revalidate the current job at loop boundaries and before approval resume. At the source-audit point, direct scheduled scripts checked the exact enabled job revision and script name at AgentDO ingress but performed config/policy/budget work before `tools.run` without a final source recheck; the final pre-effect fence is implemented in the checkpoint above. It prevents a stale operation from starting, but does not stop an operation already in flight or provide an unknown-outcome effect receipt.
 
-**Exact next action:** add that final scheduled-job recheck in the direct-script path after budget admission and immediately before `tools.run`; release any project reservation on denial. Keep in-flight cancellation and durable unknown-effect reconciliation open until their cross-service effect contract is implemented.
+This source audit's pre-effect recheck was completed in the PW06 checkpoint above. In-flight
+cancellation and durable unknown-effect reconciliation remain open until their cross-service
+effect contract is implemented.
 
 ## PW03 checkpoint — 2026-11-18 (bounded workspace-pinned attempt lineage; `5aca9a29` pushed)
 
