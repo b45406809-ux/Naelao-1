@@ -12216,7 +12216,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!result.ok) return Response.json({ error_code: "channel_simulation_handler_failed" }, { status: 409 });
       const replies = result.channel_replies ?? [];
       const answers = result.channel_answers ?? [];
-      if (replies.length + answers.length !== 1) return Response.json({ error_code: "channel_simulation_output_invalid" }, { status: 409 });
+      const outputCount = replies.length + answers.length;
+      if (outputCount > 1) return Response.json({ error_code: "channel_simulation_output_invalid" }, { status: 409 });
+      const wouldRouteToStaffReview = outputCount === 0;
       let stagedReply: { text: string; delivery: "not_sent" } | undefined;
       let stagedAnswer: { question: string; attachment_count: number; execution: "not_run" } | undefined;
       if (replies.length === 1) {
@@ -12238,14 +12240,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const responseBody = {
         simulation: true, provider: "whatsapp", installation_id: instanceId, extension_id: handler.extensionId,
         handler_sha256: link.extension_script_sha256, settings_source: "active",
+        ...(wouldRouteToStaffReview ? { handoff: { outcome: "staff_review", inbox_item_created: false } } : {}),
         ...(stagedReply ? { reply: stagedReply } : {}), ...(stagedAnswer ? { answer_request: stagedAnswer } : {}),
         ...(Object.keys(sessionUpdates).length ? { staged_session_updates: sessionUpdates } : {}),
         omitted_context: [
           ...(handler.knowledgeCollections.length ? ["published_knowledge"] : []),
           ...(handler.attachmentAccess ? ["message_attachments"] : []),
           ...(stagedAnswer ? ["answer_request_not_executed"] : []),
+          ...(wouldRouteToStaffReview ? ["staff_review_not_created"] : []),
         ],
-        disclosure: "Synthetic one-turn handler run. Replies were not sent; answer requests and session updates were not executed or saved.",
+        disclosure: "Synthetic one-turn handler run. Replies were not sent; answer requests and session updates were not executed or saved. If the handler produced no reply or answer request, live dispatch would route the stored conversation to staff review; this simulation created no inbox item or notification.",
       };
       if (new TextEncoder().encode(JSON.stringify(responseBody)).byteLength > 16_384)
         return Response.json({ error_code: "channel_simulation_output_too_large" }, { status: 409 });
@@ -12373,7 +12377,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!result.ok) return fail("channel_replay_handler_failed");
       const replies = result.channel_replies ?? [];
       const answers = result.channel_answers ?? [];
-      if (replies.length + answers.length !== 1) return fail("channel_replay_output_invalid");
+      const outputCount = replies.length + answers.length;
+      if (outputCount > 1) return fail("channel_replay_output_invalid");
+      const wouldRouteToStaffReview = outputCount === 0;
       let stagedReply: { text: string; delivery: "not_sent" } | undefined;
       let stagedAnswer: { question: string; attachment_count: number; execution: "not_run" } | undefined;
       if (replies.length === 1) {
@@ -12400,6 +12406,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           schema_version: handler.settings?.schemaVersion ?? null, sha256: settingsSha256 },
         starting_state: { source: body.startingState, available: body.startingState === "empty" || !!handler.session,
           bytes: body.startingState === "current" && handler.session ? stateBytes : 0, sha256: stateSha256 },
+        ...(wouldRouteToStaffReview ? { handoff: { outcome: "staff_review", inbox_item_created: false } } : {}),
         ...(stagedReply ? { reply: stagedReply } : {}), ...(stagedAnswer ? { answer_request: stagedAnswer } : {}),
         ...(Object.keys(sessionUpdates).length ? { staged_session_updates: sessionUpdates } : {}),
         adapters: { knowledge: handler.knowledgeCollections.length ? "simulated_empty" : "not_configured",
@@ -12408,9 +12415,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           ...(handler.knowledgeCollections.length ? ["published_knowledge_not_queried"] : []),
           ...(handler.attachmentAccess ? ["message_attachments_not_read"] : []),
           ...(stagedAnswer ? ["answer_request_not_executed"] : []),
+          ...(wouldRouteToStaffReview ? ["staff_review_not_created"] : []),
           "tools_and_side_effects_not_executed", "extension_session_updates_not_saved",
         ],
-        disclosure: "Isolated replay against the active installation and settings snapshot. The edited input was run in a fresh synthetic conversation; replies, Knowledge, tools, attachments and session updates used no-op simulation adapters and caused no live effects.",
+        disclosure: "Isolated replay against the active installation and settings snapshot. The edited input was run in a fresh synthetic conversation; replies, Knowledge, tools, attachments and session updates used no-op simulation adapters and caused no live effects. If the handler produced no reply or answer request, live dispatch would route the stored conversation to staff review; this replay created no inbox item or notification.",
       };
       if (new TextEncoder().encode(JSON.stringify(responseBody)).byteLength > 16_384)
         return fail("channel_replay_output_too_large");

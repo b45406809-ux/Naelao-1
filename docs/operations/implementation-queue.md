@@ -393,20 +393,17 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
   host inbox and documentation of the synthetic test/replay surfaces. Do not include provider
   credentials or claim unverified live behavior.
 
-**Latest checkpoint:** in addition to migration `0288`, member administration and route-use controls,
-the Project inbox now provides isolated replay of selected WhatsApp events. Replay rechecks the
-owner/admin and Project boundary, uses a fresh synthetic event/conversation ID and pins the active
-signed handler, package version and active settings revision. Its optional current session snapshot
-uses SELECT-only reads; proposed updates are never written. Knowledge, tools, attachments, model
-answers and delivery use no-op adapters. A bounded audit stores actor/source/version/hash metadata
-without message or state values; deleting the stored conversation removes linked audit rows. Agents
-and Spaces typechecks and `git diff --check` pass. The full Shell typecheck still reports only the
-four known stale `.next/types` imports for missing routes, with no changed-source diagnostics. No
-tests, migration apply, provider action or deployment ran. Detailed evidence is in the
-[progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
-**Next action:** add a customer-service WhatsApp SDK example that declares owner-approved scoped
-Knowledge, bounded session state, host-inbox escalation, and the existing synthetic test/replay
-surfaces without embedding provider credentials or implying live provider availability.
+**Latest checkpoint:** zero-output WhatsApp handler runs now appear in the synthetic customer test
+and replay as a proposed staff-review handoff. Live dispatch already marks such conversations for
+human review; the simulations create no conversation, inbox item or notification. Agents typecheck
+and `git diff --check` pass. Full Shell typecheck still reports only four stale `.next/types` imports
+for missing routes, with no diagnostics in changed Shell sources. No tests, migration apply, provider
+action or deployment ran. Replay still pins the active signed handler, package version and settings;
+current session state is read through SELECT-only queries and never written back. Detailed evidence
+is in the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
+**Next action:** add the versioned customer-service WhatsApp SDK example, with owner-published
+scoped Knowledge, bounded session state, host-inbox escalation guidance, and accurate synthetic
+test/replay limits; then verify the package and advance the queue.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

@@ -698,6 +698,7 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
           <small>Replay snapshot: active installation {replayResults[event.event_id]!.installation_version} · handler {replayResults[event.event_id]!.handler_sha256.slice(0, 12)} · settings {replayResults[event.event_id]!.settings_snapshot.source}{replayResults[event.event_id]!.settings_snapshot.revision === null ? "" : ` revision ${replayResults[event.event_id]!.settings_snapshot.revision}`}</small>
           <small>Original handler {replayResults[event.event_id]!.source_handler_sha256?.slice(0, 12) ?? "unknown"} · settings hash {replayResults[event.event_id]!.settings_snapshot.sha256?.slice(0, 12) ?? "none"}</small>
           <small>Starting state: {replayResults[event.event_id]!.starting_state.source}{replayResults[event.event_id]!.starting_state.source === "current" ? ` · ${replayResults[event.event_id]!.starting_state.bytes} bytes snapshotted · ${replayResults[event.event_id]!.starting_state.sha256.slice(0, 12)}` : " · empty"}</small>
+          {replayResults[event.event_id]!.handoff && <div><strong>Would route to staff review</strong><small style={{ display: "block" }}>No inbox item or notification was created by this replay.</small></div>}
           {replayResults[event.event_id]!.reply && <div>Simulated reply (not sent): {replayResults[event.event_id]!.reply!.text}</div>}
           {replayResults[event.event_id]!.answer_request && <div>Proposed answer (not generated): {replayResults[event.event_id]!.answer_request!.question}</div>}
           {replayResults[event.event_id]!.staged_session_updates && <details><summary>Proposed session updates (not saved)</summary><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(replayResults[event.event_id]!.staged_session_updates, null, 2)}</pre></details>}
@@ -1699,6 +1700,7 @@ export function ChannelConnect({
                 </button>
                 {customerTestError && <p role="alert" style={{ color: "var(--danger, #d33)", fontSize: 11 }}>{customerTestError}</p>}
                 {currentCustomerTestResult && <div role="status" aria-label="WhatsApp customer simulation result" style={{ marginTop: 8, fontSize: 11 }}>
+                  {currentCustomerTestResult.handoff && <div style={{ marginBottom: 8 }}><strong>Would route to staff review</strong><div style={{ color: "var(--text3)" }}>No inbox item or notification was created by this simulation.</div></div>}
                   {currentCustomerTestResult.reply && <>
                     <strong>Handler reply · not sent</strong>
                     <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "4px 0 8px", padding: 7, background: "var(--surface2)", borderRadius: 6 }}>{currentCustomerTestResult.reply.text}</pre>

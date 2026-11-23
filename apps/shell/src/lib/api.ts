@@ -3119,6 +3119,7 @@ export interface CustomerChannelSimulationResult {
   extension_id: string;
   handler_sha256: string;
   settings_source: "active";
+  handoff?: { outcome: "staff_review"; inbox_item_created: false };
   reply?: { text: string; delivery: "not_sent" };
   answer_request?: { question: string; attachment_count: number; execution: "not_run" };
   staged_session_updates?: { default?: unknown; named?: Array<{ sessionId: string; value: unknown }> };
@@ -3139,6 +3140,7 @@ export interface ChannelExtensionReplayResult {
   handler_sha256: string;
   settings_snapshot: { source: "active" | "none"; revision: number | null; schema_version: number | null; sha256: string | null };
   starting_state: { source: "empty" | "current"; available: boolean; bytes: number; sha256: string };
+  handoff?: { outcome: "staff_review"; inbox_item_created: false };
   reply?: { text: string; delivery: "not_sent" };
   answer_request?: { question: string; attachment_count: number; execution: "not_run" };
   staged_session_updates?: { default?: unknown; named?: Array<{ sessionId: string; value: unknown }> };

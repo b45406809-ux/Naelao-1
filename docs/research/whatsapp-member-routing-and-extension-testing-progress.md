@@ -195,3 +195,18 @@ identity model; do not reuse `executive_contacts` or `channel_pairings` as membe
 - This completes the replay source/UI slice. Next: add a customer-service WhatsApp SDK example that
   demonstrates only the channel-only context, owner-approved scoped Knowledge, bounded session
   state, host inbox escalation, and synthetic test/replay surfaces.
+
+### Synthetic staff-review handoff — 2026-11-23
+
+- The live customer handler already routes an invocation with no reply or answer request to human
+  review. The isolated customer simulation and replay had instead returned an invalid-output error
+  for this intentional handoff shape.
+- Both synthetic routes now accept zero handler outputs as a proposed `staff_review` outcome and
+  display that live dispatch would pause automation for staff handling. The simulation creates no
+  conversation, inbox item or notification. Multiple outputs remain invalid; one reply or answer
+  request continues to be staged without delivery or execution.
+- Agents typecheck and `git diff --check` passed with pnpm `9.12.0`. Full Shell typecheck still
+  reports only four stale `.next/types` imports for missing generated routes and no diagnostics in
+  changed Shell sources. No tests, migration apply, provider operation or deployment ran.
+- Next: add the versioned customer-service WhatsApp SDK example and document the handoff plus the
+  active test/replay boundaries accurately.
