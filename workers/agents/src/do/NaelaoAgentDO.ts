@@ -12457,6 +12457,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           takeover("The bound extension is unavailable or no longer valid for this project and channel. Rebind an approved extension or handle the conversation manually."); escalated++; continue;
         }
         const publishedKnowledge: Array<{ collection_id: string; document_id: string; title: string; content: string }> = [];
+        const knowledgeCollectionPins: Array<{ collectionId: string; revision: number }> = [];
         if (handler.knowledgeCollections.length) {
           if (!this.env.KNOWLEDGE_WORKER) {
             this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='knowledge_search_unavailable' WHERE message_id=?", msg.id);
@@ -12513,6 +12514,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 break;
               }
               const result = await readBoundedResponseJson<{ data?: Array<{ document_id?: string; title?: string; content?: string }> }>(search, 2 * 1024 * 1024);
+              knowledgeCollectionPins.push({ collectionId, revision: authorizedRevision });
               for (const hit of result.data ?? []) {
                 if (publishedKnowledge.length >= 3 || typeof hit.content !== "string" || typeof hit.document_id !== "string") break;
                 publishedKnowledge.push({ collection_id: collectionId, document_id: hit.document_id,
@@ -12595,6 +12597,61 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
         if (await tenantSuspended()) {
           return stopForSuspension();
+        }
+        if (knowledgeCollectionPins.length) {
+          let authorityChanged = false;
+          let authorityUnavailable = false;
+          try {
+            const publicationRequest = this.env.KNOWLEDGE_WORKER!.fetch(new Request(
+              `http://knowledge-worker/internal/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(msg.project_id!)}/external-publications`,
+              { headers: await this.internalHeaders(tenantId) },
+            ));
+            const grantRequest = handler.scope === "SPACE_SHARED"
+              ? this.env.SPACES_WORKER.fetch(new Request(
+                `http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(msg.project_id!)}`
+                  + `/space-shared-channel-knowledge/${encodeURIComponent(msg.channel_extension_instance_id!)}`,
+                { headers: await this.internalHeaders(tenantId) },
+              ))
+              : Promise.resolve(null);
+            const [publicationResponse, grantResponse] = await Promise.all([publicationRequest, grantRequest]);
+            if (!publicationResponse.ok) authorityUnavailable = true;
+            const publicationDirectory = publicationResponse.ok
+              ? await readBoundedResponseJson<{ publications?: Array<{ id?: unknown; revision?: unknown }> }>(publicationResponse, 64 * 1024)
+              : null;
+            let grant: { instanceId?: unknown; extensionId?: unknown; publications?: unknown } | undefined;
+            if (handler.scope === "SPACE_SHARED") {
+              if (!grantResponse?.ok) {
+                if (grantResponse && [403, 404, 409].includes(grantResponse.status)) authorityChanged = true;
+                else authorityUnavailable = true;
+              } else {
+                const selection = await readBoundedResponseJson<{
+                  instance_id?: unknown; extension_id?: unknown; granted_publications?: Array<{ id?: unknown; revision?: unknown }>;
+                }>(grantResponse, 64 * 1024);
+                grant = { instanceId: selection.instance_id, extensionId: selection.extension_id,
+                  publications: selection.granted_publications };
+              }
+            }
+            if (!authorityUnavailable && !authorityChanged) {
+              for (const pin of knowledgeCollectionPins) {
+                const currentRevision = resolveCurrentExtensionKnowledgeRevision({ scope: handler.scope,
+                  instanceId: msg.channel_extension_instance_id!, extensionId: handler.extensionId,
+                  publicationId: pin.collectionId, publications: publicationDirectory?.publications,
+                  ...(grant ? { grant } : {}) });
+                if (currentRevision !== pin.revision) { authorityChanged = true; break; }
+              }
+            }
+          } catch {
+            authorityUnavailable = true;
+          }
+          if (authorityChanged || authorityUnavailable) {
+            publishedKnowledge.length = 0;
+            this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code=? WHERE message_id=?",
+              authorityChanged ? "knowledge_access_changed" : "knowledge_search_unavailable", msg.id);
+            takeover(authorityChanged
+              ? "A published Knowledge collection or owner grant changed before the handler received its context. The extension did not answer; review the conversation manually."
+              : "The current published Knowledge authority could not be verified before the handler received its context. The extension did not answer; review the conversation manually.");
+            escalated++; continue;
+          }
         }
         const run = await channelRunner.call(engineEnv.codeRunner, {
           name: handler.name, code: handler.code, args: {}, tenantId, spaceId, agentId,

@@ -136,26 +136,27 @@ deployed/provider evidence. Preserve `infra/scripts/__pycache__/` and keep rollo
   passages and line/heading provenance. Knowledge typecheck and targeted Shell typecheck pass;
   `git diff --check` passes. Full Shell typecheck remains blocked by stale `.next/types` references
   to four missing routes. No tests, deployment or live acceptance ran.
-- [ ] **K20 — Fence Space-shared channel Knowledge grants at result handoff.** The channel handler
-  currently validates the current publication revision and owner grant before retrieval, but can
-  pass passages to the extension after that grant is revoked during the search. Re-read the exact
-  publication and installation grant after retrieval and immediately before passing context to the
-  channel runner; suppress it and hand off to a person if either changed. Preserve current cache-off
-  behavior and exact installation scope.
+- [x] **K20 — Fence Space-shared channel Knowledge grants at result handoff.** Channel dispatch now
+  re-reads each used collection revision and the Space-shared installation grant immediately before
+  passing passages to the extension runner. A changed or unavailable authority clears all retrieved
+  context, records a failed dispatch, and requires human review. Agents typecheck and
+  `git diff --check` pass; no tests, deployment or live acceptance ran.
+- [ ] **K26 — Instrument publication-scoped retrieval outcomes.** The shared extension/owner preview
+  retrieval helper does not yet record bounded retrieval latency, outcome or hit count. Add fixed
+  surface/outcome labels and clamped numbers only; never emit query, tenant, Space, Project,
+  publication, document or installation identifiers. Analytics failure must not change retrieval.
 - [ ] **Blocked · K15 — Implement and validate isolated managed-index adapter.** Resume after exact
   pre-retrieval scope fields and limits, current publication/source revision mapping, asynchronous
   deletion/retention and isolated cost evidence are established. Keep general user search on its
   current exact D1/Vectorize ACL paths and leave all provider gates off.
 
-**Latest K18 checkpoint:** Project owners/admins can preview a bounded query against an exact current
-published collection revision. The owner preview and signed extension search now share one retrieval
-helper, including the pre-ranked published-document allowlist, current source/chunk rehydration,
-deletion-ledger check and final publication revision fence. Knowledge typecheck and targeted Shell
-typecheck pass, as does `git diff --check`; full Shell typecheck reports stale `.next/types` imports
-for four missing routes, unrelated to the changed page. No tests, deployment or live acceptance ran.
-**Next action:** re-read the current publication revision and Space-shared installation grant after
-channel retrieval and immediately before handing passages to the extension runner; suppress results
-and hand off to a person if authority changed.
+**Latest K20 checkpoint:** the Space-shared channel caller re-reads every used publication revision
+and the current installation grant immediately before passing retrieved passages to its extension
+runner. It clears all passages, fails the dispatch and hands the conversation to a person if authority
+changed or could not be verified. Agents typecheck and `git diff --check` pass. No tests, deployment
+or live acceptance ran. **Next action:** add fixed-label, bounded latency/outcome/hit-count telemetry
+to the shared publication-scoped retrieval helper, with no query or resource identifiers and no
+retrieval failure on Analytics errors.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

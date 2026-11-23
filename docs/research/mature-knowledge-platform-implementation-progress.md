@@ -396,7 +396,7 @@ Statuses describe local code, not deployment or live acceptance. `IN_PROGRESS` m
 | K17 Search quality and cost benchmark | IN_PROGRESS | `infra/scripts/knowledge-retrieval-eval.mjs` validates versioned benchmark cases/content-free traces and reports precision/recall, MRR/nDCG, citation/source-version accuracy, forbidden exposure, abstention, p95 latency and recorded cost. Metrics and configured thresholds are stratified overall, by query language, and by query/source-language pair. Version 1 data contain three synthetic English cases for exact ID, current-vs-stale version and no-answer/forbidden scope. Evaluator tests 6/6; the local Knowledge route integration passes 6/6. Human review, representative domain/language data and provider/deployed measurements remain. Evaluator always returns `acceptanceEligible:false`. |
 | K18 No-code Knowledge dashboard | IN_PROGRESS | Space-wide and Project Shell plus builder Dashboard list/add/delete/search; all now offer scoped PDF preview/correction. Project Shell supports named owner-published collections, indexed-source selection, publish/update/unpublish, archive/restore-as-draft, content-free history, and an owner/admin search preview for the exact current collection revision. Accessibility/mobile review and a cost view remain. |
 | K19 SDK and extension integration | IN_PROGRESS | `ctx.resources.knowledge.search` is wired through a durable workflow effect and typed SDK result contract. The host checks the active installation, exact owner grant, current publication revision and operation lease; Knowledge prefilters by current published documents and returns current chunks with content hash, source revision/grant revision, coordinates and heading provenance. A separate generic collection discovery or citation re-resolution SDK is still absent. The source audit also found and fixed deletion and publication-revision races before extension results return; deployed/live acceptance remains open. |
-| K20 Assistant/delegated/channel authorization | IN_PROGRESS | Extension grants and scoped search exist. Caller trace found full Agents response cache keys only tenant/Space, omitting principal/project/role and source/grant revision. Response/retrieval cache reads/writes are now disabled by explicit false gates in Agents and Knowledge configs/callers until exact scope and freshness are implemented. Tests cover disabled internal reads/writes. External channel trace remains. |
+| K20 Assistant/delegated/channel authorization | IN_PROGRESS | Extension grants and scoped search exist. Full Agents response caches had incomplete tenant/Space-only keys, so response/retrieval cache reads/writes remain disabled behind explicit false gates. Space-shared channel retrieval now rechecks the exact current publication revisions and owner installation grant immediately before handing passages to the extension runner; changed or unavailable authority clears context and requires human review. Deployed/live acceptance remains open. |
 | K21 Deletion/revocation fencing | IN_PROGRESS | Durable tombstones, leases, Vectorize/R2 cleanup and citation hash checks exist. Cache generations rotate on deletion; content/grant changes are not fully covered. Cache remains off, but generation/version invalidation is still required before any future enablement. |
 | K22 Backup/restore and provider exit | IN_PROGRESS | Bounded Knowledge archive, restore and explicit reindex exist; deployed isolated restore, grant reauthorization, RPO/RTO drills and external mirror reconciliation remain. |
 | K23 Sensitive data and human handoff | IN_PROGRESS | Prompt-injection handling and air-gap policy exist. Classification/retention policy and pharmacy escalation/human review are not established as a complete workflow. |
@@ -599,3 +599,21 @@ are unrelated to the changed files. No tests, deployment or live acceptance ran.
 Exact next action: close the Space-shared channel grant race by rereading the current publication
 revision and installation grant after retrieval and immediately before handing passages to the
 extension runner. Suppress the passages and require human review if the authority changed.
+
+## K20 checkpoint — 2026-11-23 (channel Knowledge authority handoff)
+
+The inbound Space-shared channel path previously validated publication membership and the exact
+installation grant before search, then performed attachment/session preparation before passing the
+retrieved passages to the extension. It now pins the revision for each collection actually searched
+and, immediately before invoking the channel runner, rereads the current publication directory and
+Space-shared grant. If a revision or grant changed, or current authority cannot be verified, it
+clears all retrieved Knowledge context, marks the dispatch failed, and requires human review. This
+does not enable response caches or alter Project-bound publication behavior.
+
+Agents Worker typecheck and `git diff --check` pass. No tests, deployment, provider call or live
+channel acceptance ran.
+
+Exact next action: add privacy-safe fixed-label latency, result-count and outcome telemetry to the
+shared publication-scoped search helper used by extension retrieval and the owner preview. Clamp
+numeric values, omit query and all tenant/Space/Project/publication/document/installation identifiers,
+and isolate Analytics failures from retrieval.

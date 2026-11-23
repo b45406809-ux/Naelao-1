@@ -62,10 +62,9 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Mature Knowledge platform · K20 — fence Space-shared channel Knowledge grants at result handoff.**
-The channel handler checks the exact current publication revision and owner grant before retrieval,
-but it can pass passages to the extension after that grant is revoked during search. Re-read the
-publication and installation grant after retrieval and immediately before handing context to the
-channel runner; discard results and require human review if either authority changed. Keep response
+**Mature Knowledge platform · K26 — instrument publication-scoped retrieval outcomes.** Add
+privacy-safe fixed-label latency, result-count and outcome telemetry to the shared extension/owner
+preview search helper. Clamp numeric values, omit query and all tenant/Space/Project/publication/
+document/installation identifiers, and isolate Analytics failures from retrieval. Keep response
 caches disabled and the managed AI Search adapter blocked on exact pre-retrieval scope mapping,
 freshness/deletion and isolated provider evidence.
