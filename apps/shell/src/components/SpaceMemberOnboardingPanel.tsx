@@ -19,6 +19,10 @@ import {
 } from "@/lib/api";
 import { buildSpaceInvitationLink } from "@/lib/space-invitation-link";
 
+type OnboardingBusyAction =
+  | { kind: "create-invitation" | "propose-role" }
+  | { kind: "revoke-invitation" | "revoke-role"; id: string };
+
 export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canManage, canInviteAdmin, members }: {
   spaceId: string;
   productSlug: string;
@@ -39,7 +43,8 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
   const [reviewBusinessRoleId, setReviewBusinessRoleId] = React.useState("");
   const [created, setCreated] = React.useState<{ id: string; token: string } | null>(null);
   const [loading, setLoading] = React.useState(false);
-  const [saving, setSaving] = React.useState(false);
+  const [busyAction, setBusyAction] = React.useState<OnboardingBusyAction | null>(null);
+  const actionLock = React.useRef(false);
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [myRoles, setMyRoles] = React.useState<MySpaceBusinessRole[]>([]);
@@ -87,14 +92,15 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
 
   async function createInvitation(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!session || !canManage || saving) return;
+    if (!session || !canManage || actionLock.current) return;
     const hasBlueprint = blueprintId.trim().length > 0;
     const hasRole = businessRoleId.trim().length > 0;
     if (hasBlueprint !== hasRole) {
       setError("Select both an active blueprint and one of its declared roles, or leave the template-role selection blank.");
       return;
     }
-    setSaving(true); setError(null); setNotice(null); setCreated(null);
+    actionLock.current = true;
+    setBusyAction({ kind: "create-invitation" }); setError(null); setNotice(null); setCreated(null);
     try {
       const result = await createSpaceMemberInvitation(spaceId, session, {
         email: email.trim(), role,
@@ -107,14 +113,16 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
     } catch {
       setError("Invitation could not be created. Check the current Space role, verified recipient status, and active template role, then retry.");
     } finally {
-      setSaving(false);
+      actionLock.current = false;
+      setBusyAction(null);
     }
   }
 
   async function proposeRoleForMember(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!session || !canManage || !reviewMemberId || !reviewBlueprintId || !reviewBusinessRoleId || saving) return;
-    setSaving(true); setError(null); setNotice(null);
+    if (!session || !canManage || !reviewMemberId || !reviewBlueprintId || !reviewBusinessRoleId || actionLock.current) return;
+    actionLock.current = true;
+    setBusyAction({ kind: "propose-role" }); setError(null); setNotice(null);
     try {
       const result = await createSpaceBusinessRoleReview(spaceId, session, {
         blueprint_id: reviewBlueprintId, end_user_id: reviewMemberId, business_role_id: reviewBusinessRoleId,
@@ -124,11 +132,16 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
     } catch {
       setError("Role proposal could not be recorded. Confirm the member and signed template are still current, then refresh.");
       await refresh();
-    } finally { setSaving(false); }
+    } finally {
+      actionLock.current = false;
+      setBusyAction(null);
+    }
   }
 
   async function revokeInvitation(invitation: SpaceMemberInvitation) {
-    if (!session || !canManage || invitation.status !== "pending") return;
+    if (!session || !canManage || invitation.status !== "pending" || actionLock.current) return;
+    actionLock.current = true;
+    setBusyAction({ kind: "revoke-invitation", id: invitation.id });
     setError(null); setNotice(null);
     try {
       await revokeSpaceMemberInvitation(spaceId, session, invitation.id);
@@ -137,11 +150,16 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
     } catch {
       setError("Invitation status changed or could not be updated. Refresh before retrying.");
       await refresh();
+    } finally {
+      actionLock.current = false;
+      setBusyAction(null);
     }
   }
 
   async function revokeReview(review: SpaceBusinessRoleReview) {
-    if (!session || !canManage || review.status !== "proposal_only") return;
+    if (!session || !canManage || review.status !== "proposal_only" || actionLock.current) return;
+    actionLock.current = true;
+    setBusyAction({ kind: "revoke-role", id: review.id });
     setError(null); setNotice(null);
     try {
       await revokeSpaceBusinessRoleReview(spaceId, session, review.id);
@@ -150,6 +168,9 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
     } catch {
       setError("Role proposal changed or could not be revoked. Refresh to check its current status.");
       await refresh();
+    } finally {
+      actionLock.current = false;
+      setBusyAction(null);
     }
   }
 
@@ -202,7 +223,8 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
       <p className="settings-section-sub">Invitations are copy-only. A template role is a reviewed proposal and does not grant Project, app, Knowledge, channel, or spending access.</p>
       <p className="settings-row-sub">No email or SMS is sent. You must securely deliver the one-time invitation ID and token to the intended verified Product account.</p>
 
-      <form className="settings-block" onSubmit={createInvitation} aria-label="Invite a Space member" style={{ padding: 16 }}>
+      <form className="settings-block" onSubmit={createInvitation} aria-label="Invite a Space member"
+        aria-busy={busyAction?.kind === "create-invitation"} style={{ padding: 16 }}>
         <label className="settings-row-label" htmlFor="member-invite-email">Member email</label>
         <input id="member-invite-email" className="form-input" type="email" autoComplete="email" required maxLength={320}
           value={email} onChange={event => setEmail(event.target.value)} placeholder="member@example.com" />
@@ -233,12 +255,13 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
             </option>)}
           </select>
         </details>
-        <button className="btn btn-primary btn-sm" type="submit" disabled={saving || !session} style={{ marginTop: 14 }}>
-          {saving ? "Creating…" : "Create copy-only invitation"}
+        <button className="btn btn-primary btn-sm" type="submit" disabled={busyAction !== null || !session} style={{ marginTop: 14 }}>
+          {busyAction?.kind === "create-invitation" ? "Creating…" : "Create copy-only invitation"}
         </button>
       </form>
 
-      <form className="settings-block" onSubmit={proposeRoleForMember} aria-label="Propose a template role for an existing member" style={{ padding: 16, marginTop: 12 }}>
+      <form className="settings-block" onSubmit={proposeRoleForMember} aria-label="Propose a template role for an existing member"
+        aria-busy={busyAction?.kind === "propose-role"} style={{ padding: 16, marginTop: 12 }}>
         <div className="settings-row-label">Assign onboarding guidance to an existing member</div>
         <p className="settings-row-sub">This records a reviewed role proposal against the member’s current membership epoch. It does not apply Project, app, Knowledge, channel, assistant, or spending permissions.</p>
         <label className="settings-row-label" htmlFor="role-review-member">Member</label>
@@ -263,8 +286,8 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
             {option.name.en ?? Object.values(option.name)[0] ?? option.id} ({option.id})
           </option>)}
         </select>
-        <button className="btn btn-primary btn-sm" type="submit" disabled={saving || !session || members.length === 0} style={{ marginTop: 12 }}>
-          {saving ? "Saving…" : "Record role proposal"}
+        <button className="btn btn-primary btn-sm" type="submit" disabled={busyAction !== null || !session || members.length === 0} style={{ marginTop: 12 }}>
+          {busyAction?.kind === "propose-role" ? "Saving…" : "Record role proposal"}
         </button>
       </form>
 
@@ -292,7 +315,11 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
               <div className="settings-row-sub">{invitation.business_role_id ? `Proposed template role: ${invitation.business_role_id} · artifact ${invitation.artifact_sha256?.slice(0, 12)}` : "No template role selected"}</div>
               <div className="settings-row-sub">Expires {new Date(invitation.expires_at).toLocaleString()} · no email or SMS sent</div>
             </div>
-            {invitation.status === "pending" && <button className="btn btn-ghost btn-sm" type="button" onClick={() => void revokeInvitation(invitation)}>Revoke</button>}
+            {invitation.status === "pending" && <button className="btn btn-ghost btn-sm" type="button"
+              disabled={busyAction !== null} aria-busy={busyAction?.kind === "revoke-invitation" && busyAction.id === invitation.id}
+              onClick={() => void revokeInvitation(invitation)}>
+              {busyAction?.kind === "revoke-invitation" && busyAction.id === invitation.id ? "Revoking…" : "Revoke"}
+            </button>}
           </div>
         ))}
       </div>
@@ -307,7 +334,11 @@ export function SpaceMemberOnboardingPanel({ spaceId, productSlug, session, canM
               <div className="settings-row-sub">Member {review.end_user_id.slice(0, 8)}… · blueprint {review.blueprint_id} · {review.artifact_sha256.slice(0, 12)}</div>
               <div className="settings-row-sub">Grants applied: no</div>
             </div>
-            {review.status === "proposal_only" && <button className="btn btn-ghost btn-sm" type="button" onClick={() => void revokeReview(review)}>Revoke proposal</button>}
+            {review.status === "proposal_only" && <button className="btn btn-ghost btn-sm" type="button"
+              disabled={busyAction !== null} aria-busy={busyAction?.kind === "revoke-role" && busyAction.id === review.id}
+              onClick={() => void revokeReview(review)}>
+              {busyAction?.kind === "revoke-role" && busyAction.id === review.id ? "Revoking…" : "Revoke proposal"}
+            </button>}
           </div>
         ))}
       </div>

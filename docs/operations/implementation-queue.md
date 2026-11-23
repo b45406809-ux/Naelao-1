@@ -217,18 +217,21 @@ and [progress ledger](../research/template-business-roles-and-member-onboarding-
   can bind an owner-approved direct-job ceiling to exact current job identity/revision and consume it
   across nested effects before each effect. Reconciliation must preserve unknown outcomes and actual
   usage; do not borrow creator/owner grants or treat the current post-run usage tally as admission.
-- [ ] **TBR12 — Prevent duplicate member-onboarding actions.** In `SpaceMemberOnboardingPanel`, add
-  explicit busy states for invitation/proposal creation and revocation, disable repeated submits
-  while a mutation is pending, and keep screen-reader status feedback clear. Keep invitations
-  copy-only and role records non-granting.
+- [x] **TBR12 — Prevent duplicate member-onboarding actions.** `SpaceMemberOnboardingPanel` now
+  locks concurrent invitation/proposal mutations, disables repeated submit/revoke actions, labels
+  the active action, and sets `aria-busy` on the active form/button. The targeted Shell typecheck and
+  `git diff --check` pass; no tests, browser, deployment or live acceptance ran.
+- [ ] **TBR08 — Audit acting-member assistant clamps at extension-resource dispatch.** Trace current
+  Project role from assistant entry through `WorkflowRunDO` and the host mutation gate. Close a
+  concrete caller gap only where current actor authority is available; preserve denies for
+  unverified role/resource mappings and keep all rollouts disabled.
 
-**Latest TBR11 checkpoint:** direct dispatch checks the persisted heartbeat session and exact enabled
-job revision immediately before `tools.run`; Project spend reservations serialize against an enabled
-daily cap but settle by run without enforcing the held credit maximum. `ScriptToolSurface.run` can
-nested-dispatch other operations, so whole-run reservation alone cannot safely enforce an owner
-ceiling. No code or tests changed during this source trace.
-**Next action:** add explicit pending/disabled mutation states to the invitation and proposal controls
-in `SpaceMemberOnboardingPanel`, then continue with another independent TBR code gap.
+**Latest TBR12 checkpoint:** `SpaceMemberOnboardingPanel` rejects concurrent mutation attempts with
+a synchronous ref lock, exposes Creating/Saving/Revoking labels, disables the other mutation
+controls while one is pending and sets `aria-busy` on active forms/buttons. TBR11's direct-script
+budget gap is recorded above; no role or spend authority was widened.
+**Next action:** trace a current acting-member Project role through the extension workflow host and
+its final resource mutation gate; implement only a missed exact-authority check.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

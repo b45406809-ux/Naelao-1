@@ -62,8 +62,8 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Template business roles and member onboarding · TBR12 — prevent duplicate member-onboarding
-actions.** In `SpaceMemberOnboardingPanel`, expose
-pending invitation/proposal creation and revocation with explicit busy states, disable repeated
-submits while an action is pending, and keep screen-reader status feedback clear. Keep the handoff
-copy-only and role records non-granting.
+**Template business roles and member onboarding · TBR08 — audit acting-member assistant clamps at
+extension-resource dispatch.** Trace the current Project role from assistant entry through
+`WorkflowRunDO` and the host mutation gate; close a concrete caller gap only where current actor
+authority is available. Preserve denies for unverified role/resource mappings and keep all rollouts
+disabled.

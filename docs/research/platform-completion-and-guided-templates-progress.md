@@ -3157,5 +3157,4 @@ rollout gate changed.
 
 Exact next action: keep cross-resource quotes/reservations parked until an approved resource-unit
 price/cap contract exists, and keep provider-cost and deployed lifecycle acceptance separate. The
-queue now activates TBR11 to inspect direct scheduled-script admission and implement a consumed run
-reservation only where an existing exact authority/price contract supports it.
+queue's TBR11 source trace and TBR12 onboarding mutation states are complete; TBR08 is now active.

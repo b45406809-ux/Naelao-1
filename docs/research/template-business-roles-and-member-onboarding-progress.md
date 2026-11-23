@@ -212,7 +212,7 @@ Code `9ccd739538f4e0a8751ff9d289385adc5df4661b` is pushed and remote-verified on
 | TBR09 Shared data permissions | PARTIAL | The role contract can request symbolic shared-data collections and actions. Host-enforced per-record/action grants, shared-record ACLs and consistent UI/SDK/assistant callers remain uncoded. |
 | TBR10 Private-Project owner/admin policy | PRODUCT_DECISION_OPEN | SpaceDO grants implicit owner/admin access while Knowledge requires explicit Project membership. Resolve and enforce consistently; do not silently widen either policy. |
 | TBR11 Autonomous service identities | PARTIAL | Scheduled goal jobs have owner-reviewed exact enabled action allowlists, a per-run credit ceiling, persisted `scheduled_job:<id>` identity/revision, current-row checks between steps, and Billing/internal-receipt attribution (code `15b48e03`, migrations 0281/0282/157). Direct scripts recheck their exact scheduled revision before dispatch and can reserve one Project-cap credit when that cap is enabled. | Direct jobs have no owner-settable run ceiling; nested effects are not pre-reserved/consumed against a common run budget, and run settlement does not enforce the one-credit hold. General connector/channel/provider principals, in-flight effect cancellation, Project Steward opt-in and deployed acceptance remain open. |
-| TBR12 Onboarding UX, audit and acceptance | PARTIAL | Shell has copy-only invitation creation/status/revoke and existing-member role-proposal controls, a member-facing current-role/onboarding view, and authenticated redemption; all role/resource grants remain unapplied. Responsive/accessibility, audit beyond current invitation/review receipts, and deployed multi-user/revocation acceptance remain. |
+| TBR12 Onboarding UX, audit and acceptance | PARTIAL | Shell has copy-only invitation creation/status/revoke and existing-member role-proposal controls, a member-facing current-role/onboarding view, authenticated redemption, and pending/disabled busy states that prevent duplicate invitation/proposal mutations. All role/resource grants remain unapplied. Broader mobile/accessibility, audit beyond current invitation/review receipts, and deployed multi-user/revocation acceptance remain. |
 
 The copied plan source and original reconciliation remain below for provenance. The source came from `origin/plan/microapps-ui-sdk-voice` commit `28d7c4601a2cba50fef092040dfe351aa76a3`, supplemented by clarification `cdeb7deff22f23b65e91df0086523313550e640a`. The copied plan SHA-256 is `4cbfe5c7d3d523661ddef1a77df716a37624b350b7ef83bec86d2042ba9c7607`; no planning branch was checked out or merged.
 
@@ -231,9 +231,24 @@ An atomic run hold by itself therefore cannot cap a script's nested effects. Clo
 owner-approved direct-job ceiling and a per-effect consume/reconcile boundary that preserves actual
 charges and unknown outcomes. No code, test, migration or rollout changed during this trace.
 
-Exact next action: improve TBR12's existing member invitation and role-proposal forms so create and
-revoke actions expose pending state and reject duplicate submissions while an operation is active;
-preserve copy-only delivery and proposal-only access.
+The TBR12 implementation checkpoint follows. Its next active source task is the TBR08 acting-member
+assistant-clamp audit recorded there.
+
+## TBR12 checkpoint — 2026-11-23 (onboarding mutation pending states)
+
+The owner/member onboarding panel now uses a synchronous action lock for invitation create, existing
+member role-proposal create, invitation revoke and proposal revoke. The active action has a specific
+Creating/Saving/Revoking label, duplicate mutation controls are disabled, and active forms/buttons
+expose `aria-busy`. Existing role/status messaging remains explicit that invitations are copy-only
+and role proposals apply no resource grants.
+
+The targeted Shell typecheck for `api.ts` and `SpaceMemberOnboardingPanel.tsx` plus `git diff --check`
+pass. No tests, browser, provider, deployment or live acceptance ran. No identity or permission
+semantics changed.
+
+Exact next action: audit the current acting-member Project role from assistant entry through
+`WorkflowRunDO` and the final extension-resource host mutation gate; fix only a concrete missing check
+bound to current authority.
 
 TBR02 is complete locally in the checkpoint above. Exact next action: implement TBR04's owner-only installed-resource/effective-access preview before adding any invitation or grant lifecycle. Continue other S/U/P/PW/K/EP/AP gaps after this slice.
 
