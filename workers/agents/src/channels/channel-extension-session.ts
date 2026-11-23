@@ -5,6 +5,11 @@ export interface ChannelExtensionSessionSql {
 }
 
 export interface ChannelExtensionSessionScope { projectId: string; installationId: string; conversationId: string; }
+export interface ChannelExtensionSessionSnapshot {
+  defaultState: unknown;
+  namedStates: Record<string, unknown>;
+  bytes: number;
+}
 const MAX_PROJECT_SESSIONS = 10_000;
 const MAX_PROJECT_SESSION_BYTES = 16 * 1024 * 1024;
 
@@ -25,6 +30,28 @@ export function initChannelExtensionSessionStore(sql: ChannelExtensionSessionSql
 
 const MAX_NAMED_SESSIONS_PER_CONVERSATION = 16;
 const SESSION_KEY = /^[a-z][a-z0-9_-]{0,47}$/;
+
+/** Read an exact conversation state snapshot without expiring or otherwise mutating live rows.
+ * Replay uses this to seed a new synthetic conversation while leaving the source session intact. */
+export function snapshotChannelExtensionSession(sql: ChannelExtensionSessionSql, scope: ChannelExtensionSessionScope, now = Date.now()): ChannelExtensionSessionSnapshot {
+  let defaultState: unknown = null;
+  let bytes = 0;
+  const legacy = sql.exec("SELECT state_json,state_bytes FROM channel_extension_sessions WHERE project_id=? AND installation_id=? AND conversation_id=? AND expires_at>?",
+    scope.projectId, scope.installationId, scope.conversationId, now).toArray()[0] as { state_json: string; state_bytes: number } | undefined;
+  if (legacy) {
+    bytes += Math.max(0, Number(legacy.state_bytes) || 0);
+    try { defaultState = JSON.parse(legacy.state_json) as unknown; } catch { defaultState = null; }
+  }
+  const rows = sql.exec("SELECT session_key,state_json,state_bytes FROM channel_extension_named_sessions WHERE project_id=? AND installation_id=? AND conversation_id=? AND expires_at>? ORDER BY session_key LIMIT ?",
+    scope.projectId, scope.installationId, scope.conversationId, now, MAX_NAMED_SESSIONS_PER_CONVERSATION).toArray() as Array<{ session_key: string; state_json: string; state_bytes: number }>;
+  const namedStates: Record<string, unknown> = {};
+  for (const row of rows) {
+    if (!SESSION_KEY.test(row.session_key) || row.session_key === "default") continue;
+    bytes += Math.max(0, Number(row.state_bytes) || 0);
+    try { namedStates[row.session_key] = JSON.parse(row.state_json) as unknown; } catch { namedStates[row.session_key] = null; }
+  }
+  return { defaultState, namedStates, bytes };
+}
 
 /** Reads at most 16 opaque records for one verified conversation. Provider contact IDs never
  * enter the handler API; the host derives this scope from its authenticated inbound dispatch. */

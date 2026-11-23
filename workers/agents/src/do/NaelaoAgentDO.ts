@@ -16,7 +16,7 @@ import { resourceQueuePartition } from "../script-engine/resource-queue-scope.js
 import { publishCompletedTask, type TaskPublication } from "../script-engine/task-publication.js";
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
-import { clearChannelExtensionConversationSessions, clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
+import { clearChannelExtensionConversationSessions, clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, snapshotChannelExtensionSession, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
 import { resolveExtensionProjectKnowledge, resolveCurrentExtensionKnowledgeRevision } from "../channels/extension-knowledge-selection.js";
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { createScaleDownProcessor } from "../shared/scaledown.js";
@@ -1986,6 +1986,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       updated_by TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(project_id,installation_id)
     )`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_extension_inbox_notes ON channel_extension_inbox_notes(project_id,installation_id,event_id,created_at)`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS channel_extension_replay_audit (
+      replay_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+      installation_id TEXT NOT NULL, source_event_id TEXT NOT NULL, actor_user_id TEXT NOT NULL,
+      source_status TEXT NOT NULL, source_handler_sha256 TEXT, installation_version TEXT, handler_sha256 TEXT,
+      settings_revision INTEGER, settings_sha256 TEXT, starting_state_source TEXT NOT NULL,
+      starting_state_sha256 TEXT, status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),
+      error_code TEXT, started_at INTEGER NOT NULL, finished_at INTEGER
+    )`);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_extension_replay_audit_scope
+      ON channel_extension_replay_audit(project_id,installation_id,started_at DESC)`);
     initChannelExtensionSessionStore(this.ctx.storage.sql);
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN task_id TEXT`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
@@ -2170,6 +2180,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if(method==='POST'&&url.pathname==='/phone-extension')return this.handlePhoneExtension(request);
       if(method==='POST'&&url.pathname==='/channel-extension-simulation')return this.handleChannelExtensionSimulation(request);
+      if(method==='POST'&&url.pathname==='/channel-extension-replay')return this.handleChannelExtensionReplay(request);
       // POST /warm — pre-warm DO (creates tables, returns status)
       if (method === "POST" && url.pathname === "/warm") {
         return Response.json({ status: "warm", ts: Date.now() });
@@ -9934,6 +9945,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     this.ctx.storage.sql.exec("DELETE FROM channel_extension_dispatches WHERE message_id IN (SELECT id FROM channel_messages WHERE session_id=?)", event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_extension_human_replies WHERE event_id IN (SELECT id FROM channel_messages WHERE session_id=?)", event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_extension_inbox_notes WHERE event_id IN (SELECT id FROM channel_messages WHERE session_id=?)", event.session_id);
+    this.ctx.storage.sql.exec(`DELETE FROM channel_extension_replay_audit WHERE project_id=? AND installation_id=?
+      AND source_event_id IN (SELECT id FROM channel_messages WHERE session_id=?)`, projectId, installationId, event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_messages WHERE session_id=?", event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_sessions WHERE id=?", event.session_id);
     clearChannelExtensionConversationSessions(this.ctx.storage.sql, { projectId, installationId, conversationId: event.session_id });
@@ -12242,9 +12255,178 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
+  /** Replay one stored customer event in a fresh isolate conversation. This path deliberately
+   * ends at the handler boundary: Knowledge, tools, attachments, delivery and session writes are
+   * represented by no-op adapters and never call their live counterparts. */
+  private async handleChannelExtensionReplay(request: Request): Promise<Response> {
+    this.ensureInit();
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    type ReplayBody = { spaceId?: unknown; projectId?: unknown; channel?: unknown; instanceId?: unknown;
+      eventId?: unknown; replayText?: unknown; startingState?: unknown; actorId?: unknown };
+    const body = await readBoundedResponseJson<ReplayBody>(new Response(request.body), 16_384).catch(() => ({} as ReplayBody));
+    if (typeof body.spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.spaceId)
+      || typeof body.projectId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.projectId)
+      || body.channel !== "whatsapp" || typeof body.instanceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.instanceId)
+      || typeof body.eventId !== "string" || body.eventId.length < 1 || body.eventId.length > 160
+      || body.startingState !== "empty" && body.startingState !== "current"
+      || typeof body.actorId !== "string" || !/^[A-Za-z0-9._:@-]{1,160}$/.test(body.actorId)
+      || body.replayText !== undefined && typeof body.replayText !== "string")
+      return Response.json({ error_code: "channel_replay_input_invalid" }, { status: 400 });
+    if (!this.env.PLATFORM_DB) return Response.json({ error_code: "database_unavailable" }, { status: 503 });
+    const spaceId = body.spaceId, projectId = body.projectId, instanceId = body.instanceId;
+    if (await this.tenantSpaceSuspended(tenantId, spaceId)) return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
+    const link = await this.env.PLATFORM_DB.prepare(
+      "SELECT project_id,extension_instance_id,extension_script_sha256 FROM channel_links WHERE space_id=? AND tenant_id=? AND channel=?"
+    ).bind(spaceId, tenantId, "whatsapp").first<{
+      project_id: string | null; extension_instance_id: string | null; extension_script_sha256: string | null;
+    }>();
+    if (!link || link.project_id !== projectId || link.extension_instance_id !== instanceId || !link.extension_script_sha256)
+      return Response.json({ error_code: "channel_extension_not_active" }, { status: 409 });
+
+    const source = this.ctx.storage.sql.exec(`SELECT m.id AS event_id,m.session_id,m.text,m.created_at,m.channel_extension_sha256,
+        COALESCE(d.status,CASE m.answered WHEN 1 THEN 'sent' WHEN 2 THEN 'processing' ELSE 'queued' END) AS status
+      FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
+      LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
+      WHERE m.id=? AND m.direction='inbound' AND s.channel='whatsapp' AND m.project_id=? AND m.channel_extension_instance_id=? LIMIT 1`,
+    body.eventId, projectId, instanceId).toArray()[0] as {
+      event_id: string; session_id: string; text: string; created_at: number; channel_extension_sha256: string | null; status: string;
+    } | undefined;
+    if (!source) return Response.json({ error_code: "channel_replay_source_unavailable" }, { status: 404 });
+    const message = typeof body.replayText === "string" ? body.replayText : source.text;
+    if (!message.trim() || message.length > 2_000 || new TextEncoder().encode(message).byteLength > 8_000)
+      return Response.json({ error_code: "channel_replay_text_invalid", max_bytes: 8_000, max_characters: 2_000 }, { status: 400 });
+
+    const replayId = crypto.randomUUID();
+    const startedAt = Date.now();
+    this.ctx.storage.sql.exec(`INSERT INTO channel_extension_replay_audit(
+      replay_id,tenant_id,space_id,project_id,installation_id,source_event_id,actor_user_id,source_status,
+      source_handler_sha256,starting_state_source,status,started_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,'started',?)`, replayId, tenantId, spaceId, projectId, instanceId,
+    source.event_id, body.actorId, source.status, source.channel_extension_sha256, body.startingState, startedAt);
+    this.ctx.storage.sql.exec(`DELETE FROM channel_extension_replay_audit WHERE rowid IN (
+      SELECT rowid FROM channel_extension_replay_audit WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=?
+      ORDER BY started_at DESC,replay_id DESC LIMIT -1 OFFSET 500)`, tenantId, spaceId, projectId, instanceId);
+    const finish = (status: "completed" | "failed", errorCode?: string) => {
+      this.ctx.storage.sql.exec(`UPDATE channel_extension_replay_audit SET status=?,error_code=?,finished_at=? WHERE replay_id=?`,
+        status, errorCode ?? null, Date.now(), replayId);
+    };
+    const fail = (code: string, status = 409) => {
+      finish("failed", code);
+      return Response.json({ error_code: code, replay_id: replayId }, { status, headers: { "cache-control": "private, no-store" } });
+    };
+    const statePayload = (defaultState: unknown, namedStates: Record<string, unknown>) => JSON.stringify({ default: defaultState, named: namedStates });
+    let workId: string | null = null;
+    let leaseHeld = false;
+    try {
+      workId = `replay-${replayId}`;
+      const lease = await this.extensionRuntimeWork({ action: "acquire", tenantId, spaceId, projectId,
+        instanceId, workId, workKind: "channel" });
+      if (lease.acquired !== true) return fail(lease.errorCode === "extension_installation_inactive"
+        ? "channel_extension_paused" : "channel_runtime_admission_unavailable");
+      leaseHeld = true;
+      const eventId = `replay-${replayId}`;
+      const handler = await this.loadActiveChannelHandler({ spaceId, tenantId, projectId, channel: "whatsapp",
+        messageId: eventId, instanceId, scriptSha256: link.extension_script_sha256, includeSettingsSnapshot: true });
+      if (!handler) return fail("channel_handler_unavailable");
+      const settingsJson = handler.settings ? JSON.stringify({ schemaVersion: handler.settings.schemaVersion,
+        revision: handler.settings.revision, values: handler.settings.values }) : "null";
+      const settingsSha256 = handler.settings ? Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(settingsJson))),
+        byte => byte.toString(16).padStart(2, "0")).join("") : null;
+      let defaultState: unknown = null;
+      let namedStates: Record<string, unknown> = {};
+      let stateBytes = 0;
+      if (body.startingState === "current" && handler.session) {
+        const snapshot = snapshotChannelExtensionSession(this.ctx.storage.sql, {
+          projectId, installationId: instanceId, conversationId: source.session_id,
+        });
+        defaultState = snapshot.defaultState;
+        namedStates = snapshot.namedStates;
+        stateBytes = snapshot.bytes;
+      }
+      const stateJson = statePayload(defaultState, namedStates);
+      const stateSha256 = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stateJson))),
+        byte => byte.toString(16).padStart(2, "0")).join("");
+      this.ctx.storage.sql.exec(`UPDATE channel_extension_replay_audit SET installation_version=?,handler_sha256=?,
+        settings_revision=?,settings_sha256=?,starting_state_sha256=? WHERE replay_id=?`, handler.version,
+      link.extension_script_sha256, handler.settings?.revision ?? null, handler.settings ? settingsSha256 : null, stateSha256, replayId);
+      const engine = await this.buildScriptEngineEnv(spaceId, "naelao-agent", tenantId, undefined, projectId);
+      const runChannel = engine?.codeRunner?.runChannel;
+      if (!runChannel) return fail("channel_runtime_unavailable", 503);
+      const result = await runChannel.call(engine.codeRunner, {
+        name: handler.name, code: handler.code, args: {}, tenantId, spaceId, agentId: "naelao-agent",
+        installationId: instanceId, maxConcurrency: handler.maxConcurrency, limits: handler.limits,
+        channel: { provider: "whatsapp",
+          event: { id: eventId, type: "message.received", occurredAt: new Date().toISOString(), payload: { text: message } },
+          conversation: { id: `replay:${replayId}` },
+          ...(handler.settings ? { settings: { schemaVersion: handler.settings.schemaVersion,
+            revision: handler.settings.revision, values: handler.settings.values } } : {}),
+          ...(handler.session ? { session: { state: defaultState, maxBytes: handler.session.maxBytes },
+            sessions: { states: namedStates, maxBytes: handler.session.maxBytes } } : {}) },
+      });
+      if (await this.tenantSpaceSuspended(tenantId, spaceId)) return fail("tenant_suspended", 403);
+      const retainedSource = this.ctx.storage.sql.exec(`SELECT 1 AS present FROM channel_messages
+        WHERE id=? AND direction='inbound' AND project_id=? AND channel_extension_instance_id=? LIMIT 1`,
+      source.event_id, projectId, instanceId).toArray()[0];
+      if (!retainedSource) return fail("channel_replay_source_deleted", 410);
+      if (!result.ok) return fail("channel_replay_handler_failed");
+      const replies = result.channel_replies ?? [];
+      const answers = result.channel_answers ?? [];
+      if (replies.length + answers.length !== 1) return fail("channel_replay_output_invalid");
+      let stagedReply: { text: string; delivery: "not_sent" } | undefined;
+      let stagedAnswer: { question: string; attachment_count: number; execution: "not_run" } | undefined;
+      if (replies.length === 1) {
+        const text = replies[0]!.trim();
+        if (!text || text.length > 2_000 || !moderateText(text).allowed) return fail("channel_extension_reply_blocked");
+        stagedReply = { text, delivery: "not_sent" };
+      } else {
+        const answer = answers[0]!;
+        const question = answer.question.trim();
+        if (!question || question.length > 2_000 || (answer.attachmentIds?.length ?? 0) > 3)
+          return fail("channel_replay_output_invalid");
+        stagedAnswer = { question, attachment_count: answer.attachmentIds?.length ?? 0, execution: "not_run" };
+      }
+      const sessionUpdates = {
+        ...(result.channel_session_update !== undefined ? { default: result.channel_session_update } : {}),
+        ...(result.channel_session_updates?.length ? { named: result.channel_session_updates } : {}),
+      };
+      const responseBody = {
+        replay_id: replayId, simulation: true, provider: "whatsapp", source_event_id: source.event_id,
+        source_status: source.status, source_handler_sha256: source.channel_extension_sha256,
+        installation_id: instanceId, installation_version: handler.version, extension_id: handler.extensionId,
+        handler_sha256: link.extension_script_sha256,
+        settings_snapshot: { source: handler.settings ? "active" : "none", revision: handler.settings?.revision ?? null,
+          schema_version: handler.settings?.schemaVersion ?? null, sha256: settingsSha256 },
+        starting_state: { source: body.startingState, available: body.startingState === "empty" || !!handler.session,
+          bytes: body.startingState === "current" && handler.session ? stateBytes : 0, sha256: stateSha256 },
+        ...(stagedReply ? { reply: stagedReply } : {}), ...(stagedAnswer ? { answer_request: stagedAnswer } : {}),
+        ...(Object.keys(sessionUpdates).length ? { staged_session_updates: sessionUpdates } : {}),
+        adapters: { knowledge: handler.knowledgeCollections.length ? "simulated_empty" : "not_configured",
+          tools: "simulated_no_effects", attachments: "simulated_unavailable", outbound_delivery: "simulated_not_sent" },
+        omitted_context: [
+          ...(handler.knowledgeCollections.length ? ["published_knowledge_not_queried"] : []),
+          ...(handler.attachmentAccess ? ["message_attachments_not_read"] : []),
+          ...(stagedAnswer ? ["answer_request_not_executed"] : []),
+          "tools_and_side_effects_not_executed", "extension_session_updates_not_saved",
+        ],
+        disclosure: "Isolated replay against the active installation and settings snapshot. The edited input was run in a fresh synthetic conversation; replies, Knowledge, tools, attachments and session updates used no-op simulation adapters and caused no live effects.",
+      };
+      if (new TextEncoder().encode(JSON.stringify(responseBody)).byteLength > 16_384)
+        return fail("channel_replay_output_too_large");
+      finish("completed");
+      return Response.json(responseBody, { headers: { "cache-control": "private, no-store" } });
+    } catch {
+      return fail("channel_replay_failed", 503);
+    } finally {
+      if (leaseHeld && workId) await this.extensionRuntimeWork({ action: "release", tenantId, spaceId, projectId,
+        instanceId, workId, workKind: "channel" });
+    }
+  }
+
   private async loadActiveChannelHandler(input: {
-    spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null; settingsSource?: "active" | "draft"; settingsRevision?: number | null;
-  }): Promise<{ name: string; extensionId: string; scope: "SPACE_SHARED" | "PROJECT_BOUND"; code: string; maxConcurrency: number; knowledgeCollections: string[]; attachmentAccess?: { mode: "read_text" | "read_image"; maxFiles: number; maxTotalBytes: number }; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
+    spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null; settingsSource?: "active" | "draft"; settingsRevision?: number | null; includeSettingsSnapshot?: boolean;
+  }): Promise<{ name: string; extensionId: string; version: string; scope: "SPACE_SHARED" | "PROJECT_BOUND"; code: string; maxConcurrency: number; knowledgeCollections: string[]; attachmentAccess?: { mode: "read_text" | "read_image"; maxFiles: number; maxTotalBytes: number }; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
       method: "POST", headers: await this.internalHeaders(input.tenantId, { "content-type": "application/json" }),
@@ -12261,6 +12443,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (Object.prototype.hasOwnProperty.call(input, "settingsRevision"))
         installationUrl.searchParams.set("phone_settings_revision", input.settingsRevision === null ? "none" : String(input.settingsRevision));
     } else if (input.settingsSource !== undefined) return null;
+    if (input.includeSettingsSnapshot) installationUrl.searchParams.set("include_channel_settings", "1");
     const installationResponse = await this.env.SPACES_WORKER.fetch(new Request(
       installationUrl,
       { headers: await this.internalHeaders(input.tenantId) },
@@ -12272,6 +12455,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         settingsSchema?: { schemaVersion?: number }; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; attachmentAccess?: { mode?: string; maxFiles?: number; maxTotalBytes?: number }; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
       release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
       phone_settings?: { schema_version?: number; revision?: number; active_revision?: number; settings_source?: string; settings?: unknown };
+      channel_settings?: { schema?: { schemaVersion?: number }; revision?: number; settings?: unknown; migration_required?: boolean };
     }>(installationResponse, 2 * 1024 * 1024).catch(() => null);
     const instance = installation?.instance;
     if (!installation || !instance || instance.status !== "active" || instance.instance_id !== input.instanceId
@@ -12317,6 +12501,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       settings = { schemaVersion: snapshot.schema_version as 1 | 2, revision: snapshot.revision!, values: normalized };
     } else if (installation.phone_settings !== undefined
       || Object.prototype.hasOwnProperty.call(input, "settingsRevision") && input.settingsRevision !== null) return null;
+    if (settingsCapability && input.channel === "whatsapp" && input.includeSettingsSnapshot) {
+      const snapshot = installation.channel_settings;
+      if (!snapshot || snapshot.schema?.schemaVersion !== installation.manifest.settingsSchema?.schemaVersion
+        || !Number.isSafeInteger(snapshot.revision) || Number(snapshot.revision) < 0
+        || snapshot.migration_required === true || !snapshot.settings || typeof snapshot.settings !== "object" || Array.isArray(snapshot.settings)) return null;
+      const values = snapshot.settings as Record<string, unknown>;
+      if (Object.keys(values).length > 128 || Object.entries(values).some(([, value]) =>
+        typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")) return null;
+      const normalized = values as Record<string, string | number | boolean>;
+      if (new TextEncoder().encode(JSON.stringify(normalized)).byteLength > 8_192) return null;
+      settings = { schemaVersion: snapshot.schema!.schemaVersion as 1 | 2, revision: snapshot.revision!, values: normalized };
+    } else if (installation.channel_settings !== undefined
+      && (input.channel !== "whatsapp" || !input.includeSettingsSnapshot)) return null;
     const packageId = installation.manifest.bundle?.id;
     const packageVersion = installation.manifest.bundle?.version;
     if (!packageId || packageId !== installation.manifest.id || !packageVersion || installation.release?.version !== packageVersion
@@ -12354,7 +12551,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!selected) return null;
       knowledgeCollections = selected;
     }
-    return { name: path[1]!, extensionId: installation.manifest.id, scope: instance.scope as "SPACE_SHARED" | "PROJECT_BOUND",
+    return { name: path[1]!, extensionId: installation.manifest.id, version: packageVersion, scope: instance.scope as "SPACE_SHARED" | "PROJECT_BOUND",
       code: script.code, maxConcurrency: maxConcurrency ?? 1,
       knowledgeCollections,
       ...(attachmentAccess ? { attachmentAccess: { mode: attachmentAccess.mode as "read_text" | "read_image",

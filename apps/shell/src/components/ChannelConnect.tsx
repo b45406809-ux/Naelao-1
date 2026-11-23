@@ -24,7 +24,7 @@ import { extensionResourceCostDisclosure, previewExtensionResourceRequirements }
 import { previewExtensionPublisherProvenance } from "@/lib/extension-publisher-provenance";
 import { projectInstalledExtensionReleaseProvenance } from "@/lib/extension-release-provenance";
 import { projectExtensionRollbackReview } from "@/lib/extension-rollback-review";
-import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type CustomerChannelSimulationResult, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type ProjectExtensionUpdateReview, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, getProjectExtensionUpdateReceipt, recoverStagedProjectExtensionUpdate, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, simulateAssistantChannelExtension, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, reviewProjectExtensionUpdate, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import { projectExtensionSetupStatusLabel, type ChannelExtensionInstallation, type ChannelExtensionInboxEvent, type ChannelExtensionInboxNote, type ChannelExtensionReplayResult, type ChannelLink, type ChannelMediaCapabilities, type ChannelPairing, type ContainerInstallation, type CustomerChannelSimulationResult, type ExtensionProviderConnection, type ExtensionProviderRevocationOutcome, type ExtensionPublisherKey, type ExtensionPublisherRevocationReceipt, type ExtensionRelease, type ProjectExtensionResourceGrantSnapshot, type ProjectExtensionResourceRequirement, type ProjectExtensionResourceUsageSnapshot, type ProjectExtensionUpdateReview, type RuntimeCatalogueEntry, type SessionCredentials, hasReviewableProjectExtensionResources, approveProjectExtensionResourceGrant, callProjectExtensionSettingsAudit, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, getProjectExtensionUpdateReceipt, recoverStagedProjectExtensionUpdate, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget, updateAssistantChannel, simulateAssistantChannelExtension, replayChannelExtensionEvent, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, reviewProjectExtensionUpdate, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -540,6 +540,11 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
   const [replyDrafts, setReplyDrafts] = React.useState<Record<string, string>>({});
   const [replyingTo, setReplyingTo] = React.useState<string | null>(null);
   const [exportingConversation, setExportingConversation] = React.useState<string | null>(null);
+  const [replayDrafts, setReplayDrafts] = React.useState<Record<string, string>>({});
+  const [replayStartingStates, setReplayStartingStates] = React.useState<Record<string, "empty" | "current">>({});
+  const [replayResults, setReplayResults] = React.useState<Record<string, ChannelExtensionReplayResult>>({});
+  const [replayErrors, setReplayErrors] = React.useState<Record<string, string>>({});
+  const [replayingEvent, setReplayingEvent] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   React.useEffect(() => {
     let cancelled = false;
@@ -619,6 +624,26 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't export this conversation."); }
     finally { setExportingConversation(null); }
   }
+  async function replayEvent(event: ChannelExtensionInboxEvent) {
+    if (replayingEvent) return;
+    const replayText = replayDrafts[event.event_id] ?? event.text;
+    if (!replayText.trim() || replayText.length > 2_000 || new TextEncoder().encode(replayText).byteLength > 8_000) return;
+    setReplayingEvent(event.event_id);
+    setReplayResults(current => { const next = { ...current }; delete next[event.event_id]; return next; });
+    setReplayErrors(current => ({ ...current, [event.event_id]: "" }));
+    try {
+      const result = await replayChannelExtensionEvent(spaceId, session, {
+        project_id: projectId,
+        extension_instance_id: installation.instance_id,
+        source_event_id: event.event_id,
+        replay_text: replayText,
+        starting_state: replayStartingStates[event.event_id] ?? "empty",
+      });
+      setReplayResults(current => ({ ...current, [event.event_id]: result }));
+    } catch (err) {
+      setReplayErrors(current => ({ ...current, [event.event_id]: err instanceof Error ? err.message : "Couldn't replay this inbox event." }));
+    } finally { setReplayingEvent(null); }
+  }
   return <details style={{ marginTop: 8 }}>
     <summary style={{ cursor: "pointer", fontSize: 11.5 }}>Customer inbox ({events.length}{events.some(event => event.response_due_at !== null && event.response_due_at !== undefined && event.response_due_at < Date.now()) ? ` · ${events.filter(event => event.response_due_at !== null && event.response_due_at !== undefined && event.response_due_at < Date.now()).length} overdue` : ""})</summary>
     {error && <div role="alert" style={{ color: "var(--danger, #b42318)", fontSize: 11, marginTop: 6 }}>{error}</div>}
@@ -645,6 +670,40 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
       {event.reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Reply: {event.reply_text}</div>}
       {event.human_reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Team reply ({event.human_reply_status}): {event.human_reply_text}</div>}
       {event.error_code && <div role="status" style={{ color: "var(--danger, #b42318)", marginTop: 5 }}>Issue: {event.error_code}</div>}
+      {event.channel === "whatsapp" && <section aria-label="Isolated conversation replay" style={{ display: "grid", gap: 5, marginTop: 8, paddingTop: 7, borderTop: "1px solid var(--border)" }}>
+        <strong>Replay this customer event in isolation</strong>
+        <label htmlFor={`extension-replay-input-${event.event_id}`}>Replay input</label>
+        <textarea id={`extension-replay-input-${event.event_id}`} maxLength={2_000} rows={3}
+          value={replayDrafts[event.event_id] ?? event.text} disabled={replayingEvent === event.event_id}
+          onChange={change => setReplayDrafts(current => ({ ...current, [event.event_id]: change.target.value }))}
+          style={{ width: "100%", boxSizing: "border-box", background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 6, padding: 7, font: "inherit" }} />
+        <small style={{ color: "var(--text3)" }}>Edit or redact this copy before replay. The edited text is used for this run and is not saved.</small>
+        <label htmlFor={`extension-replay-state-${event.event_id}`}>Starting extension state</label>
+        <select id={`extension-replay-state-${event.event_id}`} value={replayStartingStates[event.event_id] ?? "empty"}
+          disabled={replayingEvent === event.event_id}
+          onChange={change => setReplayStartingStates(current => ({ ...current, [event.event_id]: change.target.value as "empty" | "current" }))}
+          style={{ width: "fit-content", background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 5, padding: "3px 5px" }}>
+          <option value="empty">Fresh state</option><option value="current">Current saved state snapshot</option>
+        </select>
+        <button type="button" className="btn-ghost" style={{ width: "fit-content", fontSize: 10.5 }}
+          disabled={!!replayingEvent || !((replayDrafts[event.event_id] ?? event.text).trim())
+            || (replayDrafts[event.event_id] ?? event.text).length > 2_000
+            || new TextEncoder().encode(replayDrafts[event.event_id] ?? event.text).byteLength > 8_000}
+          onClick={() => void replayEvent(event)}>
+          {replayingEvent === event.event_id ? "Replaying…" : "Replay in isolation"}
+        </button>
+        {replayErrors[event.event_id] && <div role="alert" style={{ color: "var(--danger, #b42318)" }}>{replayErrors[event.event_id]}</div>}
+        {replayResults[event.event_id] && <div role="status" style={{ display: "grid", gap: 4, marginTop: 3, color: "var(--text2)" }}>
+          <strong>Simulated outcome · source event was {replayResults[event.event_id]!.source_status}</strong>
+          <small>Replay snapshot: active installation {replayResults[event.event_id]!.installation_version} · handler {replayResults[event.event_id]!.handler_sha256.slice(0, 12)} · settings {replayResults[event.event_id]!.settings_snapshot.source}{replayResults[event.event_id]!.settings_snapshot.revision === null ? "" : ` revision ${replayResults[event.event_id]!.settings_snapshot.revision}`}</small>
+          <small>Original handler {replayResults[event.event_id]!.source_handler_sha256?.slice(0, 12) ?? "unknown"} · settings hash {replayResults[event.event_id]!.settings_snapshot.sha256?.slice(0, 12) ?? "none"}</small>
+          <small>Starting state: {replayResults[event.event_id]!.starting_state.source}{replayResults[event.event_id]!.starting_state.source === "current" ? ` · ${replayResults[event.event_id]!.starting_state.bytes} bytes snapshotted · ${replayResults[event.event_id]!.starting_state.sha256.slice(0, 12)}` : " · empty"}</small>
+          {replayResults[event.event_id]!.reply && <div>Simulated reply (not sent): {replayResults[event.event_id]!.reply!.text}</div>}
+          {replayResults[event.event_id]!.answer_request && <div>Proposed answer (not generated): {replayResults[event.event_id]!.answer_request!.question}</div>}
+          {replayResults[event.event_id]!.staged_session_updates && <details><summary>Proposed session updates (not saved)</summary><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(replayResults[event.event_id]!.staged_session_updates, null, 2)}</pre></details>}
+          <small>Knowledge and tools used simulated no-op adapters. No attachments were read, messages sent, or customer state changed.</small>
+        </div>}
+      </section>}
       <ExtensionInboxNotes spaceId={spaceId} projectId={projectId} installationId={installation.instance_id} eventId={event.event_id} session={session} />
       <button type="button" className="btn-ghost" style={{ marginTop: 6, fontSize: 10.5 }} disabled={!!exportingConversation} onClick={() => void exportConversation(event.event_id)}>
         {exportingConversation === event.event_id ? "Exporting…" : "Export stored conversation"}

@@ -4829,6 +4829,30 @@ app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
       headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" } });
     result.phone_settings = await settingsResponse.json();
   }
+  if (c.req.query("include_channel_settings") === "1") {
+    const instance = result.instance as { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; status?: string } | undefined;
+    const manifest = result.manifest as { declaredPermissions?: unknown[]; capabilityRequirements?: unknown[]; settingsSchema?: { schemaVersion?: number } } | undefined;
+    const readCapability = manifest?.capabilityRequirements?.includes("extension.settings.read") ?? false;
+    const readPermission = manifest?.declaredPermissions?.includes("extension.settings.read") ?? false;
+    if (readCapability !== readPermission || readCapability !== Boolean(manifest?.settingsSchema))
+      return c.json({ error_code: "channel_extension_settings_declaration_invalid" }, 409, { "cache-control": "private, no-store" });
+    if (instance?.status !== "active" || instance.instance_id !== c.req.param("instanceId")
+      || instance.tenant_id !== tenantId || instance.space_id !== c.req.param("spaceId") || release?.signatureValid !== true)
+      return c.json({ error_code: "channel_extension_installation_untrusted" }, 409, { "cache-control": "private, no-store" });
+    if (readCapability) {
+      if (!instance.project_id || typeof manifest?.settingsSchema?.schemaVersion !== "number")
+        return c.json({ error_code: "channel_extension_settings_scope_invalid" }, 409, { "cache-control": "private, no-store" });
+      const settingsQuery = new URLSearchParams({ tenant_id: tenantId, space_id: c.req.param("spaceId"),
+        project_id: instance.project_id, instance_id: c.req.param("instanceId"), app_id: "" });
+      const settingsResponse = await stub.fetch(new Request(`http://space-do/extension-settings?${settingsQuery}`, {
+        headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+          "x-naelao-user-id": "channel-runtime", "x-naelao-role": "member", "x-naelao-project-read": "1" },
+      }));
+      if (!settingsResponse.ok) return new Response(await settingsResponse.text(), { status: settingsResponse.status,
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" } });
+      result.channel_settings = await settingsResponse.json();
+    }
+  }
   return c.json(result);
 });
 

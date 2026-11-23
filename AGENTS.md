@@ -62,5 +62,5 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**WhatsApp member routing and extension testing — implement isolated conversation replay.**
-Use the active plan and [progress ledger](docs/research/whatsapp-member-routing-and-extension-testing-progress.md). Replay a selected customer event into a fresh simulation with a pinned installation/settings snapshot and simulated Knowledge/tool adapters. Keep provider delivery, side effects, live extension sessions and persistent customer session updates disabled.
+**WhatsApp member routing and extension testing — add a customer-service WhatsApp SDK example.**
+Use the active plan and [progress ledger](docs/research/whatsapp-member-routing-and-extension-testing-progress.md). Build a versioned channel-only example that declares owner-approved scoped Knowledge and bounded session state, uses the host inbox for staff escalation, and documents synthetic test/replay behavior without provider credentials or live-effect claims.

@@ -379,25 +379,34 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
     connection mode gates member and executive routing; customer-only inbound uses the customer
     extension path or remains in human review.
 
-- [ ] **Add isolated conversation replay.** Replay a selected customer event into a fresh simulation
-  with a pinned installation/settings snapshot and simulated Knowledge/tool adapters. Never alter
-  live extension sessions or dispatch provider effects.
+- [x] **Add isolated conversation replay.** The owner/admin Project inbox now replays a selected
+  WhatsApp event through the current signed installation in a fresh isolate conversation. Active
+  settings and optional current session state are snapshotted; edited input is transient. Replies,
+  answer requests, Knowledge and tool behavior are staged through no-op simulation adapters. No
+  provider effects or session writes run. The audit retains only bounded metadata and conversation
+  deletion clears linked audit rows. Agents/Spaces typechecks and `git diff --check` pass; full Shell
+  typecheck reports only stale `.next/types` imports for four missing routes. No tests, migration,
+  provider action or deployment ran.
 
-**Latest checkpoint:** migration `0288` adds the explicit Space WhatsApp routing mode, revisioned
-mode audit and a privacy-safe member route-use ledger. The Channels panel now manages Space or
-exact Project grants, shows each member's verification/last-use status, lets members verify,
-replace or revoke only their own contact, displays current route selections, and explains `USE`
-selection. Member dispatch requires `staff_and_customers`, rechecks exact contact/grant/current
-membership/channel state in the Agent DO, and reserves provider events so retries cannot redirect
-to a different selected assistant. `customer_service_only` routes verified staff through the
-customer pairing/extension path and prevents executive commands and contact routing; missing or
-inactive handlers stay in the existing human-review path. Agents typecheck, targeted Shell
-typecheck and `git diff --check` pass. Full Shell typecheck still reports only the four known stale
-`.next/types` imports for missing routes. No tests, migration apply, provider action or deployment
-ran. Detailed evidence is in the [progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
-**Next action:** implement isolated conversation replay for a selected customer event, pinning the
-installation/settings snapshot and using simulated Knowledge/tool adapters without writing live
-session state or dispatching provider effects.
+- [ ] **Add a customer-service WhatsApp SDK example.** Build a versioned channel-only package
+  example with owner-approved scoped Knowledge, bounded session state, staff escalation through the
+  host inbox and documentation of the synthetic test/replay surfaces. Do not include provider
+  credentials or claim unverified live behavior.
+
+**Latest checkpoint:** in addition to migration `0288`, member administration and route-use controls,
+the Project inbox now provides isolated replay of selected WhatsApp events. Replay rechecks the
+owner/admin and Project boundary, uses a fresh synthetic event/conversation ID and pins the active
+signed handler, package version and active settings revision. Its optional current session snapshot
+uses SELECT-only reads; proposed updates are never written. Knowledge, tools, attachments, model
+answers and delivery use no-op adapters. A bounded audit stores actor/source/version/hash metadata
+without message or state values; deleting the stored conversation removes linked audit rows. Agents
+and Spaces typechecks and `git diff --check` pass. The full Shell typecheck still reports only the
+four known stale `.next/types` imports for missing routes, with no changed-source diagnostics. No
+tests, migration apply, provider action or deployment ran. Detailed evidence is in the
+[progress ledger](../research/whatsapp-member-routing-and-extension-testing-progress.md).
+**Next action:** add a customer-service WhatsApp SDK example that declares owner-approved scoped
+Knowledge, bounded session state, host-inbox escalation, and the existing synthetic test/replay
+surfaces without embedding provider credentials or implying live provider availability.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

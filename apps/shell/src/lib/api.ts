@@ -3126,6 +3126,41 @@ export interface CustomerChannelSimulationResult {
   disclosure: string;
 }
 
+export interface ChannelExtensionReplayResult {
+  replay_id: string;
+  simulation: true;
+  provider: "whatsapp";
+  source_event_id: string;
+  source_status: string;
+  source_handler_sha256: string | null;
+  installation_id: string;
+  installation_version: string;
+  extension_id: string;
+  handler_sha256: string;
+  settings_snapshot: { source: "active" | "none"; revision: number | null; schema_version: number | null; sha256: string | null };
+  starting_state: { source: "empty" | "current"; available: boolean; bytes: number; sha256: string };
+  reply?: { text: string; delivery: "not_sent" };
+  answer_request?: { question: string; attachment_count: number; execution: "not_run" };
+  staged_session_updates?: { default?: unknown; named?: Array<{ sessionId: string; value: unknown }> };
+  adapters: { knowledge: string; tools: string; attachments: string; outbound_delivery: string };
+  omitted_context: string[];
+  disclosure: string;
+}
+
+/** Replay one owner-visible WhatsApp inbox event in a new isolated synthetic conversation. */
+export async function replayChannelExtensionEvent(
+  spaceId: string,
+  session: SessionCredentials,
+  input: { project_id: string; extension_instance_id: string; source_event_id: string;
+    replay_text?: string; starting_state: "empty" | "current" },
+): Promise<ChannelExtensionReplayResult> {
+  return apiFetch<ChannelExtensionReplayResult>(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channels`, {
+    method: "POST",
+    body: JSON.stringify({ action: "replay_extension", channel: "whatsapp", ...input }),
+    session,
+  });
+}
+
 /** Run one synthetic message through the exact active WhatsApp customer handler. */
 export async function simulateAssistantChannelExtension(
   spaceId: string,

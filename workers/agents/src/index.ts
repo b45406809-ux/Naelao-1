@@ -9877,11 +9877,14 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const { userId } = getCallerIdentity(c);
 
   type ChannelActionBody = {
-    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension" | "simulate_extension" | "set_member_access" | "begin_member_contact_verification" | "revoke_member_contact" | "set_member_routing_mode";
+    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension" | "simulate_extension" | "replay_extension" | "set_member_access" | "begin_member_contact_verification" | "revoke_member_contact" | "set_member_routing_mode";
     channel?: string;
     model_override?: string | null;
     extension_instance_id?: string;
     test_message?: string;
+    source_event_id?: string;
+    replay_text?: string;
+    starting_state?: "empty" | "current";
     secret?: string;
     project_id?: string | null;
     user_id?: string;
@@ -10180,6 +10183,36 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
         "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
       body: JSON.stringify({ spaceId, projectId, channel, instanceId, message }),
+    }));
+  }
+
+  if (action === "replay_extension") {
+    const projectId = body.project_id ?? "";
+    const instanceId = body.extension_instance_id ?? "";
+    const eventId = body.source_event_id ?? "";
+    const replayText = body.replay_text;
+    const startingState = body.starting_state ?? "empty";
+    if (channel !== "whatsapp") return c.json({ error_code: "channel_replay_not_supported" }, 400);
+    if (!projectId || !instanceId || !eventId || eventId.length > 160
+      || startingState !== "empty" && startingState !== "current"
+      || replayText !== undefined && (typeof replayText !== "string" || !replayText.trim()
+        || replayText.length > 2_000 || new TextEncoder().encode(replayText).byteLength > 8_000))
+      return c.json({ error_code: "channel_replay_input_invalid", max_bytes: 8_000, max_characters: 2_000 }, 400);
+    const { userId, role: callerRole } = getCallerIdentity(c);
+    const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
+    if (!userId || !["owner", "admin"].includes(role ?? ""))
+      throw forbidden("Replaying a customer inbox event requires Space owner or admin access");
+    await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
+    const installation = await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, instanceId);
+    if (!installation || !installation.manifest.channels?.some(item => item.kind === "channel" && item.provider === "whatsapp"))
+      return c.json({ error_code: "channel_extension_not_active" }, 409);
+    const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+    return stub.fetch(new Request("http://agent-do/channel-extension-replay", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+      body: JSON.stringify({ spaceId, projectId, channel, instanceId, eventId,
+        ...(replayText === undefined ? {} : { replayText }), startingState, actorId: userId }),
     }));
   }
 

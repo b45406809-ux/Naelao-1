@@ -1,7 +1,8 @@
 # WhatsApp member routing and extension testing — progress
 
-Status: open. Source review is in progress on `Mcbt5s-Backup-2`; provider behavior, deployment,
-member enrollment, isolated customer simulation and replay acceptance remain unverified.
+Status: open. Member routing, the one-turn customer simulation and isolated conversation replay now
+have local source implementations on `Mcbt5s-Backup-2`. Migration apply, tests, provider behavior,
+deployment, authenticated UI and live acceptance remain unverified.
 
 ## Current-source reconciliation — 2026-11-23
 
@@ -168,3 +169,29 @@ identity model; do not reuse `executive_contacts` or `channel_pairings` as membe
 - This completes the source implementation and UI portion of member routing. Next: implement the
   separate isolated conversation replay path with pinned installation/settings and simulated
   Knowledge/tool adapters, avoiding live delivery, side effects and session writes.
+
+### Isolated WhatsApp conversation replay — 2026-11-23
+
+- The owner/admin Project inbox now accepts a selected WhatsApp event, an editable/redactable copy
+  of its text, and an explicit starting state (`empty` or `current`). Replay requires current Space
+  owner/admin and Project access, and the selected event must still belong to the exact Project and
+  installation. The input copy is not persisted.
+- The Agent DO creates fresh synthetic event and conversation IDs, revalidates the exact current
+  channel binding and signed active installation, and runs only the channel isolate. It pins the
+  active package version, handler hash and active settings revision/hash for that invocation. The
+  original handler hash and source outcome are shown alongside the simulated result.
+- Optional current session state is copied through a new SELECT-only reader that does not expire or
+  delete source rows. The isolate receives this copied snapshot under a new conversation ID; staged
+  session changes are displayed but never saved. Replies and answer requests are staged. Knowledge,
+  tools, attachments and outbound delivery use explicit no-op simulation adapters; no provider,
+  Knowledge query, model answer, tool effect or live conversation/session mutation is called.
+- A bounded per-installation audit stores only actor, source event, outcome, package/handler/settings
+  hashes and state-source/hash metadata. It stores no message, reply, settings or state values and
+  keeps at most 500 rows per installation. Existing stored-conversation deletion also removes audit
+  entries linked to that conversation.
+- Agents and Spaces typechecks passed with pnpm `9.12.0`; `git diff --check` passed. Full Shell
+  typecheck still reports only the known stale `.next/types` imports for four missing routes, with no
+  diagnostics in changed Shell sources. No tests, migration apply, provider action or deployment ran.
+- This completes the replay source/UI slice. Next: add a customer-service WhatsApp SDK example that
+  demonstrates only the channel-only context, owner-approved scoped Knowledge, bounded session
+  state, host inbox escalation, and synthetic test/replay surfaces.
