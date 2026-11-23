@@ -98,33 +98,39 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   ledger. Local/mock verification is recorded in the APW ledger; timestamps remain freshness
   metadata, not immutable revisions.
   See the APW ledger follow-up.
-- [ ] **Active · APW04 — Retention, invalidation and context evaluation.** Local semantic recall now
-  checks promoted vector candidates against the exact live `(id,user_id)` episodic source rows, so
-  failed best-effort vector cleanup cannot bring a deleted actor memory back. Reconcile remaining
-  retention/deletion rules and evaluate bounded selective context and private-project leakage against
-  the Knowledge and actor-scope contracts. See the APW ledger follow-up.
-- [ ] **APW05 — Cost and scheduling.** Reconcile reservations, accounting and run limits with the
-  shared compute and Billing ledgers.
+- [x] **APW04 — Retention invalidation and context privacy evaluation.** Recall validates promoted
+  semantic vectors against live actor-scoped SQLite rows, so failed vector cleanup cannot restore a
+  deleted note. Local tests also cover bounded actor-filtered ingress, role-gated facts, denial of
+  Project Knowledge retrieval before search without membership, and isolation of fact/Fabric/Wiki
+  recall between Projects. See the APW ledger follow-ups.
+- [ ] **Blocked · APW04 — Retention schedule approval.** Personal and Project Fabric/Wiki plus
+  promoted vectors have no approved TTL or erase schedule; current code only decays facts and caps
+  unpromoted episodes. Resume after a retention owner approves per-class duration and deletion
+  semantics. Do not introduce a new expiry without that policy.
+- [ ] **Active · APW05 — Cost and scheduling.** Trace existing goal/task, runtime and managed-service
+  admissions through Billing reservations, settlement and shared-compute accounting. Reconcile
+  run limits and existing policy authority; keep absent quota caps and provider USD evidence explicit.
+  See the APW, shared-compute and TBR ledgers.
 - [ ] **APW06 — Task controls and SDK.** Continue authorized task UI, template controls and evaluation.
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** Personal semantic-memory recall now checks each bounded promoted-vector
-candidate against the authoritative episodic row under the current actor-or-unscoped filter and
-requires that row still be marked promoted. It replaces vector-supplied actor metadata with the
-SQLite row owner. A failed best-effort Vectorize delete therefore cannot make a deleted note
-reappear in recall. A scoped Knowledge search without current Project membership is denied before
-embeddings or vector search. Existing actor scope, relevance gates and ingress token bounds remain
-intact; no retention duration or new expiry was introduced.
+**Latest checkpoint.** APW04 local evaluation now covers provenance through Knowledge citations,
+read-time invalidation of deleted promoted semantic memories, actor-filtered and token-bounded
+ingress, role-gated project facts, Project Knowledge membership denial before search, and
+fact/Fabric/Wiki isolation between neighboring Projects. Existing retention behavior was inventoried:
+fact decay and the cap on unpromoted episodes are implemented; no approved TTL exists for personal
+or Project Fabric/Wiki or promoted vectors. These local APW04 tasks are complete. Per-class
+retention duration and erasure semantics remain blocked pending approval.
 
-Verification: Agents memory/context scope suites **16/16**, Spaces Project memory deletion **3/3**,
-Knowledge search/deletion boundaries **18/18**, Agents/Spaces/Knowledge typechecks and
-`git diff --check`; local/mock only. Earlier source-provenance checkpoint `35096385` carries the
-Knowledge sparse-search, citation, and Shell source checks. No deployed/live acceptance.
+Verification: Agents memory/context scope suites **16/16**, Spaces Project memory scope/deletion
+**4/4**, Knowledge search/deletion boundaries **18/18**, Agents/Spaces/Knowledge typechecks and
+`git diff --check`; local/mock only. Earlier provenance checkpoint `35096385` and stale-vector
+invalidation checkpoint `dc3b5f25` are pushed. No deployed/live acceptance.
 
-**Exact next action:** reconcile local fact decay and unpromoted-episode pruning with Project,
-Space, Fabric, Wiki, promoted-vector and Knowledge lifecycle rules. Keep durations unchanged without
-approved policy, then finish actor/project-bounded selective-context and private-project evaluation.
+**Exact next action:** activate APW05 and compare current task/run and runtime admission paths with
+Billing reservations, settlement and shared-compute ledgers. Implement only where an existing
+configured authority can be rechecked; keep missing quota policy and provider USD evidence explicit.
 Preserve `infra/scripts/__pycache__/`.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
