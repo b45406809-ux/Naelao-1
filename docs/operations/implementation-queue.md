@@ -326,6 +326,38 @@ typechecks ran; `git diff --check` passed. Evidence: the AgentPort messaging pro
 **Next action:** reconcile AP01–AP06 against this branch's provider-neutral SDK, verified-capability
 UI and AgentPhone gates. Keep AgentPhone absent and unavailable without verified provider evidence.
 
+## Reconciled plan — AgentPhone and AgentPort adapter evaluation
+
+See the [plan](../research/agentphone-agentport-adapter-evaluation-plan.md) and [progress
+ledger](../research/agentphone-agentport-adapter-evaluation-progress.md).
+
+- [x] **AP01–AP06 — Reconcile current capability, SDK and setup surfaces.** The generic operator-
+  verified capability gate, provider-neutral typed AgentPort metadata and owner setup-scope UI are
+  present. No AgentPhone adapter or current verified provider evidence exists; AP02–AP05 and live
+  AP06 acceptance remain provider/API/commercial gates.
+
+**Latest checkpoint:** current source corrects the ledger's stale AP06 generic-code-gap label.
+ManagedServicesPanel shows only the newest currently verified capability and explicitly separates
+scope from connection/live availability. SDK discovery is provider-declaration metadata only. No
+AgentPhone support was found; Telnyx managed and streaming gates remain false. No tests or typechecks
+ran; no provider action occurred. Evidence: the AP progress ledger.
+**Next action:** continue with the ordered WhatsApp member-routing and extension-testing plan; trace
+the actual inbound caller and current identity/extension authority before selecting code work.
+
+## Active plan — WhatsApp member routing and extension testing
+
+See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md).
+
+- [ ] **Reconcile current WhatsApp member, customer and test routing.** Trace the current shared
+  inbound pairing, provider webhook, contact verification, membership/Project checks, extension
+  execution, simulation and replay callers. Compare with the plan and channel, extension, identity
+  and platform records, then implement only the first gap supported by current host authority.
+
+**Latest checkpoint:** the plan's 2026-11-16 baseline is stale and explicitly requires current-source
+review. No current-source conclusion has been recorded in this queue. **Next action:** trace the
+WhatsApp webhook and pairing route from provider receipt through inbound dispatch and owner/member
+identity resolution, then check the reachable extension simulation APIs.
+
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 
 See the [plan](../research/resumable-workers-durable-workflows-and-branches-plan.md) and
@@ -531,8 +563,8 @@ ledgers when moving to another plan.
 8. [ ] **Paused; no current code-ready task.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md). TBR08's workflow-resource dispatch slice is locally fixed; broad channel/provider/cache/delegation acceptance remains partial. TBR11's direct-script per-effect ceiling needs an owner-approved admission contract; role-to-resource mapping and private-Project policy remain unresolved.
 9. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
 10. [x] **Reconciled; no provider-adapter task is ready without external terms/API/pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
-11. [ ] **Active.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md). Reconcile AP01–AP06 against current provider-neutral SDK, verified-capability UI and provider gates; do not add AgentPhone support from vendor claims.
-12. [ ] [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Reconcile against channel, extension, identity and platform ledgers first.
+11. [x] **Reconciled; no AgentPhone source task is ready without verified API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
+12. [ ] **Active.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Reconcile against channel, extension, identity and platform ledgers first.
 13. [ ] [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md)
 14. [ ] [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md)
 

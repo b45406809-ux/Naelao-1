@@ -1,3 +1,30 @@
+## Current source reconciliation — 2026-11-23 (AP01–AP06)
+
+- AP01's generic evidence gate exists locally: `managed_service_capability_versions` requires the
+  latest version to be verified, current and operator-audited; managed operations use
+  `requireManagedServiceCapability`. The Shell dashboard reads only the latest capability row and
+  eligible, verified entitlements, and its setup note says verification does not prove a connected
+  account or live availability.
+- AP06's generic provider-neutral surfaces also exist: `ManagedServicesPanel.tsx` shows operations,
+  account modes, regions and expiry only for a current verified record; `@agentport/sdk` exposes
+  provider-declared metadata with an explicit warning that it is not Naelao adapter/verification,
+  region, entitlement or live evidence. The AgentPort README documents generic account references
+  and event consumption separately from native Cloudflare email.
+- No `AgentPhone` adapter, caller, SDK, setup UI or capability record exists under `workers/`,
+  `apps/` or `packages/`. Telnyx and AgentMail remain separate current providers. Telnyx managed
+  and extension-streaming gates are false in staging and production. No vendor claim, sample price,
+  account reference or generic metadata is a basis to add an AgentPhone capability.
+- AP02–AP05 remain partial for AgentPhone specifically: API/auth, event/signature, voice/media,
+  parent/subaccount terms, exact payer/rates/invoice evidence and provider deletion behavior are not
+  verified. Those are provider/API/contract acceptance gates, not credential-only implementation
+  blockers. No safe AgentPhone-specific source change is ready.
+
+Reconciliation is complete for this branch; AP remains open at its documented provider gates. No
+tests or typechecks were run. No provider account, number, call, message, purchase, deployment or
+rollout was used. **Next queue task:** reconcile the WhatsApp member-routing and extension-testing
+plan against current channel, identity, extension and simulation callers; implement only gaps backed
+by existing host authority.
+
 ## Cross-plan checkpoint — 2026-11-17 (reconciled synthetic lifecycle; `b4a06736` pushed)
 
 EP03's RAG package now has a host-authorized custom retriever wrapper: pre-ranking current chunk allowlist, explicit query-egress admission, lineage/budget checks, and post-call revoke/source/deletion fencing. Synthetic tests **7/7**, RAG/Knowledge typechecks pass. No custom runtime caller or AgentPhone adapter was added. AP06 owner UI guidance uses only current operator-verified capability scopes (`41e01624`); AgentPhone API, pricing, events and live behavior remain unverified.
@@ -47,7 +74,7 @@ Fetched the source plan from `origin/plan/microapps-ui-sdk-voice` commit `3ef841
 | AP03 events and routing | PARTIAL + PROVIDER_GATE | AgentPort subscription event reference/dedupe/dispatch exists; owner-authorized AgentMail routes and Telnyx signed webhooks are separate paths. No AgentPhone event schema/signature/replay contract is verified. No AgentPhone normalization/routing adapter is present; caller ID is not identity. |
 | AP04 voice/privacy | PARTIAL + PROVIDER_GATE | Telnyx media bridges, call lifecycle, consent/profile gates and managed call billing exist. AgentPhone hosted/webhook voice, media/interruption/signature, recording and retention behavior remain unverified; no AgentPhone voice mode may be advertised or routed. |
 | AP05 payer, budget and receipts | PARTIAL / provider terms gate | Managed Telnyx paths reserve/settle usage and rental charges against configured Naelao schedules; AgentPort/AgentMail use account/usage records. No AgentPhone rate card, payer/subaccount semantics, quote or invoice receipt contract exists. Generic admission is present; do not add vendor prices until verified and approved. |
-| AP06 SDK/UI/acceptance | CODE_GAP + LIVE_GATE | Existing standalone AgentPort proxy is independent of Naelao assistant wake and existing Shell provider surfaces can be extended. No AgentPhone setup UI/SDK or equivalent benchmark exists; UI may only describe verified capability records. Zimbabwe, iMessage, WhatsApp, RCS and SIP availability/pricing are unverified. No provider registration, number provisioning, messages, calls or spend were performed. |
+| AP06 SDK/UI/acceptance | GENERIC_FOUNDATIONS_LOCAL / AGENTPHONE_PROVIDER_GATE | Current typed AgentPort metadata and verified-capability setup guidance are provider-neutral and explicitly distinguish declarations from Naelao support. No AgentPhone-specific UI/SDK, adapter or benchmark exists; implementing those requires verified provider evidence. Zimbabwe, iMessage, WhatsApp, RCS and SIP availability/pricing are unverified. |
 
 All advertised AgentPhone features, regions, APIs, event/signature behavior, subaccounts, commercial rights, terms and price figures in the source plan remain provider claims, not supported Naelao capabilities or quote inputs. The plan's illustrative $46/$73 totals must not be used for pricing. Do not sign up, disclose credentials/OTP, provision a number, send, call or incur a charge without explicit authorization. Do not replace Telnyx, AgentMail, Cloudflare email or independent AgentPort behavior. Keep rollout disabled.
 

@@ -62,8 +62,5 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**AgentPhone and AgentPort adapter evaluation — reconcile AP01–AP06 with current source.**
-Inspect the current provider-neutral AgentPort SDK and verified-capability setup surfaces against the
-AgentPhone progress ledger. Separate generic host support from provider claims, and open implementation
-only where current verified capability evidence and host authority support a safe change. Keep
-AgentPhone unavailable without current API, commercial, regional and live acceptance evidence.
+**WhatsApp member routing and extension testing — reconcile current routing and simulation callers.**
+Trace the actual inbound pairing, webhook, contact and membership authority, customer extension, and test/replay flows against the plan and existing channel, extension and identity records. Implement the first gap supported by current host authority; preserve tenant/member/project isolation and keep simulations free of live effects.
