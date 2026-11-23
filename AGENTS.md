@@ -1,5 +1,26 @@
 # Naelao implementation instructions
 
+## Start or resume
+
+When the user says **start** or **continue** in this repo, run the implementation queue on
+`origin/Mcbt5s-Backup-2`. Use one session, one plan and one task at a time. Begin with the first
+concrete action in the queue. A status summary, verified checkpoint or push is an intermediate
+result. Keep working through ready tasks until the queue is complete, the user redirects the
+session, or a specific blocker leaves no ready work.
+
+1. Find the Naelao checkout. Check its remote, branch, working tree and local-only commits.
+   Fetch `origin/Mcbt5s-Backup-2` before choosing work. In a fresh environment, start from
+   that fetched commit. If the current checkout contains other work, use a separate worktree
+   or clone and preserve the existing files and commits.
+2. Read the [implementation queue](docs/operations/implementation-queue.md) from the recovered
+   checkout. Follow its active task and latest checkpoint, then read only the relevant plan,
+   ledger entries and source. If the pointer below is stale or absent, the queue decides what
+   to resume or promote. Compare saved evidence with the code before repeating any step.
+3. In an existing checkout, recover useful local work before restarting it from the remote.
+   After an interruption during a push, fetch and check whether the remote already contains
+   the commit. If the environment is still starting or reconnecting, wait for readiness and
+   resume from the checkout when it returns.
+
 ## Current task
 
 **APW02 — Host admission for dynamic goal graph expansion.** Resume from the checked-in
@@ -8,28 +29,30 @@ caller against the APW02 ledger entry, then implement the next missing slice of 
 expansion while preserving task identity, scoped grants and Billing admission. Progressive
 routing stays disabled by default.
 
-## Work through the queue
+## Save progress inside each task
 
-- Use one implementation session, one active plan and one active task at a time. Start or
-  resume by checking the actual branch, worktree and remote tip, then read the queue and the
-  active task's plan and ledger entries. Read other plans only for a dependency or overlap.
-- After each verified task, record evidence and check it off in the queue. Replace the current
-  task above with the next ready task in the same plan. When that plan has no ready work, advance
-  to the next plan. Record any blocked item and its resume condition in the queue. If no task
-  is ready, remove the Current task section until one becomes ready.
-- Keep this file as instructions and the current pointer. Put checkpoint history, completion
-  evidence, pending work and blockers in the queue and linked ledgers. Resume from those
-  records after interruption. A checkpoint is a place to resume within the goal.
-- Reuse existing requirement IDs and code for overlaps. Verify reachable callers and run the
-  relevant checks. Record local, mock and live evidence accurately. Continue through available
-  work within the active goal unless the user redirects it or an actual blocker prevents progress.
+- Break the active task into small slices that can be checked on their own. Commit and push
+  each coherent slice as soon as its relevant checks pass, even while the task is still open.
+  Include the work and a brief handoff that states what passed, what remains, and the exact
+  next action. Keep the task checkbox open until its acceptance criteria are met.
+- Fetch before pushing, then verify the remote contains the checkpoint commit. If a push
+  fails, preserve the local commit, check the remote and retry safely. Treat the latest
+  confirmed remote commit as the recovery point for a fresh environment.
+- When a task is verified, check it off and point this file at the next ready task in the
+  same plan. When that plan has no ready work, advance to the next plan. Record blockers
+  and their resume conditions in the queue. If nothing is ready, remove the Current task
+  section. Include the queue and pointer transition in the checkpoint, then continue.
+- Keep checkpoint detail in the queue and linked ledgers. Reuse existing requirement IDs
+  and code for overlaps. Verify reachable callers and distinguish mock, local and live
+  evidence.
 
 ## Repository rules
 
 - Read nested AGENTS.md files before editing their paths. Use the pinned Node and pnpm versions
   from the repo and a frozen lockfile. Preserve existing work and untracked files.
 - Fetch and safely integrate `origin/Mcbt5s-Backup-2` before each authorized checkpoint push.
-  Push to that ref normally once the fetched tip is an ancestor of the intended commit.
+  Use `git push origin HEAD:refs/heads/Mcbt5s-Backup-2` once the fetched tip is an ancestor
+  of the intended commit.
   Preserve both sides of any divergence. Avoid force pushes, resets and cleaning away work.
 - Production deployment, rollout enablement, paid purchases, destructive remote migrations
   and external messages require separate authorization. Keep rollout gates disabled until

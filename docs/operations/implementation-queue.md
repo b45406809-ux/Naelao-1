@@ -7,9 +7,10 @@ readiness and record a reason here if the order changes.
 
 ## How to resume and advance
 
-1. Inspect the actual worktree and branch, and fetch `origin/Mcbt5s-Backup-2`. Read this queue and
-   the current task's relevant plan, ledger and source. The queue is the source of truth for the
-   active task. Bring the brief pointer in [AGENTS.md](../../AGENTS.md) into sync if it is stale.
+1. A new session can start with **start**. Follow the [startup instructions](../../AGENTS.md#start-or-resume)
+   to recover the current checkout from `origin/Mcbt5s-Backup-2`, then use the queue entry and
+   its latest checkpoint to choose exactly where to resume. Bring the AGENTS.md pointer into
+   sync if it is stale.
 2. When activating a plan, turn its remaining ready requirements into ordered checkboxes under that
    plan. Preserve the requirement IDs and use the linked ledger's verified status. Historical
    checkpoints can supply evidence. Use one task and one evidence entry for overlapping requirements.
@@ -26,11 +27,33 @@ readiness and record a reason here if the order changes.
    next ready plan. Clear the old active pointer when switching. Remove the Current task section
    from AGENTS.md if nothing is ready. Recheck parked items when their recorded dependency changes.
 
+## Checkpoint format
+
+Each checkpoint inside an open task should save a small, verified change and a handoff in the
+same commit. Update the **Latest checkpoint** under the active plan with the task and slice,
+what landed, what verification ran and its result, and the exact next action. Name a file,
+function or verification command when that helps the next session pick up the work. Link
+longer evidence in the task ledger, and keep older checkpoints in Git history or that ledger.
+The containing commit identifies the checkpoint. Link earlier evidence commits where useful.
+
+Keep the task unchecked between slices. Record a blocker only with the missing prerequisite,
+the work already saved, and a condition for retrying. Preserve unpushed work when the checkout
+survives. After local data loss, fetch the recovery branch and pick up from its latest saved
+handoff. Anything that had yet to reach that branch may need to be redone.
+
 ## Active plan
 
 **Adaptive planner, worker coordination and memory.** See the [plan](../research/adaptive-planner-worker-swarm-memory-plan.md)
 and [progress ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). APW01 was
 reconciled in that ledger. Existing partial implementations remain recorded there.
+
+**Latest checkpoint.** APW02 progressive admission landed in `796182c7` with the default rollout
+disabled. The [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md) records
+59 local goal DAG and architecture checks and the Agents and Shell typechecks for that slice.
+The next missing slice is host-owned dynamic expansion. Start by tracing
+`validateGoalDag` and `executeGoalDag` through the persisted task IDs, scoped worker grants,
+and Billing admission in the Agents worker. Use the current code and ledger to avoid repeating
+the progressive routing work.
 
 - [ ] **Active · APW02 — Host admission for dynamic goal graph expansion.** Trace the current durable
   DAG caller and implement the next missing host-owned expansion slice. Preserve stable task identity,
