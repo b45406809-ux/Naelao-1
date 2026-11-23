@@ -261,20 +261,24 @@ owner selection and revocation; do not infer beneficiary, payer or shared author
   settings, revision history/rollback drafts, synthetic scenarios and exact-install line/call/cost
   status. P06 remains partial for first-party signed distribution/catalog, managed provisioning,
   verified cost/quality and deployed carrier acceptance; those need publisher/provider evidence.
-- [ ] **P07 — Fail closed on custom worker-model capability claims.** Reconcile the custom-model
+- [x] **P07 — Fail closed on custom worker-model capability claims.** Reconcile the custom-model
   manifest and worker-selection/resume paths. A custom model has no trusted modality/context/tool
   profile today; do not infer capability from its base model or adapter ID. Enforce current private
-  route and required-capability fences after saved-session model restoration, without adding cloud
-  fallback or owner capability claims.
+  route and required-capability fences after saved-session model restoration. The host now rejects
+  unsupported required-capability selections, prevents resumed worker settings from changing a
+  local-only or BYOK route, and rechecks current model evidence after restoration. Custom-model
+  capability selection itself remains unavailable.
+- [ ] **P08 — Reconcile bounded sampled-frame authorization and quota.** Trace current attachment
+  ownership, owner opt-in, feature gate, egress, size/time limits and OCR/visual quota at the route
+  and provider handoff. Implement a source-ready local gap if found; otherwise record the exact
+  deployed/provider evidence still required. Keep the feature off until acceptance.
 
-**Latest checkpoint:** P06 trace rechecked the signed `bounded-phone-menu` example and its host APIs.
-The package is a bounded IVR, not a conversational voice agent; its existing owner caller already
-publishes per-installation settings, reviews history and rollback drafts, runs synthetic exact-handler
-scenarios, and reads exact-line/call/provider-cost status. No missing operation was safe to add within
-that contract. First-party release signing/catalog distribution, managed number provisioning, trusted
-rates/quality and live carrier acceptance remain external contract/evidence gates. No code, provider
-call or rollout changed. **Next action:** enforce P07 capability/private-route constraints after model
-selection and saved-session restoration.
+**Latest checkpoint:** P07 now rejects capability-required custom models without a trusted profile and
+rejects private-route or BYOK route changes after a saved worker model is restored. Exact local-machine
+profiles and fresh remote model cards remain the only capability evidence; no new model claim or cloud
+fallback was added. Agents typecheck and `git diff --check` pass. No tests, deployment or provider call
+ran. P07 remains PARTIAL because custom model capability selection lacks evidence. **Next action:**
+reconcile P08's sampled-frame path through its current route, quota and feature gate.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

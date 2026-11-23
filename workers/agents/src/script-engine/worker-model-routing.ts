@@ -223,8 +223,16 @@ export async function selectWorkerModel(
       reason: "Selected a model declared capable by the authorized local machine; inference remains on that machine." };
     return fallback;
   }
-  if (input.privateRoute || input.plannerModel.startsWith("custom/"))
+  if (input.plannerModel.startsWith("custom/")) {
+    if (input.requirements)
+      throw new Error("custom_worker_model_capability_evidence_unavailable");
     return fallback;
+  }
+  if (input.privateRoute) {
+    if (input.requirements)
+      throw new Error("private_worker_model_capability_evidence_unavailable_on_authorized_route");
+    return fallback;
+  }
   const cardByModel = new Map(
     (input.workerModelCandidates ?? []).map((card) => [card.model, card])
   );

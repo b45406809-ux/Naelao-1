@@ -3207,3 +3207,24 @@ only; no code, tests, provider calls or live acceptance ran.
 Exact next action: P07 — check worker model capability and privacy constraints after both automatic
 selection and saved-session model restoration. Custom-model manifests currently expose only model ID,
 base model and LoRA adapter ID; do not infer modality/context/tool support.
+
+## P07 checkpoint — 2026-11-23 (worker capability and resumed-route fences)
+
+Custom worker models still have no trusted modality/context/tool profile: `CustomModelManifest`
+contains only `modelId`, `baseModel` and `loraAdapterId`. The existing local route uses the exact
+authorized machine's owner-declared profile, while remote selection uses a fresh tool-capable provider
+card. `selectWorkerModel` now fails closed when a custom model or an authorized private/BYOK route is
+asked to satisfy worker requirements without corresponding capability evidence. After saved worker
+configuration restores its model, `NaelaoAgentDO` now checks that local-only execution remains on
+`local/*`, the current BYOK model ID is unchanged, custom selection stays on the current custom model,
+and every required model capability still has current exact local-profile or fresh remote-card
+evidence. No custom capability was inferred from a base model or adapter ID, and no cloud fallback was
+added.
+
+Agents typecheck and `git diff --check` pass. No tests, deployment, provider call or live acceptance
+ran. This closes the local fail-closed/resume slice only; P07 remains PARTIAL for owner-approved
+custom-model capability evidence and deployed/provider acceptance.
+
+Exact next action: trace P08's bounded sampled-frame authorization, owner consent, rollout flag and
+shared quota through its current request and provider paths; implement a source-ready local gap or
+record the remaining provider/deployed acceptance requirement and continue.

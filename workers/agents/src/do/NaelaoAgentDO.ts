@@ -5792,10 +5792,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           modelResolution = { model: savedConfiguration.model, downgraded: false, reason: "resumed_worker_session_policy" };
         }
         assertWorkerAttemptActive();
+        const localOnlyWorkerRoute = runtimeEnv?.airGappedOnly === true || Boolean(runtimeEnv?.localModelMachine);
+        if (localOnlyWorkerRoute && !modelResolution.model.startsWith("local/"))
+          throw new Error("private_worker_model_route_changed_on_resume");
+        const plannerByokProvider = byokProviderForModel(plannerModel);
+        if (plannerByokProvider && modelResolution.model !== plannerModel)
+          throw new Error("byok_worker_model_route_changed_on_resume");
+        if (plannerModel.startsWith("custom/") && modelResolution.model !== plannerModel)
+          throw new Error("custom_worker_model_route_changed_on_resume");
+        if (modelRequirements && modelResolution.model.startsWith("custom/"))
+          throw new Error("custom_worker_model_capability_evidence_unavailable");
         if (modelRequirements && modelResolution.model.startsWith("local/")
           && !privateWorkerModelMeetsRequirements(runtimeEnv?.privateWorkerModels?.find(profile => `local/${profile.id}` === modelResolution.model), modelRequirements))
           throw new Error("private_worker_model_capability_unavailable_on_authorized_machine");
-        if (modelRequirements && !privateRoute && !workerModelMeetsRequirements(runtimeEnv?.workerModelCandidates?.find(card=>card.model===modelResolution.model),modelRequirements)) throw new Error("worker_model_capability_unavailable_within_configured_pool");
+        if (modelRequirements && !modelResolution.model.startsWith("local/")
+          && (privateRoute || !workerModelMeetsRequirements(runtimeEnv?.workerModelCandidates?.find(card => card.model === modelResolution.model), modelRequirements)))
+          throw new Error(privateRoute ? "private_worker_model_capability_evidence_unavailable_on_authorized_route" : "worker_model_capability_unavailable_within_configured_pool");
           if (!userId || !runtimeEnv) throw new Error("delegation_authorized_parent_required");
           const depth = ((runtimeEnv.delegationDepth ?? 1) + 1) as 2 | 3;
           const planner = t["planner"] === true;
