@@ -20,7 +20,17 @@ export interface GoalTaskState { status: GoalTaskStatus; workerId: string; dispa
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain" | "verification_failed" | "verification_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" | "review_verification" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
 export interface GoalExpansionReceipt { proposalId: string; taskIds: string[]; status: "admitted" | "rejected"; reason?: string }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; taskDefinitions?: GoalTask[]; expansionReceipts?: Record<string, GoalExpansionReceipt>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number; policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed" } }
+export interface GoalRoutingAdjustment {
+  fromConcurrency: number | null;
+  toConcurrency: number;
+  reason: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed";
+  at: number;
+  taskId?: string;
+  taskOutcome?: "completed" | "failed" | "needs_review";
+  verificationOutcome?: "passed" | "failed" | "uncertain" | "not_required" | "unavailable";
+}
+export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; taskDefinitions?: GoalTask[]; expansionReceipts?: Record<string, GoalExpansionReceipt>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number; policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed"; adjustments?: GoalRoutingAdjustment[] } }
+export const MAX_GOAL_ROUTING_ADJUSTMENTS = 32;
 /** Automatic repair is an opt-in, host-budgeted path with a hard kernel ceiling. */
 export const MAX_GOAL_FIXERS_PER_RUN = 2;
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
@@ -96,8 +106,18 @@ function selectGoalRouting(tasks: GoalTask[], hostConcurrency: number, adaptiveC
     selectedConcurrency: adaptiveConcurrency ? 1 : mode === "parallel" ? Math.min(hostConcurrency, tasks.length) : 1,
     hostConcurrencyCeiling: hostConcurrency,
     ...(adaptiveConcurrency ? { policy: "progressive-v1" as const,
-      ...(mode === "parallel" ? { adjustmentReason: "initial_probe" as const } : {}) } : {}),
+      ...(mode === "parallel" ? { adjustmentReason: "initial_probe" as const,
+        adjustments: [{ fromConcurrency: null, toConcurrency: 1, reason: "initial_probe" as const, at: Date.now() }] } : {}) } : {}),
   };
+}
+
+function recordRoutingAdjustment(
+  routing: NonNullable<GoalDagJournal["routing"]>,
+  adjustment: GoalRoutingAdjustment,
+): void {
+  const adjustments = routing.adjustments ??= [];
+  adjustments.push(adjustment);
+  if (adjustments.length > MAX_GOAL_ROUTING_ADJUSTMENTS) adjustments.splice(0, adjustments.length - MAX_GOAL_ROUTING_ADJUSTMENTS);
 }
 
 function dependencyHandoffs(task: GoalTask, journal: GoalDagJournal): GoalHandoff[] {
@@ -190,6 +210,8 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     routing.selectedConcurrency = Math.min(routing.hostConcurrencyCeiling, routing.taskCount, loaded.routing.selectedConcurrency);
     routing.adjustmentReason = loaded.routing.adjustmentReason ?? "initial_probe";
   }
+  if (Array.isArray(loaded?.routing?.adjustments)) routing.adjustments = loaded.routing.adjustments.slice(-MAX_GOAL_ROUTING_ADJUSTMENTS);
+  else if (loaded?.routing?.policy === "progressive-v1" && host.adaptiveConcurrency === true && routing.mode === "parallel") routing.adjustments = [];
   journal.routing = routing;
   await host.save(structuredClone(journal));
   // The feature flag is a live host kill switch. Persisted opt-in must not override a
@@ -205,6 +227,20 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     saveTail = saveTail.then(() => host.save(snapshot));
     return saveTail;
   };
+  let lastCompletionEvidence: Pick<GoalRoutingAdjustment, "taskId" | "taskOutcome" | "verificationOutcome"> | undefined;
+  const priorCompletion = tasks.flatMap(task => {
+    const state = journal.tasks[task.id];
+    return state?.runtime?.completedAt !== undefined && ["completed", "failed", "needs_review"].includes(state.status)
+      ? [{ taskId: task.id, state, completedAt: state.runtime.completedAt }]
+      : [];
+  }).sort((left, right) => right.completedAt - left.completedAt)[0];
+  if (priorCompletion) {
+    lastCompletionEvidence = {
+      taskId: priorCompletion.taskId,
+      taskOutcome: priorCompletion.state.status as "completed" | "failed" | "needs_review",
+      verificationOutcome: priorCompletion.state.verification?.outcome ?? (journal.verificationRequired ? "unavailable" : "not_required"),
+    };
+  }
   let expansionAdmissionTail: Promise<void> = Promise.resolve();
   const processGoalExpansion = async (parent: GoalTask, state: GoalTaskState): Promise<void> => {
     if (host.dynamicExpansionEnabled !== true || state.status !== "completed" || !state.result?.ok) return;
@@ -252,7 +288,18 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       (journal.expansionReceipts ??= {})[parent.id] = {
         proposalId: prepared.proposalId, taskIds: prepared.tasks.map(task => task.id), status: "admitted",
       };
+      const priorRouting = journal.routing;
       journal.routing = selectGoalRouting(tasks, host.concurrency, host.adaptiveConcurrency === true);
+      if (priorRouting?.adjustments) journal.routing.adjustments = priorRouting.adjustments.slice(-MAX_GOAL_ROUTING_ADJUSTMENTS);
+      if (host.adaptiveConcurrency === true && priorRouting?.mode === "parallel" && journal.routing.mode === "parallel"
+        && priorRouting.selectedConcurrency !== journal.routing.selectedConcurrency) {
+        journal.routing.adjustmentReason = "initial_probe";
+        recordRoutingAdjustment(journal.routing, {
+          fromConcurrency: priorRouting.selectedConcurrency, toConcurrency: journal.routing.selectedConcurrency,
+          reason: "initial_probe", at: Date.now(), taskId: parent.id, taskOutcome: "completed",
+          verificationOutcome: state.verification?.outcome ?? (journal.verificationRequired ? "unavailable" : "not_required"),
+        });
+      }
       await save();
       for (const task of prepared.tasks) await host.publish(task, journal.tasks[task.id]!);
     } finally {
@@ -366,8 +413,13 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       && (!journal.taskBlackboardEnabled || tasks.filter(sender => sender.communication_recipients?.includes(task.id))
         .every(sender => !["pending", "running", "verifying"].includes(journal.tasks[sender.id]!.status))));
     if (host.adaptiveConcurrency === true && ready.length > 0 && journal.routing.mode === "parallel" && journal.routing.selectedConcurrency > ready.length) {
+      const fromConcurrency = journal.routing.selectedConcurrency;
       journal.routing.selectedConcurrency = ready.length;
       journal.routing.adjustmentReason = "frontier_narrowed";
+      recordRoutingAdjustment(journal.routing, {
+        fromConcurrency, toConcurrency: ready.length, reason: "frontier_narrowed", at: Date.now(),
+        ...(lastCompletionEvidence ?? {}),
+      });
       await save();
     }
     for (const task of ready) {
@@ -552,15 +604,34 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       const finishedTask = tasks.find(task => task.id === finished.id);
       for (const key of finishedTask?.resource_keys ?? []) activeResources.delete(key);
       const finishedState = journal.tasks[finished.id];
+      if (finishedState && ["completed", "failed", "needs_review"].includes(finishedState.status)) {
+        lastCompletionEvidence = {
+          taskId: finished.id,
+          taskOutcome: finishedState.status as "completed" | "failed" | "needs_review",
+          verificationOutcome: finishedState.verification?.outcome ?? (journal.verificationRequired ? "unavailable" : "not_required"),
+        };
+      }
       if (host.adaptiveConcurrency === true && journal.routing.mode === "parallel" && finishedState) {
+        const fromConcurrency = journal.routing.selectedConcurrency;
+        let reason: GoalRoutingAdjustment["reason"] | undefined;
         if (finishedState.status === "completed" && finishedState.result?.ok
             && (!journal.verificationRequired || finishedState.verification?.outcome === "passed")) {
           journal.routing.selectedConcurrency = Math.min(journal.routing.hostConcurrencyCeiling, journal.routing.taskCount, journal.routing.selectedConcurrency + 1);
           journal.routing.adjustmentReason = "verified_progress";
+          reason = "verified_progress";
         } else if (["failed", "needs_review"].includes(finishedState.status)) {
           journal.routing.selectedConcurrency = Math.max(1, Math.min(journal.routing.selectedConcurrency - 1,
             Math.floor(journal.routing.selectedConcurrency / 2)));
           journal.routing.adjustmentReason = "failure_or_review";
+          reason = "failure_or_review";
+        }
+        if (reason && journal.routing.selectedConcurrency !== fromConcurrency) {
+          recordRoutingAdjustment(journal.routing, {
+            fromConcurrency, toConcurrency: journal.routing.selectedConcurrency, reason, at: Date.now(),
+            taskId: finished.id,
+            taskOutcome: finishedState.status as "completed" | "failed" | "needs_review",
+            verificationOutcome: finishedState.verification?.outcome ?? (journal.verificationRequired ? "unavailable" : "not_required"),
+          });
         }
         await save();
       }

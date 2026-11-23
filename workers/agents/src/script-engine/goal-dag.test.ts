@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { executeGoalDag, type GoalDagHost, type GoalDagJournal } from "./goal-dag.js";
+import { executeGoalDag, MAX_GOAL_ROUTING_ADJUSTMENTS, type GoalDagHost, type GoalDagJournal } from "./goal-dag.js";
 import { COORDINATION_PATTERNS, goalPlanner, taskCommunicationRecipients, validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { MAX_SUB_AGENT_BUDGET_TOKENS } from "./sub-agent-output.js";
 import { GOAL_EXPANSION_OUTPUT_KEY } from "./goal-expansion.js";
@@ -29,9 +29,31 @@ describe("durable goal DAG", () => {
     const result = await executeGoalDag([task("a"), task("b")], resumed.host);
     expect(result.routing).toEqual({ mode: "parallel", taskCount: 2, selectedConcurrency: 1, hostConcurrencyCeiling: 1 });
   });
+  it("preserves a bounded routing history when resuming a completed graph", async () => {
+    const adjustments = Array.from({ length: MAX_GOAL_ROUTING_ADJUSTMENTS + 8 }, (_, index) => ({
+      fromConcurrency: index === 0 ? null : 1,
+      toConcurrency: 1,
+      reason: index === 0 ? "initial_probe" as const : "verified_progress" as const,
+      at: index + 1,
+      ...(index > 0 ? { taskId: "a", taskOutcome: "completed" as const, verificationOutcome: "not_required" as const } : {}),
+    }));
+    const resumed = fixture({
+      routing: { mode: "parallel", taskCount: 2, selectedConcurrency: 1, hostConcurrencyCeiling: 4,
+        policy: "progressive-v1", adjustmentReason: "verified_progress", adjustments },
+      tasks: {
+        a: { status: "completed", workerId: "worker:a", result: { id: "worker:a", ok: true } },
+        b: { status: "completed", workerId: "worker:b", result: { id: "worker:b", ok: true } },
+      },
+    });
+    resumed.host.adaptiveConcurrency = true;
+    const result = await executeGoalDag([task("a"), task("b")], resumed.host);
+    expect(result.routing?.adjustments).toHaveLength(MAX_GOAL_ROUTING_ADJUSTMENTS);
+    expect(result.routing?.adjustments?.at(-1)?.at).toBe(MAX_GOAL_ROUTING_ADJUSTMENTS + 8);
+  });
   it("expands after successful progress and contracts future dispatch after a failure", async () => {
     const f = fixture();
     f.host.adaptiveConcurrency = true;
+    f.host.verify = vi.fn(async () => ({ outcome: "passed" as const, reason: "verification passed" }));
     const resolvers = new Map<string, (result: { id: string; ok: boolean; error?: string }) => void>();
     f.host.launch = vi.fn((_task, id) => new Promise(resolve => { resolvers.set(id, resolve); }));
     const run = executeGoalDag([task("a"), task("b"), task("c"), task("d")], f.host);
@@ -39,8 +61,16 @@ describe("durable goal DAG", () => {
     resolvers.get("worker:a")!({ id: "worker:a", ok: true });
     await vi.waitFor(() => expect(resolvers.size).toBe(3));
     expect(f.snapshot().routing).toMatchObject({ selectedConcurrency: 2, adjustmentReason: "verified_progress" });
+    expect(f.snapshot().routing?.adjustments).toContainEqual(expect.objectContaining({
+      fromConcurrency: 1, toConcurrency: 2, reason: "verified_progress", taskId: "a",
+      taskOutcome: "completed", verificationOutcome: "passed",
+    }));
     resolvers.get("worker:b")!({ id: "worker:b", ok: false, error: "worker_failed" });
     await vi.waitFor(() => expect(f.snapshot().routing).toMatchObject({ selectedConcurrency: 1, adjustmentReason: "failure_or_review" }));
+    expect(f.snapshot().routing?.adjustments).toContainEqual(expect.objectContaining({
+      fromConcurrency: 2, toConcurrency: 1, reason: "failure_or_review", taskId: "b",
+      taskOutcome: "failed", verificationOutcome: "not_required",
+    }));
     expect(resolvers.has("worker:d")).toBe(false);
     resolvers.get("worker:c")!({ id: "worker:c", ok: true });
     await vi.waitFor(() => expect(resolvers.has("worker:d")).toBe(true));

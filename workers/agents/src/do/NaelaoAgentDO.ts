@@ -6,7 +6,7 @@ import { sandboxInstanceName, workspaceBranchScope } from "../script-engine/sand
 import { containerWorkerConcurrency, validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
-import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.js";
+import { executeGoalDag, MAX_GOAL_ROUTING_ADJUSTMENTS, type GoalDagJournal, type GoalRoutingAdjustment } from "../script-engine/goal-dag.js";
 import { persistGoalExpansionAdmission } from "../script-engine/goal-expansion-admission.js";
 import { applyGoalCommunicationEdges } from "../script-engine/goal-communication.js";
 import { taskCommunicationRecipients, validateGoalDag, type GoalTask } from "../script-engine/prebuilt/goal-planner.js";
@@ -6377,6 +6377,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const projectedById = new Map(projected.map(task => [task.id, task.status]));
       for (const task of projected) if (task.status === "pending" && task.dependencies.some(dependency => projectedById.get(dependency) === "needs_review" || projectedById.get(dependency) === "blocked")) task.status = "blocked";
       const routing = journal.routing;
+      const maxRoutingConcurrency = Math.min(routing?.hostConcurrencyCeiling ?? 0, routing?.taskCount ?? 0);
+      const safeAdjustments = Array.isArray(routing?.adjustments) ? routing.adjustments.slice(-MAX_GOAL_ROUTING_ADJUSTMENTS).flatMap((adjustment): GoalRoutingAdjustment[] => {
+        if (!adjustment || !["initial_probe", "verified_progress", "failure_or_review", "frontier_narrowed"].includes(adjustment.reason)
+          || !Number.isSafeInteger(adjustment.toConcurrency) || adjustment.toConcurrency < 1 || adjustment.toConcurrency > maxRoutingConcurrency
+          || (adjustment.fromConcurrency !== null && (!Number.isSafeInteger(adjustment.fromConcurrency) || adjustment.fromConcurrency < 1 || adjustment.fromConcurrency > maxRoutingConcurrency))
+          || !Number.isSafeInteger(adjustment.at)) return [];
+        const taskId = typeof adjustment.taskId === "string" && Object.hasOwn(journal.tasks, adjustment.taskId) ? adjustment.taskId : undefined;
+        const taskOutcome = ["completed", "failed", "needs_review"].includes(adjustment.taskOutcome ?? "") ? adjustment.taskOutcome : undefined;
+        const verificationOutcome = ["passed", "failed", "uncertain", "not_required", "unavailable"].includes(adjustment.verificationOutcome ?? "")
+          ? adjustment.verificationOutcome : undefined;
+        return [{ fromConcurrency: adjustment.fromConcurrency, toConcurrency: adjustment.toConcurrency, reason: adjustment.reason, at: adjustment.at,
+          ...(taskId ? { taskId } : {}), ...(taskOutcome ? { taskOutcome } : {}), ...(verificationOutcome ? { verificationOutcome } : {}) }];
+      }) : [];
       const safeRouting = routing && ["single_worker", "sequential", "parallel"].includes(routing.mode)
         && Number.isSafeInteger(routing.taskCount) && routing.taskCount > 0
         && Number.isSafeInteger(routing.selectedConcurrency) && routing.selectedConcurrency > 0
@@ -6385,7 +6398,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ? { mode: routing.mode, taskCount: routing.taskCount, selectedConcurrency: routing.selectedConcurrency, hostConcurrencyCeiling: routing.hostConcurrencyCeiling,
           ...(routing.policy === "progressive-v1" ? { policy: routing.policy } : {}),
           ...(routing.adjustmentReason && ["initial_probe", "verified_progress", "failure_or_review", "frontier_narrowed"].includes(routing.adjustmentReason)
-            ? { adjustmentReason: routing.adjustmentReason } : {}) }
+            ? { adjustmentReason: routing.adjustmentReason } : {}),
+          ...(safeAdjustments.length ? { adjustments: safeAdjustments } : {}) }
         : undefined;
       goals.push({ id: hash, ...(safeRouting ? { routing: safeRouting } : {}), verificationRequired: journal.verificationRequired === true, tasks: projected, escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
     }

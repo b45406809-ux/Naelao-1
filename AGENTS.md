@@ -23,11 +23,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW02 — Measured routing evidence and cost-aware selection.** Resume from the checked-in
+**APW02 — Hierarchical planner tree.** Resume from the checked-in
 [implementation queue](docs/operations/implementation-queue.md#active-plan). Host admission for
-bounded dynamic expansion is checked off with local DAG/admission and replay coverage. Trace the
-available verification, latency, token and credit receipts to one goal run; then implement the next
-evidence-backed routing slice without claiming unmeasured savings. Keep progressive routing and
+bounded dynamic expansion and report-only routing evidence are checked off with local DAG,
+admission, replay and projection coverage. Reconcile nested planner limits, authority inheritance
+and budget accounting before implementing deeper decomposition. Keep progressive routing and
 dynamic expansion disabled by default.
 
 ## Save progress inside each task

@@ -1774,6 +1774,12 @@ function WorkersPanel({
         <details key={goal.id} style={{ margin: "0 12px 10px", fontSize: 11, color: "var(--text2)" }}>
           <summary style={{ cursor: "pointer", fontWeight: 600 }}>Task coordination ({goal.tasks.length} tasks)</summary>
           {goal.routing && <div role="status" style={{ color: "var(--text3)", paddingTop: 4 }}>Selected topology: {goal.routing.mode.replaceAll("_", " ")} · concurrency {goal.routing.selectedConcurrency} of host limit {goal.routing.hostConcurrencyCeiling}{goal.routing.adjustmentReason ? ` · adaptive ${goal.routing.adjustmentReason.replaceAll("_", " ")}` : ""}</div>}
+          {goal.routing?.adjustments?.length ? <div style={{ color: "var(--text3)", paddingTop: 3 }}>Concurrency history: {goal.routing.adjustments.map((adjustment, index) => {
+            const change = adjustment.fromConcurrency === null ? `started at ${adjustment.toConcurrency}` : `${adjustment.fromConcurrency} → ${adjustment.toConcurrency}`;
+            const taskTitle = adjustment.taskId ? goal.tasks.find(task => task.id === adjustment.taskId)?.title ?? adjustment.taskId : undefined;
+            const evidence = taskTitle ? ` after ${taskTitle} (${adjustment.taskOutcome ?? "task outcome unavailable"}; verification ${adjustment.verificationOutcome ?? "unavailable"})` : "";
+            return `${index + 1}. ${new Date(adjustment.at).toLocaleTimeString()} · ${change} · ${adjustment.reason.replaceAll("_", " ")}${evidence}`;
+          }).join("; ")}</div> : null}
           {goal.tasks.map(task => <div key={task.id} style={{ padding: "4px 0" }}>
             <strong>{task.title}</strong> · {workerActivityLabel(task.status)}
             {(task.assigned_role || task.budget_tokens !== undefined) && <div>Worker plan: {task.assigned_role ? `${task.assigned_role.slice(0, 80)} role` : "worker"}{task.budget_tokens !== undefined ? ` · up to ${task.budget_tokens.toLocaleString()} output tokens` : ""}{task.runtime_capability ? ` · ${task.runtime_capability.slice(0, 64)} runtime recommendation` : ""}</div>}

@@ -3210,7 +3210,9 @@ export interface GoalActivity {
   id: string;
   verificationRequired: boolean;
   routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number;
-    policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed" };
+    policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed";
+    adjustments?: Array<{ fromConcurrency: number | null; toConcurrency: number; reason: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed"; at: number;
+      taskId?: string; taskOutcome?: "completed" | "failed" | "needs_review"; verificationOutcome?: "passed" | "failed" | "uncertain" | "not_required" | "unavailable" }> };
   tasks: Array<{ id: string; title: string; status: string; dependencies: string[]; workerId?: string; assigned_role?: string; budget_tokens?: number; acceptance_criteria?: string[]; decision_refs?: Array<{ id: string; revision: number }>; decision_review_reason?: string; runtime_capability?: string; dispatch?: { status: "intent" | "delivering" | "acknowledged" | "uncertain" | "review"; attempt?: number }; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; runtime?: { status: "waiting" | "assigned" | "running" | "completed" | "failed"; capability?: string; queuePosition?: number; queuedAt?: number; assignedAt?: number; startedAt?: number; completedAt?: number; queueWaitMs?: number; executionMs?: number } }>;
   escalations: Array<{ taskId: string; reason: string; nextAction: string; blockedTasks: string[] }>;
   fixers: Record<string, { status: string }>;

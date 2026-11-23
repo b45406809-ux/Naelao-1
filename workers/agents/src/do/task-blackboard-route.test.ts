@@ -23,14 +23,24 @@ describe("task blackboard durable object route", () => {
           tenantId: "t",
           spaceId: "s",
           actorId: "u",
-          tasks: [{ id: "a", title: "Task", dependencies: [], assigned_role: "schema-validator", budget_tokens: 2400, acceptance_criteria: ["Return a verified result"], decision_refs: [{ id: "decision-1", revision: 3 }] }],
+          tasks: [
+            { id: "a", title: "Task", dependencies: [], assigned_role: "schema-validator", budget_tokens: 2400, acceptance_criteria: ["Return a verified result"], decision_refs: [{ id: "decision-1", revision: 3 }] },
+            { id: "b", title: "Second task", dependencies: [] },
+          ],
         },
       ],
       [
         `goal-dag:${hash}`,
         {
           verificationRequired: true,
-          routing: { mode: "single_worker", taskCount: 1, selectedConcurrency: 1, hostConcurrencyCeiling: 4 },
+          routing: { mode: "parallel", taskCount: 2, selectedConcurrency: 2, hostConcurrencyCeiling: 4,
+            policy: "progressive-v1", adjustmentReason: "verified_progress", adjustments: [
+              { fromConcurrency: null, toConcurrency: 1, reason: "initial_probe", at: 10 },
+              { fromConcurrency: 1, toConcurrency: 2, reason: "verified_progress", at: 20,
+                taskId: "a", taskOutcome: "completed", verificationOutcome: "passed" },
+              { fromConcurrency: 1, toConcurrency: 2, reason: "verified_progress", at: 30,
+                taskId: "not-a-goal-task", taskOutcome: "completed", verificationOutcome: "passed" },
+            ] },
           tasks: {
             a: {
               status: "failed",
@@ -41,6 +51,7 @@ describe("task blackboard durable object route", () => {
                 reason: "Independent evidence rejected.",
               },
             },
+            b: { status: "pending", workerId: `${hash}:b` },
           },
           fixers: {
             a: {
@@ -96,7 +107,8 @@ describe("task blackboard durable object route", () => {
     const ownerResponse = (await (await get("u", "s")).json()) as {
       goals: Array<{
         verificationRequired: boolean;
-        routing?: { mode: string; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number };
+        routing?: { mode: string; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number;
+          adjustments?: Array<{ taskId?: string; reason: string; verificationOutcome?: string }> };
         tasks: Array<{
           assigned_role?: string;
           budget_tokens?: number;
@@ -113,7 +125,14 @@ describe("task blackboard durable object route", () => {
     expect(ownerGoals).toHaveLength(1);
     expect(ownerGoals[0]).toMatchObject({
       verificationRequired: true,
-      routing: { mode: "single_worker", taskCount: 1, selectedConcurrency: 1, hostConcurrencyCeiling: 4 },
+      routing: { mode: "parallel", taskCount: 2, selectedConcurrency: 2, hostConcurrencyCeiling: 4,
+        adjustments: [
+          { fromConcurrency: null, toConcurrency: 1, reason: "initial_probe", at: 10 },
+          { fromConcurrency: 1, toConcurrency: 2, reason: "verified_progress", at: 20,
+            taskId: "a", taskOutcome: "completed", verificationOutcome: "passed" },
+          { fromConcurrency: 1, toConcurrency: 2, reason: "verified_progress", at: 30,
+            taskOutcome: "completed", verificationOutcome: "passed" },
+        ] },
       tasks: [
         {
             assigned_role: "schema-validator",
@@ -127,6 +146,7 @@ describe("task blackboard durable object route", () => {
           },
           dispatch: { status: "review", attempt: 2 },
         },
+        { id: "b", title: "Second task", status: "pending" },
       ],
       fixers: { a: { status: "needs_review" } },
     });

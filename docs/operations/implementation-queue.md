@@ -53,11 +53,17 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   Billing path at admission, then rechecks authorization, decisions and Billing path at dispatch.
   It persists task membership/grants and serializes admissions against the graph limit. Expansion remains disabled
   unless explicitly enabled. See the APW ledger's 2026-11-23 checkpoint.
-- [ ] **Active · APW02 — Measured routing evidence and cost-aware selection.** Trace verification,
-  latency, token and credit receipts to one goal run. Establish which existing signals are comparable
-  before changing routing or describing cost/quality effects. Keep progressive routing gated.
-- [ ] **APW02 — Hierarchical planner tree.** Reconcile nested planner limits, authority inheritance
-  and budget accounting before enabling deeper decomposition.
+- [x] **APW02 — Goal-run evidence joins and report-only routing history.** Verification, queue/execution
+  timing, worker model tokens/budget and internal-credit usage now join through stable task worker IDs.
+  Progressive concurrency changes retain a bounded 32-entry journal history with the triggering task
+  outcome and verification outcome where available. This is report-only; no routing behavior changed.
+- [ ] **Blocked · APW02 — Cost-aware routing selection.** Do not tune concurrency from internal credits
+  until a per-goal spend objective and a controlled quality/cost comparison baseline are defined. The
+  current receipts are observable, but include unpriced events and do not represent provider invoices.
+  Resume after the comparative evaluation contract supplies those inputs; keep progressive routing
+  disabled meanwhile.
+- [ ] **Active · APW02 — Hierarchical planner tree.** Reconcile nested planner limits, authority
+  inheritance and budget accounting before implementing deeper decomposition.
 - [ ] **APW02 — Safe cancellation of redundant workers.** Trace dispatch acknowledgements and late
   result/workspace effects; cancellation must not imply rollback of committed work.
 - [ ] **APW02 — Comparative evaluation.** Define a controlled baseline and deployed acceptance only
@@ -72,21 +78,20 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
   platform, SC and TBR entries where they own the implementation. Link back to that evidence.
 
-**Latest checkpoint.** APW02's goal-run evidence trace now joins the existing receipts through the
-stable task worker ID: goal activity stores verification and queue/execution timing; the worker row
-stores model tokens and its budget; Billing aggregates internal-credit events by worker ID and
-attempt. The usage selectors now accept the 64-character goal hash plus task ID (up to 129
-characters), and Billing treats underscores literally so a task such as `task_1` cannot collect
-`taskX1`'s attempt receipts. Shell already displays topology, task verification/timing, tokens and
-internal credits together. Verification: selector test **2/2**, Billing usage test **25/25**, Agents
-typecheck and `git diff --check`; local/mock only. The usage endpoint explicitly reports internal
-credits and unpriced events, not provider invoices. This enables joined observation; it establishes
-no quality/cost baseline or savings claim. Progressive routing and dynamic expansion remain off.
+**Latest checkpoint.** Progressive routing now records a bounded 32-entry, report-only history in
+the goal journal. Each actual concurrency change records its prior/new value, reason and time; changes
+triggered by a task completion also record that task's outcome and verification outcome. Goal activity
+validates and projects the history, and the Shell displays it beside the existing per-task
+verification, runtime, token and internal-credit receipts. The receipt join fix is in the preceding
+checkpoint. Verification: goal DAG **60/60**, goal activity projection **5/5**, Agents typecheck,
+Shell source typecheck excluding stale `.next/types`, and `git diff --check`; local/mock only. The
+regular Shell typecheck still reports stale `.next/types` references to absent route files. Routing
+behavior and gates are unchanged; there is no controlled cost/quality baseline or savings claim.
 
-**Exact next action:** add a bounded report-only history of progressive concurrency adjustments to
-the goal journal and activity projection, linked to the task completion and verification outcome
-that caused each adjustment. Preserve the current selection behavior and rollout gate; do not infer
-cost savings from a concurrency change.
+**Exact next action:** reconcile nested planner depth, task-count and token-budget limits across
+`goal-planner.ts`, goal expansion and delegated worker contracts. Identify the smallest host-enforced
+tree boundary that prevents deeper planner recursion from exceeding inherited authority or budget;
+keep deeper decomposition disabled until that boundary is verified.
 
 The existing **SC03** synchronous capacity retry was reconciled as implemented in `f9a2a02a`.
 Track detached dispatch separately in the [shared compute ledger](../research/shared-compute-scheduling-and-budget-progress.md).
