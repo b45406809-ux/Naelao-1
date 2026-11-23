@@ -23,15 +23,14 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW05 — Cost and scheduling.** Resume from the checked-in
-[implementation queue](docs/operations/implementation-queue.md#active-plan) and APW ledger. Compare
-goal/task and runtime admission paths with Billing reservations, settlement and shared-compute
-accounting; implement only where an existing configured authority can be rechecked. Keep missing
-quota policy and provider USD evidence explicit. APW02 real-runtime/provider comparison and
-cost-aware routing remain blocked pending approved thresholds, staging/provider access,
-representative task runs, and invoice-reconciled usage. Keep progressive routing, dynamic expansion
-and redundant-worker cancellation disabled by default; do not claim live or provider-cost results
-without their applicable evidence.
+**APW06 — Task controls and SDK.** Resume from the checked-in
+[implementation queue](docs/operations/implementation-queue.md#active-plan). Start with the
+actor-scoped goal task decision-hold remediation UX, using the existing Project decision review
+route and preserving its exact-revision and workspace-pin checks. APW05 admission/accounting paths
+are reconciled in the APW ledger; aggregate goal-credit policy, priority weights and provider USD
+acceptance remain blocked there. Keep progressive routing, dynamic expansion and redundant-worker
+cancellation disabled by default; do not claim live or provider-cost results without their
+applicable evidence.
 
 ## Save progress inside each task
 
