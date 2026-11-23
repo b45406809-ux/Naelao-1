@@ -62,9 +62,10 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**Mature Knowledge platform · K18 — add an owner-only collection-scoped search preview.** Let
-Project owners/admins test a query against the exact current published collection before granting it
-to an extension. Reuse the pre-ranked publication document fence, current source/chunk rehydration and
-deletion check; do not use general Project search or return stale results after the publication
-revision changes. Keep the managed AI Search adapter blocked on exact pre-retrieval scope mapping,
+**Mature Knowledge platform · K20 — fence Space-shared channel Knowledge grants at result handoff.**
+The channel handler checks the exact current publication revision and owner grant before retrieval,
+but it can pass passages to the extension after that grant is revoked during search. Re-read the
+publication and installation grant after retrieval and immediately before handing context to the
+channel runner; discard results and require human review if either authority changed. Keep response
+caches disabled and the managed AI Search adapter blocked on exact pre-retrieval scope mapping,
 freshness/deletion and isolated provider evidence.

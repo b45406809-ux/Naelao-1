@@ -703,21 +703,47 @@ app.delete("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publi
 // Service-only retrieval contract for the Agents host. It ranks only vectors whose doc_id is in
 // the selected published collection, then rechecks every hit against the relational publication
 // rows before returning source-attributed, untrusted text. No general project-KB search is used.
-app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", async (c) => {
-  const tenantId = requireTenant(c);
-  const { spaceId, projectId } = c.req.param();
-  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
-  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space not found");
+interface PublishedCollectionSearchInput {
+  tenantId: string;
+  spaceId: string;
+  projectId: string;
+  publicationId: string;
+  publicationRevision: number;
+  query: string;
+  topK: number;
+  wrapContext: boolean;
+}
+
+interface PublishedCollectionSearchHit {
+  chunk_id: string;
+  document_id: string;
+  title: string;
+  score: number;
+  content: string;
+  content_hash: string;
+  provenance: {
+    source_adapter: string;
+    source_revision: number;
+    source_content_sha256?: string;
+    source_grant_revision?: number;
+    byte_start: number;
+    byte_end: number;
+    line_start: number;
+    line_end: number;
+    heading_path?: string[];
+  };
+}
+
+type PublishedCollectionSearchResult =
+  | { ok: true; data: PublishedCollectionSearchHit[] }
+  | { ok: false; status: 409; error_code: "knowledge_source_changed_during_search" | "knowledge_publication_revision_conflict" };
+
+async function searchPublishedCollection(
+  env: KnowledgeEnv,
+  input: PublishedCollectionSearchInput,
+): Promise<PublishedCollectionSearchResult> {
   const retrievalStartedAt = new Date().toISOString();
-  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, null as { publication_id?: unknown; publication_revision?: unknown; query?: unknown; top_k?: unknown } | null);
-  if (!body || typeof body.publication_id !== "string" || !EXTERNAL_PUBLICATION_ID.test(body.publication_id)
-    || !Number.isSafeInteger(body.publication_revision) || Number(body.publication_revision) < 1
-    || typeof body.query !== "string" || !body.query.trim() || body.query.length > 1_000) throw badRequest("publication_id, publication_revision, and query are required");
-  const publication = await c.env.PLATFORM_DB.prepare(
-    `SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=? AND archived_at IS NULL`
-  ).bind(body.publication_id, tenantId, spaceId, projectId, body.publication_revision).first();
-  if (!publication) throw notFound("Knowledge publication");
-  const docs = await c.env.PLATFORM_DB.prepare(
+  const docs = await env.PLATFORM_DB.prepare(
     `SELECT d.id,d.title FROM kb_external_publication_documents x JOIN kb_documents d ON d.id=x.document_id
      JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id
        AND p.project_id=x.project_id AND p.revision=x.publication_revision AND p.archived_at IS NULL
@@ -727,59 +753,144 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
          SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
            AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
        ))) ORDER BY d.id LIMIT 100`
-  ).bind(body.publication_id, tenantId, spaceId, projectId, body.publication_revision).all<{ id: string; title: string }>();
-  if (!docs.results.length) return c.json({ data: [], context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
-  const topK = Math.max(1, Math.min(Number.isInteger(body.top_k) ? Number(body.top_k) : 5, 10));
-  const embedding = await embedText(c.env.AI, body.query.trim());
-  const matches = await c.env.KB_VECTORS.query(embedding.embedding, {
-    topK: Math.min(100, Math.max(topK * 4, topK)), returnMetadata: "indexed",
-    filter: { tenant_id: { $eq: tenantId }, space_id: { $eq: spaceId }, project_id: { $eq: projectId }, doc_id: { $in: docs.results.map(doc => doc.id) } },
-  });
-  const ids = [...new Set((matches.matches ?? []).map(match => match.id))];
-  if (!ids.length) return c.json({ data: [], context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
-  const placeholders = ids.map(() => "?").join(",");
-  const rows = await c.env.PLATFORM_DB.prepare(
-    `SELECT k.id,k.document_id,k.content,k.content_hash,k.byte_start,k.byte_end,k.line_start,k.line_end,k.heading_path,
-       d.title,d.source_adapter,d.source_revision,d.source_content_sha256,d.source_grant_revision FROM kb_chunks k
-     JOIN kb_documents d ON d.id=k.document_id
-     JOIN kb_external_publication_documents x ON x.document_id=k.document_id AND x.tenant_id=k.tenant_id AND x.space_id=k.space_id AND x.project_id=k.project_id
-     JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id AND p.project_id=x.project_id
-     WHERE k.id IN (${placeholders}) AND x.publication_id=? AND x.publication_revision=? AND p.revision=? AND p.archived_at IS NULL
-       AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
-       AND d.status='indexed' AND d.source_state='current' AND k.deleted_at IS NULL
-       AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
-         SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
-           AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
-       )))`
-  ).bind(...ids, body.publication_id, body.publication_revision, body.publication_revision, tenantId, spaceId, projectId).all<{
-    id: string; document_id: string; content: string; content_hash: string; byte_start: number; byte_end: number;
-    line_start: number; line_end: number; heading_path: string; title: string; source_adapter: string;
-    source_revision: number; source_content_sha256: string | null; source_grant_revision: number | null;
-  }>();
-  const byId = new Map(rows.results.map(row => [row.id, row]));
-  const scoreById = new Map((matches.matches ?? []).map(match => [match.id, match.score ?? 0]));
-  const data = (await Promise.all(ids.map(async id => {
-    const row = byId.get(id);
-    if (!row) return null;
-    const headingPath = safeHeadingPath(row.heading_path);
-    return { chunk_id: row.id, document_id: row.document_id, title: row.title, score: scoreById.get(id) ?? 0,
-      content: await wrapContextChunk({ content: row.content }), content_hash: row.content_hash,
-      provenance: { source_adapter: row.source_adapter, source_revision: Number(row.source_revision),
-        ...(row.source_content_sha256 ? { source_content_sha256: row.source_content_sha256 } : {}),
-        ...(Number.isSafeInteger(row.source_grant_revision) && Number(row.source_grant_revision) > 0
-          ? { source_grant_revision: Number(row.source_grant_revision) } : {}),
-        byte_start: Number(row.byte_start), byte_end: Number(row.byte_end), line_start: Number(row.line_start), line_end: Number(row.line_end),
-        ...(headingPath ? { heading_path: headingPath } : {}) } };
-  }))).filter((item): item is NonNullable<typeof item> => item !== null).slice(0, topK);
-  if (await hasKnowledgeDocumentDeletionSince(c.env.PLATFORM_DB, tenantId, spaceId, retrievalStartedAt)) {
-    return c.json({ error_code: "knowledge_source_changed_during_search" }, 409);
+  ).bind(input.publicationId, input.tenantId, input.spaceId, input.projectId, input.publicationRevision).all<{ id: string; title: string }>();
+
+  let data: PublishedCollectionSearchHit[] = [];
+  if (docs.results.length) {
+    const embedding = await embedText(env.AI, input.query.trim());
+    const matches = await env.KB_VECTORS.query(embedding.embedding, {
+      topK: Math.min(100, Math.max(input.topK * 4, input.topK)), returnMetadata: "indexed",
+      filter: {
+        tenant_id: { $eq: input.tenantId }, space_id: { $eq: input.spaceId }, project_id: { $eq: input.projectId },
+        doc_id: { $in: docs.results.map(doc => doc.id) },
+      },
+    });
+    const ids = [...new Set((matches.matches ?? []).map(match => match.id))];
+    if (ids.length) {
+      const placeholders = ids.map(() => "?").join(",");
+      const rows = await env.PLATFORM_DB.prepare(
+        `SELECT k.id,k.document_id,k.content,k.content_hash,k.byte_start,k.byte_end,k.line_start,k.line_end,k.heading_path,
+           d.title,d.source_adapter,d.source_revision,d.source_content_sha256,d.source_grant_revision FROM kb_chunks k
+         JOIN kb_documents d ON d.id=k.document_id
+         JOIN kb_external_publication_documents x ON x.document_id=k.document_id AND x.tenant_id=k.tenant_id AND x.space_id=k.space_id AND x.project_id=k.project_id
+         JOIN kb_external_publications p ON p.id=x.publication_id AND p.tenant_id=x.tenant_id AND p.space_id=x.space_id AND p.project_id=x.project_id
+         WHERE k.id IN (${placeholders}) AND x.publication_id=? AND x.publication_revision=? AND p.revision=? AND p.archived_at IS NULL
+           AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
+           AND d.status='indexed' AND d.source_state='current' AND k.deleted_at IS NULL
+           AND (d.source_adapter!='website' OR (d.source_state='current' AND EXISTS (
+             SELECT 1 FROM website_connections wc WHERE wc.id=d.source_connection_ref AND wc.tenant_id=d.tenant_id
+               AND wc.space_id=d.space_id AND wc.project_id=d.project_id AND wc.status='active'
+           )))`
+      ).bind(...ids, input.publicationId, input.publicationRevision, input.publicationRevision,
+        input.tenantId, input.spaceId, input.projectId).all<{
+        id: string; document_id: string; content: string; content_hash: string; byte_start: number; byte_end: number;
+        line_start: number; line_end: number; heading_path: string; title: string; source_adapter: string;
+        source_revision: number; source_content_sha256: string | null; source_grant_revision: number | null;
+      }>();
+      const byId = new Map(rows.results.map(row => [row.id, row]));
+      const scoreById = new Map((matches.matches ?? []).map(match => [match.id, match.score ?? 0]));
+      data = (await Promise.all(ids.map(async id => {
+        const row = byId.get(id);
+        if (!row) return null;
+        const headingPath = safeHeadingPath(row.heading_path);
+        return {
+          chunk_id: row.id,
+          document_id: row.document_id,
+          title: row.title,
+          score: scoreById.get(id) ?? 0,
+          content: input.wrapContext ? await wrapContextChunk({ content: row.content }) : row.content,
+          content_hash: row.content_hash,
+          provenance: {
+            source_adapter: row.source_adapter,
+            source_revision: Number(row.source_revision),
+            ...(row.source_content_sha256 ? { source_content_sha256: row.source_content_sha256 } : {}),
+            ...(Number.isSafeInteger(row.source_grant_revision) && Number(row.source_grant_revision) > 0
+              ? { source_grant_revision: Number(row.source_grant_revision) } : {}),
+            byte_start: Number(row.byte_start),
+            byte_end: Number(row.byte_end),
+            line_start: Number(row.line_start),
+            line_end: Number(row.line_end),
+            ...(headingPath ? { heading_path: headingPath } : {}),
+          },
+        };
+      }))).filter((item): item is PublishedCollectionSearchHit => item !== null).slice(0, input.topK);
+    }
   }
-  const stillCurrent = await c.env.PLATFORM_DB.prepare(
+
+  // Check even empty searches: a deletion or publication update during ranking must not be
+  // mistaken for a valid empty result from the old source boundary.
+  if (await hasKnowledgeDocumentDeletionSince(env.PLATFORM_DB, input.tenantId, input.spaceId, retrievalStartedAt)) {
+    return { ok: false, status: 409, error_code: "knowledge_source_changed_during_search" };
+  }
+  const stillCurrent = await env.PLATFORM_DB.prepare(
     `SELECT revision FROM kb_external_publications
      WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=? AND archived_at IS NULL`
-  ).bind(body.publication_id, tenantId, spaceId, projectId, body.publication_revision).first<{ revision: number }>();
-  if (!stillCurrent) return c.json({ error_code: "knowledge_publication_revision_conflict" }, 409);
-  return c.json({ data, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
+  ).bind(input.publicationId, input.tenantId, input.spaceId, input.projectId, input.publicationRevision).first<{ revision: number }>();
+  if (!stillCurrent) return { ok: false, status: 409, error_code: "knowledge_publication_revision_conflict" };
+  return { ok: true, data };
+}
+
+app.post("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId/search-preview", async c => {
+  const { spaceId, projectId, publicationId } = c.req.param();
+  if (!EXTERNAL_PUBLICATION_ID.test(publicationId)) throw badRequest("Invalid publication id");
+  const access = await collectionProjectAction(c, projectId, "administer");
+  if (access instanceof Response) return access;
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  const body = await readBoundedJsonOr(c.req.raw, 8 * 1024, null as { expected_revision?: unknown; query?: unknown; top_k?: unknown } | null);
+  if (!body || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 1
+    || typeof body.query !== "string" || !body.query.trim() || body.query.length > 1_000
+    || (body.top_k !== undefined && (!Number.isSafeInteger(body.top_k) || Number(body.top_k) < 1 || Number(body.top_k) > 3))) {
+    throw badRequest("expected_revision and query are required; top_k must be between 1 and 3");
+  }
+  const publication = await c.env.PLATFORM_DB.prepare(
+    `SELECT revision FROM kb_external_publications
+     WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND archived_at IS NULL`
+  ).bind(publicationId, access.tenantId, spaceId, projectId).first<{ revision: number }>();
+  if (!publication) return c.json({ error_code: "not_found" }, 404, { "cache-control": "private, no-store" });
+  if (publication.revision !== body.expected_revision) {
+    return c.json({ error_code: "knowledge_publication_revision_conflict" }, 409, { "cache-control": "private, no-store" });
+  }
+  const result = await searchPublishedCollection(c.env, {
+    tenantId: access.tenantId,
+    spaceId,
+    projectId,
+    publicationId,
+    publicationRevision: publication.revision,
+    query: body.query,
+    topK: body.top_k === undefined ? 3 : Number(body.top_k),
+    wrapContext: false,
+  });
+  if (!result.ok) return c.json({ error_code: result.error_code }, result.status, { "cache-control": "private, no-store" });
+  return c.json({ publication_id: publicationId, revision: publication.revision, data: result.data }, 200,
+    { "cache-control": "private, no-store" });
+});
+
+app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", async (c) => {
+  const tenantId = requireTenant(c);
+  const { spaceId, projectId } = c.req.param();
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space not found");
+  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, null as { publication_id?: unknown; publication_revision?: unknown; query?: unknown; top_k?: unknown } | null);
+  if (!body || typeof body.publication_id !== "string" || !EXTERNAL_PUBLICATION_ID.test(body.publication_id)
+    || !Number.isSafeInteger(body.publication_revision) || Number(body.publication_revision) < 1
+    || typeof body.query !== "string" || !body.query.trim() || body.query.length > 1_000) throw badRequest("publication_id, publication_revision, and query are required");
+  const publication = await c.env.PLATFORM_DB.prepare(
+    `SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=? AND revision=? AND archived_at IS NULL`
+  ).bind(body.publication_id, tenantId, spaceId, projectId, body.publication_revision).first();
+  if (!publication) throw notFound("Knowledge publication");
+  const topK = Math.max(1, Math.min(Number.isInteger(body.top_k) ? Number(body.top_k) : 5, 10));
+  const result = await searchPublishedCollection(c.env, {
+    tenantId,
+    spaceId,
+    projectId,
+    publicationId: body.publication_id,
+    publicationRevision: Number(body.publication_revision),
+    query: body.query,
+    topK,
+    wrapContext: true,
+  });
+  if (!result.ok) return c.json({ error_code: result.error_code }, result.status);
+  return c.json({ data: result.data, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
 });
 
 // ── G-BD01: KB content sanitization — strip HTML/XML and scan for injection ───

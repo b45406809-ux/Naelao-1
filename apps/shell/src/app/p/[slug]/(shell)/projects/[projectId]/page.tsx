@@ -44,6 +44,7 @@ import {
   listWebsiteConnections,
   listExternalKnowledgePublicationEvents,
   listExternalKnowledgePublications,
+  searchExternalKnowledgePublication,
   listSpaceTemplateInstallations,
   listSpaceSharedChannelKnowledge,
   listDepartments,
@@ -60,6 +61,7 @@ import {
   type DepartmentOption,
   type ExternalKnowledgePublicationEvent,
   type ExternalKnowledgePublication,
+  type ExternalKnowledgeSearchPreviewResult,
   type SpaceSharedChannelKnowledgeInstallation,
   type KbDocument,
   type Project,
@@ -156,6 +158,9 @@ export default function ProjectDetailPage() {
   const [loadingPublicationSources, setLoadingPublicationSources] = React.useState<string | null>(null);
   const [loadingPublicationHistory, setLoadingPublicationHistory] = React.useState<string | null>(null);
   const [publicationHistory, setPublicationHistory] = React.useState<{ publicationId: string; events: ExternalKnowledgePublicationEvent[] } | null>(null);
+  const [collectionPreviewQuery, setCollectionPreviewQuery] = React.useState("");
+  const [collectionPreview, setCollectionPreview] = React.useState<ExternalKnowledgeSearchPreviewResult | null>(null);
+  const [previewingPublication, setPreviewingPublication] = React.useState<string | null>(null);
   const [sharedChannelKnowledge, setSharedChannelKnowledge] = React.useState<SpaceSharedChannelKnowledgeInstallation[]>([]);
   const [sharedChannelKnowledgeDrafts, setSharedChannelKnowledgeDrafts] = React.useState<Record<string, string[]>>({});
   const [sharedChannelKnowledgeLoadError, setSharedChannelKnowledgeLoadError] = React.useState(false);
@@ -855,6 +860,34 @@ export default function ProjectDetailPage() {
     }
   }
 
+  async function handlePreviewExternalCollection(publication: ExternalKnowledgePublication) {
+    if (!creds || previewingPublication) return;
+    const query = collectionPreviewQuery.trim();
+    if (!query) {
+      show("Enter a search phrase to preview this collection");
+      return;
+    }
+    setPreviewingPublication(publication.id);
+    setCollectionPreview(null);
+    try {
+      const result = await searchExternalKnowledgePublication(activeSpaceId, params.projectId, publication.id, creds, {
+        expected_revision: publication.revision,
+        query,
+        top_k: 3,
+      });
+      const current = externalPublications.find(item => item.id === publication.id);
+      if (!current || current.archived || current.revision !== result.revision) {
+        throw new Error("The collection changed during preview. Reload and try again.");
+      }
+      setCollectionPreview(result);
+    } catch (error) {
+      await refreshExternalKnowledge();
+      show(error instanceof Error ? error.message : "Couldn't preview this Knowledge collection");
+    } finally {
+      setPreviewingPublication(null);
+    }
+  }
+
   if (loading) return <div className="page-view">Loading…</div>;
   if (!project) return <div className="page-view">Project not found.</div>;
 
@@ -1492,35 +1525,70 @@ export default function ProjectDetailPage() {
       ) : externalPublications.length > 0 ? (
         <div className="settings-block" aria-label="Published Knowledge collections">
           {externalPublications.map(publication => (
-            <div className="settings-row" key={publication.id}>
-              <div>
-                <div className="settings-row-label">{publication.name}{publication.archived ? " · Archived" : ""}</div>
-                <div className="settings-row-sub">{publication.id} · revision {publication.revision} · {publication.document_count} published document{publication.document_count === 1 ? "" : "s"}</div>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                {publication.archived ? (
-                  <Button size="sm" variant="ghost" onClick={() => void handleArchiveExternalCollection(publication.id, false)}>Restore draft</Button>
-                ) : (
-                  <>
-                    <Button size="sm" variant="ghost" disabled={loadingPublicationSources !== null}
-                      onClick={() => void editExternalCollection(publication)}>
-                      {loadingPublicationSources === publication.id ? "Loading…" : "Edit"}
-                    </Button>
+            <div key={publication.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
+              <div className="settings-row">
+                <div>
+                  <div className="settings-row-label">{publication.name}{publication.archived ? " · Archived" : ""}</div>
+                  <div className="settings-row-sub">{publication.id} · revision {publication.revision} · {publication.document_count} published document{publication.document_count === 1 ? "" : "s"}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {publication.archived ? (
+                    <Button size="sm" variant="ghost" onClick={() => void handleArchiveExternalCollection(publication.id, false)}>Restore draft</Button>
+                  ) : (
+                    <>
+                      <Button size="sm" variant="ghost" disabled={loadingPublicationSources !== null}
+                        onClick={() => void editExternalCollection(publication)}>
+                        {loadingPublicationSources === publication.id ? "Loading…" : "Edit"}
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={loadingPublicationHistory !== null}
+                        onClick={() => void showExternalCollectionHistory(publication.id)}>
+                        {loadingPublicationHistory === publication.id ? "Loading…" : "History"}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => void handleArchiveExternalCollection(publication.id, true)}>Archive</Button>
+                      <Button size="sm" variant="ghost" onClick={() => void handleUnpublishExternalCollection(publication.id)}>Delete</Button>
+                    </>
+                  )}
+                  {publication.archived && (
                     <Button size="sm" variant="ghost" disabled={loadingPublicationHistory !== null}
                       onClick={() => void showExternalCollectionHistory(publication.id)}>
                       {loadingPublicationHistory === publication.id ? "Loading…" : "History"}
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => void handleArchiveExternalCollection(publication.id, true)}>Archive</Button>
-                    <Button size="sm" variant="ghost" onClick={() => void handleUnpublishExternalCollection(publication.id)}>Delete</Button>
-                  </>
-                )}
-                {publication.archived && (
-                  <Button size="sm" variant="ghost" disabled={loadingPublicationHistory !== null}
-                    onClick={() => void showExternalCollectionHistory(publication.id)}>
-                    {loadingPublicationHistory === publication.id ? "Loading…" : "History"}
-                  </Button>
-                )}
+                  )}
+                </div>
               </div>
+              {!publication.archived && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <FormInput aria-label={`Search preview for ${publication.name}`} placeholder="Test a query against this collection"
+                      value={collectionPreviewQuery} disabled={previewingPublication !== null}
+                      onChange={event => {
+                        setCollectionPreviewQuery(event.target.value);
+                        setCollectionPreview(null);
+                      }} />
+                    <Button size="sm" variant="ghost" disabled={previewingPublication !== null || !collectionPreviewQuery.trim()}
+                      onClick={() => void handlePreviewExternalCollection(publication)}>
+                      {previewingPublication === publication.id ? "Searching…" : "Preview search"}
+                    </Button>
+                  </div>
+                  {collectionPreview?.publication_id === publication.id && collectionPreview.revision === publication.revision && (
+                    <div className="settings-block" aria-label={`Search preview results for ${publication.name}`} style={{ marginTop: 10, padding: 12 }}>
+                      <div className="settings-row-label">Preview · revision {collectionPreview.revision}</div>
+                      {collectionPreview.data.length === 0 ? (
+                        <div className="settings-row-sub" style={{ marginTop: 6 }}>No matching passages in this published collection.</div>
+                      ) : collectionPreview.data.map(result => (
+                        <div key={result.chunk_id} style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                          <div className="settings-row-label">{result.title}</div>
+                          <div className="settings-row-sub">
+                            {result.provenance.source_adapter} · lines {result.provenance.line_start}–{result.provenance.line_end}
+                            {result.provenance.heading_path?.length ? ` · ${result.provenance.heading_path.join(" / ")}` : ""}
+                          </div>
+                          <p style={{ margin: "8px 0 0", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{result.content}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>

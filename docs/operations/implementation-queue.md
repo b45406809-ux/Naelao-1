@@ -129,22 +129,33 @@ deployed/provider evidence. Preserve `infra/scripts/__pycache__/` and keep rollo
   source content hash/revision and bounded citation coordinates. The Knowledge service now fails
   closed if document deletion or publication revision changes during retrieval. Knowledge typecheck
   and `git diff --check` pass; no tests, deployment or live acceptance ran.
-- [ ] **K18 — Add an owner-only collection-scoped search preview.** Let Project owners/admins test a
-  query against the exact current published collection before granting it to an extension. Reuse
-  the pre-ranked publication document fence, current source/chunk rehydration and deletion check; do
-  not use general Project search or return stale results after the publication revision changes.
+- [x] **K18 — Add an owner-only collection-scoped search preview.** Project owners/admins can preview
+  up to three passages against one exact published collection revision. The owner route and signed
+  extension route share the same pre-ranked document fence, current source/chunk rehydration,
+  deletion check and final publication revision fence; the Project Shell displays plain-text source
+  passages and line/heading provenance. Knowledge typecheck and targeted Shell typecheck pass;
+  `git diff --check` passes. Full Shell typecheck remains blocked by stale `.next/types` references
+  to four missing routes. No tests, deployment or live acceptance ran.
+- [ ] **K20 — Fence Space-shared channel Knowledge grants at result handoff.** The channel handler
+  currently validates the current publication revision and owner grant before retrieval, but can
+  pass passages to the extension after that grant is revoked during the search. Re-read the exact
+  publication and installation grant after retrieval and immediately before passing context to the
+  channel runner; suppress it and hand off to a person if either changed. Preserve current cache-off
+  behavior and exact installation scope.
 - [ ] **Blocked · K15 — Implement and validate isolated managed-index adapter.** Resume after exact
   pre-retrieval scope fields and limits, current publication/source revision mapping, asynchronous
   deletion/retention and isolated cost evidence are established. Keep general user search on its
   current exact D1/Vectorize ACL paths and leave all provider gates off.
 
-**Latest K19 checkpoint:** the signed workflow search result already carries current source and
-chunk hashes, revisions and coordinates; the durable caller pins installation/grant/publication
-authority. Source review found deletion and publication-change races after D1 materialization, so the
-route now checks the deletion ledger and exact current publication revision before returning and
-fails with 409 if either changed. Knowledge typecheck and `git diff --check` pass; no tests,
-deployment or live acceptance ran. **Next action:** add an owner/admin sample search constrained to
-the exact current published collection and recheck its revision before returning.
+**Latest K18 checkpoint:** Project owners/admins can preview a bounded query against an exact current
+published collection revision. The owner preview and signed extension search now share one retrieval
+helper, including the pre-ranked published-document allowlist, current source/chunk rehydration,
+deletion-ledger check and final publication revision fence. Knowledge typecheck and targeted Shell
+typecheck pass, as does `git diff --check`; full Shell typecheck reports stale `.next/types` imports
+for four missing routes, unrelated to the changed page. No tests, deployment or live acceptance ran.
+**Next action:** re-read the current publication revision and Space-shared installation grant after
+channel retrieval and immediately before handing passages to the extension runner; suppress results
+and hand off to a person if authority changed.
 
 ## Previous plan checkpoint — Resumable workers, durable workflows and branches
 

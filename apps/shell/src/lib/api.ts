@@ -4303,6 +4303,30 @@ export interface ExternalKnowledgePublicationSources {
   document_ids: string[];
 }
 
+export interface ExternalKnowledgeSearchPreviewResult {
+  publication_id: string;
+  revision: number;
+  data: Array<{
+    chunk_id: string;
+    document_id: string;
+    title: string;
+    score: number;
+    content: string;
+    content_hash: string;
+    provenance: {
+      source_adapter: string;
+      source_revision: number;
+      source_content_sha256?: string;
+      source_grant_revision?: number;
+      byte_start: number;
+      byte_end: number;
+      line_start: number;
+      line_end: number;
+      heading_path?: string[];
+    };
+  }>;
+}
+
 export interface ExternalKnowledgePublicationEvent {
   event_id: string;
   actor_id: string;
@@ -4362,6 +4386,16 @@ export async function getExternalKnowledgePublicationSources(
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}/sources`, {
     session, cache: "no-store",
   });
+}
+
+export async function searchExternalKnowledgePublication(
+  spaceId: string, projectId: string, publicationId: string, session: SessionCredentials,
+  input: { expected_revision: number; query: string; top_k?: 1 | 2 | 3 },
+): Promise<ExternalKnowledgeSearchPreviewResult> {
+  return apiFetch(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}/search-preview`,
+    { method: "POST", session, body: JSON.stringify(input), cache: "no-store" },
+  );
 }
 
 export async function listExternalKnowledgePublicationEvents(
