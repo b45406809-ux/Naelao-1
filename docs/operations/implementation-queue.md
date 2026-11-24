@@ -141,7 +141,7 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     idempotent digest recovery. Explicit AgentPort/tunnel execution stays independent; old sidecar
     status/reset/receipt routes remain for cleanup and historical allocations. Seven focused suites
     pass 136/136; Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-- [ ] **Active · SPR04 — Retire direct specialist execution.** Stop new first-party Project
+- [x] **SPR04 — Retire direct specialist execution.** Stop new first-party Project
   allocations in Document/Media sandboxes after the replacement routes pass. Preserve cleanup,
   reconciliation and erasure of historical runtimes.
   - [x] **SPR04.1 — Gate Project-scoped specialist execution.** Project-scoped `/exec` and
@@ -159,15 +159,19 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     CodeRunner suites pass 35/35; Spaces blueprint tests pass 28/28. Agents/Spaces typechecks, Shell
     build/type validation and `git diff --check` pass. Fixed specialist pins/bindings remain for
     Space Assistant execution and historical cleanup. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-  - [ ] **Active · SPR04.3 — Verify historical cleanup and recovery paths.** Test erasure registration and
-    cleanup dispatch for old Document/Media objects, and record any unenumerable provider resources
-    or unsupported snapshot purge dependency.
-- [ ] **SPR05 — Local acceptance.** Verify concurrency, replacement, capability denial,
-  explicit external tools, and erasure with safe fixtures.
+  - [x] **SPR04.3 — Verify historical cleanup and recovery paths.** Cleanup seeds the stable legacy
+    Document (`sandbox:<space>:<project>`) and Media (`attachment-media:<space>:<project>`) names,
+    dispatches exact registered historical objects, and retains failed receipts for retry before
+    workspace erasure advances. Five cleanup/runtime suites pass 132/132; Agents typecheck and
+    `git diff --check` pass. Arbitrary unregistered historical DO IDs cannot be enumerated and the
+    provider snapshot purge API is unsupported; see the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
+- [ ] **Active · SPR05 — Local acceptance.** Map each plan criterion to existing local evidence,
+  close any missing safe-fixture coverage for concurrency, replacement/recovery, capability denial,
+  explicit external execution, and erasure/tombstone behavior.
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4 and SPR04.1–SPR04.2 are locally verified. Project
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4 and SPR04.1–SPR04.3 are locally verified. Project
 branches share one runtime identity and generation; exact image profiles and capability grants are
 checked before admission. Video audio, frame sampling and scanned PDF use the Project main runtime;
 ordinary audio and image OCR remain container-free. Project extension binaries, managed execution,
@@ -181,11 +185,14 @@ limits Project discovery, managed selection, plan activation/prewarm and install
 deployed `TOOL_SANDBOX` profiles carrying `extension.native_execute`; Project sidecar dispatch fails
 before namespace lookup. Agents discovery/environment/CodeRunner suites pass 35/35; Spaces blueprint
 tests pass 28/28; Agents and Spaces typechecks plus Shell build/typecheck pass. Legacy specialist
-bindings and receipts remain for cleanup and Space Assistant paths. Deployment, provider lifecycle
-and live erasure acceptance remain separate.
-**Next action:** SPR04.3 — inspect old Document/Media runtime registration and cleanup dispatch,
-exercise Project erasure on safe fixtures, and record the provider namespace-enumeration and snapshot
-purge limitations without attempting live Cloudflare cleanup.
+bindings and receipts remain for cleanup and Space Assistant paths. SPR04.3 exercises seeded legacy
+Document/Media IDs and registered historical names; one failed receipt remains pending until retry,
+then cleanup advances. Five cleanup/runtime suites pass 132/132; Agents typecheck and
+`git diff --check` pass. Arbitrary unregistered historical Durable Object IDs remain unenumerable,
+and Cloudflare provider snapshot purge is unsupported. No provider cleanup or deployment was run.
+**Next action:** SPR05 — map all plan acceptance criteria to existing source and safe-fixture tests,
+then add/rerun only the local coverage needed for any uncovered concurrency, replacement/recovery,
+capability-denial, explicit external execution, erasure or tombstone case; keep live acceptance open.
 
 ## Paused plan — Managed services and sidecar runtime
 

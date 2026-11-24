@@ -364,12 +364,42 @@ the build regenerated them. No deployment or provider operation was run.
 safe Project erasure fixtures, then record the exact provider namespace enumeration and snapshot-purge
 dependencies that require separate live acceptance.
 
+## SPR04.3 — Historical specialist erasure and retry
+
+Project cleanup seeds the deterministic pre-registry Document name
+`sandbox:<space>:<project>` and Media name `attachment-media:<space>:<project>` whenever their
+legacy bindings remain present. It then pages the exact tenant/Space/Project rows from
+`workspace_runtime_registry`, dispatches authenticated erase requests to the recorded runtime kind
+and object name, and keeps the workspace cleanup barrier pending until each runtime returns both
+`erased:true` and `localStatePurged:true`. A failed historical Document receipt remains registered
+with its retry error; replay targets the same object name, clears the receipt after confirmed local
+purge, and only then completes the project cleanup. Fixed specialist pins and namespace bindings
+remain available to drain these objects.
+
+Local verification: `workspace-project-cleanup.test.ts`, its route adapter, specialized workspace,
+ToolSandboxDO and DynamicSandboxDO suites pass **132/132**; Agents typecheck and `git diff --check`
+pass. These use fake D1, R2 and Durable Object namespaces. The test receipt's
+`providerSnapshotPurge:"not_supported"` does not claim physical provider deletion. The managed
+services audit records that arbitrary unregistered historical Durable Object names cannot be
+enumerated through Cloudflare namespace APIs and that the provider snapshot purge API is unsupported.
+No deployed erasure was run.
+
+**SPR04 acceptance:** direct Project specialist execution/prewarm is gated, Project discovery and
+installation are restricted to the main runtime, and deterministic/registered historical objects
+remain retryably erasable at the local Durable Object boundary. Provider enumeration and physical
+snapshot purge remain open live dependencies; no binding or image pin was removed.
+
+**Exact next action:** SPR05 — map the plan's seven acceptance criteria to existing local tests and
+source, then close any uncovered safe-fixture gap for shared concurrency, recovery/replacement,
+capability/authority denial, explicit external execution, or erasure/tombstone behavior. Keep live
+Cloudflare lifecycle and erasure acceptance separate.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame
 caller slices, Project scanned-PDF rendering, extension native caller migration, specialist admission
-gate and Project specialist discovery fence are implemented and locally verified. Historical cleanup
-verification and SPR05 local acceptance remain open. Local
+gate, Project specialist discovery fence and historical specialist cleanup verification are
+implemented and locally verified. SPR05 local acceptance remains open. Local
 source and test evidence must remain distinct from deployed cold/warm allocation, Cloudflare
 stop/reconciliation, cost/capacity, snapshot retention and Project-erasure acceptance. Keep rollout
 disabled and legacy erasure inventory active until the migrated routes and historical cleanup pass

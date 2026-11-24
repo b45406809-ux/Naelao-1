@@ -211,6 +211,54 @@ describe("retryable project workspace cleanup", () => {
     expect(await runtimeNotifications[0]!.clone().json()).toMatchObject({ scope, confirm: true });
   });
 
+  it("seeds and dispatches legacy Document/Media names alongside registered historical objects", async () => {
+    const { env, db } = fixture();
+    const addresses: Array<{ kind: string; name: string }> = [];
+    const notifications: Array<{ kind: string; name: string; request: Request }> = [];
+    let rejectHistoricalDocumentOnce = true;
+    const namespace = (kind: string) => ({
+      idFromName: (name: string) => { addresses.push({ kind, name }); return name; },
+      get: (id: string) => ({ fetch: async (request: Request) => {
+        notifications.push({ kind, name: id, request });
+        if (kind === "document_sandbox" && id.endsWith(":historical-document") && rejectHistoricalDocumentOnce) {
+          rejectHistoricalDocumentOnce = false;
+          return Response.json({ error_code: "runtime_erasure_retry_required" }, { status: 503 });
+        }
+        return Response.json({ erased: true, localStatePurged: true, providerSnapshotPurge: "not_supported" });
+      } }),
+    });
+    const bindings = env as unknown as Record<string, unknown>;
+    bindings.DOCUMENT_SANDBOX = namespace("document_sandbox");
+    bindings.MEDIA_SANDBOX = namespace("media_sandbox");
+    db.runtimeRows.push(
+      { tenant_id: scope.tenantId, space_id: scope.spaceId, project_id: scope.projectId, runtime_kind: "document_sandbox",
+        object_name: "sandbox:space-a:project-a:historical-document", branch: "", installation_id: null, erasure_attempts: 0 },
+      { tenant_id: scope.tenantId, space_id: scope.spaceId, project_id: scope.projectId, runtime_kind: "media_sandbox",
+        object_name: "attachment-media:space-a:project-a:historical-media", branch: "", installation_id: null, erasure_attempts: 0 },
+    );
+
+    const first = await handleWorkspaceProjectCleanup(await request(), env);
+    expect(first.status).toBe(503);
+    expect(await first.json()).toMatchObject({ error_code: "workspace_runtime_erasure_pending", pending: 1 });
+    expect(db.runtimeRows.find(row => row.object_name === "sandbox:space-a:project-a:historical-document"))
+      .toMatchObject({ erasure_attempts: 1, last_erasure_error: "runtime_erasure_retry_required" });
+
+    const retried = await handleWorkspaceProjectCleanup(await request(), env);
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ erased: true });
+    expect(new Set(addresses.filter(item => item.kind === "document_sandbox").map(item => item.name))).toEqual(new Set([
+      "sandbox:space-a:project-a", "sandbox:space-a:project-a:historical-document",
+    ]));
+    expect(new Set(addresses.filter(item => item.kind === "media_sandbox").map(item => item.name))).toEqual(new Set([
+      "attachment-media:space-a:project-a", "attachment-media:space-a:project-a:historical-media",
+    ]));
+    expect(addresses.filter(item => item.kind === "document_sandbox" && item.name.endsWith(":historical-document"))).toHaveLength(2);
+    expect(notifications.filter(item => ["document_sandbox", "media_sandbox"].includes(item.kind))).toHaveLength(5);
+    expect(db.runtimeRows.filter(row => ["document_sandbox", "media_sandbox"].includes(String(row.runtime_kind)))
+      .every(row => typeof row.erasure_notified_at === "string" && row.last_erasure_error === null)).toBe(true);
+    expect(await notifications[0]!.request.clone().json()).toMatchObject({ scope, confirm: true });
+  });
+
   it("marks the project-main registry erased only after its exact dynamic runtime confirms local purge", async () => {
     const { env, db } = fixture();
     db.mainRuntimeRegistry = { tenant_id: scope.tenantId, space_id: scope.spaceId, project_id: scope.projectId,

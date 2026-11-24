@@ -10,7 +10,7 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR04.3 — Verify historical cleanup and recovery paths.** Follow the
+**SPR05 — Local acceptance.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
 and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). SPR03.1–SPR03.4
 route Project video audio, frame extraction, scanned-PDF rendering and extension native processing
@@ -20,7 +20,9 @@ container-free. Project extension execution, prewarm, stored scripts and workspa
 longer create installation sidecars. Project scopes now fail closed at specialist execution,
 prewarm, sidecar dispatch, runtime discovery, environment selection and Project runtime install
 before a direct specialist allocation can start. Legacy pins and bindings remain for cleanup.
-Verify historical cleanup/recovery and then continue SPR05 local acceptance; keep rollout disabled.
+SPR04.3 verified deterministic and registered historical Document/Media erasure dispatch with retry.
+Reconcile SPR05's concurrency, replacement, capability denial, explicit external tools and erasure
+criteria against safe local fixtures; fill gaps and keep live acceptance separate.
 
 ## Checkout and recovery
 
