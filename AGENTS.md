@@ -8,17 +8,6 @@ concrete action in the queue. A status summary, verified checkpoint or push is a
 result. Keep working through ready tasks until the queue is complete, the user redirects the
 session, or a specific blocker leaves no ready work.
 
-## Current task
-
-**WhatsApp member-phone local regression tests.** Follow the
-[active queue entry](docs/operations/implementation-queue.md#active-plan--whatsapp-member-routing-and-extension-testing)
-and [WhatsApp plan](new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Add and run
-focused local regression tests for challenge redemption, isolated customer-handler execution,
-current authority/expiry rechecks, retry receipts, exit and access-change revocation. Keep applying
-migration `0289` and live provider/UI phone acceptance as separate blocked work. The preceding
-SPR05.7 evidence matrix and readiness review are recorded in the
-[SPR ledger](docs/research/single-project-tier-6-runtime-progress.md).
-
 ## Checkout and recovery
 
 1. Find the Naelao checkout. Check its remote, branch, working tree and local-only commits.

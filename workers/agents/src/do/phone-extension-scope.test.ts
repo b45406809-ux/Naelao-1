@@ -166,6 +166,30 @@ describe("phone extension scope dispatch", () => {
     expect(f.runChannel).toHaveBeenCalledOnce();
   });
 
+  it("rechecks a customer phone-test session inside the Agent DO before routing an executive-like turn", async () => {
+    const f = setup("project", "whatsapp");
+    const currentAuthority = vi.fn(async () => null);
+    (f.agent as unknown as { currentWhatsAppCustomerTest: typeof currentAuthority }).currentWhatsAppCustomerTest = currentAuthority;
+    const text = `ad_${"f".repeat(48)}`;
+    const response = await f.agent.fetch(new Request("http://agent/channels/whatsapp/inbound", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": await mintInternalToken(secret, "tenant") },
+      body: JSON.stringify({ raw: { object: "whatsapp_business_account", entry: [{ changes: [{ value: { messages: [
+        { id: "wamid-customer-test", from: "+15551234567", type: "text", text: { body: text } },
+      ] } }] }] }, projectId: "project", spaceId: "space", tenantId: "tenant", taskId: "wamid-customer-test",
+        extensionInstanceId: "install", extensionScriptSha256: "a".repeat(64), customerTestSessionId: "test-session",
+        customerTestProviderRouteKey: "b".repeat(64), allowExecutiveRouting: false }),
+    }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error_code: "customer_test_authority_changed" });
+    expect(currentAuthority).toHaveBeenCalledWith(expect.objectContaining({ testSessionId: "test-session", tenantId: "tenant",
+      spaceId: "space", projectId: "project", senderId: "+15551234567", providerRouteKey: "b".repeat(64),
+      installationId: "install", handlerSha256: "a".repeat(64) }));
+    expect(f.runChannel).not.toHaveBeenCalled();
+    expect(f.runtimeWork).not.toHaveBeenCalled();
+  });
+
   it("pins a Telnyx DTMF call to its published settings revision and fails closed on drift", async () => {
     const f = setup(null, "telnyx");
     const pin = await f.agent.fetch(new Request("http://agent/phone-extension", {

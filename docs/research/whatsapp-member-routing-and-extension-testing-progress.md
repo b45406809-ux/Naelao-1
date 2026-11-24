@@ -1,8 +1,9 @@
 # WhatsApp member routing and extension testing — progress
 
 Status: open. Member routing, the one-turn customer simulation and isolated conversation replay now
-have local source implementations on `Mcbt5s-Backup-2`. Migration apply, tests, provider behavior,
-deployment, authenticated UI and live acceptance remain unverified.
+have local source implementations on `Mcbt5s-Backup-2`. Focused member-phone regression tests now
+pass locally. Migration apply, provider behavior, deployment, authenticated UI and live acceptance
+remain unverified.
 
 ## Current-source reconciliation — 2026-11-23
 
@@ -283,6 +284,22 @@ identity model; do not reuse `executive_contacts` or `channel_pairings` as membe
   only the four known stale `.next/types` imports for missing generated routes, with no diagnostics
   in changed Shell sources. No tests, migration apply, provider message, deployment or live
   acceptance ran.
-- Source implementation is ready. Focused tests and an accepted live phone test remain separate
-  blocked acceptance; resume them after a test request and separate migration/provider
-  authorization. The implementation queue advances to the commercial-cleaning Space Template plan.
+- Source implementation is ready. At this checkpoint focused tests and accepted live phone testing
+  were separate outstanding acceptance items; see the later local-test entry below. Migration and
+  provider acceptance remain independently gated.
+
+### Member phone-test local regressions — 2026-11-24
+
+- Added a real-SQLite in-memory D1 webhook fixture covering single-use challenge redemption before
+  pairing, duplicate provider retry idempotency, expired-code rejection, and dispatch of an active
+  test turn only to its pinned Project installation/handler with executive routing disabled.
+- The same fixture verifies expired sessions and changed contact authority prevent routing, and
+  that explicit `TEST EXIT` retries remain idempotent. An Agent DO regression verifies current
+  authority is rechecked before routing/model work and denies execution when it has changed.
+- Focused command: `corepack pnpm --filter @naelao/agents-worker exec vitest run
+  src/launchpad/whatsapp-member-customer-test.test.ts src/do/phone-extension-scope.test.ts
+  src/launchpad/whatsapp-extension-webhook.test.ts` — 3 suites, 20/20 tests passed. Agents
+  typecheck and `git diff --check` passed. Provider fetches were intercepted; no provider message,
+  remote migration, deployment or live phone acceptance ran.
+- Local regression coverage is complete. Resume live acceptance only after separate authorization to
+  apply migration `0289`, a configured test account and authorized provider/UI phone acceptance.

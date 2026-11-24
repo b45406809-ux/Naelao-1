@@ -3,7 +3,8 @@
 This is the live checklist for one session working through one plan at a time. The latest confirmed
 commit on `origin/Mcbt5s-Backup-2` is the recovery checkpoint; fetch the branch tip before resuming.
 The Tier 6 plan was activated first and its local acceptance work is verified; its separate live
-acceptance remains open. The current pointer below determines the next ready plan. The previous
+acceptance remains open. An AGENTS.md pointer, when present, identifies the single active task; when
+no local task is ready, the pointer is absent. The previous
 claims checkpoint at `2b80e458` had parked the remaining functional claims workflow. Use the
 checklist and linked ledgers to determine readiness and record a reason if the order changes.
 
@@ -209,11 +210,15 @@ local evidence from live evidence in the [SPR ledger](../research/single-project
 SPR05.1–SPR05.6 test counts and results remain on their checked task rows. Agents typecheck and
 `git diff --check` pass; no live provider operation or deployment ran. Readiness review found no
 independent ready work in the earlier APW, PW, S/U, SC, U, K, EP, TBR or P entries; their exact
-policy, authority, jurisdiction, price and deployment dependencies remain recorded. After the
-reconciled AgentPort and AgentPhone reviews, focused WhatsApp member-phone local regression tests
-are the first ready task because this session requests local tests. Applying migration `0289` and
-configured provider/UI acceptance remain separate blocked work.
-**Exact next action:** add and run the local WhatsApp member-phone regression tests.
+policy, authority, jurisdiction, price and deployment dependencies remain recorded. The reconciled
+AgentPort and AgentPhone reviews also found no source-only work without verified provider/API or
+commercial evidence. The first ready task was the requested WhatsApp member-phone regression suite;
+it is now complete at 20/20, with Agents typecheck and `git diff --check` passing. The post-test
+review found no independent local task among the remaining unchecked plans. Their specific policy,
+product-contract, jurisdiction, provider/API, pricing, deployment and practitioner dependencies are
+recorded in the corresponding plan sections and ledgers. **Exact next action:** resume the first
+applicable blocked item when its recorded dependency changes; no live migration, provider action or
+deployment was authorized or verified by this checkpoint.
 
 ## Paused plan — Managed services and sidecar runtime
 
@@ -514,10 +519,12 @@ ManagedServicesPanel shows only the newest currently verified capability and exp
 scope from connection/live availability. SDK discovery is provider-declaration metadata only. No
 AgentPhone support was found; Telnyx managed and streaming gates remain false. No tests or typechecks
 ran; no provider action occurred. Evidence: the AP progress ledger.
-**Next action:** continue with the ordered WhatsApp member-routing and extension-testing plan; trace
-the actual inbound caller and current identity/extension authority before selecting code work.
+**Handoff:** this reconciliation advanced to WhatsApp source tracing, which is complete. Focused
+WhatsApp member-phone regression tests were then run and passed; remaining provider/phone acceptance
+is blocked by the separate dependencies recorded in that plan. The post-test readiness review found
+no next independent local task.
 
-## Active plan — WhatsApp member routing and extension testing
+## Paused plan — WhatsApp member routing and extension testing
 
 See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md).
 
@@ -566,7 +573,9 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
   host inbox and documentation of the synthetic test/replay surfaces. Do not include provider
   credentials or claim unverified live behavior.
 
-- [ ] **Add bounded WhatsApp member phone testing.** Offer an optional, expiring single-use entry
+- [ ] **Blocked · Add bounded WhatsApp member phone testing — live acceptance.** Source routing and
+  focused local regression coverage are complete; migration and real phone/provider acceptance
+  remain open under the dependency below. Offer an optional, expiring single-use entry
   challenge for an authenticated member's verified sender, exact destination, Project and active
   extension installation. Keep every test turn on the customer handler before privileged routing;
   support explicit exit/revocation and show test status in the dashboard and chat.
@@ -576,10 +585,11 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
     conversation/memory scope; the Agent DO rechecks current membership, grant, contact, destination,
     channel binding and installed version before handling and delivery. Explicit chat/dashboard exit,
     access-change revocation, retry receipts, inbox marking and chat labels are wired.
-  - [ ] **WhatsApp member-phone local regression tests.** Local test work is requested in this
-    session. Cover challenge redemption ahead of privileged routing, pinned customer-handler
-    execution, current authority/expiry rechecks, retry receipts, exit and access-change revocation.
-    Keep migration and live provider acceptance separate.
+  - [x] **WhatsApp member-phone local regression tests.** A real-SQLite in-memory D1 fixture covers
+    challenge redemption before pairing, duplicate provider retry, expired challenge, pinned
+    customer-handler dispatch with executive routing disabled, active-session expiry/revocation, and
+    idempotent exit. The Agent DO rejects a session when its current-authority check fails. Three
+    Agents suites pass 20/20; Agents typecheck and `git diff --check` pass. No remote migration ran.
   - [ ] **Blocked — migration and live phone acceptance.** Requires separate authorization to apply
     migration `0289`, a configured test account, and provider/UI acceptance. No migration, provider
     message or deployment has run.
@@ -592,11 +602,18 @@ exact channel binding, test expiry and installed package version before handling
 answer, delivery and state persistence. Chat shows active/exit labels, the Project inbox marks test
 events, and contact/grant/mode/channel/extension changes close active sessions and consume pending
 challenges. Provider retry receipts retain only HMAC event keys for seven days. Migration `0289`
-remains unapplied. Agents typecheck and `git diff --check` pass; full Shell typecheck reports only the
-four known stale `.next/types` imports for missing routes. No tests, provider action or deployment ran.
-**Next action:** run the focused local WhatsApp member-phone regression tests requested in this
-session. Migration `0289` and live phone acceptance remain blocked on separate authorization and a
-configured test account.
+remains unapplied. The local follow-up adds webhook and Agent DO regression fixtures; three Agents
+suites pass 20/20, Agents typecheck and `git diff --check` pass. Provider fetches are intercepted;
+no provider message, migration, deployment or live phone acceptance ran. **Resume condition:** obtain
+separate authorization to apply migration `0289`, configure a test account and authorize provider/UI
+phone acceptance.
+
+**Readiness review after the local tests:** all remaining unchecked plan items were rechecked against
+their current queue entries and ledgers. No independent local implementation or verification is
+ready: remaining work depends on policy/product contracts, jurisdiction/provider discovery, external
+pricing/API evidence, live deployment access or practitioner validation. The exact dependencies and
+resume conditions are recorded in each plan section. There is no current task pointer until one of
+those dependencies changes.
 
 ## Paused plan — Commercial cleaning Space template
 
@@ -860,7 +877,7 @@ ledgers when moving to another plan.
 10. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
 11. [ ] **Source reconciled; provider work remains gated by terms, API and pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
 12. [ ] **Source reconciled; provider work remains gated by API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
-13. [ ] **Active; source implementation complete; local regression tests requested.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Live acceptance remains separately blocked as recorded above.
+13. [ ] **Paused; source and focused local regression tests verified; migration/live acceptance blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Resume on the separate migration authorization, configured test-account and provider/UI acceptance dependencies recorded above.
 14. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
 15. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
 
