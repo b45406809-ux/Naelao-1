@@ -260,6 +260,7 @@ async function runContainer(
     return opts.localMachine(params);
   }
 
+  if (params.projectRuntimeImage && !params.projectRuntimeInstallationId) return fail("project_extension_runtime_scope_invalid");
   if (params.projectRuntimeInstallationId) {
     if (!params.projectId || params.containerImage || params.installationId) return fail("project_extension_runtime_scope_invalid");
     if (!opts.toolSandbox || !opts.resolveProjectRuntimeExtension) return fail("project_extension_main_runtime_unavailable");
@@ -267,6 +268,8 @@ async function runContainer(
       const installation = await opts.resolveProjectRuntimeExtension(params);
       if (installation.installationId !== params.projectRuntimeInstallationId || installation.projectId !== params.projectId)
         return fail("project_extension_installation_scope_mismatch");
+      if (params.projectRuntimeImage && installation.contract.image !== params.projectRuntimeImage)
+        return fail("project_extension_image_installation_mismatch");
       const timeoutMs = Math.min(opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS,
         installation.contract.resources.timeoutSeconds * 1000);
       const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, projectId: params.projectId,
@@ -274,7 +277,7 @@ async function runContainer(
         executionId: params.executionId ?? crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}),
         ...(params.workspaceRevision !== undefined && params.workspaceManifestHash
           ? { workspaceRevision: params.workspaceRevision, workspaceManifestHash: params.workspaceManifestHash } : {}),
-        requiredCapabilities: ["extension.native_execute"], requiredImage: installation.contract.image,
+        requiredCapabilities: ["extension.native_execute"], requiredImage: params.projectRuntimeImage ?? installation.contract.image,
         ...(authorizationRevision ? { authorizationRevision } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
       validateContainerScope(scope);
       const stub = opts.toolSandbox.get(opts.toolSandbox.idFromName(
@@ -285,9 +288,8 @@ async function runContainer(
     }
   }
 
-  // §A1.17 Phase L: a script tagged with a Container Marketplace image routes to THAT image's
-  // own binding, never the base sandbox — fails closed with a clear message when the image
-  // isn't wired yet (every catalogue image ships unavailable today; see container-catalogue.ts).
+  // Project extension calls were admitted above. Projectless image-tagged scripts retain their
+  // installation-scoped route; they never change the Project main runtime image implicitly.
   if (params.containerImage) {
     if (!opts.resolveSidecar || !params.installationId) return fail("container_active_installation_required");
     try {

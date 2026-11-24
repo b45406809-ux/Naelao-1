@@ -25,7 +25,7 @@ describe("Project extension execution routing", () => {
 
     const result = await runner.run({ name: "container.extension_binary", code: "", args: { commands: "native-tool run" }, tier: 6, maxTier: 6,
       tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", userId: "owner-a", agentId: "assistant-a", runId: "run-a",
-      projectRuntimeInstallationId: "install-a" });
+      projectRuntimeInstallationId: "install-a", projectRuntimeImage: image });
 
     expect(result).toMatchObject({ ok: true, output: "project-runtime-ok" });
     expect(idFromName).toHaveBeenCalledWith("sandbox:space-a:project-a");
@@ -50,6 +50,19 @@ describe("Project extension execution routing", () => {
       projectRuntimeInstallationId: "install-a" });
 
     expect(result).toMatchObject({ ok: false, error: "project_extension_active_installation_required" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale stored image pin for an otherwise active installation", async () => {
+    const fetch = vi.fn();
+    const runner = buildCodeRunner({ authorizeContainer: async () => true,
+      resolveProjectRuntimeExtension: async () => installation,
+      toolSandbox: { idFromName: (name: string) => name, get: () => ({ fetch }) } as never });
+    const result = await runner.run({ name: "stored-script", code: "", args: {}, tier: 6, maxTier: 6,
+      tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", userId: "owner-a", agentId: "assistant-a", runId: "run-a",
+      projectRuntimeInstallationId: "install-a", projectRuntimeImage: "registry.cloudflare.com/" + "2".repeat(32) + "/old-image@sha256:" + "b".repeat(64) });
+
+    expect(result).toMatchObject({ ok: false, error: "project_extension_image_installation_mismatch" });
     expect(fetch).not.toHaveBeenCalled();
   });
 

@@ -10,15 +10,17 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR03.4 — Reconcile extension native tools with Project runtime admission.** Follow the
+**SPR04.1 — Gate Project-scoped specialist execution.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
-and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). SPR03.1–SPR03.3
-route Project video audio, frame extraction and scanned-PDF rendering through the stable main runtime
-with host-created capability admission. Projectless video and scanned PDF fail before body reads or
-specialist allocation; ordinary audio and image OCR stay container-free. Trace extension-declared
-native processing callers and their Project grants, execution scopes, image pins and Durable Object
-names. Preserve installation image policy and explicitly selected Agent37/tunnel runtimes. Keep
-rollout disabled; continue SPR04 and local acceptance after this caller review.
+and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). SPR03.1–SPR03.4
+route Project video audio, frame extraction, scanned-PDF rendering and extension native processing
+through the stable main runtime with host-created capability/image admission. Projectless video and
+scanned PDF fail before body reads or specialist allocation; ordinary audio and image OCR stay
+container-free. Project extension execution, prewarm, stored scripts and workspace artifacts no
+longer create installation sidecars. Audit remaining DocumentSandboxDO/MediaSandboxDO allocation
+and prewarm entry points; block Project scopes before receipts, reservation, billing and start while
+preserving historical cleanup and erasure. Keep rollout disabled; continue SPR05 local acceptance
+after SPR04.
 
 ## Checkout and recovery
 

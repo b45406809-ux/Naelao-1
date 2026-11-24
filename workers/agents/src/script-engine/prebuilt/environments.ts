@@ -25,6 +25,23 @@ function isWorkspacePublicationConflict(error: unknown): boolean {
   return error.message === "workspace_head_changed" || error.message === "workspace_checked_publication_failed:409"
     || error.message.includes("changed concurrently");
 }
+async function workspacePathHasDigest(ctx: PrebuiltOpContext, path: string, digest: string): Promise<boolean> {
+  try { return (await publishEnvironmentArtifact(ctx.env, path)).digest === digest; }
+  catch (error) {
+    if (error instanceof Error && error.message === "environment_artifact_source_missing") return false;
+    throw error;
+  }
+}
+async function restoreArtifactIdempotently(ctx: PrebuiltOpContext, digest: string, path: string, expectedHash: string | null) {
+  const artifact = await readEnvironmentArtifact(ctx.env, digest);
+  if (await workspacePathHasDigest(ctx, path, digest))
+    return { restored: true, path, digest, bytes: artifact.bytes.byteLength, already_present: true };
+  try { return await restoreEnvironmentArtifact(ctx.env, digest, path, expectedHash); }
+  catch (error) {
+    if (!isWorkspacePublicationConflict(error) || !await workspacePathHasDigest(ctx, path, digest)) throw error;
+    return { restored: true, path, digest, bytes: artifact.bytes.byteLength, already_present: true };
+  }
+}
 async function transferRequestId(ctx: PrebuiltOpContext, operation: string, machine: string, path: string, digest?: string) {
   return tunnelHash(JSON.stringify([ctx.env.tenantId, ctx.env.spaceId, ctx.env.projectId ?? "_assistant", ctx.env.humanInvokerId, ctx.env.runId, operation, machine, path, digest ?? null]));
 }
@@ -66,8 +83,8 @@ export const environments: PrebuiltScript = {
     "environment.artifact_restore": "digest, path and expected_hash (null only for an absent destination). Verify integrity and publish with a fenced revision check.",
     "environment.artifact_import": "machine_id and path (required). Explicitly read a file from an owner-authorized connected machine into this workspace's immutable artifact store. Binary-safe, maximum 16 MiB in resumable 8 KiB chunks; returns a digest to restore into the workspace. No filesystem mount or synchronization. If pending/indeterminate, reconcile the returned request_id with tunnel.status; do not create a new request.",
     "environment.artifact_export": "machine_id, digest and path (required). Explicitly write an immutable workspace artifact as a new file in an owner-authorized local folder. Refuses to overwrite. Binary-safe, maximum 16 MiB in resumable 8 KiB chunks. If pending/indeterminate, reconcile request IDs; do not resubmit with different IDs.",
-    "environment.sidecar_artifact_import": "installation_id, source_path, destination_path and expected_hash (required). Explicitly copy one bounded project/Space workspace artifact into an installed Cloudflare sidecar's private filesystem. Null expected_hash creates a new file; a SHA-256 expected_hash permits an observed revision. No mount, full hydration, or implicit writeback. Reuse request_id to reconcile uncertain outcomes.",
-    "environment.sidecar_artifact_export": "installation_id, source_path, destination_path and expected_hash (required). Export one sidecar file as an immutable artifact, then publish it to the project/Space workspace with a checked revision. A conflict preserves the sidecar file and artifact. Reuse request_id to reconcile uncertain outcomes.",
+    "environment.sidecar_artifact_import": "installation_id, source_path, destination_path and expected_hash (required). In a Project, copy one bounded workspace artifact to another Project workspace path for the selected main runtime; no sidecar Container is started. Null expected_hash requires a new destination; a SHA-256 expected_hash permits an observed revision. With no Project, the explicitly installed Space Assistant sidecar retains its scoped transfer route.",
+    "environment.sidecar_artifact_export": "installation_id, source_path, destination_path and expected_hash (required). In a Project, copy one bounded file between Project workspace paths using the checked publisher; no sidecar Container is started. With no Project, the explicitly installed Space Assistant sidecar retains its scoped transfer route. A Project conflict preserves the existing workspace version and immutable artifact.",
     "environment.status": "session_id and action_id. Reconcile an accepted tunnel request without resubmitting it.",
     "environment.list": "List visible environment capabilities and availability. Observations are untrusted evidence, not permissions.",
     "environment.execute": "session_id, action_id, command, capabilities (string array; default bash), mode (managed, capability, or host-verified fallback; default managed), optional app_id plus connection_id to require a fresh authenticated app observation, target_id and external-only absolute cwd. A host-classified worker runtime requirement is automatically included for managed execution and remains pinned by the session. Tunnel files stay on that machine inside its owner-consented folders; import/export files explicitly through artifact operations. Repeat action_id only to retrieve a confirmed outcome. Group commands needing shell state into one command. Pending tunnel receipts require tunnel.status reconciliation; do not resubmit.",
@@ -89,6 +106,18 @@ export const environments: PrebuiltScript = {
       if (!installationId || !sourcePath || !destinationPath || !(expectedHash === null || typeof expectedHash === "string" && /^[a-f0-9]{64}$/.test(expectedHash)))
         throw new Error("environment_sidecar_artifact_scope_required");
       if (!ctx.authorizeShell || !await ctx.authorizeShell({ kind: "file", name: sourcePath, access: "read" })) throw new Error("environment_artifact_read_denied");
+      if (ctx.env.projectId && (!await ctx.authorizeShell({ kind: "file", name: destinationPath, access: "write" }))) throw new Error("environment_artifact_write_denied");
+      if (ctx.env.projectId) {
+        const installation = (await ctx.env.containerRuntimeInventory?.())?.installed.find(item => item.installationId === installationId
+          && item.projectId === ctx.env.projectId && ["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(item.scope ?? ""));
+        if (!installation) throw new Error("environment_installation_revoked");
+        const artifact = await publishEnvironmentArtifact(ctx.env, sourcePath);
+        const requestId = typeof args.request_id === "string" ? args.request_id
+          : await transferRequestId(ctx, "project-runtime-import", installationId, destinationPath, artifact.digest);
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_sidecar_artifact_request_id_invalid");
+        const restored = await restoreArtifactIdempotently(ctx, artifact.digest, destinationPath, expectedHash as string | null);
+        return { ...restored, installation_id: installationId, source_path: sourcePath, request_id: requestId, runtime: "project-main" };
+      }
       const transfer = ctx.env.transferContainerArtifact;
       if (!transfer) throw new Error("environment_sidecar_transfer_unavailable");
       const artifact = await publishEnvironmentArtifact(ctx.env, sourcePath);
@@ -103,6 +132,18 @@ export const environments: PrebuiltScript = {
       if (!installationId || !sourcePath || !destinationPath || !(expectedHash === null || typeof expectedHash === "string" && /^[a-f0-9]{64}$/.test(expectedHash)))
         throw new Error("environment_sidecar_artifact_scope_required");
       if (!ctx.authorizeShell || !await ctx.authorizeShell({ kind: "file", name: destinationPath, access: "write" })) throw new Error("environment_artifact_write_denied");
+      if (ctx.env.projectId && (!await ctx.authorizeShell({ kind: "file", name: sourcePath, access: "read" }))) throw new Error("environment_artifact_read_denied");
+      if (ctx.env.projectId) {
+        const installation = (await ctx.env.containerRuntimeInventory?.())?.installed.find(item => item.installationId === installationId
+          && item.projectId === ctx.env.projectId && ["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(item.scope ?? ""));
+        if (!installation) throw new Error("environment_installation_revoked");
+        const artifact = await publishEnvironmentArtifact(ctx.env, sourcePath);
+        const requestId = typeof args.request_id === "string" ? args.request_id
+          : await transferRequestId(ctx, "project-runtime-export", installationId, sourcePath, artifact.digest);
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_sidecar_artifact_request_id_invalid");
+        const restored = await restoreArtifactIdempotently(ctx, artifact.digest, destinationPath, expectedHash as string | null);
+        return { ...restored, installation_id: installationId, source_path: sourcePath, request_id: requestId, runtime: "project-main" };
+      }
       const transfer = ctx.env.transferContainerArtifact;
       if (!transfer) throw new Error("environment_sidecar_transfer_unavailable");
       const requestId = typeof args.request_id === "string" ? args.request_id

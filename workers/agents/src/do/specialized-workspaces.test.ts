@@ -4,7 +4,8 @@ import { mintInternalToken } from "@naelao/http";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { ConcurrencyDO } from "./ConcurrencyDO.js";
 import { sandboxWorkspacePrefix, ToolSandboxDO } from "./ToolSandboxDO.js";
-import { validateContainerScope } from "../script-engine/container-policy.js";
+import { sidecarKey, validateContainerScope } from "../script-engine/container-policy.js";
+import { sandboxInstanceName, workspaceBranchScope } from "../script-engine/sandbox-routing.js";
 import { readBytesWithHash, sha256Bytes } from "../script-engine/r2-cas.js";
 import { environmentArtifactObjectKey } from "../script-engine/environment-artifacts.js";
 
@@ -96,8 +97,10 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image, uni
     const scope = { tenantId: "tenant", spaceId: "space", ...(sidecar && installationScope === "SPACE_SHARED" ? {} : { projectId: "project" }), actorId: "user", agentId: "worker", runId: "run",
       executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000,
       ...(sidecar ? { image, dynamicImage: false, installationId: "media-one", ...(installationScope ? { installationScope } : {}), ...(sharedFilesystemGrants ? { sharedFilesystemGrants } : {}) } : {}) };
+    const runtimeObjectName = sidecar ? sidecarKey(scope as never) + workspaceBranchScope(scope.workspaceBranch) : sandboxInstanceName(scope.spaceId, scope.projectId, scope.workspaceBranch);
     return sandbox.fetch(new Request("http://sandbox/exec", { method: "POST", headers: { "content-type": "application/json",
-      "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") },
+      "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant"),
+      "x-naelao-runtime-object-name": runtimeObjectName },
       body: JSON.stringify({ ...bodyScope, args }) }));
   };
   const addresses: string[] = [];
@@ -118,21 +121,24 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image, uni
       executionId: crypto.randomUUID(), timeoutMs: 5000, deadline: Date.now() + 5000,
       installationId: "media-one", installationScope: "PROJECT_SHARED", image, dynamicImage: false };
     return sandbox.fetch(new Request("http://sandbox/_internal/artifact-transfer", { method: "POST", headers: { "content-type": "application/json",
-      "x-naelao-container-scope": JSON.stringify(scope), ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) }, body: JSON.stringify(body) }));
+      "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-runtime-object-name": sidecarKey(scope as never) + workspaceBranchScope(scope.workspaceBranch),
+      ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) }, body: JSON.stringify(body) }));
   };
   const artifactTransfers = async (signed = true) => {
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
       executionId: crypto.randomUUID(), timeoutMs: 5000, deadline: Date.now() + 5000,
       installationId: "media-one", installationScope: "PROJECT_SHARED", image, dynamicImage: false };
     return sandbox.fetch(new Request("http://sandbox/_internal/artifact-transfers", { headers: {
-      "x-naelao-container-scope": JSON.stringify(scope), ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) } }));
+      "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-runtime-object-name": sidecarKey(scope as never) + workspaceBranchScope(scope.workspaceBranch),
+      ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) } }));
   };
   const artifactTransferOutcome = async (body: Record<string, unknown>, signed = true) => {
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
       executionId: crypto.randomUUID(), timeoutMs: 5000, deadline: Date.now() + 5000,
       installationId: "media-one", installationScope: "PROJECT_SHARED", image, dynamicImage: false };
     return sandbox.fetch(new Request("http://sandbox/_internal/artifact-transfer/outcome", { method: "POST", headers: { "content-type": "application/json",
-      "x-naelao-container-scope": JSON.stringify(scope), ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) }, body: JSON.stringify(body) }));
+      "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-runtime-object-name": sidecarKey(scope as never) + workspaceBranchScope(scope.workspaceBranch),
+      ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) }, body: JSON.stringify(body) }));
   };
   const eraseProject = async () => sandbox.fetch(new Request("http://sandbox/_internal/workspace/erase", { method: "POST",
     headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") },

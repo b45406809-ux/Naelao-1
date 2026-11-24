@@ -145,12 +145,10 @@ export interface ScriptMetadata {
   code_capabilities?: string[];
   code_language?: "javascript" | "typescript" | "python";
   /**
-   * §A1.17 Phase L: when set on a `requires_tier: 5` script, execution routes to the named
-   * Container Marketplace image's own DO/binding instead of the base per-project ToolSandboxDO
-   * (Phase K) — a dedicated, long-running container (a database, a cache) rather than the shared
-   * ephemeral sandbox. Fails closed with a clear error if the image isn't wired to a live binding
-   * yet (see `container-catalogue.ts`'s `available` flag — every image ships unavailable this
-   * pass; this field's routing hook is real ahead of any image actually going live).
+   * Legacy installation image pin. For Project work, an image-tagged script must also carry its
+   * active installation ID and is routed through the Project main runtime only when that exact
+   * pin is owner-selected with extension.native_execute. Projectless execution retains the
+   * installation-scoped route.
    */
   container_image?: string;
   container_installation_id?: string;
@@ -509,9 +507,11 @@ export interface TieredCodeRunner {
      *  files with — project-scoped when set, space-scoped (the Space Assistant) when absent.
      *  Only consumed by Tier 5 today; Tiers 2-4 don't touch a filesystem. */
     projectId?: string;
-    /** §A1.17 Phase L: routes a Tier 5 run to this Container Marketplace image's own binding
-     *  instead of the base per-project ToolSandboxDO. Absent = the ordinary Phase K sandbox. */
+    /** Installation-scoped image route for Projectless extension work. Project-scoped extension
+     *  work uses projectRuntimeInstallationId so it cannot allocate a sidecar beside the main DO. */
     containerImage?: string;
+    /** Image pin saved with a stored Project extension script; must still match the active install. */
+    projectRuntimeImage?: string;
     /** Host-selected active extension installation whose exact pinned image must already be
      *  selected for the Project main runtime. Never allocates an installation sidecar. */
     projectRuntimeInstallationId?: string;

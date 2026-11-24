@@ -490,4 +490,31 @@ describe("Execution Ladder & Code Runner", () => {
       status: "started",
     });
   });
+  it("routes Project container-tagged stored scripts through the selected main image", async () => {
+    const image = "registry.cloudflare.com/" + "1".repeat(32) + "/native-tools@sha256:" + "a".repeat(64);
+    const run = vi.fn(async () => ({ ok: true, output: "ok", tier: 6, actual_tier: 6, engine: "container", duration_ms: 1, tokens_used: 0 }));
+    const env = { scriptsBucket: {}, spaceId: "s1", projectId: "p1", agentId: "a1", tenantId: "t1", userId: "u1",
+      codeRunner: { run } } as unknown as ScriptEngineEnv;
+    const script = { metadata: { name: "native-job", requires_tier: 6, container_image: image, container_installation_id: "install-a" },
+      code: "export async function run() {}" } as StoredScript;
+
+    const result = await runStoredScript(env, script, {});
+
+    expect(result.ok).toBe(true);
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1", projectRuntimeInstallationId: "install-a", projectRuntimeImage: image }));
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty("containerImage");
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty("installationId");
+  });
+  it("rejects Project image-tagged stored scripts without an active installation identity", async () => {
+    const run = vi.fn();
+    const env = { scriptsBucket: {}, spaceId: "s1", projectId: "p1", agentId: "a1", tenantId: "t1", userId: "u1",
+      codeRunner: { run } } as unknown as ScriptEngineEnv;
+    const script = { metadata: { name: "native-job", requires_tier: 6, container_image: "runtime@sha256:" + "a".repeat(64) },
+      code: "export async function run() {}" } as StoredScript;
+
+    const result = await runStoredScript(env, script, {});
+
+    expect(result).toMatchObject({ ok: false, error: "project_extension_installation_required" });
+    expect(run).not.toHaveBeenCalled();
+  });
 });

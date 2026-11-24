@@ -290,15 +290,44 @@ Local verification: CodeRunner Project-extension, execution-ladder, sidecar-prof
 tests pass **48/48**; combined with the admission slice, **111/111**; Agents typecheck exits 0 and
 `git diff --check` passes. No provider call or allocation was run.
 
-**Exact next action:** trace Project extension artifact import/export and managed profile/reset routes.
-Migrate any caller that creates or targets a second Cloudflare allocation; keep authorized tunnel
-artifact transfers independent and retain historic sidecar cleanup evidence.
+The caller audit also found Project extension artifact import/export targeting installation-owned
+Cloudflare sidecars, and image-tagged stored scripts bypassing the new extension route. Project
+artifact operations now copy through the immutable artifact store into the Project workspace with
+checked CAS publication, installation/scope authorization and digest-based retry recovery. The
+stored-script route now carries its saved installation ID and image pin through the host resolver;
+missing IDs and stale pins fail closed. Environment list/execute and planned prewarm retain exact
+Project installation scope. Project image-ineligible fixed/specialist pins cannot fall back to
+their binding. `container-catalogue.ts` documents the selected-main-image rule.
+
+The remaining `runtime-installations/.../profile`, reset, execution-profile and artifact-receipt
+routes are maintenance/status paths for historical sidecars. Status/receipt reads do not start a
+Container; reset stops/clears a historical snapshot and does not start a replacement. They and
+registered sidecar cleanup remain available so old allocations can be drained and erased. Project
+execution has no caller to the legacy sidecar transfer route. Local user-computer execution and
+artifact transfers remain on the separately authorized AgentPort/tunnel path.
+
+Local verification: container-policy, DynamicSandbox, Project-extension CodeRunner, sidecar-profile,
+execution-ladder, environment and specialized-workspace suites pass **136/136**; Agents typecheck
+and `git diff --check` pass. The specialized-workspace test fixture now includes the exact
+host-derived runtime name required by registry registration. No provider operation or allocation
+was run.
+
+**SPR03 acceptance:** extension native Project tools use only the exact owner-selected Project
+image with an active native grant and Project-scoped installation. The current base has no selected
+extension or PDF profile, so unsupported calls remain fail-closed. No user-operated computer or
+tunnel call is used as fallback.
+
+**Exact next action:** SPR04.1 — audit remaining DocumentSandboxDO and MediaSandboxDO allocation and
+prewarm entry points. Reject Project-scoped direct specialist work before execution receipts,
+reservation, billing or Container start; preserve main-runtime attachment routes and historical
+cleanup/erasure handlers.
 
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame
-caller slices, and Project scanned-PDF rendering are implemented and locally verified. Remaining caller migration, direct specialist
-retirement and SPR05 local acceptance remain open. Local source and test evidence must remain distinct from deployed cold/warm
-allocation, Cloudflare stop/reconciliation, cost/capacity, snapshot retention and Project-erasure
-acceptance. Keep rollout disabled and legacy erasure inventory active until the migrated routes and
-historical cleanup pass their respective checks.
+caller slices, Project scanned-PDF rendering and extension native caller migration are implemented
+and locally verified. Direct specialist retirement and SPR05 local acceptance remain open. Local
+source and test evidence must remain distinct from deployed cold/warm allocation, Cloudflare
+stop/reconciliation, cost/capacity, snapshot retention and Project-erasure acceptance. Keep rollout
+disabled and legacy erasure inventory active until the migrated routes and historical cleanup pass
+their respective checks.

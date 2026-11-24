@@ -105,7 +105,7 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     workspace recovery pass in the local fixtures. The focused regression set passes 139 tests
     across eight suites; Agents typecheck and `git diff --check` pass. No Cloudflare image was built,
     deployed or started live.
-- [ ] **Active · SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and
+- [x] **SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and
   extension native processing through the Project runtime while preserving isolation and operation
   limits.
   - [x] **SPR03.1 — Video audio extraction.** The prebuilt caller carries the active Project into
@@ -134,42 +134,43 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     and DynamicSandbox tests pass 90/90; Agents typecheck and `git diff --check` pass. The checked-in
     base has no PDF capability or selected deployed profile, so Project rendering remains fail-closed
     until an approved image profile is available. No provider operation or live image was run.
-  - [ ] **Active · SPR03.4 — Extension native tools.** Reconcile extension-declared processing callers
-    with Project capability grants and the single allocation; preserve installation image policy and
-    keep explicit external runtimes independent.
-- [ ] **SPR04 — Retire direct specialist execution.** Stop new first-party specialist allocations
-  after the replacement routes work. Preserve cleanup, reconciliation and erasure of old runtimes.
+  - [x] **SPR03.4 — Extension native tools.** Project Bash, managed environment execution,
+    prewarm and image-tagged stored scripts recheck the live native grant, active Project install,
+    approved image and `extension.native_execute`, then execute on the exact owner-selected image in
+    `sandbox:<space>:<project>`. Project artifact import/export uses checked workspace copies with
+    idempotent digest recovery. Explicit AgentPort/tunnel execution stays independent; old sidecar
+    status/reset/receipt routes remain for cleanup and historical allocations. Seven focused suites
+    pass 136/136; Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
+- [ ] **Active · SPR04 — Retire direct specialist execution.** Stop new first-party Project
+  allocations in Document/Media sandboxes after the replacement routes pass. Preserve cleanup,
+  reconciliation and erasure of historical runtimes.
+  - [ ] **Active · SPR04.1 — Gate Project-scoped specialist execution.** Verify every remaining
+    Document/Media allocation and prewarm entry point, then reject Project-scoped requests before
+    execution receipts, capacity, billing or Container start while preserving the main-runtime
+    attachment routes and historical cleanup handlers.
+  - [ ] **SPR04.2 — Reconcile specialist discovery and deployment metadata.** Ensure new Project
+    operations cannot discover or select a direct specialist allocation; keep legacy image pins,
+    bindings and receipts available wherever removal would strand cleanup or erasure.
+  - [ ] **SPR04.3 — Verify historical cleanup and recovery paths.** Test erasure registration and
+    cleanup dispatch for old Document/Media objects, and record any unenumerable provider resources
+    or unsupported snapshot purge dependency.
 - [ ] **SPR05 — Local acceptance.** Verify concurrency, replacement, capability denial,
   explicit external tools, and erasure with safe fixtures.
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4 and SPR03.1–SPR03.3 are complete in local source and fixtures.
-Project branches share one runtime identity and generation; capability admission and versioned
-image settings resolve only exact deployed pins. DynamicSandbox applies checked replacement and
-workspace recovery. Project video audio, frame extraction and scanned-PDF rendering use the main
-runtime under `media.audio_extract`, `media.frame_extract` and `document.pdf_render`; ordinary audio
-and image OCR remain container-free. Projectless video and scanned PDF now fail before body reads
-and cannot create a specialist allocation. Attachment route/prebuilt tests pass 28/28; ToolSandbox/
-DynamicSandbox tests pass 90/90; Agents typecheck and `git diff --check` pass. The current base has no
-PDF capability, so Project rendering stays fail-closed until a reviewed profile is deployed. Live
-provider image lifecycle and erasure acceptance remain separate.
-**Next action:** trace extension-declared native processing in SPR03.4, verify which caller executes
-in the Project main runtime versus an installation sidecar or explicit external runtime, and fix any
-Project capability/grant or identity gap while preserving existing image policy.
-Legacy specialist retirement remains SPR04.
-
-**SPR03.4 checkpoint:** Project runtime capability declarations now include
-`extension.native_execute`; an authenticated Project invocation binds that capability to an exact
-approved image pin. DynamicSandbox checks the declared capability and exact owner-selected image
-before execution receipts, capacity or billing. Project `Bash`, explicitly selected managed
-environment execution and planned-runtime prewarm now target the stable main runtime after the host
-rechecks the live native grant, active Project installation scope, and approved deployed image
-contract. AgentPort/user-operated tunnel routing is unchanged. Admission and routing suites pass
-111/111; Agents typecheck and `git diff --check` pass. Sidecar artifact-transfer and managed-profile
-callers remain under audit. **Next action:** trace Project extension artifact import/export and
-profile/reset routes; migrate any operation that starts or targets a second Cloudflare allocation,
-while retaining historical cleanup and explicit external transfers.
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4 and SPR03.1–SPR03.4 are locally verified. Project
+branches share one runtime identity and generation; exact image profiles and capability grants are
+checked before admission. Video audio, frame sampling and scanned PDF use the Project main runtime;
+ordinary audio and image OCR remain container-free. Project extension binaries, managed execution,
+prewarm, image-tagged scripts and artifact copies use the owner-selected Project image/workspace.
+Explicit external computers remain independent. Seven focused suites pass 136/136; Agents typecheck
+and `git diff --check` pass. The checked-in base still has no selected PDF or extension profile, so
+those operations fail closed until an approved image is selected. Deployment, provider lifecycle and
+live erasure acceptance remain separate.
+**Next action:** SPR04.1 — audit remaining DocumentSandboxDO and MediaSandboxDO allocation and
+prewarm entry points; block Project scopes before receipts, reservation, billing and start, retaining
+the main-runtime attachment routes and historical cleanup paths.
 
 ## Paused plan — Managed services and sidecar runtime
 

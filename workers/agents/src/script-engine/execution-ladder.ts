@@ -211,6 +211,11 @@ export async function runStoredScript(
     };
   }
 
+  if (env.projectId && script.metadata.container_image && !script.metadata.container_installation_id) {
+    return { ok: false, error: "project_extension_installation_required", tier, actual_tier: 6, engine: "container",
+      duration_ms: Date.now() - started, tokens_used: 0 };
+  }
+
   try {
     const workerHead = env.workspaceBranch?.startsWith("workers/") && env.workspaceManifestRead
       ? (await env.workspaceManifestRead())?.head : undefined;
@@ -237,10 +242,11 @@ export async function runStoredScript(
       ...(env.projectId ? { projectId: env.projectId } : {}),
       ...(env.workspaceBranch ? { workspaceBranch: env.workspaceBranch } : {}),
       ...(workerHead ? { workspaceRevision: workerHead.revision, workspaceManifestHash: workerHead.manifestHash } : {}),
-      ...(script.metadata.container_image
-        ? { containerImage: script.metadata.container_image }
-        : {}),
-      ...(script.metadata.container_installation_id ? { installationId: script.metadata.container_installation_id } : {}),
+      ...(script.metadata.container_image && env.projectId
+        ? { projectRuntimeInstallationId: script.metadata.container_installation_id!, projectRuntimeImage: script.metadata.container_image }
+        : script.metadata.container_image ? { containerImage: script.metadata.container_image } : {}),
+      ...(script.metadata.container_image && env.projectId ? {}
+        : script.metadata.container_installation_id ? { installationId: script.metadata.container_installation_id } : {}),
     });
   } catch (err) {
     return {

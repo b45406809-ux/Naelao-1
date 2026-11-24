@@ -31,7 +31,7 @@ function fixture() {
   const machine = { machineId: "gpu", updatedAt: Date.now(), hardware: { capabilities: ["cuda", "bash"], apps: [{ id: "blender" }] }, grants: [{ actorId: "owner", projectId: "project" as string | undefined, expiresAt: Date.now() + 60000, commands: ["python train.py"], shellAccess: undefined as "sandboxed" | undefined, externalUse: ["capability"] }] };
   const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", runId: "run", humanInvokerId: "owner", nativeExecutionAllowed: true, maxTier: 6,
     executionSessions: new ExecutionSessions(storage), scriptsBucket: {}, reserveExternalEnvironment: vi.fn(async () => undefined), finalizeExternalEnvironment: vi.fn(async () => undefined),
-    containerRuntimeInventory: vi.fn(async () => ({ installed: [{ installationId: "runtime", projectId: "project", contract: { image: "image", exportedBinaries: ["node"] } }], catalogue: [{ id: "runtime-image", available: true, image: "image" }] })),
+    containerRuntimeInventory: vi.fn(async () => ({ installed: [{ installationId: "runtime", projectId: "project", scope: "PROJECT_SHARED", contract: { image: "image", exportedBinaries: ["node"] } }], catalogue: [{ id: "runtime-image", available: true, image: "image" }] })),
     codeRunner: { run: vi.fn(async () => ({ ok: true, output: { stdout: "built" }, tier: 6, actual_tier: 6, engine: "container" })) },
     localTunnel: { list: vi.fn(async () => [machine]), status: vi.fn(async () => ({ connected: true })), exec: vi.fn(async () => ({ ok: true, status: "sent", request_id: "request" })), requestStatus: vi.fn(async () => ({ ok: true, result: { status: "succeeded", stdout: "trained" } })) },
   }, authorizeShell: vi.fn(async () => true) } as unknown as PrebuiltOpContext;
@@ -90,6 +90,7 @@ describe("environment tool host integration", () => {
   });
   it("imports and exports selected Cloudflare sidecar artifacts through scoped calls", async () => {
     const { ctx } = fixture(), storage = memoryBucket();
+    ctx.env.projectId = undefined;
     ctx.env.scriptsBucket = storage.bucket;
     ctx.env.withProjectWorkspaceMutation = async operation => operation();
     const sourcePath = workspacePrefix(ctx.env) + "src/input.txt";
@@ -111,8 +112,45 @@ describe("environment tool host integration", () => {
     expect(storage.objects.has(sourcePath)).toBe(true);
     expect(storage.objects.get(workspacePrefix(ctx.env) + "out/result.txt")?.bytes).toEqual(new TextEncoder().encode("sidecar output"));
   });
+  it("copies Project extension inputs and outputs in the checked Project workspace without a sidecar call", async () => {
+    const { ctx } = fixture(), storage = memoryBucket();
+    ctx.env.scriptsBucket = storage.bucket;
+    ctx.env.workspaceBucket = storage.bucket;
+    ctx.env.immutableArtifactBucket = storage.bucket;
+    ctx.env.withProjectWorkspaceMutation = async operation => operation();
+    const sourceKey = workspacePrefix(ctx.env) + "src/input.txt";
+    await storage.bucket.put(sourceKey, new TextEncoder().encode("project input"), { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: {} });
+    ctx.env.transferContainerArtifact = vi.fn();
+
+    const imported = await environments.operations["environment.sidecar_artifact_import"]!({ installation_id: "runtime", source_path: "src/input.txt",
+      destination_path: "inputs/input.txt", expected_hash: null, request_id: "project-import" }, ctx);
+    expect(imported).toMatchObject({ runtime: "project-main", source_path: "src/input.txt", path: "inputs/input.txt", request_id: "project-import" });
+    expect(storage.objects.get(workspacePrefix(ctx.env) + "inputs/input.txt")?.bytes).toEqual(new TextEncoder().encode("project input"));
+    await expect(environments.operations["environment.sidecar_artifact_import"]!({ installation_id: "runtime", source_path: "src/input.txt",
+      destination_path: "inputs/input.txt", expected_hash: null, request_id: "project-import" }, ctx)).resolves.toMatchObject({ already_present: true });
+
+    const exported = await environments.operations["environment.sidecar_artifact_export"]!({ installation_id: "runtime", source_path: "inputs/input.txt",
+      destination_path: "out/result.txt", expected_hash: null, request_id: "project-export" }, ctx);
+    expect(exported).toMatchObject({ runtime: "project-main", source_path: "inputs/input.txt", path: "out/result.txt", request_id: "project-export" });
+    expect(storage.objects.get(workspacePrefix(ctx.env) + "out/result.txt")?.bytes).toEqual(new TextEncoder().encode("project input"));
+    expect(ctx.env.transferContainerArtifact).not.toHaveBeenCalled();
+  });
+  it("preserves a concurrent Project workspace change during extension artifact publication", async () => {
+    const { ctx } = fixture(), storage = memoryBucket();
+    ctx.env.scriptsBucket = storage.bucket;
+    ctx.env.workspaceBucket = storage.bucket;
+    ctx.env.immutableArtifactBucket = storage.bucket;
+    ctx.env.withProjectWorkspaceMutation = async operation => operation();
+    await storage.bucket.put(workspacePrefix(ctx.env) + "src/input.txt", new TextEncoder().encode("project input"), { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: {} });
+    await storage.bucket.put(workspacePrefix(ctx.env) + "out/result.txt", new TextEncoder().encode("newer workspace content"), { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: {} });
+
+    await expect(environments.operations["environment.sidecar_artifact_export"]!({ installation_id: "runtime", source_path: "src/input.txt",
+      destination_path: "out/result.txt", expected_hash: null, request_id: "project-conflict" }, ctx)).rejects.toThrow("changed concurrently");
+    expect(new TextDecoder().decode(storage.objects.get(workspacePrefix(ctx.env) + "out/result.txt")?.bytes)).toBe("newer workspace content");
+  });
   it("records an export publication conflict while preserving the immutable artifact", async () => {
     const { ctx } = fixture(), storage = memoryBucket();
+    ctx.env.projectId = undefined;
     ctx.env.scriptsBucket = storage.bucket;
     ctx.env.withProjectWorkspaceMutation = async operation => operation();
     const bytes = new TextEncoder().encode("sidecar output");
@@ -128,10 +166,11 @@ describe("environment tool host integration", () => {
     expect(ctx.env.reportContainerArtifactTransferOutcome).toHaveBeenCalledWith(expect.objectContaining({ requestId: "conflicted-sidecar-export",
       outcome: "workspace_publication_conflict", workspacePath: "out/result.txt", expectedHash: null }));
     expect(new TextDecoder().decode(storage.objects.get(workspacePrefix(ctx.env) + "out/result.txt")?.bytes)).toBe("newer workspace content");
-    expect(storage.objects.has(`workspace-artifacts/${ctx.env.tenantId}/${ctx.env.spaceId}/${ctx.env.projectId}/environment/${artifact.digest}`)).toBe(true);
+    expect(storage.objects.has(`workspace-artifacts/${ctx.env.tenantId}/${ctx.env.spaceId}/space/environment/${artifact.digest}`)).toBe(true);
   });
   it("records conflicts reported by the checked coordinator publisher", async () => {
     const { ctx } = fixture(), storage = memoryBucket();
+    ctx.env.projectId = undefined;
     ctx.env.scriptsBucket = storage.bucket;
     const artifact = await publishEnvironmentArtifactBytes(ctx.env, new TextEncoder().encode("checked sidecar output"), "sidecar:runtime:out/result.txt");
     ctx.env.publishWorkspaceChecked = async () => { throw new Error("workspace_checked_publication_failed:409"); };

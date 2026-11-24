@@ -5,12 +5,11 @@ import { mintInternalToken } from "@naelao/http";
  * `connectors/catalogue.ts` and `LAUNCHPAD_TEMPLATES` — adding an image is a catalogue row, never
  * a code branch in the reasoning loop.
  *
- * Phase K already gave every project a base Tier-5 sandbox (Python/Bash, ephemeral compute,
- * a `/workspace` an agent explicitly stages via `workspace.copy` — §A1.17 Phase R, see
- * workspace.ts) via `ToolSandboxDO`. The marketplace is for workloads that base sandbox
- * can't serve. Both one-shot extension binaries and stateful services require an approved
- * immutable image, a scoped lifecycle, durable artifacts and measured usage. Extension tools
- * use task-isolated sidecars; they are not silently installed in the general project image.
+ * Every Project has one main Tier-6 runtime. Extension binaries can use it only when the owner
+ * selects their exact approved digest as a Project image profile and the host-declared profile
+ * grants extension.native_execute. Project work never starts an installation sidecar as an
+ * alternative allocation. Projectless installations retain their installation-scoped route;
+ * historical sidecar receipts and cleanup remain available.
  *
  * Catalogue metadata does not prove that an image is deployed. `deployedContainerCatalogue`
  * marks only fixed images whose binding is present and whose digest is explicitly approved by
