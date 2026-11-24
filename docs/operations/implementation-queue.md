@@ -906,19 +906,27 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   duplicate, stale-attempt and unmarked fresh-run requests are denied. Four focused suites pass
   30/30; Agents typecheck and `git diff --check` pass. These are local fixtures, not cross-DO runtime
   acceptance.
-- [ ] **APW08 — Remaining recovery and topology readiness review.** Reconcile deadline semantics,
-  approval recovery after interruption, runtime capability revalidation, adaptive SDK/template
-  topology declarations and live interruption acceptance against source and owning ledgers. Complete
+- [x] **APW08 — Revalidate the resumed worker's runtime capability.** A worker's signed preferred
+  capability is matched against the current Project runtime inventory and installed binaries before
+  dispatch. A regression removes `ffmpeg` from the current inventory and proves the managed command
+  fails without using a stale image or external machine; the approval-resume fixture separately
+  proves the signed capability is forwarded in continuation context. The environment,
+  approval-context and delegation-contract suites pass 28/28; Agents typecheck and `git diff --check`
+  pass. These are local fixtures, not deployed capability acceptance.
+- [ ] **APW08 — Remaining recovery and topology readiness review.** Reconcile long-running worker
+  deadline semantics, approval recovery after interruption, reusable SDK/template topology
+  declarations and live interruption acceptance against source and owning ledgers. Complete
   independent local work; record exact policy, contract and deployment dependencies for blocked work.
 
 **Latest checkpoint:** APW07 source-base validation lineage is preserved and projected safely; four
 focused suites pass 39/39. APW08 budget/scope/route/pin tests pass 22/22, current Project access gate
 tests pass 2/2, and delegated approval-resume contract/start-fence suites pass 30/30. Agents typecheck
 and `git diff --check` pass. No real multi-DO publication race, live membership revocation, actual
-Coordinator pin read or interruption/recovery runtime ran. **Exact next action:** reconcile remaining
-APW08 deadline, approval recovery, runtime capability and SDK/template topology requirements against
-current callers and ledgers; implement any independent local gap before recording blockers.
-for a waiting worker attempt; test the reconstructed contract and denial of stale/duplicate resumes.
+Coordinator pin read or interruption/recovery runtime ran. The resumed preferred-runtime capability
+regression passes 28/28 with approval-contract and environment suites; Agents typecheck and
+`git diff --check` pass. **Exact next action:** reconcile long-running worker deadline semantics and
+reusable SDK/template topology declarations against their owning contracts; finish exact blocker and
+live acceptance notes before moving to the next queued plan.
 
 **APW checkpoint history.** APW06 goal decision-hold remediation adds a status explanation with
 exact decision references and revisions plus a direct link to the Project decision review panel. It

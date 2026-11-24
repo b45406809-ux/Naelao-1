@@ -69,6 +69,21 @@ pass. These are separate local fixtures, not a real cross-DO or crash-recovery t
 SDK/template topology requirements against current callers and ledgers; implement any independent
 local gap before recording blockers.
 
+## APW08 follow-up — 2026-11-24 (runtime capability on resume)
+
+The renewed delegation preserves the signed worker runtime recommendation. At the execution boundary,
+`containerRuntimeInventory` re-resolves the currently active Project installation and deployed image;
+the environment selector requires that image to still expose the preferred binary. A new regression
+removes `ffmpeg` from the current inventory and proves the managed command is denied without calling
+the container runner or external tunnel. The separate approval-resume fixture proves the signed
+capability is forwarded in continuation context. The environment, approval-context and delegation
+contract suites pass **28/28**; Agents typecheck and `git diff --check` pass. This is local fixture
+evidence and does not establish deployed image/capability state.
+
+**Exact next action:** settle the missing long-running worker deadline contract and reusable
+SDK/template topology declaration against the owning plans and ledgers; record the precise policy or
+contract dependencies and keep live crash-recovery acceptance separate.
+
 ## APW07 follow-up — 2026-11-24 (source-base validation lineage)
 
 `WorkerIntegrationValidationReceipt` now includes the actual source branch base parent, Coordinator

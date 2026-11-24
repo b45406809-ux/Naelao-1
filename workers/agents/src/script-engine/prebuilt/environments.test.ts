@@ -245,6 +245,21 @@ describe("environment tool host integration", () => {
     await execute({ session_id: "media-task", action_id: "convert", command: "ffmpeg -i input.mp4 output.mp4" }, ctx);
     expect(ctx.env.codeRunner!.run).toHaveBeenCalledWith(expect.objectContaining({ projectRuntimeInstallationId: "media-runtime", projectId: "project" }));
   });
+  it("fails closed when the preferred runtime capability is no longer installed", async () => {
+    const { ctx } = fixture();
+    ctx.env.preferredRuntimeCapability = "ffmpeg";
+    ctx.env.containerRuntimeInventory = vi.fn(async () => ({
+      installed: [{ installationId: "runtime", projectId: "project", scope: "PROJECT_SHARED",
+        contract: { image: "image", exportedBinaries: ["node"] } }],
+      catalogue: [{ id: "runtime-image", available: true, image: "image" }],
+      projectRuntimeImages: [{ image: "image", capabilities: ["extension.native_execute"] as const }],
+    }));
+
+    await expect(execute({ session_id: "resumed-media-task", action_id: "convert",
+      command: "ffmpeg -i input.mp4 output.mp4", capabilities: ["ffmpeg"], mode: "managed" }, ctx)).rejects.toThrow();
+    expect(ctx.env.codeRunner!.run).not.toHaveBeenCalled();
+    expect(ctx.env.localTunnel!.exec).not.toHaveBeenCalled();
+  });
   it("routes a consented exact command to a GPU and reconciles its receipt", async () => {
     const { ctx } = fixture(), args = { session_id: "gpujob", action_id: "train", command: "python train.py", capabilities: ["cuda"], mode: "capability" };
     expect(await execute(args, ctx)).toMatchObject({ status: "sent", environment_id: "gpu" });
