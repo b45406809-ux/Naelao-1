@@ -2,9 +2,9 @@
 
 This is the live checklist for one session working through one plan at a time. The latest confirmed
 commit on `origin/Mcbt5s-Backup-2` is the recovery checkpoint; fetch the branch tip before resuming.
-APW05 admission/accounting paths have been reconciled; its remaining aggregate cost-policy and
-provider-USD work is blocked pending the listed prerequisites. Use the checklist below and linked
-ledgers to determine readiness and record a reason if the order changes.
+The new Tier 6 plan is active. The previous claims checkpoint at `2b80e458` had parked the
+remaining functional claims workflow. Use the checklist and linked ledgers to determine readiness
+and record a reason if the order changes.
 
 ## How to resume and advance
 
@@ -26,7 +26,22 @@ ledgers to determine readiness and record a reason if the order changes.
 5. Finish a plan when its tracked tasks are verified. If all remaining work in it is blocked,
    record the exact dependency and how to resume it, leave the plan unchecked, and proceed to the
    next ready plan. Clear the old active pointer when switching. Remove the Current task section
-   from AGENTS.md if nothing is ready. Recheck parked items when their recorded dependency changes.
+   from AGENTS.md only after the readiness review below. Recheck parked items when their recorded
+   dependency changes.
+
+## Before stopping for blockers
+
+- Review all unchecked plan entries, including paused, parked and reconciled plans. Check the
+  outstanding requirements against current source, the latest ledger evidence and the specific
+  dependency. A plan label, a finished demo, or the end of the numbered list does not establish
+  that its requirements are complete.
+- Separate work that needs live access, external approval or an unresolved product decision
+  from any independent local implementation, integration or verification. When local verification
+  is authorized, a previous note that tests were not requested is historical context. Add relevant
+  local checks to the queue and carry them out. Keep deployment and live acceptance open separately.
+- Activate and continue the first ready item in queue order. If nothing can proceed, record the
+  exact remaining dependency and resume condition for each parked plan. Report the status as
+  blocked with work remaining. Mark the full queue complete only when every requirement is verified.
 
 ## Checkpoint format
 
@@ -42,7 +57,30 @@ the work already saved, and a condition for retrying. Preserve unpushed work whe
 survives. After local data loss, fetch the recovery branch and pick up from its latest saved
 handoff. Anything that had yet to reach that branch may need to be redone.
 
-## Paused plan
+## Active plan — Single Project Tier 6 runtime
+
+See the [plan](../research/single-project-tier-6-runtime-plan.md). It governs S4 and related S3/U10
+execution and erasure work. Reuse the managed-services ledger for overlapping evidence.
+
+- [ ] **Active · SPR01 — Inventory and contract.** Trace all runtime starts, including attachment
+  tools, extension tools, prewarm and restore, across Project and branch scopes. Map each caller
+  to the main runtime, a container-free service, an explicit external tool, or historical cleanup.
+  Record the first locally verifiable admission or routing gap and the existing erasure coverage.
+- [ ] **SPR02 — One allocation and image profiles.** Enforce Project-wide admission across branches,
+  select approved capabilities before starting, and fence image replacement and recovery.
+- [ ] **SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and extension
+  native processing through the Project runtime while preserving isolation and operation limits.
+- [ ] **SPR04 — Retire direct specialist execution.** Stop new first-party specialist allocations
+  after the replacement routes work. Preserve cleanup, reconciliation and erasure of old runtimes.
+- [ ] **SPR05 — Local acceptance.** Verify concurrency, replacement, capability denial,
+  explicit external tools, and erasure with safe fixtures.
+- [ ] **SPR05 — Live acceptance.** Follow up when the replacement routes pass local checks
+  and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
+
+**Latest checkpoint:** plan added after `2b80e458`. SPR01 is ready for local source work.
+Start with the current Agents attachment and extension routes and the main runtime registry.
+
+## Paused plan — Managed services and sidecar runtime
 
 **Managed services and sidecar runtime.** See the [plan](../research/managed-services-and-sidecar-runtime-plan.md)
 and [progress ledger](../research/managed-services-and-sidecar-implementation-progress.md).
@@ -344,7 +382,7 @@ ran; no provider action occurred. Evidence: the AP progress ledger.
 **Next action:** continue with the ordered WhatsApp member-routing and extension-testing plan; trace
 the actual inbound caller and current identity/extension authority before selecting code work.
 
-## Active plan — WhatsApp member routing and extension testing
+## Paused plan — WhatsApp member routing and extension testing
 
 See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md).
 
@@ -672,18 +710,19 @@ ledgers when moving to another plan.
 
 1. [ ] **Parked.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 overlap later plans.
 2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
-3. [ ] **Paused; no ready source task.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume on the regional, provider or jurisdiction acceptance dependencies above.
-4. [ ] **Paused; no ready source task.** [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md). Resume SC03 when durable invocation consent, exact alarm-safe authority revalidation and pre-dispatch reservation are supported; resume SC04 when owner-approved Space/Project caps exist.
-5. [ ] **Reconciled; no standalone task selected.** [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Code gaps remain tracked in their owning plans; remaining checked-workspace/runtime acceptance requires authorized deployed/provider evidence.
-6. [ ] **Paused; no ready source task.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md). K21 deployed acceptance and the K20 response-cache identity contract remain blocked; K15 waits on exact provider scope/freshness/cleanup evidence.
-7. [ ] **Paused; remaining EP06 billing-price/cap and provider/live acceptance gates have no current local rate/acceptance contract.** [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
-8. [ ] **Paused; no current code-ready task.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md). TBR08's workflow-resource dispatch slice is locally fixed; broad channel/provider/cache/delegation acceptance remains partial. TBR11's direct-script per-effect ceiling needs an owner-approved admission contract; role-to-resource mapping and private-Project policy remain unresolved.
-9. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
-10. [x] **Reconciled; no provider-adapter task is ready without external terms/API/pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
-11. [x] **Reconciled; no AgentPhone source task is ready without verified API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
-12. [ ] **Paused; source implementation complete; only separate test/live acceptance remains blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). See its acceptance blocker and handoff above.
-13. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
-14. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
+3. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
+4. [ ] **Active.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#active-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.
+5. [ ] **Paused; no ready source task.** [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md). Resume SC03 when durable invocation consent, exact alarm-safe authority revalidation and pre-dispatch reservation are supported; resume SC04 when owner-approved Space/Project caps exist.
+6. [ ] **Reconciled; no standalone task selected.** [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Code gaps remain tracked in their owning plans; remaining checked-workspace/runtime acceptance requires authorized deployed/provider evidence.
+7. [ ] **Paused; no ready source task.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md). K21 deployed acceptance and the K20 response-cache identity contract remain blocked; K15 waits on exact provider scope/freshness/cleanup evidence.
+8. [ ] **Paused; remaining EP06 billing-price/cap and provider/live acceptance gates have no current local rate/acceptance contract.** [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
+9. [ ] **Paused; no current code-ready task.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md). TBR08's workflow-resource dispatch slice is locally fixed; broad channel/provider/cache/delegation acceptance remains partial. TBR11's direct-script per-effect ceiling needs an owner-approved admission contract; role-to-resource mapping and private-Project policy remain unresolved.
+10. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
+11. [ ] **Source reconciled; provider work remains gated by terms, API and pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
+12. [ ] **Source reconciled; provider work remains gated by API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
+13. [ ] **Paused; source implementation complete; only separate test/live acceptance remains blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). See its acceptance blocker and handoff above.
+14. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
+15. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
 
 ## Checkpoint archive
 

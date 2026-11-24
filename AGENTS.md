@@ -8,6 +8,15 @@ concrete action in the queue. A status summary, verified checkpoint or push is a
 result. Keep working through ready tasks until the queue is complete, the user redirects the
 session, or a specific blocker leaves no ready work.
 
+## Current task
+
+**SPR01 — Inventory single-Project Tier 6 runtime callers.** Follow the
+[active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime).
+Map main, attachment and extension runtime starts and the legacy erasure routes.
+Identify the first locally verifiable change that prevents an extra Project allocation.
+
+## Checkout and recovery
+
 1. Find the Naelao checkout. Check its remote, branch, working tree and local-only commits.
    Fetch `origin/Mcbt5s-Backup-2` before choosing work. In a fresh environment, start from
    that fetched commit. If the current checkout contains other work, use a separate worktree
@@ -32,8 +41,10 @@ session, or a specific blocker leaves no ready work.
   confirmed remote commit as the recovery point for a fresh environment.
 - When a task is verified, check it off and point this file at the next ready task in the
   same plan. When that plan has no ready work, advance to the next plan. Record blockers
-  and their resume conditions in the queue. If nothing is ready, remove the Current task
-  section. Include the queue and pointer transition in the checkpoint, then continue.
+  and their resume conditions in the queue. Before declaring that nothing is ready, apply
+  the queue's [readiness review](docs/operations/implementation-queue.md#before-stopping-for-blockers)
+  to all unfinished plans. Include the queue and pointer transition in the checkpoint,
+  then continue. Remove the Current task section only after that review finds no ready work.
 - Keep checkpoint detail in the queue and linked ledgers. Reuse existing requirement IDs
   and code for overlaps. Verify reachable callers and distinguish mock, local and live
   evidence.
@@ -51,9 +62,10 @@ session, or a specific blocker leaves no ready work.
   accepted. Protect credentials and report unverified provider behavior, prices and live results
   as such.
 - Preserve identity, tenant and project boundaries, revocable grants, billing admission and
-  checked workspace publication. Cloudflare DynamicSandboxDO is the main runtime candidate.
-  One logical main computer per project participates in default execution and sync. Specialist
-  sidecars use independently scoped filesystems and authorized transfers. Preserve tunnel consent.
+  checked workspace publication. The [Tier 6 design](docs/research/single-project-tier-6-runtime-plan.md)
+  permits one Naelao-managed Cloudflare allocation per Project across branches and tools.
+  Agent37 through AgentPort and tunnel computers are explicit tools with separate filesystems
+  and authorized transfers. Preserve tunnel consent and legacy runtime erasure.
 - Only WorkspaceCoordinatorDO checked publication advances canonical state. Restore and upstream
   sync target staging. Default to `checked_handoff` and require runtime evidence for any requested
   `live_single_writer` mode. Preserve AgentPort independence, guest isolation, version and

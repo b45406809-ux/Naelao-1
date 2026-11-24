@@ -1,5 +1,11 @@
 # Managed services and sidecar runtime implementation plan
 
+[The single-Project Tier 6 runtime plan](single-project-tier-6-runtime-plan.md) governs S4 runtime
+selection and related S3/U10 execution and erasure work. Project Bash, native attachment tools and
+extension tools share one managed allocation. Treat older references to separate first-party
+Cloudflare specialist containers as historical. Keep registered legacy runtimes reachable for
+erasure and use AgentPort or tunnels for explicitly selected external computers.
+
 Status: design and autonomous implementation handoff, updated 2026-11-11. Branch: `Mcbt5s-Backup-2`; latest handoff audit baseline `700c3fe0` after fast-forward. Original design baseline `a94e8af5` is historical. Follow the latest section 17 implementation update, section 18 inherited gaps, and section 19 execution workflow when older baseline statements disagree. This document does not claim production acceptance. Progress: [implementation record](managed-services-and-sidecar-implementation-progress.md). Bootstrap: [next-session runbook](../operations/managed-services-autonomous-session.md).
 
 ## 1. Product outcome and decisions
