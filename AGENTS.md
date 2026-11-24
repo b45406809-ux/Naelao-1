@@ -10,12 +10,12 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR02.1 — Share the Project main runtime across branches.** Follow the
+**SPR02.1b — Extend Project-main admission to race branches.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
-and [SPR01 inventory](docs/research/single-project-tier-6-runtime-progress.md). Keep every Project
-branch on the stable main runtime identity, extend main admission/generation and writer checks to
-race branches, preserve non-Project and explicit external-tool routing, and add focused local tests.
-First confirm how branch workspaces remain isolated or serialized on the shared Container.
+and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). Project branch
+IDs now share one Container. Remove the race-branch exclusions from main generation, selection and
+writer admission, reconcile the branch transition fence, preserve non-Project/external routing, and
+add focused local tests for serialized cross-branch execution and allocation accounting.
 
 ## Checkout and recovery
 

@@ -349,7 +349,7 @@ describe("Execution Ladder & Code Runner", () => {
     expect(toolSandbox.get).not.toHaveBeenCalled();
   });
 
-  it("addresses speculative Tier 6 runs by branch-isolated sandbox", async () => {
+  it("addresses speculative Tier 6 runs by the Project runtime while retaining branch scope", async () => {
     const ids: string[] = [];
     const toolSandbox = {
       idFromName: vi.fn((name: string) => {
@@ -373,7 +373,7 @@ describe("Execution Ladder & Code Runner", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(ids).toEqual(["sandbox:s1:p1:branch:race/task/model-a"]);
+    expect(ids).toEqual(["sandbox:s1:p1"]);
   });
 
   it("preserves a host-supplied execution identity for sandbox reconciliation", async () => {

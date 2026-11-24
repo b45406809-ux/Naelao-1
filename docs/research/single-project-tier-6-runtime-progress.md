@@ -27,13 +27,36 @@ The capacity reservation, writer lock and generation fence are consequently per 
 of enforcing the plan's one-Project allocation. Existing `sandbox-routing.test.ts` codifies this
 older exception.
 
-Next, change Project runtime routing so every Project branch reaches the stable Project main object;
-make main admission/generation and writer exclusion apply to race branches; retain separate IDs only
-for non-Project Space Assistant work and explicitly selected external computers. Add/update focused
-tests for the routing and rejection/serialization behavior. Confirm how branch workspaces are
-isolated or serialized on the shared `/workspace` before allowing concurrent branch execution.
-After this admission slice, migrate the direct attachment and extension image callers through the
-same main-runtime authority, while keeping historical Document/Media cleanup enabled.
+The first route change is recorded below: all new Project branch calls now use the stable Project
+main object. The next part is to make race calls participate in the main generation, snapshot and
+writer rules without interpreting a workspace branch switch as a new physical allocation. Route
+identity alone does not complete one-Project admission. After admission is reconciled, migrate the
+direct attachment and extension image callers through the same main-runtime authority while keeping
+historical Document/Media cleanup enabled.
+
+## SPR02.1 — Stable Project runtime identity — 2026-11-24
+
+`script-engine/sandbox-routing.ts` now maps all Project branches, including `workers/` and `race/`,
+to `sandbox:<space>:<project>`. It preserves the workspace branch on the invocation. In
+`UNIFIED_WORKSPACE_ENABLED` mode, the Workspace Coordinator hydrates a branch-specific run workspace
+and stages results there; the main Durable Object serializes `/exec`, shell and workspace routes.
+Legacy R2 hydration modes still need branch-isolation verification. Non-Project Space Assistant names
+remain space-scoped. The caller assertion in `execution-ladder.test.ts` and branch map in
+`sandbox-routing.test.ts` were updated.
+
+Local verification: `corepack pnpm@9.12.0 --filter @naelao/agents-worker exec vitest run
+src/script-engine/sandbox-routing.test.ts src/script-engine/execution-ladder.test.ts` passes **27/27**;
+the Agents typecheck and `git diff --check` pass. This only unifies new calls' Durable Object
+identity. Race calls still bypass `ToolSandboxDO`'s Project-main generation/writer fence, and
+branch-aware D1 active-branch transition/recovery remains for the next slice. No provider or live
+allocation was started.
+
+**Exact next action:** update `ToolSandboxDO.isProjectMainRuntimeScope`, its race-specific
+`ensureMeter` and admission conditions, and `DynamicSandboxDO.prepareAllocation.projectMain` so race
+calls participate in the shared Project-main writer/generation and snapshot-retention rules. Change
+the D1 active-branch transition to fence workspace ownership without treating a branch switch as a
+new physical allocation. Add focused cross-branch concurrency/reuse tests; keep provider acceptance
+separate.
 
 ### Local verification inventory
 

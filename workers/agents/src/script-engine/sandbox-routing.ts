@@ -1,4 +1,4 @@
-/** Shared by code execution and workspace RPCs so delegated branches address the same actor. */
+/** Shared by code execution and workspace RPCs so every Project branch addresses its one main actor. */
 export function workspaceBranchScope(branch?: string): string {
   if (!branch) return "";
   const normalized = branch.replaceAll("\\", "/");
@@ -6,10 +6,8 @@ export function workspaceBranchScope(branch?: string): string {
     throw new Error("workspaceBranch contains an invalid path");
   return `:branch:${normalized}`;
 }
-export function sandboxInstanceName(spaceId: string, projectId?: string, branch?: string): string {
-  // Keep the project main computer stable while giving delegated workers and model-race
-  // candidates distinct DO/container instances. A logical R2 branch prefix alone does not
-  // isolate the warm container process or its private /workspace disk.
-  const isolatedBranch = Boolean(projectId && (branch?.startsWith("race/") || branch?.startsWith("workers/")));
-  return `sandbox:${spaceId}:${projectId ?? "_assistant"}${isolatedBranch ? workspaceBranchScope(branch) : ""}`;
+export function sandboxInstanceName(spaceId: string, projectId?: string, _branch?: string): string {
+  // Branch identity and checked workspace isolation travel in the request scope. A Project
+  // branch must never allocate another Cloudflare Container Durable Object.
+  return `sandbox:${spaceId}:${projectId ?? "_assistant"}`;
 }

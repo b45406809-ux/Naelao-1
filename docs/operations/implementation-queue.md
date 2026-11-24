@@ -70,11 +70,17 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
   [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
 - [ ] **Active · SPR02 — One allocation and image profiles.** Enforce Project-wide admission across
   branches, select approved capabilities before starting, and fence image replacement and recovery.
-  - [ ] **SPR02.1 — Stable Project runtime identity.** `sandbox-routing.ts` currently gives `workers/`
+  - [ ] **SPR02.1 — Stable Project runtime identity.** `sandbox-routing.ts` previously gave `workers/`
     and `race/` branches branch-suffixed Container IDs; `ToolSandboxDO` and `DynamicSandboxDO` also
-    exclude race branches from main generation/admission. Confirm shared `/workspace` safety, route
-    Project branches to one object, extend generation/writer admission, and cover serialization and
-    Space Assistant isolation with focused tests.
+    exclude race branches from main generation/admission.
+    - [x] Project branch IDs now resolve to `sandbox:<space>:<project>` while retaining the exact
+      branch in invocation scope. In unified-workspace mode, the Workspace Coordinator hydrates
+      and stages its run branch; the shared Durable Object serializes Container/workspace routes.
+      Routing/execution tests pass 27/27 and Agents typecheck passes.
+    - [ ] **SPR02.1b — Extend main generation and writer admission.** Remove race exclusions from
+      `ToolSandboxDO` and `DynamicSandboxDO`, make the D1 active-branch/fence transition work on the
+      one allocation without spuriously advancing the physical generation, and test race/worker
+      serialization and meter reuse. Keep Space Assistant IDs and explicit external tools separate.
 - [ ] **SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and extension
   native processing through the Project runtime while preserving isolation and operation limits.
 - [ ] **SPR04 — Retire direct specialist execution.** Stop new first-party specialist allocations
@@ -84,14 +90,16 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01 source inventory is complete in the SPR ledger. Project main and
-ordinary feature branches already share an object, but `workers/` and `race/` get separate
-Container IDs and race calls bypass the Project main generation/writer admission. Video/frame/PDF
-attachment handlers and approved extension images also address specialist namespaces/sidecar IDs;
-their exact erasure registration is preserved and must remain active through migration. No code or
-tests changed in this inventory slice. **Next action:** inspect the shared `/workspace` execution and
-branch staging path, then implement SPR02.1 so every Project branch uses one main object and the
-same admission fence; update and run focused routing/admission tests.
+**Latest checkpoint:** SPR01 source inventory and the first SPR02.1 code slice are complete in the
+SPR ledger. `sandboxInstanceName` now routes every Project branch through one Container ID, and
+branch scope stays on the invocation for Workspace Coordinator hydration/staging in unified-workspace
+mode. The Durable Object serializes Container/workspace requests. `sandbox-routing.test.ts` and
+`execution-ladder.test.ts` pass 27/27; Agents typecheck and `git diff --check` pass. The race branch
+still bypasses the Project-main D1 generation/writer fences, so this is not full SPR02.1
+acceptance. Video/frame/PDF and extension sidecar routes plus their erasure registrations remain for
+SPR03/SPR04. **Next action:** update race generation, active-branch fencing, writer admission and
+meter reuse on the shared main Durable Object; run focused `ToolSandboxDO` and `DynamicSandboxDO`
+tests before moving to attachment callers.
 
 ## Paused plan — Managed services and sidecar runtime
 
