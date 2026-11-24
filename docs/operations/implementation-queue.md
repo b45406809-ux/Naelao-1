@@ -991,7 +991,7 @@ See the [plan](../research/planner-investigation-and-worker-reuse-plan.md) and r
 evidence in the [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). This
 entry supplements existing APW/PW/TBR requirements and uses their IDs.
 
-- [ ] **APW01/APW02 — Audit and enforce the planner investigation boundary.** Trace current Project,
+- [x] **APW01/APW02 — Audit and enforce the planner investigation boundary.** Trace current Project,
   Space and nested planner callers, then deliver one locally verified host boundary slice around an
   existing exact decision or goal/evidence lookup. Migrate legitimate discovery callers to workers
   and close the corresponding planner `Read` and virtual CLI bypasses. Continue with supported
@@ -1028,9 +1028,11 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
     indexed and rechecks Project access; evidence collection verifies parent, actor scope, branch
     and declared file paths. Four focused suites pass 70/70; Agents typecheck and `git diff --check`
     pass. Local checkpoint pending push.
-  - [ ] Review the complete surviving planner operation allowlist against current callers, verify
-    exact lookup discovery and invocation on Project and Space planners, then close APW01 and advance
-    to APW02's one-worker/dependent-follow-up slice. Keep live acceptance separate.
+  - [x] Review the surviving planner operation allowlist against current callers. Project decision
+    and workspace excerpt readers are disclosed/invocable only for Project planners; Space invocation
+    is denied, including Code Mode. Thread and roster reads stay within the current Project; actor,
+    Project and attempt checks remain on Goal Activity, evidence, blackboard and resume routes. Live
+    coordinator/provider acceptance remains separate.
 - [ ] **APW02 — Use one scoped investigation worker by default and fan out independent tasks.**
   Reuse existing delegation, task DAG, worker follow-up and evidence paths. Verify dependent context
   stays with one worker, independent assignments avoid overlap, and partial results stay visible.
@@ -1046,10 +1048,10 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
 verified and pushed as `fee19873`; alias/pipeline/Code Mode/stored-command/resume regressions passed
 53/53 and were pushed as `c140822b`. The bounded Project excerpt passed 31/31 and was pushed as
 `5158d3bb`. Project thread scope passed 71/71 and was pushed as `b9a36f40`. The project-agent roster
-and task/evidence scope audit passes 70/70 with Agents typecheck; it is awaiting push. **Exact next
-action:** review the complete surviving planner operation allowlist against current callers, verify
-exact lookup discovery and invocation on Project and Space planners, then close APW01 and advance to
-APW02's one-worker/dependent-follow-up slice.
+and task/evidence scope audit passed 70/70 and was pushed as `3207c0bb`; exact-reader Project/Space
+discovery and invocation checks pass 15/15 with Agents typecheck. **Exact next action:** verify
+APW02's one-worker dependent follow-up contract against the goal DAG and direct delegation callers,
+then implement and test the next independent gap.
 
 ## Ordered plan list
 

@@ -25,11 +25,13 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW01/APW02 — Continue planner inspection bypass audit.** Resume from the
+**APW02 — Verify one-worker investigation and dependent follow-up.** Resume from the
 [active checklist and exact next action](docs/operations/implementation-queue.md#active-plan--planner-investigation-and-worker-reuse).
-Trace direct tool aliases, virtual CLI pipelines, Code Mode dispatch, stored commands and resumed
-sessions for any remaining planner workspace/domain inspection path; record callers and the next
-independently verifiable host-boundary slice.
+Use the normal goal and direct delegation paths to verify that sequential findings stay with one
+worker session, follow-ups reuse only its currently authorized scope/budget/attempt, independent
+investigations have distinct non-overlapping assignments, and partial results remain visible.
+Implement the next locally verifiable gap; keep cost-aware routing and live recovery acceptance
+under their recorded dependencies.
 
 ## Save progress inside each task
 

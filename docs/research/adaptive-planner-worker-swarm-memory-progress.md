@@ -60,10 +60,20 @@ keeps the built-in general assistant addressable. If Project scope cannot be loa
 returned in discovery and its consult request is rejected without calling the orchestration hook.
 
 Project coordination, task blackboard, task integration and Goal DAG suites pass **70/70**; Agents
-typecheck and `git diff --check` pass. This local checkpoint is awaiting push. **Exact next action:**
-review the complete surviving planner operation allowlist against current callers, verify the exact
-decision/excerpt readers are discoverable and invocable in Project scope but hidden in Space scope,
-then close APW01 and proceed to APW02's one-worker/dependent-follow-up slice.
+typecheck and `git diff --check` pass. Pushed as `3207c0bb`.
+
+## APW01 completion review — exact reader discovery and invocation
+
+The final allowlist review confirmed the intended surviving orchestration reads are Project-bound
+thread operations, a Project-filtered worker roster, and the exact decision/excerpt readers. Planner
+file/search tools, raw aliases, pipelines, saved shell commands and Code Mode storage access remain
+denied; task blackboard is worker-only. Added kernel checks that the exact excerpt is visible and
+invocable in Project scope but hidden and denied in Space scope, including Code Mode capability
+authorization. The focused kernel suite passes **15/15**, Agents typecheck passes. APW01's local
+boundary acceptance is complete; live coordinator/provider acceptance stays separate.
+
+**Exact next action:** verify APW02's one-worker dependent follow-up contract against the goal DAG
+and direct delegation callers, then implement and test the next independently verifiable gap.
 
 ## APW07 checkpoint — authorized Goal Activity route projection
 

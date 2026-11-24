@@ -112,8 +112,15 @@ describe("Batch 04 universal kernel", () => {
     if (plannerScope === "project") {
       await expect(tools.run("Bash", { command: "naelao project decision decision-42 --revision 3" }))
         .resolves.toMatchObject({ ok: true, output: { ok: false, reason: "project_journal_decision_not_found" } });
+      await expect(tools.run("project_journal.read_workspace_excerpt", {
+        path: "src/a.ts", revision: 3, start_line: 1, line_count: 1, max_bytes: 128,
+      })).resolves.toMatchObject({ ok: true, output: { ok: false, reason: "project_journal_workspace_excerpt_unavailable" } });
       await expect(tools.run("Bash", { command: "naelao project decision decision-42 --revision 3 | cat src/a.ts" }))
         .resolves.toMatchObject({ ok: false, error: expect.stringContaining("shell_permission_denied:cat") });
+    } else {
+      await expect(tools.run("project_journal.read_workspace_excerpt", {
+        path: "src/a.ts", revision: 3, start_line: 1, line_count: 1, max_bytes: 128,
+      })).resolves.toMatchObject({ ok: false, error: expect.stringContaining("planner_capability_boundary") });
     }
     await expect(tools.run("Bash", { command: "cat src/a.ts" }))
       .resolves.toMatchObject({ ok: false });
@@ -125,6 +132,7 @@ describe("Batch 04 universal kernel", () => {
     // The isolated-code broker must enforce the same boundary.
     await expect(env.codeAuthorize!(scope, "storage.read")).resolves.toBe(false);
     await expect(env.codeAuthorize!(scope, "tool:project_journal.read_decision")).resolves.toBe(plannerScope === "project");
+    await expect(env.codeAuthorize!(scope, "tool:project_journal.read_workspace_excerpt")).resolves.toBe(plannerScope === "project");
     await expect(env.codeAuthorize!(scope, "storage.write")).resolves.toBe(false);
     expect(put).not.toHaveBeenCalled();
     expect(get).not.toHaveBeenCalled();
