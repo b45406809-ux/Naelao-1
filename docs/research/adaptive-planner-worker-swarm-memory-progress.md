@@ -1,5 +1,17 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW08 follow-up — 2026-11-24 (resumed-worker budget revalidation)
+
+`delegation-admission.test.ts` now proves resumed child dispatch recomputes the allowance from the
+current parent budget and prior consumption: a saved 800-token session with 350 tokens used, resumed
+under a 500-token parent ceiling and a 700-token request, receives 150 tokens. A zero remaining
+allowance is rejected before child dispatch and leaves the prior attempt intact. The focused suite
+passes **17/17**, Agents typecheck and `git diff --check` pass. This is local test-fixture evidence;
+no real-runtime interruption/recovery acceptance ran.
+
+**Exact next action:** test that resume rejects a saved worker session when its actor or Project scope
+no longer matches the current parent request, before dispatch.
+
 ## APW07 follow-up — 2026-11-24 (source-base validation lineage)
 
 `WorkerIntegrationValidationReceipt` now includes the actual source branch base parent, Coordinator

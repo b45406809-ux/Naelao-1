@@ -10,11 +10,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW08 resumed-worker budget revalidation.** Follow the active APW08 task in the
+**APW08 resumed-worker scope revalidation.** Follow the active APW08 task in the
 [implementation queue](docs/operations/implementation-queue.md#active-plan--adaptive-planner-worker-coordination-and-memory)
 and [adaptive planner plan](docs/research/adaptive-planner-worker-swarm-memory-plan.md). Add a
-focused local recovery test proving a resumed worker receives no more than the current parent budget
-minus prior token use, and that an exhausted remaining budget cannot dispatch. Keep real-runtime
+focused local recovery test proving the saved actor and Project scope must still match the current
+parent request before a resumed worker can dispatch. Keep live grant-revocation and real-runtime
 recovery acceptance separate.
 
 ## Checkout and recovery

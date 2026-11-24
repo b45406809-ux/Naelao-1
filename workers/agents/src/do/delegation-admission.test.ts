@@ -169,6 +169,18 @@ function fixture() {
   const terminate = (parent: Host, id: string) => (parent as unknown as { terminateSubAgentImpl(id: string): Promise<void> }).terminateSubAgentImpl(id);
   return { active, requests, finishes, workers, dispatches, storageValues, publicationAttempts, host, runtime, spawn, terminate };
 }
+
+function seedRecoverableWorker(f: ReturnType<typeof fixture>, id: string, budgetTokens: number, tokensUsed: number) {
+  f.workers.set(id, {
+    id, parent_run_id: "parent-run", status: "failed", goal: "original worker task", workspace_branch: null,
+    configuration_json: JSON.stringify({ actorId: "person", agentId: "parent", tenantId: "tenant", spaceId: "space",
+      projectId: "project", model: "local/test-model", role: "worker", maxTier: 6 }),
+    attempt: 1, checkpoint_json: null, checkpoint_updated_at: null, result: null, error: "previous attempt interrupted",
+    updated_at: Date.now(), budget_tokens: budgetTokens, tokens_used: tokensUsed,
+    late_result_json: null, late_result_at: null, late_result_attempt: null,
+  });
+}
+
 describe("host delegation admission", () => {
   it("caps active leaves across different subplanners of one root and releases slots after completion", async () => {
     const f = fixture();
@@ -205,6 +217,31 @@ describe("host delegation admission", () => {
     expect(f.requests[0]!.context).toMatchObject({ max_tokens: 256, worker_token_budget: 256, delegation_depth: 2, delegation_planner: true });
     f.finishes[0]!();
     await run;
+  });
+  it("caps a resumed worker by the current parent budget less tokens already used", async () => {
+    const f = fixture(), workerId = "recoverable-worker";
+    f.runtime.workerTokenBudget = 500;
+    seedRecoverableWorker(f, workerId, 800, 350);
+
+    const run = f.spawn(f.host(), [{ sub_agent_id: workerId, goal: "continue the task", resume: true, budget_tokens: 700 }]);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+
+    expect(f.requests[0]!.context).toMatchObject({ worker_attempt: 2, max_tokens: 150, worker_token_budget: 150 });
+    expect(f.workers.get(workerId)).toMatchObject({ status: "running", attempt: 2, budget_tokens: 800, tokens_used: 350 });
+    f.finishes[0]!({ result: { ok: true, output: "continued", tokens_used: 100 } });
+    await run;
+    expect(f.workers.get(workerId)).toMatchObject({ status: "done", attempt: 2, budget_tokens: 800, tokens_used: 450 });
+  });
+  it("does not dispatch a resumed worker when its current remaining budget is exhausted", async () => {
+    const f = fixture(), workerId = "exhausted-worker";
+    f.runtime.workerTokenBudget = 400;
+    seedRecoverableWorker(f, workerId, 800, 400);
+
+    const result = await f.spawn(f.host(), [{ sub_agent_id: workerId, goal: "continue the task", resume: true }]);
+
+    expect(result.results[0]).toMatchObject({ id: workerId, ok: false, status: "failed", error: "worker_session_budget_exhausted" });
+    expect(f.requests).toHaveLength(0);
+    expect(f.workers.get(workerId)).toMatchObject({ status: "failed", attempt: 1, budget_tokens: 800, tokens_used: 400 });
   });
   it("fences child session start against the exact parent worker attempt", async () => {
     const f = fixture(), parent = f.host();
