@@ -108,21 +108,18 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1, SPR02.2 and SPR02.3 are verified in the SPR ledger. `sandboxInstanceName`
+**Latest checkpoint:** SPR01 and SPR02.1–SPR02.3 are verified in the SPR ledger. `sandboxInstanceName`
 routes every Project branch through one Container ID; race handoffs update the D1 active branch and
-fencing token without incrementing physical allocation generation. The shared Durable Object
-admits and serializes writers across race/worker branches and reuses the same capacity and billing
-reservation. `ToolSandboxDO` tests pass 37/37; DynamicSandbox, routing and execution tests pass
-68/68; Agents typecheck and `git diff --check` pass. SPR02.2 adds host-owned Project capability
-metadata to approved image pins and rejects missing capabilities before work/resource admission;
-its DynamicSandbox and container-policy tests pass 55/55, while the legacy ToolSandbox suite passes
-38/38. SPR02.3 adds versioned owner/admin image-profile selection and exact deployed-pin filtering;
-the profile route/settings/archive/policy tests pass 23/23 and DynamicSandbox tests pass 44/44.
-The saved selection remains unapplied until SPR02.4 completes replacement. Video/frame/PDF and
-extension sidecar routes plus their erasure registrations remain for SPR03/SPR04. **Next action:**
-apply the selected digest through a stop/settle, generation-fenced replacement with checked
-workspace recovery and unknown-provider-outcome reconciliation; see SPR02.4. Live provider
-acceptance and deployment remain separate.
+fencing token without incrementing physical allocation generation. Capability metadata is
+host-owned, and owner/admin settings store a versioned size and image profile filtered to the exact
+deployed pin. The first SPR02.4 slice now resolves that saved profile from D1, validates its exact
+deployed digest, capability declaration, plan and minimum size before execution registration or
+resource admission, and starts the selected image on first allocation. DynamicSandbox and policy
+tests pass 58/58; Agents typecheck and `git diff --check` pass. **Next action:** implement durable
+profile replacement: record stop/start intent, settle the prior allocation before claiming the next
+generation, retain checked workspace recovery, and reconcile unknown provider outcomes before retry.
+Video/frame/PDF and extension sidecar routes remain for SPR03; legacy specialist retirement and
+live provider acceptance remain separate.
 
 ## Paused plan — Managed services and sidecar runtime
 

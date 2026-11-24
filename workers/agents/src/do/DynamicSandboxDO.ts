@@ -4,7 +4,7 @@ import { EntitlementsChecker } from "@naelao/entitlements";
 import { ToolSandboxDO, type ContainerRuntime } from "./ToolSandboxDO.js";
 import { assertProjectRuntimeCapabilities, eligibleProjectRuntimeImageProfiles, parseApprovedContainerImages, type ContainerInvocationScope,
   type ProjectRuntimeCapability } from "../script-engine/container-policy.js";
-import { assertDynamicPlan, dynamicCreditsPerHour, dynamicPlanLimits, isDynamicProfile, selectDynamicProfile, type DynamicProfile } from "../script-engine/dynamic-containers.js";
+import { assertDynamicPlan, DYNAMIC_PROFILES, dynamicCreditsPerHour, dynamicPlanLimits, isDynamicProfile, selectDynamicProfile, type DynamicProfile } from "../script-engine/dynamic-containers.js";
 import { recordRuntimeSnapshotRetention, updateRuntimeSnapshotRetention, type RuntimeSnapshotRetentionRecord } from "../workspace/runtime-snapshot-retention.js";
 import { createPrivateStateBackup, privateStateBackupConfig, readPrivateStateBackup, readPrivateStateSelection,
   type PrivateStateBackupBindings } from "../workspace/private-state-backup.js";
@@ -30,9 +30,11 @@ interface DynamicBindings {
   DYNAMIC_PRIVATE_STATE_BACKUP_EU_R2?: R2Bucket;
 }
 interface Selection {
-  image: string; profile: DynamicProfile; owner: string; fingerprint: string; tier: string;
+  image: string; imageProfileId: string; profile: DynamicProfile; owner: string; fingerprint: string; tier: string;
   tenantId: string; spaceId: string; projectId?: string; projectMain: boolean;
 }
+interface ProjectMainPreference { profile: string; image_profile_id: string }
+interface ProjectMainImageSelection { image: string; imageProfileId: string; profile: DynamicProfile; capabilities: readonly ProjectRuntimeCapability[] }
 interface SavedSnapshot {
   id: string;
   fingerprint: string;
@@ -70,15 +72,10 @@ export class DynamicSandboxDO extends ToolSandboxDO {
   private get bindings(): DynamicBindings { return this.env as DynamicBindings; }
 
   protected override async validateAllocationRequest(scope: ContainerInvocationScope): Promise<void> {
-    if (!scope.projectId || scope.installationId || !scope.requiredCapabilities?.length) return;
-    // Dockerfile.toolsandbox is the current Project base image. Its reviewed package list has no
-    // media decoder or PDF renderer; specialist binaries remain separate until an owner selects
-    // an approved Project image profile through the checked replacement flow.
-    const baseCapabilities: readonly ProjectRuntimeCapability[] = [];
-    const deployedImages = Object.values(this.container?.images ?? {});
-    const profiles = this.bindings.DYNAMIC_CONTAINERS_ENABLED === "true"
-      ? eligibleProjectRuntimeImageProfiles(this.bindings.CONTAINER_IMAGE_REGISTRY, deployedImages) : [];
-    assertProjectRuntimeCapabilities(scope.requiredCapabilities, baseCapabilities, profiles);
+    if (!scope.projectId || scope.installationId) return;
+    const selected = await this.resolveProjectMainImage(scope);
+    assertProjectRuntimeCapabilities(scope.requiredCapabilities ?? [], selected.capabilities,
+      eligibleProjectRuntimeImageProfiles(this.bindings.CONTAINER_IMAGE_REGISTRY, Object.values(this.container?.images ?? {})));
   }
 
   protected override workspaceRuntimeKind(): "dynamic_sandbox" { return "dynamic_sandbox"; }
@@ -278,21 +275,29 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     // A crash after the D1 retention receipt committed but before the local pointer update leaves
     // this intent pending. Resolve it before considering an empty start or any older snapshot.
     await this.flushPendingSnapshotRetention();
+    const isProjectMain = Boolean(scope.projectId && !scope.installationId);
     const tier = await new EntitlementsChecker(env.PLATFORM_DB).getTenantTier(scope.tenantId);
     let image = this.container?.images?.base;
-    const projectPreference = scope.projectId && !scope.installationId
-      ? await env.PLATFORM_DB.prepare(`SELECT profile FROM project_main_runtime_profiles
-          WHERE tenant_id=? AND space_id=? AND project_id=?`)
-        .bind(scope.tenantId,scope.spaceId,scope.projectId).first<{profile:string}>()
-      : null;
-    const baseProfile = projectPreference?.profile ?? env.DYNAMIC_CONTAINER_BASE_PROFILE ?? "standard-1";
-    if (!isDynamicProfile(baseProfile)) throw new Error("container_base_profile_invalid");
-    let profile: DynamicProfile = baseProfile;
+    let imageProfileId = "base";
+    let profile: DynamicProfile;
+    if (isProjectMain) {
+      const selected = await this.resolveProjectMainImage(scope, tier);
+      image = selected.image;
+      imageProfileId = selected.imageProfileId;
+      profile = selected.profile;
+      assertProjectRuntimeCapabilities(scope.requiredCapabilities ?? [], selected.capabilities,
+        eligibleProjectRuntimeImageProfiles(env.CONTAINER_IMAGE_REGISTRY, Object.values(this.container?.images ?? {})));
+    } else {
+      const baseProfile = env.DYNAMIC_CONTAINER_BASE_PROFILE ?? "standard-1";
+      if (!isDynamicProfile(baseProfile)) throw new Error("container_base_profile_invalid");
+      profile = baseProfile;
+    }
     if (scope.installationId) {
       const approved = parseApprovedContainerImages(env.CONTAINER_IMAGE_REGISTRY).find(pin => pin.image === scope.image);
       if (!approved || approved.schedulingPolicy !== "durable_object") throw new Error("container_dynamic_image_not_approved");
       image = approved.image;
       profile = selectDynamicProfile(approved.cpuCores, approved.memoryMb);
+      imageProfileId = `installation:${scope.installationId}`;
     } else if (scope.image || scope.dynamicImage) throw new Error("container_installation_required");
     if (!image || !Object.values(this.container?.images ?? {}).includes(image)) throw new Error("container_image_not_in_deployed_image_map");
     assertDynamicPlan(profile, tier);
@@ -304,7 +309,7 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     // Egress-policy changes invalidate snapshots as well as warm processes.
     const fingerprint = await digest(JSON.stringify([image, profile, owner,
       await this.ctx.storage.get("container_egress_profile")]));
-    const selected: Selection = { image, profile, owner, fingerprint, tier,
+    const selected: Selection = { image, imageProfileId, profile, owner, fingerprint, tier,
       tenantId: scope.tenantId, spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}),
       projectMain: Boolean(scope.projectId && !scope.installationId) };
     const current = await this.ctx.storage.get<Selection>("dynamic_selection");
@@ -314,6 +319,42 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     await this.ctx.storage.put("dynamic_selection", selected);
     const existingSnapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
     if (existingSnapshot && selected.projectMain) await this.trackSnapshotRetention(existingSnapshot, selected);
+  }
+
+  private async resolveProjectMainImage(scope: ContainerInvocationScope, knownTier?: string): Promise<ProjectMainImageSelection> {
+    const env = this.bindings;
+    if (env.DYNAMIC_CONTAINERS_ENABLED !== "true") throw new Error("dynamic_containers_disabled");
+    const db = env.PLATFORM_DB;
+    if (!db) throw new Error("container_subscription_service_unavailable");
+    const tier = knownTier ?? await new EntitlementsChecker(db).getTenantTier(scope.tenantId);
+    const preference = await db.prepare(`SELECT profile,image_profile_id FROM project_main_runtime_profiles
+      WHERE tenant_id=? AND space_id=? AND project_id=?`)
+      .bind(scope.tenantId, scope.spaceId, scope.projectId).first<ProjectMainPreference>();
+    const profileValue = preference?.profile ?? env.DYNAMIC_CONTAINER_BASE_PROFILE ?? "standard-1";
+    if (!isDynamicProfile(profileValue)) throw new Error("container_base_profile_invalid");
+    const imageProfileId = preference?.image_profile_id ?? "base";
+    const deployedImages = Object.values(this.container?.images ?? {});
+    const eligibleProfiles = eligibleProjectRuntimeImageProfiles(env.CONTAINER_IMAGE_REGISTRY, deployedImages);
+    const descriptor = eligibleProfiles.find(candidate => candidate.id === imageProfileId);
+    if (!descriptor) throw new Error("project_runtime_image_profile_unavailable");
+    if (dynamicProfileOrder(profileValue) < dynamicProfileOrder(descriptor.minimumProfile))
+      throw new Error("project_runtime_profile_below_image_minimum");
+    try { assertDynamicPlan(profileValue, tier); }
+    catch { throw new Error("project_runtime_profile_not_available_for_plan"); }
+    let image: string | undefined;
+    let capabilities: readonly ProjectRuntimeCapability[] = descriptor.capabilities;
+    if (imageProfileId === "base") image = this.container?.images?.base;
+    else {
+      const pin = parseApprovedContainerImages(env.CONTAINER_IMAGE_REGISTRY).find(candidate => candidate.projectRuntime?.id === imageProfileId
+        && candidate.binding === "TOOL_SANDBOX" && candidate.schedulingPolicy === "durable_object"
+        && deployedImages.includes(candidate.image));
+      if (!pin?.projectRuntime || JSON.stringify(pin.projectRuntime.capabilities) !== JSON.stringify(descriptor.capabilities))
+        throw new Error("project_runtime_image_profile_unavailable");
+      image = pin.image;
+      capabilities = pin.projectRuntime.capabilities;
+    }
+    if (!image || !deployedImages.includes(image)) throw new Error("project_runtime_image_profile_unavailable");
+    return { image, imageProfileId, profile: profileValue, capabilities };
   }
 
   protected override allocationCreditsPerHour(): number | undefined {
@@ -543,3 +584,4 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     await this.ctx.storage.delete("dynamic_snapshot_registry_pending");
   }
 }
+function dynamicProfileOrder(profile: DynamicProfile): number { return Object.keys(DYNAMIC_PROFILES).indexOf(profile); }

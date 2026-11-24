@@ -788,6 +788,8 @@ export class ToolSandboxDO extends DurableObject {
       if (error instanceof ProjectRuntimeCapabilityAdmissionError) return Response.json({ ok: false,
         error_code: "project_runtime_capability_unavailable", missing_capabilities: error.missingCapabilities,
         eligible_profiles: error.eligibleProfiles }, { status: 409 });
+      if (error instanceof Error && error.message.startsWith("project_runtime_"))
+        return Response.json({ ok: false, error_code: error.message }, { status: 409 });
       return Response.json({ ok: false, error_code: "project_runtime_admission_unavailable" }, { status: 503 });
     }
     const body = await request.clone().text();

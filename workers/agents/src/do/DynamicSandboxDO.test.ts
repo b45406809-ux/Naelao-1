@@ -58,7 +58,8 @@ function capacityService() {
 }
 function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean;
   snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean; omitBudgetReservationReceipt?: boolean;
-  budgetProjectId?: string; recoveryStore?: boolean; projectRuntime?: { id: string; capabilities: string[] }; projectRuntimeDeployed?: boolean } = {}) {
+  budgetProjectId?: string; recoveryStore?: boolean; projectRuntime?: { id: string; capabilities: string[] }; projectRuntimeDeployed?: boolean;
+  imageProfileId?: string } = {}) {
   const records = new Map<string, any>();
   const projectMainRegistry = new Map<string, { runtimeObjectName: string; allocationGeneration: number; allocationToken?: string;
     budgetReservationId?: string; fencingToken: number; activeBranch: string; state: string }>();
@@ -118,6 +119,8 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
           && reservation.projectId === projectId
           && reservation.status === "held" && Date.parse(reservation.expiresAt) > Date.now() ? { id } : null;
       })() : sql.includes("SELECT plan_tier") ? { plan_tier: options.tier ?? "free" }
+        : sql.includes("SELECT profile,image_profile_id FROM project_main_runtime_profiles")
+        ? options.profile || options.imageProfileId ? { profile: options.profile ?? "standard-1", image_profile_id: options.imageProfileId ?? "base" } : null
         : sql.includes("SELECT profile FROM project_main_runtime_profiles") ? options.profile ? { profile: options.profile } : null
         : sql.includes("workspace_erasure_tombstones")
         ? workspaceErased ? { erased: 1 } : null : sql.includes("config_json")
@@ -328,6 +331,39 @@ describe("Cloudflare dynamic execution", () => {
     const response = await r.invoke("/prewarm", { mainComputer: true });
     expect(response.status, await response.clone().text()).toBe(200);
     expect(r.transport.start).toHaveBeenCalledWith(expect.objectContaining({ instance: "lite" }));
+  });
+
+  it("starts the exact owner-selected deployed Project image profile at its minimum size", async () => {
+    const r = runtime({ profile: "standard-1", imageProfileId: "media-documents",
+      projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract", "media.frame_extract", "document.pdf_render"] } });
+    const response = await r.invoke("/prewarm", { mainComputer: true, requiredCapabilities: ["media.audio_extract"] });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(r.transport.start).toHaveBeenCalledWith(expect.objectContaining({ image: projectProfileImage, instance: "standard-1" }));
+    expect(r.records.get("dynamic_selection")).toMatchObject({ image: projectProfileImage, imageProfileId: "media-documents", profile: "standard-1" });
+  });
+
+  it("rejects a saved Project image profile when its selected size is below the image minimum", async () => {
+    const r = runtime({ profile: "lite", imageProfileId: "media-documents",
+      projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract"] } });
+    const response = await r.invoke("/exec", { mainComputer: true });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "project_runtime_profile_below_image_minimum" });
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect(r.capacity.calls).toHaveLength(0);
+    expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(0);
+    expect([...r.records.keys()].some(key => key.startsWith("execution:"))).toBe(false);
+  });
+
+  it("does not start a different eligible Project image when the saved profile lacks a requested capability", async () => {
+    const r = runtime({ profile: "standard-1", imageProfileId: "media-documents",
+      projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract"] } });
+    const response = await r.invoke("/exec", { mainComputer: true, requiredCapabilities: ["document.pdf_render"] });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "project_runtime_capability_unavailable",
+      missing_capabilities: ["document.pdf_render"], eligible_profiles: [] });
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect(r.capacity.calls).toHaveLength(0);
+    expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(0);
   });
 
   it("does not claim a project-main allocation when the authoritative budget hold is absent", async () => {

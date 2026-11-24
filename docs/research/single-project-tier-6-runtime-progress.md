@@ -135,10 +135,30 @@ container-policy suites pass **23/23**; DynamicSandbox tests pass **44/44**; Age
 `git diff --check` pass. The route test uses a mocked deployed image map; no Cloudflare image was
 built, published or started.
 
-**Exact next action:** consume the saved image profile in `DynamicSandboxDO`, verify its exact digest
-against the deployed map and capability declaration, stop and settle the old allocation before
-claiming the next physical generation, and test failure/retry/reconciliation while restoring the
-authorized checked workspace. Keep attachment caller migration for SPR03.
+**Exact next action:** complete SPR02.4's durable replacement state machine: stop and settle the old
+allocation before persisting the new selection, retain checked workspace recovery, and reconcile
+uncertain provider outcomes before another generation can start. Keep attachment caller migration
+for SPR03.
+
+## SPR02.4 checkpoint — Resolve and admit the selected image — 2026-11-24
+
+`DynamicSandboxDO` now reads `profile` and `image_profile_id` from trusted Project settings during
+pre-admission and again before allocation. It resolves only the built-in base image or a unique
+approved `TOOL_SANDBOX` Project profile whose exact digest is in the deployed image map, verifies
+the image minimum size and current tenant plan, then checks required capabilities against the
+selected image's host declaration. Unsupported, undeployed, under-sized or over-plan selections
+fail before execution receipts, writer admission, capacity or billing. A first Project allocation
+uses the selected pinned image and its selected Cloudflare size. Legacy sidecar identity and image
+policy remain installation-scoped.
+
+Local verification: DynamicSandbox and container-policy tests pass **58/58**; Agents typecheck and
+`git diff --check` pass. No provider image was built, deployed or started live.
+
+**Exact next action:** add a durable replacement intent around profile changes. Confirm the old
+Container stop and billing settlement before persisting the new selection, retire only its
+image-specific local snapshot pointer while preserving checked workspace recovery, claim the next
+generation before provider start, and test stop/start uncertainty and retries before moving to
+SPR03. Live Cloudflare stop-outcome reconciliation remains outside local evidence.
 
 ## Acceptance boundaries
 
