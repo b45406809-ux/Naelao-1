@@ -13,6 +13,55 @@ vi.mock("../communications/core.js", async (importOriginal) => ({
 }));
 
 describe("task blackboard durable object route", () => {
+  it("projects decision-linked distinct-path candidates only to the authorized goal owner", async () => {
+    const hash = "b".repeat(64);
+    const secret = "test-secret";
+    const decision = { id: "decision-api-v1", revision: 3 };
+    const data = new Map<string, unknown>([
+      [`goal-activity:index:run`, [hash]],
+      [`goal-activity:metadata:${hash}`, {
+        tenantId: "t", spaceId: "s", actorId: "u", parentRunId: "run", projectId: null,
+        tasks: [
+          { id: "api", title: "Implement API", dependencies: [], decision_refs: [decision] },
+          { id: "client", title: "Implement client", dependencies: [], decision_refs: [decision] },
+        ],
+      }],
+      [`goal-dag:${hash}`, {
+        verificationRequired: false,
+        tasks: {
+          api: { status: "completed", workerId: `${hash}:api`, result: { id: "api-result", ok: true, output: { modifiedFiles: ["src/api.ts"] } } },
+          client: { status: "completed", workerId: `${hash}:client`, result: { id: "client-result", ok: true, output: { modifiedFiles: ["src/client.ts"] } } },
+        },
+      }],
+    ]);
+    const instance = new NaelaoAgentDO({
+      storage: {
+        get: async (key: string) => data.get(key),
+        sql: { exec: () => ({ toArray: () => [] }) },
+      },
+      id: { toString: () => "parent" },
+    } as never, { PLATFORM_SECRET: secret } as never);
+    (instance as unknown as { ensureInit(): void }).ensureInit = () => {};
+    const token = await mintInternalToken(secret, "t");
+    const get = (actor: string) => instance.fetch(new Request(
+      "http://agent/internal/goal-activity?run_id=run&space_id=s",
+      { headers: { "x-naelao-tenant-id": "t", "x-naelao-user-id": actor, "x-naelao-internal-token": token } },
+    ));
+
+    const owner = await (await get("u")).json() as { goals: Array<{ decisionChangeCandidates?: unknown[] }> };
+    expect(owner.goals[0]?.decisionChangeCandidates).toEqual([{
+      decision, tasks: [
+        { id: "api", reportedPaths: ["src/api.ts"] },
+        { id: "client", reportedPaths: ["src/client.ts"] },
+      ],
+      kind: "shared_decision_distinct_path_reports",
+      evidence: "worker_reported_paths",
+      status: "review_candidate",
+    }]);
+    const other = await (await get("other")).json() as { goals: unknown[] };
+    expect(other.goals).toEqual([]);
+  });
+
   it("limits goal activity to the recorded tenant, space and actor", async () => {
     const hash = "a".repeat(64);
     const workerId = `${hash}:a`;

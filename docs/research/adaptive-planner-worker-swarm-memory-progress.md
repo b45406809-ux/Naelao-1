@@ -1,5 +1,14 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW07 checkpoint — authorized Goal Activity route projection
+
+Added a route-level regression proving the decision-linked distinct-path candidate is projected
+through Goal Activity to its recorded owner and the route returns no goal to another actor. Together
+with the bounded helper cases, the focused route and helper suites pass **9/9**; Agents and Shell
+typechecks and `git diff --check` pass. This closes the local projection/access regression gap only;
+it does not establish semantic conflict. **Exact next action:** implement the approved semantic and
+interface classifier after APW/PW owners publish the evidence taxonomy and uncertainty contract.
+
 ## APW07 checkpoint — decision-linked distinct-path review candidates
 
 Goal Activity now emits a bounded review candidate when at least two completed workers report
