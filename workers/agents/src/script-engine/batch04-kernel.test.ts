@@ -71,6 +71,8 @@ describe("Batch 04 universal kernel", () => {
     expect(isPlannerOperationAllowed("project", "thread.delegate")).toBe(true);
     expect(isPlannerOperationAllowed("project", "project_journal.read_decision")).toBe(true);
     expect(isPlannerOperationAllowed("space", "project_journal.read_decision")).toBe(false);
+    expect(isPlannerOperationAllowed("project", "project_journal.read_workspace_excerpt")).toBe(true);
+    expect(isPlannerOperationAllowed("space", "project_journal.read_workspace_excerpt")).toBe(false);
     expect(isPlannerOperationAllowed("project", "project_journal.read_decisions")).toBe(false);
     expect(isPlannerOperationAllowed("project", "Read")).toBe(false);
     expect(isPlannerOperationAllowed("space", "Edit")).toBe(false);
@@ -86,8 +88,13 @@ describe("Batch 04 universal kernel", () => {
     const tools = new ScriptToolSurface(env, ["r2-workspace", "code-exec", "project-journal"], { plannerScope });
     expect(tools.availableOperations()).not.toContain("Read");
     expect(tools.availableOperations()).toContain("Bash");
-    if (plannerScope === "project") expect(tools.availableOperations()).toContain("project_journal.read_decision");
-    else expect(tools.availableOperations()).not.toContain("project_journal.read_decision");
+    if (plannerScope === "project") {
+      expect(tools.availableOperations()).toContain("project_journal.read_decision");
+      expect(tools.availableOperations()).toContain("project_journal.read_workspace_excerpt");
+    } else {
+      expect(tools.availableOperations()).not.toContain("project_journal.read_decision");
+      expect(tools.availableOperations()).not.toContain("project_journal.read_workspace_excerpt");
+    }
     expect(tools.availableOperations()).not.toContain("Edit");
     expect(tools.availableOperations()).not.toContain("Write");
     expect(decisionTools(undefined, tools.availableOperations()).map((tool) => tool.name)).not.toContain("Edit");

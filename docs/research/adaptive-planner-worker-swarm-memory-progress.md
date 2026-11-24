@@ -23,11 +23,26 @@ mutation. Five focused suites pass **53/53**, Agents typecheck and `git diff --c
 broad planner file/domain reader appeared on these paths. This local test/documentation slice is
 awaiting checkpoint push.
 
-**Exact next action:** implement a Project-scoped exact workspace excerpt over one normalized path,
-immutable revision and bounded line range using the coordinator-backed revision reader. Add strict
-line/byte bounds and trusted cumulative per-run admission before exposing it; verify stale, missing,
-deleted, binary, oversized, traversal and repeated-read cases. Then continue the thread/task/evidence
-caller audit and route any broad investigation through the existing worker path.
+The exact workspace excerpt is implemented in the local follow-up below. **Exact next action:** audit
+thread/task/evidence discovery operations, including caller scope and resume-time authorization, then
+test their host invocation boundaries or route broad inspection to the existing authorized worker
+path.
+
+## APW01/APW02 follow-up — bounded immutable workspace excerpt (local)
+
+Added Project-only `project_journal.read_workspace_excerpt`. The host scopes it to the current run's
+Project and coordinator branch; arguments identify one normalized exact path, immutable revision,
+1-based line range and a requested output-byte ceiling. It requires a checked workspace reader,
+rejects missing/deleted revisions and non-text/binary content, reports current versus stale revision,
+and returns at most 8 KiB per call. A host-owned per-run budget admits at most four calls and 24 KiB
+of requested output cumulatively. The underlying existing revision adapter separately integrity
+checks content and has a 20 MiB object ceiling; the excerpt API does not enumerate workspace files.
+
+Three focused suites pass **31/31**; Agents typecheck and `git diff --check` pass. This remains a
+local implementation result until checkpoint push; it does not establish live coordinator/provider
+acceptance. **Exact next action:** audit thread/task/evidence discovery operations, including caller
+scope and resume-time authorization, then test their host invocation boundaries or route broad
+inspection to the existing authorized worker path.
 
 ## APW07 checkpoint — authorized Goal Activity route projection
 

@@ -41,6 +41,6 @@ const PLANNER_OPERATIONS = new Set([
  */
 export function isPlannerOperationAllowed(scope: PlannerScope, name: string): boolean {
   if (UNIVERSAL_REPL_OPERATIONS.has(name) || PLANNER_OPERATIONS.has(name)) return true;
-  if (name === "project_journal.read_decision") return scope === "project";
+  if (name === "project_journal.read_decision" || name === "project_journal.read_workspace_excerpt") return scope === "project";
   return scope === "space" && name === "delegate_to_space_worker";
 }

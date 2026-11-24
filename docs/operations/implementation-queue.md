@@ -1010,12 +1010,15 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
     pipeline and input-redirection reads, saved-command lookup, Code Mode tool caps and signed planner
     mutation. Five focused suites pass 53/53; Agents typecheck and `git diff --check` pass. Local
     checkpoint pending. No further broad planner file/domain reader was found on these paths.
-  - [ ] **APW01/APW02 — Bounded exact workspace excerpt.** Implement a Project-scoped read for one
-    normalized path, immutable revision and line range using the coordinator-backed revision reader.
-    Include strict byte/line caps and trusted per-run cumulative admission; test stale/missing/deleted,
-    binary/oversized, traversal and repeated-read cases. Keep it unavailable where pin/read authority
-    cannot be revalidated. Then audit thread/task/evidence discovery callers and migrate any broad
-    investigation to the existing worker route.
+  - [x] **APW01/APW02 — Bounded exact workspace excerpt.** Added Project-only
+    `project_journal.read_workspace_excerpt` for one normalized path, immutable revision and bounded
+    line range. It rejects non-text/binary payloads and caps each response at 8 KiB, with host-owned
+    per-run admission of four calls and 24 KiB total requested response bytes. Stale revisions are
+    marked; absent/deleted, unsafe and unpinned reads fail closed. Three focused suites pass 31/31;
+    Agents typecheck and `git diff --check` pass. Local checkpoint pending push.
+  - [ ] Continue auditing thread/task/evidence discovery callers, their viewer/actor scope checks and
+    resume-time revalidation. Record each exact surviving caller; route broad investigation to the
+    existing authorized worker path and test both discovery and invocation before closing APW01.
 - [ ] **APW02 — Use one scoped investigation worker by default and fan out independent tasks.**
   Reuse existing delegation, task DAG, worker follow-up and evidence paths. Verify dependent context
   stays with one worker, independent assignments avoid overlap, and partial results stay visible.
@@ -1028,11 +1031,11 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
   their existing prerequisites.
 
 **Latest checkpoint:** The first exact Project decision lookup and planner file-read denial are
-verified and pushed as `fee19873`. A local alias/pipeline/Code Mode/stored-command/resume audit slice
-passes five focused suites 53/53, Agents typecheck and `git diff --check`; it is awaiting checkpoint
-push. **Exact next action:** implement the bounded exact Project workspace excerpt with immutable
-revision, line/byte caps and trusted cumulative per-run admission, then test invocation and denial
-paths before widening the caller audit.
+verified and pushed as `fee19873`; alias/pipeline/Code Mode/stored-command/resume regressions passed
+53/53 and were pushed as `c140822b`. The bounded Project excerpt now passes three focused suites
+31/31, Agents typecheck and `git diff --check`; it is awaiting checkpoint push. **Exact next action:**
+audit thread/task/evidence discovery callers, confirm actor/Project scope and resume revalidation, and
+add invocation tests or route broad inspection through the existing worker path.
 
 ## Ordered plan list
 

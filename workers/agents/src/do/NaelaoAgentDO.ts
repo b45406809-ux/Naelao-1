@@ -8,6 +8,7 @@ import { childFanout, issueDelegationContract, verifyDelegationContract, type De
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
 import { executeGoalDag, MAX_GOAL_ROUTING_ADJUSTMENTS, type GoalDagJournal, type GoalRoutingAdjustment } from "../script-engine/goal-dag.js";
 import { persistGoalExpansionAdmission } from "../script-engine/goal-expansion-admission.js";
+import { createPlannerExcerptBudget } from "../script-engine/planner-excerpt-budget.js";
 import { applyGoalCommunicationEdges } from "../script-engine/goal-communication.js";
 import { taskCommunicationRecipients, validateGoalDag, type GoalTask } from "../script-engine/prebuilt/goal-planner.js";
 import { captureWorkerArtifactManifest, collectGoalEvidence, verifyWorkerArtifact, validateGoalEvidenceChecks, type WorkerArtifactManifest } from "../script-engine/goal-evidence.js";
@@ -2610,6 +2611,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(projectId ? { projectId } : {}),
       ...(workspaceBranch ? { workspaceBranch } : {}),
     };
+    // Planner excerpts are reserved against trusted per-run state before the host loads any
+    // immutable workspace content. Tool arguments can reduce a reservation, never raise these
+    // limits; retries in this run consume the same remaining allowance.
+    env.consumePlannerExcerptBudget = createPlannerExcerptBudget();
     if (userId && callerRole && !airGappedOnly) {
       env.spaceCoordinationContext = async () => {
         try {

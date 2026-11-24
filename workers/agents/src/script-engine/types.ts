@@ -1046,6 +1046,8 @@ export interface ScriptEngineEnv {
   workspaceRevisionRead?: (input: { path: string; revision: number }) => Promise<{
     revision: number; sha256: string | null; bytes: Uint8Array | null; contentType?: string; deleted: boolean;
   } | null>;
+  /** Trusted per-run reservation for a bounded persistent-planner excerpt response. */
+  consumePlannerExcerptBudget?: (maxBytes: number) => boolean | Promise<boolean>;
   /** Project-scoped writer critical section shared with the explicit legacy migration barrier. */
   withProjectWorkspaceMutation?<T>(operation: () => Promise<T>): Promise<T>;
   /** Canonical publisher available only for an isolated checked workspace branch. */

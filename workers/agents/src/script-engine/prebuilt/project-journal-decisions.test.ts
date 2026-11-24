@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseJournal, journalKey, validateProjectDecisionRefs } from "../project-journal.js";
 import { projectJournal } from "./project-journal.js";
 
@@ -84,6 +84,76 @@ describe("project journal decision proposal and review", () => {
       .resolves.toEqual({ ok: false, reason: "project_journal_decision_not_found" });
     await expect(projectJournal.operations["project_journal.read_decision"]!({ decision_id: "bad\nselector", revision: 1 }, f.ctx("owner", 3)))
       .resolves.toEqual({ ok: false, reason: "project_journal_decision_reference_invalid" });
+  });
+
+  it("returns only a bounded excerpt from one exact immutable Project workspace revision", async () => {
+    const bytes = new TextEncoder().encode("alpha\nbeta\ngamma\n");
+    const consumePlannerExcerptBudget = vi.fn(() => true);
+    const workspaceRevisionRead = vi.fn(async ({ revision }: { path: string; revision: number }) => ({
+      revision, sha256: "a".repeat(64), bytes, contentType: "text/plain; charset=utf-8", deleted: false,
+    }));
+    const ctx = { env: {
+      spaceId: "space", projectId: "project", agentId: "agent", scriptsBucket: {} as never,
+      workspaceManifestRead: async () => ({ head: { branch: "main", revision: 9, updatedAt: "now" }, entries: [] }),
+      workspaceRevisionRead, consumePlannerExcerptBudget,
+    } } as never;
+    const result = await projectJournal.operations["project_journal.read_workspace_excerpt"]!({
+      path: "src/example.ts", revision: 8, start_line: 2, line_count: 1, max_bytes: 64,
+    }, ctx);
+    expect(result).toMatchObject({ ok: true, source: { path: "src/example.ts", revision: 8 },
+      workspaceStatus: "stale", start_line: 2, line_count: 1, content: "beta", truncated: true });
+    expect(workspaceRevisionRead).toHaveBeenCalledWith({ path: "src/example.ts", revision: 8 });
+    expect(consumePlannerExcerptBudget).toHaveBeenCalledWith(64);
+    expect(result).not.toHaveProperty("files");
+  });
+
+  it("rejects unsafe excerpt paths, binary content, and exhausted cumulative read budget", async () => {
+    const consumePlannerExcerptBudget = vi.fn(() => true);
+    const workspaceRevisionRead = vi.fn(async ({ revision }: { path: string; revision: number }) => ({
+      revision, sha256: null, bytes: new Uint8Array([0, 1, 2]), contentType: "application/octet-stream", deleted: false,
+    }));
+    const ctx = { env: {
+      spaceId: "space", projectId: "project", agentId: "agent", scriptsBucket: {} as never,
+      workspaceManifestRead: async () => ({ head: { branch: "main", revision: 9, updatedAt: "now" }, entries: [] }),
+      workspaceRevisionRead, consumePlannerExcerptBudget,
+    } } as never;
+    await expect(projectJournal.operations["project_journal.read_workspace_excerpt"]!({
+      path: "../secret", revision: 8, start_line: 1, line_count: 1, max_bytes: 64,
+    }, ctx)).resolves.toMatchObject({ ok: false, reason: "project_journal_workspace_excerpt_path_invalid" });
+    await expect(projectJournal.operations["project_journal.read_workspace_excerpt"]!({
+      path: "src/data.bin", revision: 8, start_line: 1, line_count: 1, max_bytes: 64,
+    }, ctx)).resolves.toMatchObject({ ok: false, reason: "project_journal_workspace_excerpt_not_text" });
+    consumePlannerExcerptBudget.mockReturnValue(false);
+    await expect(projectJournal.operations["project_journal.read_workspace_excerpt"]!({
+      path: "src/data.ts", revision: 8, start_line: 1, line_count: 1, max_bytes: 64,
+    }, ctx)).resolves.toMatchObject({ ok: false, reason: "project_journal_workspace_excerpt_budget_exhausted" });
+  });
+
+  it("caps excerpt bytes and reports a missing exact revision without searching", async () => {
+    const content = new TextEncoder().encode("🙂🙂🙂\nsecond\nthird");
+    const workspaceRevisionRead = vi.fn(async ({ revision }: { path: string; revision: number }) => revision === 8
+      ? { revision, sha256: "b".repeat(64), bytes: content, contentType: "text/plain", deleted: false }
+      : revision === 7 ? { revision, sha256: null, bytes: null, deleted: true } : null);
+    const ctx = { env: {
+      spaceId: "space", projectId: "project", agentId: "agent", scriptsBucket: {} as never,
+      workspaceManifestRead: async () => ({ head: { branch: "main", revision: 8, updatedAt: "now" }, entries: [] }),
+      workspaceRevisionRead, consumePlannerExcerptBudget: () => true,
+    } } as never;
+    const excerpt = await projectJournal.operations["project_journal.read_workspace_excerpt"]!({
+      path: "src/example.ts", revision: 8, start_line: 1, line_count: 2, max_bytes: 5,
+    }, ctx) as { content: string; truncated: boolean; source: { revision: number } };
+    expect(excerpt).toMatchObject({ content: "🙂", truncated: true, source: { revision: 8 } });
+    expect(new TextEncoder().encode(excerpt.content).byteLength).toBeLessThanOrEqual(5);
+    await expect(projectJournal.operations["project_journal.read_workspace_excerpt"]!({
+      path: "src/example.ts", revision: 6, start_line: 1, line_count: 2, max_bytes: 32,
+    }, ctx)).resolves.toMatchObject({ ok: false, reason: "project_journal_workspace_excerpt_not_found" });
+    await expect(projectJournal.operations["project_journal.read_workspace_excerpt"]!({
+      path: "src/example.ts", revision: 7, start_line: 1, line_count: 2, max_bytes: 32,
+    }, ctx)).resolves.toMatchObject({ ok: false, reason: "project_journal_workspace_excerpt_deleted" });
+    await expect(projectJournal.operations["project_journal.read_workspace_excerpt"]!({
+      path: "src/example.ts", revision: 8, start_line: 10, line_count: 2, max_bytes: 32,
+    }, ctx)).resolves.toMatchObject({ ok: false, reason: "project_journal_workspace_excerpt_range_unavailable" });
+    expect(workspaceRevisionRead).toHaveBeenCalledTimes(4);
   });
 
   it("requires explicit same-topic supersession and preserves the old decision", async () => {
