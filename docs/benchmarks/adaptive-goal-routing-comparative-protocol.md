@@ -80,6 +80,16 @@ test-runner overhead and are not provider or Cloudflare latency. Provider calls 
 were zero; `providerSpendUsd` is unknown. The fixture does not measure customer/model quality,
 failed-worker retry policy, durable runtime behavior, external conflicts, or checked publication.
 
+The local boundary stage is also covered by authorized caller fixtures: `batch04-kernel.test.ts`
+and `virtual-cli.test.ts` exercise planner shell/raw-domain denials and typed operation dispatch;
+`project-journal-decisions.test.ts` covers exact-revision lookup, bounded excerpt output and exhausted
+cumulative read budget; `goal-dag.test.ts` proves dependency results arrive only as bounded untrusted
+handoffs; and `worker-run-access-revalidation.test.ts` rejects revoked or unavailable Project access.
+Together with `goal-routing-comparative-benchmark.test.ts`, `goal-architecture-benchmark.test.ts`
+and `goal-evidence-quality.test.ts`, the focused local run passed **123 tests across 8 suites**
+with **2 provider/live tests skipped**. Agents typecheck and `git diff --check` pass. This is local
+fixture coverage; no provider, Cloudflare runtime, customer data or checked publication was used.
+
 ## Blocked acceptance
 
 Real-runtime/provider acceptance resumes when a staging runtime and approved provider/quota are

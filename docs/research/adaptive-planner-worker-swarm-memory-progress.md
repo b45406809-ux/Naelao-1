@@ -90,7 +90,7 @@ The existing goal DAG keeps prerequisites ordered, passes bounded untrusted dire
 receipts, schedules independent tasks under the host ceiling, and reports failed/blocked results.
 Five focused suites pass **105/105**, including virtual CLI, same-ID dispatch, DAG outcomes, planner
 invocation boundary and delegated-worker resume; Agents typecheck and `git diff --check` pass. This
-local checkpoint is awaiting push.
+checkpoint was pushed as `7c17eaad`.
 
 **Exact next action:** review APW08's internal versioned-worker contract and separate parser/host
 binding work from owner-review dependencies before selecting its first implementation slice.
@@ -551,6 +551,23 @@ dynamic expansion and redundant-worker cancellation remain disabled by default.
 worker-branch base/result revisions and checked publication validation receipts; implement the
 smallest missing lineage link and test the host projection. Real-runtime/provider comparison and
 cost-aware routing remain blocked as described in the protocol.
+
+## APW02/APW09 follow-up — 2026-11-24 (local comparison boundary verification)
+
+Revalidated the paired scheduler fixture together with the reachable planner boundary and worker
+recovery regressions. `batch04-kernel.test.ts` and `virtual-cli.test.ts` cover planner shell/raw-domain
+denial and typed dispatch; `project-journal-decisions.test.ts` covers bounded exact reads;
+`goal-dag.test.ts` verifies direct dependency results are bounded and untrusted; and
+`worker-run-access-revalidation.test.ts` verifies current Project access at the execution gate. The
+comparison, architecture and evidence-quality benchmark suites were included. Eight suites pass
+**123/123** with **2 provider/live tests skipped**; Agents typecheck and `git diff --check` pass.
+This closes the local boundary-fixture stage only. It does not establish model/customer quality,
+Cloudflare recovery, provider spend or checked publication.
+
+**Exact next action:** keep the paired real-runtime/provider evaluation blocked until the protocol's
+authorized staging runtime, provider/quota, predeclared quality/latency thresholds, per-goal spend
+ceiling and reconcilable usage/invoice evidence are available. Cost-aware routing and rollout remain
+disabled; resume APW07/APW08 implementation only after their respective owner-reviewed contracts.
 
 ## APW02 follow-up — 2026-11-23 (safe redundant-worker cancellation; local verification)
 

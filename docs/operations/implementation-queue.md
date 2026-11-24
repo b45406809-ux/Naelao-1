@@ -985,7 +985,7 @@ Track detached dispatch separately in the [shared compute ledger](../research/sh
 It needs durable invocation authority, alarm-safe revalidation and fresh Billing admission.
 Keep disconnected replay disabled while those prerequisites are open.
 
-## Active plan — Planner investigation and worker reuse
+## Paused plan — Planner investigation and worker reuse
 
 See the [plan](../research/planner-investigation-and-worker-reuse-plan.md) and record implementation
 evidence in the [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). This
@@ -1039,14 +1039,25 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
   Project, attempt, branch, capabilities and remaining budget. Independent DAG work still uses distinct
   task worker IDs and host-capped concurrency; direct dependencies receive bounded untrusted handoffs,
   and failed/partial states remain visible while descendants block. Five focused suites pass 105/105;
-  Agents typecheck and `git diff --check` pass. Local checkpoint pending push.
-- [ ] **APW08 — Reusable and ephemeral worker definitions.** Implement and verify the internal
-  versioned definition, scoped discovery, immutable pinning and host binding after the boundary
-  work. Review SDK/template compatibility and publication scope under APW/PW/TBR before enabling
-  those surfaces. Track existing deadline and live recovery work in the APW ledger.
-- [ ] **APW02/APW09 — Compare task shapes and verify the boundary.** Extend the existing comparison
-  protocol and local fixture. Keep provider-cost, real recovery and rollout acceptance open under
-  their existing prerequisites.
+  Agents typecheck and `git diff --check` pass. Pushed as `7c17eaad`.
+- [ ] **Blocked · APW08 — Reusable and ephemeral worker definitions and delegated deadlines.** The
+  source/owner review found no safe parser or host-binding slice before the APW/PW/TBR owners approve
+  the versioned definition schema, topology/model/capability/evidence/communication fields,
+  package/grant binding, reuse lifecycle and explicit host-only authority/budget rule. Delegated
+  `long_running` workers also need an owner-approved active-duration, approval-wait, expiry/cleanup
+  and expired-resume contract; do not infer the ordinary AgentDO 10-minute limit. Resume after both
+  contracts are recorded, then implement independently testable parser/binding and deadline slices.
+- [x] **APW02/APW09 — Local task-shape comparison and boundary verification.** The paired synthetic
+  scheduler fixture and authorized caller regressions cover planner shell/raw-domain denial, bounded
+  exact Project reads, bounded untrusted dependency handoffs and worker execution access checks.
+  Eight focused suites pass 123/123 with two provider/live tests skipped; Agents typecheck and
+  `git diff --check` pass. See the [comparison protocol](../benchmarks/adaptive-goal-routing-comparative-protocol.md)
+  and [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). This is local
+  fixture evidence only.
+- [ ] **Blocked · APW09 — Real-runtime/provider comparison and rollout decision.** Resume only with
+  authorized staging runtime and provider/quota, frozen representative tasks and analysis, approved
+  quality/latency thresholds and per-goal spend ceiling, and reconcilable provider usage/invoice
+  evidence. Keep progressive routing and cost-aware defaults disabled.
 
 **Latest checkpoint:** The first exact Project decision lookup and planner file-read denial are
 verified and pushed as `fee19873`; alias/pipeline/Code Mode/stored-command/resume regressions passed
@@ -1054,10 +1065,13 @@ verified and pushed as `fee19873`; alias/pipeline/Code Mode/stored-command/resum
 `5158d3bb`. Project thread scope passed 71/71 and was pushed as `b9a36f40`. The project-agent roster
 and task/evidence scope audit passed 70/70 and was pushed as `3207c0bb`; exact-reader Project/Space
 discovery and invocation checks pass 15/15 with Agents typecheck. APW02's same-session follow-up
-command and DAG handoff checks pass five suites at 105/105 with Agents typecheck; the local queue
-transition is awaiting push. **Exact next action:** review APW08's internal versioned-worker contract
-and separate independently implementable parser/host-binding work from owner-review dependencies
-before selecting its first slice.
+command and DAG handoff checks pass five suites at 105/105 with Agents typecheck and is pushed as
+`7c17eaad`. The APW08 review found the delegated deadline and reusable-definition contracts are
+owner-blocked, with no independent safe parser/host-binding slice. The APW02/APW09 local comparison
+plus boundary suites pass 123/123 (two provider/live tests skipped), Agents typecheck and diff hygiene.
+**Exact next action:** resume APW07 classification after APW/PW owners approve its evidence taxonomy,
+or resume APW08 definition/deadline work after its owners approve the versioned schema and expiry
+contract. Keep APW09 live acceptance blocked until its exact staging/provider prerequisites are met.
 
 ## Ordered plan list
 
@@ -1066,7 +1080,7 @@ contain substantial implementation. Activate one entry at a time. Copy only the 
 into the active checklist. Keep finished task checkboxes and evidence in the queue or its linked
 ledgers when moving to another plan.
 
-1. [ ] **Active; local boundary work ready.** [Planner investigation and worker reuse](../research/planner-investigation-and-worker-reuse-plan.md) · [active checklist](#active-plan--planner-investigation-and-worker-reuse). Continue here first because it supplies a ready APW boundary slice.
+1. [ ] **Paused; no ready source task after final APW review.** [Planner investigation and worker reuse](../research/planner-investigation-and-worker-reuse-plan.md) · [checklist](#paused-plan--planner-investigation-and-worker-reuse). APW02/APW09 local comparison and boundary verification are complete. APW07 classification, APW08 contracts and APW09 live acceptance remain blocked below and in the APW ledger.
 2. [ ] **Earlier APW work remains open under existing dependencies.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). A review-only APW07 shared-decision/distinct-path signal is implemented; full conflict classification and APW08 deadline/reusable-definition work need owner-reviewed contracts. APW04–APW06 and APW09 retain policy/authority/evaluation gates. Cross-DO recovery/publication and economics acceptance need authorized staging.
 3. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
 4. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
@@ -1115,9 +1129,22 @@ obtaining live/practitioner evidence. Keep unchecked plan rows open; do not mark
 
 At this review, the queue was blocked with work remaining. APW07 classification, APW08 deadline
 and reusable-definition contracts, and deployed acceptance were gated as recorded above. The
-[active planner investigation plan](#active-plan--planner-investigation-and-worker-reuse) was added
-after this review and supplies the next local task. The active checkpoint gives the current resume
-action. Keep all rollout gates disabled.
+planner investigation plan was activated after that review and supplied a local comparison task,
+which is now complete. The final queue readiness review below supersedes this earlier decision.
+Keep all rollout gates disabled.
+
+## Final queue readiness review — 2026-11-24 (after local APW comparison)
+
+The APW02/APW09 local comparison and boundary verification are now complete and pushed with this
+checkpoint. I rechecked every remaining unchecked plan against the readiness table above, the current
+queue entries and their linked owner ledgers. The prior table's non-APW dependencies are unchanged.
+APW07 semantic/interface classification still needs the APW/PW evidence taxonomy; APW08 needs the
+owner-reviewed reusable-definition and delegated deadline/expiry contracts; APW09 live comparison
+needs authorized staging/provider access, frozen tasks and thresholds, a spend ceiling and reconciled
+usage/invoice evidence. The other paused plans retain the specific policy, provider, operator or
+deployed-evidence dependencies in the table. I found no independent local implementation,
+integration or verification task ready. The queue remains blocked with work open; deployment and live
+acceptance remain separate, and rollout gates stay disabled. Resume when a listed dependency changes.
 
 ## Checkpoint archive
 

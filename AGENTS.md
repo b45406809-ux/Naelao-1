@@ -23,14 +23,6 @@ session, or a specific blocker leaves no ready work.
    the commit. If the environment is still starting or reconnecting, wait for readiness and
    resume from the checkout when it returns.
 
-## Current task
-
-**APW08 — Review the reusable worker definition contract for independent local work.** Resume from the
-[active checklist and exact next action](docs/operations/implementation-queue.md#active-plan--planner-investigation-and-worker-reuse).
-Compare the current plan and owner ledger, implement any internal parser or host-binding slice that
-does not require unresolved cross-plan authority or publication policy, and record exact blockers for
-SDK/template compatibility, deadline semantics, shared publication and live acceptance.
-
 ## Save progress inside each task
 
 - Break the active task into small slices that can be checked on their own. Commit and push
