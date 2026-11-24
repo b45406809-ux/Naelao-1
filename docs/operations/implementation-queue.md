@@ -932,7 +932,11 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   authorized staging bindings and a disposable effect fixture. No independent APW08 code gap remains.
   See the [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md).
 
-**Latest checkpoint:** APW08 deadline, reusable SDK/template definition, and live recovery contracts
+**Latest checkpoint:** On remote tip `9a1ea1a1`, `worker-integration-validation.test.ts`,
+`environments.test.ts`, `delegation-contract.test.ts`, `worker-run-access-revalidation.test.ts`,
+`delegated-worker-approval-resume.test.ts` and `delegation-admission.test.ts` pass **70/70**;
+Agents typecheck and `git diff --check` pass. This is local revalidation only. APW08 deadline,
+reusable SDK/template definition, and live recovery contracts
 were reconciled against current sources and APW/PW/TBR owners; no additional source-only change is
 ready until the owner-reviewed duration and definition contracts exist. APW07 source-base validation
 lineage is preserved and projected safely; four

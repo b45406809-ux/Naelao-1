@@ -1,5 +1,19 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW07/APW08 local revalidation — 2026-11-24 (remote tip `9a1ea1a1`)
+
+Re-ran `worker-integration-validation.test.ts`, `environments.test.ts`,
+`delegation-contract.test.ts`, `worker-run-access-revalidation.test.ts`,
+`delegated-worker-approval-resume.test.ts` and `delegation-admission.test.ts`: **70/70** tests pass.
+Agents typecheck and `git diff --check` pass. The suites cover local conflict/publication helper,
+resume fencing, current access/runtime capability and budget/scope admission behavior. They do not
+exercise real DO eviction or cross-DO publication storage. No code changed; the owner contract and
+staging acceptance dependencies below remain.
+
+**Exact next action:** implement the APW07 classification mechanism after APW/PW owners approve its
+evidence taxonomy; then implement APW08 deadline and reusable-definition slices after the relevant
+owners approve their contracts.
+
 ## APW08 readiness review — 2026-11-24 (deadline, reusable definitions and live recovery)
 
 Current source gives ordinary AgentDO runs a 10-minute wall-clock deadline and allows an explicit
