@@ -10,10 +10,12 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR01 — Inventory single-Project Tier 6 runtime callers.** Follow the
-[active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime).
-Map main, attachment and extension runtime starts and the legacy erasure routes.
-Identify the first locally verifiable change that prevents an extra Project allocation.
+**SPR02.1 — Share the Project main runtime across branches.** Follow the
+[active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
+and [SPR01 inventory](docs/research/single-project-tier-6-runtime-progress.md). Keep every Project
+branch on the stable main runtime identity, extend main admission/generation and writer checks to
+race branches, preserve non-Project and explicit external-tool routing, and add focused local tests.
+First confirm how branch workspaces remain isolated or serialized on the shared Container.
 
 ## Checkout and recovery
 

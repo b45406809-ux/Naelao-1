@@ -62,23 +62,36 @@ handoff. Anything that had yet to reach that branch may need to be redone.
 See the [plan](../research/single-project-tier-6-runtime-plan.md). It governs S4 and related S3/U10
 execution and erasure work. Reuse the managed-services ledger for overlapping evidence.
 
-- [ ] **Active · SPR01 — Inventory and contract.** Trace all runtime starts, including attachment
+- [x] **SPR01 — Inventory and contract.** Trace all runtime starts, including attachment
   tools, extension tools, prewarm and restore, across Project and branch scopes. Map each caller
   to the main runtime, a container-free service, an explicit external tool, or historical cleanup.
-  Record the first locally verifiable admission or routing gap and the existing erasure coverage.
-- [ ] **SPR02 — One allocation and image profiles.** Enforce Project-wide admission across branches,
-  select approved capabilities before starting, and fence image replacement and recovery.
+  Record the first locally verifiable admission or routing gap and the existing erasure coverage;
+  the source map and existing erasure routes are documented in the
+  [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
+- [ ] **Active · SPR02 — One allocation and image profiles.** Enforce Project-wide admission across
+  branches, select approved capabilities before starting, and fence image replacement and recovery.
+  - [ ] **SPR02.1 — Stable Project runtime identity.** `sandbox-routing.ts` currently gives `workers/`
+    and `race/` branches branch-suffixed Container IDs; `ToolSandboxDO` and `DynamicSandboxDO` also
+    exclude race branches from main generation/admission. Confirm shared `/workspace` safety, route
+    Project branches to one object, extend generation/writer admission, and cover serialization and
+    Space Assistant isolation with focused tests.
 - [ ] **SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and extension
   native processing through the Project runtime while preserving isolation and operation limits.
 - [ ] **SPR04 — Retire direct specialist execution.** Stop new first-party specialist allocations
   after the replacement routes work. Preserve cleanup, reconciliation and erasure of old runtimes.
 - [ ] **SPR05 — Local acceptance.** Verify concurrency, replacement, capability denial,
   explicit external tools, and erasure with safe fixtures.
-- [ ] **SPR05 — Live acceptance.** Follow up when the replacement routes pass local checks
+- [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** plan added after `2b80e458`. SPR01 is ready for local source work.
-Start with the current Agents attachment and extension routes and the main runtime registry.
+**Latest checkpoint:** SPR01 source inventory is complete in the SPR ledger. Project main and
+ordinary feature branches already share an object, but `workers/` and `race/` get separate
+Container IDs and race calls bypass the Project main generation/writer admission. Video/frame/PDF
+attachment handlers and approved extension images also address specialist namespaces/sidecar IDs;
+their exact erasure registration is preserved and must remain active through migration. No code or
+tests changed in this inventory slice. **Next action:** inspect the shared `/workspace` execution and
+branch staging path, then implement SPR02.1 so every Project branch uses one main object and the
+same admission fence; update and run focused routing/admission tests.
 
 ## Paused plan — Managed services and sidecar runtime
 

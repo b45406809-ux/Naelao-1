@@ -2,6 +2,7 @@
 
 Status: active design. Implementation and evidence are tracked in the
 [implementation queue](../operations/implementation-queue.md#active-plan--single-project-tier-6-runtime).
+Source inventory and implementation evidence: [SPR progress ledger](single-project-tier-6-runtime-progress.md).
 This plan governs Project container selection for S4 and the S3/U10 execution and erasure callers
 in the [managed services and runtime plan](managed-services-and-sidecar-runtime-plan.md).
 Reuse the existing checkpoints for main runtime admission and historical erasure. This design
