@@ -23,6 +23,17 @@ live membership or grant revocation.
 **Exact next action:** verify a saved remote worker model route cannot dispatch after the current
 parent runtime becomes local-only.
 
+## APW08 follow-up — 2026-11-24 (resumed-worker runtime-route revalidation)
+
+The delegated worker's saved model is restored on resume, then checked against the current parent
+placement policy. A regression fixture with a saved remote route under the current local-only policy
+now confirms the resumed session fails closed before a child request and retains prior token usage.
+The focused delegation-admission suite passes **20/20**, Agents typecheck and `git diff --check` pass.
+This local test does not establish provider capability or deployed route acceptance.
+
+**Exact next action:** test that an old worker checkpoint payload is withheld when the current
+workspace branch head no longer matches its immutable saved pin.
+
 ## APW07 follow-up — 2026-11-24 (source-base validation lineage)
 
 `WorkerIntegrationValidationReceipt` now includes the actual source branch base parent, Coordinator

@@ -10,12 +10,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW08 resumed-worker runtime-route revalidation.** Follow the active APW08 task in the
+**APW08 stale workspace-checkpoint revalidation.** Follow the active APW08 task in the
 [implementation queue](docs/operations/implementation-queue.md#active-plan--adaptive-planner-worker-coordination-and-memory)
 and [adaptive planner plan](docs/research/adaptive-planner-worker-swarm-memory-plan.md). Add a
-focused local recovery test proving a saved remote model route cannot bypass the current local-only
-runtime policy during resume. Keep live capability/provider and real-runtime recovery acceptance
-separate.
+focused local recovery test proving an old worker checkpoint is withheld when the source workspace
+head no longer matches its immutable saved pin. Keep deployed workspace/runtime acceptance separate.
 
 ## Checkout and recovery
 

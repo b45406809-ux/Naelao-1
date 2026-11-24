@@ -260,6 +260,20 @@ describe("host delegation admission", () => {
     expect(f.requests).toHaveLength(0);
     expect(f.workers.get(workerId)).toMatchObject({ status: "failed", attempt: 1, tokens_used: 100 });
   });
+  it("does not dispatch a resumed worker on its saved remote route under local-only policy", async () => {
+    const f = fixture(), workerId = "remote-route-worker";
+    seedRecoverableWorker(f, workerId, 800, 100);
+    const row = f.workers.get(workerId)!;
+    const configuration = JSON.parse(row.configuration_json!) as Record<string, unknown>;
+    configuration.model = "provider/remote-model";
+    row.configuration_json = JSON.stringify(configuration);
+
+    const result = await f.spawn(f.host(), [{ sub_agent_id: workerId, goal: "continue the task", resume: true }]);
+
+    expect(result.results[0]).toMatchObject({ id: workerId, ok: false, status: "failed", error: "private_worker_model_route_changed_on_resume" });
+    expect(f.requests).toHaveLength(0);
+    expect(f.workers.get(workerId)).toMatchObject({ status: "failed", attempt: 2, tokens_used: 100 });
+  });
   it("fences child session start against the exact parent worker attempt", async () => {
     const f = fixture(), parent = f.host();
     const run = f.spawn(parent, [{ goal: "start only while admitted" }]);
