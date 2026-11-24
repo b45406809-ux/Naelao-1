@@ -10,12 +10,12 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW08 resumed-worker scope revalidation.** Follow the active APW08 task in the
+**APW08 resumed-worker runtime-route revalidation.** Follow the active APW08 task in the
 [implementation queue](docs/operations/implementation-queue.md#active-plan--adaptive-planner-worker-coordination-and-memory)
 and [adaptive planner plan](docs/research/adaptive-planner-worker-swarm-memory-plan.md). Add a
-focused local recovery test proving the saved actor and Project scope must still match the current
-parent request before a resumed worker can dispatch. Keep live grant-revocation and real-runtime
-recovery acceptance separate.
+focused local recovery test proving a saved remote model route cannot bypass the current local-only
+runtime policy during resume. Keep live capability/provider and real-runtime recovery acceptance
+separate.
 
 ## Checkout and recovery
 

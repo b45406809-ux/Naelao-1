@@ -222,8 +222,9 @@ that validation receipts omit the already-checked worker source-base pin, so tha
 is now complete: 39/39 across four focused suites, Agents typecheck and `git diff --check` pass.
 The delegation-admission test fixture was also corrected to use its declared local worker model.
 APW08 budget-resume coverage now passes 17/17, with Agents typecheck and `git diff --check` passing.
-Next is saved scope revalidation on resume. Live and other policy/contract/provider/practitioner
-acceptance remains separate.
+Saved actor/Project scope revalidation also passes in the 19/19 delegation suite. Next is current
+runtime-route revalidation on resume. Live and other policy/contract/provider/practitioner acceptance
+remains separate.
 
 ## Paused plan — Managed services and sidecar runtime
 
@@ -861,16 +862,22 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   lesser of its saved budget and the current parent budget, minus prior token use; a zero remainder is
   denied without dispatch. `delegation-admission.test.ts` passes 17/17, Agents typecheck and
   `git diff --check` pass. This is local recovery evidence, not deployed runtime acceptance.
-- [ ] **APW08 — Revalidate saved worker scope on resume.** Add a focused recovery test proving a
-  resumed worker is rejected without dispatch when its saved actor or Project scope differs from the
-  current parent request. Run the delegation-admission suite, Agents typecheck and `git diff --check`.
-  Keep live membership/grant-revocation and real-runtime acceptance separate.
+- [x] **APW08 — Revalidate saved worker scope on resume.** Actor and Project mismatch fixtures prove a
+  resumed worker is rejected before dispatch when its saved scope differs from the current parent
+  request. `delegation-admission.test.ts` passes 19/19, Agents typecheck and `git diff --check` pass.
+  This verifies scope matching locally; live membership/grant revocation and runtime acceptance remain
+  separate.
+- [ ] **APW08 — Revalidate a resumed worker's runtime route.** Add a focused recovery test proving a
+  previously saved remote model cannot dispatch when the current parent runtime is local-only. Run the
+  delegation-admission suite, Agents typecheck and `git diff --check`; keep live capability/provider
+  acceptance separate.
 
 **Latest checkpoint:** APW07 source-base validation lineage is preserved and projected safely; four
-focused suites pass 39/39. APW08 resumed-worker budget recovery now passes 17/17, and Agents typecheck
-passes. Both checkpoints are local evidence; the publication test does not exercise real DO permit
-storage, and no deployed Coordinator or real-runtime recovery acceptance ran. **Exact next action:** add
-a resume test that rejects saved worker actor/Project scope mismatch before any child dispatch.
+focused suites pass 39/39. APW08 budget recovery and actor/Project scope revalidation now pass in the
+delegation suite at 19/19; Agents typecheck passes. This remains local evidence: publication-permit
+storage, live grant revocation, deployed Coordinator and real-runtime recovery were not exercised.
+**Exact next action:** test that resume rejects a saved remote worker route under the current
+local-only parent policy before any child dispatch.
 
 **APW checkpoint history.** APW06 goal decision-hold remediation adds a status explanation with
 exact decision references and revisions plus a direct link to the Project decision review panel. It
@@ -906,7 +913,7 @@ contain substantial implementation. Activate one entry at a time. Copy only the 
 into the active checklist. Keep finished task checkboxes and evidence in the queue or its linked
 ledgers when moving to another plan.
 
-1. [ ] **Active; APW08 resumed-worker scope revalidation.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 reuse their owning plans.
+1. [ ] **Active; APW08 resumed-worker runtime-route revalidation.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 reuse their owning plans.
 2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
 3. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
 4. [ ] **Paused; local acceptance complete, live acceptance blocked.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#paused-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.

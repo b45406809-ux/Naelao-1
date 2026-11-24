@@ -12,6 +12,17 @@ no real-runtime interruption/recovery acceptance ran.
 **Exact next action:** test that resume rejects a saved worker session when its actor or Project scope
 no longer matches the current parent request, before dispatch.
 
+## APW08 follow-up — 2026-11-24 (resumed-worker scope revalidation)
+
+Recovery fixtures now cover both actor and Project scope drift in the saved worker configuration.
+Resume returns `worker_session_scope_mismatch`, leaves the prior failed attempt and usage intact, and
+does not issue a child request. The focused delegation-admission suite passes **19/19**, Agents
+typecheck and `git diff --check` pass. This tests current scope matching locally; it does not simulate
+live membership or grant revocation.
+
+**Exact next action:** verify a saved remote worker model route cannot dispatch after the current
+parent runtime becomes local-only.
+
 ## APW07 follow-up — 2026-11-24 (source-base validation lineage)
 
 `WorkerIntegrationValidationReceipt` now includes the actual source branch base parent, Coordinator
