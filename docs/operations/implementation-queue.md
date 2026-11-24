@@ -1001,9 +1001,21 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
     from the run, returns one exact decision revision with its read-time workspace status, and denies
     planner `Read`, aliases, and virtual shell file inspection. Four focused suites pass 49/49;
     Agents typecheck and `git diff --check` pass. Pushed as `fee19873`.
-  - [ ] Continue the caller audit through direct tool aliases, virtual CLI pipelines, Code Mode
-    dispatch, stored commands and resumed sessions. Record each surviving read/discovery caller and
-    its exact host replacement before changing the next path.
+  - [x] **APW01/APW02 — Direct alias, virtual shell and resume audit.** Confirmed persistent and
+    nested planner scope is host-set in `NaelaoAgentDO`; delegated planner identity is included in
+    the signed delegation contract and revalidated on resume. `ScriptToolSurface.run` gates raw
+    operation names before dispatch, Code Mode authorization maps `storage.read` through the same
+    gate, shell pipelines authorize each command, redirects/listings authorize file access, and
+    saved commands are authorized before their source is loaded. Added regressions for `code.execute_bash`,
+    pipeline and input-redirection reads, saved-command lookup, Code Mode tool caps and signed planner
+    mutation. Five focused suites pass 53/53; Agents typecheck and `git diff --check` pass. Local
+    checkpoint pending. No further broad planner file/domain reader was found on these paths.
+  - [ ] **APW01/APW02 — Bounded exact workspace excerpt.** Implement a Project-scoped read for one
+    normalized path, immutable revision and line range using the coordinator-backed revision reader.
+    Include strict byte/line caps and trusted per-run cumulative admission; test stale/missing/deleted,
+    binary/oversized, traversal and repeated-read cases. Keep it unavailable where pin/read authority
+    cannot be revalidated. Then audit thread/task/evidence discovery callers and migrate any broad
+    investigation to the existing worker route.
 - [ ] **APW02 — Use one scoped investigation worker by default and fan out independent tasks.**
   Reuse existing delegation, task DAG, worker follow-up and evidence paths. Verify dependent context
   stays with one worker, independent assignments avoid overlap, and partial results stay visible.
@@ -1016,11 +1028,11 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
   their existing prerequisites.
 
 **Latest checkpoint:** The first exact Project decision lookup and planner file-read denial are
-verified and pushed as `fee19873`. Four focused suites pass 49/49; Agents typecheck and
-`git diff --check` pass. The full caller audit remains open. **Exact next action:** trace direct tool
-aliases, virtual CLI pipelines, Code Mode dispatch, stored commands and resumed sessions for any
-remaining planner workspace/domain inspection path; record callers and the next locally verifiable
-host-boundary slice.
+verified and pushed as `fee19873`. A local alias/pipeline/Code Mode/stored-command/resume audit slice
+passes five focused suites 53/53, Agents typecheck and `git diff --check`; it is awaiting checkpoint
+push. **Exact next action:** implement the bounded exact Project workspace excerpt with immutable
+revision, line/byte caps and trusted cumulative per-run admission, then test invocation and denial
+paths before widening the caller audit.
 
 ## Ordered plan list
 

@@ -78,9 +78,9 @@ describe("Batch 04 universal kernel", () => {
   });
 
   it.each(["space", "project"] as const)("strips file mutation tools from a %s planner before disclosure and invocation", async (plannerScope) => {
-    const put = vi.fn(), get = vi.fn();
+    const put = vi.fn(), get = vi.fn(async () => null);
     const env: ScriptEngineEnv = {
-      scriptsBucket: { put, get: vi.fn(async () => null), head: vi.fn(async () => null), list: vi.fn(async () => ({ objects: [], truncated: false })) } as unknown as R2Bucket,
+      scriptsBucket: { put, get, head: vi.fn(async () => null), list: vi.fn(async () => ({ objects: [], truncated: false })) } as unknown as R2Bucket,
       spaceId: "s", projectId: "p", agentId: "a", tenantId: "t", codeGrantIsActive: async () => true,
     };
     const tools = new ScriptToolSurface(env, ["r2-workspace", "code-exec", "project-journal"], { plannerScope });
@@ -100,15 +100,24 @@ describe("Batch 04 universal kernel", () => {
       await expect(tools.run(readName, { path: "src/a.ts" }))
         .resolves.toMatchObject({ ok: false, error: expect.stringContaining("planner_capability_boundary") });
     }
+    await expect(tools.run("code.execute_bash", { commands: "cat src/a.ts" }))
+      .resolves.toMatchObject({ ok: false, error: expect.stringContaining("planner_capability_boundary") });
     if (plannerScope === "project") {
       await expect(tools.run("Bash", { command: "naelao project decision decision-42 --revision 3" }))
         .resolves.toMatchObject({ ok: true, output: { ok: false, reason: "project_journal_decision_not_found" } });
+      await expect(tools.run("Bash", { command: "naelao project decision decision-42 --revision 3 | cat src/a.ts" }))
+        .resolves.toMatchObject({ ok: false, error: expect.stringContaining("shell_permission_denied:cat") });
     }
     await expect(tools.run("Bash", { command: "cat src/a.ts" }))
       .resolves.toMatchObject({ ok: false });
+    await expect(tools.run("Bash", { command: "printf safe < src/a.ts" }))
+      .resolves.toMatchObject({ ok: false, error: expect.stringContaining("shell_permission_denied:src/a.ts") });
+    await expect(tools.run("Bash", { command: "saved-inspector" }))
+      .resolves.toMatchObject({ ok: false, error: expect.stringContaining("shell_permission_denied:saved-inspector") });
     const scope = { tenantId: "t", spaceId: "s", projectId: "p", agentId: "a" };
     // The isolated-code broker must enforce the same boundary.
     await expect(env.codeAuthorize!(scope, "storage.read")).resolves.toBe(false);
+    await expect(env.codeAuthorize!(scope, "tool:project_journal.read_decision")).resolves.toBe(plannerScope === "project");
     await expect(env.codeAuthorize!(scope, "storage.write")).resolves.toBe(false);
     expect(put).not.toHaveBeenCalled();
     expect(get).not.toHaveBeenCalled();

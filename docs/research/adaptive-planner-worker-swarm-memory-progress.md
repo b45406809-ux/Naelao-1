@@ -11,10 +11,23 @@ the planner's virtual shell allowlist. Isolated Code Mode `storage.read` receive
 Workers retain their existing file-read path.
 
 Four focused suites pass **49/49**; Agents typecheck and `git diff --check` pass. This is the first
-host-enforced lookup slice, not completion of the planner investigation audit. **Exact next action:**
-continue tracing direct tool calls, virtual CLI aliases/pipelines, Code Mode and saved scripts for
-remaining planner workspace or domain-read paths; record supported callers and select the next
-independently verifiable boundary slice.
+host-enforced lookup slice, not completion of the planner investigation audit.
+
+**Alias and resume audit (local):** persistent and nested planner scope is host-set in
+`NaelaoAgentDO`; delegated planner identity is signed and revalidated on resume. `ScriptToolSurface.run`
+checks raw operation names before dispatch; Code Mode `storage.read` maps through that same check;
+virtual shell pipelines authorize each command, redirections/listings authorize file access, and
+saved commands are authorized before their source is loaded. Added regressions for Bash aliases,
+pipeline and input-redirection reads, saved command lookup, Code Mode tool caps and signed planner
+mutation. Five focused suites pass **53/53**, Agents typecheck and `git diff --check` pass. No further
+broad planner file/domain reader appeared on these paths. This local test/documentation slice is
+awaiting checkpoint push.
+
+**Exact next action:** implement a Project-scoped exact workspace excerpt over one normalized path,
+immutable revision and bounded line range using the coordinator-backed revision reader. Add strict
+line/byte bounds and trusted cumulative per-run admission before exposing it; verify stale, missing,
+deleted, binary, oversized, traversal and repeated-read cases. Then continue the thread/task/evidence
+caller audit and route any broad investigation through the existing worker path.
 
 ## APW07 checkpoint — authorized Goal Activity route projection
 

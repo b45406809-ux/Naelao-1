@@ -12,7 +12,7 @@ describe("host-signed worker identity", () => {
     const longRunToken = await issueDelegationContract(longRun, "test-host-secret");
     await verifyDelegationContract(longRun, longRunToken, "test-host-secret");
     for (const patch of [{ actorId: "other" }, { projectId: undefined }, { agentId: "other" }, { maxTokens: 2_000_001 },
-      { depth: 3, planner: false }, { parentDoId: "other" }, { maxTier: 6 }, { localOnly: false }, { localModelMachine: "other" }, { filePaths: ["src/other.ts"] }, { runtimeCapability: "other-runtime" },
+      { depth: 3, planner: false }, { planner: false }, { parentDoId: "other" }, { maxTier: 6 }, { localOnly: false }, { localModelMachine: "other" }, { filePaths: ["src/other.ts"] }, { runtimeCapability: "other-runtime" },
       { workerCapabilities: { enabledPrebuilts: ["code-exec"], selectedSkills: [] } }]) {
       await expect(verifyDelegationContract({ ...contract, ...patch } as DelegationContract, token, "test-host-secret")).rejects.toThrow();
     }
