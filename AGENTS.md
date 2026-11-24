@@ -12,13 +12,13 @@ session, or a specific blocker leaves no ready work.
 
 **SPR03.4 — Reconcile extension native tools with Project runtime admission.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
-and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). SPR03.1 moved
-Project video and SPR03.3 moved Project PDF rendering to the stable runtime with host-created
-capability admission. Trace extension-declared native processing callers and their Project grants,
-execution scopes, image pins and Durable Object names. Route Project native processing through the
-same Project identity only when the host has authorized the operation; preserve installation-scoped
-sidecars and explicitly selected Agent37/tunnel runtimes. Keep rollout disabled. Then continue SPR04
-and the local acceptance review.
+and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). SPR03.1–SPR03.3
+route Project video audio, frame extraction and scanned-PDF rendering through the stable main runtime
+with host-created capability admission. Projectless video and scanned PDF fail before body reads or
+specialist allocation; ordinary audio and image OCR stay container-free. Trace extension-declared
+native processing callers and their Project grants, execution scopes, image pins and Durable Object
+names. Preserve installation image policy and explicitly selected Agent37/tunnel runtimes. Keep
+rollout disabled; continue SPR04 and local acceptance after this caller review.
 
 ## Checkout and recovery
 

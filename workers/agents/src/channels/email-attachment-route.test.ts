@@ -323,18 +323,15 @@ describe("explicit task-scoped email image OCR endpoint", () => {
     expect(unsupported.ai.run).not.toHaveBeenCalled();
   });
 
-  it("keeps Projectless Space Assistant PDF OCR on the existing document sandbox path", async () => {
-    const pdf = new TextEncoder().encode("%PDF-1.4\nfixture");
-    const state = makeOcrEnv({ mime: "application/pdf", bytes: pdf });
+  it("rejects Projectless scanned PDF OCR before reading the body or starting DocumentSandbox", async () => {
+    const state = makeOcrEnv({ mime: "application/pdf", bytes: new TextEncoder().encode("%PDF-1.4\nfixture") });
     const response = await ocrAttachment(state.env);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      mime_type: "application/pdf", pages: [{ page: 1, text: "Invoice 42\nTotal $10.00" }],
-      text: expect.stringContaining("[UNTRUSTED OCR FROM SCANNED PDF"),
-    });
-    expect(state.documentSandboxCalls()).toBe(1);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "scanned_pdf_project_required" });
+    expect(state.r2BodyReads()).toBe(0);
+    expect(state.documentSandboxCalls()).toBe(0);
     expect(state.projectRuntimeCalls()).toBe(0);
-    expect(state.ai.run).toHaveBeenCalledTimes(1);
+    expect(state.ai.run).not.toHaveBeenCalled();
   });
 
   it("renders Project PDF pages in the stable main runtime with host-owned capability admission", async () => {

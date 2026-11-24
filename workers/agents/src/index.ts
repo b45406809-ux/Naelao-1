@@ -9241,9 +9241,8 @@ app.post("/internal/attachments/ocr", async (c) => {
     if (mimeType === "application/pdf") {
       if (object.size > EMAIL_PDF_MAX_BYTES) return c.json({ error_code: "attachment_pdf_too_large", max_bytes: EMAIL_PDF_MAX_BYTES }, 413);
       const projectId = body.projectId;
-      const projectRuntimeNamespace = projectId
-        ? c.env.DYNAMIC_CONTAINERS_ENABLED === "true" ? c.env.DYNAMIC_SANDBOX : c.env.TOOL_SANDBOX
-        : c.env.DOCUMENT_SANDBOX;
+      if (!projectId) return c.json({ error_code: "scanned_pdf_project_required" }, 409);
+      const projectRuntimeNamespace = c.env.DYNAMIC_CONTAINERS_ENABLED === "true" ? c.env.DYNAMIC_SANDBOX : c.env.TOOL_SANDBOX;
       if (!projectRuntimeNamespace) return c.json({ error_code: "scanned_pdf_ocr_unavailable" }, 503);
       const initialAttemptAdmitted = await reserveEmailOcrAttempt(c.env.PLATFORM_DB, {
         id: crypto.randomUUID(), tenantId, spaceId: body.spaceId, now: new Date(),
@@ -9251,22 +9250,21 @@ app.post("/internal/attachments/ocr", async (c) => {
       if (!initialAttemptAdmitted) return c.json({ error_code: "attachment_ocr_daily_limit_reached", max_attempts_per_day: 20 }, 429);
       const inputBytes = new Uint8Array(await object.arrayBuffer());
       const scope: ContainerInvocationScope = {
-        tenantId, spaceId: body.spaceId,
-        ...(projectId ? { projectId, requiredCapabilities: ["document.pdf_render"] as const } : {}),
+        tenantId, spaceId: body.spaceId, projectId, requiredCapabilities: ["document.pdf_render"],
         actorId: "attachment-reader", agentId: body.agentId ?? "attachment-reader", runId: body.taskId,
         executionId: crypto.randomUUID(), deadline: Date.now() + 50_000, timeoutMs: 45_000,
       };
       try { validateContainerScope(scope); } catch { return c.json({ error_code: "scanned_pdf_scope_invalid" }, 400); }
-      const runtimeName = projectId ? sandboxInstanceName(body.spaceId, projectId) : `sandbox:${body.spaceId}:_assistant`;
+      const runtimeName = sandboxInstanceName(body.spaceId, projectId);
       const sandbox = projectRuntimeNamespace.get(projectRuntimeNamespace.idFromName(runtimeName));
-      const renderResponse = await sandbox.fetch(new Request(projectId ? "http://project-main-runtime/pdf/render" : "http://document-sandbox/pdf/render", {
+      const renderResponse = await sandbox.fetch(new Request("http://project-main-runtime/pdf/render", {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "x-naelao-tenant-id": tenantId,
           "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
           "x-naelao-container-scope": JSON.stringify(scope),
-          ...(projectId ? { "x-naelao-runtime-object-name": runtimeName } : {}),
+          "x-naelao-runtime-object-name": runtimeName,
           "x-naelao-execution-id": scope.executionId,
           "x-naelao-timeout-ms": String(scope.timeoutMs),
         },

@@ -235,8 +235,10 @@ with Project context, the authenticated OCR route now selects DynamicSandbox whe
 main `TOOL_SANDBOX` binding otherwise, and targets the stable `sandbox:<space>:<project>` identity.
 Its host-created attachment-reader scope requests `document.pdf_render`; the `/pdf/render` body and
 runtime object header carry the same Space and Project identity. Dynamic capability/profile errors
-are surfaced to the caller. Projectless Space Assistant PDFs retain their existing
-`DOCUMENT_SANDBOX` identity until SPR04 addresses direct specialist retirement.
+are surfaced to the caller. A final source review caught the old Projectless Space Assistant fallback
+still creating `DOCUMENT_SANDBOX`; that path now returns `scanned_pdf_project_required` before reading
+the PDF body, reserving OCR quota or calling any runtime. Image OCR and ordinary PDF text extraction
+remain container-free. Historical DocumentSandbox cleanup registration is unchanged.
 
 The route retains owner opt-in, Space egress and exact task attachment checks, the shared daily OCR
 quota, 1 MiB PDF input ceiling, five-page render window, 8 MiB bounded render response, per-page
