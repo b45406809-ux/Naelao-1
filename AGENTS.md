@@ -8,6 +8,15 @@ concrete action in the queue. A status summary, verified checkpoint or push is a
 result. Keep working through ready tasks until the queue is complete, the user redirects the
 session, or a specific blocker leaves no ready work.
 
+## Current task
+
+**APW07 source-base lineage in validation receipts.** Follow the active APW07 task in the
+[implementation queue](docs/operations/implementation-queue.md#active-plan--adaptive-planner-worker-coordination-and-memory)
+and the [resumable-workers plan](docs/research/resumable-workers-durable-workflows-and-branches-plan.md).
+Carry the exact worker source-branch base parent, revision and manifest hash into the durable
+validation receipt and its scoped task-lineage projection. Add focused local regression coverage for
+the persisted/projected pins; keep deployed Coordinator acceptance separate.
+
 ## Checkout and recovery
 
 1. Find the Naelao checkout. Check its remote, branch, working tree and local-only commits.

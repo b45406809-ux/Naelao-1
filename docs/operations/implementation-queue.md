@@ -214,11 +214,12 @@ policy, authority, jurisdiction, price and deployment dependencies remain record
 AgentPort and AgentPhone reviews also found no source-only work without verified provider/API or
 commercial evidence. The first ready task was the requested WhatsApp member-phone regression suite;
 it is now complete at 20/20, with Agents typecheck and `git diff --check` passing. The post-test
-review found no independent local task among the remaining unchecked plans. Their specific policy,
-product-contract, jurisdiction, provider/API, pricing, deployment and practitioner dependencies are
-recorded in the corresponding plan sections and ledgers. **Exact next action:** resume the first
-applicable blocked item when its recorded dependency changes; no live migration, provider action or
-deployment was authorized or verified by this checkpoint.
+review initially found no independent local task. A final APW07 audit selected a barrier-driven
+local race regression for cancellation after publication authorization while the Artifact Worker
+request is pending; it now passes 16/16. This verifies the integration helper's host contract only,
+not real Agent DO permit storage or deployed Coordinator behavior. A follow-up source review found
+that validation receipts omit the already-checked worker source-base pin, so that local lineage task
+is active next. Live and other policy/contract/provider/practitioner acceptance remains separate.
 
 ## Paused plan — Managed services and sidecar runtime
 
@@ -609,11 +610,12 @@ separate authorization to apply migration `0289`, configure a test account and a
 phone acceptance.
 
 **Readiness review after the local tests:** all remaining unchecked plan items were rechecked against
-their current queue entries and ledgers. No independent local implementation or verification is
-ready: remaining work depends on policy/product contracts, jurisdiction/provider discovery, external
-pricing/API evidence, live deployment access or practitioner validation. The exact dependencies and
-resume conditions are recorded in each plan section. There is no current task pointer until one of
-those dependencies changes.
+their current queue entries and ledgers. The first pass found no independent local task; a final APW07
+review identified a barrier-driven publication-race regression that does not require external policy
+or provider access, so the queue now selects that task. Other remaining work depends on
+policy/product contracts, jurisdiction/provider discovery, external pricing/API evidence, live
+deployment access or practitioner validation. Their exact dependencies and resume conditions are
+recorded in each plan section.
 
 ## Paused plan — Commercial cleaning Space template
 
@@ -723,7 +725,7 @@ an approved owner policy. The APW plan remains parked because its open cost, ret
 acceptance work has explicit dependencies, while APW07–APW09 overlaps owning plans. The next plan
 in the ordered list is S/U.
 
-## Parked plan — Adaptive planner, worker coordination and memory
+## Active plan — Adaptive planner, worker coordination and memory
 
 **Adaptive planner, worker coordination and memory.** See the [plan](../research/adaptive-planner-worker-swarm-memory-plan.md)
 and [progress ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). APW01 was
@@ -828,8 +830,37 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **Blocked · APW06 — Real-runtime/deployed acceptance.** Resume with staging runtime access and
   separately accepted pause/cancel and task-control behavior; do not treat local/mock UI evidence
   as live acceptance.
-- [ ] **APW07–APW09 — Integration, recovery, and evaluation.** Track work through PW, EP, workflow,
-  platform, SC and TBR entries where they own the implementation. Link back to that evidence.
+- [ ] **APW07–APW09 — Cross-plan integration, recovery, and evaluation.** The barrier-driven
+  helper-level publication-race test is complete below. APW07's current local task carries the exact
+  source-branch base pin into validation receipts and their task-lineage projection. Remaining APW07
+  work needs semantic/interface conflict classification and broader integrated behavior evidence
+  through PW/EP. The local Node fixture does not exercise the parent DO's durable publication-permit
+  storage against a real Coordinator DO; resume that acceptance with authorized multi-DO staging
+  access. APW08 still needs approved
+  pause/resume/approval authority, stale authorization/budget recovery coverage and adaptive
+  topology declarations in the owning SDK/template plans. APW09 still needs a frozen representative
+  quality/economics evaluation, complete provider-charge reconciliation and authorized real-runtime
+  acceptance. Track each slice in PW, EP, workflow, platform, SC and TBR as applicable; see the APW
+  ledger for the requirement mapping.
+- [x] **APW07 — Barrier-test cancellation during an authorized publication request.**
+  `worker-integration-validation.test.ts` pauses the simulated Artifact Worker request after
+  `authorizePublication` returns, cancels while that request is pending, then releases it and checks
+  the publication result is recorded without claiming rollback or replay. The focused suite passes
+  16/16; Agents typecheck and `git diff --check` pass. This is local helper/host-contract evidence,
+  not real DO storage concurrency or deployed Coordinator acceptance.
+- [ ] **APW07 — Preserve the worker source-base pin in validation lineage.** Add the exact source
+  base parent branch, Coordinator revision and manifest hash to `WorkerIntegrationValidationReceipt`
+  and the sanitized `goal-workspace-lineage.ts` projection. Test the success and invalid/stale
+  projection cases, then run the focused validation/lineage suites, Agents typecheck and
+  `git diff --check`. The current source checks this pin before integration but omits it from the
+  durable validation receipt.
+
+**Latest checkpoint:** the barrier-driven cancellation test pauses the simulated Artifact Worker
+publication request after the helper's authorization callback, cancels while the request is pending,
+and confirms the accepted publication result is retained. `worker-integration-validation.test.ts`
+passes 16/16; Agents typecheck and `git diff --check` pass. This is host/helper local evidence only.
+**Exact next action:** add the source-base parent/revision/hash to the durable validation receipt and
+its task-lineage projection, then test invalid pins remain excluded.
 
 **APW checkpoint history.** APW06 goal decision-hold remediation adds a status explanation with
 exact decision references and revisions plus a direct link to the Project decision review panel. It
@@ -865,7 +896,7 @@ contain substantial implementation. Activate one entry at a time. Copy only the 
 into the active checklist. Keep finished task checkboxes and evidence in the queue or its linked
 ledgers when moving to another plan.
 
-1. [ ] **Parked.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 overlap later plans.
+1. [ ] **Active; APW07 source-base validation-receipt lineage.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 reuse their owning plans.
 2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
 3. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
 4. [ ] **Paused; local acceptance complete, live acceptance blocked.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#paused-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.

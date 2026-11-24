@@ -11,7 +11,7 @@ import {
 const hash = (character: string) => character.repeat(64);
 const commit = (character: string) => character.repeat(40);
 
-function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-advanced" | "validator-changed" | "validation-mutated" | "cancel-during-validation" | "cancel-before-publication-permit" | "cancel-after-publication-permit" | "publication-outcome-unknown" = "pass", config: string | null = '{"schema_version":1,"command":"pnpm test"}') {
+function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-advanced" | "validator-changed" | "validation-mutated" | "cancel-during-validation" | "cancel-before-publication-permit" | "cancel-after-publication-permit" | "cancel-during-publication" | "publication-outcome-unknown" = "pass", config: string | null = '{"schema_version":1,"command":"pnpm test"}') {
   const target: WorkerIntegrationHead = run === "target-advanced"
     ? { branch: "main", commitId: commit("c"), revision: 3, manifestHash: hash("c") }
     : { branch: "main", commitId: commit("a"), revision: 2, manifestHash: hash("a") };
@@ -28,8 +28,19 @@ function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-adva
   const validation: WorkerIntegrationHead = { branch: "race/worker-validation/op", commitId: candidate.commitId, revision: candidate.revision, manifestHash: candidate.manifestHash,
     branchBase: { parentBranch: candidate.branch, revision: candidate.revision, manifestHash: candidate.manifestHash } };
   const heads = new Map<string, WorkerIntegrationHead>([[target.branch, target], [source.branch, source]]);
+  const timeline: string[] = [];
+  let signalPublicationStarted!: () => void;
+  let releasePublication!: () => void;
+  const publicationStarted = new Promise<void>(resolve => { signalPublicationStarted = resolve; });
+  const publicationGate = new Promise<void>(resolve => { releasePublication = resolve; });
   const publishCandidate = vi.fn(async () => {
     if (run === "cancel-after-publication-permit") active = false;
+    if (run === "cancel-during-publication") {
+      timeline.push("coordinator-requested");
+      signalPublicationStarted();
+      await publicationGate;
+      timeline.push("coordinator-accepted");
+    }
     if (run === "publication-outcome-unknown") {
       heads.set(target.branch, { ...target, commitId: commit("d"), revision: target.revision + 1, manifestHash: hash("d") });
       throw new Error("response outcome unavailable");
@@ -39,6 +50,7 @@ function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-adva
   const saveReceipt = vi.fn(async () => {});
   let active = true;
   const authorizePublication = vi.fn(async () => {
+    timeline.push("permit-authorized");
     if (run === "cancel-before-publication-permit") active = false;
     if (!active) throw new Error("worker_cancelled");
   });
@@ -61,7 +73,7 @@ function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-adva
       if (run === "cancel-during-validation") active = false;
       if (run === "stale-target") heads.set(target.branch, { ...target, revision: 3, manifestHash: hash("c") });
       if (run === "validation-mutated") heads.set(validation.branch, { ...validation, commitId: commit("e"), manifestHash: hash("e"), revision: validation.revision + 1 });
-      return run === "pass" || run === "stale-target" || run === "target-advanced" || run === "cancel-before-publication-permit" || run === "cancel-after-publication-permit" || run === "publication-outcome-unknown"
+      return run === "pass" || run === "stale-target" || run === "target-advanced" || run === "cancel-before-publication-permit" || run === "cancel-after-publication-permit" || run === "cancel-during-publication" || run === "publication-outcome-unknown"
         ? { status: "passed", exitCode: 0, durationMs: 12 }
         : { status: "failed", exitCode: 1, durationMs: 12, reason: "api_schema_incompatibility" };
     },
@@ -70,7 +82,8 @@ function fixture(run: "pass" | "api-schema-fail" | "stale-target" | "target-adva
     readPublicationHead: async branch => heads.get(branch) ?? null,
     saveReceipt,
   };
-  return { host, authorizePublication, publishCandidate, saveReceipt, mergeCandidate, target, source, sourceBase, cancel: () => { active = false; } };
+  return { host, authorizePublication, publishCandidate, saveReceipt, mergeCandidate, target, source, sourceBase, timeline,
+    publicationStarted, releasePublication: () => releasePublication(), cancel: () => { timeline.push("cancel-requested"); active = false; } };
 }
 
 const input = {
@@ -137,6 +150,23 @@ describe("checked worker integration", () => {
     const result = await runCheckedWorkerIntegration(pinnedInput(f), f.host);
     expect(f.authorizePublication).toHaveBeenCalledOnce();
     expect(f.publishCandidate).toHaveBeenCalledOnce();
+    expect(result.status).toBe("published");
+    expect(result.receipt).toMatchObject({ status: "passed", publicationStatus: "published" });
+    expect(f.saveReceipt).toHaveBeenLastCalledWith(expect.objectContaining({ status: "passed", publicationStatus: "published" }));
+  });
+
+  it("records the Coordinator outcome when cancellation arrives during an authorized publication request", async () => {
+    const f = fixture("cancel-during-publication");
+    const pending = runCheckedWorkerIntegration(pinnedInput(f), f.host);
+    await f.publicationStarted;
+    expect(f.authorizePublication).toHaveBeenCalledOnce();
+    expect(f.publishCandidate).toHaveBeenCalledOnce();
+
+    f.cancel();
+    f.releasePublication();
+    const result = await pending;
+
+    expect(f.timeline).toEqual(["permit-authorized", "coordinator-requested", "cancel-requested", "coordinator-accepted"]);
     expect(result.status).toBe("published");
     expect(result.receipt).toMatchObject({ status: "passed", publicationStatus: "published" });
     expect(f.saveReceipt).toHaveBeenLastCalledWith(expect.objectContaining({ status: "passed", publicationStatus: "published" }));

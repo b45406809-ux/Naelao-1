@@ -1,5 +1,23 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW07 follow-up — 2026-11-24 (cancellation during pending publication)
+
+The checked integration helper now has a barrier-driven local regression for cancellation after
+`authorizePublication` succeeds but while the simulated Artifact Worker request is pending. The test
+releases the request after cancellation, then asserts the observed published result is retained in
+the validation receipt without claiming rollback or replay. The focused
+`worker-integration-validation.test.ts` suite passes **16/16**, Agents typecheck and `git diff --check`
+pass.
+
+This verifies the helper's host contract only. The Node fixture does not exercise the parent Agent
+DO's durable publication-permit SQL or an actual Artifact/Workspace Coordinator DO race. Keep that
+multi-DO/deployed acceptance separate; it needs authorized staging bindings and a real runtime
+receipt.
+
+**Exact next action:** add the source branch's immutable base parent/revision/manifest hash to the
+durable `WorkerIntegrationValidationReceipt` and the safe Goal Activity lineage projection, then
+test both valid projection and invalid/stale omission.
+
 ## APW06 follow-up — 2026-11-23 (authorized conversation stop; Project controls remain blocked)
 
 The existing `StopDurableTaskButton` passes the task ID to `cancelRun` only for processing tasks
