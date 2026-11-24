@@ -46,6 +46,16 @@ this is not deployed workspace acceptance.
 capability and SDK/template topology requirements against current callers and owning ledgers. Complete
 any independent local gap before recording exact external blockers.
 
+## APW08 follow-up — 2026-11-24 (current Project access at the execution gate)
+
+The resumed child calls `enforceRunGates` before execution, which queries the current Project
+assistant-access contract. New direct gate tests prove both a current denial and an unavailable
+authority fail closed: **2/2**. Agents typecheck and `git diff --check` pass. The tests do not simulate
+actual child-DO dispatch, a live membership-revocation race or deployed runtime behavior.
+
+**Exact next action:** finish the APW08/PW/EP caller and contract readiness review, implement any
+independent local gap and record exact authority, policy or deployment dependencies for the rest.
+
 ## APW07 follow-up — 2026-11-24 (source-base validation lineage)
 
 `WorkerIntegrationValidationReceipt` now includes the actual source branch base parent, Coordinator

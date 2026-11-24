@@ -10,12 +10,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW08 recovery and topology readiness review.** Follow the active APW08 task in the
+**APW08 current-access revalidation on resume.** Follow the active APW08 task in the
 [implementation queue](docs/operations/implementation-queue.md#active-plan--adaptive-planner-worker-coordination-and-memory)
-and [adaptive planner plan](docs/research/adaptive-planner-worker-swarm-memory-plan.md). Compare the
-remaining APW08 recovery/runtime-capability and SDK/template topology requirements with current
-callers and ledgers; carry out any remaining ready local work and record exact blockers for the rest.
-Keep deployed workspace/runtime acceptance separate.
+and [adaptive planner plan](docs/research/adaptive-planner-worker-swarm-memory-plan.md). Add focused
+run-gate regression coverage proving current Project assistant access is checked for a resumed child
+and revoked or unavailable access fails closed. Keep live grant and real-runtime acceptance separate.
 
 ## Checkout and recovery
 

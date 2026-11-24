@@ -225,8 +225,9 @@ APW08 budget-resume coverage now passes 17/17, with Agents typecheck and `git di
 Saved actor/Project scope revalidation also passes in the 19/19 delegation suite. Current
 runtime-route revalidation on resume passes in the 20/20 suite. The stale workspace-checkpoint pin
 regression now passes in the 22/22 delegation suite, Agents typecheck and `git diff --check` pass.
-Next is an APW08 caller/ledger readiness review. Live and other policy/contract/provider/practitioner
-acceptance remains separate.
+The current Project assistant-access gate also passes revoked/unavailable regression cases (2/2),
+with Agents typecheck and `git diff --check` clean. Next is the APW08/PW/EP caller and contract
+readiness review. Live and other policy/contract/provider/practitioner acceptance remains separate.
 
 ## Paused plan — Managed services and sidecar runtime
 
@@ -842,9 +843,10 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   APW07 work needs semantic/interface conflict classification and broader integrated behavior evidence
   through PW/EP. The local Node fixture does not exercise the parent DO's durable publication-permit
   storage against a real Coordinator DO; resume that acceptance with authorized multi-DO staging
-  access. APW08 still needs approved
-  pause/resume/approval authority, stale authorization/budget recovery coverage and adaptive
-  topology declarations in the owning SDK/template plans. APW09 still needs a frozen representative
+  access. APW08 local budget, saved-scope, current-route, workspace-pin and access-gate tests are
+  complete. User pause/resume/approval still needs an owner/admin authority and durable
+  status/effect-reconciliation contract; template/SDK topology declarations need a reviewed
+  reusable-definition contract. Real interruption acceptance needs the deployed runtime. APW09 still needs a frozen representative
   quality/economics evaluation, complete provider-charge reconciliation and authorized real-runtime
   acceptance. Track each slice in PW, EP, workflow, platform, SC and TBR as applicable; see the APW
   ledger for the requirement mapping.
@@ -878,18 +880,23 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   stale-checkpoint notice is used instead. `delegation-admission.test.ts` passes 22/22, Agents
   typecheck and `git diff --check` pass. Coordinator pin reads are mocked; live workspace acceptance
   remains separate.
-- [ ] **APW08 — Readiness review of remaining recovery and topology requirements.** Compare current
-  caller/ledger evidence for resume authorization, deadline, runtime capability, source/target pinning,
-  and adaptive SDK/template topology declarations. Complete each independent local gap or record its
-  exact policy, contract or deployment blocker before advancing.
+- [x] **APW08 — Revalidate current Project access on resumed worker execution.** The child execution
+  gate reads current Project assistant access for each attempt; direct gate tests prove revoked access
+  and an unavailable authority both fail closed. `worker-run-access-revalidation.test.ts` passes 2/2,
+  Agents typecheck and `git diff --check` pass. The unit test does not simulate actual child-DO
+  dispatch, live membership revocation or deployed acceptance.
+- [ ] **APW08 — Caller and contract readiness review.** Reconcile remaining pause/resume/approval
+  controls, deadline/recovery semantics, runtime capability checks, adaptive SDK/template topology
+  declarations and live interruption acceptance against source and owning ledgers. Complete any
+  independent local task; record exact policy/contract/deployment dependencies for blocked work.
 
 **Latest checkpoint:** APW07 source-base validation lineage is preserved and projected safely; four
 focused suites pass 39/39. APW08 budget recovery, actor/Project scope, saved-route and workspace-pin
 revalidation pass in `delegation-admission.test.ts` at 22/22; Agents typecheck passes. This remains
 local evidence: publication-permit storage, live grant revocation, actual Coordinator pin reads and
-real-runtime recovery were not exercised. **Exact next action:** reconcile the remaining APW08 resume
-authorization/deadline/capability and SDK/template topology requirements against current source and
-owning ledgers; implement any ready local gap before recording external blockers.
+real-runtime recovery were not exercised. **Exact next action:** finish the APW08/PW/EP caller and
+contract readiness review; implement any remaining independent local gap and record exact dependencies
+for policy, ownership and live acceptance.
 
 **APW checkpoint history.** APW06 goal decision-hold remediation adds a status explanation with
 exact decision references and revisions plus a direct link to the Project decision review panel. It
@@ -925,7 +932,7 @@ contain substantial implementation. Activate one entry at a time. Copy only the 
 into the active checklist. Keep finished task checkboxes and evidence in the queue or its linked
 ledgers when moving to another plan.
 
-1. [ ] **Active; APW08 recovery and topology readiness review.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 reuse their owning plans.
+1. [ ] **Active; APW08 current-access revalidation on resume.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 reuse their owning plans.
 2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
 3. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
 4. [ ] **Paused; local acceptance complete, live acceptance blocked.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#paused-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.
