@@ -190,14 +190,16 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
   owner/user routes, project or machine grants, scoped filesystem access and selected artifact
   transfers. A managed Project shell or extension capability denial does not fall back to a local
   computer. Five Agents suites pass 56/56; Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-- [ ] **SPR05.6 — Erasure and tombstone.** Map historical Document/Media and registered sidecar
-  cleanup, retry receipts, tombstone barriers and provider outcome reporting to local fixtures.
+- [x] **SPR05.6 — Erasure and tombstone.** Historical Document/Media and registered sidecar
+  cleanup, retry receipts, Project tombstone barriers, and truthful provider outcomes are mapped
+  to local fixtures. Three Agents suites pass 114/114; Agents typecheck and `git diff --check`
+  pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
 - [ ] **SPR05.7 — Evidence and live boundary review.** Record all seven plan criteria against local
   evidence and keep Cloudflare lifecycle, cost/capacity and deployed erasure acceptance separate.
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4, SPR04.1–SPR04.3 and SPR05.1–SPR05.5 are locally verified. Project
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4, SPR04.1–SPR04.3 and SPR05.1–SPR05.6 are locally verified. Project
 branches share one runtime identity and generation; exact image profiles and capability grants are
 checked before admission. Video audio, frame sampling and scanned PDF use the Project main runtime;
 ordinary audio and image OCR remain container-free. Project extension binaries, managed execution,
@@ -231,8 +233,13 @@ video audio, sampled frames and scanned PDFs use the main Project runtime with c
 bounds; three Agents suites pass 43/43, Agents typecheck and `git diff --check` pass. SPR05.5 verifies
 owner-selected Agent37/tunnel calls and grant enforcement, plus no local-computer fallback after
 managed shell or extension denial; five Agents suites pass 56/56, typecheck and `git diff --check`
-pass. **Next action:** SPR05.6 — map historical specialist/sidecar erasure, tombstone barriers and
-provider outcome reporting to local cleanup fixtures. Keep live acceptance open.
+pass. SPR05.6 verifies exact cleanup dispatch for seeded historical Document/Media names and a
+registered Project sidecar, retry receipts before canonical deletion, the execution tombstone fence,
+and a zero-row result from the atomic D1 runtime-registration insert before billing or Container
+start. Snapshot cleanup reports `providerSnapshotPurge: not_supported`; no provider cleanup or
+deployment was run. Three Agents suites pass 114/114; Agents typecheck and `git diff --check` pass.
+**Exact next action:** SPR05.7 — record local evidence against all seven plan criteria, review every
+unfinished plan for ready local work, and keep live Cloudflare acceptance separate.
 
 ## Paused plan — Managed services and sidecar runtime
 

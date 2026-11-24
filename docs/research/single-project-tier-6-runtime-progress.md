@@ -497,6 +497,27 @@ availability, user workstation connectivity or provider-grant state.
 **Exact next action:** SPR05.6 — map historical Document/Media and registered sidecar cleanup,
 Project tombstone barriers and truthful provider outcomes to local erasure fixtures.
 
+## SPR05.6 — Erasure and tombstone
+
+Cleanup fixtures cover deterministic legacy Document/Media names alongside registered historical
+objects, exact-name dispatch for a registered Project sidecar, and a failed runtime receipt that
+stays pending until the same object succeeds on retry. Canonical workspace deletion remains behind
+the receipt barrier. ToolSandbox fixtures verify execution remains blocked by the Project erasure
+barrier, including after the D1 tombstone is rolled back, and that a late tombstone aborts an active
+execution. A separate first-touch race fixture simulates the guarded D1 registry insert changing no
+rows after the tombstone wins; the request fails closed before billing reservation or Container
+start. DynamicSandbox erasure receipts report provider snapshot purge as `not_supported` and clear
+local checkpoint pointers.
+
+Local verification: cleanup, ToolSandboxDO and DynamicSandboxDO suites pass **114/114**; Agents
+typecheck and `git diff --check` pass. The fake D1/runtime fixtures establish local behavior only.
+Unregistered historical Durable Object IDs cannot be enumerated through the available Cloudflare
+API, and the provider snapshot purge operation is unsupported. No provider cleanup or deployment
+was run; live erasure acceptance remains open.
+
+**Exact next action:** SPR05.7 — record all seven plan criteria against local evidence, review
+every unfinished plan for ready local work, and keep live Cloudflare acceptance separate.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame
@@ -506,9 +527,10 @@ implemented and locally verified. SPR05.1 has locally verified shared Shell/FFmp
 admission and distinct Project allocation identities; SPR05.2 covers capability and authority
 denials; SPR05.3 covers local recovery fences and scratch placement; SPR05.4 maps container-free
 and Project attachment routes; SPR05.5 maps explicit external tools and denies managed-route
-fallback. The remaining SPR05 local
-acceptance checks remain open. Local
-source and test evidence must remain distinct from deployed cold/warm allocation, Cloudflare
-stop/reconciliation, cost/capacity, snapshot retention and Project-erasure acceptance. Keep rollout
-disabled and legacy erasure inventory active until the migrated routes and historical cleanup pass
-their respective checks.
+fallback. SPR05.6 maps historical specialist and Project sidecar dispatch, retryable receipts,
+registration/execution tombstone barriers and explicit provider snapshot-purge status to local
+fixtures. SPR05.7's evidence review and the separate live acceptance remain open. Keep local source
+and test evidence distinct from deployed cold/warm allocation, Cloudflare stop/reconciliation,
+cost/capacity, snapshot retention and Project-erasure acceptance. Keep rollout disabled and legacy
+erasure inventory active until the migrated routes and historical cleanup pass their respective
+checks.

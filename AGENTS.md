@@ -10,9 +10,12 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR05 — Local acceptance.** Follow the
+**SPR05.7 — Evidence and live boundary review.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
-and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). SPR03.1–SPR03.4
+and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). Record all
+seven plan criteria against local tests, review every unfinished plan for the next ready local
+task, and keep Cloudflare lifecycle, capacity/cost and deployed erasure acceptance separate.
+SPR03.1–SPR03.4
 route Project video audio, frame extraction, scanned-PDF rendering and extension native processing
 through the stable main runtime with host-created capability/image admission. Projectless video and
 scanned PDF fail before body reads or specialist allocation; ordinary audio and image OCR stay
@@ -21,8 +24,10 @@ longer create installation sidecars. Project scopes now fail closed at specialis
 prewarm, sidecar dispatch, runtime discovery, environment selection and Project runtime install
 before a direct specialist allocation can start. Legacy pins and bindings remain for cleanup.
 SPR04.3 verified deterministic and registered historical Document/Media erasure dispatch with retry.
-Reconcile SPR05's concurrency, replacement, capability denial, explicit external tools and erasure
-criteria against safe local fixtures; fill gaps and keep live acceptance separate.
+SPR05.1–SPR05.6 map concurrency, replacement, capability denial, explicit external tools and erasure
+criteria to safe local fixtures, including registered sidecar cleanup and the atomic runtime-
+registration tombstone race; finish the evidence table and readiness review while keeping live
+acceptance separate.
 
 ## Checkout and recovery
 

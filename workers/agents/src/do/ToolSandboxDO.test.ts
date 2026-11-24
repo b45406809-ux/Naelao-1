@@ -21,7 +21,7 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; specialist?: "document" | "media"; sidecarExecutionSeconds?: number; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean; workspaceBranch?: string; workspaceRevision?: number; workspaceManifestHash?: string; requiredCapabilities?: string[] } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; specialist?: "document" | "media"; sidecarExecutionSeconds?: number; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean; rejectWorkspaceRuntimeRegistration?: boolean; workspaceBranch?: string; workspaceRevision?: number; workspaceManifestHash?: string; requiredCapabilities?: string[] } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
@@ -38,6 +38,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     const billingCalls: string[] = [];
     const containerFiles: Record<string, string> = {};
     const r2Objects = new Map<string, Uint8Array>();
+    const workspaceRuntimeRegistryStatements: string[] = [];
     const r2 = {
       list: async ({ prefix }: { prefix: string }) => ({ objects: [...r2Objects.keys()].filter(key => key.startsWith(prefix)).map(key => ({ key, size: r2Objects.get(key)!.byteLength })), truncated: false }),
       head: async (key: string) => { const bytes = r2Objects.get(key); return bytes ? { size: bytes.byteLength, etag: `etag-${key}`, customMetadata: { sha256: "" } } : null; },
@@ -196,7 +197,10 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
                 ? { config_json: airGapped ? JSON.stringify({ compliance: { airGappedOnly: true } }) : "{}" }
                 : { id: "space" };
             },
-            run: async () => ({ meta: { changes: 1 } }),
+            run: async () => {
+              if (query.includes("INSERT INTO workspace_runtime_registry")) workspaceRuntimeRegistryStatements.push(query);
+              return { meta: { changes: query.includes("INSERT INTO workspace_runtime_registry") && options.rejectWorkspaceRuntimeRegistration ? 0 : 1 } };
+            },
           }),
         }),
       } } : {}),
@@ -222,7 +226,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       return realSandbox.fetch(new Request(request, { headers }));
     } };
     const initialPrewarm = options.hangReservation ? undefined : await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
-    return { sandbox, recreate: () => { realSandbox = createRuntime(); }, storage, coordinatorStorage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; }, setWorkspaceErased: (erased: boolean) => { workspaceErased = erased; }, coordinator, r2Objects };
+    return { sandbox, recreate: () => { realSandbox = createRuntime(); }, storage, coordinatorStorage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; }, setWorkspaceErased: (erased: boolean) => { workspaceErased = erased; }, coordinator, r2Objects, workspaceRuntimeRegistryStatements };
   }
 
   it("rejects container operations for a suspended tenant before reserving or starting execution", async () => {
@@ -296,6 +300,20 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     const replay = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
     expect(replay.status).toBe(410);
     expect(mockContainer.start).toHaveBeenCalledTimes(startCount);
+  });
+
+  it("fails closed when the atomic runtime registration loses a race with the erasure tombstone", async () => {
+    const { sandbox, mockContainer, billingCalls, storage, workspaceRuntimeRegistryStatements } = await createTestSandbox({
+      workspaceProject: true, hangReservation: true, rejectWorkspaceRuntimeRegistration: true,
+    });
+    const response = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ ok: false, error: "workspace_runtime_registry_unavailable" });
+    expect(workspaceRuntimeRegistryStatements).toHaveLength(1);
+    expect(workspaceRuntimeRegistryStatements[0]).toContain("FROM workspace_erasure_tombstones");
+    expect(mockContainer.start).not.toHaveBeenCalled();
+    expect(billingCalls.filter(path => path.endsWith("/reserve"))).toHaveLength(0);
+    expect([...storage.keys()].some(key => String(key).startsWith("execution:"))).toBe(false);
   });
 
   it("aborts an active project execution when the erasure alarm observes a late tombstone", async () => {

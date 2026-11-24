@@ -259,6 +259,32 @@ describe("retryable project workspace cleanup", () => {
     expect(await notifications[0]!.request.clone().json()).toMatchObject({ scope, confirm: true });
   });
 
+  it("dispatches a registered Project sidecar by its exact historical object name", async () => {
+    const { env, db } = fixture();
+    const objectName = `sidecar:${JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId, "install-a", null, "image-ref"])}`;
+    db.runtimeRows.push({ tenant_id: scope.tenantId, space_id: scope.spaceId, project_id: scope.projectId,
+      runtime_kind: "tool_sandbox", object_name: objectName, branch: "", installation_id: "install-a", erasure_attempts: 0 });
+    const names: string[] = [];
+    const notifications: Request[] = [];
+    (env as unknown as Record<string, unknown>).TOOL_SANDBOX = {
+      idFromName: (name: string) => name,
+      get: (id: string) => ({ fetch: async (request: Request) => {
+        names.push(id);
+        notifications.push(request);
+        return Response.json({ erased: true, localStatePurged: true, providerSnapshotPurge: "not_supported" });
+      } }),
+    };
+
+    const response = await handleWorkspaceProjectCleanup(await request(), env);
+    expect(response.status).toBe(200);
+    expect(names.filter(name => name === objectName)).toHaveLength(1);
+    expect(db.runtimeRows.find(row => row.object_name === objectName))
+      .toMatchObject({ erasure_notified_at: expect.any(String), erasure_attempts: 1, last_erasure_error: null });
+    const notification = notifications[names.findIndex(name => name === objectName)];
+    expect(notification).toBeDefined();
+    expect(await notification!.clone().json()).toMatchObject({ scope, confirm: true });
+  });
+
   it("marks the project-main registry erased only after its exact dynamic runtime confirms local purge", async () => {
     const { env, db } = fixture();
     db.mainRuntimeRegistry = { tenant_id: scope.tenantId, space_id: scope.spaceId, project_id: scope.projectId,
