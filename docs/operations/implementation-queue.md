@@ -186,8 +186,10 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
   audio, bounded frame sampling and scanned-PDF tests assert main-runtime identity, capability
   admission, owner/egress gates, limits and no specialist fallback. Three Agents suites pass 43/43;
   Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-- [ ] **SPR05.5 — Explicit external tools.** Verify Agent37 and tunnel tools require their own
-  selected route and grants, with no managed-runtime fallback to a local computer.
+- [x] **SPR05.5 — Explicit external tools.** Agent37 and tunnel fixtures enforce explicit
+  owner/user routes, project or machine grants, scoped filesystem access and selected artifact
+  transfers. A managed Project shell or extension capability denial does not fall back to a local
+  computer. Five Agents suites pass 56/56; Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
 - [ ] **SPR05.6 — Erasure and tombstone.** Map historical Document/Media and registered sidecar
   cleanup, retry receipts, tombstone barriers and provider outcome reporting to local fixtures.
 - [ ] **SPR05.7 — Evidence and live boundary review.** Record all seven plan criteria against local
@@ -195,7 +197,7 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4, SPR04.1–SPR04.3 and SPR05.1–SPR05.4 are locally verified. Project
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4, SPR04.1–SPR04.3 and SPR05.1–SPR05.5 are locally verified. Project
 branches share one runtime identity and generation; exact image profiles and capability grants are
 checked before admission. Video audio, frame sampling and scanned PDF use the Project main runtime;
 ordinary audio and image OCR remain container-free. Project extension binaries, managed execution,
@@ -226,9 +228,11 @@ workspace hydration, and a new scratch-directory guard that refuses any path und
 `/workspace`; four Agents suites pass 118/118, typecheck and syntax checks pass. **Next action:**
 SPR05.4 confirms ordinary audio and image analysis use container-free paths, while authenticated
 video audio, sampled frames and scanned PDFs use the main Project runtime with capability and route
-bounds; three Agents suites pass 43/43, Agents typecheck and `git diff --check` pass. **Next action:**
-SPR05.5 — verify explicit Agent37 and tunnel selection/grants and prove managed runtime failure
-does not fall back to a local computer. Keep live acceptance open.
+bounds; three Agents suites pass 43/43, Agents typecheck and `git diff --check` pass. SPR05.5 verifies
+owner-selected Agent37/tunnel calls and grant enforcement, plus no local-computer fallback after
+managed shell or extension denial; five Agents suites pass 56/56, typecheck and `git diff --check`
+pass. **Next action:** SPR05.6 — map historical specialist/sidecar erasure, tombstone barriers and
+provider outcome reporting to local cleanup fixtures. Keep live acceptance open.
 
 ## Paused plan — Managed services and sidecar runtime
 

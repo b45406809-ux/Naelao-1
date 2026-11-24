@@ -478,6 +478,25 @@ or deployed to prove live rendering.
 **Exact next action:** SPR05.5 — map explicit Agent37/tunnel selection and grants to local tests,
 then verify a managed-route failure does not choose a local computer implicitly.
 
+## SPR05.5 — Explicit external tools
+
+Agent37 caller fixtures confirm Project filtering, owner/native-execution context, explicit start and
+execute calls, exact Project AgentPort identity, shell authorization and path-granted artifact
+transfer. The LocalTunnel Durable Object fixtures verify the authenticated tunnel command, exact
+machine grant, actor rejection before dispatch, and only granted filesystem roots. Existing
+capability selection tests keep the Agent37 specialist bundle task-matched. A new CodeRunner fixture
+returns a capability error from Project-managed Shell and extension requests and proves neither
+selects the optional local-computer backend; the existing positive case reaches a user computer
+only when `containerOptions.backend` explicitly names `local_workstation`.
+
+Local verification: CodeRunner Project extension, Agent37 caller, LocalTunnelDO, prebuilt
+environment and worker-capability suites pass **56/56**; Agents typecheck and `git diff --check`
+pass. External service and tunnel endpoints are mocked; this does not establish deployed AgentPort
+availability, user workstation connectivity or provider-grant state.
+
+**Exact next action:** SPR05.6 — map historical Document/Media and registered sidecar cleanup,
+Project tombstone barriers and truthful provider outcomes to local erasure fixtures.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame
@@ -486,7 +505,8 @@ gate, Project specialist discovery fence and historical specialist cleanup verif
 implemented and locally verified. SPR05.1 has locally verified shared Shell/FFmpeg/PDF request
 admission and distinct Project allocation identities; SPR05.2 covers capability and authority
 denials; SPR05.3 covers local recovery fences and scratch placement; SPR05.4 maps container-free
-and Project attachment routes. The remaining SPR05 local
+and Project attachment routes; SPR05.5 maps explicit external tools and denies managed-route
+fallback. The remaining SPR05 local
 acceptance checks remain open. Local
 source and test evidence must remain distinct from deployed cold/warm allocation, Cloudflare
 stop/reconciliation, cost/capacity, snapshot retention and Project-erasure acceptance. Keep rollout

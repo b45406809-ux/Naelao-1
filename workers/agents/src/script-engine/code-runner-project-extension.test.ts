@@ -99,4 +99,27 @@ describe("Project extension execution routing", () => {
     expect(localMachine).toHaveBeenCalledOnce();
     expect(resolveProjectRuntimeExtension).not.toHaveBeenCalled();
   });
+
+  it("does not fall back from failed managed shell or extension work to a local computer", async () => {
+    const fetch = vi.fn(async () => Response.json({ ok: false, error: "project_runtime_capability_unavailable" }, { status: 409 }));
+    const idFromName = vi.fn((name: string) => name);
+    const localMachine = vi.fn(async () => ({ ok: true, output: "must-not-run", tier: 6, actual_tier: 6,
+      engine: "container", duration_ms: 1, tokens_used: 0 }));
+    const runner = buildCodeRunner({ platformSecret: "project-extension-test-secret", authorizeContainer: async () => true,
+      localMachine, resolveProjectRuntimeExtension: async () => installation,
+      toolSandbox: { idFromName, get: () => ({ fetch }) } as never });
+    const common = { tier: 6 as const, maxTier: 6, tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a",
+      userId: "owner-a", agentId: "assistant-a", runId: "run-a" };
+
+    const shell = await runner.run({ ...common, name: "Bash", code: "printf managed", args: { commands: "printf managed" } });
+    const extension = await runner.run({ ...common, name: "container.extension_binary", code: "", args: { commands: "native-tool run" },
+      projectRuntimeInstallationId: "install-a", projectRuntimeImage: image });
+
+    expect(shell).toMatchObject({ ok: false, error: "project_runtime_capability_unavailable" });
+    expect(extension).toMatchObject({ ok: false, error: "project_runtime_capability_unavailable" });
+    expect(idFromName).toHaveBeenNthCalledWith(1, "sandbox:space-a:project-a");
+    expect(idFromName).toHaveBeenNthCalledWith(2, "sandbox:space-a:project-a");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(localMachine).not.toHaveBeenCalled();
+  });
 });
