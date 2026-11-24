@@ -1,5 +1,19 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW07 checkpoint — decision-linked distinct-path review candidates
+
+Goal Activity now emits a bounded review candidate when at least two completed workers report
+distinct modified paths under the same exact Project decision revision. The candidate is explicitly
+based on untrusted worker path reports; the Shell labels it as a review signal, not proof of a
+semantic conflict or permission to publish. Overlapping paths, failed/incomplete tasks, malformed
+paths and differing decision revisions do not generate a candidate.
+
+`goal-decision-change-candidates.test.ts` passes **3/3**; Agents and Shell typechecks and
+`git diff --check` pass. This is a deterministic candidate heuristic only. It does not classify
+incompatible interfaces or other cross-file semantic behavior. **Exact next action:** continue APW07
+after owners approve the conflict taxonomy/evidence contract, then add the approved classification
+mechanism and integration tests. Keep cross-DO publication acceptance separate.
+
 ## APW07/APW08 local revalidation — 2026-11-24 (remote tip `9a1ea1a1`)
 
 Re-ran `worker-integration-validation.test.ts`, `environments.test.ts`,

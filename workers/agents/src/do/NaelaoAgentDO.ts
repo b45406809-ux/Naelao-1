@@ -72,6 +72,7 @@ import { connectorPollIsCurrent, reconcileScheduledServiceResumeContext, schedul
 import { parseSessionSpendStatus } from "../session-spend-status.js";
 import { decodeWorkerCheckpoint, encodeWorkerCheckpoint } from "./worker-checkpoint.js";
 import { projectGoalWorkspaceLineage } from "./goal-workspace-lineage.js";
+import { projectDecisionChangeCandidates } from "./goal-decision-change-candidates.js";
 import type { ScheduledJobGrantConfig } from "@naelao/security";
 import { renderExtensionVoiceResponse } from "../communications/voice-response.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
@@ -6760,7 +6761,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             ? { adjustmentReason: routing.adjustmentReason } : {}),
           ...(safeAdjustments.length ? { adjustments: safeAdjustments } : {}) }
         : undefined;
-      goals.push({ id: hash, ...(safeRouting ? { routing: safeRouting } : {}), verificationRequired: journal.verificationRequired === true, tasks: projected, escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
+      const decisionChangeCandidates = projectDecisionChangeCandidates(metadata.tasks, journal);
+      goals.push({ id: hash, ...(safeRouting ? { routing: safeRouting } : {}), verificationRequired: journal.verificationRequired === true,
+        tasks: projected, ...(decisionChangeCandidates.length ? { decisionChangeCandidates } : {}),
+        escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })),
+        fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
     }
     return Response.json({ goals: history ? goals.reverse() : goals });
   }

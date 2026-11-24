@@ -3489,6 +3489,8 @@ export interface GoalWorkspaceLineage {
 export interface GoalActivity {
   id: string;
   verificationRequired: boolean;
+  decisionChangeCandidates?: Array<{ decision: { id: string; revision: number }; tasks: Array<{ id: string; reportedPaths: string[] }>;
+    kind: "shared_decision_distinct_path_reports"; evidence: "worker_reported_paths"; status: "review_candidate" }>;
   routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number;
     policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed";
     adjustments?: Array<{ fromConcurrency: number | null; toConcurrency: number; reason: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed"; at: number;

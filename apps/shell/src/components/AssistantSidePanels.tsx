@@ -773,6 +773,10 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
     {goals.map(goal => <details key={goal.id} className="settings-block" style={{ padding: 12, marginTop: 8 }}>
       <summary style={{ cursor: "pointer", fontWeight: 600 }}>Task graph · {goal.tasks.length} tasks</summary>
       {goal.routing && <div role="status" style={{ color: "var(--text3)", fontSize: 11, paddingTop: 4 }}>Selected topology: {goal.routing.mode.replaceAll("_", " ")} · concurrency {goal.routing.selectedConcurrency} of host limit {goal.routing.hostConcurrencyCeiling}{goal.routing.adjustmentReason ? ` · adaptive ${goal.routing.adjustmentReason.replaceAll("_", " ")}` : ""}</div>}
+      {goal.decisionChangeCandidates?.map((candidate, index) => <div key={`${candidate.decision.id}:${candidate.decision.revision}:${index}`} role="status" style={{ border: "1px solid var(--border, #64748b44)", borderRadius: 6, padding: 7, marginTop: 6, color: "var(--text3)", fontSize: 11 }}>
+        Review candidate: separate workers report changes to distinct files under Project decision {candidate.decision.id.slice(0, 48)} · revision {candidate.decision.revision}. This is an untrusted path-based signal, not proof of a semantic conflict or permission to publish. Review both branches and the current decision before integration.
+        {candidate.tasks.map(task => <div key={task.id} style={{ paddingTop: 3 }}>{task.id}: {task.reportedPaths.join(", ")}</div>)}
+      </div>)}
       {goal.tasks.map(task => <div key={task.id} style={{ padding: "6px 0", overflowWrap: "anywhere" }}>
         <strong>{task.title.slice(0, 240)}</strong> · {workerActivityLabel(task.status)}
         {(task.assigned_role || task.budget_tokens !== undefined) && <div style={{ color: "var(--text3)", fontSize: 11 }}>Worker plan: {task.assigned_role ? `${task.assigned_role.slice(0, 80)} role` : "worker"}{task.budget_tokens !== undefined ? ` · up to ${task.budget_tokens.toLocaleString()} output tokens` : ""}{task.runtime_capability ? ` · ${task.runtime_capability.slice(0, 64)} runtime recommendation` : ""}</div>}

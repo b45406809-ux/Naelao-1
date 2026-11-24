@@ -853,8 +853,13 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **Blocked · APW06 — Real-runtime/deployed acceptance.** Resume with staging runtime access and
   separately accepted pause/cancel and task-control behavior; do not treat local/mock UI evidence
   as live acceptance.
-- [ ] **APW07–APW09 — Cross-plan integration, recovery, and evaluation.** The barrier-driven
-  helper-level publication-race test and source-base validation lineage are complete. Validation
+- [ ] **APW07–APW09 — Cross-plan integration, recovery, and evaluation.** A bounded Goal Activity
+  review signal now flags completed workers with distinct reported paths under the same exact Project
+  decision revision. It is explicitly untrusted, review-only, and does not establish semantic conflict
+  or authorize publication. Its test passes 3/3; Agents/Shell typechecks and `git diff --check` pass.
+  Full APW07 classification still needs an APW/PW-approved evidence taxonomy, including interface
+  evidence and uncertainty handling. The barrier-driven publication-race test and source-base
+  validation lineage are complete. Validation
   receipts pin source base/commit, target revision/manifest, candidate and validation heads, command
   digest and publication outcome. Coordinator conflict reasons cover deterministic text/path/content
   collisions, not semantic/interface conflicts across files; resume classification after APW/PW owners
@@ -932,7 +937,9 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   authorized staging bindings and a disposable effect fixture. No independent APW08 code gap remains.
   See the [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md).
 
-**Latest checkpoint:** On remote tip `9a1ea1a1`, `worker-integration-validation.test.ts`,
+**Latest checkpoint:** APW07 now projects bounded, untrusted shared-decision/distinct-path review
+candidates; its focused test passes 3/3, Agents and Shell typechecks pass, and `git diff --check`
+passes. Full classification remains blocked on the APW/PW evidence contract. On remote tip `9a1ea1a1`, `worker-integration-validation.test.ts`,
 `environments.test.ts`, `delegation-contract.test.ts`, `worker-run-access-revalidation.test.ts`,
 `delegated-worker-approval-resume.test.ts` and `delegation-admission.test.ts` pass **70/70**;
 Agents typecheck and `git diff --check` pass. This is local revalidation only. APW08 deadline,
@@ -983,7 +990,7 @@ contain substantial implementation. Activate one entry at a time. Copy only the 
 into the active checklist. Keep finished task checkboxes and evidence in the queue or its linked
 ledgers when moving to another plan.
 
-1. [ ] **Reconciled; APW has no ready local task.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). APW07 conflict classification and APW08 deadline/reusable-definition work need owner-reviewed contracts; APW04–APW06 and APW09 retain policy/authority/evaluation gates. Cross-DO recovery/publication and economics acceptance need authorized staging.
+1. [ ] **Reconciled; APW has no ready local task.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). A review-only APW07 shared-decision/distinct-path signal is implemented; full conflict classification and APW08 deadline/reusable-definition work need owner-reviewed contracts. APW04–APW06 and APW09 retain policy/authority/evaluation gates. Cross-DO recovery/publication and economics acceptance need authorized staging.
 2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
 3. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
 4. [ ] **Paused; local acceptance complete, live acceptance blocked.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#paused-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.
