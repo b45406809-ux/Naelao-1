@@ -8,6 +8,12 @@ describe("project sandbox routing", () => {
     }
   });
 
+  it("routes different Projects to independent runtime identities", () => {
+    expect(sandboxInstanceName("space-a", "project-a")).toBe("sandbox:space-a:project-a");
+    expect(sandboxInstanceName("space-a", "project-b")).toBe("sandbox:space-a:project-b");
+    expect(sandboxInstanceName("space-a", "project-a")).not.toBe(sandboxInstanceName("space-a", "project-b"));
+  });
+
   it("keeps non-project assistant slots space scoped", () => {
     expect(sandboxInstanceName("space-a")).toBe("sandbox:space-a:_assistant");
   });

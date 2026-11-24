@@ -168,10 +168,29 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Active · SPR05 — Local acceptance.** Map each plan criterion to existing local evidence,
   close any missing safe-fixture coverage for concurrency, replacement/recovery, capability denial,
   explicit external execution, and erasure/tombstone behavior.
+- [x] **SPR05.1 — Shared Project allocation and isolation.** Concurrent Shell, FFmpeg and PDF
+  requests across branches share one runtime generation, provider admission and billing reservation;
+  a second Project receives a separate runtime identity and allocation under the same tenant quota.
+  DynamicSandbox and routing tests pass 57/57. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
+- [ ] **SPR05.2 — Admission and authority failures.** Map capability, attachment access, egress,
+  revoked-grant, Project deletion and unavailable-admission cases to local tests; add any uncovered
+  safe-fixture ordering assertion.
+- [ ] **SPR05.3 — Replacement and recovery safety.** Map profile changes, crashes, retries,
+  interrupted starts, unknown stops, authorized workspace recovery and scratch isolation; add any
+  uncovered canonical-workspace assertion.
+- [ ] **SPR05.4 — Container-free and Project attachment paths.** Verify ordinary audio and other
+  container-free behavior plus configured video audio, frame sampling and scanned PDF through
+  authenticated entry-point fixtures.
+- [ ] **SPR05.5 — Explicit external tools.** Verify Agent37 and tunnel tools require their own
+  selected route and grants, with no managed-runtime fallback to a local computer.
+- [ ] **SPR05.6 — Erasure and tombstone.** Map historical Document/Media and registered sidecar
+  cleanup, retry receipts, tombstone barriers and provider outcome reporting to local fixtures.
+- [ ] **SPR05.7 — Evidence and live boundary review.** Record all seven plan criteria against local
+  evidence and keep Cloudflare lifecycle, cost/capacity and deployed erasure acceptance separate.
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4 and SPR04.1–SPR04.3 are locally verified. Project
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4, SPR04.1–SPR04.3 and SPR05.1 are locally verified. Project
 branches share one runtime identity and generation; exact image profiles and capability grants are
 checked before admission. Video audio, frame sampling and scanned PDF use the Project main runtime;
 ordinary audio and image OCR remain container-free. Project extension binaries, managed execution,
@@ -190,9 +209,12 @@ Document/Media IDs and registered historical names; one failed receipt remains p
 then cleanup advances. Five cleanup/runtime suites pass 132/132; Agents typecheck and
 `git diff --check` pass. Arbitrary unregistered historical Durable Object IDs remain unenumerable,
 and Cloudflare provider snapshot purge is unsupported. No provider cleanup or deployment was run.
-**Next action:** SPR05 — map all plan acceptance criteria to existing source and safe-fixture tests,
-then add/rerun only the local coverage needed for any uncovered concurrency, replacement/recovery,
-capability-denial, explicit external execution, erasure or tombstone case; keep live acceptance open.
+SPR05.1 now exercises simultaneous Shell, FFmpeg and PDF requests across three Project branches and
+confirms one start, one capacity admission and one billing reservation; a second Project starts its
+own runtime under the same tenant-capacity fixture. The focused DynamicSandbox/routing suites pass
+57/57. **Next action:** SPR05.2 — map capability, attachment, egress, grant, deletion and
+unavailable-admission denials to local fixtures; add any missing before-compute/data assertion and
+keep live acceptance open.
 
 ## Paused plan — Managed services and sidecar runtime
 

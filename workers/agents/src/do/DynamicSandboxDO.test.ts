@@ -242,8 +242,14 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
     const runtimeObjectName = scope.installationId
       ? sidecarKey(scope as never) + workspaceBranchScope(scope.workspaceBranch)
       : sandboxInstanceName(scope.spaceId, scope.projectId, scope.workspaceBranch);
+    const body = path === "/exec" ? { spaceId: scope.spaceId, projectId: scope.projectId, workspaceBranch: scope.workspaceBranch }
+      : path === "/shell" ? { command: "printf acceptance" }
+      : path === "/media/extract-audio" ? { tenantId: scope.tenantId, spaceId: scope.spaceId, projectId: scope.projectId,
+        taskId: scope.runId, videoBase64: "AQID" }
+      : path === "/pdf/render" ? { spaceId: scope.spaceId, projectId: scope.projectId, firstPage: 1, lastPage: 1, pdfBase64: "AQID" }
+      : {};
     return sandbox.fetch(new Request("http://sandbox" + path, { method: "POST",
-      body: JSON.stringify(path === "/exec" ? { spaceId: scope.spaceId, projectId: scope.projectId, workspaceBranch: scope.workspaceBranch } : {}),
+      body: JSON.stringify(body),
       headers: {
         "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("secret", scope.tenantId),
         "x-naelao-runtime-object-name": runtimeObjectName,
@@ -358,6 +364,46 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.transport.start).toHaveBeenCalledOnce();
     expect(r.capacity.calls.filter(v => v === "/compute-admission/request")).toHaveLength(1);
     expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(1);
+  });
+
+  it("admits concurrent Bash, FFmpeg and PDF requests from Project branches onto one allocation", async () => {
+    const r = runtime({ tier: "growth", profile: "standard-1", imageProfileId: "media-documents",
+      projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract", "media.frame_extract", "document.pdf_render"] } });
+    const calls = [
+      { path: "/shell", scope: { mainComputer: true, workspaceBranch: "main", executionId: "parallel-project-bash", runId: "bash-task" } },
+      { path: "/media/extract-audio", scope: { mainComputer: true, actorId: "attachment-reader", workspaceBranch: "race/task/ffmpeg",
+        executionId: "parallel-project-ffmpeg", runId: "ffmpeg-task", requiredCapabilities: ["media.audio_extract"] } },
+      { path: "/pdf/render", scope: { mainComputer: true, actorId: "attachment-reader", workspaceBranch: "workers/pdf",
+        executionId: "parallel-project-pdf", runId: "pdf-task", requiredCapabilities: ["document.pdf_render"] } },
+    ] as const;
+    const responses = await Promise.all(calls.map(({ path, scope }) => r.invoke(path, scope)));
+
+    expect(responses.map(response => response.status), await Promise.all(responses.map(response => response.clone().text()))).toEqual([200, 200, 200]);
+    expect(r.projectMainRegistry.size).toBe(1);
+    expect(r.projectMainRegistry.get("tenant:space:project")).toMatchObject({
+      runtimeObjectName: "sandbox:space:project", allocationGeneration: 1, state: "active",
+    });
+    expect(r.transport.start).toHaveBeenCalledOnce();
+    expect(r.capacity.calls.filter(path => path === "/compute-admission/request")).toHaveLength(1);
+    expect(r.billing.filter(entry => entry.path.endsWith("/reserve"))).toHaveLength(1);
+  });
+
+  it("starts separate Project main allocations under distinct runtime identities", async () => {
+    const capacity = capacityService();
+    const projectA = runtime({ tier: "growth", capacity });
+    const projectB = runtime({ tier: "growth", capacity });
+    const [responseA, responseB] = await Promise.all([
+      projectA.invoke("/prewarm", { mainComputer: true, projectId: "project-a", executionId: "project-a-start" }),
+      projectB.invoke("/prewarm", { mainComputer: true, projectId: "project-b", executionId: "project-b-start" }),
+    ]);
+
+    expect(responseA.status).toBe(200);
+    expect(responseB.status).toBe(200);
+    expect(projectA.projectMainRegistry.get("tenant:space:project-a")).toMatchObject({ runtimeObjectName: "sandbox:space:project-a", allocationGeneration: 1, state: "active" });
+    expect(projectB.projectMainRegistry.get("tenant:space:project-b")).toMatchObject({ runtimeObjectName: "sandbox:space:project-b", allocationGeneration: 1, state: "active" });
+    expect(projectA.transport.start).toHaveBeenCalledOnce();
+    expect(projectB.transport.start).toHaveBeenCalledOnce();
+    expect(capacity.held.get("tenant:tenant")?.size).toBe(2);
   });
 
   it("registers a cold race-branch start as the Project main allocation", async () => {

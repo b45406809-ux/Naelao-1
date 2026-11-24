@@ -394,12 +394,33 @@ source, then close any uncovered safe-fixture gap for shared concurrency, recove
 capability/authority denial, explicit external execution, or erasure/tombstone behavior. Keep live
 Cloudflare lifecycle and erasure acceptance separate.
 
+## SPR05.1 — Shared Project allocation and isolation
+
+The local dynamic-runtime fixture now submits Shell, FFmpeg audio extraction and PDF rendering
+simultaneously against three branches of one Project with the required media/document image
+capabilities. All three requests succeed through one stable runtime identity and generation; the
+fixture records exactly one Container start, one compute-admission lease and one billing hold. A
+second fixture pair starts Project A and Project B concurrently under the same tenant-capacity
+service; each gets its own `sandbox:<space>:<project>` identity and starts one allocation. The
+routing test separately asserts that branch names remain one Project identity and distinct Project
+IDs map to distinct identities.
+
+Local verification: `DynamicSandboxDO.test.ts` and `sandbox-routing.test.ts` pass **57/57**. This is
+safe-fixture evidence for routing and host admission; it does not verify physical Cloudflare
+allocation counts, provider concurrency, cold/warm startup, or billing settlement.
+
+**Exact next action:** SPR05.2 — map Project capability, attachment-access, egress, grant-revocation,
+deletion and unavailable-admission denials to their local fixtures, then add any missing
+before-compute/data assertion.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame
 caller slices, Project scanned-PDF rendering, extension native caller migration, specialist admission
 gate, Project specialist discovery fence and historical specialist cleanup verification are
-implemented and locally verified. SPR05 local acceptance remains open. Local
+implemented and locally verified. SPR05.1 has locally verified shared Shell/FFmpeg/PDF request
+admission and distinct Project allocation identities; the remaining SPR05 local acceptance checks
+remain open. Local
 source and test evidence must remain distinct from deployed cold/warm allocation, Cloudflare
 stop/reconciliation, cost/capacity, snapshot retention and Project-erasure acceptance. Keep rollout
 disabled and legacy erasure inventory active until the migrated routes and historical cleanup pass
