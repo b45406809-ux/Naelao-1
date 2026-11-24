@@ -23,7 +23,8 @@ describe("goal workspace lineage projection", () => {
         targetRevision: 8, targetManifestHash: "e".repeat(64), commandHash: "f".repeat(64),
         executionId: "internal-execution-id", runId: "internal-run-id", durationMs: 1200,
         completedAt: "2026-11-23T00:00:00.000Z", candidateBranch: "race/candidate-1", candidateCommitId: commit,
-        sourceBranch: workerBranch, sourceCommitId: commit, targetBranch: "main", targetCommitId: commit,
+        sourceBranch: workerBranch, sourceCommitId: commit, sourceBase: { parentBranch, revision: 7, manifestHash: hash },
+        targetBranch: "main", targetCommitId: commit,
         publicationStatus: "published", reason: "internal detail must not be projected",
       }],
       publicationAttempts: [{ attempt: 2, targetBranch: "main", targetRevision: 8, status: "outcome_unknown", updatedAt: "2026-11-23T00:00:00.000Z" }],
@@ -38,7 +39,8 @@ describe("goal workspace lineage projection", () => {
         status: "passed", branch: "race/validation-1", revision: 3, manifestHash: "d".repeat(64),
         targetRevision: 8, targetManifestHash: "e".repeat(64), commandHash: "f".repeat(64), durationMs: 1200,
         completedAt: "2026-11-23T00:00:00.000Z", candidateBranch: "race/candidate-1", candidateCommitId: commit,
-        sourceBranch: workerBranch, sourceCommitId: commit, targetBranch: "main", targetCommitId: commit,
+        sourceBranch: workerBranch, sourceCommitId: commit, sourceBase: { parentBranch, revision: 7, manifestHash: hash },
+        targetBranch: "main", targetCommitId: commit,
         publicationStatus: "published",
       }],
       publicationAttempts: [{ attempt: 2, targetBranch: "main", targetRevision: 8, status: "outcome_unknown", updatedAt: "2026-11-23T00:00:00.000Z" }],
@@ -48,17 +50,48 @@ describe("goal workspace lineage projection", () => {
     expect(JSON.stringify(projected)).not.toContain("internal-execution-id");
   });
 
-  it("omits invalid base, checkpoint and receipt metadata and rejects non-worker branches", () => {
+  it("omits invalid or stale base/checkpoint/receipt metadata and rejects non-worker branches", () => {
     const projected = projectGoalWorkspaceLineage({
       branch: workerBranch,
       attempt: 1,
       branchOrigin: { branch: "workers/other", parentBranch, revision: 0, manifestHash: "bad" },
       checkpointJson: JSON.stringify({ format: "naelao.worker-checkpoint", schema_version: 2 }),
-      validationReceipts: [{ status: "passed", branch: "../../private", revision: 1 }],
+      validationReceipts: [
+        { status: "passed", branch: "../../private", revision: 1 },
+        { status: "passed", branch: "race/validation-1", revision: 3, manifestHash: "d".repeat(64),
+          targetRevision: 8, targetManifestHash: "e".repeat(64), commandHash: "f".repeat(64),
+          durationMs: 1200, completedAt: "2026-11-23T00:00:00.000Z", candidateBranch: "race/candidate-1",
+          candidateCommitId: commit, sourceBranch: workerBranch, sourceCommitId: commit,
+          sourceBase: { parentBranch, revision: 0, manifestHash: hash }, targetBranch: "main", targetCommitId: commit,
+          publicationStatus: "published" },
+      ],
       publicationAttempts: [{ attempt: 1, targetBranch: "../private", targetRevision: 1, status: "published", updatedAt: "bad" }],
     });
     expect(projected).toEqual({ branch: workerBranch, attempt: 1, validationReceipts: [], publicationAttempts: [] });
     expect(projectGoalWorkspaceLineage({ branch: "private/branch", attempt: 1, branchOrigin: null,
       checkpointJson: null, validationReceipts: [], publicationAttempts: [] })).toBeUndefined();
+  });
+
+  it("omits a valid-looking receipt whose source base is stale and keeps legacy receipts bounded", () => {
+    const legacyReceipt = {
+      status: "passed", branch: "race/validation-1", revision: 3, manifestHash: "d".repeat(64),
+      targetRevision: 8, targetManifestHash: "e".repeat(64), commandHash: "f".repeat(64),
+      durationMs: 1200, completedAt: "2026-11-23T00:00:00.000Z", candidateBranch: "race/candidate-1",
+      candidateCommitId: commit, sourceBranch: workerBranch, sourceCommitId: commit,
+      targetBranch: "main", targetCommitId: commit, publicationStatus: "published",
+    };
+    const staleReceipt = { ...legacyReceipt, sourceBase: { parentBranch, revision: 6, manifestHash: hash } };
+    const projected = projectGoalWorkspaceLineage({
+      branch: workerBranch,
+      attempt: 1,
+      branchOrigin: { branch: workerBranch, parentBranch, revision: 7, manifestHash: hash },
+      checkpointJson: null,
+      validationReceipts: [legacyReceipt, staleReceipt],
+      publicationAttempts: [],
+    });
+
+    expect(projected?.base).toEqual({ parentBranch, revision: 7, manifestHash: hash });
+    expect(projected?.validationReceipts).toHaveLength(1);
+    expect(projected?.validationReceipts[0]).not.toHaveProperty("sourceBase");
   });
 });

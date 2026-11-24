@@ -1,5 +1,21 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW07 follow-up — 2026-11-24 (source-base validation lineage)
+
+`WorkerIntegrationValidationReceipt` now includes the actual source branch base parent, Coordinator
+revision and manifest hash. The Goal Activity lineage projection validates a present pin against the
+current workspace lineage and omits malformed or stale receipts; historical receipts without the
+optional pin remain readable. Focused validation, lineage, route and delegation-admission suites pass
+**39/39**; Agents typecheck and `git diff --check` pass. A pre-existing delegation test fixture was
+corrected to use its declared local worker model so the test reaches the intended admission path.
+
+This is local source/fixture evidence. No real multi-DO publication test or deployed Coordinator
+acceptance ran. APW07's semantic/interface conflict classification and broader integrated evidence
+remain in the PW/EP plans.
+
+**Exact next action:** add APW08 recovery coverage proving a resumed worker uses no more than the
+current parent budget less prior token use and cannot dispatch when the remaining budget is exhausted.
+
 ## APW07 follow-up — 2026-11-24 (cancellation during pending publication)
 
 The checked integration helper now has a barrier-driven local regression for cancellation after

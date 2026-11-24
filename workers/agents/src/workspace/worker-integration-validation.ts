@@ -37,6 +37,8 @@ export type WorkerIntegrationValidationReceipt = {
   candidateCommitId: string | null;
   sourceBranch: string;
   sourceCommitId: string | null;
+  /** Immutable parent pin used to verify that the worker branch descends from the expected base. */
+  sourceBase?: WorkerIntegrationBranchBase;
   targetBranch: string;
   targetCommitId: string | null;
   publicationStatus: "published" | "not_published" | "uncertain";
@@ -183,6 +185,8 @@ export async function runCheckedWorkerIntegration(input: {
     candidateCommitId: candidate?.commitId ?? null,
     sourceBranch: source.branch,
     sourceCommitId: source.commitId,
+    ...(source.branchBase ? { sourceBase: { parentBranch: source.branchBase.parentBranch, revision: source.branchBase.revision,
+      manifestHash: source.branchBase.manifestHash } } : {}),
     targetBranch: target.branch,
     targetCommitId: target.commitId,
     publicationStatus,

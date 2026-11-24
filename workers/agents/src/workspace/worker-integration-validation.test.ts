@@ -128,6 +128,7 @@ describe("checked worker integration", () => {
       expectedTarget: expect.objectContaining({ commitId: commit("a"), revision: 2, manifestHash: hash("a") }),
       expectedSourceCommitId: commit("b"),
     }));
+    expect(result.receipt.sourceBase).toEqual({ parentBranch: "main", revision: 2, manifestHash: hash("a") });
   });
 
   it("does not publish or save a success receipt when cancellation lands during validation", async () => {
@@ -211,6 +212,7 @@ describe("checked worker integration", () => {
     const result = await runCheckedWorkerIntegration({ ...pinnedInput(f), expectedSourceBase: { ...f.sourceBase, manifestHash: hash("c") } }, f.host);
     expect(result.status).toBe("blocked");
     expect(result.receipt.reason).toBe("worker_source_base_mismatch");
+    expect(result.receipt.sourceBase).toEqual({ parentBranch: "main", revision: 2, manifestHash: hash("a") });
     expect(f.mergeCandidate).not.toHaveBeenCalled();
     expect(f.publishCandidate).not.toHaveBeenCalled();
   });

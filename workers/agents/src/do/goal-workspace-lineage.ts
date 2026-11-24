@@ -19,6 +19,7 @@ export type GoalWorkspaceLineage = {
     candidateCommitId: string | null;
     sourceBranch: string;
     sourceCommitId: string | null;
+    sourceBase?: { parentBranch: string; revision: number; manifestHash: string };
     targetBranch: string;
     targetCommitId: string | null;
     publicationStatus: "published" | "not_published" | "uncertain";
@@ -40,9 +41,18 @@ const manifestHash = (value: unknown): value is string => typeof value === "stri
 const commitId = (value: unknown): value is string | null => value === null || typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const positiveInteger = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
 
-function projectValidationReceipt(value: unknown): GoalWorkspaceLineage["validationReceipts"][number] | undefined {
+function projectValidationReceipt(value: unknown, expectedSourceBase?: GoalWorkspaceLineage["base"]): GoalWorkspaceLineage["validationReceipts"][number] | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const item = value as Record<string, unknown>;
+  let sourceBase: GoalWorkspaceLineage["base"];
+  if (item.sourceBase !== undefined) {
+    if (!item.sourceBase || typeof item.sourceBase !== "object" || Array.isArray(item.sourceBase)) return undefined;
+    const rawBase = item.sourceBase as Record<string, unknown>;
+    if (!branchName(rawBase.parentBranch) || !positiveInteger(rawBase.revision) || !manifestHash(rawBase.manifestHash)) return undefined;
+    sourceBase = { parentBranch: rawBase.parentBranch, revision: Number(rawBase.revision), manifestHash: rawBase.manifestHash };
+    if (expectedSourceBase && (sourceBase.parentBranch !== expectedSourceBase.parentBranch || sourceBase.revision !== expectedSourceBase.revision ||
+        sourceBase.manifestHash !== expectedSourceBase.manifestHash)) return undefined;
+  }
   if (!(["passed", "failed", "uncertain", "blocked"] as unknown[]).includes(item.status)
     || !branchName(item.branch) || !positiveInteger(item.revision) || !manifestHash(item.manifestHash)
     || !positiveInteger(item.targetRevision) || !manifestHash(item.targetManifestHash)
@@ -60,6 +70,7 @@ function projectValidationReceipt(value: unknown): GoalWorkspaceLineage["validat
     commandHash: item.commandHash, durationMs: Number(item.durationMs), completedAt: item.completedAt,
     candidateBranch: item.candidateBranch, candidateCommitId: item.candidateCommitId,
     sourceBranch: item.sourceBranch, sourceCommitId: item.sourceCommitId,
+    ...(sourceBase ? { sourceBase } : {}),
     targetBranch: item.targetBranch, targetCommitId: item.targetCommitId,
     publicationStatus: item.publicationStatus as GoalWorkspaceLineage["validationReceipts"][number]["publicationStatus"],
     ...(Number.isSafeInteger(item.exitCode) ? { exitCode: Number(item.exitCode) } : {}),
@@ -109,7 +120,7 @@ export function projectGoalWorkspaceLineage(input: {
 
   if (Array.isArray(input.validationReceipts)) {
     view.validationReceipts = input.validationReceipts.slice(-10).flatMap(item => {
-      const receipt = projectValidationReceipt(item);
+      const receipt = projectValidationReceipt(item, view.base);
       return receipt ? [receipt] : [];
     });
   }

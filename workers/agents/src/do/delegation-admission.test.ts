@@ -161,10 +161,11 @@ function fixture() {
   };
   const runtime = { scriptsBucket: {}, tenantId: "tenant", spaceId: "space", agentId: "parent", rootRunId: "root",
     delegationDepth: 2, delegationPlanner: true, effectiveRole: "editor", callerRole: "product_end_user",
-    maxTier: 6, airGappedOnly: true, localModelMachine: "authorized-machine" } as ScriptEngineEnv;
+    maxTier: 6, airGappedOnly: true, localModelMachine: "authorized-machine",
+    privateWorkerModels: [{ id: "test-model", inputModalities: ["text"], outputModalities: ["text"], contextTokens: 32_000, toolCalling: true }] } as ScriptEngineEnv;
   const spawn = (parent: Host, tasks: Record<string, unknown>[], merge?: Host["spawnSubAgentBatch"] extends (...args: infer A) => unknown ? A[14] : never,
     goalDispatchId?: string) => parent.spawnSubAgentBatch(tasks, "space", "parent", "tenant", "", "parent-run", "parent-thread", "project", children,
-    "person", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "low", undefined, runtime, merge, goalDispatchId);
+    "person", "local/test-model", "low", undefined, runtime, merge, goalDispatchId);
   const terminate = (parent: Host, id: string) => (parent as unknown as { terminateSubAgentImpl(id: string): Promise<void> }).terminateSubAgentImpl(id);
   return { active, requests, finishes, workers, dispatches, storageValues, publicationAttempts, host, runtime, spawn, terminate };
 }
