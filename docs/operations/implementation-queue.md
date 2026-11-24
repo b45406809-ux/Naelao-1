@@ -919,21 +919,27 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   only it for an idempotent start-check after recovery; other fresh IDs remain denied. The recovery,
   parent-admission and delegation-contract suites pass 29/29; Agents typecheck and `git diff --check`
   pass. Local fixtures do not simulate actual DO eviction or deployed recovery.
-- [ ] **APW08 — Remaining recovery and topology readiness review.** Reconcile long-running worker
-  deadline semantics, reusable SDK/template topology declarations and live interruption acceptance
-  against source and owning ledgers. Complete
-  independent local work; record exact policy, contract and deployment dependencies for blocked work.
+- [x] **APW08 — Remaining recovery and topology readiness review.** Current source confirms delegated
+  `long_running` work has no wall-clock deadline; its expiry, approval-wait and resume semantics need
+  an owner-reviewed contract. SDK `workerRoles` bind primitives but do not define reusable task/workflow
+  topology; APW/PW/TBR owners must review the versioned schema, topology/model/capability/evidence/
+  communication fields, reuse lifecycle and host-only authority/budget rule before implementation.
+  Local approval recovery is covered, while real DO eviction/cross-DO/provider-effect acceptance needs
+  authorized staging bindings and a disposable effect fixture. No independent APW08 code gap remains.
+  See the [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md).
 
-**Latest checkpoint:** APW07 source-base validation lineage is preserved and projected safely; four
+**Latest checkpoint:** APW08 deadline, reusable SDK/template definition, and live recovery contracts
+were reconciled against current sources and APW/PW/TBR owners; no additional source-only change is
+ready until the owner-reviewed duration and definition contracts exist. APW07 source-base validation
+lineage is preserved and projected safely; four
 focused suites pass 39/39. APW08 budget/scope/route/pin tests pass 22/22, current Project access gate
 tests pass 2/2, and delegated approval-resume contract/start-fence suites pass 30/30. Agents typecheck
 and `git diff --check` pass. No real multi-DO publication race, live membership revocation, actual
 Coordinator pin read, actual DO eviction/recovery or interruption runtime ran. The resumed preferred-
 runtime capability suites pass 28/28. Approval continuation recovery, parent start-fence and contract
-suites pass 29/29; Agents typecheck and `git diff --check` pass. **Exact next action:** reconcile the
-long-running worker deadline contract and reusable SDK/template topology declarations against their
-owning plans; record exact blockers and live acceptance conditions before moving to the next queued
-plan.
+suites pass 29/29; Agents typecheck and `git diff --check` pass. **Exact next action:** complete the
+queue-wide readiness review across every unfinished plan, then resume the first plan with independent
+local work.
 
 **APW checkpoint history.** APW06 goal decision-hold remediation adds a status explanation with
 exact decision references and revisions plus a direct link to the Project decision review panel. It
@@ -969,7 +975,7 @@ contain substantial implementation. Activate one entry at a time. Copy only the 
 into the active checklist. Keep finished task checkboxes and evidence in the queue or its linked
 ledgers when moving to another plan.
 
-1. [ ] **Active; APW08 remaining recovery and topology readiness review.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 reuse their owning plans.
+1. [ ] **Reconciled; APW08 has no ready local task.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Deadline and reusable-definition contracts need owner review; live recovery needs authorized staging. APW04–APW06 also retain their recorded policy/authority gates, and APW07–APW09 reuse their owning plans.
 2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
 3. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
 4. [ ] **Paused; local acceptance complete, live acceptance blocked.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#paused-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.

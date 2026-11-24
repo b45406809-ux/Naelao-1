@@ -1,5 +1,45 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW08 readiness review — 2026-11-24 (deadline, reusable definitions and live recovery)
+
+Current source gives ordinary AgentDO runs a 10-minute wall-clock deadline and allows an explicit
+`deadline_ms` override. The delegated-worker caller sets `long_running: true` without `deadline_ms`,
+so that path receives no wall-clock deadline. Its signed delegation bounds token and step counts,
+but those limits do not define elapsed-time or paused-worker expiry. The APW and PW plans require
+bounded deadlines and safe recovery, but neither owner ledger defines the maximum active duration,
+whether human-approval waiting time counts, expiry/cleanup behavior, or the user-visible state when
+an expired worker is resumed. **Dependency:** an owner-reviewed worker deadline/expiry contract that
+defines those semantics and the resume fence. After approval, wire its bounded deadline to delegated
+execution and test active, suspended, expired and resumed cases. Do not infer a duration from the
+ordinary interactive 10-minute deadline.
+
+The SDK currently exposes `ExtensionWorkerRole` bindings (`principal`, invocation/execution,
+entry, primitive IDs and optional Gadget actions). Its extension workflow contract lists an entry,
+steps and tool names; the `@naelao/sdk` plan compiler emits a bounded static sequential list. These
+contracts do not describe a reusable worker/task definition or an adaptive workflow topology. APW
+§8 calls for role, capability, model, task, stage, evidence and communication declarations; PW §6
+distinguishes reusable worker/workflow definitions from sessions and branches; TBR's template role
+contract keeps authority host-owned. The owners do not yet define the versioned schema, how reusable
+definitions bind to host-approved package/grants, or lifecycle/review rules. **Dependency:** review
+and approve that cross-plan definition contract, including role-to-task/stage binding, allowed
+topology bounds, model/capability declarations, evidence/communication shape, reuse/version rules,
+and an explicit rule that declarations cannot grant authority or budget. Then implement its parser,
+SDK/template round-trip and host binding tests against existing admission limits.
+
+Approval recovery now reuses the persisted continuation run ID and budget, with exact-attempt
+fencing and idempotent run recovery covered by local fixtures. These do not prove Cloudflare DO
+eviction, cross-DO scheduling or provider-effect recovery. **Live acceptance dependency:** authorized
+staging AgentDO/Workflow bindings and a disposable effect fixture; interrupt a delegated worker while
+approval is pending and while continuation is starting, then verify current authorization, budget,
+runtime capability and exact-attempt fencing after restart, with no duplicate committed effect.
+Keep this acceptance separate from the local implementation record.
+
+The source/owner review found no additional APW08 code change that can be made without choosing the
+missing duration and reusable-definition contracts. APW08's local budget, scope, route, workspace-pin,
+access, runtime-capability and approval-recovery slices remain verified in the entries below.
+**Exact next action:** finish the implementation-queue readiness review for every unchecked plan;
+keep APW08 incomplete until its owner contracts and live recovery acceptance are satisfied.
+
 ## APW08 follow-up — 2026-11-24 (resumed-worker budget revalidation)
 
 `delegation-admission.test.ts` now proves resumed child dispatch recomputes the allowance from the
