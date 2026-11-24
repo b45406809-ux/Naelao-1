@@ -55,4 +55,29 @@ describe("project worker capability roster", () => {
       .rejects.toThrow("thread_read_scope_denied");
     expect(fetch).toHaveBeenCalledTimes(2);
   });
+
+  it("limits a Project planner's worker roster and consult target to the Project allowlist", async () => {
+    const fetch = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/projects/project-1")) return Response.json({
+        id: "project-1", default_agent_id: "worker-2", allowed_agent_ids: ["worker-2"],
+      });
+      if (url.pathname.endsWith("/agent-definitions")) return Response.json({ data: [
+        { id: "worker-1", name: "Other Project Worker", config: { scripts: { prebuilt: ["finance-ops"] } } },
+        { id: "worker-2", name: "Allowed Worker", config: { scripts: { prebuilt: ["knowledge-base"] } } },
+      ] });
+      return Response.json({ data: [] });
+    });
+    const consultAgent = vi.fn();
+    const ctx = { env: {
+      spacesWorker: { fetch } as never, spaceId: "space-1", projectId: "project-1", tenantId: "tenant-1", platformSecret: "secret",
+      orchestration: { consultAgent },
+    }, run: vi.fn() } as never;
+
+    const roster = await projectCoordination.operations["thread.list_project_agents"]!({}, ctx) as { agents: Array<{ id: string }> };
+    expect(roster.agents.map(agent => agent.id)).toEqual(["naelao-agent", "worker-2"]);
+    const result = await projectCoordination.operations["thread.consult"]!({ agent_id: "worker-1", message: "inspect the private project" }, ctx) as { ok: boolean; error: string };
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("was not found in this project") });
+    expect(consultAgent).not.toHaveBeenCalled();
+  });
 });

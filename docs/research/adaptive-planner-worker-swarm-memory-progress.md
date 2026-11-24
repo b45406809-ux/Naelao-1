@@ -48,9 +48,22 @@ and rechecks current Project access before projecting evidence, and evidence col
 worker parent, tenant, Space, Project, branch and declared file paths.
 
 The Project coordination/task blackboard/Goal DAG suites pass **69/69**; Spaces thread hierarchy
-passes **2/2**; Agents and Spaces typechecks pass. This local checkpoint is awaiting push.
-**Exact next action:** audit project-agent roster visibility and its delegation target validation,
-then complete the exact task/evidence discovery and resume-path caller audit.
+passes **2/2**; Agents and Spaces typechecks pass. Pushed as `b9a36f40`.
+
+## APW01/APW02 follow-up — Project worker roster scope (local)
+
+`thread.list_project_agents` previously returned every Space agent definition to a Project planner,
+even when the current Project had a non-empty `allowed_agent_ids` list. The Project planner now
+reads its current Project config, filters the roster to that allowlist plus its default agent, and
+keeps the built-in general assistant addressable. If Project scope cannot be loaded, it fails closed.
+`thread.consult` uses the same filtered roster before dispatch. A disallowed configured worker is not
+returned in discovery and its consult request is rejected without calling the orchestration hook.
+
+Project coordination, task blackboard, task integration and Goal DAG suites pass **70/70**; Agents
+typecheck and `git diff --check` pass. This local checkpoint is awaiting push. **Exact next action:**
+review the complete surviving planner operation allowlist against current callers, verify the exact
+decision/excerpt readers are discoverable and invocable in Project scope but hidden in Space scope,
+then close APW01 and proceed to APW02's one-worker/dependent-follow-up slice.
 
 ## APW07 checkpoint — authorized Goal Activity route projection
 

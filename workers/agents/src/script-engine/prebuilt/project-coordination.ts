@@ -54,10 +54,23 @@ interface ProjectAgentEntry {
   available_capabilities?: string[];
 }
 
-/** List the agents addressable from a project: every agent_definition in the space PLUS the
- *  general Space Assistant, which is always addressable even in a brand-new project (auto-added
- *  to the listing so a spawn/consult/send can name it). De-duplicated by id. */
+/** List the agents addressable from this run: Project allowlists narrow the space roster; a
+ *  Space planner can inspect the full space roster. The general assistant stays addressable. */
 async function listProjectAgents(ctx: PrebuiltOpContext): Promise<ProjectAgentEntry[]> {
+  let allowedAgentIds: Set<string> | undefined;
+  if (ctx.env.projectId) {
+    let project: Record<string, unknown>;
+    try {
+      project = await spacesCall(ctx, "GET", `/spaces/${ctx.env.spaceId}/projects/${encodeURIComponent(ctx.env.projectId)}`) as Record<string, unknown>;
+    } catch {
+      throw new Error("project_agent_scope_unavailable");
+    }
+    const configured = Array.isArray(project["allowed_agent_ids"])
+      ? project["allowed_agent_ids"].filter((id): id is string => typeof id === "string" && id.length > 0)
+      : [];
+    const defaultAgentId = typeof project["default_agent_id"] === "string" ? project["default_agent_id"] : undefined;
+    if (configured.length) allowedAgentIds = new Set([...configured, ...(defaultAgentId ? [defaultAgentId] : [])]);
+  }
   let rows: Array<Record<string, unknown>> = [];
   try {
     const res = (await spacesCall(
@@ -70,7 +83,7 @@ async function listProjectAgents(ctx: PrebuiltOpContext): Promise<ProjectAgentEn
     // A listing failure must never make the general agent invisible — it is always addressable.
     rows = [];
   }
-  const entries: ProjectAgentEntry[] = rows.map((r) => ({
+  const entries: ProjectAgentEntry[] = rows.filter(r => !allowedAgentIds || allowedAgentIds.has(String(r["id"] ?? ""))).map((r) => ({
     id: String(r["id"] ?? ""),
     name: String(r["name"] ?? r["id"] ?? "agent"),
     ...(typeof r["description"] === "string" ? { description: r["description"] as string } : {}),

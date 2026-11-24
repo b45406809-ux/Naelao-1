@@ -1021,10 +1021,16 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
     before fetching messages. Broad Space thread listings now filter private Projects using the
     viewer's membership/owner role. Project coordination and thread hierarchy suites pass 71/71;
     Agents and Spaces typechecks pass. Local checkpoint pending push.
-  - [ ] Continue auditing the project-agent roster and exact task/evidence discovery callers,
-    including viewer/actor scope and resume-time revalidation. Keep task blackboard worker-only and
-    route broad investigation through authorized workers; test discovery and invocation before
-    closing APW01.
+  - [x] **APW01/APW02 — Project worker roster scope.** The roster now filters Space agent definitions
+    by a non-empty current Project `allowed_agent_ids` list (including its default agent), preserves
+    the general assistant, and fails closed if Project scope cannot be read. A disallowed consult
+    target is rejected before dispatch. Task blackboard remains worker-only; Goal Activity is actor
+    indexed and rechecks Project access; evidence collection verifies parent, actor scope, branch
+    and declared file paths. Four focused suites pass 70/70; Agents typecheck and `git diff --check`
+    pass. Local checkpoint pending push.
+  - [ ] Review the complete surviving planner operation allowlist against current callers, verify
+    exact lookup discovery and invocation on Project and Space planners, then close APW01 and advance
+    to APW02's one-worker/dependent-follow-up slice. Keep live acceptance separate.
 - [ ] **APW02 — Use one scoped investigation worker by default and fan out independent tasks.**
   Reuse existing delegation, task DAG, worker follow-up and evidence paths. Verify dependent context
   stays with one worker, independent assignments avoid overlap, and partial results stay visible.
@@ -1039,10 +1045,11 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
 **Latest checkpoint:** The first exact Project decision lookup and planner file-read denial are
 verified and pushed as `fee19873`; alias/pipeline/Code Mode/stored-command/resume regressions passed
 53/53 and were pushed as `c140822b`. The bounded Project excerpt passed 31/31 and was pushed as
-`5158d3bb`. A local thread-scope slice passes 71/71 across Agents and Spaces suites; both typechecks
-pass, pending checkpoint push. **Exact next action:** audit project-agent roster visibility and the
-exact task/evidence discovery callers, confirm actor/Project scope and resume revalidation, and add
-invocation tests or route broad inspection through authorized workers.
+`5158d3bb`. Project thread scope passed 71/71 and was pushed as `b9a36f40`. The project-agent roster
+and task/evidence scope audit passes 70/70 with Agents typecheck; it is awaiting push. **Exact next
+action:** review the complete surviving planner operation allowlist against current callers, verify
+exact lookup discovery and invocation on Project and Space planners, then close APW01 and advance to
+APW02's one-worker/dependent-follow-up slice.
 
 ## Ordered plan list
 
