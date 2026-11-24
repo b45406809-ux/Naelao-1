@@ -8,6 +8,10 @@ This is a proposal, not a claim that the capabilities exist or are production re
 
 The running implementation session may copy this file into its active branch without merging this planning branch. Re-audit current code and record evidence rather than treating this document's examples as current behavior. Keep rollout and deployed acceptance subject to the existing plans.
 
+The [planner investigation and worker reuse plan](planner-investigation-and-worker-reuse-plan.md)
+specifies the target planner tool boundary, investigation routing and versioned worker-definition
+design under APW01, APW02 and APW08. Use the narrower boundary when implementing those slices.
+
 ## 2. Research and evidence boundaries
 
 The primary reference is Cursor's [Agent swarms and the new model economics](https://cursor.com/blog/agent-swarm-model-economics), 20 July 2026. Cursor tasked agents with implementing the SQLite manual in Rust without SQLite source, binary, internet or the evaluation test suite. It reports better results for its redesigned swarm across its tested model mixes. At four hours, the redesigned configurations scored 73–85% on its held-out SQL test suite; the old configurations scored 11–77%. All redesigned configurations eventually passed that suite, which does not establish full SQLite compatibility or production readiness.

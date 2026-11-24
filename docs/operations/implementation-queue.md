@@ -748,7 +748,7 @@ an approved owner policy. The APW plan remains parked because its open cost, ret
 acceptance work has explicit dependencies, while APW07–APW09 overlaps owning plans. The next plan
 in the ordered list is S/U.
 
-## Active plan — Adaptive planner, worker coordination and memory
+## Previous plan checkpoint — Adaptive planner, worker coordination and memory
 
 **Adaptive planner, worker coordination and memory.** See the [plan](../research/adaptive-planner-worker-swarm-memory-plan.md)
 and [progress ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). APW01 was
@@ -985,6 +985,35 @@ Track detached dispatch separately in the [shared compute ledger](../research/sh
 It needs durable invocation authority, alarm-safe revalidation and fresh Billing admission.
 Keep disconnected replay disabled while those prerequisites are open.
 
+## Active plan — Planner investigation and worker reuse
+
+See the [plan](../research/planner-investigation-and-worker-reuse-plan.md) and record implementation
+evidence in the [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). This
+entry supplements existing APW/PW/TBR requirements and uses their IDs.
+
+- [ ] **APW01/APW02 — Audit and enforce the planner investigation boundary.** Trace current Project,
+  Space and nested planner callers, then deliver one locally verified host boundary slice around an
+  existing exact decision or goal/evidence lookup. Migrate legitimate discovery callers to workers
+  and close the corresponding planner `Read` and virtual CLI bypasses. Continue with supported
+  exact workspace excerpts and verify invocation as well as tool discovery.
+- [ ] **APW02 — Use one scoped investigation worker by default and fan out independent tasks.**
+  Reuse existing delegation, task DAG, worker follow-up and evidence paths. Verify dependent context
+  stays with one worker, independent assignments avoid overlap, and partial results stay visible.
+- [ ] **APW08 — Reusable and ephemeral worker definitions.** Implement and verify the internal
+  versioned definition, scoped discovery, immutable pinning and host binding after the boundary
+  work. Review SDK/template compatibility and publication scope under APW/PW/TBR before enabling
+  those surfaces. Track existing deadline and live recovery work in the APW ledger.
+- [ ] **APW02/APW09 — Compare task shapes and verify the boundary.** Extend the existing comparison
+  protocol and local fixture. Keep provider-cost, real recovery and rollout acceptance open under
+  their existing prerequisites.
+
+**Latest checkpoint:** Branch tip `003f79d7` confirms the planner allows `Read` and filesystem
+inspection via the virtual CLI. The queued spec defines exact lookup, one-worker investigation,
+conditional parallelism and reusable worker definitions. This checkpoint adds the plan and handoff.
+**Exact next action:** audit planner `Read` and `Bash` from `agent-topology.ts` through
+`ScriptToolSurface.run` and the virtual CLI, then trace one existing exact Project decision or
+goal/evidence reader. Record the callers and land the first locally verified host boundary slice.
+
 ## Ordered plan list
 
 Unchecked entries mean work or reconciliation remains, even where the linked ledgers already
@@ -992,21 +1021,22 @@ contain substantial implementation. Activate one entry at a time. Copy only the 
 into the active checklist. Keep finished task checkboxes and evidence in the queue or its linked
 ledgers when moving to another plan.
 
-1. [ ] **Reconciled; APW has no ready local task.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). A review-only APW07 shared-decision/distinct-path signal is implemented; full conflict classification and APW08 deadline/reusable-definition work need owner-reviewed contracts. APW04–APW06 and APW09 retain policy/authority/evaluation gates. Cross-DO recovery/publication and economics acceptance need authorized staging.
-2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
-3. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
-4. [ ] **Paused; local acceptance complete, live acceptance blocked.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#paused-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.
-5. [ ] **Paused; no ready source task.** [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md). Resume SC03 when durable invocation consent, exact alarm-safe authority revalidation and pre-dispatch reservation are supported; resume SC04 when owner-approved Space/Project caps exist.
-6. [ ] **Reconciled; no standalone task selected.** [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Code gaps remain tracked in their owning plans; remaining checked-workspace/runtime acceptance requires authorized deployed/provider evidence.
-7. [ ] **Paused; no ready source task.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md). K21 deployed acceptance and the K20 response-cache identity contract remain blocked; K15 waits on exact provider scope/freshness/cleanup evidence.
-8. [ ] **Paused; remaining EP06 billing-price/cap and provider/live acceptance gates have no current local rate/acceptance contract.** [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
-9. [ ] **Paused; no current code-ready task.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md). TBR08's workflow-resource dispatch slice is locally fixed; broad channel/provider/cache/delegation acceptance remains partial. TBR11's direct-script per-effect ceiling needs an owner-approved admission contract; role-to-resource mapping and private-Project policy remain unresolved.
-10. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
-11. [ ] **Source reconciled; provider work remains gated by terms, API and pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
-12. [ ] **Source reconciled; provider work remains gated by API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
-13. [ ] **Paused; source and focused local regression tests verified; migration/live acceptance blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Resume on the separate migration authorization, configured test-account and provider/UI acceptance dependencies recorded above.
-14. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
-15. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
+1. [ ] **Active; local boundary work ready.** [Planner investigation and worker reuse](../research/planner-investigation-and-worker-reuse-plan.md) · [active checklist](#active-plan--planner-investigation-and-worker-reuse). Continue here first because it supplies a ready APW boundary slice.
+2. [ ] **Earlier APW work remains open under existing dependencies.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). A review-only APW07 shared-decision/distinct-path signal is implemented; full conflict classification and APW08 deadline/reusable-definition work need owner-reviewed contracts. APW04–APW06 and APW09 retain policy/authority/evaluation gates. Cross-DO recovery/publication and economics acceptance need authorized staging.
+3. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
+4. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
+5. [ ] **Paused; local acceptance complete, live acceptance blocked.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#paused-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.
+6. [ ] **Paused; no ready source task.** [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md). Resume SC03 when durable invocation consent, exact alarm-safe authority revalidation and pre-dispatch reservation are supported; resume SC04 when owner-approved Space/Project caps exist.
+7. [ ] **Reconciled; no standalone task selected.** [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Code gaps remain tracked in their owning plans; remaining checked-workspace/runtime acceptance requires authorized deployed/provider evidence.
+8. [ ] **Paused; no ready source task.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md). K21 deployed acceptance and the K20 response-cache identity contract remain blocked; K15 waits on exact provider scope/freshness/cleanup evidence.
+9. [ ] **Paused; remaining EP06 billing-price/cap and provider/live acceptance gates have no current local rate/acceptance contract.** [Extensible platform and managed resources](../research/extensible-platform-and-managed-resources-plan.md) · EP entries in the [platform ledger](../research/platform-completion-and-guided-templates-progress.md)
+10. [ ] **Paused; no current code-ready task.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md). TBR08's workflow-resource dispatch slice is locally fixed; broad channel/provider/cache/delegation acceptance remains partial. TBR11's direct-script per-effect ceiling needs an owner-approved admission contract; role-to-resource mapping and private-Project policy remain unresolved.
+11. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
+12. [ ] **Source reconciled; provider work remains gated by terms, API and pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
+13. [ ] **Source reconciled; provider work remains gated by API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
+14. [ ] **Paused; source and focused local regression tests verified; migration/live acceptance blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Resume on the separate migration authorization, configured test-account and provider/UI acceptance dependencies recorded above.
+15. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
+16. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
 
 ## Queue readiness review — 2026-11-24 (after `4e040d97`)
 
@@ -1038,10 +1068,11 @@ obtaining live/practitioner evidence. Keep unchecked plan rows open; do not mark
 | Commercial cleaning template | Practitioner discovery must approve site/scope/visit/correction/inspection records, transitions and evidence; pilot scope/terms must be agreed before operational workflows or validation. No partner contact is authorized. |
 | Corporate recovery claims | Owner-approved functional scope and practitioner-validated status/checklist language, provenance and access contract are required before import/correction/export behavior; real claims data and practitioner outreach are not authorized. |
 
-**Queue status:** blocked with work remaining; no local task is ready. **Exact next action:** when the
-APW/PW owners publish the APW07 conflict evidence contract, implement and test its approved local
-classifier/receipt, then resume APW08's deadline and reusable-definition slices as their contracts
-are approved. Track DO/provider acceptance independently and keep all rollout gates disabled.
+At this review, the queue was blocked with work remaining. APW07 classification, APW08 deadline
+and reusable-definition contracts, and deployed acceptance were gated as recorded above. The
+[active planner investigation plan](#active-plan--planner-investigation-and-worker-reuse) was added
+after this review and supplies the next local task. The active checkpoint gives the current resume
+action. Keep all rollout gates disabled.
 
 ## Checkpoint archive
 

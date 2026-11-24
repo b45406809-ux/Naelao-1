@@ -23,6 +23,12 @@ session, or a specific blocker leaves no ready work.
    the commit. If the environment is still starting or reconnecting, wait for readiness and
    resume from the checkout when it returns.
 
+## Current task
+
+**APW01/APW02 — Planner investigation boundary.** Resume from the
+[active checklist and exact next action](docs/operations/implementation-queue.md#active-plan--planner-investigation-and-worker-reuse).
+Start with planner `Read` and `Bash` caller tracing and the first exact authorized lookup slice.
+
 ## Save progress inside each task
 
 - Break the active task into small slices that can be checked on their own. Commit and push
