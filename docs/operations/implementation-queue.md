@@ -854,12 +854,16 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   separately accepted pause/cancel and task-control behavior; do not treat local/mock UI evidence
   as live acceptance.
 - [ ] **APW07–APW09 — Cross-plan integration, recovery, and evaluation.** The barrier-driven
-  helper-level publication-race test and source-base validation lineage are complete below. Remaining
-  APW07 work needs semantic/interface conflict classification and broader integrated behavior evidence
-  through PW/EP. The local Node fixture does not exercise the parent DO's durable publication-permit
-  storage against a real Coordinator DO; resume that acceptance with authorized multi-DO staging
-  access. APW08 local budget, saved-scope, current-route, workspace-pin, access-gate, approval-resume
-  fencing and interrupted-resume recovery tests are complete. User-facing pause/resume/approval still needs an owner/admin authority and durable
+  helper-level publication-race test and source-base validation lineage are complete. Validation
+  receipts pin source base/commit, target revision/manifest, candidate and validation heads, command
+  digest and publication outcome. Coordinator conflict reasons cover deterministic text/path/content
+  collisions, not semantic/interface conflicts across files; resume classification after APW/PW owners
+  approve the evidence taxonomy, candidate-versus-confirmed states, uncertainty handling and whether
+  any classifier may use an existing task budget. Keep every classification untrusted and review-only.
+  The local Node fixture does not exercise parent-DO permit storage against a real Coordinator DO;
+  resume with authorized multi-DO staging access and cancellation before/after the permit. APW08 local
+  budget, saved-scope, current-route, workspace-pin, access-gate, approval-resume fencing and interrupted-
+  resume recovery tests are complete. User-facing pause/resume/approval still needs an owner/admin authority and durable
   status/effect-reconciliation contract; template/SDK topology declarations need a reviewed
   reusable-definition contract. Real interruption acceptance needs the deployed runtime. APW09 still needs a frozen representative
   quality/economics evaluation, complete provider-charge reconciliation and authorized real-runtime
@@ -975,7 +979,7 @@ contain substantial implementation. Activate one entry at a time. Copy only the 
 into the active checklist. Keep finished task checkboxes and evidence in the queue or its linked
 ledgers when moving to another plan.
 
-1. [ ] **Reconciled; APW08 has no ready local task.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Deadline and reusable-definition contracts need owner review; live recovery needs authorized staging. APW04–APW06 also retain their recorded policy/authority gates, and APW07–APW09 reuse their owning plans.
+1. [ ] **Reconciled; APW has no ready local task.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). APW07 conflict classification and APW08 deadline/reusable-definition work need owner-reviewed contracts; APW04–APW06 and APW09 retain policy/authority/evaluation gates. Cross-DO recovery/publication and economics acceptance need authorized staging.
 2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
 3. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
 4. [ ] **Paused; local acceptance complete, live acceptance blocked.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#paused-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.
