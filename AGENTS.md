@@ -10,11 +10,12 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW08 stale workspace-checkpoint revalidation.** Follow the active APW08 task in the
+**APW08 recovery and topology readiness review.** Follow the active APW08 task in the
 [implementation queue](docs/operations/implementation-queue.md#active-plan--adaptive-planner-worker-coordination-and-memory)
-and [adaptive planner plan](docs/research/adaptive-planner-worker-swarm-memory-plan.md). Add a
-focused local recovery test proving an old worker checkpoint is withheld when the source workspace
-head no longer matches its immutable saved pin. Keep deployed workspace/runtime acceptance separate.
+and [adaptive planner plan](docs/research/adaptive-planner-worker-swarm-memory-plan.md). Compare the
+remaining APW08 recovery/runtime-capability and SDK/template topology requirements with current
+callers and ledgers; carry out any remaining ready local work and record exact blockers for the rest.
+Keep deployed workspace/runtime acceptance separate.
 
 ## Checkout and recovery
 

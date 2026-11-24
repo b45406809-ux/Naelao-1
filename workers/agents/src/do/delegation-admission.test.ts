@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { NaelaoAgentDO } from "./NaelaoAgentDO.js";
+import { encodeWorkerCheckpoint } from "./worker-checkpoint.js";
 import { verifyDelegationContract } from "../script-engine/delegation-contract.js";
 import type { ScriptEngineEnv } from "../script-engine/types.js";
 
@@ -273,6 +274,30 @@ describe("host delegation admission", () => {
     expect(result.results[0]).toMatchObject({ id: workerId, ok: false, status: "failed", error: "private_worker_model_route_changed_on_resume" });
     expect(f.requests).toHaveLength(0);
     expect(f.workers.get(workerId)).toMatchObject({ status: "failed", attempt: 2, tokens_used: 100 });
+  });
+  it.each([
+    { label: "revision", revision: 8, manifestHash: "a".repeat(64) },
+    { label: "manifest hash", revision: 7, manifestHash: "b".repeat(64) },
+  ])("withholds a resumed worker checkpoint when its workspace $label pin is stale", async ({ revision, manifestHash }) => {
+    const f = fixture(), workerId = `stale-checkpoint-${revision}-${manifestHash[0]}`;
+    seedRecoverableWorker(f, workerId, 800, 100);
+    const row = f.workers.get(workerId)!;
+    row.workspace_branch = "workers/resume-checkpoint";
+    row.checkpoint_json = encodeWorkerCheckpoint({ privateProgress: "untrusted stale checkpoint payload" }, {
+      attempt: 1, workspacePin: { branch: row.workspace_branch, revision: 7, manifestHash: "a".repeat(64) },
+      workspacePinStatus: "pinned",
+    });
+    const parent = f.host();
+    (parent as unknown as { readSubAgentCheckpointPin: (tenantId: string, spaceId: string, projectId: string | undefined, branch: string) => Promise<unknown> })
+      .readSubAgentCheckpointPin = async (_tenantId, _spaceId, _projectId, branch) => ({ branch, revision, manifestHash });
+
+    const run = f.spawn(parent, [{ sub_agent_id: workerId, goal: "continue from authorized workspace", resume: true }]);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+
+    expect(f.requests[0]!.goal).toContain("Saved checkpoint is unpinned, stale, or unavailable; do not use its progress payload.");
+    expect(f.requests[0]!.goal).not.toContain("untrusted stale checkpoint payload");
+    f.finishes[0]!({ result: { ok: true, output: "continued from current workspace", tokens_used: 10 } });
+    await run;
   });
   it("fences child session start against the exact parent worker attempt", async () => {
     const f = fixture(), parent = f.host();

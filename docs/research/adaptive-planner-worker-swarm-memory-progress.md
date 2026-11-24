@@ -34,6 +34,18 @@ This local test does not establish provider capability or deployed route accepta
 **Exact next action:** test that an old worker checkpoint payload is withheld when the current
 workspace branch head no longer matches its immutable saved pin.
 
+## APW08 follow-up — 2026-11-24 (resumed-worker workspace pin revalidation)
+
+Resume now has regression coverage for a changed Coordinator revision and a changed manifest hash.
+Both cases supply a different current branch head and verify the saved checkpoint payload is withheld
+from the child prompt in favor of the stale/unavailable-checkpoint notice. The focused delegation
+suite passes **22/22**, Agents typecheck and `git diff --check` pass. The Coordinator read is stubbed;
+this is not deployed workspace acceptance.
+
+**Exact next action:** reconcile the remaining APW08 resume authorization, deadline, runtime
+capability and SDK/template topology requirements against current callers and owning ledgers. Complete
+any independent local gap before recording exact external blockers.
+
 ## APW07 follow-up — 2026-11-24 (source-base validation lineage)
 
 `WorkerIntegrationValidationReceipt` now includes the actual source branch base parent, Coordinator
