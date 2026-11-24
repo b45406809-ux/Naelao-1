@@ -6806,24 +6806,41 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const body = await request.json<{ workerId?: string; parentDoId?: string; parentRunId?: string; attempt?: number; runId?: string;
-      spaceId?: string; projectId?: string | null; actorId?: string }>().catch((): { workerId?: string; parentDoId?: string;
-        parentRunId?: string; attempt?: number; runId?: string; spaceId?: string; projectId?: string | null; actorId?: string } => ({}));
+      resumeAuthorized?: boolean; spaceId?: string; projectId?: string | null; actorId?: string }>().catch((): { workerId?: string; parentDoId?: string;
+        parentRunId?: string; attempt?: number; runId?: string; resumeAuthorized?: boolean; spaceId?: string; projectId?: string | null; actorId?: string } => ({}));
     if (typeof body.workerId !== "string" || body.workerId.length < 1 || body.workerId.length > 160
         || body.parentDoId !== this.ctx.id.toString() || typeof body.parentRunId !== "string"
         || !Number.isSafeInteger(body.attempt) || Number(body.attempt) < 1 || typeof body.runId !== "string"
+        || body.resumeAuthorized !== undefined && typeof body.resumeAuthorized !== "boolean"
+        || body.runId.length < 1 || body.runId.length > 192
         || typeof body.spaceId !== "string" || typeof body.actorId !== "string") {
       return Response.json({ error_code: "invalid_worker_start_check" }, { status: 400 });
     }
     const expectedRunId = body.attempt === 1 ? body.workerId : `${body.workerId}:attempt:${body.attempt}`;
-    if (body.runId !== expectedRunId) return Response.json({ active: false });
-    const row = this.ctx.storage.sql.exec<{ status: string; attempt: number; parent_run_id: string; configuration_json: string | null }>(
-      "SELECT status,attempt,parent_run_id,configuration_json FROM sub_agents WHERE id=?", body.workerId
-    ).toArray()[0];
-    const saved = row?.configuration_json ? safeJsonParse(row.configuration_json) as Record<string, unknown> | undefined : undefined;
-    const scopeMatches = row?.parent_run_id === body.parentRunId && saved?.tenantId === tenantId && saved.spaceId === body.spaceId
-      && saved.actorId === body.actorId && saved.parentDoId === body.parentDoId
-      && (saved.projectId ?? null) === (body.projectId ?? null);
-    return Response.json({ active: Boolean(scopeMatches && row?.status === "running" && row.attempt === body.attempt) });
+    if (body.resumeAuthorized !== true && body.runId !== expectedRunId) return Response.json({ active: false });
+    let active = false;
+    this.ctx.storage.transactionSync(() => {
+      const row = this.ctx.storage.sql.exec<{ status: string; attempt: number; parent_run_id: string; configuration_json: string | null }>(
+        "SELECT status,attempt,parent_run_id,configuration_json FROM sub_agents WHERE id=?", body.workerId
+      ).toArray()[0];
+      const saved = row?.configuration_json ? safeJsonParse(row.configuration_json) as Record<string, unknown> | undefined : undefined;
+      const scopeMatches = row?.parent_run_id === body.parentRunId && saved?.tenantId === tenantId && saved.spaceId === body.spaceId
+        && saved.actorId === body.actorId && saved.parentDoId === body.parentDoId
+        && (saved.projectId ?? null) === (body.projectId ?? null);
+      if (!row || !scopeMatches || row.attempt !== body.attempt) return;
+      if (body.resumeAuthorized !== true) {
+        active = row.status === "running";
+        return;
+      }
+      if (!(["awaiting_human_input", "awaiting_planner_input"] as string[]).includes(row.status)) return;
+      const claimed = this.ctx.storage.sql.exec(
+        `UPDATE sub_agents SET status='running',updated_at=? WHERE id=? AND parent_run_id=? AND attempt=?
+         AND status IN ('awaiting_human_input','awaiting_planner_input') RETURNING id`,
+        Date.now(), body.workerId, body.parentRunId, body.attempt,
+      ).toArray();
+      active = claimed.length === 1;
+    });
+    return Response.json({ active });
   }
 
   private async handleSubAgentSessionUpdate(request: Request): Promise<Response> {
@@ -8145,6 +8162,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         rootRunId: context["root_run_id"] as string, parentRunId: context["parent_run_id"] as string,
         parentDoId: context["parent_do_id"] as string, workerId: context["sub_agent_id"] as string,
         ...(Number.isSafeInteger(context["worker_attempt"]) ? { workerAttempt: context["worker_attempt"] as number } : {}),
+        ...(context["worker_resume_authorized"] === true ? { resumeAuthorized: true } : {}),
         depth: context["delegation_depth"] as 2 | 3, planner: context["delegation_planner"] as boolean,
         maxTokens: context["max_tokens"] as number, maxSteps: context["max_steps"] as number,
         ...(typeof context["runtime_capability"] === "string" ? { runtimeCapability: context["runtime_capability"] } : {}),
@@ -8170,6 +8188,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
             body: JSON.stringify({ workerId: delegation.workerId, parentDoId: delegation.parentDoId,
               parentRunId: delegation.parentRunId, attempt: delegation.workerAttempt ?? 1, runId,
+              ...(delegation.resumeAuthorized ? { resumeAuthorized: true } : {}),
               spaceId, projectId: projectId ?? null, actorId: delegation.actorId }),
           }));
           const check = await readBoundedResponseJson<{ active?: boolean }>(response, 16 * 1024);
@@ -10580,6 +10599,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       resumeDelegation = { ...resumeDelegation, maxTokens: remaining, maxSteps: budgetToMaxSteps(remaining) };
     }
+    if (resumeDelegation) resumeDelegation = { ...resumeDelegation, resumeAuthorized: true };
     let resumeContext: Record<string, unknown> | undefined = serviceResumeContext;
     if (resumeDelegation) {
       try {
@@ -10587,10 +10607,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         resumeContext = {
           ...(resumeContext ?? {}),
           delegation_token: token, delegation_depth: resumeDelegation.depth, delegation_planner: resumeDelegation.planner,
+          worker_attempt: resumeDelegation.workerAttempt,
+          worker_resume_authorized: resumeDelegation.resumeAuthorized,
           root_run_id: resumeDelegation.rootRunId, delegation_max_tier: resumeDelegation.maxTier,
           parent_run_id: resumeDelegation.parentRunId, parent_do_id: resumeDelegation.parentDoId,
           sub_agent_id: resumeDelegation.workerId, max_steps: resumeDelegation.maxSteps, max_tokens: resumeDelegation.maxTokens,
           worker_token_budget: resumeDelegation.maxTokens,
+          ...(resumeDelegation.runtimeCapability ? { runtime_capability: resumeDelegation.runtimeCapability } : {}),
           ...(resumeDelegation.filePaths !== undefined ? { file_paths: resumeDelegation.filePaths } : {}),
           ...(resumeDelegation.modelRequirements ? {worker_model_requirements:resumeDelegation.modelRequirements}:{}),
           ...(resumeDelegation.workerCapabilities !== undefined ? { worker_capabilities: resumeDelegation.workerCapabilities } : {}),

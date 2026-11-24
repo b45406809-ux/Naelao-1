@@ -8,6 +8,8 @@ export interface DelegationContract {
   rootRunId: string; parentRunId: string; parentDoId: string; workerId: string;
   /** Monotonic attempt fence for durable worker-session callbacks. */
   workerAttempt?: number;
+  /** Set only after a child DO verifies its suspended run's current HITL answer. */
+  resumeAuthorized?: boolean;
   depth: 2 | 3; planner: boolean; maxTokens: number; maxSteps: number;
   /** Host-classified managed runtime capability; advisory until the execution tool resolves it. */
   runtimeCapability?: string;
@@ -27,6 +29,7 @@ function resource(contract: DelegationContract): string {
   }
   if (contract.callerRole !== undefined && (typeof contract.callerRole !== "string" || !contract.callerRole || contract.callerRole.length > 192)) throw new Error("delegation_identity_invalid");
   if (contract.workerAttempt !== undefined && (!Number.isSafeInteger(contract.workerAttempt) || contract.workerAttempt < 1)) throw new Error("delegation_worker_attempt_invalid");
+  if (contract.resumeAuthorized !== undefined && typeof contract.resumeAuthorized !== "boolean") throw new Error("delegation_resume_authority_invalid");
   if (!Number.isInteger(contract.maxTier) || contract.maxTier < 1 || contract.maxTier > 6 || typeof contract.localOnly !== "boolean" || (contract.localModelMachine !== undefined && (typeof contract.localModelMachine !== "string" || !contract.localModelMachine))
     || (contract.runtimeCapability !== undefined && (typeof contract.runtimeCapability !== "string" || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(contract.runtimeCapability)))
     || ![2, 3].includes(contract.depth) || typeof contract.planner !== "boolean" || (contract.depth === 3 && contract.planner)
@@ -57,6 +60,7 @@ function resource(contract: DelegationContract): string {
   // Fixed order includes every field used to grant child execution permissions.
   return JSON.stringify([contract.agentId, contract.rootRunId, contract.parentRunId, contract.parentDoId, contract.workerId,
     ...(contract.workerAttempt === undefined ? [] : [contract.workerAttempt]),
+    ...(contract.resumeAuthorized === undefined ? [] : [contract.resumeAuthorized]),
     contract.depth, contract.planner, contract.maxTokens, contract.maxSteps, contract.model, contract.role, contract.callerRole ?? null, contract.workspaceBranch ?? null, contract.maxTier, contract.localOnly, contract.localModelMachine ?? null, contract.runtimeCapability ?? null, contract.filePaths === undefined ? null : [...contract.filePaths].sort(), contract.knowledgeScopes === undefined ? null : [...contract.knowledgeScopes].sort(),
     contract.workerCapabilities === undefined ? null : [ [...contract.workerCapabilities.enabledPrebuilts].sort(), [...contract.workerCapabilities.selectedSkills].sort() ],
     ...(requirements ? [[...requirements.inputModalities].sort(), requirements.minContextTokens] : [])]);

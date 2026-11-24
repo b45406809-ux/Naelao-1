@@ -53,8 +53,21 @@ assistant-access contract. New direct gate tests prove both a current denial and
 authority fail closed: **2/2**. Agents typecheck and `git diff --check` pass. The tests do not simulate
 actual child-DO dispatch, a live membership-revocation race or deployed runtime behavior.
 
-**Exact next action:** finish the APW08/PW/EP caller and contract readiness review, implement any
-independent local gap and record exact authority, policy or deployment dependencies for the rest.
+**Exact next action:** carry the exact worker attempt/runtime capability through delegated HITL resume
+and make the parent start fence accept only a verified, one-time claim for its waiting attempt.
+
+## APW08 follow-up — 2026-11-24 (delegated approval-resume fence)
+
+`handleResumeRun` now carries `workerAttempt` and `runtimeCapability` through the renewed delegation
+context. It sets signed `resumeAuthorized` only after HITL confirms an answer. The parent start check
+accepts a fresh run ID only for that signed resume, then atomically changes the exact waiting attempt
+to `running`; a duplicate or stale attempt is denied. Contract reconstruction and start-fence tests
+pass alongside the delegation and access suites: **30/30**. Agents typecheck and `git diff --check`
+pass. These are separate local fixtures, not a real cross-DO or crash-recovery test.
+
+**Exact next action:** reconcile remaining APW08 deadline, approval recovery, runtime capability and
+SDK/template topology requirements against current callers and ledgers; implement any independent
+local gap before recording blockers.
 
 ## APW07 follow-up — 2026-11-24 (source-base validation lineage)
 

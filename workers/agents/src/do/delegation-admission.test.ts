@@ -102,6 +102,12 @@ function fixture() {
         if (!row || row.status !== "delivering" || row.cancel_requested_at !== null) return cursor();
         row.status = "acknowledged"; row.attempt = Number(attempt); row.workspace_branch = String(branch); return cursor([], 1);
       }
+      if (normalized.startsWith("UPDATE sub_agents SET status='running',updated_at=? WHERE id=? AND parent_run_id=? AND attempt=?")) {
+        const [updated, id, parentRunId, attempt] = args, row = workers.get(String(id));
+        if (!row || row.parent_run_id !== parentRunId || row.attempt !== Number(attempt)
+            || !["awaiting_human_input", "awaiting_planner_input"].includes(row.status)) return cursor();
+        row.status = "running"; row.updated_at = Number(updated); return cursor([{ id: row.id }], 1);
+      }
       const rowId = normalized.startsWith("UPDATE sub_agents SET status = 'terminated'") ? args[1]
         : normalized.startsWith("UPDATE sub_agents SET status='running'") ? args[2]
         : normalized.startsWith("UPDATE sub_agents SET workspace_branch=?") ? args[3]
@@ -324,6 +330,29 @@ describe("host delegation admission", () => {
     expect(f.workers.has("worker-1")).toBe(false);
     expect(f.requests).toHaveLength(0);
     expect(f.dispatches.get("dispatch-1")?.status).toBe("delivering");
+  });
+  it("claims one approved resume for an exact waiting worker attempt", async () => {
+    const f = fixture(), parent = f.host();
+    const run = f.spawn(parent, [{ goal: "wait for approval" }]);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    const workerId = String(f.requests[0]!.context.sub_agent_id);
+    f.finishes[0]!({ pending_approval: { approval_id: "approval-a" }, result: { ok: false, error: "approval required", tokens_used: 0 } });
+    await run;
+    expect(f.workers.get(workerId)?.status).toBe("awaiting_human_input");
+
+    const check = async (attempt: number, runId: string, resumeAuthorized: boolean) => (parent as unknown as { fetch(request: Request): Promise<Response> }).fetch(new Request("http://agent-do/internal/sub-agents/start-check", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": await mintInternalToken("test-signing-key", "tenant") },
+      body: JSON.stringify({ workerId, parentDoId: "parent-do", parentRunId: "parent-run", attempt, runId,
+        spaceId: "space", projectId: "project", actorId: "person", ...(resumeAuthorized ? { resumeAuthorized: true } : {}) }),
+    }));
+
+    expect(await (await check(1, "fresh-resume-run", false)).json()).toEqual({ active: false });
+    const resumed = await check(1, "fresh-resume-run", true);
+    expect(await resumed.json()).toEqual({ active: true });
+    expect(f.workers.get(workerId)?.status).toBe("running");
+    expect(await (await check(1, "second-resume-run", true)).json()).toEqual({ active: false });
+    expect(await (await check(2, "stale-attempt", true)).json()).toEqual({ active: false });
   });
   it("lists a saved progress checkpoint timestamp without exposing checkpoint payload", async () => {
     const f = fixture(), parent = f.host();
