@@ -203,10 +203,35 @@ Carry `media.frame_extract` to the main runtime; preserve 0/10/20-second samplin
 revalidation, Space owner toggle, egress check, quota accounting, frame/image validation, and
 provenance. Projectless frame analysis must not create a specialist allocation.
 
+## SPR03.2 — Project video frame sampling — 2026-11-24
+
+The authenticated `attachment.describe_video` prebuilt carries its active Project and agent IDs to
+the frame-analysis route. The route now requires Project context before reading R2, then targets the
+stable `sandbox:<space>:<project>` identity through DynamicSandbox when enabled or the main
+`TOOL_SANDBOX` binding otherwise. Its host-created invocation scope requires `media.frame_extract`
+and retains the task run ID and `attachment-reader` actor. The existing runtime validates tenant,
+Space, Project, task and actor identity before forwarding to the container; capability admission
+still occurs before runtime resource admission or container start.
+
+The route preserves the owner feature toggle, task-owned attachment lookup, Space egress checks and
+pre/post extraction authority revalidation. It retains the 6 MiB input ceiling, 0/10/20-second
+sample points, three-frame limit, 5 MiB bounded runtime response, per-JPEG size and image validation,
+shared daily model-call quota, timestamps and untrusted sampled-frame provenance. Projectless frame
+requests fail before R2 reads and cannot create a specialist allocation. Capability/profile errors
+are surfaced to the caller.
+
+Local verification: attachment route and prebuilt caller tests pass **24/24**; ToolSandbox and
+DynamicSandbox suites pass **89/89**; Agents typecheck exits 0 and `git diff --check` passes. The
+tests use local fixtures; no provider operation or live image was run.
+
+**Exact next action:** trace the authenticated scanned-PDF OCR caller in SPR03.3 and route rendering
+through the Project runtime with host-created `document.pdf_render` admission, preserving task/Space
+authority, page and byte limits, and OCR attribution.
+
 ## Acceptance boundaries
 
-The branch identity, Project capability/image selection, checked replacement and video audio caller
-slices are implemented and locally verified. Remaining caller migration, direct specialist
+The branch identity, Project capability/image selection, checked replacement, video audio and frame
+caller slices are implemented and locally verified. Remaining caller migration, direct specialist
 retirement and SPR05 local acceptance remain open. Local source and test evidence must remain distinct from deployed cold/warm
 allocation, Cloudflare stop/reconciliation, cost/capacity, snapshot retention and Project-erasure
 acceptance. Keep rollout disabled and legacy erasure inventory active until the migrated routes and

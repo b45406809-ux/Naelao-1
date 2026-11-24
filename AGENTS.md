@@ -10,17 +10,15 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR03.2 — Route video frame sampling through the Project runtime.** Follow the
+**SPR03.3 — Route scanned PDF rendering through the Project runtime.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
 and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). SPR03.1 moved
-Project video audio extraction to the stable Project runtime with host-created
-`media.audio_extract` admission; ordinary audio remains container-free and Projectless video is
-denied before reading bytes. Trace the authenticated frame-analysis caller and its task/Space owner,
-egress and quota revalidation. Route only Project-scoped frames through the stable Project runtime
-with `media.frame_extract`; preserve the 0/10/20-second sample window, frame/byte bounds, image
-validation, attribution and provenance. Keep direct specialist allocation for this still-unmigrated
-caller only until its slice passes local tests; do not enable rollout. Continue SPR03.3–SPR03.4 after
-the frame slice.
+Project video audio extraction and SPR03.2 moved frame sampling to the stable Project runtime with
+host-created media capability admission. Ordinary audio remains container-free; Projectless video
+operations fail before reading bytes. Trace the authenticated scanned-PDF OCR caller and its task,
+Space owner, egress and quota checks. Route only Project-scoped PDF rendering through the stable
+Project runtime with `document.pdf_render`; preserve page, input, output and size limits plus OCR
+provenance. Keep the rollout disabled. Continue SPR03.4 after the PDF slice.
 
 ## Checkout and recovery
 

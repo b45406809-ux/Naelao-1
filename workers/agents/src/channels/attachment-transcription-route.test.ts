@@ -14,22 +14,31 @@ function env(options: { owned?: boolean; airGapped?: boolean; active?: boolean; 
     mainRuntimeCalls++;
     projectRuntimeNames.push(id);
     expect(id).toBe("sandbox:space-a:project-a");
-    expect(new URL(request.url).pathname).toBe("/media/extract-audio");
+    const path = new URL(request.url).pathname;
+    expect(["/media/extract-audio", "/media/extract-video-frames"]).toContain(path);
     const scope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as Record<string, unknown>;
     expect(scope).toMatchObject({ tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a",
-      actorId: "attachment-reader", runId: "task-a", requiredCapabilities: ["media.audio_extract"] });
+      actorId: "attachment-reader", runId: "task-a",
+      requiredCapabilities: [path === "/media/extract-video-frames" ? "media.frame_extract" : "media.audio_extract"] });
     expect(request.headers.get("x-naelao-runtime-object-name")).toBe("sandbox:space-a:project-a");
     if (options.runtimeCapabilityDenied) return Response.json({ ok: false, error_code: "project_runtime_capability_unavailable",
-      missing_capabilities: ["media.audio_extract"], eligible_profiles: ["media-documents"] }, { status: 409 });
+      missing_capabilities: [path === "/media/extract-video-frames" ? "media.frame_extract" : "media.audio_extract"],
+      eligible_profiles: ["media-documents"] }, { status: 409 });
     if (options.oversizedMediaResponse) {
       let chunks = 0;
+      const maxChunks = path === "/media/extract-video-frames" ? 6 : 3;
       return new Response(new ReadableStream<Uint8Array>({
         pull(controller) {
           chunks++;
-          if (chunks <= 3) controller.enqueue(new Uint8Array(1024 * 1024));
+          if (chunks <= maxChunks) controller.enqueue(new Uint8Array(1024 * 1024));
           else controller.close();
         },
       }));
+    }
+    if (path === "/media/extract-video-frames") {
+      const timestamps = Array.from({ length: options.frameCount ?? 3 }, (_, index) => [0, 10, 20, 30][index] ?? 30);
+      return Response.json({ frames: timestamps.map((timestampSeconds, index) => ({ timestampSeconds,
+        jpegBase64: options.malformedFrame && index === 0 ? btoa("not a jpeg") : btoa(String.fromCharCode(...jpeg)) })) });
     }
     return Response.json({ audioBase64: btoa("OggS"), mimeType: "audio/ogg", durationLimitSeconds: 60 });
   } }) };
@@ -97,11 +106,12 @@ async function describeImage(value: never, options: { owned?: boolean; question?
   }, value);
 }
 
-async function describeVideo(value: never, options: { question?: string } = {}) {
+async function describeVideo(value: never, options: { question?: string; projectId?: string | null } = {}) {
   return app.request("/internal/attachments/describe-video", {
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
-    body: JSON.stringify({ tenantId: "tenant-a", spaceId: "space-a", taskId: "task-a", id: "attachment-1", question: options.question ?? "What happens?" }),
+    body: JSON.stringify({ tenantId: "tenant-a", spaceId: "space-a", taskId: "task-a", id: "attachment-1", question: options.question ?? "What happens?",
+      ...(options.projectId !== undefined ? { projectId: options.projectId } : {}) }),
   }, value);
 }
 
@@ -241,16 +251,29 @@ describe("task-scoped audio transcription route", () => {
     expect(airGapped.mediaCalls()).toBe(0);
   });
 
-  it("analyzes only task-owned bounded video frames and labels timestamps and incomplete coverage", async () => {
+  it("requires an active Project before reading video bytes or creating a frame runtime allocation", async () => {
     const state = env({ mime: "video/mp4", videoFramesEnabled: true });
     const response = await describeVideo(state.value);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "video_frame_project_required" });
+    expect(state.reads()).toBe(0);
+    expect(state.mainRuntimeCalls()).toBe(0);
+    expect(state.mediaCalls()).toBe(0);
+    expect(state.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("analyzes only task-owned bounded video frames and labels timestamps and incomplete coverage", async () => {
+    const state = env({ mime: "video/mp4", videoFramesEnabled: true });
+    const response = await describeVideo(state.value, { projectId: "project-a" });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       task: "describe_video", source_media: "sampled_video_frames", analyzed_video_window_seconds: 30,
       frames: [{ timestamp_seconds: 0, width: 3, height: 2 }, { timestamp_seconds: 10 }, { timestamp_seconds: 20 }],
       text: expect.stringContaining("motion, events between frames, and content outside the first 30 seconds may be missed"),
     });
-    expect(state.mediaCalls()).toBe(1);
+    expect(state.mediaCalls()).toBe(0);
+    expect(state.mainRuntimeCalls()).toBe(1);
+    expect(state.projectRuntimeNames).toEqual(["sandbox:space-a:project-a"]);
     expect(state.ai.run).toHaveBeenCalledTimes(3);
     expect(state.ai.run).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ task: "query", question: expect.stringContaining("sampled video time 10 seconds") }), expect.any(Object));
 
@@ -262,7 +285,7 @@ describe("task-scoped audio transcription route", () => {
 
   it("does not call Workers AI when the shared per-Space model-call quota is exhausted", async () => {
     const state = env({ mime: "video/mp4", videoFramesEnabled: true, quotaAllowed: false });
-    const response = await describeVideo(state.value);
+    const response = await describeVideo(state.value, { projectId: "project-a" });
     expect(response.status).toBe(429);
     expect(await response.json()).toMatchObject({ error_code: "attachment_visual_analysis_daily_limit_reached", max_model_calls_per_rolling_day: 20 });
     expect(state.ai.run).not.toHaveBeenCalled();
@@ -270,16 +293,36 @@ describe("task-scoped audio transcription route", () => {
 
   it("rejects oversized input and invalid or excessive sandbox frames before model calls", async () => {
     const oversized = env({ mime: "video/mp4", videoFramesEnabled: true, oversizedAttachment: true });
-    expect((await describeVideo(oversized.value)).status).toBe(413);
+    expect((await describeVideo(oversized.value, { projectId: "project-a" })).status).toBe(413);
     expect(oversized.reads()).toBe(0);
     expect(oversized.mediaCalls()).toBe(0);
 
     const malformed = env({ mime: "video/mp4", videoFramesEnabled: true, malformedFrame: true });
-    expect((await describeVideo(malformed.value)).status).toBe(422);
+    expect((await describeVideo(malformed.value, { projectId: "project-a" })).status).toBe(422);
     expect(malformed.ai.run).not.toHaveBeenCalled();
 
     const excessive = env({ mime: "video/mp4", videoFramesEnabled: true, frameCount: 4 });
-    expect((await describeVideo(excessive.value)).status).toBe(413);
+    expect((await describeVideo(excessive.value, { projectId: "project-a" })).status).toBe(413);
     expect(excessive.ai.run).not.toHaveBeenCalled();
+
+    const oversizedOutput = env({ mime: "video/mp4", videoFramesEnabled: true, oversizedMediaResponse: true });
+    const outputResponse = await describeVideo(oversizedOutput.value, { projectId: "project-a" });
+    expect(outputResponse.status).toBe(413);
+    expect(await outputResponse.json()).toMatchObject({ error_code: "video_frame_output_limit" });
+    expect(oversizedOutput.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("uses DynamicSandbox and surfaces Project image capability admission for frame sampling", async () => {
+    const dynamic = env({ mime: "video/mp4", videoFramesEnabled: true, dynamicRuntime: true });
+    expect((await describeVideo(dynamic.value, { projectId: "project-a" })).status).toBe(200);
+    expect(dynamic.mainRuntimeCalls()).toBe(1);
+    expect(dynamic.mediaCalls()).toBe(0);
+
+    const denied = env({ mime: "video/mp4", videoFramesEnabled: true, runtimeCapabilityDenied: true });
+    const response = await describeVideo(denied.value, { projectId: "project-a" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error_code: "project_runtime_capability_unavailable",
+      missing_capabilities: ["media.frame_extract"], eligible_profiles: ["media-documents"] });
+    expect(denied.ai.run).not.toHaveBeenCalled();
   });
 });

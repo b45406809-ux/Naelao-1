@@ -68,7 +68,7 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
   Record the first locally verifiable admission or routing gap and the existing erasure coverage;
   the source map and existing erasure routes are documented in the
   [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-- [ ] **Active · SPR02 — One allocation and image profiles.** Enforce Project-wide admission across
+- [x] **SPR02 — One allocation and image profiles.** Enforce Project-wide admission across
   branches, select approved capabilities before starting, and fence image replacement and recovery.
   - [x] **SPR02.1 — Stable Project runtime identity and branch admission.** Project branch IDs
     resolve to `sandbox:<space>:<project>` while retaining the exact branch in invocation scope.
@@ -116,10 +116,16 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     ordinary audio remains on the container-free transcription service. Attachment route and
     prebuilt caller tests pass 22/22; Agents typecheck and `git diff --check` pass. No live image or
     provider operation was run.
-  - [ ] **Active · SPR03.2 — Video frame sampling.** Route the Project attachment path to the shared
-    runtime with `media.frame_extract` admission and preserve sampled-frame bounds and provenance.
-  - [ ] **SPR03.3 — Scanned PDF rendering.** Route Project OCR page rendering to the shared runtime
-    with `document.pdf_render` admission and preserve page, size and output limits.
+  - [x] **SPR03.2 — Video frame sampling.** The authenticated frame-analysis route now requires
+    Project context before reading R2, and calls `sandbox:<space>:<project>` through DynamicSandbox
+    or the legacy main runtime with host-created `media.frame_extract` admission. It preserves the
+    owner toggle, task ownership, Space egress and attachment revalidation, 0/10/20-second sampling,
+    frame/JPEG/output bounds, image validation, quota accounting, timestamps and provenance.
+    Projectless requests cannot create a specialist allocation. Attachment route and prebuilt tests
+    pass 24/24; ToolSandbox and DynamicSandbox tests pass 89/89; Agents typecheck and
+    `git diff --check` pass. No provider operation or live image was run.
+  - [ ] **Active · SPR03.3 — Scanned PDF rendering.** Route Project OCR page rendering to the shared
+    runtime with `document.pdf_render` admission and preserve page, size and output limits.
   - [ ] **SPR03.4 — Extension native tools.** Reconcile extension-declared processing callers with
     Project capability grants and the single allocation; preserve installation image policy and
     keep explicit external runtimes independent.
@@ -130,16 +136,17 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4 and SPR03.1 are complete in local source and fixtures.
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4 and SPR03.1–SPR03.2 are complete in local source and fixtures.
 Project branches share one runtime identity and generation; capability admission and versioned
 image settings resolve only exact deployed pins. DynamicSandbox applies checked replacement and
-workspace recovery. Project video audio extraction reaches the main runtime under
-`media.audio_extract`; ordinary audio remains container-free and Projectless video is denied before
-attachment bytes are read. Attachment route and prebuilt caller tests pass 22/22; Agents typecheck
-and `git diff --check` pass. Live provider image lifecycle and erasure acceptance remain separate.
-**Next action:** trace and migrate the authenticated video frame sampling caller in SPR03.2, carrying
-`media.frame_extract` through the host-created Project invocation while preserving sampling,
-provenance, attachment owner, egress and quota checks. Then continue SPR03.3–SPR03.4 in order.
+workspace recovery. Project video audio and frame extraction reach the main runtime under
+`media.audio_extract` and `media.frame_extract`; ordinary audio remains container-free, and
+Projectless video fails before attachment bytes are read. SPR03.2 attachment route/prebuilt tests pass
+24/24; ToolSandbox/DynamicSandbox tests pass 89/89; Agents typecheck and `git diff --check` pass.
+Live provider image lifecycle and erasure acceptance remain separate.
+**Next action:** trace the authenticated scanned-PDF OCR caller in SPR03.3 and route rendering through
+the Project runtime with host-created `document.pdf_render` admission, preserving task/Space checks,
+page and byte limits, and OCR attribution. Then continue SPR03.4.
 Legacy specialist retirement remains SPR04.
 
 ## Paused plan — Managed services and sidecar runtime

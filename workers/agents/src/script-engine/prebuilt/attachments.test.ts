@@ -55,12 +55,12 @@ describe("task-scoped attachment CLI operations", () => {
     expect(await state.calls[0]!.json()).toMatchObject({ taskId: "task-a", id: "opaque-video", projectId: "project-a", agentId: "agent-a", languageHint: "en" });
   });
 
-  it("routes bounded task-owned video frame questions through a separately authorized operation", async () => {
-    const state = context({ response: { task: "describe_video", frames: [{ timestamp_seconds: 0, text: "A person enters." }] } });
+  it("carries the active Project into bounded task-owned video frame analysis", async () => {
+    const state = context({ projectId: "project-a", response: { task: "describe_video", frames: [{ timestamp_seconds: 0, text: "A person enters." }] } });
     await expect(attachments.operations["attachment.describe_video"]!({ id: "opaque-video", question: "What changes?" }, state.ctx))
       .resolves.toMatchObject({ task: "describe_video", frames: [{ timestamp_seconds: 0 }] });
     expect(state.calls[0]?.url).toBe("http://agents-worker/internal/attachments/describe-video");
-    expect(await state.calls[0]!.json()).toMatchObject({ taskId: "task-a", id: "opaque-video", question: "What changes?" });
+    expect(await state.calls[0]!.json()).toMatchObject({ taskId: "task-a", id: "opaque-video", projectId: "project-a", agentId: "agent-a", question: "What changes?" });
     await expect(attachments.operations["attachment.describe_video"]!({ id: "opaque-video", question: "x".repeat(501) }, state.ctx))
       .rejects.toThrow("attachment_question_too_long");
     expect(state.calls).toHaveLength(1);

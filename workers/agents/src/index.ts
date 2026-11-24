@@ -8912,11 +8912,19 @@ app.post("/internal/attachments/describe-video", async (c) => {
   if (!["video/mp4", "video/webm", "video/quicktime", "video/x-matroska"].includes(mimeType)) {
     return c.json({ error_code: "attachment_video_frame_analysis_mime_unsupported" }, 415);
   }
+  if (!body.projectId) return c.json({ error_code: "video_frame_project_required" }, 409);
   const maxVideoBytes = 6 * 1024 * 1024;
   if (row.size_bytes <= 0 || row.size_bytes > maxVideoBytes) return c.json({ error_code: "video_input_too_large", max_bytes: maxVideoBytes }, 413);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "attachment_storage_unavailable" }, 503);
-  if (!c.env.MEDIA_SANDBOX) return c.json({ error_code: "video_frame_runtime_unavailable" }, 503);
+  const projectRuntimeNamespace = c.env.DYNAMIC_CONTAINERS_ENABLED === "true" ? c.env.DYNAMIC_SANDBOX : c.env.TOOL_SANDBOX;
+  if (!projectRuntimeNamespace) return c.json({ error_code: "video_frame_runtime_unavailable" }, 503);
   if (!c.env.AI) return c.json({ error_code: "attachment_video_frame_analysis_provider_unavailable" }, 503);
+  const scope: ContainerInvocationScope = {
+    tenantId, spaceId: body.spaceId, projectId: body.projectId, requiredCapabilities: ["media.frame_extract"],
+    actorId: "attachment-reader", agentId: body.agentId ?? "attachment-reader", runId: body.taskId,
+    executionId: crypto.randomUUID(), deadline: Date.now() + 45_000, timeoutMs: 40_000,
+  };
+  try { validateContainerScope(scope); } catch { return c.json({ error_code: "video_frame_scope_invalid" }, 400); }
   const object = await c.env.SCRIPTS_R2.get(row.object_key);
   if (!object) return c.json({ error_code: "attachment_not_found" }, 404);
   if (object.size !== row.size_bytes) return c.json({ error_code: "attachment_size_mismatch" }, 409);
@@ -8924,32 +8932,31 @@ app.post("/internal/attachments/describe-video", async (c) => {
   try {
     const videoBytes = new Uint8Array(await object.arrayBuffer());
     if (videoBytes.byteLength !== row.size_bytes) return c.json({ error_code: "attachment_size_mismatch" }, 409);
-    const scope: ContainerInvocationScope = {
-      tenantId, spaceId: body.spaceId, ...(body.projectId ? { projectId: body.projectId } : {}),
-      actorId: "attachment-reader", agentId: body.agentId ?? "attachment-reader", runId: body.taskId,
-      executionId: crypto.randomUUID(), deadline: Date.now() + 45_000, timeoutMs: 40_000,
-    };
-    try { validateContainerScope(scope); } catch { return c.json({ error_code: "video_frame_scope_invalid" }, 400); }
     const preExtractionDispatchAuthority = await revalidateFrameAuthority();
     if (preExtractionDispatchAuthority) return preExtractionDispatchAuthority;
-    const sandbox = c.env.MEDIA_SANDBOX.get(c.env.MEDIA_SANDBOX.idFromName(`attachment-media:${body.spaceId}:${body.projectId ?? "_assistant"}`));
-    const response = await sandbox.fetch(new Request("http://media-sandbox/media/extract-video-frames", {
+    const runtimeName = sandboxInstanceName(body.spaceId, body.projectId);
+    const sandbox = projectRuntimeNamespace.get(projectRuntimeNamespace.idFromName(runtimeName));
+    const response = await sandbox.fetch(new Request("http://project-main-runtime/media/extract-video-frames", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-naelao-tenant-id": tenantId,
         "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
         "x-naelao-container-scope": JSON.stringify(scope),
-        ...(body.projectId ? { "x-naelao-runtime-object-name": `attachment-media:${body.spaceId}:${body.projectId}` } : {}),
+        "x-naelao-runtime-object-name": runtimeName,
         "x-naelao-execution-id": scope.executionId,
         "x-naelao-timeout-ms": String(scope.timeoutMs),
       },
       body: JSON.stringify({ tenantId, spaceId: body.spaceId, projectId: body.projectId ?? null, taskId: body.taskId, videoBase64: bytesToBase64(videoBytes) }),
     }));
-    let extracted: { frames?: Array<{ timestampSeconds?: number; jpegBase64?: string }>; error?: string } = {};
+    let extracted: { frames?: Array<{ timestampSeconds?: number; jpegBase64?: string }>; error?: string; error_code?: string;
+      missing_capabilities?: string[]; eligible_profiles?: string[] } = {};
     try { extracted = JSON.parse(await readBoundedResponseText(response, 5 * 1024 * 1024)); }
     catch { return c.json({ error_code: "video_frame_output_limit" }, 413); }
     if (!response.ok || !Array.isArray(extracted.frames)) {
+      if (extracted.error_code?.startsWith("project_runtime_")) return c.json({ error_code: extracted.error_code,
+        ...(extracted.missing_capabilities ? { missing_capabilities: extracted.missing_capabilities } : {}),
+        ...(extracted.eligible_profiles ? { eligible_profiles: extracted.eligible_profiles } : {}) }, response.status === 503 ? 503 : 409);
       return c.json({ error_code: extracted.error ?? "video_frame_extract_failed" }, response.status === 413 ? 413 : response.status === 503 ? 503 : 422);
     }
     if (extracted.frames.length < 1 || extracted.frames.length > VIDEO_FRAME_ANALYSIS_MAX_FRAMES) {
