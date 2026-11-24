@@ -70,6 +70,14 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
   Record the first locally verifiable admission or routing gap and the existing erasure coverage;
   the source map and existing erasure routes are documented in the
   [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
+- [x] **SPR01 — Revalidate the runtime-start inventory on the active branch.** Current source routes
+  Project main execution, video audio/frame extraction, scanned-PDF rendering and Project-native
+  extension execution through `sandbox:<space>:<project>`. Project `MEDIA_SANDBOX` and
+  `DOCUMENT_SANDBOX` references remain for historical erasure/discovery, not new Project starts;
+  explicit AgentPort/tunnel execution remains separately authorized. Four focused routing,
+  attachment and specialist-workspace suites pass 56/56; Agents typecheck and `git diff --check`
+  pass. No additional local SPR01 code gap was found. Keep Cloudflare lifecycle and erasure acceptance
+  blocked separately as recorded below.
 - [x] **SPR02 — One allocation and image profiles.** Enforce Project-wide admission across
   branches, select approved capabilities before starting, and fence image replacement and recovery.
   - [x] **SPR02.1 — Stable Project runtime identity and branch admission.** Project branch IDs
@@ -229,6 +237,12 @@ The current Project assistant-access gate also passes revoked/unavailable regres
 with Agents typecheck and `git diff --check` clean. Approval-resume contract and parent start-fence
 coverage now passes 30/30 across four focused suites. Next is the APW08/PW/EP caller and contract
 readiness review. Live and other policy/contract/provider/practitioner acceptance remains separate.
+The SPR01 inventory was refreshed on the active branch: current Project main, attachment and native
+extension execution use the stable Project main object, while specialist namespaces remain for
+historical cleanup/discovery. Four focused routing/attachment/specialist suites pass 56/56, Agents
+typecheck and `git diff --check` pass. No further local SPR01 implementation gap was found; the
+separate live lifecycle/erasure blocker remains. **Exact next action:** continue the queued APW08
+recovery and topology readiness review.
 
 ## Paused plan — Managed services and sidecar runtime
 

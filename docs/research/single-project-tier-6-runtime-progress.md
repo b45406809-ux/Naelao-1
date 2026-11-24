@@ -1,5 +1,22 @@
 # Single Project Tier 6 runtime progress
 
+## SPR01 inventory refresh — 2026-11-24
+
+Rechecked runtime starts and routing on the active branch at `d287a115`. Project command execution,
+video audio extraction, video frame sampling, scanned-PDF rendering and Project-native extension
+execution all address the stable `sandbox:<space>:<project>` main object. Project-native extensions
+are re-resolved against the current installation and exact approved image before using the main
+runtime. Project `MEDIA_SANDBOX` and `DOCUMENT_SANDBOX` references remain in historical cleanup and
+deployment/discovery metadata; no new Project execution caller starts those specialist namespaces.
+AgentPort and tunnel execution remains explicit and independently authorized. Four focused routing,
+attachment and specialist-workspace suites pass **56/56**; Agents typecheck and `git diff --check`
+pass. This source and fixture review found no additional local SPR01 gap. Cloudflare allocation,
+capacity, billing, stop/reconciliation, snapshot and erasure acceptance remain unverified and blocked
+on the jurisdiction-specific deployment/access prerequisites recorded in the queue.
+
+**Exact next action:** continue the queue's APW08 recovery and topology readiness review; keep live
+SPR lifecycle and erasure acceptance separate.
+
 ## SPR01 source inventory — 2026-11-24
 
 Reconciled against `origin/Mcbt5s-Backup-2` at `700b693beb856a685ea7110d74e425dc75e1269e` and
