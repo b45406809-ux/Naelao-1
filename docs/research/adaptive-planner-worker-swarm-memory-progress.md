@@ -12,7 +12,8 @@ paths and differing decision revisions do not generate a candidate.
 `git diff --check` pass. This is a deterministic candidate heuristic only. It does not classify
 incompatible interfaces or other cross-file semantic behavior. **Exact next action:** continue APW07
 after owners approve the conflict taxonomy/evidence contract, then add the approved classification
-mechanism and integration tests. Keep cross-DO publication acceptance separate.
+mechanism and integration tests. Keep cross-DO publication acceptance separate. Pushed as
+`0abb4433` to `origin/Mcbt5s-Backup-2`.
 
 ## APW07/APW08 local revalidation — 2026-11-24 (remote tip `9a1ea1a1`)
 
