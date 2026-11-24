@@ -73,6 +73,19 @@ describe("project journal decision proposal and review", () => {
     expect(register.decisions.find(item => item.id === decision.id)).toMatchObject({ status: "active", workspaceStatus: "unpinned" });
   });
 
+  it("reads only the requested Project decision id and exact revision", async () => {
+    const f = fixture();
+    const proposal = await f.propose("editor");
+    const decision = (proposal as { decision: { id: string } }).decision;
+    const exact = await projectJournal.operations["project_journal.read_decision"]!({ decision_id: decision.id, revision: 1 }, f.ctx("owner", 3));
+    expect(exact).toMatchObject({ ok: true, decision: { id: decision.id, revision: 1, status: "proposed", workspaceStatus: "unpinned" } });
+    expect(exact).not.toHaveProperty("decisions");
+    await expect(projectJournal.operations["project_journal.read_decision"]!({ decision_id: decision.id, revision: 2 }, f.ctx("owner", 3)))
+      .resolves.toEqual({ ok: false, reason: "project_journal_decision_not_found" });
+    await expect(projectJournal.operations["project_journal.read_decision"]!({ decision_id: "bad\nselector", revision: 1 }, f.ctx("owner", 3)))
+      .resolves.toEqual({ ok: false, reason: "project_journal_decision_reference_invalid" });
+  });
+
   it("requires explicit same-topic supersession and preserves the old decision", async () => {
     const f = fixture();
     const first = await f.propose("editor");

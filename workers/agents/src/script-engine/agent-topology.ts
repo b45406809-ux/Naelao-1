@@ -15,7 +15,7 @@ export const UNIVERSAL_AGENT_BASELINE_PREBUILTS = [
 ] as const;
 
 const UNIVERSAL_REPL_OPERATIONS = new Set([
-  "Bash", "Read", "tools.search", "tools.describe",
+  "Bash", "tools.search", "tools.describe",
 ]);
 
 const PLANNER_OPERATIONS = new Set([
@@ -41,5 +41,6 @@ const PLANNER_OPERATIONS = new Set([
  */
 export function isPlannerOperationAllowed(scope: PlannerScope, name: string): boolean {
   if (UNIVERSAL_REPL_OPERATIONS.has(name) || PLANNER_OPERATIONS.has(name)) return true;
+  if (name === "project_journal.read_decision") return scope === "project";
   return scope === "space" && name === "delegate_to_space_worker";
 }

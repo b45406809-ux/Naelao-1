@@ -558,6 +558,7 @@ export class ScriptToolSurface {
     }
     if (this.plannerScope) {
       rows.push("## planner coordination Bash commands");
+      rows.push("- `naelao project decision <decision-id> --revision <n>` - read one exact decision revision from the current Project; stale or unavailable workspace status is advisory");
       rows.push("- `naelao goal plan --json '<JSON object with objective and tasks>'` - validate, persist and execute a dependency-aware worker DAG; host policy selects worker capabilities and models");
       rows.push("- `naelao project agents list` - list every agent addressable in the current project - no parameters");
       rows.push("- `naelao project agents consult --agent-id <id> --message <text>` - privately ask a named project worker for information or a bounded handoff");
@@ -999,13 +1000,14 @@ export class ScriptToolSurface {
           }])),
           authorizeShell: async (resource) => {
             if (resource.kind === "file") {
+              if (this.plannerScope) return false;
               if (resource.access === "write" && (this.plannerScope || this.env.effectiveRole === "viewer")) return false;
               return isToolAllowedForRole(this.role, resource.access === "write" ? "Edit" : "Read");
             }
             const installed = this.ops.get(resource.name);
             if (installed) return isToolAllowedForRole(this.role, resource.name, installed.prebuilt.requires_tier)
               && (!this.plannerScope || isPlannerOperationAllowed(this.plannerScope, resource.name));
-            if (this.plannerScope) return new Set(["naelao", "runtime", "echo", "printf", "pwd", "cat", "ls", "grep", "sed", "awk", "find", "jq", "head", "tail", "sort", "uniq", "wc", "diff", "true", "false"]).has(resource.name);
+            if (this.plannerScope) return new Set(["naelao", "runtime", "echo", "printf", "pwd", "true", "false"]).has(resource.name);
             return isToolAllowedForRole(this.role, "Bash");
           },
           // skills calling skills (§7): a prebuilt op may invoke another op/script.

@@ -1,5 +1,21 @@
 # Adaptive planner, worker coordination and memory progress
 
+## APW01/APW02 checkpoint — exact Project decision read at planner boundary
+
+Project planners can request one Project Journal decision by exact ID and revision through
+`project_journal.read_decision` or `naelao project decision <id> --revision <n>`. The host derives
+the Project from the current run, returns only the matching record, and includes its read-time
+workspace freshness status. Space planners cannot invoke it. Planner `Read` and its aliases are
+denied; the Bash host callback denies file resources and removes filesystem inspection commands from
+the planner's virtual shell allowlist. Isolated Code Mode `storage.read` receives the same denial.
+Workers retain their existing file-read path.
+
+Four focused suites pass **49/49**; Agents typecheck and `git diff --check` pass. This is the first
+host-enforced lookup slice, not completion of the planner investigation audit. **Exact next action:**
+continue tracing direct tool calls, virtual CLI aliases/pipelines, Code Mode and saved scripts for
+remaining planner workspace or domain-read paths; record supported callers and select the next
+independently verifiable boundary slice.
+
 ## APW07 checkpoint — authorized Goal Activity route projection
 
 Added a route-level regression proving the decision-linked distinct-path candidate is projected

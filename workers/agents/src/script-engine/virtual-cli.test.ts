@@ -34,6 +34,14 @@ describe("VirtualCliDispatcher", () => {
       operation: "thread.list_project_agents", params: { query: "invoice reconciliation" },
     });
   });
+  it("parses an exact Project decision lookup and rejects broad or invalid selectors", () => {
+    expect(interceptPlatformCli("naelao project decision decision-42 --revision 3")).toEqual({
+      operation: "project_journal.read_decision", params: { decision_id: "decision-42", revision: 3 },
+    });
+    expect(() => interceptPlatformCli("naelao project decision decision-42")).toThrow("positive-integer");
+    expect(() => interceptPlatformCli("naelao project decision decision-42 --revision 0")).toThrow("positive-integer");
+    expect(() => interceptPlatformCli("naelao project decision --revision 3 --all")).toThrow("positive-integer");
+  });
   it("routes planner DAG creation through the typed CLI boundary", () => {
     const plan = { objective: "write a report", tasks: [{ id: "write", title: "Write report", subtask_spec: "Create the report", assigned_role: "worker", acceptance_criteria: ["artifact exists"], evidence_checks: [{ criterion: "artifact exists", operation: "workspace.exists:report.txt" }], file_paths: ["report.txt"], budget_tokens: 128 }] };
     expect(interceptPlatformCli(`naelao goal plan --json '${JSON.stringify(plan)}'`)).toEqual({

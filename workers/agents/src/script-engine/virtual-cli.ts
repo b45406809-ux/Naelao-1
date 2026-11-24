@@ -70,6 +70,18 @@ function plannerCoordinationCli(words: string[], rawCommand?: string): CliDispat
     throw new Error("usage: naelao project agents [list|consult|delegate] ...");
   }
 
+  if (words[1] === "project" && words[2] === "decision") {
+    const { positional, body } = bodyAndFlags(words.slice(3));
+    const decisionId = positional[0] ?? body.decision_id;
+    const revisionValue = body.revision;
+    const revision = typeof revisionValue === "string" ? Number(revisionValue) : revisionValue;
+    if (typeof decisionId !== "string" || !decisionId || !Number.isSafeInteger(revision) || (revision as number) < 1
+      || positional.length > 1 || Object.keys(body).some(key => key !== "revision" && key !== "decision_id")) {
+      throw new Error("usage: naelao project decision <decision-id> --revision <positive-integer>");
+    }
+    return { operation: "project_journal.read_decision", params: { decision_id: decisionId, revision } };
+  }
+
   if (words[1] === "worker" && words[2]) {
     if (words[2] === "run" || words.includes("--task")) {
       const workerId = words[2] === "run" ? words[3] : words[2];

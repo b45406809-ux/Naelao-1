@@ -69,6 +69,10 @@ describe("Batch 04 universal kernel", () => {
     expect(isPlannerOperationAllowed("project", "engine.coordination_patterns")).toBe(true);
     expect(isPlannerOperationAllowed("space", "project.create")).toBe(false);
     expect(isPlannerOperationAllowed("project", "thread.delegate")).toBe(true);
+    expect(isPlannerOperationAllowed("project", "project_journal.read_decision")).toBe(true);
+    expect(isPlannerOperationAllowed("space", "project_journal.read_decision")).toBe(false);
+    expect(isPlannerOperationAllowed("project", "project_journal.read_decisions")).toBe(false);
+    expect(isPlannerOperationAllowed("project", "Read")).toBe(false);
     expect(isPlannerOperationAllowed("space", "Edit")).toBe(false);
     expect(isPlannerOperationAllowed("project", "Edit")).toBe(false);
   });
@@ -76,12 +80,14 @@ describe("Batch 04 universal kernel", () => {
   it.each(["space", "project"] as const)("strips file mutation tools from a %s planner before disclosure and invocation", async (plannerScope) => {
     const put = vi.fn(), get = vi.fn();
     const env: ScriptEngineEnv = {
-      scriptsBucket: { put, get, list: vi.fn(async () => ({ objects: [], truncated: false })) } as unknown as R2Bucket,
-      spaceId: "s", agentId: "a", tenantId: "t",
+      scriptsBucket: { put, get: vi.fn(async () => null), head: vi.fn(async () => null), list: vi.fn(async () => ({ objects: [], truncated: false })) } as unknown as R2Bucket,
+      spaceId: "s", projectId: "p", agentId: "a", tenantId: "t", codeGrantIsActive: async () => true,
     };
-    const tools = new ScriptToolSurface(env, ["r2-workspace", "code-exec"], { plannerScope });
-    expect(tools.availableOperations()).toContain("Read");
+    const tools = new ScriptToolSurface(env, ["r2-workspace", "code-exec", "project-journal"], { plannerScope });
+    expect(tools.availableOperations()).not.toContain("Read");
     expect(tools.availableOperations()).toContain("Bash");
+    if (plannerScope === "project") expect(tools.availableOperations()).toContain("project_journal.read_decision");
+    else expect(tools.availableOperations()).not.toContain("project_journal.read_decision");
     expect(tools.availableOperations()).not.toContain("Edit");
     expect(tools.availableOperations()).not.toContain("Write");
     expect(decisionTools(undefined, tools.availableOperations()).map((tool) => tool.name)).not.toContain("Edit");
@@ -90,8 +96,19 @@ describe("Batch 04 universal kernel", () => {
       await expect(tools.run(name, { path: "src/a.ts", old: "a", new: "b" }))
         .resolves.toMatchObject({ ok: false, error: expect.stringContaining("planner_capability_boundary") });
     }
-    const scope = { tenantId: "t", spaceId: "s", agentId: "a" };
+    for (const readName of ["Read", "read", "read_file"]) {
+      await expect(tools.run(readName, { path: "src/a.ts" }))
+        .resolves.toMatchObject({ ok: false, error: expect.stringContaining("planner_capability_boundary") });
+    }
+    if (plannerScope === "project") {
+      await expect(tools.run("Bash", { command: "naelao project decision decision-42 --revision 3" }))
+        .resolves.toMatchObject({ ok: true, output: { ok: false, reason: "project_journal_decision_not_found" } });
+    }
+    await expect(tools.run("Bash", { command: "cat src/a.ts" }))
+      .resolves.toMatchObject({ ok: false });
+    const scope = { tenantId: "t", spaceId: "s", projectId: "p", agentId: "a" };
     // The isolated-code broker must enforce the same boundary.
+    await expect(env.codeAuthorize!(scope, "storage.read")).resolves.toBe(false);
     await expect(env.codeAuthorize!(scope, "storage.write")).resolves.toBe(false);
     expect(put).not.toHaveBeenCalled();
     expect(get).not.toHaveBeenCalled();
