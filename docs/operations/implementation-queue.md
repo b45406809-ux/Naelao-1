@@ -159,6 +159,14 @@ in the Project main runtime versus an installation sidecar or explicit external 
 Project capability/grant or identity gap while preserving existing image policy.
 Legacy specialist retirement remains SPR04.
 
+**SPR03.4 checkpoint:** Project runtime capability declarations now include
+`extension.native_execute`; an authenticated Project invocation can bind that capability to an exact
+approved image pin. DynamicSandbox checks both the declared capability and exact owner-selected image
+before execution receipts, capacity or billing. Container-policy and DynamicSandbox tests pass 63/63.
+No runtime caller is migrated yet. **Next action:** route Project extension binary execution and
+prewarm through the stable main runtime, with a host recheck of the active installation grant and
+exact deployed image pin; preserve explicit external tunnel execution.
+
 ## Paused plan — Managed services and sidecar runtime
 
 **Managed services and sidecar runtime.** See the [plan](../research/managed-services-and-sidecar-runtime-plan.md)

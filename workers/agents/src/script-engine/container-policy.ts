@@ -6,12 +6,14 @@ export interface ContainerInvocationScope {
   runId: string; executionId: string; workspaceBranch?: string | undefined; workspaceRevision?: number | undefined; workspaceManifestHash?: string | undefined;
   /** Host-selected operation requirements. These are authenticated with the invocation scope. */
   requiredCapabilities?: readonly ProjectRuntimeCapability[];
+  /** Exact Project-selected image required by an installed native extension invocation. */
+  requiredImage?: string | undefined;
   authorizationRevision?: string | undefined;
   installationId?: string | undefined; containerId?: string | undefined; installationScope?: InstallationScope | undefined; image?: string; dynamicImage?: boolean;
   deadline: number; timeoutMs: number;
   sharedFilesystemGrants?: readonly { path: string; access: "READ" | "READ_WRITE" }[];
 }
-export const PROJECT_RUNTIME_CAPABILITIES = ["media.audio_extract", "media.frame_extract", "document.pdf_render"] as const;
+export const PROJECT_RUNTIME_CAPABILITIES = ["media.audio_extract", "media.frame_extract", "document.pdf_render", "extension.native_execute"] as const;
 export type ProjectRuntimeCapability = typeof PROJECT_RUNTIME_CAPABILITIES[number];
 export interface ProjectRuntimeImageProfile {
   id: string;
@@ -103,6 +105,10 @@ export function validateContainerScope(scope: ContainerInvocationScope, now = Da
     || scope.requiredCapabilities.some(capability => !PROJECT_RUNTIME_CAPABILITIES.includes(capability))
     || new Set(scope.requiredCapabilities).size !== scope.requiredCapabilities.length))
     throw new Error("project_runtime_capability_requirements_invalid");
+  if (scope.requiredImage !== undefined && (!scope.projectId || scope.installationId
+    || !/^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(scope.requiredImage)
+    || !scope.requiredCapabilities?.includes("extension.native_execute")))
+    throw new Error("project_runtime_required_image_invalid");
   if (scope.installationScope && !["SPACE_SHARED", "SPACE_ASSISTANT", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(scope.installationScope)) throw new Error("container_installation_scope_invalid");
   if (scope.installationScope && !scope.installationId) throw new Error("container_installation_required");
   if (scope.sharedFilesystemGrants !== undefined) {

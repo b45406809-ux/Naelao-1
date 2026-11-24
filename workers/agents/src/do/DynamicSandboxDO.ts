@@ -82,6 +82,7 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     const selected = await this.resolveProjectMainImage(scope);
     assertProjectRuntimeCapabilities(scope.requiredCapabilities ?? [], selected.capabilities,
       eligibleProjectRuntimeImageProfiles(this.bindings.CONTAINER_IMAGE_REGISTRY, Object.values(this.container?.images ?? {})));
+    if (scope.requiredImage && selected.image !== scope.requiredImage) throw new Error("project_runtime_extension_image_unselected");
   }
 
   protected override workspaceRuntimeKind(): "dynamic_sandbox" { return "dynamic_sandbox"; }
@@ -297,6 +298,7 @@ export class DynamicSandboxDO extends ToolSandboxDO {
       profile = selected.profile;
       assertProjectRuntimeCapabilities(scope.requiredCapabilities ?? [], selected.capabilities,
         eligibleProjectRuntimeImageProfiles(env.CONTAINER_IMAGE_REGISTRY, Object.values(this.container?.images ?? {})));
+      if (scope.requiredImage && selected.image !== scope.requiredImage) throw new Error("project_runtime_extension_image_unselected");
     } else {
       const baseProfile = env.DYNAMIC_CONTAINER_BASE_PROFILE ?? "standard-1";
       if (!isDynamicProfile(baseProfile)) throw new Error("container_base_profile_invalid");

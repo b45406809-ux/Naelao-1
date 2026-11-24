@@ -255,6 +255,31 @@ operation or live image was run.
 run in the Project main runtime, an installation sidecar or an explicitly selected external runtime,
 and close any Project capability, grant or identity gap without changing existing image policy.
 
+## SPR03.4 — Project extension native runtime admission (slice 1)
+
+The caller trace found two Project extension-native execution paths: `Bash` resolves installed
+binary contracts and sends them through `containerImage`/`installationId`, while
+`environment.execute` runs an explicitly selected managed installation through the same
+installation-scoped CodeRunner route. Planned-runtime prewarm also targets that installation
+sidecar. These paths can create a second Cloudflare allocation for Project work. Local tunnel
+execution is a separate AgentPort path with its own consent, grant and artifact-transfer contract.
+
+The main-runtime admission contract now recognizes `extension.native_execute` and can bind it to an
+exact digest pin via `requiredImage`. DynamicSandbox validates the Project's selected image's
+host-declared capability and exact image match during pre-admission and again before allocation.
+An image mismatch returns `project_runtime_extension_image_unselected` before execution receipt,
+capacity, billing or start. Installation scope identity remains excluded from the Project runtime
+scope; the next slice must revalidate active installation and native grants in the Agents host before
+dispatch, and must fail closed without falling back to a sidecar.
+
+Local verification: `container-policy.test.ts` and `DynamicSandboxDO.test.ts` pass **63/63**. No
+host caller was migrated in this slice; no container or provider operation was started.
+
+**Exact next action:** add a Project extension dispatch path to CodeRunner that targets the stable
+`sandbox:<space>:<project>` Durable Object, and wire its host resolver to recheck the active
+Project-scoped installation, exact approved `TOOL_SANDBOX` pin, and native grant. Leave AgentPort
+and user-operated tunnel dispatch unchanged.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame

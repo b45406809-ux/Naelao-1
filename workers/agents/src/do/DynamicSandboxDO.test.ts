@@ -311,6 +311,17 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.transport.start).not.toHaveBeenCalled();
   });
 
+  it("rejects an installed extension image that is not the exact owner-selected Project image before admission", async () => {
+    const r = runtime({ projectRuntime: { id: "native-tools", capabilities: ["extension.native_execute"] }, imageProfileId: "native-tools" });
+    const response = await r.invoke("/exec", { mainComputer: true, requiredCapabilities: ["extension.native_execute"], requiredImage: image });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ ok: false, error_code: "project_runtime_extension_image_unselected" });
+    expect(r.capacity.calls).toHaveLength(0);
+    expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(0);
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect([...r.records.keys()].some(key => key.startsWith("execution:"))).toBe(false);
+  });
+
   it("fails closed on private-state requests while the independent backup feature is unconfigured", async () => {
     const r = runtime();
     const response = await r.privateState({ tenantId: "tenant", action: "capture",

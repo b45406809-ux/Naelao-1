@@ -71,6 +71,9 @@ describe("container capability resolution", () => {
       agentId: "worker", runId: "run", executionId: "exec", requiredCapabilities: ["media.audio_extract"],
       timeoutMs: 30_000, deadline: Date.now() + 30_000 };
     expect(() => validateContainerScope(project)).not.toThrow();
+    expect(() => validateContainerScope({ ...project, requiredCapabilities: ["extension.native_execute"], requiredImage: installation().contract.image })).not.toThrow();
+    expect(() => validateContainerScope({ ...project, requiredImage: installation().contract.image })).toThrow("project_runtime_required_image_invalid");
+    expect(() => validateContainerScope({ ...project, requiredCapabilities: ["extension.native_execute"], requiredImage: "un-pinned-image" })).toThrow("project_runtime_required_image_invalid");
     expect(() => validateContainerScope({ ...project, requiredCapabilities: ["media.audio_extract", "media.audio_extract"] })).toThrow("project_runtime_capability_requirements_invalid");
     expect(() => validateContainerScope({ ...project, requiredCapabilities: ["native-execution"] as never })).toThrow("project_runtime_capability_requirements_invalid");
     const image = `registry.cloudflare.com/${"1".repeat(32)}/media-docs@sha256:${"a".repeat(64)}`;
@@ -78,6 +81,9 @@ describe("container capability resolution", () => {
       networkPolicy: "none", cpuCores: .25, memoryMb: 1024,
       projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract", "media.frame_extract", "document.pdf_render"] } }]));
     expect(pins[0]?.projectRuntime).toEqual({ id: "media-documents", capabilities: ["media.audio_extract", "media.frame_extract", "document.pdf_render"] });
+    expect(parseApprovedContainerImages(JSON.stringify([{ image, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object", networkPolicy: "none",
+      cpuCores: .25, memoryMb: 1024, projectRuntime: { id: "native-tools", capabilities: ["extension.native_execute"] } }]))[0]?.projectRuntime)
+      .toEqual({ id: "native-tools", capabilities: ["extension.native_execute"] });
     expect(() => parseApprovedContainerImages(JSON.stringify([{ image, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object",
       networkPolicy: "none", cpuCores: .25, memoryMb: 1024, projectRuntime: { id: "bad", capabilities: ["shell.root"] } }]))).toThrow("container_project_runtime_profile_invalid");
     expect(() => parseApprovedContainerImages(JSON.stringify([0, 1].map(index => ({ image: `registry.cloudflare.com/${"1".repeat(32)}/runtime-${index}@sha256:${String(index + 1).repeat(64)}`,
