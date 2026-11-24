@@ -160,12 +160,16 @@ Project capability/grant or identity gap while preserving existing image policy.
 Legacy specialist retirement remains SPR04.
 
 **SPR03.4 checkpoint:** Project runtime capability declarations now include
-`extension.native_execute`; an authenticated Project invocation can bind that capability to an exact
-approved image pin. DynamicSandbox checks both the declared capability and exact owner-selected image
-before execution receipts, capacity or billing. Container-policy and DynamicSandbox tests pass 63/63.
-No runtime caller is migrated yet. **Next action:** route Project extension binary execution and
-prewarm through the stable main runtime, with a host recheck of the active installation grant and
-exact deployed image pin; preserve explicit external tunnel execution.
+`extension.native_execute`; an authenticated Project invocation binds that capability to an exact
+approved image pin. DynamicSandbox checks the declared capability and exact owner-selected image
+before execution receipts, capacity or billing. Project `Bash`, explicitly selected managed
+environment execution and planned-runtime prewarm now target the stable main runtime after the host
+rechecks the live native grant, active Project installation scope, and approved deployed image
+contract. AgentPort/user-operated tunnel routing is unchanged. Admission and routing suites pass
+111/111; Agents typecheck and `git diff --check` pass. Sidecar artifact-transfer and managed-profile
+callers remain under audit. **Next action:** trace Project extension artifact import/export and
+profile/reset routes; migrate any operation that starts or targets a second Cloudflare allocation,
+while retaining historical cleanup and explicit external transfers.
 
 ## Paused plan — Managed services and sidecar runtime
 

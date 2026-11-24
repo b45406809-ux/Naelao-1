@@ -275,10 +275,24 @@ dispatch, and must fail closed without falling back to a sidecar.
 Local verification: `container-policy.test.ts` and `DynamicSandboxDO.test.ts` pass **63/63**. No
 host caller was migrated in this slice; no container or provider operation was started.
 
-**Exact next action:** add a Project extension dispatch path to CodeRunner that targets the stable
-`sandbox:<space>:<project>` Durable Object, and wire its host resolver to recheck the active
-Project-scoped installation, exact approved `TOOL_SANDBOX` pin, and native grant. Leave AgentPort
-and user-operated tunnel dispatch unchanged.
+The CodeRunner now has a host-only Project extension route. Project `Bash` commands resolved from an
+installed container contract pass the installation ID to this route rather than `containerImage`
+and sidecar identity. `environment.execute` sends explicitly selected managed Project environments
+through the same path, and planned-runtime prewarm targets the Project main runtime. The Agents host
+rechecks native execution grant, exact active Project-scoped installation, per-user scope, approved
+image pin, `TOOL_SANDBOX` dynamic policy and `extension.native_execute` declaration. CodeRunner sends
+the stable `sandbox:<space>:<project>` object name with an exact image requirement and no installation
+filesystem identity; DynamicSandbox denies profile/image mismatch before allocation. A failed
+Project-image check has no sidecar fallback. Explicit AgentPort/user-computer actions still take the
+local tunnel route before managed Project admission.
+
+Local verification: CodeRunner Project-extension, execution-ladder, sidecar-profile and environment
+tests pass **48/48**; combined with the admission slice, **111/111**; Agents typecheck exits 0 and
+`git diff --check` passes. No provider call or allocation was run.
+
+**Exact next action:** trace Project extension artifact import/export and managed profile/reset routes.
+Migrate any caller that creates or targets a second Cloudflare allocation; keep authorized tunnel
+artifact transfers independent and retain historic sidecar cleanup evidence.
 
 ## Acceptance boundaries
 

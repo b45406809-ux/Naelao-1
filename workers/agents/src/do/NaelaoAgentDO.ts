@@ -3311,7 +3311,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!installation) return { warmed: false, error: "planned_container_runtime_unavailable" };
       const result = await env.codeRunner.run({ name: "container.prewarm", code: "", args: {}, tier: 6,
         tenantId, spaceId, agentId, ...(projectId ? { projectId } : {}), userId, runId: prewarmRunId,
-        installationId: installation.installationId, containerImage: installation.contract.image,
+        ...(projectId ? { projectRuntimeInstallationId: installation.installationId }
+          : { installationId: installation.installationId, containerImage: installation.contract.image }),
         ...(prewarmBranch ? { workspaceBranch: prewarmBranch } : {}), ...(env.executionSignal ? { signal: env.executionSignal } : {}), maxTier: env.maxTier ?? 6 });
       return result.ok ? { warmed: true } : { warmed: false, error: result.error ?? "planned_container_prewarm_failed" };
     };
@@ -3330,6 +3331,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const namespace = approved.schedulingPolicy === "durable_object" ? (this.env.DYNAMIC_CONTAINERS_ENABLED === "true" ? this.env.DYNAMIC_SANDBOX : undefined) : this.env[approved.binding];
         if (!namespace) throw new Error("container_binding_unavailable");
         return { installation, namespace, dynamicImage: approved.schedulingPolicy === "durable_object" };
+      },
+      resolveProjectRuntimeExtension: async params => {
+        if (!params.projectId || params.projectId !== projectId || !params.projectRuntimeInstallationId
+          || !await nativeGrantActive({ tenantId: params.tenantId, spaceId: params.spaceId, agentId: params.agentId,
+            projectId: params.projectId, userId: params.userId, runId: params.runId })) throw new Error("container_execution_denied");
+        const installation = (await installedContainers()).find(item => item.installationId === params.projectRuntimeInstallationId
+          && item.projectId === params.projectId && ["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(item.scope ?? "")
+          && (!item.userId || item.userId === params.userId));
+        if (!installation) throw new Error("project_extension_active_installation_required");
+        const approved = approvedContainer(installation, parseApprovedContainerImages(this.env.CONTAINER_IMAGE_REGISTRY));
+        if (approved.binding !== "TOOL_SANDBOX" || approved.schedulingPolicy !== "durable_object"
+          || !approved.projectRuntime?.capabilities.includes("extension.native_execute"))
+          throw new Error("project_extension_image_not_project_runtime_eligible");
+        if (this.env.DYNAMIC_CONTAINERS_ENABLED !== "true" || !this.env.DYNAMIC_SANDBOX)
+          throw new Error("project_extension_main_runtime_unavailable");
+        return installation;
       },
       pythonEnabled: this.env.DYNAMIC_PYTHON_ENABLED === "true",
       ...(loopbacks?.CodeRpcBroker ? { createRpcBinding: async (options, deadline) => bindCodeRpc(loopbacks.CodeRpcBroker!, options, deadline) } : {}),

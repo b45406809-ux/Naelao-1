@@ -221,7 +221,9 @@ async function runTier(
     ...(ctx.env.onToolOutput ? { onOutput: ctx.env.onToolOutput } : {}),
     ...(ctx.env.executionSignal ? { signal: ctx.env.executionSignal } : {}),
     ...(name === "code-exec.execute_python" ? { language: "python" as const, limits: { wallMs: Number(args["timeout"] ?? 30) * 1000 } } : {}),
-    ...(sidecar ? { containerImage: sidecar.contract.image, installationId: sidecar.installationId } : {}),
+    ...(sidecar ? ctx.env.projectId
+      ? { projectRuntimeInstallationId: sidecar.installationId }
+      : { containerImage: sidecar.contract.image, installationId: sidecar.installationId } : {}),
   });
   if (!result.ok) throw Object.assign(new Error(result.error ?? `${name} failed`), { capability_error: result.capability_error, runtime_receipt: result.runtime_receipt });
   return result.output && typeof result.output === "object" && !Array.isArray(result.output)

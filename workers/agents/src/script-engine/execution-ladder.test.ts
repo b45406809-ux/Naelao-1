@@ -92,7 +92,7 @@ describe("Execution Ladder & Code Runner", () => {
     });
   });
 
-  it("runs a declared pipeline only inside one exact installed image", async () => {
+  it("runs a declared Project pipeline only when one exact installation can use the selected Project image", async () => {
     const bucket = { get: vi.fn(async () => null) };
     const installation = { installationId: "install-1", contract: { id: "media", image: "media@sha256:abc", exportedBinaries: ["ffmpeg", "ffprobe"] } };
     const run = vi.fn(async () => ({ ok: true, output: { stdout: "ok" }, actual_tier: 6, engine: "container" }));
@@ -106,7 +106,7 @@ describe("Execution Ladder & Code Runner", () => {
     expect(resolveContainerCommand.mock.calls.map(([command]) => command)).toEqual(["ffmpeg", "ffprobe"]);
     expect(authorizeShell.mock.calls.map(([call]) => call.name)).toEqual(["ffmpeg", "ffprobe"]);
     expect(run).toHaveBeenCalledWith(expect.objectContaining({ name: "container.extension_binary", tier: 6,
-      args: { commands: "'ffmpeg' '-i' 'a file.mp4' | 'ffprobe' '-v' 'quiet'" }, installationId: "install-1", containerImage: "media@sha256:abc" }));
+      args: { commands: "'ffmpeg' '-i' 'a file.mp4' | 'ffprobe' '-v' 'quiet'" }, projectRuntimeInstallationId: "install-1" }));
   });
 
   it("rejects pipelines whose binaries resolve to different installations", async () => {

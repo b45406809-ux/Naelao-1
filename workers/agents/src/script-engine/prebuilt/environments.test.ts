@@ -178,7 +178,7 @@ describe("environment tool host integration", () => {
     await execute(args, ctx); await execute(args, ctx);
     expect(ctx.env.codeRunner!.run).toHaveBeenCalledTimes(1);
     expect(ctx.env.reserveExternalEnvironment).not.toHaveBeenCalled();
-    expect(ctx.env.codeRunner!.run).toHaveBeenCalledWith(expect.objectContaining({ installationId: "runtime", runId: "run", projectId: "project" }));
+    expect(ctx.env.codeRunner!.run).toHaveBeenCalledWith(expect.objectContaining({ projectRuntimeInstallationId: "runtime", runId: "run", projectId: "project" }));
   });
   it("applies the signed worker runtime recommendation to managed target selection", async () => {
     const { ctx } = fixture();
@@ -191,7 +191,7 @@ describe("environment tool host integration", () => {
       catalogue: [{ id: "runtime-image", available: true, image: "image" }, { id: "media-image", available: true, image: "media-image" }],
     }));
     await execute({ session_id: "media-task", action_id: "convert", command: "ffmpeg -i input.mp4 output.mp4" }, ctx);
-    expect(ctx.env.codeRunner!.run).toHaveBeenCalledWith(expect.objectContaining({ installationId: "media-runtime", containerImage: "media-image" }));
+    expect(ctx.env.codeRunner!.run).toHaveBeenCalledWith(expect.objectContaining({ projectRuntimeInstallationId: "media-runtime", projectId: "project" }));
   });
   it("routes a consented exact command to a GPU and reconciles its receipt", async () => {
     const { ctx } = fixture(), args = { session_id: "gpujob", action_id: "train", command: "python train.py", capabilities: ["cuda"], mode: "capability" };

@@ -95,6 +95,9 @@ export interface CodeRunnerOptions {
   /** Host resolves the active installation and an approved fixed binding, not model text. */
   authorizeContainer?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<boolean | string>;
   resolveSidecar?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<{ installation: InstalledContainer; namespace: DurableObjectNamespace; dynamicImage?: boolean }>;
+  /** Host revalidates an active Project-scoped installation before its exact selected image is
+   *  invoked through the single Project main runtime. */
+  resolveProjectRuntimeExtension?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<InstalledContainer>;
   browserContainerLease?: () => Promise<BrowserContainerLease | undefined>;
   browserCompatible?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<boolean>;
   /** Per-call wall-clock timeout for isolate tiers (2-4). Default 15s. */
@@ -255,6 +258,31 @@ async function runContainer(
   if (backend === "local_workstation") {
     if (!params.containerOptions?.localMachineId || !opts.localMachine) return unavailableBackend(backend, started);
     return opts.localMachine(params);
+  }
+
+  if (params.projectRuntimeInstallationId) {
+    if (!params.projectId || params.containerImage || params.installationId) return fail("project_extension_runtime_scope_invalid");
+    if (!opts.toolSandbox || !opts.resolveProjectRuntimeExtension) return fail("project_extension_main_runtime_unavailable");
+    try {
+      const installation = await opts.resolveProjectRuntimeExtension(params);
+      if (installation.installationId !== params.projectRuntimeInstallationId || installation.projectId !== params.projectId)
+        return fail("project_extension_installation_scope_mismatch");
+      const timeoutMs = Math.min(opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS,
+        installation.contract.resources.timeoutSeconds * 1000);
+      const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, projectId: params.projectId,
+        actorId: params.userId, agentId: params.agentId, runId: params.runId,
+        executionId: params.executionId ?? crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}),
+        ...(params.workspaceRevision !== undefined && params.workspaceManifestHash
+          ? { workspaceRevision: params.workspaceRevision, workspaceManifestHash: params.workspaceManifestHash } : {}),
+        requiredCapabilities: ["extension.native_execute"], requiredImage: installation.contract.image,
+        ...(authorizationRevision ? { authorizationRevision } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
+      validateContainerScope(scope);
+      const stub = opts.toolSandbox.get(opts.toolSandbox.idFromName(
+        sandboxInstanceName(params.spaceId, params.projectId, params.workspaceBranch)));
+      return runContainerRequest(stub, opts, params, started, false, scope, authorizationRevision);
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : "project_extension_runtime_resolution_failed");
+    }
   }
 
   // §A1.17 Phase L: a script tagged with a Container Marketplace image routes to THAT image's
