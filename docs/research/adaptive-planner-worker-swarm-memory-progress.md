@@ -84,6 +84,23 @@ evidence and does not establish deployed image/capability state.
 SDK/template topology declaration against the owning plans and ledgers; record the precise policy or
 contract dependencies and keep live crash-recovery acceptance separate.
 
+## APW08 follow-up — 2026-11-24 (approval continuation recovery after DO interruption)
+
+An approved `suspended_runs` checkpoint left at `resuming` can now be picked up after a DO restart.
+Recovery retains and reuses its saved continuation run ID; a same-instance in-memory claim still
+rejects concurrent resume requests. The parent `sub_agents` row records that exact resumed run ID,
+so the start fence accepts an idempotent retry for the same worker attempt and rejects a different
+fresh ID. Resume budget now subtracts usage from both the original suspended run and its partial
+continuation. Existing `handleScriptRun` durable-run logic reattaches to an active continuation,
+returns a terminal receipt, or recovers a stale run from saved step boundaries while the action
+ledger keeps indeterminate effects from replay. The focused recovery, parent-admission and contract
+suites pass **29/29**; Agents typecheck and `git diff --check` pass.
+
+The fixture does not simulate Cloudflare DO eviction, cross-DO scheduling or a real provider effect.
+No process/model memory is restored. **Exact next action:** reconcile the uncapped
+`long_running` worker deadline and reusable SDK/template topology contract against their owners, then
+record separate deployed interruption acceptance.
+
 ## APW07 follow-up — 2026-11-24 (source-base validation lineage)
 
 `WorkerIntegrationValidationReceipt` now includes the actual source branch base parent, Coordinator

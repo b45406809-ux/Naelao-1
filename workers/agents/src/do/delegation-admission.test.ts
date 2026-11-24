@@ -38,9 +38,10 @@ function fixture() {
         const row = workers.get(String(args[0]));
         return cursor(row ? [{ status: row.status, attempt: row.attempt }] : []);
       }
-      if (normalized.startsWith("SELECT status,attempt,parent_run_id,configuration_json FROM sub_agents")) {
+      if (normalized.startsWith("SELECT status,attempt,parent_run_id,configuration_json,resume_run_id FROM sub_agents")) {
         const row = workers.get(String(args[0]));
-        return cursor(row ? [{ status: row.status, attempt: row.attempt, parent_run_id: row.parent_run_id, configuration_json: row.configuration_json }] : []);
+        return cursor(row ? [{ status: row.status, attempt: row.attempt, parent_run_id: row.parent_run_id,
+          configuration_json: row.configuration_json, resume_run_id: row.resume_run_id }] : []);
       }
       if (normalized.startsWith("SELECT status,worker_id,parent_run_id,cancel_requested_at FROM goal_dispatch_outbox")) {
         const row = dispatches.get(String(args[0]));
@@ -83,7 +84,7 @@ function fixture() {
         const [id, parentRunId, goal, budget, branch, , , updated] = args as [string, string, string, number, string | null, number, number, number];
         workers.set(id, { id, parent_run_id: parentRunId, status: "running", goal, workspace_branch: branch, configuration_json: null,
           attempt: 1, checkpoint_json: null, checkpoint_updated_at: null, result: null, error: null, updated_at: updated, budget_tokens: budget, tokens_used: 0,
-          late_result_json: null, late_result_at: null, late_result_attempt: null });
+          resume_run_id: null, late_result_json: null, late_result_at: null, late_result_attempt: null });
         return cursor([], 1);
       }
       if (normalized.startsWith("UPDATE sub_agents SET late_result_json=CASE WHEN late_result_attempt")) {
@@ -102,11 +103,11 @@ function fixture() {
         if (!row || row.status !== "delivering" || row.cancel_requested_at !== null) return cursor();
         row.status = "acknowledged"; row.attempt = Number(attempt); row.workspace_branch = String(branch); return cursor([], 1);
       }
-      if (normalized.startsWith("UPDATE sub_agents SET status='running',updated_at=? WHERE id=? AND parent_run_id=? AND attempt=?")) {
-        const [updated, id, parentRunId, attempt] = args, row = workers.get(String(id));
+      if (normalized.startsWith("UPDATE sub_agents SET status='running',resume_run_id=?,updated_at=? WHERE id=? AND parent_run_id=? AND attempt=?")) {
+        const [resumeRunId, updated, id, parentRunId, attempt] = args, row = workers.get(String(id));
         if (!row || row.parent_run_id !== parentRunId || row.attempt !== Number(attempt)
             || !["awaiting_human_input", "awaiting_planner_input"].includes(row.status)) return cursor();
-        row.status = "running"; row.updated_at = Number(updated); return cursor([{ id: row.id }], 1);
+        row.status = "running"; row.resume_run_id = String(resumeRunId); row.updated_at = Number(updated); return cursor([{ id: row.id }], 1);
       }
       const rowId = normalized.startsWith("UPDATE sub_agents SET status = 'terminated'") ? args[1]
         : normalized.startsWith("UPDATE sub_agents SET status='running'") ? args[2]
@@ -351,6 +352,8 @@ describe("host delegation admission", () => {
     const resumed = await check(1, "fresh-resume-run", true);
     expect(await resumed.json()).toEqual({ active: true });
     expect(f.workers.get(workerId)?.status).toBe("running");
+    expect(f.workers.get(workerId)?.resume_run_id).toBe("fresh-resume-run");
+    expect(await (await check(1, "fresh-resume-run", true)).json()).toEqual({ active: true });
     expect(await (await check(1, "second-resume-run", true)).json()).toEqual({ active: false });
     expect(await (await check(2, "stale-attempt", true)).json()).toEqual({ active: false });
   });

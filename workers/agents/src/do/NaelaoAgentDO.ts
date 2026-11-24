@@ -2054,6 +2054,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         attempt       INTEGER NOT NULL DEFAULT 1,
         checkpoint_json TEXT,
         checkpoint_updated_at INTEGER,
+        resume_run_id TEXT,
         late_result_json TEXT,
         late_result_at INTEGER,
         late_result_attempt INTEGER,
@@ -2137,6 +2138,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ["attempt", "ALTER TABLE sub_agents ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1"],
       ["checkpoint_json", "ALTER TABLE sub_agents ADD COLUMN checkpoint_json TEXT"],
       ["checkpoint_updated_at", "ALTER TABLE sub_agents ADD COLUMN checkpoint_updated_at INTEGER"],
+      ["resume_run_id", "ALTER TABLE sub_agents ADD COLUMN resume_run_id TEXT"],
     ] as const) {
       try { this.ctx.storage.sql.exec(ddl); } catch { /* already migrated */ }
     }
@@ -6820,8 +6822,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (body.resumeAuthorized !== true && body.runId !== expectedRunId) return Response.json({ active: false });
     let active = false;
     this.ctx.storage.transactionSync(() => {
-      const row = this.ctx.storage.sql.exec<{ status: string; attempt: number; parent_run_id: string; configuration_json: string | null }>(
-        "SELECT status,attempt,parent_run_id,configuration_json FROM sub_agents WHERE id=?", body.workerId
+      const row = this.ctx.storage.sql.exec<{ status: string; attempt: number; parent_run_id: string; configuration_json: string | null; resume_run_id: string | null }>(
+        "SELECT status,attempt,parent_run_id,configuration_json,resume_run_id FROM sub_agents WHERE id=?", body.workerId
       ).toArray()[0];
       const saved = row?.configuration_json ? safeJsonParse(row.configuration_json) as Record<string, unknown> | undefined : undefined;
       const scopeMatches = row?.parent_run_id === body.parentRunId && saved?.tenantId === tenantId && saved.spaceId === body.spaceId
@@ -6832,11 +6834,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         active = row.status === "running";
         return;
       }
+      if (row.status === "running" && row.resume_run_id === body.runId) {
+        // Recovery reuses the original durable continuation ID. This is the only running-state
+        // resume request allowed through; a different fresh ID remains a duplicate/stale claim.
+        active = true;
+        return;
+      }
       if (!(["awaiting_human_input", "awaiting_planner_input"] as string[]).includes(row.status)) return;
       const claimed = this.ctx.storage.sql.exec(
-        `UPDATE sub_agents SET status='running',updated_at=? WHERE id=? AND parent_run_id=? AND attempt=?
+        `UPDATE sub_agents SET status='running',resume_run_id=?,updated_at=? WHERE id=? AND parent_run_id=? AND attempt=?
          AND status IN ('awaiting_human_input','awaiting_planner_input') RETURNING id`,
-        Date.now(), body.workerId, body.parentRunId, body.attempt,
+        body.runId, Date.now(), body.workerId, body.parentRunId, body.attempt,
       ).toArray();
       active = claimed.length === 1;
     });
@@ -7458,6 +7466,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private cancelledRuns = new Set<string>();
   /** Execution cancellation is host-controlled; an HTTP client disconnect must not kill durable work. */
   private executionControllers = new Map<string, AbortController>();
+  /** Prevent duplicate approval-resume requests while one continuation is active in this DO instance. */
+  private activeApprovalResumes = new Set<string>();
 
   /** Ask a run to stop. Cooperative: the loop finishes the action it is inside and stops at the
    *  next step boundary, so a half-completed side effect is never left ambiguous. */
@@ -10459,25 +10469,38 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private async handleResumeRun(request: Request): Promise<Response> {
     const { approvalId } = await request.json<{ approvalId: string }>();
     if (!approvalId) return Response.json({ error: "approvalId is required" }, { status: 400 });
+    if (this.activeApprovalResumes.has(approvalId)) return Response.json({ resumed: false, reason: "already claimed" }, { status: 409 });
+    this.activeApprovalResumes.add(approvalId);
+    try { return await this.resumeApprovedRun(approvalId); }
+    finally { this.activeApprovalResumes.delete(approvalId); }
+  }
+
+  private async resumeApprovedRun(approvalId: string): Promise<Response> {
 
     const rows = this.ctx.storage.sql
-      .exec(`SELECT * FROM suspended_runs WHERE approval_id = ? AND status = 'suspended'`, approvalId)
+      .exec(`SELECT * FROM suspended_runs WHERE approval_id = ? AND status IN ('suspended','resuming')`, approvalId)
       .toArray() as unknown as Array<Record<string, string | null>>;
     const row = rows[0];
     if (!row) return Response.json({ resumed: false, reason: "no suspended run for this approval" });
 
-    // Claim it before doing any work — two concurrent resumes must not both re-enter the loop.
-    // RETURNING rather than rowsWritten — see handleContinueInterruptedRun for why that counter
-    // cannot be read as "rows changed". This works today only because no index on suspended_runs
-    // happens to contain `status`; adding one would silently break every approval resume.
-    const claimed = this.ctx.storage.sql.exec(
-      `UPDATE suspended_runs SET status = 'resuming' WHERE approval_id = ? AND status = 'suspended'
-       RETURNING approval_id`,
-      approvalId
-    ).toArray();
-    if (claimed.length !== 1) {
-      return Response.json({ resumed: false, reason: "already claimed" });
+    if (row["status"] === "suspended") {
+      // Claim it before doing any work — two concurrent resumes must not both re-enter the loop.
+      // RETURNING rather than rowsWritten — see handleContinueInterruptedRun for why that counter
+      // cannot be read as "rows changed". This works today only because no index on suspended_runs
+      // happens to contain `status`; adding one would silently break every approval resume.
+      const claimed = this.ctx.storage.sql.exec(
+        `UPDATE suspended_runs SET status = 'resuming' WHERE approval_id = ? AND status = 'suspended'
+         RETURNING approval_id`,
+        approvalId
+      ).toArray();
+      if (claimed.length !== 1) return Response.json({ resumed: false, reason: "already claimed" });
+    } else if (row["status"] !== "resuming") {
+      return Response.json({ resumed: false, reason: "approval resume is no longer recoverable" }, { status: 409 });
     }
+    // A persisted `resuming` row with no in-memory claim is a continuation recovered after DO
+    // eviction. Recheck HITL and re-enter the same durable run ID below; handleScriptRun either
+    // attaches to a fresh run, returns its terminal receipt, or recovers a stale run from durable
+    // step boundaries. Its action ledger keeps uncertain effects from being replayed.
 
     // Trust HITLApprovalDO, not the caller, for whether this was actually approved.
     let approved = false;
@@ -10586,7 +10609,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch { return Response.json({ resumed: false, reason: "delegated worker checkpoint is invalid" }, { status: 409 }); }
     let spentThisAttempt = 0;
     if (resumeDelegation && row["run_id"]) {
-      const usage = this.ctx.storage.sql.exec(`SELECT COALESCE(SUM(tokens), 0) AS used FROM run_traces WHERE run_id=?`, row["run_id"])
+      const usage = this.ctx.storage.sql.exec(
+        `SELECT COALESCE(SUM(tokens), 0) AS used FROM run_traces WHERE run_id=? OR run_id=?`,
+        row["run_id"], row["resumed_run_id"] ?? ""
+      )
         .toArray()[0] as { used?: number } | undefined;
       spentThisAttempt = Number(usage?.used ?? 0);
       const remaining = resumeDelegation.maxTokens - spentThisAttempt;
@@ -10621,6 +10647,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         };
       } catch { return Response.json({ resumed: false, reason: "could not renew delegated worker scope" }, { status: 409 }); }
     }
+    const resumedRunId = typeof row["resumed_run_id"] === "string" && row["resumed_run_id"]
+      ? row["resumed_run_id"] : crypto.randomUUID();
     const resumeBody = {
       goal: row["goal"] ?? "",
       spaceId: row["space_id"] ?? "",
@@ -10639,14 +10667,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // stays the ORIGINAL run's, which is what stops this pass re-executing the ungated work the
       // first pass already did — the model is shown those steps, but being shown is not being
       // prevented, and the cost of it deciding to redo one is a second real side effect.
-      runId: crypto.randomUUID(),
+      runId: resumedRunId,
     };
 
     // Recorded BEFORE the continuation actually executes (which can take as long as the rest of
     // the agent's work) — a poller watching this approval_id sees the new run id the moment it
-    // exists, not only once the whole continuation has already finished.
+    // exists, not only once the whole continuation has already finished. Retain it across a DO
+    // restart so retries attach to/recover the same durable run rather than minting a duplicate.
     this.ctx.storage.sql.exec(
-      `UPDATE suspended_runs SET resumed_run_id = ? WHERE approval_id = ?`,
+      `UPDATE suspended_runs SET resumed_run_id = COALESCE(resumed_run_id, ?) WHERE approval_id = ? AND status='resuming'`,
       resumeBody.runId, approvalId
     );
 
@@ -10669,8 +10698,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
     );
 
-    this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status = 'resumed' WHERE approval_id = ?`, approvalId);
     const result = await readBoundedResponseJson<Record<string, unknown>>(resp, 2 * 1024 * 1024);
+    if (resp.status === 202 && result.status === "running") {
+      return Response.json({ resumed: false, reason: "resume already running", run_id: resumeBody.runId }, { status: 202 });
+    }
+    this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status = 'resumed' WHERE approval_id = ? AND status='resuming'`, approvalId);
     if (resumeDelegation) {
       const loopResult = result as Record<string, unknown>;
       const runResult = loopResult["result"] as Record<string, unknown> | undefined;

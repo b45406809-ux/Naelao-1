@@ -858,8 +858,8 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   APW07 work needs semantic/interface conflict classification and broader integrated behavior evidence
   through PW/EP. The local Node fixture does not exercise the parent DO's durable publication-permit
   storage against a real Coordinator DO; resume that acceptance with authorized multi-DO staging
-  access. APW08 local budget, saved-scope, current-route, workspace-pin, access-gate and approval-
-  resume contract/start-fence tests are complete. User-facing pause/resume/approval still needs an owner/admin authority and durable
+  access. APW08 local budget, saved-scope, current-route, workspace-pin, access-gate, approval-resume
+  fencing and interrupted-resume recovery tests are complete. User-facing pause/resume/approval still needs an owner/admin authority and durable
   status/effect-reconciliation contract; template/SDK topology declarations need a reviewed
   reusable-definition contract. Real interruption acceptance needs the deployed runtime. APW09 still needs a frozen representative
   quality/economics evaluation, complete provider-charge reconciliation and authorized real-runtime
@@ -913,20 +913,27 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   proves the signed capability is forwarded in continuation context. The environment,
   approval-context and delegation-contract suites pass 28/28; Agents typecheck and `git diff --check`
   pass. These are local fixtures, not deployed capability acceptance.
+- [x] **APW08 — Recover a claimed approval continuation after DO interruption.** A persisted
+  `resuming` checkpoint reuses its saved continuation run ID; partial continuation tokens are
+  included in the remaining-budget check. The parent records that exact resumed run ID and accepts
+  only it for an idempotent start-check after recovery; other fresh IDs remain denied. The recovery,
+  parent-admission and delegation-contract suites pass 29/29; Agents typecheck and `git diff --check`
+  pass. Local fixtures do not simulate actual DO eviction or deployed recovery.
 - [ ] **APW08 — Remaining recovery and topology readiness review.** Reconcile long-running worker
-  deadline semantics, approval recovery after interruption, reusable SDK/template topology
-  declarations and live interruption acceptance against source and owning ledgers. Complete
+  deadline semantics, reusable SDK/template topology declarations and live interruption acceptance
+  against source and owning ledgers. Complete
   independent local work; record exact policy, contract and deployment dependencies for blocked work.
 
 **Latest checkpoint:** APW07 source-base validation lineage is preserved and projected safely; four
 focused suites pass 39/39. APW08 budget/scope/route/pin tests pass 22/22, current Project access gate
 tests pass 2/2, and delegated approval-resume contract/start-fence suites pass 30/30. Agents typecheck
 and `git diff --check` pass. No real multi-DO publication race, live membership revocation, actual
-Coordinator pin read or interruption/recovery runtime ran. The resumed preferred-runtime capability
-regression passes 28/28 with approval-contract and environment suites; Agents typecheck and
-`git diff --check` pass. **Exact next action:** reconcile long-running worker deadline semantics and
-reusable SDK/template topology declarations against their owning contracts; finish exact blocker and
-live acceptance notes before moving to the next queued plan.
+Coordinator pin read, actual DO eviction/recovery or interruption runtime ran. The resumed preferred-
+runtime capability suites pass 28/28. Approval continuation recovery, parent start-fence and contract
+suites pass 29/29; Agents typecheck and `git diff --check` pass. **Exact next action:** reconcile the
+long-running worker deadline contract and reusable SDK/template topology declarations against their
+owning plans; record exact blockers and live acceptance conditions before moving to the next queued
+plan.
 
 **APW checkpoint history.** APW06 goal decision-hold remediation adds a status explanation with
 exact decision references and revisions plus a direct link to the Project decision review panel. It
