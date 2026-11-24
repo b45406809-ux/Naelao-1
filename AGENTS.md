@@ -8,14 +8,6 @@ concrete action in the queue. A status summary, verified checkpoint or push is a
 result. Keep working through ready tasks until the queue is complete, the user redirects the
 session, or a specific blocker leaves no ready work.
 
-## Current task
-
-**Queue-wide readiness review.** The APW08 source/owner review is complete. Follow the
-[implementation queue](docs/operations/implementation-queue.md#before-stopping-for-blockers) and
-check every unfinished plan against current source and its latest ledger for independent local
-implementation, integration or verification. Record exact dependencies and resume conditions, keep
-live acceptance separate, then remove this pointer only if no ready local task remains.
-
 ## Checkout and recovery
 
 1. Find the Naelao checkout. Check its remote, branch, working tree and local-only commits.

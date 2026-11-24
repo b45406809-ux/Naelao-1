@@ -37,8 +37,10 @@ Keep this acceptance separate from the local implementation record.
 The source/owner review found no additional APW08 code change that can be made without choosing the
 missing duration and reusable-definition contracts. APW08's local budget, scope, route, workspace-pin,
 access, runtime-capability and approval-recovery slices remain verified in the entries below.
-**Exact next action:** finish the implementation-queue readiness review for every unchecked plan;
-keep APW08 incomplete until its owner contracts and live recovery acceptance are satisfied.
+**Exact next action:** resume APW07 when the owners approve its conflict evidence taxonomy, then
+implement and test the approved classification mechanism. Implement APW08's bounded deadline and
+reusable-definition contracts after their owners approve duration, expiry and schema/lifecycle rules.
+Keep real DO recovery and publication acceptance separately gated on authorized staging.
 
 ## APW07 readiness review — 2026-11-24 (lineage complete, conflict taxonomy pending)
 
@@ -57,7 +59,8 @@ static analysis, worker-declared evidence or a budgeted model review. **Dependen
 owners approve candidate versus confirmed conflict categories, required revision/symbol/interface
 evidence, uncertainty/false-positive handling, and whether any classifier may spend an existing task
 budget. Suggestions must remain untrusted review signals and must never authorize publication.
-Then add a deterministic local classifier/receipt and tests under the approved contract.
+Then implement the approved static checks or bounded review suggestion and receipt, with tests for
+candidate/confirmed states and uncertainty handling.
 
 **Live acceptance dependency:** authorized staging AgentDO/Artifact/Workspace Coordinator bindings and
 the real parent publication-permit storage race, including cancellation before and after the permit.

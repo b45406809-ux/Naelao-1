@@ -941,9 +941,9 @@ tests pass 2/2, and delegated approval-resume contract/start-fence suites pass 3
 and `git diff --check` pass. No real multi-DO publication race, live membership revocation, actual
 Coordinator pin read, actual DO eviction/recovery or interruption runtime ran. The resumed preferred-
 runtime capability suites pass 28/28. Approval continuation recovery, parent start-fence and contract
-suites pass 29/29; Agents typecheck and `git diff --check` pass. **Exact next action:** complete the
-queue-wide readiness review across every unfinished plan, then resume the first plan with independent
-local work.
+suites pass 29/29; Agents typecheck and `git diff --check` pass. **Exact next action:** resume APW07
+after APW/PW owners approve its conflict evidence taxonomy; then implement and test the approved
+classification mechanism. Keep APW08 deadline/definition contracts and all live acceptance gates open.
 
 **APW checkpoint history.** APW06 goal decision-hold remediation adds a status explanation with
 exact decision references and revisions plus a direct link to the Project decision review panel. It
@@ -994,6 +994,40 @@ ledgers when moving to another plan.
 13. [ ] **Paused; source and focused local regression tests verified; migration/live acceptance blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Resume on the separate migration authorization, configured test-account and provider/UI acceptance dependencies recorded above.
 14. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
 15. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
+
+## Queue readiness review — 2026-11-24
+
+I rechecked every unchecked plan against the current source and its latest owner ledger. SPR01's
+active-branch inventory refresh is complete; its local routing suites and typecheck are recorded in
+the SPR ledger. APW07's source/target/candidate lineage is present in code and its local focused
+suites are recorded; APW07 conflict classification and APW08 deadline/reusable-definition work need
+owner-reviewed contracts. The remaining plans have no independent local implementation, integration
+or verification slice ready without choosing a missing policy/contract, relying on unsupported
+provider behavior, or obtaining live/practitioner evidence. Do not mark the queue complete; its
+unchecked plan rows remain open.
+
+| Plan | Readiness result and exact resume dependency |
+| --- | --- |
+| APW | Conflict taxonomy/evidence contract (APW/PW owners); bounded worker deadline and expiry contract; versioned reusable task/workflow definition contract (APW/PW/TBR owners); approved retention, task-control and per-goal cost policies; staging DO/provider receipts and frozen evaluation protocol. Implement only after each applicable contract is recorded. |
+| PW | Owner-approved branch retention, deletion and recovery policy; real runtime isolation, cross-DO publication/cancellation and provider-cost acceptance require authorized Cloudflare bindings and reconciled effect/invoice receipts. Other local caller slices are recorded complete in the queue and PW/platform ledgers. |
+| S/U | U05/U06 need a supported authenticated writer/drain/flush/reconnect transport; U09 needs approved key and jurisdiction bindings; U10 needs regional Cloudflare configuration and provider support or an accepted migration path for physical snapshot purge and historic unregistered sidecar discovery; U11 needs authoritative provider/idle-cost feeds; Modal needs pricing and settlement before a caller. |
+| SPR | Local SPR01–SPR05 implementation/fixtures are complete. Resume live allocation, replacement, cleanup and erasure acceptance with approved jurisdiction-specific Sandboxes/D1/R2 configuration and authorized Cloudflare lifecycle receipts; physical snapshot purge and historic sidecar discovery need supported provider APIs or an accepted migration. |
+| SC | SC03 detached replay requires a reviewed durable invocation-consent/job contract, revocable authority revision, alarm-safe revalidation, fresh pre-dispatch Billing reservation and owner status/cancel/retry; SC04 requires owner-approved Space/Project caps. |
+| Unified platform | No standalone local task: code is assigned to S/U, SC, PW, K, EP, TBR and P owners. Remaining checked-workspace/runtime claims require authorized deployed/provider receipts against those owners' exact contracts. |
+| Knowledge | K21 needs authorized migration 0284 and deployed mutation/revocation/delete-race evidence; K20 needs host-owned response-cache identity/effect and exact authority-revision rules; K15 needs provider-approved scope/identifier/freshness/deletion/retention and isolated cost evidence. Keep caches and provider gates off. |
+| EP | EP06 needs owner-approved resource-unit prices and cross-resource caps before quotes/reservations; provider invoices and deployed export/uninstall/cleanup receipts need authorized provider acceptance. Keep resource descriptors unavailable. |
+| TBR | TBR11 needs atomic per-effect ceiling consumption bound to exact job identity/revision; TBR04 needs approved symbolic-resource-to-host-grant bindings; TBR07 needs a decision on same-Space owner/admin access to private Projects and a cross-store deny/exception contract. Provider/channel and multi-user acceptance remain separate. |
+| Platform completion (P) | No standalone local slice after the 2026-11-23 P10 source reconciliation. P01/P02 need distinct Cloudflare resource ownership, 158 read-only receipts and operator-attested D1 baselines; P03/P12 need approved grace/restriction/retry policy; P13 needs a supported platform-admin identity, backlog/DLQ source and redacted idempotent replay contract; P16 needs an accepted Discord attachment signature contract and real event; P17 needs cross-issuer identity handoff; P20 needs payout/refund accounting policy; P24 needs cross-tenant artifact rights and scanning/retention policy. Provider and deployment acceptance remains separate. |
+| AgentPort providers | Candidate-specific executed terms, API/auth/event and account lifecycle contracts, supported territories, exact payer/rates/invoice evidence, and retention/deletion duties are missing. Reopen one adapter only after those records are verified. |
+| AgentPhone | Verified API/auth/signature/event and voice/media behavior, parent/subaccount terms, supported regions, payer/rate/invoice evidence, deletion behavior and disposable live acceptance are missing. Do not infer support from other providers. |
+| WhatsApp member routing | Local route and focused regression work is complete. Resume after authorization for migration 0289, a configured disposable test account, and separately authorized provider, browser/UI and live routing acceptance. |
+| Commercial cleaning template | Practitioner discovery must approve site/scope/visit/correction/inspection records, transitions and evidence; pilot scope/terms must be agreed before operational workflows or validation. No partner contact is authorized. |
+| Corporate recovery claims | Owner-approved functional scope and practitioner-validated status/checklist language, provenance and access contract are required before import/correction/export behavior; real claims data and practitioner outreach are not authorized. |
+
+**Queue status:** blocked with work remaining; no local task is ready. **Exact next action:** when the
+APW/PW owners publish the APW07 conflict evidence contract, implement and test its approved local
+classifier/receipt, then resume APW08's deadline and reusable-definition slices as their contracts
+are approved. Track DO/provider acceptance independently and keep all rollout gates disabled.
 
 ## Checkpoint archive
 
