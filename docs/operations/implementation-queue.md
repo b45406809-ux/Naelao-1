@@ -938,8 +938,9 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   See the [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md).
 
 **Latest checkpoint:** APW07 now projects bounded, untrusted shared-decision/distinct-path review
-candidates in pushed commit `0abb4433`; its focused test passes 3/3, Agents and Shell typechecks pass,
-and `git diff --check` passes. Full classification remains blocked on the APW/PW evidence contract.
+candidates in `0abb4433`; route and helper regressions pass 9/9 in pushed commit `4e040d97`, Agents
+and Shell typechecks pass, and `git diff --check` passes. The authorized Goal Activity caller receives
+the candidate; a different actor receives no goal. Full classification remains blocked on the APW/PW evidence contract.
 On remote tip `9a1ea1a1`, `worker-integration-validation.test.ts`,
 `environments.test.ts`, `delegation-contract.test.ts`, `worker-run-access-revalidation.test.ts`,
 `delegated-worker-approval-resume.test.ts` and `delegation-admission.test.ts` pass **70/70**;
@@ -1007,17 +1008,17 @@ ledgers when moving to another plan.
 14. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
 15. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
 
-## Queue readiness review — 2026-11-24 (after `0abb4433`)
+## Queue readiness review — 2026-11-24 (after `4e040d97`)
 
 I rechecked every unchecked plan against the current source and its latest owner ledger after pushing
-`0abb4433`. SPR01's active-branch inventory refresh remains complete; its current routing callers,
-focused local suites and typecheck are recorded in the SPR ledger, and the APW slice does not affect
-the SPR evidence. APW07 now additionally emits the bounded review-only distinct-path candidate; its
-focused test and both typechecks pass. APW07 semantic/interface classification and APW08
-deadline/reusable-definition work still need owner-reviewed contracts. I found no independent local
-implementation, integration or verification slice ready in the remaining plans without choosing a
-missing policy/contract, relying on unsupported provider behavior, or obtaining live/practitioner
-evidence. Keep unchecked plan rows open; do not mark the queue complete.
+`4e040d97`. SPR01's active-branch inventory refresh remains complete; its current routing callers,
+focused local suites and typecheck are recorded in the SPR ledger. APW07 now has both unit and route
+coverage for the bounded review candidate; the route test proves owner projection and other-actor
+filtering. Its focused suites pass 9/9 with Agents and Shell typechecks. Semantic/interface
+classification and APW08 deadline/reusable-definition work still need owner-reviewed contracts. I
+found no independent local implementation, integration or verification slice ready in the remaining
+plans without choosing a missing policy/contract, relying on unsupported provider behavior, or
+obtaining live/practitioner evidence. Keep unchecked plan rows open; do not mark the queue complete.
 
 | Plan | Readiness result and exact resume dependency |
 | --- | --- |
