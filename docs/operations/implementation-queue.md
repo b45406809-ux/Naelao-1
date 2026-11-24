@@ -86,12 +86,17 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     Current Project base image has no FFmpeg or PDF-render capabilities and no Project profile pin
     is configured. DynamicSandbox and container-policy tests pass 55/55; `ToolSandboxDO` tests
     pass 38/38; Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-  - [ ] **Active · SPR02.3 — Owner-selected Project image profile.** Extend the owner/admin
-    settings flow, currently size-only, to select one eligible image profile and size subject to
-    plan ceilings, declared capabilities and optimistic version fencing. Verify capability and
-    settings reads from trusted host state; leave the actual profile replacement to SPR02.4.
-  - [ ] **SPR02.4 — Checked image replacement and recovery.** Drain or safely cancel active work,
-    stop and confirm the prior allocation, claim a new physical generation, start the chosen pinned
+  - [x] **SPR02.3 — Owner-selected Project image profile.** The owner/admin settings API now stores
+    a requested image profile separately from its size tier under the existing optimistic version
+    fence. Reads and writes expose only profiles meeting the tenant plan and whose exact image pin
+    is present in the deployed DynamicSandbox image map. The selected size must meet the image
+    minimum. Profile settings, audit rows and version 1 archives include the image profile; older
+    archives default to `base`. Profile route, settings/archive and container-policy tests pass
+    23/23; DynamicSandbox tests pass 44/44; Agents typecheck and `git diff --check` pass. The saved
+    request is not applied to a running Container yet; SPR02.4 owns the checked replacement.
+  - [ ] **Active · SPR02.4 — Checked image replacement and recovery.** Resolve the saved image
+    profile through trusted D1 and the current deployed pin map. Drain or safely cancel active work,
+    stop and settle the prior allocation, claim a new physical generation, start the chosen pinned
     image and restore authorized workspace data. Unknown stop/start outcomes must block a second
     allocation until reconciliation; preserve the prior recoverable workspace and rollback fences.
 - [ ] **SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and extension
@@ -103,7 +108,7 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1 and SPR02.2 are verified in the SPR ledger. `sandboxInstanceName`
+**Latest checkpoint:** SPR01, SPR02.1, SPR02.2 and SPR02.3 are verified in the SPR ledger. `sandboxInstanceName`
 routes every Project branch through one Container ID; race handoffs update the D1 active branch and
 fencing token without incrementing physical allocation generation. The shared Durable Object
 admits and serializes writers across race/worker branches and reuses the same capacity and billing
@@ -111,11 +116,13 @@ reservation. `ToolSandboxDO` tests pass 37/37; DynamicSandbox, routing and execu
 68/68; Agents typecheck and `git diff --check` pass. SPR02.2 adds host-owned Project capability
 metadata to approved image pins and rejects missing capabilities before work/resource admission;
 its DynamicSandbox and container-policy tests pass 55/55, while the legacy ToolSandbox suite passes
-38/38. The current base has no media/PDF tools
-and no Project profile is configured. Video/frame/PDF and extension sidecar routes plus their
-erasure registrations remain for SPR03/SPR04. **Next action:** extend owner/admin Project runtime
-settings from size-only to an eligible pinned image profile plus size, with plan and version checks;
-see SPR02.3. Live provider acceptance and deployment remain separate.
+38/38. SPR02.3 adds versioned owner/admin image-profile selection and exact deployed-pin filtering;
+the profile route/settings/archive/policy tests pass 23/23 and DynamicSandbox tests pass 44/44.
+The saved selection remains unapplied until SPR02.4 completes replacement. Video/frame/PDF and
+extension sidecar routes plus their erasure registrations remain for SPR03/SPR04. **Next action:**
+apply the selected digest through a stop/settle, generation-fenced replacement with checked
+workspace recovery and unknown-provider-outcome reconciliation; see SPR02.4. Live provider
+acceptance and deployment remain separate.
 
 ## Paused plan — Managed services and sidecar runtime
 

@@ -1,16 +1,17 @@
 import { DYNAMIC_PROFILES, isDynamicProfile, type DynamicProfile, assertDynamicPlan } from "../script-engine/dynamic-containers.js";
+import { BASE_PROJECT_RUNTIME_PROFILE_ID, type EligibleProjectRuntimeImageProfile } from "../script-engine/container-policy.js";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 type Scope = { tenantId: string; spaceId: string; projectId: string };
-type ProfileRow = { profile: string; version: number; updated_by: string; updated_at: string };
+type ProfileRow = { profile: string; image_profile_id: string; version: number; updated_by: string; updated_at: string };
 type MainRuntimeRegistryRow = { state: string; allocation_generation: number; last_seen_at: string };
 type RestartRecipeSetRow = { recipes_json: string; version: number; updated_by: string; updated_at: string };
-type MainRuntimeProfileArchiveRow = { profile: string; version: number; updated_by: string; updated_at: string };
+type MainRuntimeProfileArchiveRow = { profile: string; image_profile_id: string; version: number; updated_by: string; updated_at: string };
 
 export interface ProjectMainRuntimeSettingsArchiveSnapshot {
   version: 1;
   scope: Scope;
-  mainRuntimeProfile: { profile: DynamicProfile; sourceVersion: number; sourceUpdatedBy: string; sourceUpdatedAt: string } | null;
+  mainRuntimeProfile: { profile: DynamicProfile; imageProfileId: string; sourceVersion: number; sourceUpdatedBy: string; sourceUpdatedAt: string } | null;
   restartRecipes: { recipes: ProjectMainRestartRecipe[]; sourceVersion: number; sourceUpdatedBy: string; sourceUpdatedAt: string } | null;
 }
 
@@ -106,18 +107,21 @@ export async function readProjectMainRuntimeProfile(
   scope: Scope,
   planTier: string,
   configuredDefault: string | undefined,
+  eligibleImageProfiles: readonly EligibleProjectRuntimeImageProfile[] = [{ id: BASE_PROJECT_RUNTIME_PROFILE_ID, capabilities: [], minimumProfile: "lite" }],
 ) {
   const fallback: DynamicProfile = isDynamicProfile(configuredDefault) ? configuredDefault : "standard-1";
-  const row = await db.prepare(`SELECT profile,version,updated_by,updated_at FROM project_main_runtime_profiles
+  const row = await db.prepare(`SELECT profile,image_profile_id,version,updated_by,updated_at FROM project_main_runtime_profiles
     WHERE tenant_id=? AND space_id=? AND project_id=?`)
     .bind(scope.tenantId,scope.spaceId,scope.projectId).first<ProfileRow>();
   return {
     profile: row && isDynamicProfile(row.profile) ? row.profile : fallback,
+    imageProfileId: row && /^[a-z][a-z0-9-]{0,39}$/.test(row.image_profile_id) ? row.image_profile_id : BASE_PROJECT_RUNTIME_PROFILE_ID,
     source: row ? "project" as const : "deployment_default" as const,
     version: row?.version ?? 0,
     updatedBy: row?.updated_by ?? null,
     updatedAt: row?.updated_at ?? null,
     allowedProfiles: allowedProfiles(planTier),
+    eligibleImageProfiles: eligibleImageProfiles.filter(value => allowedProfiles(planTier).includes(value.minimumProfile)),
   };
 }
 
@@ -159,7 +163,8 @@ export async function saveProjectMainRuntimeProfile(
   db: D1Database,
   scope: Scope,
   planTier: string,
-  input: { profile: string; expectedVersion: number; actorId: string },
+  input: { profile: string; imageProfileId?: string; expectedVersion: number; actorId: string;
+    eligibleImageProfiles?: readonly EligibleProjectRuntimeImageProfile[] },
   now = new Date(),
 ) {
   if (!ID.test(scope.tenantId) || !ID.test(scope.spaceId) || !ID.test(scope.projectId)
@@ -170,31 +175,45 @@ export async function saveProjectMainRuntimeProfile(
   try { assertDynamicPlan(input.profile, planTier); }
   catch { throw new Error("project_main_runtime_profile_plan_limit"); }
 
-  const prior = await db.prepare(`SELECT profile,version FROM project_main_runtime_profiles
+  const prior = await db.prepare(`SELECT profile,image_profile_id,version FROM project_main_runtime_profiles
     WHERE tenant_id=? AND space_id=? AND project_id=?`)
-    .bind(scope.tenantId,scope.spaceId,scope.projectId).first<{profile:string;version:number}>();
+    .bind(scope.tenantId,scope.spaceId,scope.projectId).first<{profile:string;image_profile_id?:string;version:number}>();
   const currentVersion = prior?.version ?? 0;
   if (currentVersion !== input.expectedVersion) throw new Error("project_main_runtime_profile_version_conflict");
-  if (prior?.profile === input.profile) return { profile: input.profile as DynamicProfile, version: currentVersion, changed: false };
+  const imageProfileId = input.imageProfileId ?? prior?.image_profile_id ?? BASE_PROJECT_RUNTIME_PROFILE_ID;
+  if (!/^[a-z][a-z0-9-]{0,39}$/.test(imageProfileId)) throw new Error("project_main_runtime_profile_invalid");
+  const eligibleImageProfiles = input.eligibleImageProfiles ?? [{ id: BASE_PROJECT_RUNTIME_PROFILE_ID, capabilities: [], minimumProfile: "lite" }];
+  const imageProfile = eligibleImageProfiles.find(value => value.id === imageProfileId);
+  if (!imageProfile) throw new Error("project_main_runtime_profile_image_unavailable");
+  try { assertDynamicPlan(imageProfile.minimumProfile, planTier); }
+  catch { throw new Error("project_main_runtime_profile_image_plan_limit"); }
+  const requestedSize = DYNAMIC_PROFILES[input.profile as DynamicProfile], minimumSize = DYNAMIC_PROFILES[imageProfile.minimumProfile];
+  if (requestedSize.cpuCores < minimumSize.cpuCores || requestedSize.memoryMb < minimumSize.memoryMb || requestedSize.diskGb < minimumSize.diskGb)
+    throw new Error("project_main_runtime_profile_image_size_limit");
+  if (prior?.profile === input.profile && (prior.image_profile_id ?? BASE_PROJECT_RUNTIME_PROFILE_ID) === imageProfileId)
+    return { profile: input.profile as DynamicProfile, imageProfileId, version: currentVersion, changed: false };
 
   const version = currentVersion + 1;
   const at = now.toISOString();
   const auditId = `pmrpa_${crypto.randomUUID().replaceAll("-", "")}`;
   const results = await db.batch([
-    db.prepare(`INSERT INTO project_main_runtime_profiles(tenant_id,space_id,project_id,profile,version,updated_by,updated_at)
-      VALUES(?,?,?,?,1,?,?) ON CONFLICT(tenant_id,space_id,project_id) DO UPDATE SET profile=excluded.profile,
+    db.prepare(`INSERT INTO project_main_runtime_profiles(tenant_id,space_id,project_id,profile,image_profile_id,version,updated_by,updated_at)
+      VALUES(?,?,?,?,?,1,?,?) ON CONFLICT(tenant_id,space_id,project_id) DO UPDATE SET profile=excluded.profile,
+      image_profile_id=excluded.image_profile_id,
       version=project_main_runtime_profiles.version+1,updated_by=excluded.updated_by,updated_at=excluded.updated_at
       WHERE project_main_runtime_profiles.version=?`)
-      .bind(scope.tenantId,scope.spaceId,scope.projectId,input.profile,input.actorId,at,input.expectedVersion),
-    db.prepare(`INSERT INTO project_main_runtime_profile_audit(id,tenant_id,space_id,project_id,previous_profile,new_profile,version,actor_id,created_at)
-      SELECT ?,?,?,?,?,?,?,?,? FROM project_main_runtime_profiles WHERE tenant_id=? AND space_id=? AND project_id=?
+      .bind(scope.tenantId,scope.spaceId,scope.projectId,input.profile,imageProfileId,input.actorId,at,input.expectedVersion),
+    db.prepare(`INSERT INTO project_main_runtime_profile_audit(id,tenant_id,space_id,project_id,previous_profile,new_profile,
+        previous_image_profile_id,new_image_profile_id,version,actor_id,created_at)
+      SELECT ?,?,?,?,?,?,?,?,?,?,? FROM project_main_runtime_profiles WHERE tenant_id=? AND space_id=? AND project_id=?
         AND profile=? AND version=? AND updated_by=?`)
-      .bind(auditId,scope.tenantId,scope.spaceId,scope.projectId,prior?.profile??null,input.profile,version,input.actorId,at,
+      .bind(auditId,scope.tenantId,scope.spaceId,scope.projectId,prior?.profile??null,input.profile,
+        prior?.image_profile_id ?? BASE_PROJECT_RUNTIME_PROFILE_ID,imageProfileId,version,input.actorId,at,
         scope.tenantId,scope.spaceId,scope.projectId,input.profile,version,input.actorId),
   ]);
   if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1)
     throw new Error("project_main_runtime_profile_version_conflict");
-  return { profile: input.profile as DynamicProfile, version, changed: true };
+  return { profile: input.profile as DynamicProfile, imageProfileId, version, changed: true };
 }
 
 /** Read owner-configured recovery metadata. This does not imply that an adapter can execute it. */
@@ -275,16 +294,17 @@ export async function saveProjectMainRestartRecipes(
 export async function exportProjectMainRuntimeSettingsArchive(db: D1Database, scope: Scope): Promise<ProjectMainRuntimeSettingsArchiveSnapshot | null> {
   if (!ID.test(scope.tenantId) || !ID.test(scope.spaceId) || !ID.test(scope.projectId)) throw new Error("project_main_settings_archive_scope_invalid");
   const [profileRow, recipeRow] = await Promise.all([
-    db.prepare(`SELECT profile,version,updated_by,updated_at FROM project_main_runtime_profiles WHERE tenant_id=? AND space_id=? AND project_id=?`)
+    db.prepare(`SELECT profile,image_profile_id,version,updated_by,updated_at FROM project_main_runtime_profiles WHERE tenant_id=? AND space_id=? AND project_id=?`)
       .bind(scope.tenantId, scope.spaceId, scope.projectId).first<MainRuntimeProfileArchiveRow>(),
     db.prepare(`SELECT recipes_json,version,updated_by,updated_at FROM project_main_restart_recipe_sets WHERE tenant_id=? AND space_id=? AND project_id=?`)
       .bind(scope.tenantId, scope.spaceId, scope.projectId).first<RestartRecipeSetRow>(),
   ]);
   let mainRuntimeProfile: ProjectMainRuntimeSettingsArchiveSnapshot["mainRuntimeProfile"] = null;
   if (profileRow) {
-    if (!isDynamicProfile(profileRow.profile) || !Number.isSafeInteger(profileRow.version) || profileRow.version < 1
+    if (!isDynamicProfile(profileRow.profile) || !/^[a-z][a-z0-9-]{0,39}$/.test(profileRow.image_profile_id)
+      || !Number.isSafeInteger(profileRow.version) || profileRow.version < 1
       || !ID.test(profileRow.updated_by) || !Number.isFinite(Date.parse(profileRow.updated_at))) throw new Error("project_main_settings_archive_corrupt");
-    mainRuntimeProfile = { profile: profileRow.profile, sourceVersion: profileRow.version,
+    mainRuntimeProfile = { profile: profileRow.profile, imageProfileId: profileRow.image_profile_id, sourceVersion: profileRow.version,
       sourceUpdatedBy: profileRow.updated_by, sourceUpdatedAt: profileRow.updated_at };
   }
   let restartRecipes: ProjectMainRuntimeSettingsArchiveSnapshot["restartRecipes"] = null;
@@ -316,11 +336,13 @@ function validateProjectMainRuntimeSettingsArchiveSnapshot(value: unknown, scope
   if (row.mainRuntimeProfile !== null) {
     if (!row.mainRuntimeProfile || typeof row.mainRuntimeProfile !== "object" || Array.isArray(row.mainRuntimeProfile)) throw new Error("project_main_settings_archive_invalid");
     const profile = row.mainRuntimeProfile as Record<string, unknown>;
-    if (Object.keys(profile).some(key => !["profile", "sourceVersion", "sourceUpdatedBy", "sourceUpdatedAt"].includes(key))
+    if (Object.keys(profile).some(key => !["profile", "imageProfileId", "sourceVersion", "sourceUpdatedBy", "sourceUpdatedAt"].includes(key))
       || typeof profile.profile !== "string" || !isDynamicProfile(profile.profile) || !Number.isSafeInteger(profile.sourceVersion) || Number(profile.sourceVersion) < 1
+      || profile.imageProfileId !== undefined && (typeof profile.imageProfileId !== "string" || !/^[a-z][a-z0-9-]{0,39}$/.test(profile.imageProfileId))
       || typeof profile.sourceUpdatedBy !== "string" || !ID.test(profile.sourceUpdatedBy) || typeof profile.sourceUpdatedAt !== "string"
       || !Number.isFinite(Date.parse(profile.sourceUpdatedAt))) throw new Error("project_main_settings_archive_invalid");
-    mainRuntimeProfile = { profile: profile.profile, sourceVersion: Number(profile.sourceVersion), sourceUpdatedBy: profile.sourceUpdatedBy,
+    mainRuntimeProfile = { profile: profile.profile, imageProfileId: typeof profile.imageProfileId === "string" ? profile.imageProfileId : BASE_PROJECT_RUNTIME_PROFILE_ID,
+      sourceVersion: Number(profile.sourceVersion), sourceUpdatedBy: profile.sourceUpdatedBy,
       sourceUpdatedAt: profile.sourceUpdatedAt };
   }
   let restartRecipes: ProjectMainRuntimeSettingsArchiveSnapshot["restartRecipes"] = null;
@@ -366,12 +388,14 @@ export async function restoreProjectMainRuntimeSettingsArchive(db: D1Database, s
   if (snapshot.mainRuntimeProfile) {
     const profile = snapshot.mainRuntimeProfile.profile;
     const auditId = `pmrpa_${crypto.randomUUID().replaceAll("-", "")}`;
-    statements.push(db.prepare(`INSERT INTO project_main_runtime_profiles(tenant_id,space_id,project_id,profile,version,updated_by,updated_at)
-      VALUES(?,?,?,?,1,?,?) ON CONFLICT(tenant_id,space_id,project_id) DO NOTHING`)
-      .bind(scope.tenantId, scope.spaceId, scope.projectId, profile, actorId, at));
-    statements.push(db.prepare(`INSERT INTO project_main_runtime_profile_audit(id,tenant_id,space_id,project_id,previous_profile,new_profile,version,actor_id,created_at)
-      SELECT ?,?,?,?,NULL,?,1,?,? WHERE changes()=1`)
-      .bind(auditId, scope.tenantId, scope.spaceId, scope.projectId, profile, actorId, at));
+    const imageProfileId = snapshot.mainRuntimeProfile.imageProfileId;
+    statements.push(db.prepare(`INSERT INTO project_main_runtime_profiles(tenant_id,space_id,project_id,profile,image_profile_id,version,updated_by,updated_at)
+      VALUES(?,?,?,?,?,1,?,?) ON CONFLICT(tenant_id,space_id,project_id) DO NOTHING`)
+      .bind(scope.tenantId, scope.spaceId, scope.projectId, profile, imageProfileId, actorId, at));
+    statements.push(db.prepare(`INSERT INTO project_main_runtime_profile_audit(id,tenant_id,space_id,project_id,previous_profile,new_profile,
+      previous_image_profile_id,new_image_profile_id,version,actor_id,created_at)
+      SELECT ?,?,?,?,NULL,?,NULL,?,1,?,? WHERE changes()=1`)
+      .bind(auditId, scope.tenantId, scope.spaceId, scope.projectId, profile, imageProfileId, actorId, at));
   }
   if (snapshot.restartRecipes) {
     const recipesJson = JSON.stringify(snapshot.restartRecipes.recipes);

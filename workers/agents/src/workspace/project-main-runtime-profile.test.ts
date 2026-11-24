@@ -9,6 +9,7 @@ const db = () => createFakeD1([
   readFileSync(new URL("../../../../infra/migrations/0189_project_main_runtime_registry.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../../../../infra/migrations/0197_project_main_runtime_allocation_tokens.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../../../../infra/migrations/0198_project_main_runtime_profiles.sql", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../../infra/migrations/0290_project_main_runtime_image_profiles.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../../../../infra/migrations/0249_project_main_runtime_budget_reservations.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../../../../infra/migrations/0250_project_main_restart_recipes.sql", import.meta.url), "utf8"),
 ]);
@@ -28,7 +29,7 @@ describe("project main runtime profile preference", () => {
     })).rejects.toThrow("project_main_runtime_profile_plan_limit");
     await expect(saveProjectMainRuntimeProfile(fixture, scope, "free", {
       profile: "lite", expectedVersion: 0, actorId: "owner",
-    }, new Date("2026-11-11T12:00:00.000Z"))).resolves.toEqual({ profile: "lite", version: 1, changed: true });
+    }, new Date("2026-11-11T12:00:00.000Z"))).resolves.toEqual({ profile: "lite", imageProfileId: "base", version: 1, changed: true });
     expect(await fixture.prepare("SELECT previous_profile,new_profile,version,actor_id FROM project_main_runtime_profile_audit").first())
       .toEqual({ previous_profile: null, new_profile: "lite", version: 1, actor_id: "owner" });
     await expect(saveProjectMainRuntimeProfile(fixture, scope, "free", {
@@ -49,12 +50,39 @@ describe("project main runtime profile preference", () => {
     const fixture = db();
     await expect(saveProjectMainRuntimeProfile(fixture, scope, "free", {
       profile: "standard-1", expectedVersion: 0, actorId: "owner",
-    })).resolves.toEqual({ profile: "standard-1", version: 1, changed: true });
+    })).resolves.toEqual({ profile: "standard-1", imageProfileId: "base", version: 1, changed: true });
     await expect(saveProjectMainRuntimeProfile(fixture, scope, "free", {
       profile: "standard-1", expectedVersion: 1, actorId: "owner",
-    })).resolves.toEqual({ profile: "standard-1", version: 1, changed: false });
+    })).resolves.toEqual({ profile: "standard-1", imageProfileId: "base", version: 1, changed: false });
     expect(await fixture.prepare("SELECT COUNT(*) AS count FROM project_main_runtime_profile_audit").first())
       .toEqual({ count: 1 });
+  });
+
+  it("stores only deployed approved image profiles at a plan-supported minimum size", async () => {
+    const fixture = db();
+    const eligibleImageProfiles = [
+      { id: "base", capabilities: [], minimumProfile: "lite" as const },
+      { id: "media-documents", capabilities: ["media.audio_extract", "document.pdf_render"] as const, minimumProfile: "standard-1" as const },
+      { id: "large-media", capabilities: ["media.frame_extract"] as const, minimumProfile: "standard-2" as const },
+    ];
+    await expect(saveProjectMainRuntimeProfile(fixture, scope, "pro", {
+      profile: "standard-1", imageProfileId: "media-documents", eligibleImageProfiles, expectedVersion: 0, actorId: "owner",
+    })).resolves.toEqual({ profile: "standard-1", imageProfileId: "media-documents", version: 1, changed: true });
+    expect(await fixture.prepare(`SELECT previous_image_profile_id,new_image_profile_id,version,actor_id
+      FROM project_main_runtime_profile_audit`).first()).toEqual({
+      previous_image_profile_id: "base", new_image_profile_id: "media-documents", version: 1, actor_id: "owner",
+    });
+    await expect(readProjectMainRuntimeProfile(fixture, scope, "pro", undefined, eligibleImageProfiles))
+      .resolves.toMatchObject({ imageProfileId: "media-documents", eligibleImageProfiles });
+    await expect(saveProjectMainRuntimeProfile(fixture, scope, "pro", {
+      profile: "standard-1", imageProfileId: "not-deployed", eligibleImageProfiles, expectedVersion: 1, actorId: "owner",
+    })).rejects.toThrow("project_main_runtime_profile_image_unavailable");
+    await expect(saveProjectMainRuntimeProfile(fixture, scope, "pro", {
+      profile: "lite", imageProfileId: "media-documents", eligibleImageProfiles, expectedVersion: 1, actorId: "owner",
+    })).rejects.toThrow("project_main_runtime_profile_image_size_limit");
+    await expect(saveProjectMainRuntimeProfile(fixture, scope, "free", {
+      profile: "lite", imageProfileId: "large-media", eligibleImageProfiles, expectedVersion: 1, actorId: "owner",
+    })).rejects.toThrow("project_main_runtime_profile_image_plan_limit");
   });
 
   it("returns only the scoped persisted runtime state and labels it as non-live health evidence", async () => {
@@ -138,7 +166,7 @@ describe("project main runtime profile preference", () => {
     await saveProjectMainRuntimeProfile(source, scope, "pro", { profile: "standard-2", expectedVersion: 0, actorId: "source-owner" });
     await saveProjectMainRestartRecipes(source, scope, { recipes, expectedVersion: 0, actorId: "source-owner" });
     const snapshot = await exportProjectMainRuntimeSettingsArchive(source, scope);
-    expect(snapshot).toMatchObject({ version: 1, scope, mainRuntimeProfile: { profile: "standard-2", sourceVersion: 1 },
+    expect(snapshot).toMatchObject({ version: 1, scope, mainRuntimeProfile: { profile: "standard-2", imageProfileId: "base", sourceVersion: 1 },
       restartRecipes: { recipes, sourceVersion: 1 } });
     expect(snapshot).not.toHaveProperty("runtimeAllocation");
     expect(snapshot).not.toHaveProperty("providerSnapshots");

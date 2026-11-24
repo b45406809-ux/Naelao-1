@@ -118,6 +118,28 @@ and registry fixtures only; no image was built, published, deployed or inspected
 eligible pinned image profile and size, with plan and expected-version checks; keep replacement
 work for SPR02.4.
 
+## SPR02.3 — Owner-selected Project image profile — 2026-11-24
+
+Migration `0290_project_main_runtime_image_profiles.sql` stores `image_profile_id` separately from
+the Cloudflare size profile and adds both values to the profile audit trail. The owner/admin GET
+route returns the base profile plus capability profiles whose exact dynamic pin is in the current
+deployed image map and whose minimum size is allowed by the tenant plan. PUT accepts an optional
+`image_profile_id`, preserves the current value for size-only updates, validates the requested pin
+and image minimum size, and uses the existing expected-version fence. The image selection is
+configuration only at this checkpoint; DynamicSandbox still starts the base image until SPR02.4
+implements the checked replacement.
+
+Project settings archives now include the selected image profile. Version 1 archives without that
+field remain valid and restore to `base`. Local verification: profile route, settings/archive and
+container-policy suites pass **23/23**; DynamicSandbox tests pass **44/44**; Agents typecheck and
+`git diff --check` pass. The route test uses a mocked deployed image map; no Cloudflare image was
+built, published or started.
+
+**Exact next action:** consume the saved image profile in `DynamicSandboxDO`, verify its exact digest
+against the deployed map and capability declaration, stop and settle the old allocation before
+claiming the next physical generation, and test failure/retry/reconciliation while restoring the
+authorized checked workspace. Keep attachment caller migration for SPR03.
+
 ## Acceptance boundaries
 
 The branch identity and main admission slice is implemented and locally verified. Project image

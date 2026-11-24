@@ -134,7 +134,8 @@ import { actorAddress, parseExtensionPrimitive, type ContainerContract, type Thr
 import { applyDurableObjectJurisdiction, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { deleteBytesCas, putBytesCas, readBytesWithHash, R2CasConflictError } from "./script-engine/r2-cas.js";
 import { workspacePrefix } from "./script-engine/types.js";
-import { approvedContainer, parseApprovedContainerImages, sidecarKey, validateContainerScope, type ContainerInvocationScope } from "./script-engine/container-policy.js";
+import { approvedContainer, eligibleProjectRuntimeImageProfiles, parseApprovedContainerImages, sidecarKey, validateContainerScope,
+  type ContainerInvocationScope, type EligibleProjectRuntimeImageProfile } from "./script-engine/container-policy.js";
 import { workspaceBranchScope } from "./script-engine/sandbox-routing.js";
 import {
   createAgentEmailAddress, createReplyAddress, emailReplyBody, hashEmailAddress, MAX_EMAIL_ATTACHMENT_BYTES,
@@ -5802,6 +5803,12 @@ async function requireProjectAccessForManagedProfile(c: Context<{ Bindings: Agen
   return { tenantId, userId };
 }
 
+async function projectMainRuntimeImageProfiles(env: AgentsEnv): Promise<EligibleProjectRuntimeImageProfile[]> {
+  const deployedImages = env.DYNAMIC_CONTAINERS_ENABLED === "true"
+    ? await deployedDynamicImages(env.DYNAMIC_SANDBOX, env.PLATFORM_SECRET) : [];
+  return eligibleProjectRuntimeImageProfiles(env.CONTAINER_IMAGE_REGISTRY, deployedImages);
+}
+
 async function projectDecisionReviewAccess(c: Context<{ Bindings: AgentsEnv }>, spaceId: string, projectId: string, tenantId: string, userId: string) {
   if (!c.env.SPACES_WORKER) throw new Error("project_decision_authority_unavailable");
   const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
@@ -5924,7 +5931,11 @@ app.get("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => 
   const { spaceId, projectId } = c.req.param();
   const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
   const planTier = await new EntitlementsChecker(c.env.PLATFORM_DB).getTenantTier(tenantId);
-  const profile = await readProjectMainRuntimeProfile(c.env.PLATFORM_DB, { tenantId, spaceId, projectId }, planTier, c.env.DYNAMIC_CONTAINER_BASE_PROFILE);
+  let imageProfiles: EligibleProjectRuntimeImageProfile[];
+  try { imageProfiles = await projectMainRuntimeImageProfiles(c.env); }
+  catch { return c.json({ error_code: "project_main_runtime_profile_unavailable" }, 503); }
+  const profile = await readProjectMainRuntimeProfile(c.env.PLATFORM_DB, { tenantId, spaceId, projectId },
+    planTier, c.env.DYNAMIC_CONTAINER_BASE_PROFILE, imageProfiles);
   const runtimeStatus = await readProjectMainRuntimeStatus(c.env.PLATFORM_DB, { tenantId, spaceId, projectId });
   const snapshotRetention = await readLatestRuntimeSnapshotRetention(c.env.PLATFORM_DB,{tenantId,spaceId,projectId});
   return c.json({ ...profile, runtimeStatus, snapshotRetention, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true", provider: "cloudflare" });
@@ -6070,13 +6081,18 @@ app.post("/spaces/:spaceId/projects/:projectId/main-runtime-private-state/backup
 app.put("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => {
   const { spaceId, projectId } = c.req.param();
   const { tenantId, userId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
-  const body = await c.req.json<{ profile?: string; expected_version?: number }>().catch(() => null);
-  if (!body || typeof body.profile !== "string" || typeof body.expected_version !== "number")
+  const body = await c.req.json<{ profile?: string; image_profile_id?: string; expected_version?: number }>().catch(() => null);
+  if (!body || typeof body.profile !== "string" || typeof body.expected_version !== "number"
+    || body.image_profile_id !== undefined && typeof body.image_profile_id !== "string")
     return c.json({ error_code: "project_main_runtime_profile_invalid" }, 400);
   const planTier = await new EntitlementsChecker(c.env.PLATFORM_DB).getTenantTier(tenantId);
+  let imageProfiles: EligibleProjectRuntimeImageProfile[];
+  try { imageProfiles = await projectMainRuntimeImageProfiles(c.env); }
+  catch { return c.json({ error_code: "project_main_runtime_profile_unavailable" }, 503); }
   try {
     const result = await saveProjectMainRuntimeProfile(c.env.PLATFORM_DB, { tenantId, spaceId, projectId }, planTier,
-      { profile: body.profile, expectedVersion: body.expected_version, actorId: userId });
+      { profile: body.profile, ...(body.image_profile_id !== undefined ? { imageProfileId: body.image_profile_id } : {}),
+        expectedVersion: body.expected_version, actorId: userId, eligibleImageProfiles: imageProfiles });
     const runtimeStatus = await readProjectMainRuntimeStatus(c.env.PLATFORM_DB, { tenantId, spaceId, projectId });
     const snapshotRetention = await readLatestRuntimeSnapshotRetention(c.env.PLATFORM_DB,{tenantId,spaceId,projectId});
     return c.json({ ...result, runtimeStatus, snapshotRetention, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true", provider: "cloudflare" });
@@ -6084,6 +6100,9 @@ app.put("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => 
     const code = error instanceof Error ? error.message : "project_main_runtime_profile_failed";
     if (code === "project_main_runtime_profile_version_conflict") return c.json({ error_code: code }, 409);
     if (code === "project_main_runtime_profile_plan_limit") return c.json({ error_code: code }, 403);
+    if (code === "project_main_runtime_profile_image_plan_limit") return c.json({ error_code: code }, 403);
+    if (code === "project_main_runtime_profile_image_unavailable" || code === "project_main_runtime_profile_image_size_limit")
+      return c.json({ error_code: code }, 409);
     if (code === "project_main_runtime_profile_invalid") return c.json({ error_code: code }, 400);
     throw error;
   }

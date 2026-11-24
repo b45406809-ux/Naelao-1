@@ -10,16 +10,16 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR02.3 — Owner-selected Project image profile.** Follow the
+**SPR02.4 — Apply selected image profiles through checked replacement.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
 and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). Project branch
 IDs now share one Container and race branches participate in its generation, writer and snapshot
 rules. Approved dynamic image pins can declare an immutable Project runtime profile and its
-capabilities, and missing capabilities are denied before execution registration, capacity/billing
-reservation, or startup. Extend the owner/admin settings flow, which currently stores only size, to
-select an eligible Project image profile and size under plan limits and version fencing. Preserve
-the checked replacement path as the following task, plus installation image policy and
-non-Project/external routing.
+capabilities; the owner/admin settings now store the requested image profile separately from size.
+Read that versioned selection from trusted D1, require its exact digest in the deployed image map,
+then stop/settle the old allocation before claiming a new generation and starting the selected
+image. Preserve checked workspace recovery, image-specific capability denial, unknown-stop fencing,
+installation image policy and non-Project/external routing. Add lifecycle and recovery tests.
 
 ## Checkout and recovery
 

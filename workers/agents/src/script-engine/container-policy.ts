@@ -17,6 +17,20 @@ export interface ProjectRuntimeImageProfile {
   id: string;
   capabilities: readonly ProjectRuntimeCapability[];
 }
+export interface EligibleProjectRuntimeImageProfile extends ProjectRuntimeImageProfile {
+  minimumProfile: keyof typeof DYNAMIC_PROFILES;
+}
+export const BASE_PROJECT_RUNTIME_PROFILE_ID = "base";
+/** Expose only the built-in base plus capability profiles whose immutable pin is in the deployed map. */
+export function eligibleProjectRuntimeImageProfiles(registryJson: string | undefined, deployedImages: readonly string[]): EligibleProjectRuntimeImageProfile[] {
+  const profiles: EligibleProjectRuntimeImageProfile[] = [{ id: BASE_PROJECT_RUNTIME_PROFILE_ID, capabilities: [], minimumProfile: "lite" }];
+  for (const pin of parseApprovedContainerImages(registryJson)) {
+    if (!pin.projectRuntime || !deployedImages.includes(pin.image)) continue;
+    profiles.push({ ...pin.projectRuntime, minimumProfile: selectDynamicProfile(pin.cpuCores, pin.memoryMb) });
+  }
+  return profiles.sort((left, right) => left.id === right.id ? 0 : left.id === BASE_PROJECT_RUNTIME_PROFILE_ID ? -1
+    : right.id === BASE_PROJECT_RUNTIME_PROFILE_ID ? 1 : left.id.localeCompare(right.id));
+}
 export class ProjectRuntimeCapabilityAdmissionError extends Error {
   constructor(readonly missingCapabilities: readonly ProjectRuntimeCapability[], readonly eligibleProfiles: readonly string[]) {
     super("project_runtime_capability_unavailable");
@@ -114,7 +128,7 @@ export function parseApprovedContainerImages(json: string | undefined): Approved
   if (!json) return [];
   const value: unknown = JSON.parse(json);
   if (!Array.isArray(value) || value.length > 99) throw new Error("container_registry_invalid");
-  const pins = new Set<string>(), projectProfileIds = new Set<string>();
+  const pins = new Set<string>(), projectProfileIds = new Set<string>([BASE_PROJECT_RUNTIME_PROFILE_ID]);
   const ids = new Set(["postgres-16", "redis-7", "chrome-headless", "ffmpeg", "blender-cli", "pytorch-gpu", "r-statistical", "libreoffice"]);
   return value.map(item => {
     if (!item || typeof item !== "object" || !/^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(item.image)

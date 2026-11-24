@@ -2,7 +2,7 @@ import { applyDurableObjectJurisdiction } from "@naelao/security";
 import { mintInternalToken, verifyInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { EntitlementsChecker } from "@naelao/entitlements";
 import { ToolSandboxDO, type ContainerRuntime } from "./ToolSandboxDO.js";
-import { assertProjectRuntimeCapabilities, parseApprovedContainerImages, type ContainerInvocationScope,
+import { assertProjectRuntimeCapabilities, eligibleProjectRuntimeImageProfiles, parseApprovedContainerImages, type ContainerInvocationScope,
   type ProjectRuntimeCapability } from "../script-engine/container-policy.js";
 import { assertDynamicPlan, dynamicCreditsPerHour, dynamicPlanLimits, isDynamicProfile, selectDynamicProfile, type DynamicProfile } from "../script-engine/dynamic-containers.js";
 import { recordRuntimeSnapshotRetention, updateRuntimeSnapshotRetention, type RuntimeSnapshotRetentionRecord } from "../workspace/runtime-snapshot-retention.js";
@@ -77,9 +77,7 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     const baseCapabilities: readonly ProjectRuntimeCapability[] = [];
     const deployedImages = Object.values(this.container?.images ?? {});
     const profiles = this.bindings.DYNAMIC_CONTAINERS_ENABLED === "true"
-      ? parseApprovedContainerImages(this.bindings.CONTAINER_IMAGE_REGISTRY)
-        .flatMap(pin => pin.projectRuntime && deployedImages.includes(pin.image) ? [pin.projectRuntime] : [])
-      : [];
+      ? eligibleProjectRuntimeImageProfiles(this.bindings.CONTAINER_IMAGE_REGISTRY, deployedImages) : [];
     assertProjectRuntimeCapabilities(scope.requiredCapabilities, baseCapabilities, profiles);
   }
 
