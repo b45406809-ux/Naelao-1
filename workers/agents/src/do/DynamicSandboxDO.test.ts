@@ -57,6 +57,7 @@ function capacityService() {
   } }) }, admissions, markQueueFull: () => { fullNextRequest = true; } };
 }
 function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean;
+  capacityServiceUnavailable?: boolean;
   snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean; omitBudgetReservationReceipt?: boolean;
   budgetProjectId?: string; recoveryStore?: boolean; projectRuntime?: { id: string; capabilities: string[] }; projectRuntimeDeployed?: boolean;
   imageProfileId?: string; destroyFailures?: number } = {}) {
@@ -135,7 +136,8 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
     list: async ({ prefix = "" }: { prefix?: string } = {}) => new Map([...records.entries()].filter(([key]) => key.startsWith(prefix))),
   } };
   const env = { PLATFORM_SECRET: "secret", DYNAMIC_CONTAINERS_ENABLED: options.enabled === false ? "false" : "true",
-    DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED: options.snapshots ? "true" : "false", CONCURRENCY_DO: capacity.namespace,
+    DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED: options.snapshots ? "true" : "false",
+    CONCURRENCY_DO: options.capacityServiceUnavailable ? undefined : capacity.namespace,
     PLATFORM_DB: { prepare: (sql: string) => ({ bind: (...values: unknown[]) => ({
       first: async () => sql.includes("workflow_budget_reservations") ? (() => {
         const [id, tenantId, spaceId, projectId] = values as [string, string, string, string];
@@ -642,6 +644,17 @@ describe("Cloudflare dynamic execution", () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error: "project_main_writer_admission_unavailable" });
     expect(r.transport.start).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before billing or start when the compute admission binding is unavailable", async () => {
+    const r = runtime({ capacityServiceUnavailable: true });
+    const response = await r.invoke("/prewarm", { mainComputer: true, executionId: "admission-service-unavailable" });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, error: "Error: container_capacity_service_unavailable" });
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect(r.billing.filter(entry => entry.path.endsWith("/reserve"))).toHaveLength(0);
+    expect(r.capacity.calls).toHaveLength(0);
   });
 
   it("exposes tenant-authenticated managed profile status and reset", async () => {

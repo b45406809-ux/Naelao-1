@@ -413,6 +413,27 @@ allocation counts, provider concurrency, cold/warm startup, or billing settlemen
 deletion and unavailable-admission denials to their local fixtures, then add any missing
 before-compute/data assertion.
 
+## SPR05.2 — Admission and authority failures
+
+Existing local fixtures cover missing media/PDF capabilities before execution receipts, capacity or
+Container start; foreign-task or Projectless attachment requests before R2 reads; Space suspension
+and air-gap policy before attachment data is sent; air-gap changes that remove warm trusted-package
+egress; and Project tombstones that abort or reject execution before a new Container start. The
+CodeRunner capacity-retry fixture rechecks an authorization revision and cancels a queued request
+when the current grant is revoked. This slice adds two explicit ordering checks: a revoked Project
+extension grant returns `container_execution_denied` before installation resolution or namespace
+lookup, and a missing compute-admission binding returns its service error without billing reserve,
+admission call or Container start. Project-main writer-store outage is already covered separately.
+
+Local verification: `DynamicSandboxDO.test.ts`, `ToolSandboxDO.test.ts`, attachment transcription,
+email attachment OCR, CodeRunner capacity and Project extension suites pass **138/138**; Agents
+typecheck and `git diff --check` pass. Results are safe-fixture evidence and do not establish live
+membership-revocation timing, provider egress enforcement or tenant admission health.
+
+**Exact next action:** SPR05.3 — map replacement, crash/retry, interrupted-start, unknown-stop,
+authorized workspace recovery and scratch-file isolation to local tests; add any missing
+canonical-state assertion.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame

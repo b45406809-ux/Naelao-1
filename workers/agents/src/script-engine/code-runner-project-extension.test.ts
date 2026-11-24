@@ -53,6 +53,27 @@ describe("Project extension execution routing", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("does not resolve or dispatch a Project extension after its current grant is revoked", async () => {
+    const fetch = vi.fn();
+    const idFromName = vi.fn((name: string) => name);
+    const authorizeContainer = vi.fn(async () => false);
+    const resolveProjectRuntimeExtension = vi.fn(async () => installation);
+    const runner = buildCodeRunner({
+      authorizeContainer,
+      resolveProjectRuntimeExtension,
+      toolSandbox: { idFromName, get: () => ({ fetch }) } as never,
+    });
+    const result = await runner.run({ name: "container.extension_binary", code: "", args: { commands: "native-tool run" }, tier: 6, maxTier: 6,
+      tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", userId: "owner-a", agentId: "assistant-a", runId: "run-a",
+      projectRuntimeInstallationId: "install-a", projectRuntimeImage: image });
+
+    expect(result).toMatchObject({ ok: false, error: "container_execution_denied" });
+    expect(authorizeContainer).toHaveBeenCalledOnce();
+    expect(resolveProjectRuntimeExtension).not.toHaveBeenCalled();
+    expect(idFromName).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("rejects a stale stored image pin for an otherwise active installation", async () => {
     const fetch = vi.fn();
     const runner = buildCodeRunner({ authorizeContainer: async () => true,

@@ -172,9 +172,11 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
   requests across branches share one runtime generation, provider admission and billing reservation;
   a second Project receives a separate runtime identity and allocation under the same tenant quota.
   DynamicSandbox and routing tests pass 57/57. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-- [ ] **SPR05.2 — Admission and authority failures.** Map capability, attachment access, egress,
-  revoked-grant, Project deletion and unavailable-admission cases to local tests; add any uncovered
-  safe-fixture ordering assertion.
+- [x] **SPR05.2 — Admission and authority failures.** Missing capabilities, attachment ownership,
+  air-gap egress, revoked Project extension grants, Project deletion and unavailable writer/compute
+  admission are mapped to local fixtures. New regressions prove a revoked extension grant stops
+  before runtime lookup and an unavailable compute-admission binding stops before billing or start.
+  Six Agents suites pass 138/138; Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
 - [ ] **SPR05.3 — Replacement and recovery safety.** Map profile changes, crashes, retries,
   interrupted starts, unknown stops, authorized workspace recovery and scratch isolation; add any
   uncovered canonical-workspace assertion.
@@ -190,7 +192,7 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4, SPR04.1–SPR04.3 and SPR05.1 are locally verified. Project
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4, SPR04.1–SPR04.3 and SPR05.1–SPR05.2 are locally verified. Project
 branches share one runtime identity and generation; exact image profiles and capability grants are
 checked before admission. Video audio, frame sampling and scanned PDF use the Project main runtime;
 ordinary audio and image OCR remain container-free. Project extension binaries, managed execution,
@@ -212,9 +214,13 @@ and Cloudflare provider snapshot purge is unsupported. No provider cleanup or de
 SPR05.1 now exercises simultaneous Shell, FFmpeg and PDF requests across three Project branches and
 confirms one start, one capacity admission and one billing reservation; a second Project starts its
 own runtime under the same tenant-capacity fixture. The focused DynamicSandbox/routing suites pass
-57/57. **Next action:** SPR05.2 — map capability, attachment, egress, grant, deletion and
-unavailable-admission denials to local fixtures; add any missing before-compute/data assertion and
-keep live acceptance open.
+57/57. SPR05.2 maps capability denial, attachment ownership, air-gap egress, extension grant
+revocation, Project deletion, and writer/compute admission failure. Six Agents suites pass 138/138;
+Agents typecheck and `git diff --check` pass. The added tests confirm a revoked grant is rejected
+before runtime lookup, and unavailable compute admission is rejected before billing reservation or
+Container start. **Next action:** SPR05.3 — map profile replacement, crash/retry, interrupted start,
+unknown stop, authorized workspace recovery and scratch isolation; add any missing canonical-state
+assertion. Keep live acceptance open.
 
 ## Paused plan — Managed services and sidecar runtime
 
