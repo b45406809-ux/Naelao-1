@@ -70,17 +70,19 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
   [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
 - [ ] **Active · SPR02 — One allocation and image profiles.** Enforce Project-wide admission across
   branches, select approved capabilities before starting, and fence image replacement and recovery.
-  - [ ] **SPR02.1 — Stable Project runtime identity.** `sandbox-routing.ts` previously gave `workers/`
-    and `race/` branches branch-suffixed Container IDs; `ToolSandboxDO` and `DynamicSandboxDO` also
-    exclude race branches from main generation/admission.
-    - [x] Project branch IDs now resolve to `sandbox:<space>:<project>` while retaining the exact
-      branch in invocation scope. In unified-workspace mode, the Workspace Coordinator hydrates
-      and stages its run branch; the shared Durable Object serializes Container/workspace routes.
-      Routing/execution tests pass 27/27 and Agents typecheck passes.
-    - [ ] **SPR02.1b — Extend main generation and writer admission.** Remove race exclusions from
-      `ToolSandboxDO` and `DynamicSandboxDO`, make the D1 active-branch/fence transition work on the
-      one allocation without spuriously advancing the physical generation, and test race/worker
-      serialization and meter reuse. Keep Space Assistant IDs and explicit external tools separate.
+  - [x] **SPR02.1 — Stable Project runtime identity and branch admission.** Project branch IDs
+    resolve to `sandbox:<space>:<project>` while retaining the exact branch in invocation scope.
+    Race branches now participate in Project-main generation, active-branch fencing, writer
+    admission and snapshot retention. In unified-workspace mode, the Workspace Coordinator
+    hydrates and stages its run branch; the shared Durable Object serializes Container/workspace
+    routes. `ToolSandboxDO` tests pass 37/37; DynamicSandbox, routing and execution tests pass 68/68;
+    Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
+  - [ ] **Active · SPR02.2 — Host-owned capability admission for Project images.** Inventory the
+    checked-in base/media/document images and approved dynamic image pins; add immutable,
+    host-owned capability declarations and resolve required capabilities before reserving billing
+    or capacity or starting a Container. A missing capability must return a structured error with
+    eligible configured profiles. Preserve size-only profile settings and installation image
+    policy until the owner-selected image/replacement slice is verified.
 - [ ] **SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and extension
   native processing through the Project runtime while preserving isolation and operation limits.
 - [ ] **SPR04 — Retire direct specialist execution.** Stop new first-party specialist allocations
@@ -90,16 +92,15 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01 source inventory and the first SPR02.1 code slice are complete in the
-SPR ledger. `sandboxInstanceName` now routes every Project branch through one Container ID, and
-branch scope stays on the invocation for Workspace Coordinator hydration/staging in unified-workspace
-mode. The Durable Object serializes Container/workspace requests. `sandbox-routing.test.ts` and
-`execution-ladder.test.ts` pass 27/27; Agents typecheck and `git diff --check` pass. The race branch
-still bypasses the Project-main D1 generation/writer fences, so this is not full SPR02.1
-acceptance. Video/frame/PDF and extension sidecar routes plus their erasure registrations remain for
-SPR03/SPR04. **Next action:** update race generation, active-branch fencing, writer admission and
-meter reuse on the shared main Durable Object; run focused `ToolSandboxDO` and `DynamicSandboxDO`
-tests before moving to attachment callers.
+**Latest checkpoint:** SPR01 and SPR02.1 are verified in the SPR ledger. `sandboxInstanceName`
+routes every Project branch through one Container ID; race handoffs update the D1 active branch and
+fencing token without incrementing physical allocation generation. The shared Durable Object
+admits and serializes writers across race/worker branches and reuses the same capacity and billing
+reservation. `ToolSandboxDO` tests pass 37/37; DynamicSandbox, routing and execution tests pass
+68/68; Agents typecheck and `git diff --check` pass. Video/frame/PDF and extension sidecar routes
+plus their erasure registrations remain for SPR03/SPR04. **Next action:** map capabilities to the
+checked-in and approved Project images, then enforce capability admission before any compute or
+billing reservation; see SPR02.2.
 
 ## Paused plan — Managed services and sidecar runtime
 

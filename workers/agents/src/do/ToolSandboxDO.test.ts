@@ -3,6 +3,8 @@ import { mintInternalToken } from "@naelao/http";
 import { sandboxWorkspacePrefix, ToolSandboxDO } from "./ToolSandboxDO.js";
 import { WorkspaceCoordinatorDO } from "../workspace/WorkspaceCoordinatorDO.js";
 import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
+import { sidecarKey } from "../script-engine/container-policy.js";
+import { sandboxInstanceName, workspaceBranchScope } from "../script-engine/sandbox-routing.js";
 
 describe("sandbox workspace ownership", () => {
   it("keeps the Space Assistant, each Space-wide extension, and projects in distinct durable prefixes", () => {
@@ -194,6 +196,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
                 ? { config_json: airGapped ? JSON.stringify({ compliance: { airGappedOnly: true } }) : "{}" }
                 : { id: "space" };
             },
+            run: async () => ({ meta: { changes: 1 } }),
           }),
         }),
       } } : {}),
@@ -204,11 +207,15 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       const testExecutionId = headers.get("x-test-execution-id");
       headers.delete("x-test-execution-id");
       headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant"));
-      headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", ...(options.workspaceProject ? { projectId: "project" } : {}), actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
+      const scope = { tenantId: "tenant", spaceId: "space", ...(options.workspaceProject || options.sidecar ? { projectId: "project" } : {}), actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
         ...(options.workspaceBranch ? { workspaceBranch: options.workspaceBranch } : {}), ...(options.workspaceRevision !== undefined ? { workspaceRevision: options.workspaceRevision } : {}),
         ...(options.workspaceManifestHash ? { workspaceManifestHash: options.workspaceManifestHash } : {}),
         ...(options.sidecar ? { projectId: "project", installationId: "install-a", containerId: "container-a", installationScope: "PROJECT_SHARED", image: "registry.example/tool@sha256:" + "a".repeat(64), dynamicImage: false } : {}),
-        executionId: testExecutionId ?? crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
+        executionId: testExecutionId ?? crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) };
+      headers.set("x-naelao-container-scope", JSON.stringify(scope));
+      if (scope.projectId) headers.set("x-naelao-runtime-object-name", scope.installationId
+        ? sidecarKey(scope as never) + workspaceBranchScope(scope.workspaceBranch)
+        : sandboxInstanceName(scope.spaceId, scope.projectId, scope.workspaceBranch));
       return realSandbox.fetch(new Request(request, { headers }));
     } };
     const initialPrewarm = options.hangReservation ? undefined : await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));

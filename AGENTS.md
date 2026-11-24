@@ -10,12 +10,14 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR02.1b — Extend Project-main admission to race branches.** Follow the
+**SPR02.2 — Host-owned capability admission for Project images.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
 and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). Project branch
-IDs now share one Container. Remove the race-branch exclusions from main generation, selection and
-writer admission, reconcile the branch transition fence, preserve non-Project/external routing, and
-add focused local tests for serialized cross-branch execution and allocation accounting.
+IDs now share one Container and race branches participate in its generation, writer and snapshot
+rules. Inventory the checked-in images and approved image pins, define immutable host-owned
+capability metadata for Project images, and fail before capacity/billing reservation or container
+start when a requested capability is absent. Preserve owner-selected size profiles, installation
+image policy, and non-Project/external routing; add focused local admission tests.
 
 ## Checkout and recovery
 

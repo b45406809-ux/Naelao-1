@@ -69,9 +69,32 @@ separate.
 - Extension sidecar execution, profile, transfer and cleanup tests must be located with each
   migrated caller; deployment bindings and external provider behavior remain outside local tests.
 
+## SPR02.1b — Race-branch main admission — 2026-11-24
+
+Removed the race-branch exclusions from `ToolSandboxDO.isProjectMainRuntimeScope`, Project-main
+meter reservation reuse and `DynamicSandboxDO.prepareAllocation.projectMain`. Every Project-scoped
+main allocation now registers the branch in the same D1 main-runtime row. Switching branches
+increments its fencing token while retaining `allocationGeneration`; the cold race-branch path
+starts and registers generation 1. The same per-DO writer transaction now covers race and worker
+branch runs, and warm branch handoff does not request another capacity lease or billing hold.
+
+The `ToolSandboxDO` test fixture now supplies the host-derived runtime object name and implements
+the D1 registry write contract; this allowed the existing workspace lifecycle suite to reach its
+intended assertions. Local verification: `ToolSandboxDO.test.ts` passes **37/37**; the combined
+`DynamicSandboxDO.test.ts`, `sandbox-routing.test.ts` and `execution-ladder.test.ts` pass **68/68**;
+Agents typecheck and `git diff --check` pass. These are local mocks; no provider allocation,
+Cloudflare physical concurrency, billing charge or live erasure was verified.
+
+**Exact next action:** inventory the checked-in base/media/document Dockerfiles and approved
+dynamic-image pin format, add immutable host-owned capability metadata for Project images, and
+deny missing capabilities before capacity/billing reservation or Container start. Keep size
+profiles and extension installation image policy distinct in this slice.
+
 ## Acceptance boundaries
 
-The new one-allocation contract is not yet implemented. Local source and test evidence must remain
-distinct from deployed cold/warm allocation, Cloudflare stop/reconciliation, cost/capacity, snapshot
-retention and Project-erasure acceptance. Keep rollout disabled and legacy erasure inventory active
-until the migrated routes and historical cleanup pass their respective checks.
+The branch identity and main admission slice is implemented and locally verified. Project image
+capability selection, checked image replacement, caller migration, direct specialist retirement and
+SPR05 acceptance remain open. Local source and test evidence must remain distinct from deployed
+cold/warm allocation, Cloudflare stop/reconciliation, cost/capacity, snapshot retention and
+Project-erasure acceptance. Keep rollout disabled and legacy erasure inventory active until the
+migrated routes and historical cleanup pass their respective checks.

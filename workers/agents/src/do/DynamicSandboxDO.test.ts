@@ -3,6 +3,8 @@ import { mintInternalToken } from "@naelao/http";
 import { DynamicSandboxDO } from "./DynamicSandboxDO.js";
 import { ToolSandboxDO } from "./ToolSandboxDO.js";
 import { assertDynamicPlan, dynamicCreditsPerHour, selectDynamicProfile } from "../script-engine/dynamic-containers.js";
+import { sidecarKey } from "../script-engine/container-policy.js";
+import { sandboxInstanceName, workspaceBranchScope } from "../script-engine/sandbox-routing.js";
 
 const image = `registry.cloudflare.com/${"1".repeat(32)}/tools@sha256:${"a".repeat(64)}`;
 async function sha256(value: string): Promise<string> {
@@ -195,11 +197,14 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "owner", agentId: "worker", runId: "run",
       ...(!mainComputer ? { installationId: "install", installationScope: "PROJECT_SHARED", image, dynamicImage: true } : {}),
       executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000, ...overrides };
+    const runtimeObjectName = scope.installationId
+      ? sidecarKey(scope as never) + workspaceBranchScope(scope.workspaceBranch)
+      : sandboxInstanceName(scope.spaceId, scope.projectId, scope.workspaceBranch);
     return sandbox.fetch(new Request("http://sandbox" + path, { method: "POST",
       body: JSON.stringify(path === "/exec" ? { spaceId: scope.spaceId, projectId: scope.projectId, workspaceBranch: scope.workspaceBranch } : {}),
       headers: {
         "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("secret", scope.tenantId),
-        "x-naelao-runtime-object-name": "sandbox:" + scope.spaceId + ":" + scope.projectId,
+        "x-naelao-runtime-object-name": runtimeObjectName,
       } }));
   }
   async function profile(reset?: boolean, suppliedToken?: string) {
@@ -241,7 +246,7 @@ describe("Cloudflare dynamic execution", () => {
     expect(unauthorized.status).toBe(403);
   });
 
-  it("keeps one project main runtime across branch handoffs and advances its fence once", async () => {
+  it("keeps one project main runtime across branch handoffs and advances its fence", async () => {
     const r = runtime();
     const key = "tenant:space:project";
     expect((await r.invoke("/prewarm", { mainComputer: true })).status).toBe(200);
@@ -255,7 +260,28 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.projectMainRegistry.get(key)).toMatchObject({ fencingToken: 1, activeBranch: "feature/research" });
     expect((await r.invoke("/prewarm", { mainComputer: true, workspaceBranch: "feature/research" })).status).toBe(200);
     expect(r.projectMainRegistry.get(key)).toMatchObject({ fencingToken: 1, activeBranch: "feature/research" });
+    const race = await r.invoke("/prewarm", { mainComputer: true, workspaceBranch: "race/task/model-a" });
+    expect(race.status, await race.clone().text()).toBe(200);
+    expect(r.projectMainRegistry.get(key)).toMatchObject({
+      runtimeObjectName: "sandbox:space:project", allocationGeneration: 1, fencingToken: 2,
+      activeBranch: "race/task/model-a", state: "active",
+    });
     expect(r.projectMainRegistry.size).toBe(1);
+    expect(r.transport.start).toHaveBeenCalledOnce();
+    expect(r.capacity.calls.filter(v => v === "/compute-admission/request")).toHaveLength(1);
+    expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(1);
+  });
+
+  it("registers a cold race-branch start as the Project main allocation", async () => {
+    const r = runtime();
+    const response = await r.invoke("/prewarm", { mainComputer: true, workspaceBranch: "race/task/model-a" });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(r.projectMainRegistry.get("tenant:space:project")).toMatchObject({
+      runtimeObjectName: "sandbox:space:project", allocationGeneration: 1, fencingToken: 0,
+      activeBranch: "race/task/model-a", state: "active",
+    });
+    expect(r.records.get("workspace_runtime_generation")).toBe(1);
+    expect(r.transport.start).toHaveBeenCalledOnce();
   });
 
   it("applies a persisted project main size preference at allocation time", async () => {
@@ -312,10 +338,10 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.records.get("workspace_runtime_generation")).toBe(1);
   });
 
-  it("serializes project-main writers across normal branches until the active run finishes", async () => {
+  it("serializes project-main writers across race and worker branches until the active run finishes", async () => {
     const r = runtime({ tier: "growth" });
     r.hangBuild();
-    const first = r.invoke("/build", { mainComputer: true, executionId: "writer-one", workspaceBranch: "main" });
+    const first = r.invoke("/build", { mainComputer: true, executionId: "writer-one", workspaceBranch: "race/task/model-a" });
     const firstState = await Promise.race([
       r.waitForExecution().then(() => "harness_started"),
       first.then(async (response) => `request_returned_${response.status}_${(await response.clone().text()).slice(0,160)}`),
@@ -323,7 +349,7 @@ describe("Cloudflare dynamic execution", () => {
     ]);
     expect(firstState).toBe("harness_started");
     let competingCompleted = false;
-    const competing = r.invoke("/build", { mainComputer: true, executionId: "writer-two", workspaceBranch: "feature/next" })
+    const competing = r.invoke("/build", { mainComputer: true, executionId: "writer-two", workspaceBranch: "workers/next" })
       .then((response) => { competingCompleted = true; return response; });
     await Promise.resolve();
     expect(competingCompleted).toBe(false);
@@ -334,7 +360,7 @@ describe("Cloudflare dynamic execution", () => {
 
   it("fails closed before container work when project-main writer admission storage is unavailable", async () => {
     const r = runtime({ writerAdmissionFails: true });
-    const response = await r.invoke("/build", { mainComputer: true, workspaceBranch: "main" });
+    const response = await r.invoke("/build", { mainComputer: true, workspaceBranch: "race/task/model-a" });
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error: "project_main_writer_admission_unavailable" });
     expect(r.transport.start).not.toHaveBeenCalled();

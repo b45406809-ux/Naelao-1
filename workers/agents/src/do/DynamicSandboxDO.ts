@@ -293,7 +293,7 @@ export class DynamicSandboxDO extends ToolSandboxDO {
       await this.ctx.storage.get("container_egress_profile")]));
     const selected: Selection = { image, profile, owner, fingerprint, tier,
       tenantId: scope.tenantId, spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}),
-      projectMain: Boolean(scope.projectId && !scope.installationId && !scope.workspaceBranch?.startsWith("race/")) };
+      projectMain: Boolean(scope.projectId && !scope.installationId) };
     const current = await this.ctx.storage.get<Selection>("dynamic_selection");
     if (current && current.owner !== owner) throw new Error("container_session_owner_mismatch");
     if (current && (current.image !== image || current.profile !== profile)) await this.stopContainer();

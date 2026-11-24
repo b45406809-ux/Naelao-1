@@ -571,8 +571,7 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   private isProjectMainRuntimeScope(scope: ContainerInvocationScope, request: Request): boolean {
-    if (this.workspaceRuntimeKind() !== "dynamic_sandbox" || !scope.projectId || scope.installationId
-      || scope.workspaceBranch?.startsWith("race/")) return false;
+    if (this.workspaceRuntimeKind() !== "dynamic_sandbox" || !scope.projectId || scope.installationId) return false;
     return request.headers.get("x-naelao-runtime-object-name") === `sandbox:${scope.spaceId}:${scope.projectId}`;
   }
 
@@ -634,7 +633,6 @@ export class ToolSandboxDO extends DurableObject {
     const now = Date.now();
     const creditsPerHour = this.allocationCreditsPerHour();
     const mainAttempt = this.workspaceRuntimeKind() === "dynamic_sandbox" && scope.projectId && !scope.installationId
-      && !scope.workspaceBranch?.startsWith("race/")
       ? await this.ctx.storage.get<ProjectMainGenerationAttempt>("project_main_generation_attempt") : undefined;
     const reuseReservationId = mainAttempt?.branch === (scope.workspaceBranch ?? "main") ? mainAttempt.budgetReservationId : undefined;
     const meter: ContainerMeter = { ...(creditsPerHour === undefined ? {} : { creditsPerHour }), tenantId: scope.tenantId, spaceId: scope.spaceId,
@@ -774,8 +772,7 @@ export class ToolSandboxDO extends DurableObject {
     if (erasure === "erased") return Response.json({ ok: false, error: "workspace_project_erased" }, { status: 410 });
     if (erasure === "unavailable") return Response.json({ ok: false, error: "workspace_erasure_check_unavailable" }, { status: 503 });
     const mainWriter = this.isProjectMainRuntimeScope(scope, request);
-    if (this.workspaceRuntimeKind() === "dynamic_sandbox" && scope.projectId && !scope.installationId
-      && !scope.workspaceBranch?.startsWith("race/") && !mainWriter) {
+    if (this.workspaceRuntimeKind() === "dynamic_sandbox" && scope.projectId && !scope.installationId && !mainWriter) {
       return Response.json({ ok: false, error: "project_main_runtime_identity_mismatch" }, { status: 409 });
     }
     const body = await request.clone().text();
