@@ -25,9 +25,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW01/APW02 — Planner investigation boundary.** Resume from the
+**APW01/APW02 — Continue planner inspection bypass audit.** Resume from the
 [active checklist and exact next action](docs/operations/implementation-queue.md#active-plan--planner-investigation-and-worker-reuse).
-Start with planner `Read` and `Bash` caller tracing and the first exact authorized lookup slice.
+Trace direct tool aliases, virtual CLI pipelines, Code Mode dispatch, stored commands and resumed
+sessions for any remaining planner workspace/domain inspection path; record callers and the next
+independently verifiable host-boundary slice.
 
 ## Save progress inside each task
 

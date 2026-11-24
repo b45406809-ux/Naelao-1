@@ -996,6 +996,14 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
   existing exact decision or goal/evidence lookup. Migrate legitimate discovery callers to workers
   and close the corresponding planner `Read` and virtual CLI bypasses. Continue with supported
   exact workspace excerpts and verify invocation as well as tool discovery.
+  - [x] **APW01/APW02 — First exact Project decision read.** Added `project_journal.read_decision`
+    and `naelao project decision <id> --revision <n>` for Project planners. It derives Project scope
+    from the run, returns one exact decision revision with its read-time workspace status, and denies
+    planner `Read`, aliases, and virtual shell file inspection. Four focused suites pass 49/49;
+    Agents typecheck and `git diff --check` pass. Pushed as `fee19873`.
+  - [ ] Continue the caller audit through direct tool aliases, virtual CLI pipelines, Code Mode
+    dispatch, stored commands and resumed sessions. Record each surviving read/discovery caller and
+    its exact host replacement before changing the next path.
 - [ ] **APW02 — Use one scoped investigation worker by default and fan out independent tasks.**
   Reuse existing delegation, task DAG, worker follow-up and evidence paths. Verify dependent context
   stays with one worker, independent assignments avoid overlap, and partial results stay visible.
@@ -1007,12 +1015,12 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
   protocol and local fixture. Keep provider-cost, real recovery and rollout acceptance open under
   their existing prerequisites.
 
-**Latest checkpoint:** Branch tip `003f79d7` confirms the planner allows `Read` and filesystem
-inspection via the virtual CLI. The queued spec defines exact lookup, one-worker investigation,
-conditional parallelism and reusable worker definitions. This checkpoint adds the plan and handoff.
-**Exact next action:** audit planner `Read` and `Bash` from `agent-topology.ts` through
-`ScriptToolSurface.run` and the virtual CLI, then trace one existing exact Project decision or
-goal/evidence reader. Record the callers and land the first locally verified host boundary slice.
+**Latest checkpoint:** The first exact Project decision lookup and planner file-read denial are
+verified and pushed as `fee19873`. Four focused suites pass 49/49; Agents typecheck and
+`git diff --check` pass. The full caller audit remains open. **Exact next action:** trace direct tool
+aliases, virtual CLI pipelines, Code Mode dispatch, stored commands and resumed sessions for any
+remaining planner workspace/domain inspection path; record callers and the next locally verifiable
+host-boundary slice.
 
 ## Ordered plan list
 
