@@ -675,7 +675,8 @@ describe("Space Template activation preview", () => {
     const db = { prepare: (sql: string) => ({ bind: () => ({ first: async () => sql.includes("FROM orgs") ? { plan_tier: "free" } : { id: "space-runtime-install" }, run: async () => ({ success: true }) }) }) };
     const env = { PLATFORM_SECRET: secret, PLATFORM_DB: db,
       SCRIPTS_R2: { get: async (key: string) => stored.has(key) ? { json: async () => stored.get(key) } : null },
-      AGENTS_WORKER: { fetch: async () => Response.json({ images: [{ id: "ffmpeg", name: "FFmpeg", available: true, billing_tier: "free", image, exported_binaries: ["ffmpeg"], install_manifest: runtimeManifest }] }) },
+      AGENTS_WORKER: { fetch: async () => Response.json({ images: [{ id: "ffmpeg", name: "FFmpeg", available: true, billing_tier: "free", image,
+        project_runtime_capabilities: ["extension.native_execute"], exported_binaries: ["ffmpeg"], install_manifest: runtimeManifest }] }) },
       SPACE_DO: { idFromName: () => "runtime-install-do", get: () => stub } } as never;
     const headers = { "x-naelao-tenant-id": "tenant-runtime-install", "x-naelao-user-id": "owner", "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-runtime-install") };
     const preview = await worker.fetch(new Request(`https://spaces/spaces/space-runtime-install/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
@@ -786,9 +787,24 @@ it("blocks a fresh template whose required runtime slots exceed its plan before 
   const requirements = ["one", "two", "three"].map(id => ({ id, capabilities: ["bash"], required: true, priority: 0, dependencies: [] }));
   const project = { id: "project-a", name: "A", kind: "DualPane" as const, templateMode: "cowork_studio" as const, configuration: { executionCeiling: 6 }, viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [], runtimeRequirements: requirements };
   const artifact = blueprint({ projects: [project], requiredExtensions: [], requiredCredentials: [] });
-  const images = requirements.map(item => ({ id: item.id, name: item.id, available: true, plan_available: true, install_manifest: { id: `ext_${item.id}`, containers: [{}] } }));
+  const images = requirements.map(item => ({ id: item.id, name: item.id, available: true, plan_available: true,
+    project_runtime_capabilities: ["extension.native_execute"], install_manifest: { id: `ext_${item.id}`, containers: [{}] } }));
   const free = blueprintRuntimeInstallability(artifact, images, "free");
   expect([...free.values()].every(item => !item.installable && item.reason === "subscription_slot_limit")).toBe(true);
   expect(previewBlueprintActivation(artifact, new Map(), new Map(), free).ready).toBe(false);
   expect([...blueprintRuntimeInstallability(artifact, images, "growth").values()].every(item => item.installable)).toBe(true);
+});
+
+it("requires a deployed Project-main image profile before a template can install a runtime", () => {
+  const requirement = { id: "ffmpeg", capabilities: ["ffmpeg"], required: true, priority: 0, dependencies: [] };
+  const project = { id: "media", name: "Media", kind: "DualPane" as const, templateMode: "cowork_studio" as const,
+    configuration: { executionCeiling: 6 }, viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [], runtimeRequirements: [requirement] };
+  const artifact = blueprint({ projects: [project], requiredExtensions: [], requiredCredentials: [] });
+  const directSpecialist = blueprintRuntimeInstallability(artifact, [{ id: "ffmpeg", name: "FFmpeg", available: true,
+    plan_available: true, exported_binaries: ["ffmpeg"], install_manifest: { id: "ext_ffmpeg", containers: [{}] } }], "growth");
+  expect(directSpecialist.get("media:ffmpeg")).toMatchObject({ installable: false, reason: "project_runtime_profile_required" });
+  const selectedMainImage = blueprintRuntimeInstallability(artifact, [{ id: "ffmpeg", name: "FFmpeg", available: true,
+    plan_available: true, exported_binaries: ["ffmpeg"], project_runtime_capabilities: ["extension.native_execute"],
+    install_manifest: { id: "ext_ffmpeg", containers: [{}] } }], "growth");
+  expect(selectedMainImage.get("media:ffmpeg")?.installable).toBe(true);
 });

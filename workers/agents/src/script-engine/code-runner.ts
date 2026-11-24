@@ -291,6 +291,7 @@ async function runContainer(
   // Project extension calls were admitted above. Projectless image-tagged scripts retain their
   // installation-scoped route; they never change the Project main runtime image implicitly.
   if (params.containerImage) {
+    if (params.projectId) return fail("project_runtime_sidecar_retired");
     if (!opts.resolveSidecar || !params.installationId) return fail("container_active_installation_required");
     try {
       const { namespace, installation, dynamicImage } = await opts.resolveSidecar(params);

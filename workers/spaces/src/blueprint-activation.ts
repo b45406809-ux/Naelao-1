@@ -40,7 +40,7 @@ export interface BlueprintActivationPreview {
     knowledge: Array<{ extension_id: string; knowledge_id: string; purpose: string; access: "member_only" | "owner_published_external"; required: boolean; status: "available" | "unavailable"; package_purpose?: string }>;
     actions: Array<{ extension_id: string; primitive_id: string; scope: string; resource: string; action: string; purpose: string; required: boolean; status: "available" | "unavailable" }>;
   };
-  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted"; project_slots_required?: number; project_slots_limit?: number; resources?: { cpu_cores: number; memory_mb: number } }>;
+  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "project_runtime_profile_required" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted"; project_slots_required?: number; project_slots_limit?: number; resources?: { cpu_cores: number; memory_mb: number } }>;
   setup_credentials: Array<{
     name: string;
     description: string;

@@ -341,11 +341,35 @@ No provider lifecycle or live allocation was run.
 selection so Document/Media bindings and fixed image pins cannot advertise a new direct specialist
 allocation, while retaining legacy metadata required for cleanup and erasure.
 
+## SPR04.2 — Project specialist discovery and selection fence
+
+Project runtime inventory now identifies only exact digest pins that are bound as dynamic
+`TOOL_SANDBOX`, present in the deployed image map, and declare `extension.native_execute` as eligible
+Project-main images. Project environment availability, command discovery, runtime listing/search,
+plan activation and prewarm use that host-derived set; fixed Document/Media images and their installed
+rows are hidden from Project selection. CodeRunner rejects any Project image-tagged sidecar request
+before the sidecar resolver can choose a namespace, with a matching host resolver guard. The
+Project-aware settings catalog lists only eligible native-capable marketplace images, the Project
+runtime installation endpoint enforces the same metadata, and template runtime readiness cannot
+install fixed specialist images. Space Assistant catalogue and sidecar paths remain available. Fixed
+specialist pins, bindings, receipts and cleanup routes are retained for old installations and erasure.
+
+Local verification: runtime discovery, environments, Project sidecar rejection and Project extension
+CodeRunner suites pass **35/35**; Space blueprint activation tests pass **28/28**. Agents and Spaces
+typechecks pass; the Shell production build's compile/type validation and a follow-up Shell typecheck
+pass; `git diff --check` passes. The first Shell typecheck exposed stale ignored `.next/types` files;
+the build regenerated them. No deployment or provider operation was run.
+
+**Exact next action:** SPR04.3 — verify registered and legacy Document/Media cleanup dispatch against
+safe Project erasure fixtures, then record the exact provider namespace enumeration and snapshot-purge
+dependencies that require separate live acceptance.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame
-caller slices, Project scanned-PDF rendering and extension native caller migration are implemented
-and locally verified. Direct specialist retirement and SPR05 local acceptance remain open. Local
+caller slices, Project scanned-PDF rendering, extension native caller migration, specialist admission
+gate and Project specialist discovery fence are implemented and locally verified. Historical cleanup
+verification and SPR05 local acceptance remain open. Local
 source and test evidence must remain distinct from deployed cold/warm allocation, Cloudflare
 stop/reconciliation, cost/capacity, snapshot retention and Project-erasure acceptance. Keep rollout
 disabled and legacy erasure inventory active until the migrated routes and historical cleanup pass

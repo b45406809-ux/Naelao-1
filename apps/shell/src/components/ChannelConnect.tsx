@@ -1010,7 +1010,7 @@ export function ChannelConnect({
   React.useEffect(() => {
     if (!projectId || !canManage) { setRuntimeCatalogue([]); setRuntimeSlotLimit(null); setRuntimeCatalogueError(null); return; }
     let cancelled = false;
-    listRuntimeCatalogue(spaceId, session).then(result => { if (!cancelled) { setRuntimeCatalogue(result.images); setRuntimeSlotLimit(result.installed_slots_per_workspace); setRuntimeCatalogueError(null); } })
+    listRuntimeCatalogue(spaceId, session, projectId).then(result => { if (!cancelled) { setRuntimeCatalogue(result.images); setRuntimeSlotLimit(result.installed_slots_per_workspace); setRuntimeCatalogueError(null); } })
       .catch(error => { if (!cancelled) { setRuntimeCatalogue([]); setRuntimeSlotLimit(null); setRuntimeCatalogueError(error instanceof Error ? error.message : "Runtime catalogue is unavailable."); } });
     return () => { cancelled = true; };
   }, [spaceId, projectId, session, canManage]);

@@ -2,7 +2,15 @@ import type { PrebuiltOpContext, PrebuiltScript } from "./index.js";
 
 async function inventory(ctx: PrebuiltOpContext) {
   if (!ctx.env.containerRuntimeInventory) throw new Error("runtime_inventory_unavailable");
-  return ctx.env.containerRuntimeInventory();
+  const result = await ctx.env.containerRuntimeInventory();
+  if (!ctx.env.projectId) return result;
+  const eligibleImages = new Set((result.projectRuntimeImages ?? [])
+    .filter(item => item.capabilities.includes("extension.native_execute")).map(item => item.image));
+  return {
+    installed: result.installed.filter(item => item.projectId === ctx.env.projectId && eligibleImages.has(item.contract.image)),
+    catalogue: result.catalogue.filter(item => item.available && Boolean(item.image && eligibleImages.has(item.image))
+      && item.project_runtime_capabilities?.includes("extension.native_execute")),
+  };
 }
 
 export const runtimeDiscovery: PrebuiltScript = {

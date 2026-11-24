@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { deployedContainerCatalogue } from "../container-catalogue.js";
+import { deployedContainerCatalogue, deployedProjectRuntimeImages } from "../container-catalogue.js";
 import { runtimeDiscovery } from "./runtime-discovery.js";
 
 const pin = (hex: string, binding: "DOCUMENT_SANDBOX" | "MEDIA_SANDBOX" = "MEDIA_SANDBOX") => ({
@@ -32,15 +32,43 @@ describe("runtime discovery and deployment approval", () => {
       .toThrow("container_marketplace_entry_invalid");
   });
 
-  it("proposes an approved runtime without installing or allocating it", async () => {
+  it("marks only deployed dynamic native-capable Project images in discovery metadata", () => {
+    const native = { image: `registry.cloudflare.com/${"1".repeat(32)}/fde/native@sha256:${"d".repeat(64)}`, binding: "TOOL_SANDBOX",
+      memoryMb: 4096, cpuCores: 0.5, schedulingPolicy: "durable_object", networkPolicy: "none",
+      projectRuntime: { id: "native-tools", capabilities: ["extension.native_execute"] },
+      marketplace: { id: "native-tools-market", name: "Native tools", description: "Project native tools.", category: "compute", exportedBinaries: ["native-tool"] } };
+    const catalogue = deployedContainerCatalogue(JSON.stringify([native]), ["TOOL_SANDBOX"], [native.image]);
+    expect(catalogue.find(item => item.id === "native-tools-market")).toMatchObject({ available: true,
+      project_runtime_capabilities: ["extension.native_execute"] });
+    expect(deployedProjectRuntimeImages(JSON.stringify([native]), ["TOOL_SANDBOX"], [native.image])).toEqual([
+      { image: native.image, capabilities: ["extension.native_execute"] },
+    ]);
+    expect(deployedProjectRuntimeImages(JSON.stringify([native]), ["TOOL_SANDBOX"], [])).toEqual([]);
+    expect(deployedProjectRuntimeImages(JSON.stringify([pin("a")]), ["MEDIA_SANDBOX"], [pin("a").image])).toEqual([]);
+  });
+
+  it("does not propose a direct specialist allocation to a Project", async () => {
     const fetch = vi.fn();
     const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "project",
       containerRuntimeInventory: async () => ({ installed: [], catalogue: deployedContainerCatalogue(JSON.stringify([pin("a")]), ["MEDIA_SANDBOX"]) }),
       fastDecision: { choice: fetch } }, run: async () => undefined } as never;
     const result = await runtimeDiscovery.operations["runtime.find"]({ binary: "ffmpeg" }, ctx) as Record<string, unknown>;
-    expect(result).toMatchObject({ status: "installation_required", binary: "ffmpeg", recommended: "ffmpeg",
+    expect(result).toMatchObject({ status: "runtime_not_found", binary: "ffmpeg", candidates: [],
       requires_human_approval: true, scope: "PROJECT_SHARED", project_id: "project" });
+    expect(await runtimeDiscovery.operations["runtime.list"]({}, ctx)).toMatchObject({ installed: [], catalogue: [] });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("proposes only an exact deployed native-capable Project image without allocating it", async () => {
+    const image = `registry.cloudflare.com/${"1".repeat(32)}/fde/native@sha256:${"d".repeat(64)}`;
+    const native = { image, binding: "TOOL_SANDBOX", memoryMb: 4096, cpuCores: .5, schedulingPolicy: "durable_object", networkPolicy: "none",
+      projectRuntime: { id: "native-tools", capabilities: ["extension.native_execute"] },
+      marketplace: { id: "native-tools-market", name: "Native tools", description: "Project native tools.", category: "compute", exportedBinaries: ["native-tool"] } };
+    const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "project", containerRuntimeInventory: async () => ({ installed: [],
+      catalogue: deployedContainerCatalogue(JSON.stringify([native]), ["TOOL_SANDBOX"], [image]), projectRuntimeImages: deployedProjectRuntimeImages(JSON.stringify([native]), ["TOOL_SANDBOX"], [image]) }) },
+      run: async () => undefined } as never;
+    expect(await runtimeDiscovery.operations["runtime.find"]({ binary: "native-tool" }, ctx)).toMatchObject({ status: "installation_required",
+      candidates: [{ id: "native-tools-market", project_runtime_capabilities: ["extension.native_execute"] }], scope: "PROJECT_SHARED" });
   });
 
   it("recommends the assistant workspace only when discovery has no project scope", async () => {
@@ -55,7 +83,8 @@ describe("runtime discovery and deployment approval", () => {
   it("returns only actor-scoped installed commands and rejects invalid binary names", async () => {
     const installed = { tenantId: "tenant", spaceId: "space", projectId: "project", installationId: "instance-1",
       extensionId: "ext_runtime_ffmpeg", contract: { id: "ffmpeg", image: pin("a").image, exportedBinaries: ["ffmpeg", "ffprobe"] } };
-    const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "project", containerRuntimeInventory: async () => ({ installed: [installed], catalogue: [] }) }, run: async () => undefined } as never;
+    const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "project", containerRuntimeInventory: async () => ({ installed: [installed], catalogue: [],
+      projectRuntimeImages: [{ image: installed.contract.image, capabilities: ["extension.native_execute"] }] }) }, run: async () => undefined } as never;
     expect(await runtimeDiscovery.operations["runtime.find"]({ binary: "ffmpeg" }, ctx)).toMatchObject({ status: "installed", candidates: [{ command: "ext_runtime_ffmpeg/ffmpeg/ffmpeg" }] });
     await expect(runtimeDiscovery.operations["runtime.find"]({ binary: "../ffmpeg" }, ctx)).rejects.toThrow("runtime_binary_invalid");
   });

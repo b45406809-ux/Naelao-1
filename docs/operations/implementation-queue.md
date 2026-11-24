@@ -150,10 +150,16 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     Container start. Main-runtime attachment routes and historical cleanup remain available.
     ToolSandboxDO, DynamicSandboxDO, specialist-workspace and attachment caller tests pass 146/146;
     Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-  - [ ] **Active · SPR04.2 — Reconcile specialist discovery and deployment metadata.** Ensure new Project
-    operations cannot discover or select a direct specialist allocation; keep legacy image pins,
-    bindings and receipts available wherever removal would strand cleanup or erasure.
-  - [ ] **SPR04.3 — Verify historical cleanup and recovery paths.** Test erasure registration and
+  - [x] **SPR04.2 — Reconcile specialist discovery and deployment metadata.** Project `runtime.list`
+    and `runtime.find`, managed environment availability and command/planned-runtime resolution expose
+    only the exact deployed dynamic TOOL_SANDBOX images carrying `extension.native_execute`. Project
+    image-tagged calls fail before resolving a sidecar; the Project runtime catalog and installation
+    route admit only these same native-capable images, and blueprint runtime requirements fail closed
+    without one. Projectless catalogue and sidecar behavior remains. Agents discovery, environment and
+    CodeRunner suites pass 35/35; Spaces blueprint tests pass 28/28. Agents/Spaces typechecks, Shell
+    build/type validation and `git diff --check` pass. Fixed specialist pins/bindings remain for
+    Space Assistant execution and historical cleanup. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
+  - [ ] **Active · SPR04.3 — Verify historical cleanup and recovery paths.** Test erasure registration and
     cleanup dispatch for old Document/Media objects, and record any unenumerable provider resources
     or unsupported snapshot purge dependency.
 - [ ] **SPR05 — Local acceptance.** Verify concurrency, replacement, capability denial,
@@ -161,7 +167,7 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4 and SPR03.1–SPR03.4 are locally verified. Project
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4 and SPR04.1–SPR04.2 are locally verified. Project
 branches share one runtime identity and generation; exact image profiles and capability grants are
 checked before admission. Video audio, frame sampling and scanned PDF use the Project main runtime;
 ordinary audio and image OCR remain container-free. Project extension binaries, managed execution,
@@ -170,11 +176,16 @@ Explicit external computers remain independent. SPR04.1 now rejects Project `/ex
 in DocumentSandboxDO/MediaSandboxDO before execution receipts, reservation, billing or Container
 start; the main-runtime attachment routes and historical cleanup remain. Five focused suites pass
 146/146; Agents typecheck and `git diff --check` pass. The checked-in base still has no selected PDF
-or extension profile, so those operations fail closed until an approved image is selected.
-Deployment, provider lifecycle and live erasure acceptance remain separate.
-**Next action:** SPR04.2 — inspect specialist runtime discovery/catalogue and deployment metadata, then
-prevent Project operations from selecting direct Document/Media allocations while retaining legacy
-pins and bindings required by cleanup.
+or extension profile, so those operations fail closed until an approved image is selected. SPR04.2
+limits Project discovery, managed selection, plan activation/prewarm and install metadata to exact
+deployed `TOOL_SANDBOX` profiles carrying `extension.native_execute`; Project sidecar dispatch fails
+before namespace lookup. Agents discovery/environment/CodeRunner suites pass 35/35; Spaces blueprint
+tests pass 28/28; Agents and Spaces typechecks plus Shell build/typecheck pass. Legacy specialist
+bindings and receipts remain for cleanup and Space Assistant paths. Deployment, provider lifecycle
+and live erasure acceptance remain separate.
+**Next action:** SPR04.3 — inspect old Document/Media runtime registration and cleanup dispatch,
+exercise Project erasure on safe fixtures, and record the provider namespace-enumeration and snapshot
+purge limitations without attempting live Cloudflare cleanup.
 
 ## Paused plan — Managed services and sidecar runtime
 

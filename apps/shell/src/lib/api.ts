@@ -1741,11 +1741,13 @@ export interface CrossSpaceGrant {
 export interface RuntimeCatalogueEntry {
   id: string; name: string; description: string; category: string; available: boolean;
   plan_available?: boolean; plan_reason?: string;
+  project_runtime_capabilities?: string[];
   image?: string; exported_binaries?: string[];
   install_manifest?: { id?: string; containers?: Array<{ id: string; image: string; resources: { memoryMb: number; cpuCores: number; timeoutSeconds: number }; networkPolicy?: string }> };
 }
-export async function listRuntimeCatalogue(spaceId: string, session: SessionCredentials) {
-  return apiFetch<{ images: RuntimeCatalogueEntry[]; installed_slots_per_workspace: number }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog`, { session });
+export async function listRuntimeCatalogue(spaceId: string, session: SessionCredentials, projectId?: string) {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  return apiFetch<{ images: RuntimeCatalogueEntry[]; installed_slots_per_workspace: number }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog${query}`, { session });
 }
 export interface ContainerInstallation {
   instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string; generation?: number; release_version?: string | null;

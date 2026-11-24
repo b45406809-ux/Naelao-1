@@ -57,9 +57,13 @@ async function cards(ctx: PrebuiltOpContext, command?: string): Promise<Environm
   const now = Date.now(), scope = owner(ctx), result: EnvironmentCard[] = [];
   if (ctx.env.containerRuntimeInventory) {
     const inventory = await ctx.env.containerRuntimeInventory();
+    const projectRuntimeImages = new Set((inventory.projectRuntimeImages ?? [])
+      .filter(item => item.capabilities.includes("extension.native_execute")).map(item => item.image));
     result.push(...inventory.installed.slice(0, 128).filter(item => item.projectId === ctx.env.projectId).map(item => ({ ...scope, id: item.installationId, name: item.installationId,
       kind: "managed" as const, provider: "cloudflare", capabilities: ["bash", ...item.contract.exportedBinaries], observedAt: now,
-      available: ctx.env.managedEnvironmentsUnavailable !== true && inventory.catalogue.some(image => image.available && image.image === item.contract.image), authorized: true, persistence: "ephemeral" as const, filesystemModel: "workspace-backed" as const, apps: [], externalUse: [] })));
+      available: ctx.env.managedEnvironmentsUnavailable !== true && (ctx.env.projectId
+        ? projectRuntimeImages.has(item.contract.image)
+        : inventory.catalogue.some(image => image.available && image.image === item.contract.image)), authorized: true, persistence: "ephemeral" as const, filesystemModel: "workspace-backed" as const, apps: [], externalUse: [] })));
   }
   if (ctx.env.localTunnel) {
     const machines = await ctx.env.localTunnel.list();

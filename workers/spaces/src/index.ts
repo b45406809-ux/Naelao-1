@@ -441,7 +441,10 @@ function installedSpaceExtensionPins(rows: Array<{ instance_id?: string; extensi
   }
   return pins;
 }
-interface RuntimeCatalogueRecord { id: string; name: string; available: boolean; image?: string; exported_binaries?: string[]; billing_tier?: string; install_manifest?: unknown; plan_available: boolean; plan_reason?: string }
+interface RuntimeCatalogueRecord { id: string; name: string; available: boolean; image?: string; exported_binaries?: string[]; project_runtime_capabilities?: string[]; billing_tier?: string; install_manifest?: unknown; plan_available: boolean; plan_reason?: string }
+function projectMainRuntimeImage(image: Pick<RuntimeCatalogueRecord, "available" | "project_runtime_capabilities">): boolean {
+  return image.available && image.project_runtime_capabilities?.includes("extension.native_execute") === true;
+}
 async function getPlanAwareRuntimeCatalogue(env: Env, tenantId: string): Promise<{ plan: string; images: RuntimeCatalogueRecord[] } | null> {
   if (!env.AGENTS_WORKER) return null;
   const response = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
@@ -469,7 +472,7 @@ async function getPlanAwareRuntimeCatalogue(env: Env, tenantId: string): Promise
   });
   return { plan, images };
 }
-type RuntimeReadinessReason = "runtime_provisioning_unavailable" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required";
+type RuntimeReadinessReason = "runtime_provisioning_unavailable" | "runtime_not_deployed" | "project_runtime_profile_required" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required";
 export function blueprintRuntimeInstallability(blueprint: SpaceBlueprint, images: readonly RuntimeCatalogueRecord[], plan = "free"): Map<string, { installable: boolean; reason?: RuntimeReadinessReason; projectSlotsRequired: number; projectSlotsLimit: number; resources?: { cpuCores: number; memoryMb: number } }> {
   const result = new Map<string, { installable: boolean; reason?: RuntimeReadinessReason; projectSlotsRequired: number; projectSlotsLimit: number; resources?: { cpuCores: number; memoryMb: number } }>();
   for (const project of blueprint.projects) for (const requirement of project.runtimeRequirements ?? []) {
@@ -494,6 +497,7 @@ export function blueprintRuntimeInstallability(blueprint: SpaceBlueprint, images
     const key = `${project.id ?? project.name}:${requirement.id}`, image = images.find(item => item.id === requirement.id);
     let reason: RuntimeReadinessReason | undefined;
     if (!image?.available) reason = "runtime_not_deployed";
+    else if (!projectMainRuntimeImage(image)) reason = "project_runtime_profile_required";
     else if (!requirement.capabilities.every(capability => capability === "bash" || image.exported_binaries?.includes(capability))) reason = "runtime_capability_mismatch";
     else if (!image.plan_available) reason = image.plan_reason === "subscription_resource_limit" ? "subscription_resource_limit" : "subscription_plan_required";
     else if (requirement.required && requiredSlots > getExecutionLimits(plan).installedContainersPerWorkspace) reason = "subscription_slot_limit";
@@ -4925,12 +4929,18 @@ app.get("/spaces/:spaceId/runtime-catalog", async c => {
   const identity = getCallerIdentity(c);
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(c.req.param("spaceId"), identity.tenantId).first();
   if (!owned) throw notFound("Space");
+  const projectId = c.req.query("project_id");
+  if (projectId) {
+    const denied = await requireManageableAutomationProject(c, c.req.param("spaceId"), projectId);
+    if (denied) return denied;
+  }
   if (!c.env.AGENTS_WORKER) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
   const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
   if (!response.ok) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
-  const catalogue = await response.json<{ images: Array<{ id: string; available: boolean; image?: string; billing_tier?: string; install_manifest?: unknown; plan_available?: boolean; plan_reason?: string }> }>();
+  const catalogue = await response.json<{ images: Array<{ id: string; available: boolean; image?: string; project_runtime_capabilities?: string[]; billing_tier?: string; install_manifest?: unknown; plan_available?: boolean; plan_reason?: string }> }>();
   const plan = await new EntitlementsChecker(c.env.PLATFORM_DB).getTenantTier(identity.tenantId);
-  const images = catalogue.images.map(image => {
+  const scopedImages = projectId ? catalogue.images.filter(projectMainRuntimeImage) : catalogue.images;
+  const images = scopedImages.map(image => {
     const requirements = (image.install_manifest as { containers?: Array<{ resources?: { cpuCores?: number; memoryMb?: number } }> } | undefined)?.containers ?? [];
     let planAvailable = image.available;
     let planReason = image.available ? undefined : "runtime_not_deployed";
@@ -4978,9 +4988,11 @@ app.post("/spaces/:spaceId/runtime-installations", async c => {
   if (!c.env.AGENTS_WORKER) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
   const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
   if (!response.ok) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
-  const catalogue = await response.json<{ images: Array<{ id: string; available: boolean; image?: string; billing_tier?: string; install_manifest?: unknown }> }>();
+  const catalogue = await response.json<{ images: Array<{ id: string; available: boolean; image?: string; project_runtime_capabilities?: string[]; billing_tier?: string; install_manifest?: unknown }> }>();
   const candidate = catalogue.images.find(entry => entry.id === body.image_id && entry.available && entry.install_manifest);
   if (!candidate) return c.json({ error_code: "runtime_not_deployed_or_approved" }, 409);
+  if (body.scope === "PROJECT_SHARED" && !projectMainRuntimeImage(candidate))
+    return c.json({ error_code: "project_runtime_image_not_eligible" }, 409);
   const plan = await new EntitlementsChecker(c.env.PLATFORM_DB).getTenantTier(tenantId);
   if (candidate.billing_tier && !isPlanTierAtLeast(plan, candidate.billing_tier))
     return c.json({ error_code: "subscription_plan_required" }, 403);

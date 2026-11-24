@@ -124,7 +124,7 @@ import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code
 import { SkillLibrary } from "../script-engine/skill-library.js";
 import { bindCodeRpc, type CodeRpcBinding } from "../script-engine/code-rpc-broker.js";
 import { resolveContainerBinary, resolveContainerCapabilities, containerRuntimeResourceKey, parseApprovedContainerImages, approvedContainer, sidecarKey, type InstalledContainer } from "../script-engine/container-policy.js";
-import { deployedContainerCatalogue, deployedDynamicImages } from "../script-engine/container-catalogue.js";
+import { deployedContainerCatalogue, deployedDynamicImages, deployedProjectRuntimeImages } from "../script-engine/container-catalogue.js";
 import { createVaultProxy } from "../script-engine/vault-proxy.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
 import { buildProjectMemoryStore, buildHybridMemoryStore, roleRankFor } from "../script-engine/project-memory-client.js";
@@ -3251,9 +3251,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       return containers;
     };
+    const containerRuntimeInventory = async () => {
+      const bound = [this.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", this.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : "",
+        this.env.DYNAMIC_CONTAINERS_ENABLED === "true" && this.env.DYNAMIC_SANDBOX ? "TOOL_SANDBOX" : ""];
+      const dynamicImages = await deployedDynamicImages(this.env.DYNAMIC_SANDBOX, this.env.PLATFORM_SECRET);
+      const projectRuntimeImages = projectId ? deployedProjectRuntimeImages(this.env.CONTAINER_IMAGE_REGISTRY, bound, dynamicImages) : undefined;
+      const installed = await installedContainers();
+      const eligibleImages = new Set(projectRuntimeImages?.map(item => item.image) ?? []);
+      const catalogue = deployedContainerCatalogue(this.env.CONTAINER_IMAGE_REGISTRY, bound, dynamicImages);
+      return { installed: projectId ? installed.filter(item => item.projectId === projectId && eligibleImages.has(item.contract.image)) : installed,
+        catalogue: projectId ? catalogue.filter(item => Boolean(item.image && eligibleImages.has(item.image))
+          && item.project_runtime_capabilities?.includes("extension.native_execute")) : catalogue,
+        ...(projectRuntimeImages ? { projectRuntimeImages } : {}) };
+    };
     env.resolveContainerCommand = async command => {
       if (!userId) return undefined;
-      const installations = await installedContainers();
+      const installations = (await containerRuntimeInventory()).installed;
       if (env.preferredRuntimeCapability) {
         const preferred = resolveContainerCapabilities([env.preferredRuntimeCapability], installations, { tenantId, spaceId, projectId, userId });
         if (!preferred) throw new Error("planned_container_runtime_unavailable");
@@ -3267,11 +3280,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
     env.resolveContainerCapabilities = async capabilities => {
       if (!userId) return undefined;
-      return resolveContainerCapabilities(capabilities, await installedContainers(), { tenantId, spaceId, projectId, userId });
+      return resolveContainerCapabilities(capabilities, (await containerRuntimeInventory()).installed, { tenantId, spaceId, projectId, userId });
     };
     env.classifyPlanRuntimes = async ({ steps, availableTools }) => {
       if (airGappedOnly || !userId || !env.fastDecision?.classifyWorkPlan) return [];
-      const installations = await installedContainers();
+      const installations = (await containerRuntimeInventory()).installed;
       const owner = { tenantId, spaceId, projectId, userId };
       const candidates = new Map<string, { capability: string; description: string }>();
       const resourceKeys = new Map<string, string>();
@@ -3299,7 +3312,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     env.activatePlanRuntime = async capability => {
       if (!capability) { delete env.planContainerInstallationId; return; }
       if (!userId) throw new Error("planned_container_runtime_requires_authorized_user");
-      const installation = await resolveContainerCapabilities([capability], await installedContainers(), { tenantId, spaceId, projectId, userId });
+      const installation = await resolveContainerCapabilities([capability], (await containerRuntimeInventory()).installed, { tenantId, spaceId, projectId, userId });
       if (!installation) throw new Error("planned_container_runtime_unavailable");
       env.planContainerInstallationId = installation.installationId;
     };
@@ -3307,7 +3320,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const prewarmRunId = target?.runId ?? env.runId;
       const prewarmBranch = target?.workspaceBranch ?? env.workspaceBranch;
       if (!capability || airGappedOnly || env.localModelMachine || !userId || !prewarmRunId || !env.codeRunner || (env.maxTier ?? 0) < 6) return { warmed: false };
-      const installation = await resolveContainerCapabilities([capability], await installedContainers(), { tenantId, spaceId, projectId, userId });
+      const installation = await resolveContainerCapabilities([capability], (await containerRuntimeInventory()).installed, { tenantId, spaceId, projectId, userId });
       if (!installation) return { warmed: false, error: "planned_container_runtime_unavailable" };
       const result = await env.codeRunner.run({ name: "container.prewarm", code: "", args: {}, tier: 6,
         tenantId, spaceId, agentId, ...(projectId ? { projectId } : {}), userId, runId: prewarmRunId,
@@ -3316,14 +3329,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(prewarmBranch ? { workspaceBranch: prewarmBranch } : {}), ...(env.executionSignal ? { signal: env.executionSignal } : {}), maxTier: env.maxTier ?? 6 });
       return result.ok ? { warmed: true } : { warmed: false, error: result.error ?? "planned_container_prewarm_failed" };
     };
-    env.containerRuntimeInventory = async () => ({ installed: await installedContainers(),
-      catalogue: deployedContainerCatalogue(this.env.CONTAINER_IMAGE_REGISTRY,
-        [this.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", this.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : "", this.env.DYNAMIC_CONTAINERS_ENABLED === "true" && this.env.DYNAMIC_SANDBOX ? "TOOL_SANDBOX" : ""],
-        await deployedDynamicImages(this.env.DYNAMIC_SANDBOX, this.env.PLATFORM_SECRET)) });
+    env.containerRuntimeInventory = containerRuntimeInventory;
     env.codeRunner = buildCodeRunner({
       airGappedOnly,
       authorizeContainer: nativeGrantRevision,
       resolveSidecar: async params => {
+        if (params.projectId) throw new Error("project_runtime_sidecar_retired");
         if (!await nativeGrantActive({ tenantId: params.tenantId, spaceId: params.spaceId, agentId: params.agentId, projectId: params.projectId, userId: params.userId, runId: params.runId })) throw new Error("container_execution_denied");
         const installation = (await installedContainers()).find(item => item.installationId === params.installationId && item.contract.image === params.containerImage && (!item.projectId || item.projectId === projectId) && (!item.userId || item.userId === userId));
         if (!installation) throw new Error("container_active_installation_required");

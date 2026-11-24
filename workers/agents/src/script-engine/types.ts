@@ -1205,7 +1205,8 @@ export interface ScriptEngineEnv {
   planContainerInstallationId?: string;
   /** Signed host recommendation applied to this worker's managed environment selection. */
   preferredRuntimeCapability?: string;
-  containerRuntimeInventory?: () => Promise<{ installed: import("./container-policy.js").InstalledContainer[]; catalogue: import("./container-catalogue.js").ContainerImageManifest[] }>;
+  containerRuntimeInventory?: () => Promise<{ installed: import("./container-policy.js").InstalledContainer[]; catalogue: import("./container-catalogue.js").ContainerImageManifest[];
+    projectRuntimeImages?: Array<{ image: string; capabilities: readonly import("./container-policy.js").ProjectRuntimeCapability[] }> }>;
   /** Memory OS (structured facts + episodic + semantic recall) — present when the host DO
    *  has initialized its memory tables. Absent in environments that haven't wired it yet. */
   memoryStore?: MemoryStore;

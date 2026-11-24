@@ -31,7 +31,8 @@ function fixture() {
   const machine = { machineId: "gpu", updatedAt: Date.now(), hardware: { capabilities: ["cuda", "bash"], apps: [{ id: "blender" }] }, grants: [{ actorId: "owner", projectId: "project" as string | undefined, expiresAt: Date.now() + 60000, commands: ["python train.py"], shellAccess: undefined as "sandboxed" | undefined, externalUse: ["capability"] }] };
   const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", runId: "run", humanInvokerId: "owner", nativeExecutionAllowed: true, maxTier: 6,
     executionSessions: new ExecutionSessions(storage), scriptsBucket: {}, reserveExternalEnvironment: vi.fn(async () => undefined), finalizeExternalEnvironment: vi.fn(async () => undefined),
-    containerRuntimeInventory: vi.fn(async () => ({ installed: [{ installationId: "runtime", projectId: "project", scope: "PROJECT_SHARED", contract: { image: "image", exportedBinaries: ["node"] } }], catalogue: [{ id: "runtime-image", available: true, image: "image" }] })),
+    containerRuntimeInventory: vi.fn(async () => ({ installed: [{ installationId: "runtime", projectId: "project", scope: "PROJECT_SHARED", contract: { image: "image", exportedBinaries: ["node"] } }],
+      catalogue: [{ id: "runtime-image", available: true, image: "image" }], projectRuntimeImages: [{ image: "image", capabilities: ["extension.native_execute"] as const }] })),
     codeRunner: { run: vi.fn(async () => ({ ok: true, output: { stdout: "built" }, tier: 6, actual_tier: 6, engine: "container" })) },
     localTunnel: { list: vi.fn(async () => [machine]), status: vi.fn(async () => ({ connected: true })), exec: vi.fn(async () => ({ ok: true, status: "sent", request_id: "request" })), requestStatus: vi.fn(async () => ({ ok: true, result: { status: "succeeded", stdout: "trained" } })) },
   }, authorizeShell: vi.fn(async () => true) } as unknown as PrebuiltOpContext;
@@ -219,6 +220,17 @@ describe("environment tool host integration", () => {
     expect(ctx.env.reserveExternalEnvironment).not.toHaveBeenCalled();
     expect(ctx.env.codeRunner!.run).toHaveBeenCalledWith(expect.objectContaining({ projectRuntimeInstallationId: "runtime", runId: "run", projectId: "project" }));
   });
+  it("hides direct specialist installations from Project environment selection", async () => {
+    const { ctx } = fixture();
+    ctx.env.containerRuntimeInventory = vi.fn(async () => ({
+      installed: [{ installationId: "legacy-media", projectId: "project", scope: "PROJECT_SHARED", contract: { image: "media-image", exportedBinaries: ["ffmpeg"] } }],
+      catalogue: [{ id: "ffmpeg", available: true, image: "media-image" }], projectRuntimeImages: [],
+    }));
+    const cards = (await environments.operations["environment.list"]!({}, ctx) as { environments: Array<{ id: string; available: boolean }> }).environments;
+    expect(cards.find(card => card.id === "legacy-media")).toMatchObject({ available: false });
+    await expect(execute({ session_id: "legacy-media", action_id: "run", command: "ffmpeg -version", capabilities: ["ffmpeg"], mode: "managed" }, ctx)).rejects.toThrow();
+    expect(ctx.env.codeRunner!.run).not.toHaveBeenCalled();
+  });
   it("applies the signed worker runtime recommendation to managed target selection", async () => {
     const { ctx } = fixture();
     ctx.env.preferredRuntimeCapability = "ffmpeg";
@@ -228,6 +240,7 @@ describe("environment tool host integration", () => {
         { installationId: "media-runtime", projectId: "project", contract: { image: "media-image", exportedBinaries: ["ffmpeg"] } },
       ],
       catalogue: [{ id: "runtime-image", available: true, image: "image" }, { id: "media-image", available: true, image: "media-image" }],
+      projectRuntimeImages: [{ image: "image", capabilities: ["extension.native_execute"] }, { image: "media-image", capabilities: ["extension.native_execute"] }],
     }));
     await execute({ session_id: "media-task", action_id: "convert", command: "ffmpeg -i input.mp4 output.mp4" }, ctx);
     expect(ctx.env.codeRunner!.run).toHaveBeenCalledWith(expect.objectContaining({ projectRuntimeInstallationId: "media-runtime", projectId: "project" }));

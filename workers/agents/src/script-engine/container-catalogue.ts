@@ -19,6 +19,7 @@ import { mintInternalToken } from "@naelao/http";
 
 import { parseApprovedContainerImages } from "./container-policy.js";
 import type { ExtensionManifest } from "@naelao/agent-sdk";
+import type { ProjectRuntimeCapability } from "./container-policy.js";
 
 export interface ContainerImageManifest {
   id: string;
@@ -39,6 +40,8 @@ export interface ContainerImageManifest {
   /** True only when a fixed runtime binding and its exact digest are approved at deployment. */
   available: boolean;
   image?: string;
+  /** Host-authenticated Project-main capabilities for a matching deployed dynamic image. */
+  project_runtime_capabilities?: readonly ProjectRuntimeCapability[];
   exported_binaries?: string[];
   install_manifest?: ExtensionManifest;
 }
@@ -167,6 +170,7 @@ export function deployedContainerCatalogue(registryJson: string | undefined, bou
       id: card.id, name: card.name, description: card.description, category: card.category,
       exposed_ops: [], persisted_paths: [], network_policy: "none", billing_tier: "pro", available: true,
       image: pin.image, exported_binaries: [...card.exportedBinaries],
+      ...(pin.projectRuntime ? { project_runtime_capabilities: [...pin.projectRuntime.capabilities] } : {}),
       install_manifest: {
         id: `ext_runtime_${card.id}_${pin.image.slice(-12)}`, type: "extension", declaredPermissions: ["container:execute"], capabilityRequirements: ["native-execution"], gadgets: [], daemons: [], commands: [],
         containers: [{ schemaVersion: "1.0", kind: "container", id: card.id, version: "1.0.0", permissions: [{ scope: "PROJECT_BOUND", actions: ["execute"], resource: "workspace" }],
@@ -175,6 +179,19 @@ export function deployedContainerCatalogue(registryJson: string | undefined, bou
     });
   }
   return images;
+}
+
+/** Exact deployed TOOL_SANDBOX pins that can host Project native extensions on the main runtime. */
+export function deployedProjectRuntimeImages(
+  registryJson: string | undefined,
+  bound: readonly string[],
+  dynamicImages: readonly string[],
+): Array<{ image: string; capabilities: readonly ProjectRuntimeCapability[] }> {
+  return parseApprovedContainerImages(registryJson)
+    .filter(pin => pin.binding === "TOOL_SANDBOX" && pin.schedulingPolicy === "durable_object"
+      && bound.includes("TOOL_SANDBOX") && dynamicImages.includes(pin.image)
+      && pin.projectRuntime?.capabilities.includes("extension.native_execute"))
+    .map(pin => ({ image: pin.image, capabilities: [...pin.projectRuntime!.capabilities] }));
 }
 
 export { resolveContainerBinary, approvedContainer, parseApprovedContainerImages, sidecarKey } from "./container-policy.js";
