@@ -37,6 +37,14 @@ describe("task-scoped attachment CLI operations", () => {
     expect(rejectedIdBody).not.toHaveProperty("key");
   });
 
+  it("carries the active Project into the task-scoped PDF OCR caller", async () => {
+    const state = context({ projectId: "project-a", response: { mime_type: "application/pdf", pages: [{ page: 1, text: "Invoice 42" }] } });
+    await expect(attachments.operations["attachment.ocr"]!({ id: "opaque-pdf" }, state.ctx))
+      .resolves.toMatchObject({ mime_type: "application/pdf", pages: [{ page: 1, text: "Invoice 42" }] });
+    expect(state.calls[0]?.url).toBe("http://agents-worker/internal/attachments/ocr");
+    expect(await state.calls[0]!.json()).toMatchObject({ taskId: "task-a", id: "opaque-pdf", projectId: "project-a", agentId: "agent-a" });
+  });
+
   it("routes bounded visual questions through a separate image-description operation", async () => {
     const state = context({ response: { task: "describe_image", text: "A red truck." } });
     await expect(attachments.operations["attachment.describe"]!({ id: "opaque-image", question: "What vehicle is shown?" }, state.ctx))

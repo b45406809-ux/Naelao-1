@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { zipSync } from "fflate";
 import { mintInternalToken } from "@naelao/http";
+import { EMAIL_PDF_MAX_BYTES } from "./email-pdf.js";
 import { app } from "../index.js";
 
 const secret = "attachment-test-secret";
@@ -68,10 +69,43 @@ function smallPng(): Uint8Array {
   return bytes;
 }
 
-function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGapped?: boolean; active?: boolean; mime?: string; attemptAllowed?: boolean; bytes?: Uint8Array; oversizedRenderResponse?: boolean } = {}) {
+function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGapped?: boolean; active?: boolean; mime?: string; attemptAllowed?: boolean; bytes?: Uint8Array; oversizedPdf?: boolean; renderedPageCount?: number; oversizedRenderResponse?: boolean; dynamicRuntime?: boolean; mainRuntimeAvailable?: boolean; runtimeCapabilityDenied?: boolean } = {}) {
   let r2Reads = 0;
+  let r2BodyReads = 0;
   let documentSandboxCalls = 0;
+  let projectRuntimeCalls = 0;
+  const projectRuntimeNames: string[] = [];
   const ai = { run: vi.fn(async () => ({ answer: "Invoice 42\nTotal $10.00" })) };
+  const projectRuntime = {
+    idFromName: (name: string) => name,
+    get: (id: string) => ({ async fetch(request: Request) {
+      projectRuntimeCalls++;
+      projectRuntimeNames.push(id);
+      expect(id).toBe("sandbox:space-1:project-a");
+      expect(request.url).toBe("http://project-main-runtime/pdf/render");
+      expect(request.headers.get("x-naelao-runtime-object-name")).toBe("sandbox:space-1:project-a");
+      expect(JSON.parse(request.headers.get("x-naelao-container-scope") ?? "{}")).toMatchObject({
+        tenantId: "tenant-1", spaceId: "space-1", projectId: "project-a", actorId: "attachment-reader",
+        runId: "task-1", timeoutMs: 45_000, requiredCapabilities: ["document.pdf_render"],
+      });
+      expect(await request.json()).toMatchObject({ spaceId: "space-1", projectId: "project-a", firstPage: 1,
+        lastPage: 5, pdfBase64: expect.any(String) });
+      if (options.runtimeCapabilityDenied) return Response.json({ ok: false, error_code: "project_runtime_capability_unavailable",
+        missing_capabilities: ["document.pdf_render"], eligible_profiles: ["media-documents"] }, { status: 409 });
+      if (options.oversizedRenderResponse) {
+        let chunks = 0;
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            chunks++;
+            if (chunks <= 3) controller.enqueue(new Uint8Array(3 * 1024 * 1024));
+            else controller.close();
+          },
+        }));
+      }
+      const page = { width: 5, height: 5, pngBase64: btoa(String.fromCharCode(...smallPng())) };
+      return Response.json({ pages: Array.from({ length: options.renderedPageCount ?? 1 }, (_, index) => ({ ...page, page: index + 1 })), output_bytes: 24 });
+    } }),
+  };
   const env = {
     PLATFORM_SECRET: secret,
     PLATFORM_DB: {
@@ -103,9 +137,16 @@ function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGap
         r2Reads++;
         expect(key).toBe(owned.key);
         const bytes = options.bytes ?? smallPng();
-        return { size: bytes.byteLength, httpMetadata: { contentType: options.mime ?? "image/png" }, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+        return { size: options.oversizedPdf ? EMAIL_PDF_MAX_BYTES + 1 : bytes.byteLength,
+          httpMetadata: { contentType: options.mime ?? "image/png" }, arrayBuffer: async () => {
+          r2BodyReads++;
+          return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        } };
       },
     },
+    TOOL_SANDBOX: options.dynamicRuntime === true || options.mainRuntimeAvailable === false ? undefined : projectRuntime,
+    ...(options.dynamicRuntime === true && options.mainRuntimeAvailable !== false
+      ? { DYNAMIC_CONTAINERS_ENABLED: "true", DYNAMIC_SANDBOX: projectRuntime } : {}),
     DOCUMENT_SANDBOX: {
       idFromName: (name: string) => name,
       get: (id: string) => ({
@@ -136,7 +177,8 @@ function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGap
     },
     AI: ai,
   };
-  return { env: env as never, r2Reads: () => r2Reads, ai, documentSandboxCalls: () => documentSandboxCalls };
+  return { env: env as never, r2Reads: () => r2Reads, r2BodyReads: () => r2BodyReads, ai, documentSandboxCalls: () => documentSandboxCalls,
+    projectRuntimeCalls: () => projectRuntimeCalls, projectRuntimeNames };
 }
 
 async function readAttachment(env: never, overrides: Partial<typeof owned> = {}) {
@@ -157,7 +199,7 @@ async function readAttachment(env: never, overrides: Partial<typeof owned> = {})
   }, env);
 }
 
-async function ocrAttachment(env: never, overrides: Partial<typeof owned> = {}) {
+async function ocrAttachment(env: never, overrides: Partial<typeof owned> & { projectId?: string; agentId?: string } = {}) {
   const tenantId = overrides.tenant ?? owned.tenant;
   return app.request("/internal/attachments/ocr", {
     method: "POST",
@@ -166,7 +208,8 @@ async function ocrAttachment(env: never, overrides: Partial<typeof owned> = {}) 
       "x-naelao-tenant-id": tenantId,
       "x-naelao-internal-token": await mintInternalToken(secret, tenantId),
     },
-    body: JSON.stringify({ tenantId, spaceId: overrides.space ?? owned.space, taskId: overrides.task ?? owned.task, key: overrides.key ?? owned.key }),
+    body: JSON.stringify({ tenantId, spaceId: overrides.space ?? owned.space, taskId: overrides.task ?? owned.task, key: overrides.key ?? owned.key,
+      ...(overrides.projectId ? { projectId: overrides.projectId } : {}), ...(overrides.agentId ? { agentId: overrides.agentId } : {}) }),
   }, env);
 }
 
@@ -280,7 +323,7 @@ describe("explicit task-scoped email image OCR endpoint", () => {
     expect(unsupported.ai.run).not.toHaveBeenCalled();
   });
 
-  it("renders scanned PDF pages in the isolated document sandbox before bounded OCR", async () => {
+  it("keeps Projectless Space Assistant PDF OCR on the existing document sandbox path", async () => {
     const pdf = new TextEncoder().encode("%PDF-1.4\nfixture");
     const state = makeOcrEnv({ mime: "application/pdf", bytes: pdf });
     const response = await ocrAttachment(state.env);
@@ -289,7 +332,56 @@ describe("explicit task-scoped email image OCR endpoint", () => {
       mime_type: "application/pdf", pages: [{ page: 1, text: "Invoice 42\nTotal $10.00" }],
       text: expect.stringContaining("[UNTRUSTED OCR FROM SCANNED PDF"),
     });
+    expect(state.documentSandboxCalls()).toBe(1);
+    expect(state.projectRuntimeCalls()).toBe(0);
     expect(state.ai.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders Project PDF pages in the stable main runtime with host-owned capability admission", async () => {
+    const state = makeOcrEnv({ mime: "application/pdf", bytes: new TextEncoder().encode("%PDF-1.4\nfixture") });
+    const response = await ocrAttachment(state.env, { projectId: "project-a", agentId: "agent-a" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ mime_type: "application/pdf", pages: [{ page: 1, text: "Invoice 42\nTotal $10.00" }] });
+    expect(state.documentSandboxCalls()).toBe(0);
+    expect(state.projectRuntimeCalls()).toBe(1);
+    expect(state.projectRuntimeNames).toEqual(["sandbox:space-1:project-a"]);
+    expect(state.ai.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an oversized Project PDF before reading its bytes or rendering pages", async () => {
+    const state = makeOcrEnv({ mime: "application/pdf", oversizedPdf: true });
+    const response = await ocrAttachment(state.env, { projectId: "project-a" });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error_code: "attachment_pdf_too_large", max_bytes: EMAIL_PDF_MAX_BYTES });
+    expect(state.r2BodyReads()).toBe(0);
+    expect(state.projectRuntimeCalls()).toBe(0);
+    expect(state.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("selects DynamicSandbox for Project PDF rendering and surfaces missing capability admission", async () => {
+    const dynamic = makeOcrEnv({ mime: "application/pdf", dynamicRuntime: true });
+    expect((await ocrAttachment(dynamic.env, { projectId: "project-a" })).status).toBe(200);
+    expect(dynamic.projectRuntimeCalls()).toBe(1);
+    expect(dynamic.documentSandboxCalls()).toBe(0);
+
+    const denied = makeOcrEnv({ mime: "application/pdf", runtimeCapabilityDenied: true });
+    const response = await ocrAttachment(denied.env, { projectId: "project-a" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error_code: "project_runtime_capability_unavailable",
+      missing_capabilities: ["document.pdf_render"], eligible_profiles: ["media-documents"] });
+    expect(denied.ai.run).not.toHaveBeenCalled();
+    expect(denied.documentSandboxCalls()).toBe(0);
+  });
+
+  it("fails closed when a Project runtime binding is unavailable instead of falling back to DocumentSandbox", async () => {
+    const state = makeOcrEnv({ mime: "application/pdf", dynamicRuntime: true, mainRuntimeAvailable: false });
+    const response = await ocrAttachment(state.env, { projectId: "project-a" });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error_code: "scanned_pdf_ocr_unavailable" });
+    expect(state.r2BodyReads()).toBe(0);
+    expect(state.documentSandboxCalls()).toBe(0);
+    expect(state.projectRuntimeCalls()).toBe(0);
+    expect(state.ai.run).not.toHaveBeenCalled();
   });
 
   it("does not invoke OCR after the per-Space daily attempt limit is reached", async () => {
@@ -300,19 +392,26 @@ describe("explicit task-scoped email image OCR endpoint", () => {
     expect(exhausted.ai.run).not.toHaveBeenCalled();
   });
 
-  it("checks the PDF OCR daily limit before rendering pages in the document sandbox", async () => {
+  it("checks the PDF OCR daily limit before rendering pages in the Project runtime", async () => {
     const exhausted = makeOcrEnv({ attemptAllowed: false, mime: "application/pdf", bytes: new TextEncoder().encode("%PDF-1.4\nfixture") });
-    const response = await ocrAttachment(exhausted.env);
+    const response = await ocrAttachment(exhausted.env, { projectId: "project-a" });
     expect(response.status).toBe(429);
-    expect(exhausted.documentSandboxCalls()).toBe(0);
+    expect(exhausted.projectRuntimeCalls()).toBe(0);
     expect(exhausted.ai.run).not.toHaveBeenCalled();
   });
 
-  it("rejects an oversized document sandbox response before parsing or OCR", async () => {
+  it("rejects an oversized Project runtime response before parsing or OCR", async () => {
     const state = makeOcrEnv({ mime: "application/pdf", bytes: new TextEncoder().encode("%PDF-1.4\nfixture"), oversizedRenderResponse: true });
-    const response = await ocrAttachment(state.env);
+    const response = await ocrAttachment(state.env, { projectId: "project-a" });
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({ error_code: "pdf_render_output_limit" });
+    expect(state.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("rejects a Project renderer that exceeds the five-page OCR window", async () => {
+    const state = makeOcrEnv({ mime: "application/pdf", renderedPageCount: 6 });
+    const response = await ocrAttachment(state.env, { projectId: "project-a" });
+    expect(response.status).toBe(422);
     expect(state.ai.run).not.toHaveBeenCalled();
   });
 });

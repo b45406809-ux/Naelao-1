@@ -228,10 +228,35 @@ tests use local fixtures; no provider operation or live image was run.
 through the Project runtime with host-created `document.pdf_render` admission, preserving task/Space
 authority, page and byte limits, and OCR attribution.
 
+## SPR03.3 — Project scanned-PDF rendering — 2026-11-24
+
+The `attachment.ocr` prebuilt already carries its active Project and agent IDs. For a task-owned PDF
+with Project context, the authenticated OCR route now selects DynamicSandbox when enabled or the
+main `TOOL_SANDBOX` binding otherwise, and targets the stable `sandbox:<space>:<project>` identity.
+Its host-created attachment-reader scope requests `document.pdf_render`; the `/pdf/render` body and
+runtime object header carry the same Space and Project identity. Dynamic capability/profile errors
+are surfaced to the caller. Projectless Space Assistant PDFs retain their existing
+`DOCUMENT_SANDBOX` identity until SPR04 addresses direct specialist retirement.
+
+The route retains owner opt-in, Space egress and exact task attachment checks, the shared daily OCR
+quota, 1 MiB PDF input ceiling, five-page render window, 8 MiB bounded render response, per-page
+image OCR checks and untrusted OCR/page attribution. Project runtime unavailability fails closed
+without falling back to `DOCUMENT_SANDBOX`.
+
+Local verification: attachment OCR route and prebuilt caller tests pass **28/28**; ToolSandbox and
+DynamicSandbox suites pass **90/90**; Agents typecheck exits 0 and `git diff --check` passes. These
+tests use local fixtures. The checked-in base has no PDF capability or selected deployed profile,
+so Project rendering remains fail-closed until an approved image profile is available. No provider
+operation or live image was run.
+
+**Exact next action:** trace extension-declared native processing in SPR03.4, determine which paths
+run in the Project main runtime, an installation sidecar or an explicitly selected external runtime,
+and close any Project capability, grant or identity gap without changing existing image policy.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame
-caller slices are implemented and locally verified. Remaining caller migration, direct specialist
+caller slices, and Project scanned-PDF rendering are implemented and locally verified. Remaining caller migration, direct specialist
 retirement and SPR05 local acceptance remain open. Local source and test evidence must remain distinct from deployed cold/warm
 allocation, Cloudflare stop/reconciliation, cost/capacity, snapshot retention and Project-erasure
 acceptance. Keep rollout disabled and legacy erasure inventory active until the migrated routes and

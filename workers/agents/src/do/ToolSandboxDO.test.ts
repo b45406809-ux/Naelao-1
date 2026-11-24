@@ -248,6 +248,20 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect([...storage.keys()].some(key => String(key).startsWith("execution:"))).toBe(false);
   });
 
+  it("denies Project PDF rendering on the legacy base before reservation or startup", async () => {
+    const { sandbox, mockContainer, storage, billingCalls } = await createTestSandbox({
+      workspaceProject: true, hangReservation: true, requiredCapabilities: ["document.pdf_render"],
+    });
+    const response = await sandbox.fetch(new Request("https://sandbox/pdf/render", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", firstPage: 1, lastPage: 5, pdfBase64: "AQID" }) }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "project_runtime_capability_unavailable",
+      missing_capabilities: ["document.pdf_render"], eligible_profiles: [] });
+    expect(mockContainer.start).not.toHaveBeenCalled();
+    expect(billingCalls.filter(path => path.endsWith("/reserve"))).toHaveLength(0);
+    expect([...storage.keys()].some(key => String(key).startsWith("execution:"))).toBe(false);
+  });
+
   it("blocks execution after project erasure and preserves the local barrier through a database restore", async () => {
     const { sandbox, storage, mockContainer, setWorkspaceErased } = await createTestSandbox({ platformDb: true, workspaceProject: true });
     const startCount = mockContainer.start.mock.calls.length;

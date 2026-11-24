@@ -124,10 +124,18 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     Projectless requests cannot create a specialist allocation. Attachment route and prebuilt tests
     pass 24/24; ToolSandbox and DynamicSandbox tests pass 89/89; Agents typecheck and
     `git diff --check` pass. No provider operation or live image was run.
-  - [ ] **Active · SPR03.3 — Scanned PDF rendering.** Route Project OCR page rendering to the shared
-    runtime with `document.pdf_render` admission and preserve page, size and output limits.
-  - [ ] **SPR03.4 — Extension native tools.** Reconcile extension-declared processing callers with
-    Project capability grants and the single allocation; preserve installation image policy and
+  - [x] **SPR03.3 — Scanned PDF rendering.** Project-scoped `attachment.ocr` PDF requests now target
+    `sandbox:<space>:<project>` through DynamicSandbox or the main runtime with host-created
+    `document.pdf_render` admission. The route preserves task/Space owner and egress checks, daily
+    OCR quota accounting, the 1 MiB PDF input limit, five-page window, 8 MiB renderer response cap,
+    page image checks and untrusted OCR provenance. The Projectless Space Assistant path remains on
+    its existing DocumentSandbox identity for SPR04 retirement/reconciliation. Attachment route and
+    prebuilt caller tests pass 28/28; ToolSandbox and DynamicSandbox tests pass 90/90; Agents typecheck
+    and `git diff --check` pass. The checked-in base has no PDF capability or selected deployed
+    profile, so Project rendering remains fail-closed until an approved image profile is available.
+    No provider operation or live image was run.
+  - [ ] **Active · SPR03.4 — Extension native tools.** Reconcile extension-declared processing callers
+    with Project capability grants and the single allocation; preserve installation image policy and
     keep explicit external runtimes independent.
 - [ ] **SPR04 — Retire direct specialist execution.** Stop new first-party specialist allocations
   after the replacement routes work. Preserve cleanup, reconciliation and erasure of old runtimes.
@@ -136,17 +144,18 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4 and SPR03.1–SPR03.2 are complete in local source and fixtures.
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4 and SPR03.1–SPR03.3 are complete in local source and fixtures.
 Project branches share one runtime identity and generation; capability admission and versioned
 image settings resolve only exact deployed pins. DynamicSandbox applies checked replacement and
-workspace recovery. Project video audio and frame extraction reach the main runtime under
-`media.audio_extract` and `media.frame_extract`; ordinary audio remains container-free, and
-Projectless video fails before attachment bytes are read. SPR03.2 attachment route/prebuilt tests pass
-24/24; ToolSandbox/DynamicSandbox tests pass 89/89; Agents typecheck and `git diff --check` pass.
-Live provider image lifecycle and erasure acceptance remain separate.
-**Next action:** trace the authenticated scanned-PDF OCR caller in SPR03.3 and route rendering through
-the Project runtime with host-created `document.pdf_render` admission, preserving task/Space checks,
-page and byte limits, and OCR attribution. Then continue SPR03.4.
+workspace recovery. Project video audio, frame extraction and scanned-PDF page rendering use the
+main runtime under `media.audio_extract`, `media.frame_extract` and `document.pdf_render`; ordinary
+audio stays container-free. SPR03.3 route/prebuilt tests pass 28/28; ToolSandbox/DynamicSandbox tests
+pass 90/90; Agents typecheck and `git diff --check` pass. The current base has no PDF capability, so
+Project rendering stays fail-closed until a reviewed profile is deployed. The Projectless assistant
+PDF path remains on DocumentSandbox pending SPR04. Live provider image lifecycle and erasure acceptance remain separate.
+**Next action:** trace extension-declared native processing in SPR03.4, verify which caller executes
+in the Project main runtime versus an installation sidecar or explicit external runtime, and fix any
+Project capability/grant or identity gap while preserving existing image policy.
 Legacy specialist retirement remains SPR04.
 
 ## Paused plan — Managed services and sidecar runtime

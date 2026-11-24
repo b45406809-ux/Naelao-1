@@ -9240,28 +9240,33 @@ app.post("/internal/attachments/ocr", async (c) => {
   try {
     if (mimeType === "application/pdf") {
       if (object.size > EMAIL_PDF_MAX_BYTES) return c.json({ error_code: "attachment_pdf_too_large", max_bytes: EMAIL_PDF_MAX_BYTES }, 413);
-      if (!c.env.DOCUMENT_SANDBOX) return c.json({ error_code: "scanned_pdf_ocr_unavailable" }, 503);
+      const projectId = body.projectId;
+      const projectRuntimeNamespace = projectId
+        ? c.env.DYNAMIC_CONTAINERS_ENABLED === "true" ? c.env.DYNAMIC_SANDBOX : c.env.TOOL_SANDBOX
+        : c.env.DOCUMENT_SANDBOX;
+      if (!projectRuntimeNamespace) return c.json({ error_code: "scanned_pdf_ocr_unavailable" }, 503);
       const initialAttemptAdmitted = await reserveEmailOcrAttempt(c.env.PLATFORM_DB, {
         id: crypto.randomUUID(), tenantId, spaceId: body.spaceId, now: new Date(),
       });
       if (!initialAttemptAdmitted) return c.json({ error_code: "attachment_ocr_daily_limit_reached", max_attempts_per_day: 20 }, 429);
       const inputBytes = new Uint8Array(await object.arrayBuffer());
-      const projectId = body.projectId;
       const scope: ContainerInvocationScope = {
-        tenantId, spaceId: body.spaceId, ...(projectId ? { projectId } : {}),
+        tenantId, spaceId: body.spaceId,
+        ...(projectId ? { projectId, requiredCapabilities: ["document.pdf_render"] as const } : {}),
         actorId: "attachment-reader", agentId: body.agentId ?? "attachment-reader", runId: body.taskId,
         executionId: crypto.randomUUID(), deadline: Date.now() + 50_000, timeoutMs: 45_000,
       };
       try { validateContainerScope(scope); } catch { return c.json({ error_code: "scanned_pdf_scope_invalid" }, 400); }
-      const sandbox = c.env.DOCUMENT_SANDBOX.get(c.env.DOCUMENT_SANDBOX.idFromName(`sandbox:${body.spaceId}:${projectId ?? "_assistant"}`));
-      const renderResponse = await sandbox.fetch(new Request("http://document-sandbox/pdf/render", {
+      const runtimeName = projectId ? sandboxInstanceName(body.spaceId, projectId) : `sandbox:${body.spaceId}:_assistant`;
+      const sandbox = projectRuntimeNamespace.get(projectRuntimeNamespace.idFromName(runtimeName));
+      const renderResponse = await sandbox.fetch(new Request(projectId ? "http://project-main-runtime/pdf/render" : "http://document-sandbox/pdf/render", {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "x-naelao-tenant-id": tenantId,
           "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
           "x-naelao-container-scope": JSON.stringify(scope),
-          ...(projectId ? { "x-naelao-runtime-object-name": `sandbox:${body.spaceId}:${projectId}` } : {}),
+          ...(projectId ? { "x-naelao-runtime-object-name": runtimeName } : {}),
           "x-naelao-execution-id": scope.executionId,
           "x-naelao-timeout-ms": String(scope.timeoutMs),
         },
@@ -9270,13 +9275,17 @@ app.post("/internal/attachments/ocr", async (c) => {
       // At most five 1 MiB PNGs can be returned (base64 plus JSON overhead). Bound the
       // sandbox response before parsing so a faulty container cannot force an unbounded
       // allocation in this Worker.
-      let rendered: { error?: string; pages?: Array<{ page: number; pngBase64: string }>; output_bytes?: number } = {};
+      let rendered: { error?: string; error_code?: string; missing_capabilities?: string[]; eligible_profiles?: string[];
+        pages?: Array<{ page: number; pngBase64: string }>; output_bytes?: number } = {};
       try {
         rendered = JSON.parse(await readBoundedResponseText(renderResponse, 8 * 1024 * 1024));
       } catch {
         return c.json({ error_code: "pdf_render_output_limit" }, 413);
       }
       if (!renderResponse.ok || !Array.isArray(rendered.pages) || rendered.pages.length < 1 || rendered.pages.length > 5) {
+        if (rendered.error_code?.startsWith("project_runtime_")) return c.json({ error_code: rendered.error_code,
+          ...(rendered.missing_capabilities ? { missing_capabilities: rendered.missing_capabilities } : {}),
+          ...(rendered.eligible_profiles ? { eligible_profiles: rendered.eligible_profiles } : {}) }, renderResponse.status === 503 ? 503 : 409);
         const code = rendered.error ?? "scanned_pdf_ocr_unavailable";
         return c.json({ error_code: code === "pdf_encrypted_unsupported" ? "attachment_pdf_encrypted" : code }, code === "pdf_encrypted_unsupported" ? 415 : code === "pdf_input_too_large_or_invalid" ? 413 : 422);
       }
