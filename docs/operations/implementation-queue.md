@@ -177,9 +177,10 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
   admission are mapped to local fixtures. New regressions prove a revoked extension grant stops
   before runtime lookup and an unavailable compute-admission binding stops before billing or start.
   Six Agents suites pass 138/138; Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-- [ ] **SPR05.3 — Replacement and recovery safety.** Map profile changes, crashes, retries,
-  interrupted starts, unknown stops, authorized workspace recovery and scratch isolation; add any
-  uncovered canonical-workspace assertion.
+- [x] **SPR05.3 — Replacement and recovery safety.** Profile replacement, lost-claim recovery,
+  interrupted starts, unknown stop outcomes, checked Project workspace hydration, and runtime
+  scratch isolation are mapped to local fixtures. Four Agents suites pass 118/118; Agents typecheck,
+  container server syntax checks and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
 - [ ] **SPR05.4 — Container-free and Project attachment paths.** Verify ordinary audio and other
   container-free behavior plus configured video audio, frame sampling and scanned PDF through
   authenticated entry-point fixtures.
@@ -192,7 +193,7 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4, SPR04.1–SPR04.3 and SPR05.1–SPR05.2 are locally verified. Project
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4, SPR04.1–SPR04.3 and SPR05.1–SPR05.3 are locally verified. Project
 branches share one runtime identity and generation; exact image profiles and capability grants are
 checked before admission. Video audio, frame sampling and scanned PDF use the Project main runtime;
 ordinary audio and image OCR remain container-free. Project extension binaries, managed execution,
@@ -218,9 +219,11 @@ own runtime under the same tenant-capacity fixture. The focused DynamicSandbox/r
 revocation, Project deletion, and writer/compute admission failure. Six Agents suites pass 138/138;
 Agents typecheck and `git diff --check` pass. The added tests confirm a revoked grant is rejected
 before runtime lookup, and unavailable compute admission is rejected before billing reservation or
-Container start. **Next action:** SPR05.3 — map profile replacement, crash/retry, interrupted start,
-unknown stop, authorized workspace recovery and scratch isolation; add any missing canonical-state
-assertion. Keep live acceptance open.
+Container start. SPR05.3 verifies replacement and retry fences, lost D1 claim recovery, checked
+workspace hydration, and a new scratch-directory guard that refuses any path under canonical
+`/workspace`; four Agents suites pass 118/118, typecheck and syntax checks pass. **Next action:**
+SPR05.4 — map container-free audio and authenticated Project video audio, frame and PDF entry-point
+evidence, including configured capability and profile limits. Keep live acceptance open.
 
 ## Paused plan — Managed services and sidecar runtime
 

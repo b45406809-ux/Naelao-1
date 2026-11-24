@@ -434,14 +434,38 @@ membership-revocation timing, provider egress enforcement or tenant admission he
 authorized workspace recovery and scratch-file isolation to local tests; add any missing
 canonical-state assertion.
 
+## SPR05.3 — Replacement and recovery safety
+
+The existing DynamicSandbox fixtures cover profile replacement after confirmed stop, unknown stop
+and interrupted start fencing, retries that advance only after inspection/stop confirmation, lost D1
+claim-ack recovery, and hydration of a replacement image from checked Project workspace files after
+an old-image snapshot is dropped. ToolSandbox workspace fixtures cover an interrupted coordinator
+checkpoint recovered after DO recreation and a cold runtime replacement reopening a checked session.
+
+To make the scratch boundary executable, media audio, sampled-frame and PDF handlers now request
+task directories through `createRuntimeScratchDirectory`. It rejects a configured temp root inside
+the canonical `/workspace`; the handlers still remove each temp directory in their existing
+`finally` block. The helper fixture writes a rendered-page stand-in and proves it remains outside
+the canonical workspace, rejects an overlapping root, and leaves canonical files unchanged.
+
+Local verification: DynamicSandbox, ToolSandbox, specialized-workspace and runtime-scratch suites
+pass **118/118**. Agents typecheck, `node --check` for the container server and scratch helper, and
+`git diff --check` pass. The lifecycle assertions use local Durable Object/provider mocks and do
+not establish that Cloudflare has stopped a physical allocation after a reported timeout.
+
+**Exact next action:** SPR05.4 — map ordinary container-free audio and configured Project video
+audio, sampled frames and scanned-PDF entry-point evidence, including the selected capability and
+profile bounds.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame
 caller slices, Project scanned-PDF rendering, extension native caller migration, specialist admission
 gate, Project specialist discovery fence and historical specialist cleanup verification are
 implemented and locally verified. SPR05.1 has locally verified shared Shell/FFmpeg/PDF request
-admission and distinct Project allocation identities; the remaining SPR05 local acceptance checks
-remain open. Local
+admission and distinct Project allocation identities; SPR05.2 covers capability and authority
+denials; SPR05.3 covers local recovery fences and scratch placement. The remaining SPR05 local
+acceptance checks remain open. Local
 source and test evidence must remain distinct from deployed cold/warm allocation, Cloudflare
 stop/reconciliation, cost/capacity, snapshot retention and Project-erasure acceptance. Keep rollout
 disabled and legacy erasure inventory active until the migrated routes and historical cleanup pass

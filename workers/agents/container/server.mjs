@@ -46,6 +46,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runGuest, cancelExecution, cancelAllExecutions, executionOutput } from "./process-supervisor.mjs";
 import { ArtifactFS } from "./artifact-fs.mjs";
+import { createRuntimeScratchDirectory } from "./runtime-scratch.mjs";
 import { assertWorkspaceAncestors, safeWorkspacePath } from "./workspace-path.mjs";
 import { readPrivateStatePaths, writePrivateStatePaths } from "./private-state-path.mjs";
 
@@ -377,7 +378,7 @@ createServer((req, res) => {
               || !/^[A-Za-z0-9+/]+={0,2}$/.test(parsed.videoBase64)) throw new Error("video_input_invalid");
             const video = Buffer.from(parsed.videoBase64, "base64");
             if (!video.length || video.length > MAX_VIDEO_BYTES) throw new Error("video_input_limit");
-            directory = await mkdtemp(join(tmpdir(), "naelao-video-frames-"));
+            directory = await createRuntimeScratchDirectory("naelao-video-frames-", { workspaceDirectory: WORKSPACE_DIR });
             await chown(directory, 10001, 10001); await chmod(directory, 0o700);
             const inputPath = join(directory, "input-video");
             await writeFile(inputPath, video);
@@ -424,7 +425,7 @@ createServer((req, res) => {
             || !/^[A-Za-z0-9+/]+={0,2}$/.test(parsed.videoBase64)) throw new Error("video_input_invalid");
           const video = Buffer.from(parsed.videoBase64, "base64");
           if (!video.length || video.length > MAX_VIDEO_BYTES) throw new Error("video_input_limit");
-          directory = await mkdtemp(join(tmpdir(), "naelao-media-"));
+          directory = await createRuntimeScratchDirectory("naelao-media-", { workspaceDirectory: WORKSPACE_DIR });
           await chown(directory, 10001, 10001); await chmod(directory, 0o700);
           const inputPath = join(directory, "input-video");
           const outputPath = join(directory, "audio.ogg");
@@ -460,7 +461,7 @@ createServer((req, res) => {
         if (!pdf.length || pdf.length > MAX_PDF_BYTES || pdf.subarray(0, 5).toString("ascii") !== "%PDF-") {
           res.writeHead(415, { "content-type": "application/json" }).end(JSON.stringify({ error: "pdf_input_invalid" })); return;
         }
-        const dir = await mkdtemp(join("/tmp/guest", "pdf-render-"));
+        const dir = await createRuntimeScratchDirectory("pdf-render-", { workspaceDirectory: WORKSPACE_DIR, scratchRoot: "/tmp/guest" });
         try {
           await chown(dir, 10001, 10001); await chmod(dir, 0o700);
           const inputPath = join(dir, "input.pdf");
