@@ -72,8 +72,28 @@ invocable in Project scope but hidden and denied in Space scope, including Code 
 authorization. The focused kernel suite passes **15/15**, Agents typecheck passes. APW01's local
 boundary acceptance is complete; live coordinator/provider acceptance stays separate.
 
-**Exact next action:** verify APW02's one-worker dependent follow-up contract against the goal DAG
-and direct delegation callers, then implement and test the next independently verifiable gap.
+APW02 dependent follow-up work is recorded below.
+
+## APW02 follow-up — same-session dependent worker continuation (local)
+
+The host already had `sendToSubAgent`, which checks the saved worker's tenant/Space/Project/actor
+scope and resumes its stable ID with the saved workspace branch and admission data. Persistent
+planners could not reach it: `agent.send` was hidden by the planner operation boundary and no typed
+Bash command dispatched it. Added `naelao agent send --id <worker-id> --task <follow-up>`, kept
+`agent.send` hidden as a separate tool, and allowed it only through the scoped CLI operation gate.
+Requests are bounded to an ID up to 192 characters and task data up to 8 KiB; invalid requests stop
+before host dispatch. Planner instructions and catalog now direct context-dependent follow-ups to
+the same returned worker ID. The host's existing resume path revalidates saved access, attempt,
+branch, capabilities and remaining token budget.
+
+The existing goal DAG keeps prerequisites ordered, passes bounded untrusted direct-dependency
+receipts, schedules independent tasks under the host ceiling, and reports failed/blocked results.
+Five focused suites pass **105/105**, including virtual CLI, same-ID dispatch, DAG outcomes, planner
+invocation boundary and delegated-worker resume; Agents typecheck and `git diff --check` pass. This
+local checkpoint is awaiting push.
+
+**Exact next action:** review APW08's internal versioned-worker contract and separate parser/host
+binding work from owner-review dependencies before selecting its first implementation slice.
 
 ## APW07 checkpoint — authorized Goal Activity route projection
 

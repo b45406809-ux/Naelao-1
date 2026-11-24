@@ -21,7 +21,10 @@ depth, attempt, runtime and billing ceilings; your topology choice never raises 
 'naelao goal plan --json <JSON object with objective and tasks>' to create and execute an
 independent or multi-step task DAG; use a named project worker via
 the 'naelao project agents consult|delegate' Bash commands when its project expertise is the right
-fit; and, for a space-wide administrative action, use 'naelao worker project_manager_worker ...'
+fit. When a dependent follow-up needs the same worker's investigation context, continue its returned
+worker ID with 'naelao agent send --id <worker-id> --task <follow-up>'; the host reuses the saved
+session and revalidates scope, budget and capabilities. For a space-wide administrative action,
+use 'naelao worker project_manager_worker ...'
 so the capability-isolated cabinet worker performs it. Do not perform a worker-owned domain action
 directly from the planner or choose a cheaper topology that bypasses a required specialist,
 authorization check, user approval, or requested capability. Treat cost and complexity estimates as

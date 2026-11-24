@@ -25,13 +25,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**APW02 — Verify one-worker investigation and dependent follow-up.** Resume from the
+**APW08 — Review the reusable worker definition contract for independent local work.** Resume from the
 [active checklist and exact next action](docs/operations/implementation-queue.md#active-plan--planner-investigation-and-worker-reuse).
-Use the normal goal and direct delegation paths to verify that sequential findings stay with one
-worker session, follow-ups reuse only its currently authorized scope/budget/attempt, independent
-investigations have distinct non-overlapping assignments, and partial results remain visible.
-Implement the next locally verifiable gap; keep cost-aware routing and live recovery acceptance
-under their recorded dependencies.
+Compare the current plan and owner ledger, implement any internal parser or host-binding slice that
+does not require unresolved cross-plan authority or publication policy, and record exact blockers for
+SDK/template compatibility, deadline semantics, shared publication and live acceptance.
 
 ## Save progress inside each task
 

@@ -48,6 +48,14 @@ function plannerCoordinationCli(words: string[], rawCommand?: string): CliDispat
     return { operation: "engine.plan_and_delegate_goal", params };
   }
 
+  if (words[1] === "agent") {
+    if (words[2] !== "send") throw new Error("usage: naelao agent send --id <worker-id> --task <follow-up>");
+    const { body } = bodyAndFlags(words.slice(3));
+    if (typeof body.id !== "string" || !body.id.trim() || typeof body.task !== "string" || !body.task.trim())
+      throw new Error("usage: naelao agent send --id <worker-id> --task <follow-up>");
+    return { operation: "agent.send", params: { id: body.id, task: body.task } };
+  }
+
   if (words[1] === "project" && words[2] === "agents") {
     const action = words[3] ?? "list";
     if (action === "list") {

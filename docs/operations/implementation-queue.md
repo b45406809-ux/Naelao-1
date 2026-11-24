@@ -1033,9 +1033,13 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
     is denied, including Code Mode. Thread and roster reads stay within the current Project; actor,
     Project and attempt checks remain on Goal Activity, evidence, blackboard and resume routes. Live
     coordinator/provider acceptance remains separate.
-- [ ] **APW02 — Use one scoped investigation worker by default and fan out independent tasks.**
-  Reuse existing delegation, task DAG, worker follow-up and evidence paths. Verify dependent context
-  stays with one worker, independent assignments avoid overlap, and partial results stay visible.
+- [x] **APW02 — Use one scoped investigation worker by default and fan out independent tasks.** Added
+  `naelao agent send --id <worker-id> --task <follow-up>` as the typed path to continue a dependent
+  investigation in its existing session. The host keeps the same ID and revalidates saved actor,
+  Project, attempt, branch, capabilities and remaining budget. Independent DAG work still uses distinct
+  task worker IDs and host-capped concurrency; direct dependencies receive bounded untrusted handoffs,
+  and failed/partial states remain visible while descendants block. Five focused suites pass 105/105;
+  Agents typecheck and `git diff --check` pass. Local checkpoint pending push.
 - [ ] **APW08 — Reusable and ephemeral worker definitions.** Implement and verify the internal
   versioned definition, scoped discovery, immutable pinning and host binding after the boundary
   work. Review SDK/template compatibility and publication scope under APW/PW/TBR before enabling
@@ -1049,9 +1053,11 @@ verified and pushed as `fee19873`; alias/pipeline/Code Mode/stored-command/resum
 53/53 and were pushed as `c140822b`. The bounded Project excerpt passed 31/31 and was pushed as
 `5158d3bb`. Project thread scope passed 71/71 and was pushed as `b9a36f40`. The project-agent roster
 and task/evidence scope audit passed 70/70 and was pushed as `3207c0bb`; exact-reader Project/Space
-discovery and invocation checks pass 15/15 with Agents typecheck. **Exact next action:** verify
-APW02's one-worker dependent follow-up contract against the goal DAG and direct delegation callers,
-then implement and test the next independent gap.
+discovery and invocation checks pass 15/15 with Agents typecheck. APW02's same-session follow-up
+command and DAG handoff checks pass five suites at 105/105 with Agents typecheck; the local queue
+transition is awaiting push. **Exact next action:** review APW08's internal versioned-worker contract
+and separate independently implementable parser/host-binding work from owner-review dependencies
+before selecting its first slice.
 
 ## Ordered plan list
 

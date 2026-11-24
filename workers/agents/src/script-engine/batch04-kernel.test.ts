@@ -65,6 +65,8 @@ describe("Batch 04 universal kernel", () => {
 
   it("keeps worker-owned domain actions behind the parent planner boundary", () => {
     expect(isPlannerOperationAllowed("space", "delegate_to_space_worker")).toBe(true);
+    expect(isPlannerOperationAllowed("space", "agent.send")).toBe(true);
+    expect(isPlannerOperationAllowed("project", "agent.send")).toBe(true);
     expect(isPlannerOperationAllowed("space", "engine.coordination_patterns")).toBe(true);
     expect(isPlannerOperationAllowed("project", "engine.coordination_patterns")).toBe(true);
     expect(isPlannerOperationAllowed("space", "project.create")).toBe(false);
@@ -85,7 +87,7 @@ describe("Batch 04 universal kernel", () => {
       scriptsBucket: { put, get, head: vi.fn(async () => null), list: vi.fn(async () => ({ objects: [], truncated: false })) } as unknown as R2Bucket,
       spaceId: "s", projectId: "p", agentId: "a", tenantId: "t", codeGrantIsActive: async () => true,
     };
-    const tools = new ScriptToolSurface(env, ["r2-workspace", "code-exec", "project-journal"], { plannerScope });
+    const tools = new ScriptToolSurface(env, ["r2-workspace", "code-exec", "project-journal", "sub-agent"], { plannerScope });
     expect(tools.availableOperations()).not.toContain("Read");
     expect(tools.availableOperations()).toContain("Bash");
     if (plannerScope === "project") {
@@ -97,6 +99,7 @@ describe("Batch 04 universal kernel", () => {
     }
     expect(tools.availableOperations()).not.toContain("Edit");
     expect(tools.availableOperations()).not.toContain("Write");
+    expect(tools.availableOperations()).not.toContain("agent.send");
     expect(decisionTools(undefined, tools.availableOperations()).map((tool) => tool.name)).not.toContain("Edit");
     expect(decisionTools(undefined, ["Bash", "Read", "Edit"]).map((tool) => tool.name)).toContain("Edit");
     for (const name of ["Edit", "edit", "patch_file", "Write"]) {
@@ -128,6 +131,8 @@ describe("Batch 04 universal kernel", () => {
       .resolves.toMatchObject({ ok: false, error: expect.stringContaining("shell_permission_denied:src/a.ts") });
     await expect(tools.run("Bash", { command: "saved-inspector" }))
       .resolves.toMatchObject({ ok: false, error: expect.stringContaining("shell_permission_denied:saved-inspector") });
+    await expect(tools.run("Bash", { command: 'naelao agent send --id worker:7 --task "check follow-up"' }))
+      .resolves.toMatchObject({ ok: true, output: { ok: false, reason: "sub-agent messaging not available" } });
     const scope = { tenantId: "t", spaceId: "s", projectId: "p", agentId: "a" };
     // The isolated-code broker must enforce the same boundary.
     await expect(env.codeAuthorize!(scope, "storage.read")).resolves.toBe(false);

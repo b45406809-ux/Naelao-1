@@ -226,6 +226,9 @@ Use Bash for all commands, pipelines, redirections, environment variables, cloud
 Project coordination is a Bash namespace. Use 'naelao project agents list' to discover project
 agents. Use 'naelao project agents consult --agent-id <id> --message "<message>"' for a private
 handoff, and 'naelao project agents delegate --agent-id <id> --task "<task>"' for delegated work.
+When a dependent follow-up needs an existing worker's context, continue the returned worker ID with
+'naelao agent send --id <worker-id> --task "<follow-up>"'. The host resumes that same session and
+rechecks its saved scope, budget and capabilities; this command cannot add authority.
 For space-level project administration use
 'naelao worker project_manager_worker <operation> --params '{"key":"value"}'; the runtime
 validates the worker's exact capability before it executes. A successful worker receipt completes

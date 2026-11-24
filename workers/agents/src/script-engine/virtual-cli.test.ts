@@ -50,6 +50,13 @@ describe("VirtualCliDispatcher", () => {
     expect(() => interceptPlatformCli("naelao goal plan --json '{\"objective\":\"write it\"}'")).toThrow("requires objective and tasks");
     expect(() => interceptPlatformCli("naelao goal destroy")).toThrow("usage: naelao goal plan");
   });
+  it("routes a dependent worker follow-up to the existing session id", () => {
+    expect(interceptPlatformCli('naelao agent send --id worker:7 --task "Check the second source"')).toEqual({
+      operation: "agent.send", params: { id: "worker:7", task: "Check the second source" },
+    });
+    expect(() => interceptPlatformCli("naelao agent send --id worker:7")).toThrow("usage: naelao agent send");
+    expect(() => interceptPlatformCli("naelao agent resume --id worker:7")).toThrow("usage: naelao agent send");
+  });
   it("requests Markdown-for-agents through the scoped fetch callback and reports honest fallbacks", async () => {
     const fetchMarkdown = vi.fn(async () => ({
       url: "https://example.com/guide.md",

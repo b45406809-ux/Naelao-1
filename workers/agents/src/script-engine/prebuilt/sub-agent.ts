@@ -44,7 +44,7 @@ export const subAgent: PrebuiltScript = {
     "agent.resume":
       "id (string, required) — an existing worker session id; answer (string) or task (string) explains the clarification/follow-up. Resumes the same worker session and branch.",
     "agent.send":
-      "id (string, required) and task (string or object, required). Continue work through the parent planner on that existing session; this is not peer-to-peer worker messaging.",
+      "id (string, required) and task (bounded string or object, required). Continue work through the parent planner on that same session; the host retains its current scope, budget, attempt and worker capabilities. This is not peer-to-peer worker messaging.",
     "agent.receive":
       "id (string, required). Read the worker status, output, checkpoint, question, and retained workspace branch before deciding whether to resume it.",
   },
@@ -222,7 +222,17 @@ export const subAgent: PrebuiltScript = {
       const h = hooks(ctx);
       if (!h.sendToSubAgent)
         return { ok: false, reason: "sub-agent messaging not available" };
-      return await h.sendToSubAgent(String(args["id"] ?? ""), args["task"]);
+      const id = typeof args["id"] === "string" ? args["id"].trim() : "";
+      const task = args["task"];
+      let taskBytes = 0;
+      try {
+        if (typeof task === "string") taskBytes = new TextEncoder().encode(task).byteLength;
+        else if (task && typeof task === "object" && !Array.isArray(task)) taskBytes = new TextEncoder().encode(JSON.stringify(task)).byteLength;
+      } catch { /* invalid/non-serializable task data is rejected below */ }
+      if (!id || id.length > 192 || taskBytes < 1 || taskBytes > 8 * 1024
+        || typeof task === "string" && !task.trim() || Array.isArray(task))
+        return { ok: false, reason: "agent.send requires a bounded worker id and follow-up task" };
+      return await h.sendToSubAgent(id, task);
     },
     async "agent.receive"(args, ctx) {
       const h = hooks(ctx);

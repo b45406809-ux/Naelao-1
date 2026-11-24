@@ -23,6 +23,7 @@ const PLANNER_OPERATIONS = new Set([
   "engine.coordination_patterns",
   "engine.plan_and_delegate_goal",
   "agent.spawn",
+  "agent.send",
   "model.race",
   "agent.list_models",
   "thread.list_project_agents",

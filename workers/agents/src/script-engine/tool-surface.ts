@@ -178,6 +178,7 @@ const MISS_FALLBACK_THRESHOLD = 2;
 const PLANNER_INTERNAL_OPERATIONS = new Set([
   "engine.plan_and_delegate_goal",
   "agent.spawn",
+  "agent.send",
   "agent.list_models",
   "thread.list_project_agents",
   "thread.consult",
@@ -560,6 +561,7 @@ export class ScriptToolSurface {
       rows.push("## planner coordination Bash commands");
       rows.push("- `naelao project decision <decision-id> --revision <n>` - read one exact decision revision from the current Project; stale or unavailable workspace status is advisory");
       rows.push("- `naelao goal plan --json '<JSON object with objective and tasks>'` - validate, persist and execute a dependency-aware worker DAG; host policy selects worker capabilities and models");
+      rows.push("- `naelao agent send --id <worker-id> --task <follow-up>` - continue that worker's saved session for a dependent step; scope, budget and capabilities are revalidated by the host");
       rows.push("- `naelao project agents list` - list every agent addressable in the current project - no parameters");
       rows.push("- `naelao project agents consult --agent-id <id> --message <text>` - privately ask a named project worker for information or a bounded handoff");
       rows.push("- `naelao project agents delegate --agent-id <id> --task <text>` - delegate bounded work to a named project worker");
