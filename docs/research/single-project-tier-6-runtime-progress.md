@@ -457,6 +457,27 @@ not establish that Cloudflare has stopped a physical allocation after a reported
 audio, sampled frames and scanned-PDF entry-point evidence, including the selected capability and
 profile bounds.
 
+## SPR05.4 — Container-free and Project attachment paths
+
+Ordinary audio transcription remains on the authenticated Workers AI path; its fixture now asserts
+that neither `MEDIA_SANDBOX` nor the Project main runtime is called. Ordinary image analysis also
+asserts no runtime call. The email text/PDF parser remains local and does not call an external
+renderer. Project video audio and sampled video frames carry the attachment reader, active Project,
+task ID and the exact `media.audio_extract` or `media.frame_extract` requirement to
+`sandbox:<space>:<project>`. The fixtures cover Projectless denial before R2 reads, owner/air-gap
+gates, DynamicSandbox selection, selected-image capability errors, bounded output, sample timestamps,
+frame count and quota. Scanned email PDF rendering similarly uses the Project main runtime with
+`document.pdf_render`, preserves the page/byte limits and task/egress checks, and fails closed for a
+Projectless request or absent runtime binding. It never falls back to DocumentSandbox.
+
+Local verification: attachment transcription, email attachment and prebuilt attachment suites pass
+**43/43**; Agents typecheck and `git diff --check` pass. Successful route fixtures supply a fake
+configured runtime; the checked-in base still has no selected PDF profile, and no image was built
+or deployed to prove live rendering.
+
+**Exact next action:** SPR05.5 — map explicit Agent37/tunnel selection and grants to local tests,
+then verify a managed-route failure does not choose a local computer implicitly.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame
@@ -464,7 +485,8 @@ caller slices, Project scanned-PDF rendering, extension native caller migration,
 gate, Project specialist discovery fence and historical specialist cleanup verification are
 implemented and locally verified. SPR05.1 has locally verified shared Shell/FFmpeg/PDF request
 admission and distinct Project allocation identities; SPR05.2 covers capability and authority
-denials; SPR05.3 covers local recovery fences and scratch placement. The remaining SPR05 local
+denials; SPR05.3 covers local recovery fences and scratch placement; SPR05.4 maps container-free
+and Project attachment routes. The remaining SPR05 local
 acceptance checks remain open. Local
 source and test evidence must remain distinct from deployed cold/warm allocation, Cloudflare
 stop/reconciliation, cost/capacity, snapshot retention and Project-erasure acceptance. Keep rollout

@@ -150,6 +150,9 @@ describe("task-scoped audio transcription route", () => {
     expect(await response.json()).toMatchObject({ task: "transcribe", provider: "cloudflare_workers_ai", text: expect.stringContaining("recognized words") });
     expect(state.reads()).toBe(1);
     expect(state.ai.run).toHaveBeenCalledOnce();
+    expect(state.mediaCalls()).toBe(0);
+    expect(state.mainRuntimeCalls()).toBe(0);
+    expect(state.projectRuntimeNames).toEqual([]);
   });
 
   it("does not read foreign tasks, video, or files from an air-gapped Space", async () => {
@@ -231,6 +234,8 @@ describe("task-scoped audio transcription route", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ task: "describe_image", width: 5, height: 5, text: expect.stringContaining("A red truck") });
     expect(state.ai.run).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ task: "query", question: expect.stringContaining("What is shown?") }), expect.any(Object));
+    expect(state.mediaCalls()).toBe(0);
+    expect(state.mainRuntimeCalls()).toBe(0);
     const foreign = env({ mime: "image/png", owned: false });
     expect((await describeImage(foreign.value)).status).toBe(404);
     expect(foreign.reads()).toBe(0);
