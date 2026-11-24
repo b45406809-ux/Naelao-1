@@ -518,6 +518,40 @@ was run; live erasure acceptance remains open.
 **Exact next action:** SPR05.7 — record all seven plan criteria against local evidence, review
 every unfinished plan for ready local work, and keep live Cloudflare acceptance separate.
 
+## SPR05.7 — Evidence matrix and live boundary review
+
+| Plan criterion | Local evidence | Acceptance boundary |
+| --- | --- | --- |
+| One Project allocation across branches/tools; distinct Project allocations | `DynamicSandboxDO.test.ts` shared Shell/FFmpeg/PDF concurrency and distinct Project tests; routing tests. SPR05.1: 57/57. | Local transport/capacity/billing fakes only; no Cloudflare cold/warm allocation measurement. |
+| Capability, access, egress, grants, deletion and admission deny before compute/data | ToolSandbox/DynamicSandbox, attachment routes and Project CodeRunner grant fixtures. SPR05.2: six suites, 138/138. | No deployed policy/binding or provider network acceptance. |
+| Replacement/retry/recovery preserve one allocation; authorized files recover; scratch stays noncanonical | DynamicSandbox replacement, uncertain-stop, lost-claim and checked-workspace fixtures; `runtime-scratch.test.mjs`. SPR05.3: four suites, 118/118. | Snapshot and stop behavior uses local providers; no live lifecycle or recovery result. |
+| Container-free paths remain container-free; configured attachment work uses Project runtime | Attachment transcription, email PDF, ToolSandbox and prebuilt attachment fixtures. SPR05.4: three suites, 43/43. | The checked-in base has no selected PDF/FFmpeg profile; success is a local configured-runtime fixture. |
+| Agent37 and tunnel require explicit selection and grants; no implicit fallback | `prebuilt/agent37.test.ts`, `LocalTunnelDO.test.ts`, `prebuilt/environments.test.ts`, and `code-runner-project-extension.test.ts`. SPR05.5: five suites, 56/56. | AgentPort/tunnel services are mocked; no workstation/provider availability is established. |
+| Historical specialist/sidecar cleanup, tombstone barrier and truthful provider outcomes | `workspace-project-cleanup.test.ts`, `ToolSandboxDO.test.ts`, `DynamicSandboxDO.test.ts`. SPR05.6: three suites, 114/114. | Local fixtures prove local receipts only. Unknown unregistered historical DO IDs remain unenumerable; physical snapshot purge is unsupported. |
+| Cleanly separate local/live cold/warm, cost, capacity, lifecycle, recovery and erasure evidence | Criteria 1–6 are mapped above; local cold/restart, admission, retry, lifecycle and erasure behavior is covered only by fixtures. | No deployed cold/warm, provider USD cost, live capacity, stop/reconciliation, snapshot-retention or erasure acceptance was run. Keep rollout gated. |
+
+Agents typecheck and `git diff --check` pass for SPR05. The combined regression totals above are
+per-slice evidence and are not additive global coverage counts.
+
+**Blocked live acceptance dependency:** approved jurisdiction-specific Sandbox/D1/R2 configuration
+and access policy, a deployed Project image with the needed PDF/FFmpeg capabilities, and an
+authorized Cloudflare verification window. The provider does not expose supported physical snapshot
+purge here, and the namespace API cannot enumerate pre-registry unregistered historical DO IDs.
+Resume when these prerequisites or a provider-supported discovery/purge path change; keep the
+separate live acceptance unchecked.
+
+**Readiness review:** the queue was reviewed in order across APW, PW, S/U, SPR, SC, U, K, EP, TBR,
+P, AgentPort, AgentPhone, WhatsApp, cleaning and claims. The earlier entries have no independent
+ready local task: they are blocked on policy, current-authority/retention contracts, jurisdiction,
+provider/API/pricing evidence or deployed access, as recorded in their queue sections and ledgers.
+The WhatsApp member-phone implementation is already present; its focused local regression tests are
+the first ready task because this session explicitly requests local test work. Its migration and
+live phone acceptance remain separate and blocked.
+
+**Exact next action:** add and run the WhatsApp member-phone local regression tests. Do not apply
+migration `0289`; resume that separate task only after the recorded authorization and test-account
+dependencies are satisfied.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame

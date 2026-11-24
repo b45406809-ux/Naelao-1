@@ -2,9 +2,10 @@
 
 This is the live checklist for one session working through one plan at a time. The latest confirmed
 commit on `origin/Mcbt5s-Backup-2` is the recovery checkpoint; fetch the branch tip before resuming.
-The new Tier 6 plan is active. The previous claims checkpoint at `2b80e458` had parked the
-remaining functional claims workflow. Use the checklist and linked ledgers to determine readiness
-and record a reason if the order changes.
+The Tier 6 plan was activated first and its local acceptance work is verified; its separate live
+acceptance remains open. The current pointer below determines the next ready plan. The previous
+claims checkpoint at `2b80e458` had parked the remaining functional claims workflow. Use the
+checklist and linked ledgers to determine readiness and record a reason if the order changes.
 
 ## How to resume and advance
 
@@ -57,7 +58,7 @@ the work already saved, and a condition for retrying. Preserve unpushed work whe
 survives. After local data loss, fetch the recovery branch and pick up from its latest saved
 handoff. Anything that had yet to reach that branch may need to be redone.
 
-## Active plan — Single Project Tier 6 runtime
+## Paused plan — Single Project Tier 6 runtime
 
 See the [plan](../research/single-project-tier-6-runtime-plan.md). It governs S4 and related S3/U10
 execution and erasure work. Reuse the managed-services ledger for overlapping evidence.
@@ -165,9 +166,8 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     workspace erasure advances. Five cleanup/runtime suites pass 132/132; Agents typecheck and
     `git diff --check` pass. Arbitrary unregistered historical DO IDs cannot be enumerated and the
     provider snapshot purge API is unsupported; see the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-- [ ] **Active · SPR05 — Local acceptance.** Map each plan criterion to existing local evidence,
-  close any missing safe-fixture coverage for concurrency, replacement/recovery, capability denial,
-  explicit external execution, and erasure/tombstone behavior.
+- [ ] **Paused · SPR05 — Local acceptance complete; live acceptance blocked.** All seven local
+  criteria are verified and mapped below; the separate Cloudflare acceptance remains open.
 - [x] **SPR05.1 — Shared Project allocation and isolation.** Concurrent Shell, FFmpeg and PDF
   requests across branches share one runtime generation, provider admission and billing reservation;
   a second Project receives a separate runtime identity and allocation under the same tenant quota.
@@ -194,52 +194,26 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
   cleanup, retry receipts, Project tombstone barriers, and truthful provider outcomes are mapped
   to local fixtures. Three Agents suites pass 114/114; Agents typecheck and `git diff --check`
   pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-- [ ] **SPR05.7 — Evidence and live boundary review.** Record all seven plan criteria against local
-  evidence and keep Cloudflare lifecycle, cost/capacity and deployed erasure acceptance separate.
-- [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
-  and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
+- [x] **SPR05.7 — Evidence and live boundary review.** All seven criteria are mapped to local
+  fixtures in the SPR ledger, with mock/local evidence separated from deployed behavior. Readiness
+  review found no local SPR work remaining; the live acceptance is blocked as recorded below.
+- [ ] **Blocked · Separate live acceptance.** Requires approved jurisdiction-specific Sandboxes/D1/R2
+  configuration and access policy, a deployed Project image with the required capabilities, and an
+  authorized Cloudflare journey for cold/warm allocation, capacity/billing, stop/reconciliation,
+  recovery, snapshot retention and erasure. Physical snapshot purge is unsupported, and historical
+  unregistered Durable Object IDs are not enumerable through the available namespace API. No live
+  operation or deployment ran; keep rollout gated.
 
-**Latest checkpoint:** SPR01, SPR02.1–SPR02.4, SPR03.1–SPR03.4, SPR04.1–SPR04.3 and SPR05.1–SPR05.6 are locally verified. Project
-branches share one runtime identity and generation; exact image profiles and capability grants are
-checked before admission. Video audio, frame sampling and scanned PDF use the Project main runtime;
-ordinary audio and image OCR remain container-free. Project extension binaries, managed execution,
-prewarm, image-tagged scripts and artifact copies use the owner-selected Project image/workspace.
-Explicit external computers remain independent. SPR04.1 now rejects Project `/exec` and `/prewarm`
-in DocumentSandboxDO/MediaSandboxDO before execution receipts, reservation, billing or Container
-start; the main-runtime attachment routes and historical cleanup remain. Five focused suites pass
-146/146; Agents typecheck and `git diff --check` pass. The checked-in base still has no selected PDF
-or extension profile, so those operations fail closed until an approved image is selected. SPR04.2
-limits Project discovery, managed selection, plan activation/prewarm and install metadata to exact
-deployed `TOOL_SANDBOX` profiles carrying `extension.native_execute`; Project sidecar dispatch fails
-before namespace lookup. Agents discovery/environment/CodeRunner suites pass 35/35; Spaces blueprint
-tests pass 28/28; Agents and Spaces typechecks plus Shell build/typecheck pass. Legacy specialist
-bindings and receipts remain for cleanup and Space Assistant paths. SPR04.3 exercises seeded legacy
-Document/Media IDs and registered historical names; one failed receipt remains pending until retry,
-then cleanup advances. Five cleanup/runtime suites pass 132/132; Agents typecheck and
-`git diff --check` pass. Arbitrary unregistered historical Durable Object IDs remain unenumerable,
-and Cloudflare provider snapshot purge is unsupported. No provider cleanup or deployment was run.
-SPR05.1 now exercises simultaneous Shell, FFmpeg and PDF requests across three Project branches and
-confirms one start, one capacity admission and one billing reservation; a second Project starts its
-own runtime under the same tenant-capacity fixture. The focused DynamicSandbox/routing suites pass
-57/57. SPR05.2 maps capability denial, attachment ownership, air-gap egress, extension grant
-revocation, Project deletion, and writer/compute admission failure. Six Agents suites pass 138/138;
-Agents typecheck and `git diff --check` pass. The added tests confirm a revoked grant is rejected
-before runtime lookup, and unavailable compute admission is rejected before billing reservation or
-Container start. SPR05.3 verifies replacement and retry fences, lost D1 claim recovery, checked
-workspace hydration, and a new scratch-directory guard that refuses any path under canonical
-`/workspace`; four Agents suites pass 118/118, typecheck and syntax checks pass. **Next action:**
-SPR05.4 confirms ordinary audio and image analysis use container-free paths, while authenticated
-video audio, sampled frames and scanned PDFs use the main Project runtime with capability and route
-bounds; three Agents suites pass 43/43, Agents typecheck and `git diff --check` pass. SPR05.5 verifies
-owner-selected Agent37/tunnel calls and grant enforcement, plus no local-computer fallback after
-managed shell or extension denial; five Agents suites pass 56/56, typecheck and `git diff --check`
-pass. SPR05.6 verifies exact cleanup dispatch for seeded historical Document/Media names and a
-registered Project sidecar, retry receipts before canonical deletion, the execution tombstone fence,
-and a zero-row result from the atomic D1 runtime-registration insert before billing or Container
-start. Snapshot cleanup reports `providerSnapshotPurge: not_supported`; no provider cleanup or
-deployment was run. Three Agents suites pass 114/114; Agents typecheck and `git diff --check` pass.
-**Exact next action:** SPR05.7 — record local evidence against all seven plan criteria, review every
-unfinished plan for ready local work, and keep live Cloudflare acceptance separate.
+**Latest checkpoint:** SPR05.7 records all seven plan criteria against local fixtures and separates
+local evidence from live evidence in the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
+SPR05.1–SPR05.6 test counts and results remain on their checked task rows. Agents typecheck and
+`git diff --check` pass; no live provider operation or deployment ran. Readiness review found no
+independent ready work in the earlier APW, PW, S/U, SC, U, K, EP, TBR or P entries; their exact
+policy, authority, jurisdiction, price and deployment dependencies remain recorded. After the
+reconciled AgentPort and AgentPhone reviews, focused WhatsApp member-phone local regression tests
+are the first ready task because this session requests local tests. Applying migration `0289` and
+configured provider/UI acceptance remain separate blocked work.
+**Exact next action:** add and run the local WhatsApp member-phone regression tests.
 
 ## Paused plan — Managed services and sidecar runtime
 
@@ -543,7 +517,7 @@ ran; no provider action occurred. Evidence: the AP progress ledger.
 **Next action:** continue with the ordered WhatsApp member-routing and extension-testing plan; trace
 the actual inbound caller and current identity/extension authority before selecting code work.
 
-## Paused plan — WhatsApp member routing and extension testing
+## Active plan — WhatsApp member routing and extension testing
 
 See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md).
 
@@ -602,9 +576,13 @@ See the [plan](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PL
     conversation/memory scope; the Agent DO rechecks current membership, grant, contact, destination,
     channel binding and installed version before handling and delivery. Explicit chat/dashboard exit,
     access-change revocation, retry receipts, inbox marking and chat labels are wired.
-  - [ ] **Blocked — focused tests and accepted live phone test.** Resume after the user asks for test
-    work and separately authorizes applying migration `0289` plus provider/UI acceptance with a
-    configured test account. No migration, provider message or deployment has run.
+  - [ ] **WhatsApp member-phone local regression tests.** Local test work is requested in this
+    session. Cover challenge redemption ahead of privileged routing, pinned customer-handler
+    execution, current authority/expiry rechecks, retry receipts, exit and access-change revocation.
+    Keep migration and live provider acceptance separate.
+  - [ ] **Blocked — migration and live phone acceptance.** Requires separate authorization to apply
+    migration `0289`, a configured test account, and provider/UI acceptance. No migration, provider
+    message or deployment has run.
 
 **Latest checkpoint:** source implementation now redeems challenges on the signed WhatsApp platform
 webhook before pairing, verification, member route selection or executive commands. Active turns
@@ -616,8 +594,9 @@ events, and contact/grant/mode/channel/extension changes close active sessions a
 challenges. Provider retry receipts retain only HMAC event keys for seven days. Migration `0289`
 remains unapplied. Agents typecheck and `git diff --check` pass; full Shell typecheck reports only the
 four known stale `.next/types` imports for missing routes. No tests, provider action or deployment ran.
-**Next action:** focused test coverage and authorized live phone-test acceptance remain blocked; the
-queue advances to commercial cleaning template source reconciliation.
+**Next action:** run the focused local WhatsApp member-phone regression tests requested in this
+session. Migration `0289` and live phone acceptance remain blocked on separate authorization and a
+configured test account.
 
 ## Paused plan — Commercial cleaning Space template
 
@@ -872,7 +851,7 @@ ledgers when moving to another plan.
 1. [ ] **Parked.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). Remaining tasks have explicit policy, authority or live-acceptance dependencies; APW07–APW09 overlap later plans.
 2. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
 3. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
-4. [ ] **Active.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#active-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.
+4. [ ] **Paused; local acceptance complete, live acceptance blocked.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#paused-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.
 5. [ ] **Paused; no ready source task.** [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md). Resume SC03 when durable invocation consent, exact alarm-safe authority revalidation and pre-dispatch reservation are supported; resume SC04 when owner-approved Space/Project caps exist.
 6. [ ] **Reconciled; no standalone task selected.** [Unified platform](../research/naelao-unified-platform-deep-plan.md) · [U ledger](../research/unified-platform-implementation-progress.md). Code gaps remain tracked in their owning plans; remaining checked-workspace/runtime acceptance requires authorized deployed/provider evidence.
 7. [ ] **Paused; no ready source task.** [Mature Knowledge platform](../research/mature-knowledge-platform-plan.md) · [K ledger](../research/mature-knowledge-platform-implementation-progress.md). K21 deployed acceptance and the K20 response-cache identity contract remain blocked; K15 waits on exact provider scope/freshness/cleanup evidence.
@@ -881,7 +860,7 @@ ledgers when moving to another plan.
 10. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
 11. [ ] **Source reconciled; provider work remains gated by terms, API and pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
 12. [ ] **Source reconciled; provider work remains gated by API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
-13. [ ] **Paused; source implementation complete; only separate test/live acceptance remains blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). See its acceptance blocker and handoff above.
+13. [ ] **Active; source implementation complete; local regression tests requested.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Live acceptance remains separately blocked as recorded above.
 14. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
 15. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
 

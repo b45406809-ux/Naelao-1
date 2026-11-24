@@ -10,24 +10,14 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR05.7 — Evidence and live boundary review.** Follow the
-[active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
-and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). Record all
-seven plan criteria against local tests, review every unfinished plan for the next ready local
-task, and keep Cloudflare lifecycle, capacity/cost and deployed erasure acceptance separate.
-SPR03.1–SPR03.4
-route Project video audio, frame extraction, scanned-PDF rendering and extension native processing
-through the stable main runtime with host-created capability/image admission. Projectless video and
-scanned PDF fail before body reads or specialist allocation; ordinary audio and image OCR stay
-container-free. Project extension execution, prewarm, stored scripts and workspace artifacts no
-longer create installation sidecars. Project scopes now fail closed at specialist execution,
-prewarm, sidecar dispatch, runtime discovery, environment selection and Project runtime install
-before a direct specialist allocation can start. Legacy pins and bindings remain for cleanup.
-SPR04.3 verified deterministic and registered historical Document/Media erasure dispatch with retry.
-SPR05.1–SPR05.6 map concurrency, replacement, capability denial, explicit external tools and erasure
-criteria to safe local fixtures, including registered sidecar cleanup and the atomic runtime-
-registration tombstone race; finish the evidence table and readiness review while keeping live
-acceptance separate.
+**WhatsApp member-phone local regression tests.** Follow the
+[active queue entry](docs/operations/implementation-queue.md#active-plan--whatsapp-member-routing-and-extension-testing)
+and [WhatsApp plan](new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Add and run
+focused local regression tests for challenge redemption, isolated customer-handler execution,
+current authority/expiry rechecks, retry receipts, exit and access-change revocation. Keep applying
+migration `0289` and live provider/UI phone acceptance as separate blocked work. The preceding
+SPR05.7 evidence matrix and readiness review are recorded in the
+[SPR ledger](docs/research/single-project-tier-6-runtime-progress.md).
 
 ## Checkout and recovery
 
