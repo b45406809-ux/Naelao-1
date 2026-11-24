@@ -59,7 +59,7 @@ function capacityService() {
 function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean;
   snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean; omitBudgetReservationReceipt?: boolean;
   budgetProjectId?: string; recoveryStore?: boolean; projectRuntime?: { id: string; capabilities: string[] }; projectRuntimeDeployed?: boolean;
-  imageProfileId?: string } = {}) {
+  imageProfileId?: string; destroyFailures?: number } = {}) {
   const records = new Map<string, any>();
   const projectMainRegistry = new Map<string, { runtimeObjectName: string; allocationGeneration: number; allocationToken?: string;
     budgetReservationId?: string; fencingToken: number; activeBranch: string; state: string }>();
@@ -68,6 +68,8 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
   const billing: any[] = [];
   const snapshotRetentionWrites: string[] = [];
   const recoveryObjects = new Map<string, string>();
+  const workspaceWrites: Array<{ image?: string; files: Record<string, string> }> = [];
+  let runtimeWorkspaceFiles = new Map<string, string>();
   let snapshotRetentionFails = false;
   let running = false;
   let info: any;
@@ -80,16 +82,39 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
   let controlReady = true;
   let workspaceErased = options.erased ?? false;
   let loseMainClaimAck = options.loseMainClaimAck ?? false;
+  let configuredProfile = options.profile;
+  let configuredImageProfileId = options.imageProfileId;
+  let destroyFailuresRemaining = options.destroyFailures ?? 0;
+  let startFailsAfterAllocation = false;
   const transport = {
     images: { base: image, tool: image,
       ...(options.projectRuntime && options.projectRuntimeDeployed !== false ? { projectProfile: projectProfileImage } : {}) }, get running() { return running; },
-    start: vi.fn((args: any) => { running = true; info = { image: args.containerSnapshot ? "" : args.image, labels: args.labels }; }),
-    destroy: vi.fn(async () => { running = false; }),
+    start: vi.fn((args: any) => { running = true; runtimeWorkspaceFiles = new Map(); info = { image: args.containerSnapshot ? "" : args.image, labels: args.labels };
+      if (startFailsAfterAllocation) { startFailsAfterAllocation = false; throw new Error("simulated_unknown_start_outcome"); } }),
+    destroy: vi.fn(async () => { if (destroyFailuresRemaining > 0) { destroyFailuresRemaining -= 1; throw new Error("simulated_unknown_stop_outcome"); } running = false; }),
     inspect: vi.fn(async () => running ? info : null),
     snapshotContainer: vi.fn(async () => ({ id: "snapshot-one", size: 1024 })),
     getTcpPort: () => ({ fetch: async (request: Request) => {
-      if (["/build", "/exec"].includes(new URL(request.url).pathname) && task) { markTaskStarted?.(); return task; }
-      if (new URL(request.url).pathname === "/control/init" && !controlReady) return Response.json({ ok: false }, { status: 503 });
+      const path = new URL(request.url).pathname;
+      if (["/build", "/exec"].includes(path) && task) { markTaskStarted?.(); return task; }
+      if (path === "/control/init" && !controlReady) return Response.json({ ok: false }, { status: 503 });
+      if (path === "/workspace/write") {
+        const body = await request.clone().json() as { files?: Record<string, string>; files_base64?: Record<string, string> };
+        const files = body.files ?? Object.fromEntries(Object.entries(body.files_base64 ?? {}).map(([name, encoded]) => [name,
+          new TextDecoder().decode(Uint8Array.from(atob(encoded), character => character.charCodeAt(0)))]));
+        for (const [name, value] of Object.entries(files)) runtimeWorkspaceFiles.set(name, value);
+        workspaceWrites.push({ image: info?.image, files: structuredClone(files) });
+        return Response.json({ ok: true });
+      }
+      if (path === "/workspace/list") return Response.json({ files: [...runtimeWorkspaceFiles.keys()] });
+      if (path === "/workspace/read") {
+        const body = await request.clone().json() as { paths?: string[] };
+        const files_base64 = Object.fromEntries((body.paths ?? []).flatMap(name => {
+          const value = runtimeWorkspaceFiles.get(name);
+          return value === undefined ? [] : [[name, btoa(value)]];
+        }));
+        return Response.json({ files_base64 });
+      }
       return Response.json({ ok: true });
     } }),
   };
@@ -120,7 +145,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
           && reservation.status === "held" && Date.parse(reservation.expiresAt) > Date.now() ? { id } : null;
       })() : sql.includes("SELECT plan_tier") ? { plan_tier: options.tier ?? "free" }
         : sql.includes("SELECT profile,image_profile_id FROM project_main_runtime_profiles")
-        ? options.profile || options.imageProfileId ? { profile: options.profile ?? "standard-1", image_profile_id: options.imageProfileId ?? "base" } : null
+        ? configuredProfile || configuredImageProfileId ? { profile: configuredProfile ?? "standard-1", image_profile_id: configuredImageProfileId ?? "base" } : null
         : sql.includes("SELECT profile FROM project_main_runtime_profiles") ? options.profile ? { profile: options.profile } : null
         : sql.includes("workspace_erasure_tombstones")
         ? workspaceErased ? { erased: 1 } : null : sql.includes("config_json")
@@ -144,6 +169,14 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
         if (sql.includes("UPDATE project_main_runtime_registry")) {
           const row = [...projectMainRegistry.values()][0];
           if (!row) return { meta: { changes: 0 } };
+          if (sql.includes("mark-project-main-replacement-recovery-required")) {
+            const [, tenantId, spaceId, projectId, objectName, generation, branch] = values as [string, string, string, string, string, number, string];
+            const matches = [tenantId, spaceId, projectId].join(":") === "tenant:space:project"
+              && row.runtimeObjectName === objectName && row.allocationGeneration === generation
+              && row.activeBranch === branch && row.state !== "erased";
+            if (matches) row.state = "recovery_required";
+            return { meta: { changes: matches ? 1 : 0 } };
+          }
           if (sql.includes("recover-project-main-generation")) {
             const [, , , , objectName, generation, token, branch] = values as [string, string, string, string, number, string, string, string];
             const matches = row.runtimeObjectName === objectName && row.allocationGeneration === generation
@@ -231,8 +264,10 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
     return sandbox.fetch(new Request("http://sandbox/_internal/workspace/erase", { method: "POST", body: JSON.stringify({ scope, confirm: true }),
       headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken("secret", "tenant") } }));
   }
-  return { invoke, profile, privateState, transport, records, capacity, env, billing, projectMainRegistry, budgetReservations, snapshotRetentionWrites, recoveryObjects, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
+  return { invoke, profile, privateState, transport, records, capacity, env, billing, projectMainRegistry, budgetReservations, snapshotRetentionWrites, recoveryObjects, workspaceWrites, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
     setSnapshotRetentionFails: (value: boolean) => { snapshotRetentionFails = value; },
+    failNextStartAfterAllocation: () => { startFailsAfterAllocation = true; },
+    setImageProfile: (imageProfileId: string, profile = "standard-1") => { configuredImageProfileId = imageProfileId; configuredProfile = profile; },
     restart: () => { sandbox = new DynamicSandboxDO(ctx as never, env as never); },
     setInfo: (v: any) => { info = v; }, hangBuild: () => { taskStarted = new Promise<void>(resolve => { markTaskStarted = resolve; }); task = new Promise<Response>(resolve => { releaseTask = resolve; }); },
     waitForExecution: () => taskStarted,
@@ -354,6 +389,18 @@ describe("Cloudflare dynamic execution", () => {
     expect([...r.records.keys()].some(key => key.startsWith("execution:"))).toBe(false);
   });
 
+  it("fails closed before resource admission when a saved Project image digest leaves the deployed map", async () => {
+    const r = runtime({ profile: "standard-1", imageProfileId: "media-documents", projectRuntimeDeployed: false,
+      projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract"] } });
+    const response = await r.invoke("/prewarm", { mainComputer: true });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "project_runtime_image_profile_unavailable" });
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect(r.capacity.calls).toHaveLength(0);
+    expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(0);
+    expect([...r.records.keys()].some(key => key.startsWith("execution:"))).toBe(false);
+  });
+
   it("does not start a different eligible Project image when the saved profile lacks a requested capability", async () => {
     const r = runtime({ profile: "standard-1", imageProfileId: "media-documents",
       projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract"] } });
@@ -364,6 +411,105 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.transport.start).not.toHaveBeenCalled();
     expect(r.capacity.calls).toHaveLength(0);
     expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(0);
+  });
+
+  it("keeps a pending replacement fenced after unknown stop outcomes and resumes only after stop confirmation", async () => {
+    const r = runtime({ projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract"] }, destroyFailures: 2 });
+    expect((await r.invoke("/prewarm", { mainComputer: true })).status).toBe(200);
+    r.setImageProfile("media-documents");
+
+    const blocked = await r.invoke("/prewarm", { mainComputer: true, executionId: "replacement-stop-unknown" });
+    expect(blocked.status).toBe(409);
+    expect(r.transport.start).toHaveBeenCalledOnce();
+    expect(r.records.get("project_main_replacement")).toMatchObject({ phase: "stopping", toImage: projectProfileImage });
+    expect(r.projectMainRegistry.get("tenant:space:project")).toMatchObject({ allocationGeneration: 1, state: "recovery_required" });
+
+    const resumed = await r.invoke("/prewarm", { mainComputer: true, executionId: "replacement-stop-reconciled" });
+    expect(resumed.status, await resumed.clone().text()).toBe(200);
+    expect(r.transport.start).toHaveBeenCalledTimes(2);
+    expect(r.transport.start).toHaveBeenLastCalledWith(expect.objectContaining({ image: projectProfileImage }));
+    expect(r.projectMainRegistry.get("tenant:space:project")).toMatchObject({ allocationGeneration: 2, state: "active" });
+    expect(r.records.has("project_main_replacement")).toBe(false);
+    const settlementIndex = r.billing.findIndex(v => v.path.endsWith("/settle"));
+    const replacementReservationIndex = r.billing.findIndex((v, index) => index > settlementIndex && v.path.endsWith("/reserve"));
+    expect(settlementIndex).toBeGreaterThanOrEqual(0);
+    expect(replacementReservationIndex).toBeGreaterThan(settlementIndex);
+  });
+
+  it("abandons an uncertain started generation only after confirmed stop, then starts the next generation", async () => {
+    const r = runtime({ projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract"] } });
+    expect((await r.invoke("/prewarm", { mainComputer: true })).status).toBe(200);
+    r.setImageProfile("media-documents");
+    r.failNextStartAfterAllocation();
+
+    const uncertain = await r.invoke("/prewarm", { mainComputer: true, executionId: "replacement-start-unknown" });
+    expect(uncertain.status).toBe(409);
+    expect(r.transport.start).toHaveBeenCalledTimes(2);
+    expect(r.transport.running).toBe(false);
+    expect(r.records.get("project_main_replacement")).toMatchObject({ phase: "stopped", toImage: projectProfileImage });
+    expect(r.projectMainRegistry.get("tenant:space:project")).toMatchObject({ allocationGeneration: 2, state: "recovery_required" });
+
+    const retry = await r.invoke("/prewarm", { mainComputer: true, executionId: "replacement-start-retry" });
+    expect(retry.status, await retry.clone().text()).toBe(200);
+    expect(r.transport.start).toHaveBeenCalledTimes(3);
+    expect(r.projectMainRegistry.get("tenant:space:project")).toMatchObject({ allocationGeneration: 3, state: "active" });
+    expect(r.records.has("project_main_replacement")).toBe(false);
+  });
+
+  it("hydrates the replacement from the checked Project workspace after dropping an old-image snapshot", async () => {
+    let now = 3_100_000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true,
+      projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract"] } });
+    const workspaceScope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+    const content = new TextEncoder().encode("canonical-project-workspace");
+    const contentHash = await sha256(new TextDecoder().decode(content));
+    const objectKey = `workspace-v1/tenant/space/project/global/content/${contentHash}`;
+    const entry = { path: "README.md", sha256: contentHash, size: content.byteLength, executable: false, objectKey };
+    const branchHeads = new Set(["main"]);
+    const headFor = (branch: string) => ({ version: 1 as const, scope: workspaceScope, branch, revision: 1,
+      manifestHash: "f".repeat(64), parentRevision: null, publicationId: null, updatedAt: new Date(now).toISOString() });
+    const coordinator = { idFromName: (value: string) => value, get: () => ({ fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/v1/head") return Response.json({ head: headFor(url.searchParams.get("branch") ?? "main") });
+      if (url.pathname === "/v1/read") return Response.json({ entries: [entry], head: headFor(url.searchParams.get("branch") ?? "main") });
+      if (url.pathname === "/v1/branch") {
+        const body = await request.json() as { branch: string };
+        branchHeads.add(body.branch);
+        return Response.json({ created: true });
+      }
+      if (url.pathname === "/v1/open") {
+        const body = await request.json() as { branch: string; allocationGeneration: number };
+        return Response.json({ session: { id: `session-${body.allocationGeneration}`, fence: body.allocationGeneration,
+          allocationGeneration: body.allocationGeneration, branch: body.branch } });
+      }
+      if (url.pathname === "/v1/close") return Response.json({ closed: true });
+      return Response.json({ error_code: "not_found" }, { status: 404 });
+    } }) };
+    const workspaceBucket = {
+      head: async (key: string) => key === objectKey ? { size: content.byteLength, etag: "content-etag", customMetadata: { sha256: contentHash } } : null,
+      get: async (key: string) => key === objectKey ? { size: content.byteLength, arrayBuffer: async () => new Uint8Array(content).buffer } : null,
+      list: async () => ({ objects: [], truncated: false }),
+      put: async () => ({ etag: "unused" }),
+    };
+    Object.assign(r.env as unknown as Record<string, unknown>, { UNIFIED_WORKSPACE_ENABLED: "true",
+      WORKSPACE_COORDINATOR: coordinator, SCRIPTS_R2: workspaceBucket });
+
+    const initial = await r.invoke("/exec", { mainComputer: true, executionId: "checked-workspace-before" });
+    expect(initial.status, await initial.clone().text()).toBe(200);
+    expect(r.workspaceWrites.at(-1)).toMatchObject({ image, files: { "README.md": "canonical-project-workspace" } });
+    now += 60_001;
+    await r.alarm();
+    expect(r.records.get("dynamic_snapshot")?.imageDigest).toBe(await sha256(image));
+
+    r.setImageProfile("media-documents");
+    const replaced = await r.invoke("/exec", { mainComputer: true, executionId: "checked-workspace-after" });
+    expect(replaced.status, await replaced.clone().text()).toBe(200);
+    expect(r.transport.start).toHaveBeenLastCalledWith(expect.objectContaining({ image: projectProfileImage }));
+    expect(r.transport.start.mock.calls.at(-1)?.[0].containerSnapshot).toBeUndefined();
+    expect(r.records.has("dynamic_snapshot")).toBe(false);
+    expect(r.snapshotRetentionWrites.some(sql => sql.includes("SET\n    state=CASE"))).toBe(true);
+    expect(r.workspaceWrites.at(-1)).toMatchObject({ image: projectProfileImage, files: { "README.md": "canonical-project-workspace" } });
+    expect(branchHeads.has("main")).toBe(true);
   });
 
   it("does not claim a project-main allocation when the authoritative budget hold is absent", async () => {

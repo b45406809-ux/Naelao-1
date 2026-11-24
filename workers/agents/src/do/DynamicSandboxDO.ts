@@ -35,6 +35,12 @@ interface Selection {
 }
 interface ProjectMainPreference { profile: string; image_profile_id: string }
 interface ProjectMainImageSelection { image: string; imageProfileId: string; profile: DynamicProfile; capabilities: readonly ProjectRuntimeCapability[] }
+type ProjectMainReplacementPhase = "stopping" | "stopped" | "starting";
+interface ProjectMainReplacement {
+  version: 1; phase: ProjectMainReplacementPhase; tenantId: string; spaceId: string; projectId: string;
+  fromImage: string; fromProfile: DynamicProfile; toImage: string; toImageProfileId: string;
+  toProfile: DynamicProfile; owner: string; updatedAt: number;
+}
 interface SavedSnapshot {
   id: string;
   fingerprint: string;
@@ -140,14 +146,16 @@ export class DynamicSandboxDO extends ToolSandboxDO {
                     : !Number.isFinite(snapshotExpiresAt) ? "dynamic_snapshot_record_invalid"
                       : snapshotExpiresAt! <= Date.now() ? "dynamic_snapshot_expired" : undefined
         : undefined;
-      const recoveryError = workspaceErasure ? "workspace_erased" : restoreError ?? snapshotStatusError ?? retentionTrackingError;
+      const replacement = await this.ctx.storage.get<ProjectMainReplacement>("project_main_replacement");
+      const recoveryError = workspaceErasure ? "workspace_erased" : restoreError ?? snapshotStatusError ?? retentionTrackingError
+        ?? (replacement ? "project_main_replacement_reconciliation_required" : undefined);
       const retryableRestoreFailure = restoreError === "dynamic_snapshot_restore_failed"
         || restoreError === "dynamic_snapshot_restore_incomplete";
-      const canRestore = Boolean(!workspaceErasure && !retentionTrackingError && snapshot && !snapshotStatusError && (!restoreError || retryableRestoreFailure)
+      const canRestore = Boolean(!replacement && !workspaceErasure && !retentionTrackingError && snapshot && !snapshotStatusError && (!restoreError || retryableRestoreFailure)
         && this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED === "true");
       return Response.json({ enabled: this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED === "true",
         state: recoveryError ? "recovery_required" : snapshot ? "checkpointed" : this.container?.running ? "active" : "empty",
-        image: selection?.image, checkpoint_created_at: snapshot?.createdAt,
+        image: selection?.image, image_profile_id: selection?.imageProfileId ?? "base", checkpoint_created_at: snapshot?.createdAt,
         checkpoint_size_bytes: snapshot?.sizeBytes, checkpoint_generation: snapshot?.allocationGeneration,
         checkpoint_expires_at: snapshotExpiresAt, recovery_error: recoveryError,
         workspace_erasure_blocked: Boolean(workspaceErasure),
@@ -246,6 +254,8 @@ export class DynamicSandboxDO extends ToolSandboxDO {
   }
 
   private async resetSnapshot(): Promise<Response> {
+    if (await this.ctx.storage.get<ProjectMainReplacement>("project_main_replacement"))
+      return Response.json({ error_code: "project_main_replacement_reconciliation_required" }, { status: 409 });
     try {
       await this.flushPendingSnapshotRetention();
       const selection = await this.ctx.storage.get<Selection>("dynamic_selection");
@@ -314,11 +324,123 @@ export class DynamicSandboxDO extends ToolSandboxDO {
       projectMain: Boolean(scope.projectId && !scope.installationId) };
     const current = await this.ctx.storage.get<Selection>("dynamic_selection");
     if (current && current.owner !== owner) throw new Error("container_session_owner_mismatch");
-    if (current && (current.image !== image || current.profile !== profile)) await this.stopContainer();
+    if (selected.projectMain) await this.prepareProjectMainReplacement(selected, current, scope);
+    else if (current && (current.image !== image || current.profile !== profile)) await this.stopContainer();
     this.selected = selected;
     await this.ctx.storage.put("dynamic_selection", selected);
     const existingSnapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
     if (existingSnapshot && selected.projectMain) await this.trackSnapshotRetention(existingSnapshot, selected);
+  }
+
+  private replacementTargets(replacement: ProjectMainReplacement, selection: Selection): boolean {
+    return replacement.tenantId === selection.tenantId && replacement.spaceId === selection.spaceId
+      && replacement.projectId === selection.projectId && replacement.toImage === selection.image
+      && replacement.toImageProfileId === selection.imageProfileId && replacement.toProfile === selection.profile
+      && replacement.owner === selection.owner;
+  }
+
+  private async prepareProjectMainReplacement(selection: Selection, current: Selection | undefined, scope: ContainerInvocationScope): Promise<void> {
+    let replacement = await this.ctx.storage.get<ProjectMainReplacement>("project_main_replacement");
+    const changed = Boolean(current && (current.image !== selection.image || current.profile !== selection.profile));
+    if (!replacement && changed && current?.projectMain && selection.projectId) {
+      replacement = { version: 1, phase: "stopping", tenantId: selection.tenantId, spaceId: selection.spaceId,
+        projectId: selection.projectId, fromImage: current.image, fromProfile: current.profile,
+        toImage: selection.image, toImageProfileId: selection.imageProfileId, toProfile: selection.profile,
+        owner: selection.owner, updatedAt: Date.now() };
+      // Persist intent before touching the prior allocation. A retry must reconcile this exact
+      // target before any other generation can start.
+      await this.ctx.storage.put("project_main_replacement", replacement);
+    }
+    if (!replacement) return;
+    if (replacement.version !== 1 || !["stopping", "stopped", "starting"].includes(replacement.phase)
+      || replacement.tenantId !== selection.tenantId
+      || replacement.spaceId !== selection.spaceId || replacement.projectId !== selection.projectId)
+      throw new Error("project_main_replacement_reconciliation_required");
+    await this.markProjectMainReplacementRecoveryRequired(scope);
+
+    if (!this.replacementTargets(replacement, selection)) {
+      // Settings may change while a replacement is unresolved. Reconcile the old target first,
+      // then retarget only after inspection proves its allocation is gone.
+      if (replacement.phase !== "stopped") await this.stopContainer();
+      else await this.assertProjectMainProviderStopped();
+      replacement = { ...replacement, phase: "stopped", toImage: selection.image,
+        toImageProfileId: selection.imageProfileId, toProfile: selection.profile, owner: selection.owner, updatedAt: Date.now() };
+      await this.ctx.storage.put("project_main_replacement", replacement);
+    }
+
+    if (replacement.phase === "stopping") {
+      await this.stopContainer();
+      replacement = await this.ctx.storage.get<ProjectMainReplacement>("project_main_replacement") ?? replacement;
+    } else if (replacement.phase === "starting") {
+      const container = this.container;
+      if (container?.running) {
+        const info = await container.inspect?.();
+        if (!info) throw new Error("project_main_replacement_reconciliation_required");
+        if (info.image === selection.image && info.labels?.naelao_owner === selection.owner
+          && info.labels?.naelao_image === await digest(selection.image)) return;
+        await this.stopContainer();
+        replacement = await this.ctx.storage.get<ProjectMainReplacement>("project_main_replacement") ?? replacement;
+      } else {
+        await this.stopContainer();
+        replacement = await this.ctx.storage.get<ProjectMainReplacement>("project_main_replacement") ?? replacement;
+      }
+    }
+    if (replacement.phase === "stopped") {
+      await this.assertProjectMainProviderStopped();
+      await this.dropProjectMainSnapshotReference(selection);
+    }
+  }
+
+  private async assertProjectMainProviderStopped(): Promise<void> {
+    const container = this.container;
+    if (!container || !container.inspect) throw new Error("project_main_replacement_reconciliation_required");
+    const info = await container.inspect();
+    if (container.running || info !== null) throw new Error("project_main_replacement_reconciliation_required");
+  }
+
+  private async markProjectMainReplacementRecoveryRequired(scope: ContainerInvocationScope): Promise<void> {
+    const db = this.bindings.PLATFORM_DB;
+    if (!db || !scope.projectId) throw new Error("project_main_runtime_registry_unavailable");
+    const generation = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
+    const marked = await db.prepare(`UPDATE project_main_runtime_registry /* mark-project-main-replacement-recovery-required */
+      SET state='recovery_required',last_seen_at=? WHERE tenant_id=? AND space_id=? AND project_id=?
+        AND runtime_object_name=? AND allocation_generation=? AND active_branch=? AND state<>'erased'`)
+      .bind(new Date().toISOString(), scope.tenantId, scope.spaceId, scope.projectId,
+        `sandbox:${scope.spaceId}:${scope.projectId}`, generation, scope.workspaceBranch ?? "main").run();
+    if (!marked.meta.changes) throw new Error("project_main_runtime_registry_write_failed");
+  }
+
+  private async dropProjectMainSnapshotReference(selection: Selection): Promise<void> {
+    const snapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
+    if (snapshot && selection.projectId) {
+      await updateRuntimeSnapshotRetention(this.requireDb(), {
+        tenantId: selection.tenantId, spaceId: selection.spaceId, projectId: selection.projectId,
+        runtimeObjectSha256: await digest(this.ctx.id.toString()),
+      }, "reference_dropped");
+      await this.ctx.storage.delete("dynamic_snapshot");
+    }
+    await this.ctx.storage.delete("dynamic_restored");
+    await this.ctx.storage.delete("dynamic_snapshot_restore_candidate");
+    await this.ctx.storage.delete("dynamic_snapshot_restored_id");
+    await this.ctx.storage.delete("dynamic_snapshot_restore_error");
+    await this.ctx.storage.delete("dynamic_snapshot_save_error");
+  }
+
+  protected override async stopContainer(preserveSnapshot = false): Promise<void> {
+    const replacement = await this.ctx.storage.get<ProjectMainReplacement>("project_main_replacement");
+    await super.stopContainer(preserveSnapshot);
+    if (!replacement || replacement.phase === "stopped") return;
+    await this.assertProjectMainProviderStopped();
+    if (replacement.phase === "starting") await this.ctx.storage.delete("project_main_generation_attempt");
+    await this.ctx.storage.put("project_main_replacement", { ...replacement, phase: "stopped", updatedAt: Date.now() });
+  }
+
+  protected override async afterProjectMainGenerationActivated(scope: ContainerInvocationScope): Promise<void> {
+    const replacement = await this.ctx.storage.get<ProjectMainReplacement>("project_main_replacement");
+    const selected = await this.ctx.storage.get<Selection>("dynamic_selection");
+    if (replacement && selected && selected.projectMain && selected.projectId === scope.projectId
+      && this.replacementTargets(replacement, selected) && replacement.phase === "starting")
+      await this.ctx.storage.delete("project_main_replacement");
   }
 
   private async resolveProjectMainImage(scope: ContainerInvocationScope, knownTier?: string): Promise<ProjectMainImageSelection> {
@@ -480,6 +602,11 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     await this.ctx.storage.delete("dynamic_snapshot_restored_id");
     await this.ctx.storage.delete("dynamic_snapshot_restore_error");
     await this.ctx.storage.put("dynamic_restored", false);
+    const replacement = await this.ctx.storage.get<ProjectMainReplacement>("project_main_replacement");
+    if (replacement && selected.projectMain && this.replacementTargets(replacement, selected)) {
+      if (replacement.phase !== "stopped") throw new Error("project_main_replacement_reconciliation_required");
+      await this.ctx.storage.put("project_main_replacement", { ...replacement, phase: "starting", updatedAt: Date.now() });
+    }
     container.start({ ...options, image: selected.image });
   }
 

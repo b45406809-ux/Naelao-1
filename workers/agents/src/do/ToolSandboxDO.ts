@@ -305,6 +305,8 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   protected async prepareAllocation(_scope: ContainerInvocationScope): Promise<void> {}
+  /** Called only after the Project registry confirms the newly started generation is active. */
+  protected async afterProjectMainGenerationActivated(_scope: ContainerInvocationScope): Promise<void> {}
   /** Validate host-selected image requirements before recording work or reserving resources. */
   protected async validateAllocationRequest(scope: ContainerInvocationScope): Promise<void> {
     if (this.workspaceRuntimeKind() !== "tool_sandbox" || !scope.projectId || scope.installationId || !scope.requiredCapabilities?.length) return;
@@ -1993,6 +1995,7 @@ export class ToolSandboxDO extends DurableObject {
         if (this.isProjectMainRuntimeScope(requestedScope, request)) await this.stopContainer().catch(() => undefined);
         throw error;
       }
+      if (this.isProjectMainRuntimeScope(requestedScope, request)) await this.afterProjectMainGenerationActivated(requestedScope);
     }
     if (requestedScope?.image) {
       // Installed sidecars are installation-scoped across worker runs. The Durable Object

@@ -94,13 +94,30 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     archives default to `base`. Profile route, settings/archive and container-policy tests pass
     23/23; DynamicSandbox tests pass 44/44; Agents typecheck and `git diff --check` pass. The saved
     request is not applied to a running Container yet; SPR02.4 owns the checked replacement.
-  - [ ] **Active · SPR02.4 — Checked image replacement and recovery.** Resolve the saved image
-    profile through trusted D1 and the current deployed pin map. Drain or safely cancel active work,
-    stop and settle the prior allocation, claim a new physical generation, start the chosen pinned
-    image and restore authorized workspace data. Unknown stop/start outcomes must block a second
-    allocation until reconciliation; preserve the prior recoverable workspace and rollback fences.
-- [ ] **SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and extension
-  native processing through the Project runtime while preserving isolation and operation limits.
+  - [x] **SPR02.4 — Checked image replacement and recovery.** DynamicSandbox resolves the saved
+    Project image from trusted D1, verifies its exact deployed digest, capability declaration,
+    minimum size and current plan before execution/resource admission. A durable replacement intent
+    fences the prior generation as `recovery_required`; the old Container and billing hold must be
+    confirmed stopped/settled before the new selection and next generation can start. Uncertain
+    stop/start outcomes remain fenced until inspection reconciliation. Image-specific snapshots are
+    marked `reference_dropped` and never restored to the replacement; the new image hydrates from
+    checked Project workspace content. Stop/start uncertainty, stale pins, capabilities and checked
+    workspace recovery pass in the local fixtures. The focused regression set passes 139 tests
+    across eight suites; Agents typecheck and `git diff --check` pass. No Cloudflare image was built,
+    deployed or started live.
+- [ ] **Active · SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and
+  extension native processing through the Project runtime while preserving isolation and operation
+  limits.
+  - [ ] **SPR03.1 — Video audio extraction.** Trace the authenticated attachment caller, then route
+    Project-scoped extraction to the shared runtime with `media.audio_extract` admission and retain
+    current file, task and output bounds. Keep non-Project service behavior intact.
+  - [ ] **SPR03.2 — Video frame sampling.** Route the Project attachment path to the shared runtime
+    with `media.frame_extract` admission and preserve sampled-frame bounds and provenance.
+  - [ ] **SPR03.3 — Scanned PDF rendering.** Route Project OCR page rendering to the shared runtime
+    with `document.pdf_render` admission and preserve page, size and output limits.
+  - [ ] **SPR03.4 — Extension native tools.** Reconcile extension-declared processing callers with
+    Project capability grants and the single allocation; preserve installation image policy and
+    keep explicit external runtimes independent.
 - [ ] **SPR04 — Retire direct specialist execution.** Stop new first-party specialist allocations
   after the replacement routes work. Preserve cleanup, reconciliation and erasure of old runtimes.
 - [ ] **SPR05 — Local acceptance.** Verify concurrency, replacement, capability denial,
@@ -108,18 +125,15 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01 and SPR02.1–SPR02.3 are verified in the SPR ledger. `sandboxInstanceName`
-routes every Project branch through one Container ID; race handoffs update the D1 active branch and
-fencing token without incrementing physical allocation generation. Capability metadata is
-host-owned, and owner/admin settings store a versioned size and image profile filtered to the exact
-deployed pin. The first SPR02.4 slice now resolves that saved profile from D1, validates its exact
-deployed digest, capability declaration, plan and minimum size before execution registration or
-resource admission, and starts the selected image on first allocation. DynamicSandbox and policy
-tests pass 58/58; Agents typecheck and `git diff --check` pass. **Next action:** implement durable
-profile replacement: record stop/start intent, settle the prior allocation before claiming the next
-generation, retain checked workspace recovery, and reconcile unknown provider outcomes before retry.
-Video/frame/PDF and extension sidecar routes remain for SPR03; legacy specialist retirement and
-live provider acceptance remain separate.
+**Latest checkpoint:** SPR01 and SPR02.1–SPR02.4 are complete in local source and fixtures. Project
+branches share one runtime identity and generation; capability admission and versioned image
+settings resolve only exact deployed pins. DynamicSandbox now performs the stop/settle, recovery
+fencing, next-generation start and checked-workspace rehydration flow. The focused regression set
+passes 139 tests across eight suites; Agents typecheck and `git diff --check` pass. Live provider
+image lifecycle and erasure acceptance remain separate. **Next action:** trace and migrate the
+authenticated video audio extraction caller in SPR03.1, carrying `media.audio_extract` through the
+host-created invocation scope to the Project runtime while preserving attachment and output bounds.
+Then continue SPR03.2–SPR03.4 in order; legacy specialist retirement remains SPR04.
 
 ## Paused plan — Managed services and sidecar runtime
 

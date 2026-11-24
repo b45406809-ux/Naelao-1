@@ -10,16 +10,15 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR02.4 — Apply selected image profiles through checked replacement.** Follow the
+**SPR03.1 — Route video audio extraction through the Project runtime.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
-and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). Project branch
-IDs now share one Container and race branches participate in its generation, writer and snapshot
-rules. Approved dynamic image pins can declare an immutable Project runtime profile and its
-capabilities; the owner/admin settings now store the requested image profile separately from size.
-Read that versioned selection from trusted D1, require its exact digest in the deployed image map,
-then stop/settle the old allocation before claiming a new generation and starting the selected
-image. Preserve checked workspace recovery, image-specific capability denial, unknown-stop fencing,
-installation image policy and non-Project/external routing. Add lifecycle and recovery tests.
+and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). SPR02.4 now
+resolves owner-selected images and applies them through stop/settle, generation-fenced replacement,
+unknown-outcome reconciliation and checked workspace rehydration. Start with the authenticated video
+audio attachment caller: trace its Project and assistant scopes, preserve input/output and task
+bounds, and carry `media.audio_extract` as a host-created capability requirement to the stable
+Project runtime. Keep container-free non-Project behavior, explicit external tools and rollout gates
+unchanged. Add caller-level tests, then continue SPR03.2–SPR03.4 in queue order.
 
 ## Checkout and recovery
 

@@ -140,9 +140,9 @@ allocation before persisting the new selection, retain checked workspace recover
 uncertain provider outcomes before another generation can start. Keep attachment caller migration
 for SPR03.
 
-## SPR02.4 checkpoint — Resolve and admit the selected image — 2026-11-24
+## SPR02.4 — Checked replacement and recovery — 2026-11-24
 
-`DynamicSandboxDO` now reads `profile` and `image_profile_id` from trusted Project settings during
+`DynamicSandboxDO` reads `profile` and `image_profile_id` from trusted Project settings during
 pre-admission and again before allocation. It resolves only the built-in base image or a unique
 approved `TOOL_SANDBOX` Project profile whose exact digest is in the deployed image map, verifies
 the image minimum size and current tenant plan, then checks required capabilities against the
@@ -151,20 +151,36 @@ fail before execution receipts, writer admission, capacity or billing. A first P
 uses the selected pinned image and its selected Cloudflare size. Legacy sidecar identity and image
 policy remain installation-scoped.
 
-Local verification: DynamicSandbox and container-policy tests pass **58/58**; Agents typecheck and
-`git diff --check` pass. No provider image was built, deployed or started live.
+For a changed selection, a durable `project_main_replacement` intent is written before stopping.
+The D1 registry is fenced to `recovery_required`. The old Container must complete destroy, billing
+settlement and capacity release, then inspect as absent before the new selection is stored and a
+next generation can be claimed. `starting` intent is retained across ambiguous starts. Inspection
+must prove the exact target image and owner before a retry can adopt a running allocation; otherwise
+the old attempt is abandoned only after stop is confirmed, and a fresh generation is claimed.
+Successful registry activation clears the intent. The profile status route reports unresolved
+replacement as `recovery_required`, and snapshot reset is blocked while one is pending.
 
-**Exact next action:** add a durable replacement intent around profile changes. Confirm the old
-Container stop and billing settlement before persisting the new selection, retire only its
-image-specific local snapshot pointer while preserving checked workspace recovery, claim the next
-generation before provider start, and test stop/start uncertainty and retries before moving to
-SPR03. Live Cloudflare stop-outcome reconciliation remains outside local evidence.
+When replacing an image or size, the old image-specific snapshot pointer is marked
+`reference_dropped` and cleared after stop confirmation; the provider snapshot is not claimed purged.
+The replacement starts without that snapshot. The test fixture verifies the new image hydrates the
+authorized Project file from Workspace Coordinator checked state and does not restore the old-image
+snapshot. Unknown stop, uncertain start, stale deployment pins, selected capability admission and
+minimum-size denial are covered.
+
+Local verification: the focused regression set passes **139 tests across eight suites**; Agents
+typecheck exits 0 and `git diff --check` passes. No provider image was built, deployed or started
+live. Cloudflare destroy/start outcome reconciliation and live image behavior remain separate
+acceptance.
+
+**Exact next action:** trace and migrate the authenticated video audio extraction caller in SPR03.1,
+carrying `media.audio_extract` through host-created invocation scope to the Project runtime while
+preserving attachment, task and output bounds. Then continue SPR03.2–SPR03.4 in queue order.
 
 ## Acceptance boundaries
 
-The branch identity and main admission slice is implemented and locally verified. Project image
-capability selection, checked image replacement, caller migration, direct specialist retirement and
-SPR05 acceptance remain open. Local source and test evidence must remain distinct from deployed
-cold/warm allocation, Cloudflare stop/reconciliation, cost/capacity, snapshot retention and
-Project-erasure acceptance. Keep rollout disabled and legacy erasure inventory active until the
-migrated routes and historical cleanup pass their respective checks.
+The branch identity, Project capability/image selection and checked replacement slices are
+implemented and locally verified. Caller migration, direct specialist retirement and SPR05 local
+acceptance remain open. Local source and test evidence must remain distinct from deployed cold/warm
+allocation, Cloudflare stop/reconciliation, cost/capacity, snapshot retention and Project-erasure
+acceptance. Keep rollout disabled and legacy erasure inventory active until the migrated routes and
+historical cleanup pass their respective checks.
