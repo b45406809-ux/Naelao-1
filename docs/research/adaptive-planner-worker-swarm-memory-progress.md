@@ -20,13 +20,9 @@ virtual shell pipelines authorize each command, redirections/listings authorize 
 saved commands are authorized before their source is loaded. Added regressions for Bash aliases,
 pipeline and input-redirection reads, saved command lookup, Code Mode tool caps and signed planner
 mutation. Five focused suites pass **53/53**, Agents typecheck and `git diff --check` pass. No further
-broad planner file/domain reader appeared on these paths. This local test/documentation slice is
-awaiting checkpoint push.
+broad planner file/domain reader appeared on these paths. Pushed with tests and handoff as `c140822b`.
 
-The exact workspace excerpt is implemented in the local follow-up below. **Exact next action:** audit
-thread/task/evidence discovery operations, including caller scope and resume-time authorization, then
-test their host invocation boundaries or route broad inspection to the existing authorized worker
-path.
+The exact workspace excerpt is implemented in the pushed follow-up below.
 
 ## APW01/APW02 follow-up — bounded immutable workspace excerpt (local)
 
@@ -38,11 +34,23 @@ and returns at most 8 KiB per call. A host-owned per-run budget admits at most f
 of requested output cumulatively. The underlying existing revision adapter separately integrity
 checks content and has a 20 MiB object ceiling; the excerpt API does not enumerate workspace files.
 
-Three focused suites pass **31/31**; Agents typecheck and `git diff --check` pass. This remains a
-local implementation result until checkpoint push; it does not establish live coordinator/provider
-acceptance. **Exact next action:** audit thread/task/evidence discovery operations, including caller
-scope and resume-time authorization, then test their host invocation boundaries or route broad
-inspection to the existing authorized worker path.
+Three focused suites pass **31/31**; Agents typecheck and `git diff --check` pass. Pushed as
+`5158d3bb`; this does not establish live coordinator/provider acceptance.
+
+## APW01/APW02 follow-up — Project thread scope (local)
+
+The caller audit found `thread.list`/`thread.search` accepted a caller-supplied Project ID from a
+Project planner, and a broad Space listing did not filter private Project threads. Project planner
+selectors now remain bound to the current Project, and `thread.read` rejects foreign Project/Space
+targets before it fetches messages. SpaceDO filters broad listings against Project visibility and
+the requesting member/owner role. Task blackboard stays worker-only; Goal Activity indexes by actor
+and rechecks current Project access before projecting evidence, and evidence collection verifies
+worker parent, tenant, Space, Project, branch and declared file paths.
+
+The Project coordination/task blackboard/Goal DAG suites pass **69/69**; Spaces thread hierarchy
+passes **2/2**; Agents and Spaces typechecks pass. This local checkpoint is awaiting push.
+**Exact next action:** audit project-agent roster visibility and its delegation target validation,
+then complete the exact task/evidence discovery and resume-path caller audit.
 
 ## APW07 checkpoint — authorized Goal Activity route projection
 

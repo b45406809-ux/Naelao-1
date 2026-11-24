@@ -176,6 +176,17 @@ async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, 
   return readBoundedResponseJson(resp, 2 * 1024 * 1024);
 }
 
+/** Persistent Project planners may inspect coordination state only inside their bound Project. */
+function threadProjectScope(ctx: PrebuiltOpContext, requested: unknown): string | undefined {
+  if (ctx.env.projectId) {
+    if (requested !== undefined && requested !== ctx.env.projectId) throw new Error("thread_project_scope_denied");
+    return ctx.env.projectId;
+  }
+  if (requested === undefined) return undefined;
+  if (typeof requested !== "string" || requested.length < 1 || requested.length > 192) throw new Error("thread_project_scope_invalid");
+  return requested;
+}
+
 async function repositoryCall(ctx: PrebuiltOpContext, operation: string, method: "GET" | "POST", payload: Record<string, unknown>): Promise<unknown> {
   if (!ctx.env.artifactWorker || !ctx.env.projectId) throw new Error("project repository unavailable");
   const token = await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId);
@@ -368,7 +379,7 @@ export const projectCoordination: PrebuiltScript = {
     },
     "thread.list": (a, c) => {
       const qs = new URLSearchParams({ space_id: c.env.spaceId });
-      const projectId = a["project_id"] ? String(a["project_id"]) : c.env.projectId;
+      const projectId = threadProjectScope(c, a["project_id"]);
       if (projectId) qs.set("project_id", projectId);
       if (a["parent_thread_id"]) qs.set("parent_thread_id", String(a["parent_thread_id"]));
       if (a["include_sub_threads"]) qs.set("include_sub_threads", "true");
@@ -379,9 +390,13 @@ export const projectCoordination: PrebuiltScript = {
       if (!threadId) throw new Error("thread.read requires thread_id");
       const thread = (await spacesCall(c, "GET", `/spaces/${c.env.spaceId}/threads/${encodeURIComponent(threadId)}`)) as {
         id: string;
+        space_id?: string;
+        project_id?: string | null;
         session_id?: string | null;
         [key: string]: unknown;
       };
+      if ((thread.space_id && thread.space_id !== c.env.spaceId)
+        || (c.env.projectId && thread.project_id !== c.env.projectId)) throw new Error("thread_read_scope_denied");
       if (!thread.session_id) return { thread, messages: [] };
       const messages = await spacesCall(c, "GET", `/spaces/${c.env.spaceId}/sessions/${thread.session_id}/messages`);
       return { thread, messages };
@@ -409,7 +424,7 @@ export const projectCoordination: PrebuiltScript = {
     "thread.search": async (a, c) => {
       const query = String(a["query"] ?? "").trim().toLowerCase();
       if (!query) throw new Error("thread.search requires query");
-      const projectId = a["project_id"] ? String(a["project_id"]) : c.env.projectId;
+      const projectId = threadProjectScope(c, a["project_id"]);
       const qs = new URLSearchParams({ space_id: c.env.spaceId });
       if (projectId) qs.set("project_id", projectId);
       if (a["include_sub_threads"]) qs.set("include_sub_threads", "true");

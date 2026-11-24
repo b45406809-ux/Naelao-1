@@ -13212,12 +13212,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       clauses.push("thread_tier != 'tier_4_scratchpad'");
     }
 
-    const rows = queryAll(
+    const rows = queryAll<Record<string, unknown>>(
       this.ctx.storage.sql as never,
       `SELECT * FROM threads WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC LIMIT 200`,
       ...args
     );
-    return Response.json({ data: rows, count: rows.length });
+    // A space-wide listing must apply the same private-Project visibility checks as an exact
+    // project listing. Otherwise omitting project_id would expose private project threads to
+    // any Space member even though exact reads correctly hide them.
+    const visibleRows = rows.filter((row) => {
+      const rowProjectId = typeof row.project_id === "string" ? row.project_id : "";
+      if (!rowProjectId) return true;
+      const project = queryOne<{ space_id: string; visibility: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT space_id, visibility FROM projects WHERE id = ?",
+        rowProjectId,
+      );
+      if (!project || project.space_id !== spaceId) return false;
+      return project.visibility !== "private" || isSpaceManager || Boolean(viewerId &&
+        (this.getProjectMemberRole(rowProjectId, viewerId) !== null || this.isSpaceOwnerOrAdmin(viewerId, spaceId)));
+    });
+    return Response.json({ data: visibleRows, count: visibleRows.length });
   }
 
   /**

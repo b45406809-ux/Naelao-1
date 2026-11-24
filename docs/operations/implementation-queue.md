@@ -1016,9 +1016,15 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
     per-run admission of four calls and 24 KiB total requested response bytes. Stale revisions are
     marked; absent/deleted, unsafe and unpinned reads fail closed. Three focused suites pass 31/31;
     Agents typecheck and `git diff --check` pass. Local checkpoint pending push.
-  - [ ] Continue auditing thread/task/evidence discovery callers, their viewer/actor scope checks and
-    resume-time revalidation. Record each exact surviving caller; route broad investigation to the
-    existing authorized worker path and test both discovery and invocation before closing APW01.
+  - [x] **APW01/APW02 — Thread coordination scope.** Project planners now have their list/search
+    selectors clamped to the run's Project; exact thread reads reject foreign Project/Space targets
+    before fetching messages. Broad Space thread listings now filter private Projects using the
+    viewer's membership/owner role. Project coordination and thread hierarchy suites pass 71/71;
+    Agents and Spaces typechecks pass. Local checkpoint pending push.
+  - [ ] Continue auditing the project-agent roster and exact task/evidence discovery callers,
+    including viewer/actor scope and resume-time revalidation. Keep task blackboard worker-only and
+    route broad investigation through authorized workers; test discovery and invocation before
+    closing APW01.
 - [ ] **APW02 — Use one scoped investigation worker by default and fan out independent tasks.**
   Reuse existing delegation, task DAG, worker follow-up and evidence paths. Verify dependent context
   stays with one worker, independent assignments avoid overlap, and partial results stay visible.
@@ -1032,10 +1038,11 @@ entry supplements existing APW/PW/TBR requirements and uses their IDs.
 
 **Latest checkpoint:** The first exact Project decision lookup and planner file-read denial are
 verified and pushed as `fee19873`; alias/pipeline/Code Mode/stored-command/resume regressions passed
-53/53 and were pushed as `c140822b`. The bounded Project excerpt now passes three focused suites
-31/31, Agents typecheck and `git diff --check`; it is awaiting checkpoint push. **Exact next action:**
-audit thread/task/evidence discovery callers, confirm actor/Project scope and resume revalidation, and
-add invocation tests or route broad inspection through the existing worker path.
+53/53 and were pushed as `c140822b`. The bounded Project excerpt passed 31/31 and was pushed as
+`5158d3bb`. A local thread-scope slice passes 71/71 across Agents and Spaces suites; both typechecks
+pass, pending checkpoint push. **Exact next action:** audit project-agent roster visibility and the
+exact task/evidence discovery callers, confirm actor/Project scope and resume revalidation, and add
+invocation tests or route broad inspection through authorized workers.
 
 ## Ordered plan list
 

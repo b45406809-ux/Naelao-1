@@ -4,7 +4,10 @@ import { SpaceDO } from "./do/SpaceDO.js";
 type ThreadRow = Record<string, unknown>;
 
 function makeThreadJourney() {
-  const project = { id: "project-1", space_id: "space-1", status: "active", visibility: "public", show_sub_threads: 0, max_threads: 0 };
+  const projects = new Map([
+    ["project-1", { id: "project-1", space_id: "space-1", status: "active", visibility: "public", show_sub_threads: 0, max_threads: 0 }],
+    ["project-2", { id: "project-2", space_id: "space-1", status: "active", visibility: "private", show_sub_threads: 0, max_threads: 0 }],
+  ]);
   const threads = new Map<string, ThreadRow>();
   const sql = {
     exec(query: string, ...args: unknown[]) {
@@ -13,7 +16,10 @@ function makeThreadJourney() {
         const row = threads.get(String(id));
         return { toArray: () => (row ? [row] : []) };
       };
-      if (lower.includes("from projects where id = ?")) return { toArray: () => [project] };
+      if (lower.includes("from projects where id = ?")) {
+        const row = projects.get(String(args[0]));
+        return { toArray: () => (row ? [row] : []) };
+      }
       if (lower.includes("select id from threads where id = ?")) return byId(args[0]);
       if (lower.includes("select space_id, project_id, status from threads where id = ?")) return byId(args[0]);
       if (lower.includes("select * from threads where id = ?")) return byId(args[0]);
@@ -45,7 +51,7 @@ function makeThreadJourney() {
   const instance = new SpaceDO({
     storage: { sql, transactionSync: (fn: () => unknown) => fn(), deleteAlarm: async () => undefined, setAlarm: async () => undefined },
   } as never, { PLATFORM_SECRET: "secret" } as never);
-  return { instance, threads };
+  return { instance, threads, projects };
 }
 
 describe("four-tier thread persistence and visibility", () => {
@@ -73,5 +79,18 @@ describe("four-tier thread persistence and visibility", () => {
     expect(expandedRows.map((row) => row.id)).toEqual(expect.arrayContaining(["team", "task", "consult", "scratch"]));
     expect(expandedRows.find((row) => row.id === "consult")).toMatchObject({ parent_thread_id: "task", thread_tier: "tier_3_consult", system_internal: 1 });
     expect(team).toMatchObject({ thread_tier: "tier_1_team" });
+  });
+
+  it("filters private Project threads from a broad Space listing for ordinary members", async () => {
+    const h = makeThreadJourney();
+    h.threads.set("public-thread", { id: "public-thread", space_id: "space-1", project_id: "project-1",
+      title: "Public", status: "active", thread_kind: "primary", thread_tier: "tier_1_team", system_internal: 0 });
+    h.threads.set("private-thread", { id: "private-thread", space_id: "space-1", project_id: "project-2",
+      title: "Private", status: "active", thread_kind: "primary", thread_tier: "tier_1_team", system_internal: 0 });
+
+    const ordinary = await h.instance.fetch(new Request("https://space/threads?space_id=space-1&viewer_id=member-1"));
+    expect(((await ordinary.json()) as { data: ThreadRow[] }).data.map(row => row.id)).toEqual(["public-thread"]);
+    const manager = await h.instance.fetch(new Request("https://space/threads?space_id=space-1&space_manager=1"));
+    expect(((await manager.json()) as { data: ThreadRow[] }).data.map(row => row.id)).toEqual(expect.arrayContaining(["public-thread", "private-thread"]));
   });
 });
