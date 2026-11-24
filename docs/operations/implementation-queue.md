@@ -144,11 +144,13 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Active · SPR04 — Retire direct specialist execution.** Stop new first-party Project
   allocations in Document/Media sandboxes after the replacement routes pass. Preserve cleanup,
   reconciliation and erasure of historical runtimes.
-  - [ ] **Active · SPR04.1 — Gate Project-scoped specialist execution.** Verify every remaining
-    Document/Media allocation and prewarm entry point, then reject Project-scoped requests before
-    execution receipts, capacity, billing or Container start while preserving the main-runtime
-    attachment routes and historical cleanup handlers.
-  - [ ] **SPR04.2 — Reconcile specialist discovery and deployment metadata.** Ensure new Project
+  - [x] **SPR04.1 — Gate Project-scoped specialist execution.** Project-scoped `/exec` and
+    `/prewarm` on DocumentSandboxDO and MediaSandboxDO return `project_runtime_specialist_retired`
+    in the shared allocation admission hook before execution receipts, reservation, billing or
+    Container start. Main-runtime attachment routes and historical cleanup remain available.
+    ToolSandboxDO, DynamicSandboxDO, specialist-workspace and attachment caller tests pass 146/146;
+    Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
+  - [ ] **Active · SPR04.2 — Reconcile specialist discovery and deployment metadata.** Ensure new Project
     operations cannot discover or select a direct specialist allocation; keep legacy image pins,
     bindings and receipts available wherever removal would strand cleanup or erasure.
   - [ ] **SPR04.3 — Verify historical cleanup and recovery paths.** Test erasure registration and
@@ -164,13 +166,15 @@ branches share one runtime identity and generation; exact image profiles and cap
 checked before admission. Video audio, frame sampling and scanned PDF use the Project main runtime;
 ordinary audio and image OCR remain container-free. Project extension binaries, managed execution,
 prewarm, image-tagged scripts and artifact copies use the owner-selected Project image/workspace.
-Explicit external computers remain independent. Seven focused suites pass 136/136; Agents typecheck
-and `git diff --check` pass. The checked-in base still has no selected PDF or extension profile, so
-those operations fail closed until an approved image is selected. Deployment, provider lifecycle and
-live erasure acceptance remain separate.
-**Next action:** SPR04.1 — audit remaining DocumentSandboxDO and MediaSandboxDO allocation and
-prewarm entry points; block Project scopes before receipts, reservation, billing and start, retaining
-the main-runtime attachment routes and historical cleanup paths.
+Explicit external computers remain independent. SPR04.1 now rejects Project `/exec` and `/prewarm`
+in DocumentSandboxDO/MediaSandboxDO before execution receipts, reservation, billing or Container
+start; the main-runtime attachment routes and historical cleanup remain. Five focused suites pass
+146/146; Agents typecheck and `git diff --check` pass. The checked-in base still has no selected PDF
+or extension profile, so those operations fail closed until an approved image is selected.
+Deployment, provider lifecycle and live erasure acceptance remain separate.
+**Next action:** SPR04.2 — inspect specialist runtime discovery/catalogue and deployment metadata, then
+prevent Project operations from selecting direct Document/Media allocations while retaining legacy
+pins and bindings required by cleanup.
 
 ## Paused plan — Managed services and sidecar runtime
 

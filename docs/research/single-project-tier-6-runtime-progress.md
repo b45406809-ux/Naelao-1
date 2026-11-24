@@ -322,6 +322,25 @@ prewarm entry points. Reject Project-scoped direct specialist work before execut
 reservation, billing or Container start; preserve main-runtime attachment routes and historical
 cleanup/erasure handlers.
 
+## SPR04.1 — Project specialist allocation retirement gate
+
+The remaining allocation entry points are the shared `ToolSandboxDO.executeScoped` `/exec` and
+`/prewarm` paths inherited by `DocumentSandboxDO` and `MediaSandboxDO`. Their shared admission hook
+now returns `project_runtime_specialist_retired` for Project scopes before execution receipt lookup
+or creation, project writer/capacity admission, billing or Container start. Both direct paths are
+covered for each specialist class. Main-runtime attachment routes continue to use the Project
+runtime, while direct specialist names and registered runtime rows remain in cleanup dispatch.
+Source search found no other first-party specialist namespace callers outside the discovery/catalogue
+metadata and cleanup paths assigned to SPR04.2 and SPR04.3.
+
+Local verification: ToolSandboxDO, DynamicSandboxDO, specialized-workspaces, attachment-transcription
+and email-attachment route suites pass **146/146**; Agents typecheck and `git diff --check` pass.
+No provider lifecycle or live allocation was run.
+
+**Exact next action:** SPR04.2 — audit Project runtime discovery and deployed container catalogue
+selection so Document/Media bindings and fixed image pins cannot advertise a new direct specialist
+allocation, while retaining legacy metadata required for cleanup and erasure.
+
 ## Acceptance boundaries
 
 The branch identity, Project capability/image selection, checked replacement, video audio and frame

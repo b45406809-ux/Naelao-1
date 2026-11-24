@@ -10,17 +10,17 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR04.1 — Gate Project-scoped specialist execution.** Follow the
+**SPR04.2 — Reconcile specialist discovery and deployment metadata.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
 and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). SPR03.1–SPR03.4
 route Project video audio, frame extraction, scanned-PDF rendering and extension native processing
 through the stable main runtime with host-created capability/image admission. Projectless video and
 scanned PDF fail before body reads or specialist allocation; ordinary audio and image OCR stay
 container-free. Project extension execution, prewarm, stored scripts and workspace artifacts no
-longer create installation sidecars. Audit remaining DocumentSandboxDO/MediaSandboxDO allocation
-and prewarm entry points; block Project scopes before receipts, reservation, billing and start while
-preserving historical cleanup and erasure. Keep rollout disabled; continue SPR05 local acceptance
-after SPR04.
+longer create installation sidecars. Project scopes now fail closed at specialist execution and
+prewarm before receipts, reservation, billing and start, while historical cleanup and erasure remain.
+Reconcile specialist discovery/deployment metadata so new Project operations cannot select direct
+specialist allocation. Keep rollout disabled; continue SPR04.3 and SPR05 local acceptance afterward.
 
 ## Checkout and recovery
 

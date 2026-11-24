@@ -309,6 +309,8 @@ export class ToolSandboxDO extends DurableObject {
   protected async afterProjectMainGenerationActivated(_scope: ContainerInvocationScope): Promise<void> {}
   /** Validate host-selected image requirements before recording work or reserving resources. */
   protected async validateAllocationRequest(scope: ContainerInvocationScope): Promise<void> {
+    if (scope.projectId && ["document_sandbox", "media_sandbox"].includes(this.workspaceRuntimeKind()))
+      throw new Error("project_runtime_specialist_retired");
     if (this.workspaceRuntimeKind() !== "tool_sandbox" || !scope.projectId || scope.installationId || !scope.requiredCapabilities?.length) return;
     // The legacy ToolSandbox base image also lacks media/PDF tools. Until an approved Project
     // profile is selected, it must reject those operations before creating an execution receipt.

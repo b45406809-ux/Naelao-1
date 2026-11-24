@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
-import { sandboxWorkspacePrefix, ToolSandboxDO } from "./ToolSandboxDO.js";
+import { DocumentSandboxDO, MediaSandboxDO, sandboxWorkspacePrefix, ToolSandboxDO } from "./ToolSandboxDO.js";
 import { WorkspaceCoordinatorDO } from "../workspace/WorkspaceCoordinatorDO.js";
 import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
 import { sidecarKey } from "../script-engine/container-policy.js";
@@ -21,7 +21,7 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; sidecarExecutionSeconds?: number; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean; workspaceBranch?: string; workspaceRevision?: number; workspaceManifestHash?: string; requiredCapabilities?: string[] } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; specialist?: "document" | "media"; sidecarExecutionSeconds?: number; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean; workspaceBranch?: string; workspaceRevision?: number; workspaceManifestHash?: string; requiredCapabilities?: string[] } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
@@ -201,7 +201,9 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
         }),
       } } : {}),
     } as never;
-    let realSandbox = new ToolSandboxDO(mockCtx, sandboxEnv);
+    const createRuntime = () => options.specialist === "document" ? new DocumentSandboxDO(mockCtx, sandboxEnv)
+      : options.specialist === "media" ? new MediaSandboxDO(mockCtx, sandboxEnv) : new ToolSandboxDO(mockCtx, sandboxEnv);
+    let realSandbox = createRuntime();
     const sandbox = { alarm: () => realSandbox.alarm(), fetch: async (request: Request) => {
       const headers = new Headers(request.headers);
       const testExecutionId = headers.get("x-test-execution-id");
@@ -220,7 +222,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       return realSandbox.fetch(new Request(request, { headers }));
     } };
     const initialPrewarm = options.hangReservation ? undefined : await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
-    return { sandbox, recreate: () => { realSandbox = new ToolSandboxDO(mockCtx, sandboxEnv); }, storage, coordinatorStorage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; }, setWorkspaceErased: (erased: boolean) => { workspaceErased = erased; }, coordinator, r2Objects };
+    return { sandbox, recreate: () => { realSandbox = createRuntime(); }, storage, coordinatorStorage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; }, setWorkspaceErased: (erased: boolean) => { workspaceErased = erased; }, coordinator, r2Objects };
   }
 
   it("rejects container operations for a suspended tenant before reserving or starting execution", async () => {
@@ -257,6 +259,20 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error_code: "project_runtime_capability_unavailable",
       missing_capabilities: ["document.pdf_render"], eligible_profiles: [] });
+    expect(mockContainer.start).not.toHaveBeenCalled();
+    expect(billingCalls.filter(path => path.endsWith("/reserve"))).toHaveLength(0);
+    expect([...storage.keys()].some(key => String(key).startsWith("execution:"))).toBe(false);
+  });
+
+  it.each(["document", "media"] as const)("retires Project-scoped %s execution and prewarm before reservation", async specialist => {
+    const { sandbox, mockContainer, storage, billingCalls } = await createTestSandbox({
+      specialist, workspaceProject: true, hangReservation: true,
+    });
+    for (const path of ["/exec", "/prewarm"]) {
+      const response = await sandbox.fetch(new Request("https://sandbox" + path, { method: "POST", body: "{}" }));
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ ok: false, error_code: "project_runtime_specialist_retired" });
+    }
     expect(mockContainer.start).not.toHaveBeenCalled();
     expect(billingCalls.filter(path => path.endsWith("/reserve"))).toHaveLength(0);
     expect([...storage.keys()].some(key => String(key).startsWith("execution:"))).toBe(false);
