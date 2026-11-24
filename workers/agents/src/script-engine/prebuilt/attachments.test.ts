@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { attachments } from "./attachments.js";
 import type { PrebuiltOpContext } from "./index.js";
 
-function context(options: { taskId?: string; response?: unknown } = {}) {
+function context(options: { taskId?: string; projectId?: string; response?: unknown } = {}) {
   const calls: Request[] = [];
   const ctx = {
     env: {
       tenantId: "tenant-a", spaceId: "space-a", taskId: options.taskId ?? "task-a", platformSecret: "secret",
+      ...(options.projectId ? { projectId: options.projectId, agentId: "agent-a" } : {}),
       agentsWorker: { fetch: async (request: Request) => { calls.push(request); return Response.json(options.response ?? { attachments: [] }); } },
     },
   } as unknown as PrebuiltOpContext;
@@ -44,6 +45,14 @@ describe("task-scoped attachment CLI operations", () => {
     expect(await state.calls[0]!.json()).toMatchObject({ taskId: "task-a", id: "opaque-image", question: "What vehicle is shown?" });
     await expect(attachments.operations["attachment.describe"]!({ id: "opaque-image", question: "x".repeat(501) }, state.ctx)).rejects.toThrow("attachment_question_too_long");
     expect(state.calls).toHaveLength(1);
+  });
+
+  it("carries the active Project into task-scoped video transcription", async () => {
+    const state = context({ projectId: "project-a", response: { task: "transcribe", source_media: "video_audio_track" } });
+    await expect(attachments.operations["attachment.transcribe"]!({ id: "opaque-video", languageHint: "en" }, state.ctx))
+      .resolves.toMatchObject({ source_media: "video_audio_track" });
+    expect(state.calls[0]?.url).toBe("http://agents-worker/internal/attachments/transcribe");
+    expect(await state.calls[0]!.json()).toMatchObject({ taskId: "task-a", id: "opaque-video", projectId: "project-a", agentId: "agent-a", languageHint: "en" });
   });
 
   it("routes bounded task-owned video frame questions through a separately authorized operation", async () => {

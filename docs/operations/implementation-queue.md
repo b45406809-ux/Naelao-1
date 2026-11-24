@@ -108,11 +108,16 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Active · SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and
   extension native processing through the Project runtime while preserving isolation and operation
   limits.
-  - [ ] **SPR03.1 — Video audio extraction.** Trace the authenticated attachment caller, then route
-    Project-scoped extraction to the shared runtime with `media.audio_extract` admission and retain
-    current file, task and output bounds. Keep non-Project service behavior intact.
-  - [ ] **SPR03.2 — Video frame sampling.** Route the Project attachment path to the shared runtime
-    with `media.frame_extract` admission and preserve sampled-frame bounds and provenance.
+  - [x] **SPR03.1 — Video audio extraction.** The prebuilt caller carries the active Project into
+    the authenticated attachment route. Project video extraction now targets
+    `sandbox:<space>:<project>` through DynamicSandbox when enabled, with host-created
+    `media.audio_extract` admission. The route preserves input, 60-second extraction, base64 and
+    output bounds, and forwards capability/profile errors. Projectless video fails before R2 read;
+    ordinary audio remains on the container-free transcription service. Attachment route and
+    prebuilt caller tests pass 22/22; Agents typecheck and `git diff --check` pass. No live image or
+    provider operation was run.
+  - [ ] **Active · SPR03.2 — Video frame sampling.** Route the Project attachment path to the shared
+    runtime with `media.frame_extract` admission and preserve sampled-frame bounds and provenance.
   - [ ] **SPR03.3 — Scanned PDF rendering.** Route Project OCR page rendering to the shared runtime
     with `document.pdf_render` admission and preserve page, size and output limits.
   - [ ] **SPR03.4 — Extension native tools.** Reconcile extension-declared processing callers with
@@ -125,15 +130,17 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01 and SPR02.1–SPR02.4 are complete in local source and fixtures. Project
-branches share one runtime identity and generation; capability admission and versioned image
-settings resolve only exact deployed pins. DynamicSandbox now performs the stop/settle, recovery
-fencing, next-generation start and checked-workspace rehydration flow. The focused regression set
-passes 139 tests across eight suites; Agents typecheck and `git diff --check` pass. Live provider
-image lifecycle and erasure acceptance remain separate. **Next action:** trace and migrate the
-authenticated video audio extraction caller in SPR03.1, carrying `media.audio_extract` through the
-host-created invocation scope to the Project runtime while preserving attachment and output bounds.
-Then continue SPR03.2–SPR03.4 in order; legacy specialist retirement remains SPR04.
+**Latest checkpoint:** SPR01, SPR02.1–SPR02.4 and SPR03.1 are complete in local source and fixtures.
+Project branches share one runtime identity and generation; capability admission and versioned
+image settings resolve only exact deployed pins. DynamicSandbox applies checked replacement and
+workspace recovery. Project video audio extraction reaches the main runtime under
+`media.audio_extract`; ordinary audio remains container-free and Projectless video is denied before
+attachment bytes are read. Attachment route and prebuilt caller tests pass 22/22; Agents typecheck
+and `git diff --check` pass. Live provider image lifecycle and erasure acceptance remain separate.
+**Next action:** trace and migrate the authenticated video frame sampling caller in SPR03.2, carrying
+`media.frame_extract` through the host-created Project invocation while preserving sampling,
+provenance, attachment owner, egress and quota checks. Then continue SPR03.3–SPR03.4 in order.
+Legacy specialist retirement remains SPR04.
 
 ## Paused plan — Managed services and sidecar runtime
 

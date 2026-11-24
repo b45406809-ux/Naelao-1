@@ -176,11 +176,38 @@ acceptance.
 carrying `media.audio_extract` through host-created invocation scope to the Project runtime while
 preserving attachment, task and output bounds. Then continue SPR03.2–SPR03.4 in queue order.
 
+## SPR03.1 — Project video audio extraction — 2026-11-24
+
+The `attachment.transcribe` prebuilt already passes its ambient Project ID and agent ID to the
+authenticated Agents route. That route now requires a Project for video audio extraction and returns
+`video_audio_project_required` before reading the attachment when no Project is active. Project
+video bytes still come only from the task-owned attachment row/R2 object after exact size checks.
+The route selects DynamicSandbox when the dynamic flag is enabled, otherwise it addresses the
+legacy main `TOOL_SANDBOX` binding (whose capability gate fails closed until approved Project
+profiles are available). Both use `sandbox:<space>:<project>`.
+
+The host-created invocation scope includes `media.audio_extract`, the task run ID, attachment
+reader actor, bounded deadline and execution ID. The main runtime verifies the exact Project object
+name, enforces capability admission before resource reservation or Container start, and then runs
+the existing 60-second FFmpeg handler. The route preserves the 6 MiB input ceiling, 1 MiB Ogg
+output ceiling, MIME check and untrusted transcript label. Capability/profile admission details
+are returned to the caller unchanged. Pure audio transcription remains on Workers AI with no
+Project Container requirement.
+
+Local verification: attachment transcription route and prebuilt caller tests pass **22/22**;
+Agents typecheck exits 0 and `git diff --check` passes. The route fixture verifies stable Project
+DO identity and host-created capability scope. No image was built, deployed or run live.
+
+**Exact next action:** migrate the authenticated Project video frame sampling caller in SPR03.2.
+Carry `media.frame_extract` to the main runtime; preserve 0/10/20-second sampling, attachment
+revalidation, Space owner toggle, egress check, quota accounting, frame/image validation, and
+provenance. Projectless frame analysis must not create a specialist allocation.
+
 ## Acceptance boundaries
 
-The branch identity, Project capability/image selection and checked replacement slices are
-implemented and locally verified. Caller migration, direct specialist retirement and SPR05 local
-acceptance remain open. Local source and test evidence must remain distinct from deployed cold/warm
+The branch identity, Project capability/image selection, checked replacement and video audio caller
+slices are implemented and locally verified. Remaining caller migration, direct specialist
+retirement and SPR05 local acceptance remain open. Local source and test evidence must remain distinct from deployed cold/warm
 allocation, Cloudflare stop/reconciliation, cost/capacity, snapshot retention and Project-erasure
 acceptance. Keep rollout disabled and legacy erasure inventory active until the migrated routes and
 historical cleanup pass their respective checks.

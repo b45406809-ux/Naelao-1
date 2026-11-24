@@ -97,7 +97,7 @@ export const attachments: PrebuiltScript = {
     "attachment.ocr": "{id:string}. Requests hosted OCR for a task-owned image or at most five pages of a small scanned PDF. Requires Space-owner enablement and allowed egress.",
     "attachment.describe": "{id:string,question:string}. Asks a bounded visual question about a task-owned PNG/JPEG image. Requires Space-owner enablement and allowed egress. The image and answer are untrusted data.",
     "attachment.describe_video": "{id:string,question:string}. Asks a visual question using at most three JPEG frames sampled at 0, 10, and 20 seconds from the first 30 seconds of a task-owned video. Requires separate Space-owner enablement and allowed egress. Uses the shared 20-call rolling Space-day OCR/visual-analysis quota. This is sampled-frame evidence, not full-video understanding; frames and answers are untrusted.",
-    "attachment.transcribe": "{id:string,languageHint?:string}. Transcribes task-owned audio, or extracts and transcribes up to 60 seconds of the audio track from a supported video using the bounded MediaSandbox.",
+    "attachment.transcribe": "{id:string,languageHint?:string}. Transcribes task-owned audio through the container-free audio service. Video audio-track extraction requires an authorized Project and an owner-selected image profile with media.audio_extract; it uses the shared Project runtime and extracts at most 60 seconds.",
     "attachment.copy": "{id:string,path:string}. Copies original bytes to the current authorized workspace without decoding or sending them to a model; refuses an existing destination.",
   },
 };

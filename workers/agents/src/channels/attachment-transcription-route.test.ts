@@ -4,12 +4,39 @@ import { app } from "../index.js";
 
 const secret = "transcription-route-secret";
 const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x08, 0x08, 0x00, 0x02, 0x00, 0x03, 0x01, 0xff, 0xda, 0x00, 0x3f, 0x00, 0xff, 0xd9]);
-function env(options: { owned?: boolean; airGapped?: boolean; active?: boolean; mime?: string; oversizedMediaResponse?: boolean; mismatchedR2Size?: boolean; videoFramesEnabled?: boolean; frameCount?: number; malformedFrame?: boolean; oversizedAttachment?: boolean; quotaAllowed?: boolean } = {}) {
+function env(options: { owned?: boolean; airGapped?: boolean; active?: boolean; mime?: string; oversizedMediaResponse?: boolean; mismatchedR2Size?: boolean; videoFramesEnabled?: boolean; frameCount?: number; malformedFrame?: boolean; oversizedAttachment?: boolean; quotaAllowed?: boolean; dynamicRuntime?: boolean; mainRuntimeAvailable?: boolean; runtimeCapabilityDenied?: boolean } = {}) {
   let reads = 0;
   let mediaCalls = 0;
+  let mainRuntimeCalls = 0;
+  const projectRuntimeNames: string[] = [];
   const ai = { run: vi.fn(async (_model: string, input?: Record<string, unknown>) => input?.task === "query" ? ({ answer: "A red truck at a loading dock." }) : ({ text: "recognized words" })) };
+  const projectRuntime = { idFromName: (name: string) => name, get: (id: string) => ({ async fetch(request: Request) {
+    mainRuntimeCalls++;
+    projectRuntimeNames.push(id);
+    expect(id).toBe("sandbox:space-a:project-a");
+    expect(new URL(request.url).pathname).toBe("/media/extract-audio");
+    const scope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as Record<string, unknown>;
+    expect(scope).toMatchObject({ tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a",
+      actorId: "attachment-reader", runId: "task-a", requiredCapabilities: ["media.audio_extract"] });
+    expect(request.headers.get("x-naelao-runtime-object-name")).toBe("sandbox:space-a:project-a");
+    if (options.runtimeCapabilityDenied) return Response.json({ ok: false, error_code: "project_runtime_capability_unavailable",
+      missing_capabilities: ["media.audio_extract"], eligible_profiles: ["media-documents"] }, { status: 409 });
+    if (options.oversizedMediaResponse) {
+      let chunks = 0;
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunks++;
+          if (chunks <= 3) controller.enqueue(new Uint8Array(1024 * 1024));
+          else controller.close();
+        },
+      }));
+    }
+    return Response.json({ audioBase64: btoa("OggS"), mimeType: "audio/ogg", durationLimitSeconds: 60 });
+  } }) };
   const value = {
     PLATFORM_SECRET: secret,
+    TOOL_SANDBOX: options.dynamicRuntime === true || options.mainRuntimeAvailable === false ? undefined : projectRuntime,
+    ...(options.dynamicRuntime === true && options.mainRuntimeAvailable !== false ? { DYNAMIC_CONTAINERS_ENABLED: "true", DYNAMIC_SANDBOX: projectRuntime } : {}),
     PLATFORM_DB: { prepare(sql: string) { return { bind(...values: unknown[]) { return { async first() {
       if (sql.includes("SELECT s.id FROM spaces s WHERE")) return options.active === false ? null : { id: "space-a" };
       if (sql.includes("SELECT status,config_json FROM spaces")) return { status: "active", config_json: JSON.stringify({ productConfig: { compliance: { airGappedOnly: options.airGapped ?? false }, attachmentOcr: { enabled: true }, attachmentVideoFrameAnalysis: { enabled: options.videoFramesEnabled ?? false } } }) };
@@ -51,14 +78,14 @@ function env(options: { owned?: boolean; airGapped?: boolean; active?: boolean; 
     } }) },
     AI: ai,
   };
-  return { value: value as never, reads: () => reads, mediaCalls: () => mediaCalls, ai };
+  return { value: value as never, reads: () => reads, mediaCalls: () => mediaCalls, mainRuntimeCalls: () => mainRuntimeCalls, projectRuntimeNames, ai };
 }
 
-async function post(value: never) {
+async function post(value: never, options: { projectId?: string } = {}) {
   return app.request("/internal/attachments/transcribe", {
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
-    body: JSON.stringify({ tenantId: "tenant-a", spaceId: "space-a", taskId: "task-a", id: "attachment-1" }),
+    body: JSON.stringify({ tenantId: "tenant-a", spaceId: "space-a", taskId: "task-a", id: "attachment-1", ...options }),
   }, value);
 }
 
@@ -120,12 +147,20 @@ describe("task-scoped audio transcription route", () => {
     expect((await post(foreign.value)).status).toBe(404);
     expect(foreign.reads()).toBe(0);
 
+    const noProjectVideo = env({ mime: "video/mp4" });
+    const noProjectResponse = await post(noProjectVideo.value);
+    expect(noProjectResponse.status).toBe(409);
+    expect(await noProjectResponse.json()).toMatchObject({ error_code: "video_audio_project_required" });
+    expect(noProjectVideo.reads()).toBe(0);
+
     const video = env({ mime: "video/mp4" });
-    const videoResponse = await post(video.value);
+    const videoResponse = await post(video.value, { projectId: "project-a" });
     expect(videoResponse.status).toBe(200);
     expect(await videoResponse.json()).toMatchObject({ source_media: "video_audio_track", extracted_duration_limit_seconds: 60, task: "transcribe", text: expect.stringContaining("recognized words") });
     expect(video.reads()).toBe(1);
-    expect(video.mediaCalls()).toBe(1);
+    expect(video.mediaCalls()).toBe(0);
+    expect(video.mainRuntimeCalls()).toBe(1);
+    expect(video.projectRuntimeNames).toEqual(["sandbox:space-a:project-a"]);
     expect(video.ai.run).toHaveBeenCalledTimes(1);
 
     const airGapped = env({ airGapped: true });
@@ -135,9 +170,35 @@ describe("task-scoped audio transcription route", () => {
 
   it("rejects oversized media sandbox output before calling the transcription provider", async () => {
     const state = env({ mime: "video/mp4", oversizedMediaResponse: true });
-    const response = await post(state.value);
+    const response = await post(state.value, { projectId: "project-a" });
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({ error_code: "video_audio_output_limit" });
+    expect(state.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("selects DynamicSandbox for Project video audio when the runtime flag is enabled", async () => {
+    const state = env({ mime: "video/mp4", dynamicRuntime: true });
+    const response = await post(state.value, { projectId: "project-a" });
+    expect(response.status).toBe(200);
+    expect(state.mainRuntimeCalls()).toBe(1);
+    expect(state.mediaCalls()).toBe(0);
+  });
+
+  it("returns capability admission details without calling transcription when the selected Project image lacks FFmpeg", async () => {
+    const state = env({ mime: "video/mp4", runtimeCapabilityDenied: true });
+    const response = await post(state.value, { projectId: "project-a" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error_code: "project_runtime_capability_unavailable",
+      missing_capabilities: ["media.audio_extract"], eligible_profiles: ["media-documents"] });
+    expect(state.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("fails before reading a Project video when no main runtime binding is available", async () => {
+    const state = env({ mime: "video/mp4", dynamicRuntime: true, mainRuntimeAvailable: false });
+    const response = await post(state.value, { projectId: "project-a" });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error_code: "video_audio_runtime_unavailable" });
+    expect(state.reads()).toBe(0);
     expect(state.ai.run).not.toHaveBeenCalled();
   });
 
