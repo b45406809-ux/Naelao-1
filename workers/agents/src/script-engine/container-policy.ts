@@ -4,10 +4,36 @@ import { parseExtensionPrimitive, type ContainerContract, type InstallationScope
 export interface ContainerInvocationScope {
   tenantId: string; spaceId: string; projectId?: string | undefined; actorId: string; agentId: string;
   runId: string; executionId: string; workspaceBranch?: string | undefined; workspaceRevision?: number | undefined; workspaceManifestHash?: string | undefined;
+  /** Host-selected operation requirements. These are authenticated with the invocation scope. */
+  requiredCapabilities?: readonly ProjectRuntimeCapability[];
   authorizationRevision?: string | undefined;
   installationId?: string | undefined; containerId?: string | undefined; installationScope?: InstallationScope | undefined; image?: string; dynamicImage?: boolean;
   deadline: number; timeoutMs: number;
   sharedFilesystemGrants?: readonly { path: string; access: "READ" | "READ_WRITE" }[];
+}
+export const PROJECT_RUNTIME_CAPABILITIES = ["media.audio_extract", "media.frame_extract", "document.pdf_render"] as const;
+export type ProjectRuntimeCapability = typeof PROJECT_RUNTIME_CAPABILITIES[number];
+export interface ProjectRuntimeImageProfile {
+  id: string;
+  capabilities: readonly ProjectRuntimeCapability[];
+}
+export class ProjectRuntimeCapabilityAdmissionError extends Error {
+  constructor(readonly missingCapabilities: readonly ProjectRuntimeCapability[], readonly eligibleProfiles: readonly string[]) {
+    super("project_runtime_capability_unavailable");
+    this.name = "ProjectRuntimeCapabilityAdmissionError";
+  }
+}
+export function assertProjectRuntimeCapabilities(
+  required: readonly ProjectRuntimeCapability[],
+  available: readonly ProjectRuntimeCapability[],
+  profiles: readonly ProjectRuntimeImageProfile[],
+): void {
+  const missing = [...new Set(required)].filter(capability => !available.includes(capability));
+  if (missing.length === 0) return;
+  const eligibleProfiles = [...new Set(profiles
+    .filter(profile => required.every(capability => profile.capabilities.includes(capability)))
+    .map(profile => profile.id))].sort();
+  throw new ProjectRuntimeCapabilityAdmissionError(missing, eligibleProfiles);
 }
 export interface InstalledContainer {
   tenantId: string; spaceId: string; projectId?: string | undefined; userId?: string | undefined;
@@ -39,6 +65,8 @@ export interface ApprovedContainerImage {
   memoryMb: number; cpuCores: number;
   /** Static specialist deployments or versioned dynamic image selection. */
   schedulingPolicy: "default" | "durable_object"; networkPolicy: "none";
+  /** Optional owner-selectable Project image profile with capabilities verified from its Dockerfile. */
+  projectRuntime?: ProjectRuntimeImageProfile;
   /** Optional owner-reviewed marketplace card. TOOL_SANDBOX images must implement the
    *  Naelao sandbox harness protocol and are still pinned to this immutable digest. */
   marketplace?: { id: string; name: string; description: string; category: "media" | "compute" | "browser"; exportedBinaries: string[] };
@@ -55,6 +83,12 @@ export function validateContainerScope(scope: ContainerInvocationScope, now = Da
     || scope.workspaceManifestHash !== undefined && !/^[a-f0-9]{64}$/.test(scope.workspaceManifestHash)) throw new Error("container_workspace_head_invalid");
   if (scope.authorizationRevision !== undefined && !/^space:[1-9][0-9]{0,15}(?:\.project:[1-9][0-9]{0,15})?$/.test(scope.authorizationRevision))
     throw new Error("container_authorization_revision_invalid");
+  if (scope.requiredCapabilities !== undefined && (!scope.projectId || scope.installationId
+    || !Array.isArray(scope.requiredCapabilities) || scope.requiredCapabilities.length < 1
+    || scope.requiredCapabilities.length > PROJECT_RUNTIME_CAPABILITIES.length
+    || scope.requiredCapabilities.some(capability => !PROJECT_RUNTIME_CAPABILITIES.includes(capability))
+    || new Set(scope.requiredCapabilities).size !== scope.requiredCapabilities.length))
+    throw new Error("project_runtime_capability_requirements_invalid");
   if (scope.installationScope && !["SPACE_SHARED", "SPACE_ASSISTANT", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(scope.installationScope)) throw new Error("container_installation_scope_invalid");
   if (scope.installationScope && !scope.installationId) throw new Error("container_installation_required");
   if (scope.sharedFilesystemGrants !== undefined) {
@@ -80,7 +114,8 @@ export function parseApprovedContainerImages(json: string | undefined): Approved
   if (!json) return [];
   const value: unknown = JSON.parse(json);
   if (!Array.isArray(value) || value.length > 99) throw new Error("container_registry_invalid");
-  const pins = new Set<string>(), ids = new Set(["postgres-16", "redis-7", "chrome-headless", "ffmpeg", "blender-cli", "pytorch-gpu", "r-statistical", "libreoffice"]);
+  const pins = new Set<string>(), projectProfileIds = new Set<string>();
+  const ids = new Set(["postgres-16", "redis-7", "chrome-headless", "ffmpeg", "blender-cli", "pytorch-gpu", "r-statistical", "libreoffice"]);
   return value.map(item => {
     if (!item || typeof item !== "object" || !/^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(item.image)
       || !["DOCUMENT_SANDBOX", "MEDIA_SANDBOX", "TOOL_SANDBOX"].includes(item.binding)
@@ -88,6 +123,17 @@ export function parseApprovedContainerImages(json: string | undefined): Approved
       || (item.binding === "TOOL_SANDBOX" && item.schedulingPolicy !== "durable_object") || item.networkPolicy !== "none"
       || !Number.isFinite(item.cpuCores) || !Number.isSafeInteger(item.memoryMb) || pins.has(item.image))
       throw new Error("container_registry_invalid");
+    if (item.projectRuntime !== undefined) {
+      const profile = item.projectRuntime;
+      if (item.binding !== "TOOL_SANDBOX" || item.schedulingPolicy !== "durable_object" || !profile || typeof profile !== "object"
+        || Object.keys(profile).some(key => !["id", "capabilities"].includes(key))
+        || typeof profile.id !== "string" || !/^[a-z][a-z0-9-]{0,39}$/.test(profile.id)
+        || !Array.isArray(profile.capabilities) || profile.capabilities.length < 1 || profile.capabilities.length > PROJECT_RUNTIME_CAPABILITIES.length
+        || profile.capabilities.some((capability: unknown) => !PROJECT_RUNTIME_CAPABILITIES.includes(capability as ProjectRuntimeCapability))
+        || new Set(profile.capabilities).size !== profile.capabilities.length || projectProfileIds.has(profile.id))
+        throw new Error("container_project_runtime_profile_invalid");
+      projectProfileIds.add(profile.id);
+    }
     const size = DYNAMIC_PROFILES[selectDynamicProfile(item.cpuCores, item.memoryMb)];
     if (item.schedulingPolicy === "durable_object" && !CLOUDFLARE_IMAGE_PIN.test(item.image)) throw new Error("container_cloudflare_registry_required");
     if (item.schedulingPolicy === "default" && (item.memoryMb !== 4096 || item.cpuCores !== .5)) throw new Error("container_fixed_resource_mismatch");

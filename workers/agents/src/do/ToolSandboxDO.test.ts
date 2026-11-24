@@ -21,7 +21,7 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; sidecarExecutionSeconds?: number; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean; workspaceBranch?: string; workspaceRevision?: number; workspaceManifestHash?: string } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; sidecarExecutionSeconds?: number; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean; workspaceBranch?: string; workspaceRevision?: number; workspaceManifestHash?: string; requiredCapabilities?: string[] } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
@@ -210,6 +210,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       const scope = { tenantId: "tenant", spaceId: "space", ...(options.workspaceProject || options.sidecar ? { projectId: "project" } : {}), actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
         ...(options.workspaceBranch ? { workspaceBranch: options.workspaceBranch } : {}), ...(options.workspaceRevision !== undefined ? { workspaceRevision: options.workspaceRevision } : {}),
         ...(options.workspaceManifestHash ? { workspaceManifestHash: options.workspaceManifestHash } : {}),
+        ...(options.requiredCapabilities ? { requiredCapabilities: options.requiredCapabilities } : {}),
         ...(options.sidecar ? { projectId: "project", installationId: "install-a", containerId: "container-a", installationScope: "PROJECT_SHARED", image: "registry.example/tool@sha256:" + "a".repeat(64), dynamicImage: false } : {}),
         executionId: testExecutionId ?? crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) };
       headers.set("x-naelao-container-scope", JSON.stringify(scope));
@@ -232,6 +233,19 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(await response.json()).toMatchObject({ ok: false, error: "tenant_suspended" });
     expect(storage.get("container_meter")?.reservationId).toBe(reservationId);
     expect(mockContainer.start).toHaveBeenCalledTimes(starts);
+  });
+
+  it("denies unsupported capabilities on the legacy Project base before reservation or startup", async () => {
+    const { sandbox, mockContainer, storage, billingCalls } = await createTestSandbox({
+      workspaceProject: true, hangReservation: true, requiredCapabilities: ["media.audio_extract"],
+    });
+    const response = await sandbox.fetch(new Request("https://sandbox/build", { method: "POST", body: "{}" }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "project_runtime_capability_unavailable",
+      missing_capabilities: ["media.audio_extract"], eligible_profiles: [] });
+    expect(mockContainer.start).not.toHaveBeenCalled();
+    expect(billingCalls.filter(path => path.endsWith("/reserve"))).toHaveLength(0);
+    expect([...storage.keys()].some(key => String(key).startsWith("execution:"))).toBe(false);
   });
 
   it("blocks execution after project erasure and preserves the local barrier through a database restore", async () => {

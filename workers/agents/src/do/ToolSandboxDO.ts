@@ -42,7 +42,8 @@ import { readBoundedRequestBytes, readBoundedResponseText, RequestBodyTooLargeEr
 import { BILLING_CORE_RATE_CARD_VERSION, infraTimeToCredits } from "@naelao/billing-core";
 import { deriveKek, encryptAuthenticated } from "@naelao/crypto";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
-import { sidecarKey, validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
+import { assertProjectRuntimeCapabilities, ProjectRuntimeCapabilityAdmissionError, sidecarKey, validateContainerScope,
+  type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import { sandboxInstanceName, workspaceBranchScope } from "../script-engine/sandbox-routing.js";
 import type { InstallationScope } from "@naelao/agent-sdk";
 import type { Env } from "../env.js";
@@ -304,6 +305,13 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   protected async prepareAllocation(_scope: ContainerInvocationScope): Promise<void> {}
+  /** Validate host-selected image requirements before recording work or reserving resources. */
+  protected async validateAllocationRequest(scope: ContainerInvocationScope): Promise<void> {
+    if (this.workspaceRuntimeKind() !== "tool_sandbox" || !scope.projectId || scope.installationId || !scope.requiredCapabilities?.length) return;
+    // The legacy ToolSandbox base image also lacks media/PDF tools. Until an approved Project
+    // profile is selected, it must reject those operations before creating an execution receipt.
+    assertProjectRuntimeCapabilities(scope.requiredCapabilities, [], []);
+  }
   protected workspaceRuntimeKind(): "tool_sandbox" | "dynamic_sandbox" | "document_sandbox" | "media_sandbox" { return "tool_sandbox"; }
   protected async reserveCapacity(_scope: ContainerInvocationScope, _holder: string, _expiresAt: number): Promise<void> {}
   protected async releaseCapacity(): Promise<void> {}
@@ -774,6 +782,13 @@ export class ToolSandboxDO extends DurableObject {
     const mainWriter = this.isProjectMainRuntimeScope(scope, request);
     if (this.workspaceRuntimeKind() === "dynamic_sandbox" && scope.projectId && !scope.installationId && !mainWriter) {
       return Response.json({ ok: false, error: "project_main_runtime_identity_mismatch" }, { status: 409 });
+    }
+    try { await this.validateAllocationRequest(scope); }
+    catch (error) {
+      if (error instanceof ProjectRuntimeCapabilityAdmissionError) return Response.json({ ok: false,
+        error_code: "project_runtime_capability_unavailable", missing_capabilities: error.missingCapabilities,
+        eligible_profiles: error.eligibleProfiles }, { status: 409 });
+      return Response.json({ ok: false, error_code: "project_runtime_admission_unavailable" }, { status: 503 });
     }
     const body = await request.clone().text();
     const payloadHash = await hashWorkspaceContent(new URL(request.url).pathname + body);

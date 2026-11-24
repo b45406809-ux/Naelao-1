@@ -2,7 +2,8 @@ import { applyDurableObjectJurisdiction } from "@naelao/security";
 import { mintInternalToken, verifyInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { EntitlementsChecker } from "@naelao/entitlements";
 import { ToolSandboxDO, type ContainerRuntime } from "./ToolSandboxDO.js";
-import { parseApprovedContainerImages, type ContainerInvocationScope } from "../script-engine/container-policy.js";
+import { assertProjectRuntimeCapabilities, parseApprovedContainerImages, type ContainerInvocationScope,
+  type ProjectRuntimeCapability } from "../script-engine/container-policy.js";
 import { assertDynamicPlan, dynamicCreditsPerHour, dynamicPlanLimits, isDynamicProfile, selectDynamicProfile, type DynamicProfile } from "../script-engine/dynamic-containers.js";
 import { recordRuntimeSnapshotRetention, updateRuntimeSnapshotRetention, type RuntimeSnapshotRetentionRecord } from "../workspace/runtime-snapshot-retention.js";
 import { createPrivateStateBackup, privateStateBackupConfig, readPrivateStateBackup, readPrivateStateSelection,
@@ -67,6 +68,20 @@ export class DynamicSandboxDO extends ToolSandboxDO {
   }
   private selected: Selection | undefined;
   private get bindings(): DynamicBindings { return this.env as DynamicBindings; }
+
+  protected override async validateAllocationRequest(scope: ContainerInvocationScope): Promise<void> {
+    if (!scope.projectId || scope.installationId || !scope.requiredCapabilities?.length) return;
+    // Dockerfile.toolsandbox is the current Project base image. Its reviewed package list has no
+    // media decoder or PDF renderer; specialist binaries remain separate until an owner selects
+    // an approved Project image profile through the checked replacement flow.
+    const baseCapabilities: readonly ProjectRuntimeCapability[] = [];
+    const deployedImages = Object.values(this.container?.images ?? {});
+    const profiles = this.bindings.DYNAMIC_CONTAINERS_ENABLED === "true"
+      ? parseApprovedContainerImages(this.bindings.CONTAINER_IMAGE_REGISTRY)
+        .flatMap(pin => pin.projectRuntime && deployedImages.includes(pin.image) ? [pin.projectRuntime] : [])
+      : [];
+    assertProjectRuntimeCapabilities(scope.requiredCapabilities, baseCapabilities, profiles);
+  }
 
   protected override workspaceRuntimeKind(): "dynamic_sandbox" { return "dynamic_sandbox"; }
 

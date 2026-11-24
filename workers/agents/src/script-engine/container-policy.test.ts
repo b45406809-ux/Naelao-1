@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { containerRuntimeResourceKey, containerWorkerConcurrency, resolveContainerBinary, resolveContainerCapabilities, sidecarKey, validateContainerScope, type ContainerInvocationScope, type InstalledContainer } from "./container-policy.js";
+import { assertProjectRuntimeCapabilities, containerRuntimeResourceKey, containerWorkerConcurrency, parseApprovedContainerImages,
+  resolveContainerBinary, resolveContainerCapabilities, sidecarKey, validateContainerScope,
+  type ContainerInvocationScope, type InstalledContainer } from "./container-policy.js";
 
 const installation = (overrides: Partial<InstalledContainer> = {}): InstalledContainer => ({
   tenantId: "tenant", spaceId: "space", projectId: "project", installationId: "install-a", extensionId: "media_tools",
@@ -62,6 +64,31 @@ describe("container capability resolution", () => {
   it("rejects malformed requirements and leaves empty requirements unresolved", () => {
     expect(resolveContainerCapabilities([], [installation()], owner)).toBeUndefined();
     expect(() => resolveContainerCapabilities(["../escape"], [installation()], owner)).toThrow("container_capability_invalid");
+  });
+
+  it("validates host-selected Project capabilities and returns only complete approved profiles", () => {
+    const project: ContainerInvocationScope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "person",
+      agentId: "worker", runId: "run", executionId: "exec", requiredCapabilities: ["media.audio_extract"],
+      timeoutMs: 30_000, deadline: Date.now() + 30_000 };
+    expect(() => validateContainerScope(project)).not.toThrow();
+    expect(() => validateContainerScope({ ...project, requiredCapabilities: ["media.audio_extract", "media.audio_extract"] })).toThrow("project_runtime_capability_requirements_invalid");
+    expect(() => validateContainerScope({ ...project, requiredCapabilities: ["native-execution"] as never })).toThrow("project_runtime_capability_requirements_invalid");
+    const image = `registry.cloudflare.com/${"1".repeat(32)}/media-docs@sha256:${"a".repeat(64)}`;
+    const pins = parseApprovedContainerImages(JSON.stringify([{ image, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object",
+      networkPolicy: "none", cpuCores: .25, memoryMb: 1024,
+      projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract", "media.frame_extract", "document.pdf_render"] } }]));
+    expect(pins[0]?.projectRuntime).toEqual({ id: "media-documents", capabilities: ["media.audio_extract", "media.frame_extract", "document.pdf_render"] });
+    expect(() => parseApprovedContainerImages(JSON.stringify([{ image, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object",
+      networkPolicy: "none", cpuCores: .25, memoryMb: 1024, projectRuntime: { id: "bad", capabilities: ["shell.root"] } }]))).toThrow("container_project_runtime_profile_invalid");
+    expect(() => parseApprovedContainerImages(JSON.stringify([0, 1].map(index => ({ image: `registry.cloudflare.com/${"1".repeat(32)}/runtime-${index}@sha256:${String(index + 1).repeat(64)}`,
+      binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object", networkPolicy: "none", cpuCores: .25, memoryMb: 1024,
+      projectRuntime: { id: "duplicate-profile", capabilities: ["media.audio_extract"] } }))))).toThrow("container_project_runtime_profile_invalid");
+    let error: unknown;
+    try { assertProjectRuntimeCapabilities(["media.audio_extract", "document.pdf_render"], [], [
+      { id: "audio-only", capabilities: ["media.audio_extract"] },
+      { id: "media-documents", capabilities: ["media.audio_extract", "document.pdf_render"] },
+    ]); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ missingCapabilities: ["media.audio_extract", "document.pdf_render"], eligibleProfiles: ["media-documents"] });
   });
 
   it("accepts project-bound sidecar scope only when project identity is present", () => {

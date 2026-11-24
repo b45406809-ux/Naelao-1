@@ -52,6 +52,11 @@ time; the six-minute hold covers startup, executions and short warm windows.
    FFmpeg/LibreOffice installations can keep their image digest and logical MEDIA_SANDBOX or
    DOCUMENT_SANDBOX binding while changing the policy to durable_object; their namespace then
    resolves to DYNAMIC_SANDBOX. `default` entries keep using their legacy specialist binding.
+   A reviewed, owner-selectable Project image may also declare
+   `projectRuntime: { "id": "media-documents", "capabilities": ["media.audio_extract", "media.frame_extract", "document.pdf_render"] }`.
+   Declare only capabilities verified from that exact pinned image. This metadata makes a profile
+   eligible for host selection; it does not itself select the profile or migrate a specialist
+   caller.
 3. Run `node infra/scripts/prepare-dynamic-containers.mjs reviewed-registry.json staging`.
    The script updates staging's image map and registry variable together. It preserves rollout
    flags and all other environments. Review its diff before deployment. The limit is 99 reviewed

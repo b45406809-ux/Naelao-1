@@ -77,12 +77,23 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
     hydrates and stages its run branch; the shared Durable Object serializes Container/workspace
     routes. `ToolSandboxDO` tests pass 37/37; DynamicSandbox, routing and execution tests pass 68/68;
     Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
-  - [ ] **Active · SPR02.2 — Host-owned capability admission for Project images.** Inventory the
-    checked-in base/media/document images and approved dynamic image pins; add immutable,
-    host-owned capability declarations and resolve required capabilities before reserving billing
-    or capacity or starting a Container. A missing capability must return a structured error with
-    eligible configured profiles. Preserve size-only profile settings and installation image
-    policy until the owner-selected image/replacement slice is verified.
+  - [x] **SPR02.2 — Host-owned capability admission for Project images.** Approved dynamic
+    `TOOL_SANDBOX` pins can declare a unique Project profile ID and immutable capability list.
+    Authenticated operation requirements are checked against the current Project base image before
+    execution registration, writer reservation, billing/capacity admission or Container start. A
+    missing capability returns a structured error with only fully matching profile IDs present in
+    the deployed image map.
+    Current Project base image has no FFmpeg or PDF-render capabilities and no Project profile pin
+    is configured. DynamicSandbox and container-policy tests pass 55/55; `ToolSandboxDO` tests
+    pass 38/38; Agents typecheck and `git diff --check` pass. See the [SPR ledger](../research/single-project-tier-6-runtime-progress.md).
+  - [ ] **Active · SPR02.3 — Owner-selected Project image profile.** Extend the owner/admin
+    settings flow, currently size-only, to select one eligible image profile and size subject to
+    plan ceilings, declared capabilities and optimistic version fencing. Verify capability and
+    settings reads from trusted host state; leave the actual profile replacement to SPR02.4.
+  - [ ] **SPR02.4 — Checked image replacement and recovery.** Drain or safely cancel active work,
+    stop and confirm the prior allocation, claim a new physical generation, start the chosen pinned
+    image and restore authorized workspace data. Unknown stop/start outcomes must block a second
+    allocation until reconciliation; preserve the prior recoverable workspace and rollback fences.
 - [ ] **SPR03 — Migrate native tool callers.** Route video audio, video frame, PDF and extension
   native processing through the Project runtime while preserving isolation and operation limits.
 - [ ] **SPR04 — Retire direct specialist execution.** Stop new first-party specialist allocations
@@ -92,15 +103,19 @@ execution and erasure work. Reuse the managed-services ledger for overlapping ev
 - [ ] **Separate live acceptance.** Follow up when the replacement routes pass local checks
   and authorized Cloudflare lifecycle and erasure verification is available. Keep rollout gated.
 
-**Latest checkpoint:** SPR01 and SPR02.1 are verified in the SPR ledger. `sandboxInstanceName`
+**Latest checkpoint:** SPR01, SPR02.1 and SPR02.2 are verified in the SPR ledger. `sandboxInstanceName`
 routes every Project branch through one Container ID; race handoffs update the D1 active branch and
 fencing token without incrementing physical allocation generation. The shared Durable Object
 admits and serializes writers across race/worker branches and reuses the same capacity and billing
 reservation. `ToolSandboxDO` tests pass 37/37; DynamicSandbox, routing and execution tests pass
-68/68; Agents typecheck and `git diff --check` pass. Video/frame/PDF and extension sidecar routes
-plus their erasure registrations remain for SPR03/SPR04. **Next action:** map capabilities to the
-checked-in and approved Project images, then enforce capability admission before any compute or
-billing reservation; see SPR02.2.
+68/68; Agents typecheck and `git diff --check` pass. SPR02.2 adds host-owned Project capability
+metadata to approved image pins and rejects missing capabilities before work/resource admission;
+its DynamicSandbox and container-policy tests pass 55/55, while the legacy ToolSandbox suite passes
+38/38. The current base has no media/PDF tools
+and no Project profile is configured. Video/frame/PDF and extension sidecar routes plus their
+erasure registrations remain for SPR03/SPR04. **Next action:** extend owner/admin Project runtime
+settings from size-only to an eligible pinned image profile plus size, with plan and version checks;
+see SPR02.3. Live provider acceptance and deployment remain separate.
 
 ## Paused plan — Managed services and sidecar runtime
 

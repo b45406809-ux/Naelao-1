@@ -7,6 +7,7 @@ import { sidecarKey } from "../script-engine/container-policy.js";
 import { sandboxInstanceName, workspaceBranchScope } from "../script-engine/sandbox-routing.js";
 
 const image = `registry.cloudflare.com/${"1".repeat(32)}/tools@sha256:${"a".repeat(64)}`;
+const projectProfileImage = `registry.cloudflare.com/${"2".repeat(32)}/media-documents@sha256:${"b".repeat(64)}`;
 async function sha256(value: string): Promise<string> {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map(v => v.toString(16).padStart(2,"0")).join("");
 }
@@ -57,7 +58,7 @@ function capacityService() {
 }
 function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean;
   snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean; omitBudgetReservationReceipt?: boolean;
-  budgetProjectId?: string; recoveryStore?: boolean } = {}) {
+  budgetProjectId?: string; recoveryStore?: boolean; projectRuntime?: { id: string; capabilities: string[] }; projectRuntimeDeployed?: boolean } = {}) {
   const records = new Map<string, any>();
   const projectMainRegistry = new Map<string, { runtimeObjectName: string; allocationGeneration: number; allocationToken?: string;
     budgetReservationId?: string; fencingToken: number; activeBranch: string; state: string }>();
@@ -79,7 +80,8 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
   let workspaceErased = options.erased ?? false;
   let loseMainClaimAck = options.loseMainClaimAck ?? false;
   const transport = {
-    images: { base: image, tool: image }, get running() { return running; },
+    images: { base: image, tool: image,
+      ...(options.projectRuntime && options.projectRuntimeDeployed !== false ? { projectProfile: projectProfileImage } : {}) }, get running() { return running; },
     start: vi.fn((args: any) => { running = true; info = { image: args.containerSnapshot ? "" : args.image, labels: args.labels }; }),
     destroy: vi.fn(async () => { running = false; }),
     inspect: vi.fn(async () => running ? info : null),
@@ -173,8 +175,12 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
         return { meta: { changes: 1 } };
       },
     }) }) },
-    CONTAINER_IMAGE_REGISTRY: JSON.stringify([{ image, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object", networkPolicy: "none",
-      cpuCores: options.cpu ?? .0625, memoryMb: options.memory ?? 256 }]),
+    CONTAINER_IMAGE_REGISTRY: JSON.stringify([
+      { image, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object", networkPolicy: "none",
+        cpuCores: options.cpu ?? .0625, memoryMb: options.memory ?? 256 },
+      ...(options.projectRuntime ? [{ image: projectProfileImage, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object", networkPolicy: "none",
+        cpuCores: .25, memoryMb: 1024, projectRuntime: options.projectRuntime }] : []),
+    ]),
       ...(options.recoveryStore ? { SCRIPTS_R2: { put: async (key: string, value: string) => { recoveryObjects.set(key, value); },
         delete: async (key: string) => { recoveryObjects.delete(key); } } } : {}),
       BILLING_WORKER: { fetch: async (request: Request) => {
@@ -234,6 +240,39 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
 afterEach(() => vi.restoreAllMocks());
 
 describe("Cloudflare dynamic execution", () => {
+  it("denies a Project operation missing from the current image before recording or reserving work", async () => {
+    const r = runtime();
+    const response = await r.invoke("/build", { mainComputer: true, requiredCapabilities: ["media.audio_extract"] });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ ok: false, error_code: "project_runtime_capability_unavailable",
+      missing_capabilities: ["media.audio_extract"], eligible_profiles: [] });
+    expect(r.capacity.calls).toHaveLength(0);
+    expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(0);
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect([...r.records.keys()].some(key => key.startsWith("execution:"))).toBe(false);
+  });
+
+  it("reports only deployed approved image profiles that satisfy every requested Project capability", async () => {
+    const r = runtime({ projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract", "media.frame_extract", "document.pdf_render"] } });
+    const response = await r.invoke("/exec", { mainComputer: true, requiredCapabilities: ["media.audio_extract", "document.pdf_render"] });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "project_runtime_capability_unavailable",
+      missing_capabilities: ["media.audio_extract", "document.pdf_render"], eligible_profiles: ["media-documents"] });
+    expect(r.capacity.calls).toHaveLength(0);
+    expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(0);
+    expect(r.transport.start).not.toHaveBeenCalled();
+  });
+
+  it("does not advertise a Project profile absent from the deployed image map", async () => {
+    const r = runtime({ projectRuntime: { id: "media-documents", capabilities: ["media.audio_extract", "document.pdf_render"] }, projectRuntimeDeployed: false });
+    const response = await r.invoke("/exec", { mainComputer: true, requiredCapabilities: ["media.audio_extract"] });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "project_runtime_capability_unavailable", eligible_profiles: [] });
+    expect(r.capacity.calls).toHaveLength(0);
+    expect(r.billing.filter(v => v.path.endsWith("/reserve"))).toHaveLength(0);
+    expect(r.transport.start).not.toHaveBeenCalled();
+  });
+
   it("fails closed on private-state requests while the independent backup feature is unconfigured", async () => {
     const r = runtime();
     const response = await r.privateState({ tenantId: "tenant", action: "capture",

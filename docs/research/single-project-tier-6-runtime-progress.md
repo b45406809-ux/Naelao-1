@@ -90,6 +90,34 @@ dynamic-image pin format, add immutable host-owned capability metadata for Proje
 deny missing capabilities before capacity/billing reservation or Container start. Keep size
 profiles and extension installation image policy distinct in this slice.
 
+## SPR02.2 — Host-owned Project capability admission — 2026-11-24
+
+The current Project base image is `Dockerfile.toolsandbox`, which includes the Node/Python/Bash
+harness but not FFmpeg, Poppler or LibreOffice. FFmpeg is in `Dockerfile.media`; PDF render tools
+are in `Dockerfile.documents`. Those checked-in specialist images are not yet selectable Project
+profiles. Approved dynamic `TOOL_SANDBOX` pins may now carry a `projectRuntime` declaration with a
+unique profile ID and one or more known capabilities: `media.audio_extract`,
+`media.frame_extract`, or `document.pdf_render`. The pin remains digest- and deployment-map-gated;
+the declaration is host configuration that must be reviewed against the image Dockerfile and
+tool versions.
+
+Host-authenticated invocation scopes may request a bounded list of those capabilities. Dynamic
+Project admission checks them against the current base image and reports missing capabilities plus
+only the fully matching profile IDs present in the deployed image map. This check runs after tenant/erasure and
+runtime-identity checks, but before execution receipts, writer admission, billing/capacity
+reservation or Container startup. Space Assistant and installed extension scopes cannot attach
+Project capability requirements. The current local registry has no Project profile pin, so the
+media/PDF requirements correctly return an empty eligible-profile list. Owner profile selection
+and actual image replacement remain open.
+
+Local verification: DynamicSandbox and container-policy suites pass **55/55**; ToolSandbox suite
+passes **38/38**; Agents typecheck and `git diff --check` pass. These checks exercise local image
+and registry fixtures only; no image was built, published, deployed or inspected live.
+
+**Exact next action:** extend the owner/admin Project runtime settings from size-only to a selected
+eligible pinned image profile and size, with plan and expected-version checks; keep replacement
+work for SPR02.4.
+
 ## Acceptance boundaries
 
 The branch identity and main admission slice is implemented and locally verified. Project image

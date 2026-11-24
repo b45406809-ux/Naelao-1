@@ -10,14 +10,16 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**SPR02.2 — Host-owned capability admission for Project images.** Follow the
+**SPR02.3 — Owner-selected Project image profile.** Follow the
 [active queue entry](docs/operations/implementation-queue.md#active-plan--single-project-tier-6-runtime)
 and [SPR progress ledger](docs/research/single-project-tier-6-runtime-progress.md). Project branch
 IDs now share one Container and race branches participate in its generation, writer and snapshot
-rules. Inventory the checked-in images and approved image pins, define immutable host-owned
-capability metadata for Project images, and fail before capacity/billing reservation or container
-start when a requested capability is absent. Preserve owner-selected size profiles, installation
-image policy, and non-Project/external routing; add focused local admission tests.
+rules. Approved dynamic image pins can declare an immutable Project runtime profile and its
+capabilities, and missing capabilities are denied before execution registration, capacity/billing
+reservation, or startup. Extend the owner/admin settings flow, which currently stores only size, to
+select an eligible Project image profile and size under plan limits and version fencing. Preserve
+the checked replacement path as the following task, plus installation image policy and
+non-Project/external routing.
 
 ## Checkout and recovery
 
