@@ -425,6 +425,26 @@ async function providerKeyFor(env:AgentsEnv,identity:CommunicationIdentity,accou
   if(!account.credential_ciphertext||!account.credential_iv)throw new Error("agentmail_credential_unavailable");
   return String((await openCommunication(env,identity,account.id,{ciphertext:account.credential_ciphertext,iv:account.credential_iv,algorithm:"aes-256-gcm"})).apiKey??"");
 }
+async function assertAgentMailOperationAuthority(env:AgentsEnv,scope:CommunicationScope,account:AgentMailAccount,sendArgs?:Record<string,unknown>){
+  const current=await env.PLATFORM_DB.prepare(`SELECT a.status AS account_status,i.status AS identity_status,i.autonomy_json
+    FROM assistant_agentmail_accounts a JOIN assistant_communication_identities i ON i.id=a.assistant_identity_id
+      AND i.tenant_id=? AND i.space_id=? AND i.project_id IS ? AND i.owner_user_id=?
+    WHERE a.id=? AND a.tenant_id=? AND a.space_id=? AND a.project_id IS ? AND a.assistant_identity_id=?
+      AND a.owner_user_id=? AND a.status='active' AND i.status='active' LIMIT 1`)
+    .bind(scope.tenantId,scope.spaceId,scope.projectId??null,scope.userId,account.id,scope.tenantId,scope.spaceId,
+      scope.projectId??null,account.assistant_identity_id,scope.userId)
+    .first<{account_status:string;identity_status:string;autonomy_json:string}>();
+  if(!current)throw new Error("agentmail_account_not_connected");
+  if(sendArgs){
+    const policy=validateAutonomy(JSON.parse(current.autonomy_json));
+    if(policy.mode!=="standing")throw new Error("communication_approval_required");
+    const recipients=[...normalizeRecipients(sendArgs.to),...normalizeRecipients(sendArgs.cc),...normalizeRecipients(sendArgs.bcc)];
+    if(!recipients.length||recipients.some(recipient=>!policy.recipients.includes(recipient)))
+      throw new Error("communication_recipient_not_approved");
+    return policy;
+  }
+  return null;
+}
 type AgentMailUsagePoint={timestamp:string;value:number};
 function latestAgentMailUsagePoint(payload:Record<string,unknown>,name:string):AgentMailUsagePoint{
   const source=payload[name];
@@ -1015,6 +1035,8 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
   const authorization=await agentPort(env,scope.tenantId,`/accounts/${encodeURIComponent(account.agentport_account_id??"")}/actions/authorize`,"POST",
     {agentId,action:capability,idempotencyKey:authorizationId,resourceRef:providerResourceRef});
   if(authorization.result.decision!=="allow")throw new Error("agentmail_action_not_authorized");
+  const sendOperation=["agentmail.send","agentmail.reply","agentmail.reply_all","agentmail.forward"].includes(action);
+  const currentPolicy=await assertAgentMailOperationAuthority(env,scope,account,sendOperation?args:undefined);
   const endpoint=`/inboxes/${encodeURIComponent(account.inbox_id)}`;
   const methods:Record<string,{method:string;path:string;body?:unknown}>={
     "agentmail.inbox":{method:"GET",path:`${endpoint}/messages${buildQuery(args)}`},
@@ -1029,11 +1051,7 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
     "agentmail.forward":{method:"POST",path:`${endpoint}/messages/${encodeURIComponent(String(args.messageId??""))}/forward`,body:args},
   };
   const call=methods[action];if(!call)throw new Error("agentmail_operation_unsupported");
-  if(["agentmail.send","agentmail.reply","agentmail.reply_all","agentmail.forward"].includes(action)){
-    const policy=validateAutonomy(JSON.parse(identity.autonomy_json));
-    if(policy.mode!=="standing")throw new Error("communication_approval_required");
-    const recipients=[...normalizeRecipients(args.to),...normalizeRecipients(args.cc),...normalizeRecipients(args.bcc)];
-    if(!recipients.length||recipients.some(recipient=>!policy.recipients.includes(recipient)))throw new Error("communication_recipient_not_approved");
+  if(sendOperation){
     const idem=typeof args.idempotency_key==="string"?args.idempotency_key:"";
     if(!/^[A-Za-z0-9._:-]{1,200}$/.test(idem))throw new Error("agentmail_idempotency_key_required");
     const payload={...(call.body as Record<string,unknown>)};delete payload.idempotency_key;delete payload.messageId;
@@ -1043,12 +1061,13 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
     if(prior?.status==="sent")return {message_id:prior.provider_message_id,idempotent:true};
     if(prior)throw new Error("agentmail_delivery_reconciliation_required");
     const daily=await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS n FROM assistant_agentmail_sends WHERE connection_id=? AND status='sent' AND first_attempt_at>=date('now')").bind(account.id).first<{n:number}>();
-    if(!prior&&(daily?.n??0)>=policy.dailySendLimit)throw new Error("communication_daily_send_limit");
+    if(!prior&&(daily?.n??0)>=(currentPolicy?.dailySendLimit??0))throw new Error("communication_daily_send_limit");
     await env.PLATFORM_DB.prepare(`INSERT INTO assistant_agentmail_sends(connection_id,idempotency_hash,request_hash,status,first_attempt_at,updated_at) VALUES(?,?,?,'sending',?,?)
       ON CONFLICT(connection_id,idempotency_hash) DO UPDATE SET status='sending',updated_at=excluded.updated_at`).bind(account.id,idemHash,requestHash,at,at).run();
     try{
       const sent=await withTemporaryInboxKey(env,key,account.inbox_id,account.provider_region,"message_send",temporaryKey=>
-        provider(env,temporaryKey,call.path,{method:call.method,headers:{"Idempotency-Key":idem},body:JSON.stringify(payload)},account.provider_region));
+        assertAgentMailOperationAuthority(env,scope,account,args).then(()=>
+          provider(env,temporaryKey,call.path,{method:call.method,headers:{"Idempotency-Key":idem},body:JSON.stringify(payload)},account.provider_region)));
       await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='sent',provider_message_id=?,updated_at=? WHERE connection_id=? AND idempotency_hash=?")
         .bind(typeof sent.message_id==="string"?sent.message_id:null,new Date().toISOString(),account.id,idemHash).run();
       return sent;
@@ -1059,7 +1078,8 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
   }
   const permission=action==="agentmail.draft"?"draft_create":"message_read";
   return withTemporaryInboxKey(env,key,account.inbox_id,account.provider_region,permission,temporaryKey=>
-    provider(env,temporaryKey,call.path,{method:call.method,...(call.body===undefined?{}:{body:JSON.stringify(call.body)})},account.provider_region));
+    assertAgentMailOperationAuthority(env,scope,account).then(()=>
+      provider(env,temporaryKey,call.path,{method:call.method,...(call.body===undefined?{}:{body:JSON.stringify(call.body)})},account.provider_region)));
 }
 function buildQuery(args:Record<string,unknown>){const params=new URLSearchParams();for(const [key,value]of Object.entries(args))if(typeof value==="string"||typeof value==="number"||typeof value==="boolean")params.set(key,value.toString());const query=params.toString();return query?`?${query}`:"";}
 async function hashString(value:string){const bytes=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value)));return [...bytes].map(x=>x.toString(16).padStart(2,"0")).join("");}

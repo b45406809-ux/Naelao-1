@@ -233,3 +233,32 @@ implemented and tested; live provider semantics are separately tracked in CB06 a
 cross-tenant isolation, expired/revoked grants, malicious inputs and parameter substitution, stale
 policy, duplicate/unknown dispatch, callback replay, credential leakage/log redaction, and
 revocation races. Implement and verify the first independent local gap.
+
+## CB06 — Recheck current authority before dispatch (2026-11-25)
+
+`callAgentMailTool` previously read the AgentMail account and communication policy before awaiting
+AgentPort action authorization, then dispatched using the earlier identity snapshot. A standing
+send policy could therefore become approval-required during authorization/key creation and still
+be used for dispatch. The operation now re-reads the account/identity join under the exact tenant,
+Space, Project, owner and identity scope after AgentPort authorization, and checks active state.
+For send operations it validates the current autonomy mode and recipient allowlist. It repeats that
+check after temporary-key creation, immediately before the provider request, so a key created while
+the policy changes is deleted without dispatch. The daily send cap uses the freshly read policy.
+
+A regression changes the policy to approval-required during temporary-key creation. The operation
+returns `communication_approval_required`, deletes the temporary key, makes no provider send, and
+leaves the receipt fenced as indeterminate. The existing standing-policy send, recipient, daily
+limit and replay controls remain green. Verification: `agentmail.test.ts` plus
+`erasure-product-scope.test.ts` **26/26**, Agents typecheck and `git diff --check` pass. Local
+fixtures only; no provider request was made.
+
+This local recheck narrows the race but cannot make AgentPort grant revocation atomic with a remote
+AgentMail dispatch. AgentPort action authorization returns a decision/receipt, not a one-shot permit
+that the provider must consume. Full cross-system revocation linearization remains an explicit
+design/provider integration limit; live acceptance cannot establish atomicity by itself.
+
+**Exact next action:** continue CB06 with the remaining source/fixture audit for cross-tenant
+scope, expired/revoked grants, malicious tool arguments and parameter substitution, duplicate or
+unknown dispatch, callback replay, and credential leakage/log redaction. Implement any independent
+local gap; record the atomic revocation requirement as a design blocker if no enforceable local
+boundary exists.

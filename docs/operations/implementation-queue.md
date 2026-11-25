@@ -1150,19 +1150,28 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   erasure tests pass 25/25, Agents typecheck and `git diff --check` pass. AgentMail's published
   contract describes `Idempotency-Key` replay, but live behavior is tracked separately under provider
   acceptance and no live request was made. See the CB ledger.
+- [x] **CB06 local control slice — current policy before dispatch.** AgentMail rechecks the
+  account/identity state and current standing autonomy/recipient policy after AgentPort action
+  authorization and again after temporary-key creation, immediately before provider dispatch. A
+  fixture changes autonomy to approval-required during key creation; dispatch is denied and the key
+  is deleted. AgentMail plus scoped erasure tests pass 26/26, Agents typecheck and diff hygiene
+  pass. AgentPort does not provide a permit atomic with remote provider dispatch, so this narrows
+  but does not eliminate the cross-system revocation race; see the CB ledger.
 - [ ] **CB06 provider/live acceptance.** With separately authorized disposable AgentMail credentials,
   verify temporary-key expiry/revocation, provider idempotency, regional support, billing and
   callback/revocation behavior. Keep deployment separate and gated by its own authorization.
 
-**Latest checkpoint:** CB06's indeterminate-send slice is locally verified: replay after a simulated
-provider timeout returns 409 and does not mint a second temporary key or dispatch a second send.
-AgentMail plus scoped-erasure tests pass 25/25; Agents typecheck and diff hygiene pass. AgentMail's
-published `Idempotency-Key` documentation promises replay of a completed send, but no live behavior
-has been accepted. CB04 temporary-key expiry/revocation, region, parent permission and billing
-acceptance also remain open. **Exact next action:** review each remaining CB06 local control
-(cross-tenant, grant expiry/revocation, malicious input and parameter substitution, stale policy,
-duplicate/unknown dispatch, callback replay, leakage/log redaction, and revocation race) against the
-existing implementation and fixtures; implement and verify the first independently ready gap.
+**Latest checkpoint:** CB06 now fences replay after an indeterminate send and rechecks account,
+identity and current send policy after authorization and temporary-key creation before dispatch.
+The timeout replay and policy-change race regressions pass; AgentMail plus scoped-erasure tests pass
+26/26, Agents typecheck and diff hygiene pass. AgentMail's published `Idempotency-Key` documentation
+promises replay of a completed send, but no live behavior has been accepted. CB04 temporary-key
+expiry/revocation, region, parent permission and billing acceptance also remain open. AgentPort has
+no atomic grant permit spanning provider dispatch, leaving a residual cross-system revocation race.
+**Exact next action:** audit the remaining CB06 local controls (cross-tenant scope, expired/revoked
+grants, malicious tool input/parameter substitution, duplicate or unknown dispatch, callback
+replay, and credential leakage/log redaction) against source and fixtures; implement and verify the
+first independent local gap, and record non-local dependencies precisely.
 
 ## Ordered plan list
 

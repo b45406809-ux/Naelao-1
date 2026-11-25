@@ -256,6 +256,44 @@ describe("AgentMail provider account boundary",()=>{
     expect(await replay.json()).toMatchObject({error_code:"agentmail_delivery_reconciliation_required"});
     expect({keyCreates,keyDeletes,sendCalls}).toEqual({keyCreates:1,keyDeletes:1,sendCalls:1});
   });
+  it("rechecks send policy after temporary-key creation before provider dispatch",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,agentport_account_id,
+      owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'user','naelao_managed','inbox-policy-race','race@example.test','active',datetime('now'),datetime('now'))`)
+      .bind("mail-policy-race","tenant","space",identity.id,agentId,"account-policy-race").run();
+    await f.db.prepare("UPDATE assistant_communication_identities SET autonomy_json=? WHERE id=?")
+      .bind(JSON.stringify({mode:"standing",recipients:["allowed@example.test"],dailySendLimit:3}),identity.id).run();
+    (f.env as unknown as {AGENTMAIL_API_KEY:string}).AGENTMAIL_API_KEY="provider-key-policy-race-test";
+    let keyDeletes=0,sendCalls=0;
+    const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const request=new Request(input,init),url=new URL(request.url);
+      if(url.pathname.endsWith("/api-keys")&&request.method==="POST"){
+        await f.db.prepare("UPDATE assistant_communication_identities SET autonomy_json=? WHERE id=?")
+          .bind(JSON.stringify({mode:"approve",recipients:["allowed@example.test"],dailySendLimit:3}),identity.id).run();
+        const body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        return Response.json({api_key_id:"api_key_policy_race",api_key:"temporary-policy-race-key-123456",inbox_id:"inbox-policy-race",
+          expires_at:body.expires_at,permissions:body.permissions});
+      }
+      if(url.pathname.endsWith("/api-keys/api_key_policy_race")&&request.method==="DELETE"){
+        keyDeletes++;return new Response(null,{status:204});
+      }
+      if(url.pathname.endsWith("/messages/send")){sendCalls++;return Response.json({message_id:"unexpected-send"});}
+      return Response.json({});
+    });
+    vi.stubGlobal("fetch",providerFetch);
+    const app=new Hono<{Bindings:AgentsEnv}>();registerCommunicationRoutes(app);
+    const headers={"content-type":"application/json","x-naelao-tenant-id":scope.tenantId,"x-naelao-user-id":scope.userId,
+      "x-naelao-role":scope.role,"x-naelao-internal-token":await mintInternalToken("secret",scope.tenantId)};
+    const response=await app.request("/internal/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.send",
+        args:{to:"allowed@example.test",subject:"Policy changed",text:"Hello",idempotency_key:"policy-race-send"}})},f.env);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({error_code:"communication_approval_required"});
+    expect({keyDeletes,sendCalls}).toEqual({keyDeletes:1,sendCalls:0});
+    expect(await f.db.prepare("SELECT status FROM assistant_agentmail_sends WHERE connection_id='mail-policy-race'").first())
+      .toEqual({status:"indeterminate"});
+  });
   it("revokes and scrubs scoped AgentMail credentials before erasing the assistant identity",async()=>{
     const f=fixture(),identity=await ensureIdentity(f.env,scope);
     vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL)=>{
