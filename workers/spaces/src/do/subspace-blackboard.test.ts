@@ -13,6 +13,9 @@ describe("SpaceDO directed subspace blackboard", () => {
     storage.sql.exec("INSERT INTO spaces(id,parent_id,name,space_type,tenancy_mode,depth,status,settings,created_at) VALUES(?,?,'Sales','launchpad','team',1,'active','{}',?),(?,?,'Research','launchpad','team',1,'active','{}',?),(?,?,'Other','launchpad','team',1,'active','{}',?)",
       "dept-a", "root", now, "dept-b", "root", now, "other-dept", "other-root", now);
     storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('root','root-owner','owner'),('dept-a','sales-editor','editor'),('dept-b','research-member','member'),('dept-b','research-viewer','viewer')");
+    storage.sql.exec(`INSERT INTO space_assistants(space_id,assistant_actor_id,parent_assistant_actor_id,hierarchy_role)
+      VALUES('root','assistant:space:root',NULL,'DIRECTOR'),('dept-a','assistant:space:dept-a','assistant:space:root','DEPARTMENT_LEAD'),
+      ('dept-b','assistant:space:dept-b','assistant:space:root','DEPARTMENT_LEAD')`);
     return { space, storage };
   }
 
@@ -81,6 +84,33 @@ describe("SpaceDO directed subspace blackboard", () => {
     const revoked = await space.fetch(new Request("https://space/subspace-blackboard/routes/route-sales-research/revoke?root_space_id=root&actor_id=root-owner", { method: "POST" }));
     expect(revoked.status).toBe(200);
     const afterRevoke = await space.fetch(new Request("https://space/sub-spaces/dept-b/blackboard?root_space_id=root&actor_id=research-member&route_id=route-sales-research"));
+    expect(afterRevoke.status).toBe(404);
+  });
+
+  it("binds assistant reads and publishes to the exact active subspace assistant identity", async () => {
+    const { space } = await fixture();
+    const route = await space.fetch(new Request("https://space/subspace-blackboard/routes?root_space_id=root&actor_id=root-owner", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "route-assistant", source_subspace_id: "dept-a", target_subspace_id: "dept-b", allowed_kinds: ["question", "completion"], allow_reply: true }),
+    }));
+    expect(route.status).toBe(201);
+    const read = await space.fetch(new Request("https://space/sub-spaces/dept-a/blackboard?root_space_id=root&actor_id=assistant:space:dept-a&route_id=route-assistant"));
+    expect(read.status).toBe(200);
+    const wrongIdentity = await space.fetch(new Request("https://space/sub-spaces/dept-a/blackboard?root_space_id=root&actor_id=assistant:space:dept-b&route_id=route-assistant"));
+    expect(wrongIdentity.status).toBe(404);
+    const publish = await space.fetch(new Request("https://space/sub-spaces/dept-a/blackboard?root_space_id=root&actor_id=assistant:space:dept-a", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ route_id: "route-assistant", id: "assistant-question", kind: "question", text: "Please verify this" }),
+    }));
+    expect(publish.status).toBe(201);
+    const reply = await space.fetch(new Request("https://space/sub-spaces/dept-b/blackboard?root_space_id=root&actor_id=assistant:space:dept-b", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ route_id: "route-assistant", id: "assistant-reply", kind: "completion", text: "Verified", reply_to: "assistant-question" }),
+    }));
+    expect(reply.status).toBe(201);
+    const revoked = await space.fetch(new Request("https://space/subspace-blackboard/routes/route-assistant/revoke?root_space_id=root&actor_id=root-owner", { method: "POST" }));
+    expect(revoked.status).toBe(200);
+    const afterRevoke = await space.fetch(new Request("https://space/sub-spaces/dept-a/blackboard?root_space_id=root&actor_id=assistant:space:dept-a&route_id=route-assistant"));
     expect(afterRevoke.status).toBe(404);
   });
 });

@@ -62,6 +62,7 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
       "project-coordination",
       "project-journal",
       "space-blackboard",
+      "subspace-blackboard",
       "space-coordination",
       "task-blackboard",
       "tasks",

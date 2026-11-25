@@ -2,10 +2,11 @@
 
 ## Current task
 
-Subspace Blackboard Coordination, SBB03.2: add internal assistant read/publish operations bound
-to the exact current `space_assistants.assistant_actor_id`; assistants may use active routes but
-cannot create or revoke grants. SBB03.1 owner route controls, SBB02 directed handoff and SBB01
-source audit are locally verified and recorded in the plan. See [the active queue entry](docs/operations/implementation-queue.md#active-plan--subspace-blackboard-coordination).
+Subspace Blackboard Coordination, SBB03.3: inspect signed-template activation/review and resolve
+symbolic subspace roles into inactive, owner-reviewable route proposals; template data must never
+create grants. SBB03.2 exact assistant identity reads/publishes, SBB03.1 owner controls, SBB02
+directed handoff and SBB01 source audit are locally verified and recorded in the plan. See [the
+active queue entry](docs/operations/implementation-queue.md#active-plan--subspace-blackboard-coordination).
 
 ## Start or resume
 

@@ -8337,6 +8337,44 @@ app.post("/spaces/:spaceId/sub-spaces/:subId/blackboard", async (c) => {
   }));
 });
 
+// Assistant calls are internal-only. SpaceDO checks this actor against the immutable
+// assistant_actor_id stored for this exact active subspace before reading or writing.
+app.get("/internal/spaces/:spaceId/sub-spaces/:subId/blackboard", async (c) => {
+  const { spaceId, subId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const actorId = c.req.header("x-naelao-agent-id") ?? "";
+  const routeId = c.req.query("route_id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "forbidden" }, 403);
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(subId)
+      || !/^assistant:space:[A-Za-z0-9._:-]{1,160}$/.test(actorId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(routeId))
+    return c.json({ error_code: "board_unavailable" }, 404);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: actorId, route_id: routeId });
+  return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard?${query}`, "GET");
+});
+
+app.post("/internal/spaces/:spaceId/sub-spaces/:subId/blackboard", async (c) => {
+  const { spaceId, subId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const actorId = c.req.header("x-naelao-agent-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "forbidden" }, 403);
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(subId)
+      || !/^assistant:space:[A-Za-z0-9._:-]{1,160}$/.test(actorId)) return c.json({ error_code: "board_unavailable" }, 404);
+  let body: { route_id?: unknown; id?: unknown; kind?: unknown; text?: unknown; reply_to?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8192)); }
+  catch { return c.json({ error_code: "invalid_message" }, 400); }
+  if (!body || typeof body.route_id !== "string" || typeof body.id !== "string"
+      || typeof body.kind !== "string" || typeof body.text !== "string") return c.json({ error_code: "invalid_message" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: actorId });
+  return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard?${query}`, "POST", JSON.stringify({
+    route_id: body.route_id, id: body.id, kind: body.kind, text: body.text,
+    ...(typeof body.reply_to === "string" ? { reply_to: body.reply_to } : {}),
+  }));
+});
+
 app.post("/spaces/:spaceId/projects/:projectId/promote", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const identity = getCallerIdentity(c);

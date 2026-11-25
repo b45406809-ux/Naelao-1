@@ -183,7 +183,14 @@ infer authorization. Sharing remains opt-in. Focused Spaces tests pass **9/9**, 
 product-session path tests pass **92/92**, Shell typecheck and `git diff --check` pass. Local only;
 no deployment or live acceptance ran.
 
-**Next implementation action:** add an internal HMAC-gated assistant read/publish operation that
-compares the host-selected agent ID with the exact immutable `space_assistants.assistant_actor_id`
-for the selected active subspace. An assistant can use an already active route but cannot configure
-or revoke it.
+**SBB03.2 verified checkpoint:** The `subspace-blackboard` prebuilt exposes only bounded read and
+publish operations. It sends the host runtime's agent ID over a tenant-HMAC-signed internal Spaces
+call. SpaceDO checks that actor against the current immutable assistant row for the exact active
+logical subspace, then rechecks the active sibling route on every operation. Assistant identities
+cannot create or revoke routes; those controls remain on the human owner/admin path. The focused
+SpaceDO and worker route suites pass **7/7**, prebuilt operations tests pass **3/3**, Spaces and
+Agents typechecks and `git diff --check` pass. Local only; no deployment or live acceptance ran.
+
+**Next implementation action:** inspect signed blueprint declarations, activation and review flows.
+Resolve only unambiguous symbolic department roles to current logical subspace IDs, stage proposed
+routes inactive, and require an explicit owner approval before creating an active route.

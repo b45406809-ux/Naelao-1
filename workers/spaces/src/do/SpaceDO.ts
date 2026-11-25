@@ -14685,6 +14685,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return role !== null && ["owner", "admin", "editor", "member"].includes(role);
   }
 
+  /** Assistant actors are immutable SpaceDO identities, not human membership rows. */
+  private isSubspaceBlackboardAssistant(rootId: string, subspaceId: string, actorId: string): boolean {
+    if (!/^assistant:space:[A-Za-z0-9._:-]{1,160}$/.test(actorId)) return false;
+    const hierarchy = queryOne<{ parent_id: string | null; depth: number; status: string }>(this.ctx.storage.sql as never,
+      "SELECT parent_id,depth,status FROM spaces WHERE id=?", subspaceId);
+    if (!hierarchy || hierarchy.status !== "active" || hierarchy.depth !== 1 || hierarchy.parent_id !== rootId) return false;
+    const parent = queryOne<{ parent_id: string | null; depth: number; status: string }>(this.ctx.storage.sql as never,
+      "SELECT parent_id,depth,status FROM spaces WHERE id=?", rootId);
+    if (!parent || parent.status !== "active" || parent.depth !== 0 || parent.parent_id !== null) return false;
+    return queryOne<{ assistant_actor_id: string }>(this.ctx.storage.sql as never,
+      `SELECT a.assistant_actor_id FROM space_assistants a
+       JOIN spaces s ON s.id=a.space_id WHERE a.space_id=? AND s.status='active'`, subspaceId)?.assistant_actor_id === actorId;
+  }
+
   private readSubspaceBlackboardRoute(routeId: string): SubspaceBlackboardRoute | null {
     const row = queryOne<{ id: string; source_subspace_id: string; target_subspace_id: string;
       allowed_kinds_json: string; allow_reply: number; status: "active" | "revoked" }>(this.ctx.storage.sql as never,
@@ -14766,7 +14780,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const route = this.readSubspaceBlackboardRoute(routeId);
     if (!route || route.status !== "active" || !this.subspaceBlackboardRows(rootId, route.sourceSubspaceId, route.targetSubspaceId)
         || (subspaceId !== route.sourceSubspaceId && subspaceId !== route.targetSubspaceId)
-        || !this.canReadSubspaceBlackboard(rootId, subspaceId, actorId))
+        || (!this.canReadSubspaceBlackboard(rootId, subspaceId, actorId)
+          && !this.isSubspaceBlackboardAssistant(rootId, subspaceId, actorId)))
       return Response.json({ error_code: "board_unavailable" }, { status: 404 });
     const rows = queryAll<SubspaceBlackboardMessage>(this.ctx.storage.sql as never,
       `SELECT id,route_id AS routeId,source_subspace_id AS sourceSubspaceId,target_subspace_id AS targetSubspaceId,
@@ -14783,8 +14798,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(actorId)) return Response.json({ error_code: "invalid_message" }, { status: 400 });
     const route = this.readSubspaceBlackboardRoute(body.route_id);
     if (!route || route.status !== "active" || !this.subspaceBlackboardRows(rootId, route.sourceSubspaceId, route.targetSubspaceId)
-        || !this.canReadSubspaceBlackboard(rootId, senderSubspaceId, actorId)
-        || !this.canWriteSubspaceBlackboard(rootId, senderSubspaceId, actorId))
+        || (!this.canReadSubspaceBlackboard(rootId, senderSubspaceId, actorId)
+          && !this.isSubspaceBlackboardAssistant(rootId, senderSubspaceId, actorId))
+        || (!this.canWriteSubspaceBlackboard(rootId, senderSubspaceId, actorId)
+          && !this.isSubspaceBlackboardAssistant(rootId, senderSubspaceId, actorId)))
       return Response.json({ error_code: "board_unavailable" }, { status: 404 });
     const rows = queryAll<SubspaceBlackboardMessage>(this.ctx.storage.sql as never,
       `SELECT id,route_id AS routeId,source_subspace_id AS sourceSubspaceId,target_subspace_id AS targetSubspaceId,

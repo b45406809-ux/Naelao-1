@@ -71,4 +71,31 @@ describe("subspace blackboard routes", () => {
     expect(new URL(request.url).searchParams.get("subspace_id")).toBe("dept-a");
     expect(new URL(request.url).searchParams.get("actor_id")).toBe("authenticated-owner");
   });
+
+  it("requires an internal token for assistant calls and forwards only the host actor identity", async () => {
+    const { env, forwarded, secret } = environment();
+    const base = "https://spaces.test/internal/spaces/root/sub-spaces/dept-a/blackboard";
+    const denied = await spacesWorker.fetch(new Request(`${base}?route_id=route-1`, {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-agent-id": "assistant:space:dept-a" },
+    }), env);
+    expect(denied.status).toBe(403);
+    expect(forwarded).toHaveLength(0);
+
+    const token = await mintInternalToken(secret, "tenant-a");
+    const response = await spacesWorker.fetch(new Request(`${base}?route_id=route-1`, {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-agent-id": "assistant:space:dept-a", "x-naelao-internal-token": token },
+    }), env);
+    expect(response.status).toBe(200);
+    const read = forwarded[0]!;
+    expect(new URL(read.url).searchParams.get("actor_id")).toBe("assistant:space:dept-a");
+
+    const publish = await spacesWorker.fetch(new Request(base, {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a",
+        "x-naelao-agent-id": "assistant:space:dept-a", "x-naelao-internal-token": token },
+      body: JSON.stringify({ route_id: "route-1", id: "msg-1", kind: "question", text: "Please check" }),
+    }), env);
+    expect(publish.status).toBe(200);
+    expect(new URL(forwarded[1]!.url).searchParams.get("actor_id")).toBe("assistant:space:dept-a");
+    expect(await forwarded[1]!.json()).toMatchObject({ id: "msg-1", route_id: "route-1" });
+  });
 });
