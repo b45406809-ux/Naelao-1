@@ -2,7 +2,7 @@
 
 ## Current task
 
-Master implementation spec, **MS-03**: Shell message resource links. Follow
+Master implementation spec, **MS-04**: Blueprint schema: symbolic subspace roles and route proposals. Follow
 [the spec](docs/operations/master-implementation-spec.md); it lists the decided contracts (D1–D7),
 files, tests and done criteria for MS-03 to MS-12. Keep this pointer and `CLAUDE.md` in sync
 (`cp AGENTS.md CLAUDE.md`).

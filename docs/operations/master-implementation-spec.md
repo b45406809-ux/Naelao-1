@@ -174,7 +174,9 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** the full `naelao-spaces` suite passes (rule 5), plus typecheck.
 - **Landed:** commit recorded in git log (`feat: MS-02 ...`); new resolver test 12/12, existing subspace-blackboard suites and migrations test green (38 across 4 files); Spaces typecheck clean; full Spaces suite 742 pass / 5 pre-existing failures (project-extension-agent-maintenance, executive-contacts, gadget-mcp-crud x2, project-extension-lifecycle). Deviation: the recipient subspace is not in the request, so the DO derives it from the message target and checks reader/assistant there; the worker then re-checks `authorizeDepartmentMember` (user) or the exact assistant id against the returned grantee. `/cross-space-audit` now also accepts action `read_via_message`.
 
-### - [ ] MS-03 — Shell: show and open message resource links
+### - [x] MS-03 — Shell: show and open message resource links
+
+- **Result:** `openSubspaceResource` added to `api.ts`; department page shows Open document on received linked messages (read-only panel, fixed error text) and "Linked document" on sent ones. Shell typecheck: no new errors (baseline unchanged).
 
 - **Queue:** item 19. **Model:** Haiku. **Depends on:** MS-02.
 - **Start here:** `apps/shell/src/app/p/[slug]/spaces/[spaceId]/departments/[departmentId]/page.tsx`

@@ -12,6 +12,7 @@ import {
   listDepartments,
   listSubspaceBlackboardMessages,
   listSubspaceBlackboardRoutes,
+  openSubspaceResource,
   publishSubspaceBlackboardBroadcast,
   publishSubspaceBlackboardMessage,
   revokeSubspaceBlackboardRoute,
@@ -19,6 +20,7 @@ import {
   type Project,
   type SubspaceBlackboardMessage,
   type SubspaceBlackboardRoute,
+  type SubspaceResourceDocument,
 } from "@/lib/api";
 
 export default function DepartmentProjectsPage() {
@@ -36,6 +38,7 @@ export default function DepartmentProjectsPage() {
   const [replyToByRoute, setReplyToByRoute] = React.useState<Record<string, string>>({});
   const [broadcastRouteIds, setBroadcastRouteIds] = React.useState<string[]>([]);
   const [broadcastDraft, setBroadcastDraft] = React.useState("");
+  const [resourceByMessage, setResourceByMessage] = React.useState<Record<string, { loading: boolean; document?: SubspaceResourceDocument; error?: string }>>({});
   const [boardBusy, setBoardBusy] = React.useState(false);
   const [boardNotice, setBoardNotice] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -123,6 +126,17 @@ export default function DepartmentProjectsPage() {
       setBoardNotice(reason instanceof Error ? reason.message : "Could not revoke the route.");
     } finally {
       setBoardBusy(false);
+    }
+  };
+
+  const openBoardResource = async (route: SubspaceBlackboardRoute, message: SubspaceBlackboardMessage) => {
+    if (!creds) return;
+    setResourceByMessage((current) => ({ ...current, [message.id]: { loading: true } }));
+    try {
+      const document = await openSubspaceResource(params.spaceId, route.route_id, message.id, creds);
+      setResourceByMessage((current) => ({ ...current, [message.id]: { loading: false, document } }));
+    } catch {
+      setResourceByMessage((current) => ({ ...current, [message.id]: { loading: false, error: "You don't have access to this document. Ask its owner to share it with your department." } }));
     }
   };
 
@@ -271,6 +285,20 @@ export default function DepartmentProjectsPage() {
                         <li key={message.id}>
                           <div style={{ color: "var(--text3)", fontSize: 12 }}>{message.kind} · {message.senderSubspaceId === route.source_subspace_id ? source : target} · {new Date(message.createdAt).toLocaleString()}</div>
                           <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{message.text}</div>
+                          {message.resource_ref && (message.senderSubspaceId === department.id ? (
+                            <div style={{ color: "var(--text3)", fontSize: 12, marginTop: 6 }}>Linked document</div>
+                          ) : (
+                            <div style={{ marginTop: 6 }}>
+                              <button type="button" disabled={resourceByMessage[message.id]?.loading} onClick={() => void openBoardResource(route, message)}>Open document</button>
+                              {resourceByMessage[message.id]?.error && <p style={{ color: "var(--text2)", margin: "6px 0 0" }}>{resourceByMessage[message.id]?.error}</p>}
+                              {resourceByMessage[message.id]?.document && (
+                                <section aria-label="Linked document" className="card" style={{ marginTop: 8 }}>
+                                  <strong>{resourceByMessage[message.id]?.document?.title}</strong>
+                                  <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "8px 0 0" }}>{resourceByMessage[message.id]?.document?.content}</pre>
+                                </section>
+                              )}
+                            </div>
+                          ))}
                           {route.allow_reply && !isSource && ["question", "blocker"].includes(message.kind) && !repliedTo.has(message.id) && (
                             <button type="button" style={{ marginTop: 6 }} onClick={() => setReplyToByRoute((current) => ({ ...current, [route.route_id]: message.id }))}>Reply</button>
                           )}

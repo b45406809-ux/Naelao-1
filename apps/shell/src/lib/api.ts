@@ -1384,6 +1384,14 @@ export interface SubspaceBlackboardMessage {
   text: string;
   createdAt: string;
   replyTo?: string;
+  resource_ref?: { type: "knowledge_document"; target_space_id: string; document_id: string };
+}
+
+export interface SubspaceResourceDocument {
+  id: string;
+  title: string;
+  source_url: string | null;
+  content: string;
 }
 
 export async function listSubspaceBlackboardRoutes(spaceId: string, departmentId: string, session: SessionCredentials): Promise<SubspaceBlackboardRoute[]> {
@@ -1414,6 +1422,14 @@ export async function listSubspaceBlackboardMessages(spaceId: string, department
     { session, cache: "no-store" },
   );
   return result.messages;
+}
+
+export async function openSubspaceResource(spaceId: string, routeId: string, messageId: string, session: SessionCredentials): Promise<SubspaceResourceDocument> {
+  const result = await apiFetch<{ document: SubspaceResourceDocument }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/subspace-blackboard/resource?route_id=${encodeURIComponent(routeId)}&message_id=${encodeURIComponent(messageId)}`,
+    { session, cache: "no-store" },
+  );
+  return result.document;
 }
 
 export async function publishSubspaceBlackboardMessage(spaceId: string, departmentId: string, input: {
