@@ -10559,6 +10559,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       try {
         this.ctx.storage.transactionSync(() => {
           execute(sql, "UPDATE projects SET status = ? WHERE id = ?", body.status, projectId);
+          // MS-22: reopening a deleted Project cancels its pending memory purge, so a later plain
+          // archive cannot inherit an old deletion tombstone. A new delete writes a fresh one.
+          if (body.status === "active") execute(sql, "DELETE FROM project_deletion_tombstones WHERE project_id = ? AND memory_purged_at IS NULL", projectId);
           if (body.status !== "archived" || existing.status === "archived") return;
           const proposals = queryAll<{ proposal_id: string; draft_json: string; revision: number }>(sql,
             "SELECT proposal_id,draft_json,revision FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=? AND project_id=? AND status IN ('pending','approved')",

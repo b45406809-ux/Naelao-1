@@ -48,6 +48,18 @@ describe("project memory retention", () => {
     expect(count("live")).toBe(3);
   });
 
+  it("reopening a deleted Project cancels its purge, so a later plain archive keeps memory", async () => {
+    const { space, addProject, count, storage } = await setup("true");
+    addProject("reopened", "archived", daysAgo(60));
+    const patch = (status: string) => space.fetch(new Request("http://space/projects/reopened?tenant_id=t", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status }) }));
+    expect((await patch("active")).status).toBe(200);
+    expect(storage.sql.exec("SELECT COUNT(*) AS n FROM project_deletion_tombstones WHERE project_id='reopened'").toArray()[0]).toEqual({ n: 0 });
+    expect((await patch("archived")).status).toBe(200);
+    await space.alarm();
+    expect(count("reopened")).toBe(3);
+  });
+
   it("flag off (unset or not exactly true) removes nothing", async () => {
     for (const flag of [undefined, "false", "TRUE", "1"]) {
       const { space, addProject, count } = await setup(flag);
