@@ -1157,6 +1157,10 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   is deleted. AgentMail plus scoped erasure tests pass 26/26, Agents typecheck and diff hygiene
   pass. AgentPort does not provide a permit atomic with remote provider dispatch, so this narrows
   but does not eliminate the cross-system revocation race; see the CB ledger.
+- [x] **CB06 local control slice — AgentPort callback replay.** The signed AgentMail event fixture
+  now replays an already queued delivery and verifies the endpoint acknowledges with 204 without
+  a second session-queue send or AgentPort claim. The focused callback integration test passes; it
+  runs within the AgentMail suite recorded above. This is local fixture evidence only.
 - [ ] **CB06 provider/live acceptance.** With separately authorized disposable AgentMail credentials,
   verify temporary-key expiry/revocation, provider idempotency, regional support, billing and
   callback/revocation behavior. Keep deployment separate and gated by its own authorization.
@@ -1170,8 +1174,8 @@ expiry/revocation, region, parent permission and billing acceptance also remain 
 no atomic grant permit spanning provider dispatch, leaving a residual cross-system revocation race.
 **Exact next action:** audit the remaining CB06 local controls (cross-tenant scope, expired/revoked
 grants, malicious tool input/parameter substitution, duplicate or unknown dispatch, callback
-replay, and credential leakage/log redaction) against source and fixtures; implement and verify the
-first independent local gap, and record non-local dependencies precisely.
+and credential leakage/log redaction) against source and fixtures; implement and verify the first
+independent local gap, and record non-local dependencies precisely.
 
 ## Ordered plan list
 

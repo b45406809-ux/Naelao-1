@@ -635,6 +635,10 @@ describe("AgentMail provider account boundary",()=>{
     expect(eventResponse.status).toBe(204);
     expect(f.env.CHANNEL_SESSIONS?.send).toHaveBeenCalledWith(expect.objectContaining({type:"provider_event_reference",deliveryId:"delivery-1",threadRef:"provider-thread-1",dataRef:"provider-message-1"}));
     expect(await f.db.prepare("SELECT status FROM assistant_agentport_event_receipts WHERE delivery_id='delivery-1'").first<{status:string}>()).toMatchObject({status:"queued"});
+    const replayedEvent=await receiveAgentPortNotification(f.env,connected.connectionId,new Request("https://api.example.test/event",{method:"POST",headers:{"x-agentport-timestamp":timestamp,"x-agentport-signature":signature},body:raw}));
+    expect(replayedEvent.status).toBe(204);
+    expect(f.env.CHANNEL_SESSIONS?.send).toHaveBeenCalledTimes(1);
+    expect(f.env.AGENTPORT_WORKER.fetch.mock.calls.filter(([request])=>new URL((request as Request).url).pathname.endsWith("/claim"))).toHaveLength(1);
     const ownerLink=await f.db.prepare("SELECT id FROM managed_service_owner_links WHERE owner_type='user' AND owner_id='user' AND status='active'").first<{id:string}>();
     const revoked=await revokeAgentPortOwnerLink(f.env,scope,ownerLink!.id);
     expect(revoked).toMatchObject({revoked:true,accountCount:1});

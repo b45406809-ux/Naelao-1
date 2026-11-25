@@ -259,6 +259,22 @@ design/provider integration limit; live acceptance cannot establish atomicity by
 
 **Exact next action:** continue CB06 with the remaining source/fixture audit for cross-tenant
 scope, expired/revoked grants, malicious tool arguments and parameter substitution, duplicate or
-unknown dispatch, callback replay, and credential leakage/log redaction. Implement any independent
-local gap; record the atomic revocation requirement as a design blocker if no enforceable local
-boundary exists.
+unknown dispatch, and credential leakage/log redaction. Implement any independent local gap;
+record the atomic revocation requirement as a design blocker if no enforceable local boundary exists.
+
+## CB06 — AgentPort event callback replay (2026-11-25)
+
+The existing AgentMail signed-event fixture covered a first callback through signature validation,
+durable receipt insertion, AgentPort claim, session queue delivery and AgentPort acknowledgement.
+It now sends the identical signed callback again after the receipt reaches `queued`. The retry is
+acknowledged with 204 and assertions confirm it neither claims the event again nor sends another
+session-queue message. The route's existing receipt hash check still rejects reuse of a delivery ID
+with changed event content. Verification: focused `agentmail.test.ts` callback integration case
+passes; the full focused AgentMail/erasure suites previously passed 26/26, with Agents typecheck
+and diff hygiene passing at the preceding code checkpoint. Local fixture only; no live callback
+was sent.
+
+**Exact next action:** continue CB06's audit with cross-tenant scope and expired/revoked grant
+coverage at the AgentMail-to-AgentPort boundary, then malicious arguments/parameter substitution,
+duplicate or unknown dispatch, and credential leakage/log redaction. Verify or add the narrowest
+local regression for the first gap.
