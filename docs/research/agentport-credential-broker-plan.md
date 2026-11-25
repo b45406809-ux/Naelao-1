@@ -27,6 +27,9 @@ The completed **CB01 source and threat-model audit** is recorded in the
 current host-held AgentMail path and the next local CB02 integration slice; it does not claim
 provider-minted credentials or live provider acceptance.
 
+The locally verified **CB02 scoped AgentMail host path** and its focused route evidence are recorded
+in that same ledger. The separate CB03 credential lifecycle review remains open.
+
 ## Trust and credential model
 
 Separate these records and responsibilities:

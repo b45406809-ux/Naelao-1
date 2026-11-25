@@ -122,18 +122,77 @@ describe("AgentMail provider account boundary",()=>{
     const app=new Hono<{Bindings:AgentsEnv}>();registerCommunicationRoutes(app);
     const headers={"content-type":"application/json","x-naelao-tenant-id":scope.tenantId,"x-naelao-user-id":scope.userId,
       "x-naelao-role":scope.role,"x-naelao-internal-token":await mintInternalToken("secret",scope.tenantId)};
-    const response=await app.request("/spaces/space/assistant-communications",{method:"POST",headers,
-      body:JSON.stringify({action:"agentmail-operation",operation:"agentmail.inbox",connection_id:"mail-a",args:{limit:10}})},f.env);
+    const response=await app.request("/internal/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.inbox",connection_id:"mail-a",args:{limit:10}})},f.env);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({result:{messages:[{message_id:"message-a"}]}});
     expect(new URL(String(providerFetch.mock.calls[0]?.[0])).pathname).toBe("/v0/inboxes/inbox-a/messages");
-    const denied=await app.request("/spaces/space/assistant-communications",{method:"POST",headers,
-      body:JSON.stringify({action:"agentmail-operation",operation:"agentmail.inbox",connection_id:"mail-foreign",args:{limit:10}})},f.env);
+    const denied=await app.request("/internal/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.inbox",connection_id:"mail-foreign",args:{limit:10}})},f.env);
     expect(denied.status).toBe(502);
     expect(await denied.json()).toMatchObject({error_code:"agentmail_account_not_connected"});
     expect(providerFetch).toHaveBeenCalledOnce();
     expect((await getAssistantAgentMailStatus(f.env,scope)).connections.map((connection)=>connection.address))
       .not.toContain("private@example.test");
+  });
+  it("keeps internal assistant AgentMail operations behind the current AgentPort grant",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,agentport_account_id,
+      owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'user','naelao_managed','inbox-denied','denied@example.test','active',datetime('now'),datetime('now'))`)
+      .bind("mail-denied", "tenant", "space", identity.id, agentId, "account-denied").run();
+    (f.env as unknown as {AGENTMAIL_API_KEY:string}).AGENTMAIL_API_KEY="provider-key-for-test";
+    const providerFetch=vi.fn(async()=>Response.json({messages:[]}));
+    vi.stubGlobal("fetch",providerFetch);
+    f.env.AGENTPORT_WORKER.fetch=vi.fn(async()=>Response.json({decision:"deny",error_code:"permission_denied"}));
+    const app=new Hono<{Bindings:AgentsEnv}>();registerCommunicationRoutes(app);
+    const headers={"content-type":"application/json","x-naelao-tenant-id":scope.tenantId,"x-naelao-user-id":scope.userId,
+      "x-naelao-role":scope.role,"x-naelao-internal-token":await mintInternalToken("secret",scope.tenantId)};
+    const response=await app.request("/internal/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.inbox",args:{limit:5}})},f.env);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({error_code:"agentmail_action_not_authorized"});
+    expect(providerFetch).not.toHaveBeenCalled();
+  });
+  it("preserves send autonomy, recipient and idempotency controls on the internal assistant path",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,agentport_account_id,
+      owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'user','naelao_managed','inbox-send','send@example.test','active',datetime('now'),datetime('now'))`)
+      .bind("mail-send", "tenant", "space", identity.id, agentId, "account-send").run();
+    await f.db.prepare("UPDATE assistant_communication_identities SET autonomy_json=? WHERE id=?")
+      .bind(JSON.stringify({mode:"standing",recipients:["allowed@example.test"],dailySendLimit:1}),identity.id).run();
+    (f.env as unknown as {AGENTMAIL_API_KEY:string}).AGENTMAIL_API_KEY="provider-key-for-test";
+    const providerFetch=vi.fn(async(_input:RequestInfo|URL,init?:RequestInit)=>{
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer provider-key-for-test");
+      return Response.json({message_id:"provider-message-1"});
+    });
+    vi.stubGlobal("fetch",providerFetch);
+    const app=new Hono<{Bindings:AgentsEnv}>();registerCommunicationRoutes(app);
+    const headers={"content-type":"application/json","x-naelao-tenant-id":scope.tenantId,"x-naelao-user-id":scope.userId,
+      "x-naelao-role":scope.role,"x-naelao-internal-token":await mintInternalToken("secret",scope.tenantId)};
+    const request=(to:string,idempotency_key:string)=>app.request("/internal/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.send",
+        args:{to,subject:"Approved",text:"Hello",idempotency_key}})},f.env);
+    const sent=await request("allowed@example.test","send-1");
+    expect(sent.status).toBe(200);
+    expect(await sent.json()).toEqual({result:{message_id:"provider-message-1"}});
+    const replay=await request("allowed@example.test","send-1");
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({result:{message_id:"provider-message-1",idempotent:true}});
+    expect(providerFetch).toHaveBeenCalledOnce();
+    const recipientDenied=await request("other@example.test","send-2");
+    expect(recipientDenied.status).toBe(403);
+    expect(await recipientDenied.json()).toMatchObject({error_code:"communication_recipient_not_approved"});
+    const limitDenied=await request("allowed@example.test","send-3");
+    expect(limitDenied.status).toBe(429);
+    expect(await limitDenied.json()).toMatchObject({error_code:"communication_daily_send_limit"});
+    await f.db.prepare("UPDATE assistant_communication_identities SET autonomy_json=? WHERE id=?")
+      .bind(JSON.stringify({mode:"approve",recipients:["allowed@example.test"],dailySendLimit:1}),identity.id).run();
+    const approvalDenied=await request("allowed@example.test","send-4");
+    expect(approvalDenied.status).toBe(409);
+    expect(await approvalDenied.json()).toMatchObject({error_code:"communication_approval_required"});
+    expect(providerFetch).toHaveBeenCalledOnce();
   });
   it("accepts an owner-selected AgentMail API region and persists it before later provider calls",async()=>{
     const f=fixture();

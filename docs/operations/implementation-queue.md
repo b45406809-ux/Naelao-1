@@ -1083,17 +1083,24 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   identifies the internal assistant AgentMail operation gate as the next local slice. AgentPort
   route/core tests pass 20/20; AgentMail tests pass 17/17; MCP gate/revocation tests pass 10/10; provider
   SDK tests pass 2/2. Local source/fixture evidence only; no provider action, deployment or live claim.
-- [ ] **CB02 — Scoped host execution path for AgentMail operations.** Permit the existing internal
-  `assistant-mail` tool caller through the agent operation allowlist while retaining current scope,
-  identity owner, active account, AgentPort grant, autonomy, recipient, daily-limit and idempotency
-  checks. Prove allowed owner execution and denied cross-scope/revoked cases through the internal
-  route. Do not expose provider credentials or add provider-token minting.
+- [x] **CB02 — Scoped host execution path for AgentMail operations.** The internal assistant route
+  now admits only `agentmail-operation`; existing current-scope, owner identity/account, AgentPort
+  grant, autonomy, recipient, daily-limit and idempotency checks still run. Internal route tests prove
+  owner account access and foreign-account/grant denials; send tests cover allowed recipient,
+  standing autonomy, daily limit and no duplicate provider call on replay. The daily-limit error now
+  maps to 429. AgentMail tests pass 19/19, Agents typecheck and `git diff --check` pass. See the CB
+  ledger; no provider action or live acceptance was run.
+- [ ] **CB03 — Local credential lifecycle and leakage review.** Trace the AgentMail credential
+  encryption/key derivation, reconnection/rotation, unlink and tenant/user erasure callers. Verify
+  locally testable secret deletion and no credential in result/log/SDK paths, then record exact
+  upstream provider deletion/rotation dependencies. Do not claim upstream purge.
 
-**Latest checkpoint:** Fast-forwarded to `46e73106` and completed CB01's current-source/threat-model
-audit. Findings and exact caller paths are in the CB ledger. Four focused suites pass 49/49; exact
-next action: update the internal `handle()` agent action allowlist and add route regressions for the
-scoped AgentMail assistant operation, then run the AgentMail and Agents route tests and typecheck.
-No live provider behavior was exercised.
+**Latest checkpoint:** Fast-forwarded to `46e73106`; CB01 source/threat-model audit is pushed in
+`31bbcd10` with four focused suites passing 49/49. CB02 adds the scoped internal AgentMail route,
+preserves existing owner/grant/policy checks, and maps the daily limit to 429. AgentMail tests pass
+19/19, Agents typecheck and `git diff --check` pass; no live provider behavior was exercised. **Exact
+next action:** audit CB03 credential rotation, unlink and erasure paths, then add local verification
+for the current host-held credential lifecycle and leakage boundaries.
 
 ## Ordered plan list
 

@@ -25,11 +25,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**CB02 — Add the scoped host execution path for AgentMail operations.** Resume from the active
+**CB03 — Verify AgentMail credential lifecycle and leakage boundaries.** Resume from the active
 checklist in [implementation-queue.md](docs/operations/implementation-queue.md#active-plan--agentport-credential-broker).
-Permit only the internal assistant tool operation through the agent path while retaining current
-tenant/Space/Project access, owner identity, account scope, AgentPort grant, autonomy, recipient,
-daily-limit and idempotency checks. Add local route regressions before selecting another slice.
+Trace encryption/key derivation, reconnection/rotation, unlink and tenant/user erasure. Add local
+verification for secret deletion and result/log/SDK leakage boundaries; keep upstream provider
+deletion/rotation claims blocked on provider evidence.
 
 ## Save progress inside each task
 

@@ -217,6 +217,9 @@ async function handle(c: C, agent: boolean) {
       "verification-cancel",
       "higgsfield-estimate",
       "higgsfield-submit",
+      // The prebuilt assistant-mail tool enters through this authenticated internal route.
+      // Its handler still enforces owner identity, scoped account, AgentPort grant and send policy.
+      "agentmail-operation",
     ].includes(action)
   )
     return c.json({ error_code: "human_control_required" }, 403);
@@ -434,7 +437,7 @@ async function handle(c: C, agent: boolean) {
       return c.json({error_code:"agentmail_action_unsupported"},400);
     } catch(error) {
       const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentmail_unavailable";
-      return c.json({error_code:code},code.includes("not_configured")?503:code.includes("not_found")?404:code.includes("not_authorized")||code.includes("recipient_not_approved")?403:code.includes("approval_required")||code.includes("capability")||code.includes("region_not_verified")||code.includes("region_unsupported")||code.includes("revoked")||code.includes("changed")||code.includes("quote")||code.includes("price")?409:code.includes("invalid")?400:502);
+      return c.json({error_code:code},code.includes("not_configured")?503:code.includes("not_found")?404:code.includes("not_authorized")||code.includes("recipient_not_approved")?403:code.includes("daily_send_limit")?429:code.includes("approval_required")||code.includes("capability")||code.includes("region_not_verified")||code.includes("region_unsupported")||code.includes("revoked")||code.includes("changed")||code.includes("quote")||code.includes("price")?409:code.includes("invalid")?400:502);
     }
   }
   if(action.startsWith("higgsfield-")) {

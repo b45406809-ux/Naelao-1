@@ -48,3 +48,27 @@ or provider API/terms acceptance was exercised.
 assistant-agent route, then prove owner-scoped success and cross-scope, revoked-grant, disallowed
 recipient and non-standing-autonomy denial at the route boundary. Preserve AgentMail's encrypted
 host credential and send idempotency path; do not expose a key or add a generic HTTP proxy.
+
+## CB02 — Scoped AgentMail host execution path (2026-11-25)
+
+The internal assistant-agent route now permits only the existing `agentmail-operation` action in
+addition to its previous allowlist. The route continues through current Space/Project access,
+`manageIdentity`, owner-scoped account selection, AgentPort grant/capability admission, and the
+existing AgentMail owner autonomy, recipient and durable send-idempotency checks. No provider key or
+credential reference is returned to the tool caller. The public owner route behavior and generic
+AgentPort/MCP provider-action contracts are unchanged.
+
+A focused internal-route fixture proves inbox reads are limited to the selected owner's account and
+a denied AgentPort grant prevents provider dispatch. Send fixtures prove an explicitly standing
+owner policy can send only to its approved recipient, replays reuse the saved provider result without
+a second call, other recipients and non-standing policies are denied, and the daily cap blocks a
+second send. The tests exposed that `communication_daily_send_limit` was reported as an upstream
+502; the route now maps this policy result to 429 without changing admission. Verification:
+`agentmail.test.ts` **19/19**, Agents typecheck and `git diff --check` pass. This is local fixture
+evidence; no provider was called.
+
+**Exact next action:** continue CB03 with a local lifecycle audit of AgentMail credential encryption,
+key rotation/reconnection, account unlink and tenant/user erasure callers. Add tests for locally
+verifiable deletion/rotation and leakage boundaries. Record upstream inbox/key deletion and any
+unsupported rotation semantics as provider acceptance dependencies; do not claim provider-side
+erasure.
