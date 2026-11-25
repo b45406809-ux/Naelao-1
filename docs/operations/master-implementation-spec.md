@@ -31,7 +31,7 @@ first unchecked one unless told otherwise. The **Model** line says which model s
      path is under `.next/types`.
 4. **DO SQLite:** `?` placeholders only. Never run `PRAGMA` or `BEGIN/COMMIT` inside a Durable
    Object. Add new SpaceDO migrations by appending the next `version` to the `MIGRATIONS` array in
-   `workers/spaces/src/do/SpaceDO.ts` (the current last version is **160**). Update
+   `workers/spaces/src/do/SpaceDO.ts` (the current last version is **162**). Update
    `workers/spaces/src/do/SpaceDO-migrations.test.ts` if it asserts the latest version.
 5. **Hono routes in `workers/spaces/src/index.ts`:** do **not** add a route of the shape
    `/:dynamic/.../static-suffix` under an existing dynamic segment; it has repeatedly corrupted
@@ -221,7 +221,9 @@ safe defaults. The owner can override any of them; until then, implement exactly
   - a legacy blueprint without these fields still instantiates.
 - **Done:** agent-sdk tests and typecheck pass.
 
-### - [ ] MS-05 — Activation: map roles to subspaces and store pending route proposals
+### - [x] MS-05 — Activation: map roles to subspaces and store pending route proposals
+
+- **Result:** landed in the MS-05 commit (see git log); naelao-spaces full suite 751/756 pass (new: 6 SpaceDO proposal tests, 2 activation tests, 1 route test; the 5 failures are the pre-existing ones), typecheck clean, migration 162.
 
 - **Queue:** item 19, SBB03.3. **Model:** Sonnet. **Decision:** D3. **Depends on:** MS-04.
 - **Start here:**

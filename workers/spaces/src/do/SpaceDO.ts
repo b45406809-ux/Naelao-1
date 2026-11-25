@@ -3570,7 +3570,26 @@ const MIGRATIONS: Migration[] = [
     version: 161,
     description: "store optional knowledge-document resource references on subspace blackboard messages and broadcasts",
     up: `ALTER TABLE subspace_blackboard_messages ADD COLUMN resource_ref_json TEXT;
-      ALTER TABLE subspace_blackboard_broadcasts ADD COLUMN resource_ref_json TEXT;`,
+        ALTER TABLE subspace_blackboard_broadcasts ADD COLUMN resource_ref_json TEXT;`,
+  },
+  {
+    version: 162,
+    description: "store pending subspace route proposals created by blueprint activation; they never create active routes",
+    up: `CREATE TABLE subspace_route_proposals (
+        id TEXT PRIMARY KEY,
+        blueprint_id TEXT NOT NULL,
+        source_subspace_id TEXT NOT NULL,
+        target_subspace_id TEXT NOT NULL,
+        allowed_kinds_json TEXT NOT NULL,
+        allow_reply INTEGER NOT NULL CHECK(allow_reply IN (0,1)),
+        status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN ('proposed','approved','dismissed')),
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        decided_by TEXT,
+        decided_at TEXT,
+        UNIQUE(blueprint_id,source_subspace_id,target_subspace_id)
+      );
+      CREATE INDEX idx_subspace_route_proposals_status ON subspace_route_proposals(status,created_at);`,
   },
 ];
 
@@ -6976,6 +6995,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const subspaceBlackboardRevokeMatch = url.pathname.match(/^\/subspace-blackboard\/routes\/([^/]+)\/revoke$/);
       if (method === "POST" && subspaceBlackboardRevokeMatch?.[1]) {
         return this.revokeSubspaceBlackboardRoute(decodeURIComponent(subspaceBlackboardRevokeMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
+      }
+      if (method === "GET" && url.pathname === "/subspace-role-bindings/options") {
+        return this.listSubspaceRoleBindingOptions(url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
+      }
+      if (method === "POST" && url.pathname === "/subspace-role-bindings/validate") {
+        return this.validateSubspaceRoleBindings(request, url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
+      }
+      if (method === "POST" && url.pathname === "/subspace-route-proposals/store") {
+        return this.storeSubspaceRouteProposals(request, url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
+      }
+      if (method === "GET" && url.pathname === "/subspace-route-proposals") {
+        return this.listSubspaceRouteProposals(url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
+      }
+      if (method === "POST" && url.pathname === "/subspace-route-proposals/decide") {
+        return this.decideSubspaceRouteProposal(request, url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
       }
       if (method === "GET" && url.pathname === "/subspace-blackboard/resource-authorize") {
         return this.authorizeSubspaceBlackboardResource(url.searchParams, url.searchParams.get("resource_links") === "true");
@@ -14824,6 +14858,120 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       "UPDATE subspace_blackboard_routes SET status='revoked',route_revision=route_revision+1,updated_at=? WHERE id=? AND status='active'",
       new Date().toISOString(), routeId);
     return Response.json({ route_id: routeId, status: "revoked" });
+  }
+
+  /** Active direct child subspaces of the root that the actor currently manages (mapping options). */
+  private manageableSubspaces(rootId: string, actorId: string): Array<{ id: string; name: string }> {
+    if (!rootId || !actorId) return [];
+    const rows = queryAll<{ id: string; name: string }>(this.ctx.storage.sql as never,
+      "SELECT id,name FROM spaces WHERE parent_id=? AND depth=1 AND status='active' ORDER BY name,id LIMIT 200", rootId);
+    return rows.filter(row => this.canManageSubspaceBlackboard(rootId, row.id, actorId));
+  }
+
+  private listSubspaceRoleBindingOptions(rootId: string, actorId: string): Response {
+    return Response.json({ subspaces: this.manageableSubspaces(rootId, actorId) });
+  }
+
+  /** Every bound subspace must be a current child of the root that the actor can manage. */
+  private async validateSubspaceRoleBindings(request: Request, rootId: string, actorId: string): Promise<Response> {
+    const invalid = () => Response.json({ error_code: "invalid_subspace_role_binding" }, { status: 400 });
+    let body: { bindings?: unknown };
+    try { body = JSON.parse(await readBoundedRequestText(request, 65536)); } catch { return invalid(); }
+    const bindings = body?.bindings;
+    if (!bindings || typeof bindings !== "object" || Array.isArray(bindings)) return invalid();
+    const manageable = new Set(this.manageableSubspaces(rootId, actorId).map(row => row.id));
+    for (const subspaceId of Object.values(bindings as Record<string, unknown>))
+      if (typeof subspaceId !== "string" || !manageable.has(subspaceId)) return invalid();
+    return Response.json({ ok: true });
+  }
+
+  /** Inserts PENDING proposals only. This path must never write subspace_blackboard_routes. */
+  private async storeSubspaceRouteProposals(request: Request, rootId: string, actorId: string): Promise<Response> {
+    let body: { blueprint_id?: unknown; proposals?: unknown };
+    try { body = JSON.parse(await readBoundedRequestText(request, 65536)); } catch { return Response.json({ error_code: "invalid_proposal" }, { status: 400 }); }
+    const allowedKinds = ["finding", "artifact", "question", "blocker", "risk", "completion", "verification"];
+    if (!body || typeof body.blueprint_id !== "string" || !body.blueprint_id || !Array.isArray(body.proposals) || body.proposals.length > 20 || !actorId)
+      return Response.json({ error_code: "invalid_proposal" }, { status: 400 });
+    const manageable = new Set(this.manageableSubspaces(rootId, actorId).map(row => row.id));
+    const now = new Date().toISOString();
+    let created = 0, existing = 0;
+    for (const item of body.proposals as Array<Record<string, unknown>>) {
+      if (!item || typeof item.source_subspace_id !== "string" || typeof item.target_subspace_id !== "string"
+          || item.source_subspace_id === item.target_subspace_id || !Array.isArray(item.allowed_kinds) || !item.allowed_kinds.length
+          || item.allowed_kinds.some(kind => typeof kind !== "string" || !allowedKinds.includes(kind)) || typeof item.allow_reply !== "boolean"
+          || !manageable.has(item.source_subspace_id) || !manageable.has(item.target_subspace_id))
+        return Response.json({ error_code: "invalid_subspace_role_binding" }, { status: 400 });
+      const found = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+        "SELECT id FROM subspace_route_proposals WHERE blueprint_id=? AND source_subspace_id=? AND target_subspace_id=?",
+        body.blueprint_id, item.source_subspace_id, item.target_subspace_id);
+      if (found) { existing++; continue; }
+      execute(this.ctx.storage.sql as never,
+        `INSERT INTO subspace_route_proposals(id,blueprint_id,source_subspace_id,target_subspace_id,allowed_kinds_json,allow_reply,status,created_by,created_at)
+         VALUES(?,?,?,?,?,?,'proposed',?,?)`, `srp_${crypto.randomUUID()}`, body.blueprint_id, item.source_subspace_id, item.target_subspace_id,
+        JSON.stringify(item.allowed_kinds), Number(item.allow_reply), actorId, now);
+      created++;
+    }
+    return Response.json({ created, existing });
+  }
+
+  private readSubspaceRouteProposal(id: string) {
+    return queryOne<{ id: string; blueprint_id: string; source_subspace_id: string; target_subspace_id: string;
+      allowed_kinds_json: string; allow_reply: number; status: string; created_by: string; created_at: string }>(this.ctx.storage.sql as never,
+      `SELECT id,blueprint_id,source_subspace_id,target_subspace_id,allowed_kinds_json,allow_reply,status,created_by,created_at
+       FROM subspace_route_proposals WHERE id=?`, id);
+  }
+
+  private listSubspaceRouteProposals(rootId: string, actorId: string): Response {
+    const names = new Map(this.manageableSubspaces(rootId, actorId).map(row => [row.id, row.name]));
+    const rows = queryAll<{ id: string; blueprint_id: string; source_subspace_id: string; target_subspace_id: string;
+      allowed_kinds_json: string; allow_reply: number; status: string; created_at: string }>(this.ctx.storage.sql as never,
+      `SELECT id,blueprint_id,source_subspace_id,target_subspace_id,allowed_kinds_json,allow_reply,status,created_at
+       FROM subspace_route_proposals WHERE status='proposed' ORDER BY created_at,id LIMIT 200`);
+    const proposals = rows.filter(row => names.has(row.source_subspace_id) && names.has(row.target_subspace_id)).flatMap(row => {
+      try {
+        const kinds: unknown = JSON.parse(row.allowed_kinds_json);
+        if (!Array.isArray(kinds)) return [];
+        return [{ id: row.id, blueprint_id: row.blueprint_id, source_subspace_id: row.source_subspace_id,
+          source_subspace_name: names.get(row.source_subspace_id) ?? "", target_subspace_id: row.target_subspace_id,
+          target_subspace_name: names.get(row.target_subspace_id) ?? "", allowed_kinds: kinds as string[],
+          allow_reply: row.allow_reply === 1, status: row.status, created_at: row.created_at }];
+      } catch { return []; }
+    });
+    return Response.json({ proposals });
+  }
+
+  /** One decision per proposal. Approval re-checks manage on both subspaces and reuses createSubspaceBlackboardRoute. */
+  private async decideSubspaceRouteProposal(request: Request, rootId: string, actorId: string): Promise<Response> {
+    const unavailable = () => Response.json({ error_code: "proposal_unavailable" }, { status: 404 });
+    let body: { id?: unknown; decision?: unknown; route_id?: unknown };
+    try { body = JSON.parse(await readBoundedRequestText(request, 8192)); } catch { return Response.json({ error_code: "invalid_decision" }, { status: 400 }); }
+    if (!body || typeof body.id !== "string" || (body.decision !== "approve" && body.decision !== "dismiss")
+        || (body.decision === "approve" && typeof body.route_id !== "string")) return Response.json({ error_code: "invalid_decision" }, { status: 400 });
+    const sql = this.ctx.storage.sql as never;
+    const proposal = this.readSubspaceRouteProposal(body.id);
+    if (!proposal || !actorId || !this.subspaceBlackboardRows(rootId, proposal.source_subspace_id, proposal.target_subspace_id)
+        || !this.canManageSubspaceBlackboard(rootId, proposal.source_subspace_id, actorId)
+        || !this.canManageSubspaceBlackboard(rootId, proposal.target_subspace_id, actorId)) return unavailable();
+    if (proposal.status !== "proposed") return Response.json({ error_code: "proposal_already_decided", status: proposal.status }, { status: 409 });
+    const now = new Date().toISOString();
+    // Claim synchronously (no await since the read above) so concurrent decisions cannot both proceed.
+    execute(sql, "UPDATE subspace_route_proposals SET status=?,decided_by=?,decided_at=? WHERE id=? AND status='proposed'",
+      body.decision === "approve" ? "approved" : "dismissed", actorId, now, proposal.id);
+    if (body.decision === "dismiss") return Response.json({ id: proposal.id, status: "dismissed" });
+    const release = () => execute(sql,
+      "UPDATE subspace_route_proposals SET status='proposed',decided_by=NULL,decided_at=NULL WHERE id=? AND decided_by=? AND status='approved'", proposal.id, actorId);
+    const routeRequest = new Request("https://space/subspace-blackboard/routes", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: body.route_id, source_subspace_id: proposal.source_subspace_id, target_subspace_id: proposal.target_subspace_id,
+        allowed_kinds: JSON.parse(proposal.allowed_kinds_json), allow_reply: proposal.allow_reply === 1 }) });
+    let routeResponse: Response;
+    try { routeResponse = await this.createSubspaceBlackboardRoute(routeRequest, rootId, actorId); }
+    catch (error) { release(); throw error; }
+    if (routeResponse.status !== 201 && routeResponse.status !== 200) {
+      // The route was not created; release the claim so the owner can retry or dismiss.
+      release();
+      return routeResponse;
+    }
+    return Response.json({ id: proposal.id, status: "approved", route_id: body.route_id }, { status: 201 });
   }
 
   private listSubspaceBlackboardMessages(subspaceId: string, rootId: string, routeId: string, actorId: string): Response {

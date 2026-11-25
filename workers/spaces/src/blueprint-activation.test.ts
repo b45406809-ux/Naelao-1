@@ -609,6 +609,77 @@ describe("Space Template activation preview", () => {
       coordinationSingletonPolicyApplication: { status: "existing_policy_preserved", singleton_capability_keys: ["owner.custom_resource"], revision: 2 } });
   });
 
+  it("lists symbolic subspace roles and proposals in the preview without creating anything", () => {
+    const preview = previewBlueprintActivation(blueprint({ requiredExtensions: [], requiredCredentials: [], subspaceRolesSchemaVersion: 1,
+      subspaceRoles: [{ key: "sales", name: "Sales" }, { key: "support", name: "Support" }],
+      subspaceRouteProposals: [{ source_role: "sales", target_role: "support", allowed_kinds: ["finding", "question"], allow_reply: true }] }), new Map(), new Map());
+    expect(preview.subspace_roles).toEqual([{ key: "sales", name: "Sales" }, { key: "support", name: "Support" }]);
+    expect(preview.route_proposals).toEqual([{ source_role: "sales", target_role: "support", allowed_kinds: ["finding", "question"], allow_reply: true }]);
+    expect(preview).toMatchObject({ installs_or_grants_applied: false });
+    const legacy = previewBlueprintActivation(blueprint({ requiredExtensions: [], requiredCredentials: [] }), new Map(), new Map());
+    expect(legacy).toMatchObject({ subspace_roles: [], route_proposals: [] });
+  });
+
+  it("maps roles to subspaces at activation, stores only pending proposals and reports unbound ones", async () => {
+    const secret = "subspace-role-activation-secret";
+    const artifact = blueprint({ id: "tpl_roles", projects: [], requiredExtensions: [], requiredCredentials: [], subspaceRolesSchemaVersion: 1,
+      subspaceRoles: [{ key: "sales", name: "Sales" }, { key: "support", name: "Support" }, { key: "legal", name: "Legal" }],
+      subspaceRouteProposals: [
+        { source_role: "sales", target_role: "support", allowed_kinds: ["finding", "question"], allow_reply: true },
+        { source_role: "support", target_role: "legal", allowed_kinds: ["risk"], allow_reply: false },
+      ] });
+    const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `roles-${index}` })) };
+    const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-roles");
+    if (!certificate) throw new Error("test_certificate_not_issued");
+    const manageable = ["dept-sales", "dept-support"];
+    const calls: string[] = [];
+    let stored: Record<string, unknown> | null = null, instantiated = 0;
+    const stub = { fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      calls.push(`${request.method} ${url.pathname}`);
+      if (url.pathname === "/extension-installations") return Response.json({ installations: [] });
+      if (url.pathname === "/subspace-role-bindings/options") return Response.json({ subspaces: manageable.map(id => ({ id, name: id })) });
+      if (url.pathname === "/subspace-role-bindings/validate") {
+        const { bindings } = await request.json() as { bindings: Record<string, string> };
+        return Object.values(bindings).every(id => manageable.includes(id)) ? Response.json({ ok: true }) : Response.json({ error_code: "invalid_subspace_role_binding" }, { status: 400 });
+      }
+      if (url.pathname === "/subspace-route-proposals/store") { stored = await request.json() as Record<string, unknown>; return Response.json({ created: 1, existing: 0 }); }
+      if (url.pathname === "/blueprints/instantiate") { instantiated++; return Response.json({ projectIds: [] }, { status: 201 }); }
+      return new Response("not found", { status: 404 });
+    } };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "root-space", config_json: "{}" }), run: async () => ({ success: true }) }) }) },
+      SCRIPTS_R2: { get: async (key: string) => key === `blueprints/tenant-roles/${artifact.id}.json` ? { json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) } : null },
+      SPACE_DO: { idFromName: () => "root-space-do", get: () => stub } } as never;
+    const headers = { "x-naelao-tenant-id": "tenant-roles", "x-naelao-user-id": "owner", "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-roles") };
+    const base = `https://spaces/spaces/root-space/blueprints/${artifact.id}`;
+    const preview = await worker.fetch(new Request(`${base}/activation-preview`, { headers }), env, {} as ExecutionContext);
+    expect(await preview.json()).toMatchObject({ subspace_roles: [{ key: "sales" }, { key: "support" }, { key: "legal" }],
+      route_proposals: [{ source_role: "sales", target_role: "support" }, { source_role: "support", target_role: "legal" }],
+      subspace_mapping_options: [{ id: "dept-sales", name: "dept-sales" }, { id: "dept-support", name: "dept-support" }] });
+    const activate = (body: unknown) => worker.fetch(new Request(`${base}/activate`, { method: "POST", headers, body: JSON.stringify(body) }), env, {} as ExecutionContext);
+    for (const subspace_role_bindings of [{ sales: "dept-foreign" }, { unknown_role: "dept-sales" }, { sales: 5 }, ["dept-sales"]]) {
+      expect((await activate({ subspace_role_bindings })).status).toBe(400);
+    }
+    expect(instantiated).toBe(0);
+    expect(stored).toBeNull();
+    const bad = await activate({ subspace_role_bindings: { sales: "dept-foreign" } });
+    expect(await bad.json()).toEqual({ error_code: "invalid_subspace_role_binding" });
+    const activation = await activate({ subspace_role_bindings: { sales: "dept-sales", support: "dept-support" } });
+    expect(activation.status).toBe(201);
+    expect(stored).toEqual({ blueprint_id: "tpl_roles", proposals: [{ source_subspace_id: "dept-sales", target_subspace_id: "dept-support", allowed_kinds: ["finding", "question"], allow_reply: true }] });
+    expect(await activation.json()).toMatchObject({ subspaceRouteProposals: { created: 1, existing: 0, status: "stored",
+      skipped: [{ source_role: "support", target_role: "legal", reason: "role_unbound" }] } });
+    expect(calls.some(call => call.includes("subspace-blackboard/routes"))).toBe(false);
+    const before = calls.length;
+    stored = null;
+    const plain = await activate({});
+    expect(plain.status).toBe(201);
+    expect(stored).toBeNull();
+    expect(calls.slice(before).some(call => call.includes("subspace-route-proposals"))).toBe(false);
+    expect(await plain.json()).toMatchObject({ subspaceRouteProposals: { created: 0, status: "stored",
+      skipped: [{ source_role: "sales" }, { source_role: "support" }] } });
+  });
+
   it("cannot bypass required runtime blockers by calling activation directly", async () => {
     const secret = "required-runtime-activation-secret";
     const project = { id: "project-with-gpu", name: "GPU project", kind: "DualPane" as const, templateMode: "cowork_studio" as const,

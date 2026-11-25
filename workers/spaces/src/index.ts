@@ -1552,7 +1552,15 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
     catch { return c.json({ error_code: "blueprint_expected_usage_invalid" }, 422); }
   }
   const costEstimate = await loadTemplateCostEstimate(c.env.PLATFORM_DB, tenantId, blueprint.id, listingId, new Date(), expectedUsage, usageSource);
-  return c.json({ ...preview, coordination_policy_current: coordinationPolicyCurrent,
+  // Mapping options are only the child subspaces the caller can manage right now; nothing is created here.
+  let subspaceMappingOptions: Array<{ id: string; name: string }> = [];
+  if (preview.subspace_roles.length) {
+    const optionsResponse = await stub.fetch(new Request(`http://space-do/subspace-role-bindings/options?${new URLSearchParams({ root_space_id: spaceId, actor_id: identity.userId })}`));
+    if (!optionsResponse.ok) return c.json({ error_code: "subspace_mapping_unavailable" }, 503);
+    const options = await optionsResponse.json<{ subspaces?: Array<{ id?: unknown; name?: unknown }> }>().catch(() => ({} as { subspaces?: Array<{ id?: unknown; name?: unknown }> }));
+    subspaceMappingOptions = (options.subspaces ?? []).flatMap(item => typeof item.id === "string" && typeof item.name === "string" ? [{ id: item.id, name: item.name }] : []);
+  }
+  return c.json({ ...preview, subspace_mapping_options: subspaceMappingOptions, coordination_policy_current: coordinationPolicyCurrent,
     coordination_singleton_policy_current: coordinationSingletonPolicyCurrent, blueprint_id: blueprint.id, target_space_id: spaceId, security,
     evaluation: { passed: value.conformanceCertificate.passed, total: value.conformanceCertificate.total,
       evidence: value.conformanceCertificate.evidence ?? "literal-lint", issued_at: value.conformanceCertificate.issuedAt },
@@ -1675,7 +1683,7 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const selectedListing = selectedTemplateListingId(owned.config_json ?? null);
   if (selectedListing.kind === "invalid") return c.json({ error_code: "template_listing_selection_invalid" }, 409);
   const listingId = selectedListing.kind === "selected" ? selectedListing.listingId : null;
-  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; apply_coordination_singleton_default?: unknown; extension_requirements_reviewed?: unknown; project_knowledge_selections?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; apply_coordination_singleton_default?: unknown; extension_requirements_reviewed?: unknown; project_knowledge_selections?: unknown }));
+  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; apply_coordination_singleton_default?: unknown; extension_requirements_reviewed?: unknown; project_knowledge_selections?: unknown; subspace_role_bindings?: unknown }>().catch(() => ({} as { subspace_role_bindings?: unknown; approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; apply_coordination_singleton_default?: unknown; extension_requirements_reviewed?: unknown; project_knowledge_selections?: unknown }));
   if (requestBody.apply_coordination_default !== undefined && typeof requestBody.apply_coordination_default !== "boolean")
     return c.json({ error_code: "coordination_default_confirmation_invalid" }, 400);
   if (requestBody.apply_coordination_singleton_default !== undefined && typeof requestBody.apply_coordination_singleton_default !== "boolean")
@@ -1706,6 +1714,22 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   let setupValues: BlueprintSetupValues;
   try { setupValues = validateBlueprintSetupValues(blueprint, requestBody.setup_values ?? {}); }
   catch (error) { return c.json({ error_code: "template_setup_values_invalid", message: (error as Error).message.slice(0, 240) }, 400); }
+  // Optional role -> subspace bindings. Validated before any side effect; they only ever create PENDING proposals.
+  const declaredSubspaceRoles = new Set((blueprint.subspaceRoles ?? []).map(role => role.key));
+  let subspaceRoleBindings: Record<string, string> = {};
+  if (requestBody.subspace_role_bindings !== undefined) {
+    const raw = requestBody.subspace_role_bindings;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length > 10
+        || Object.entries(raw as Record<string, unknown>).some(([key, value]) => !declaredSubspaceRoles.has(key) || typeof value !== "string" || !value))
+      return c.json({ error_code: "invalid_subspace_role_binding" }, 400);
+    subspaceRoleBindings = { ...(raw as Record<string, string>) };
+    if (Object.keys(subspaceRoleBindings).length) {
+      const checked = await spaceDoStub(c.env, spaceId, tenantId).then(stub => stub.fetch(new Request(`http://space-do/subspace-role-bindings/validate?${new URLSearchParams({ root_space_id: spaceId, actor_id: identity.userId! })}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bindings: subspaceRoleBindings }) })));
+      if (checked.status === 400) return c.json({ error_code: "invalid_subspace_role_binding" }, 400);
+      if (!checked.ok) return c.json({ error_code: "subspace_mapping_unavailable" }, 503);
+    }
+  }
   const approvedFilesystem = new Map<string, Array<{ path: string; access: "READ" | "READ_WRITE" }>>();
   if (requestBody.approved_shared_filesystem !== undefined) {
     const raw = requestBody.approved_shared_filesystem;
@@ -1929,7 +1953,27 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
       } else coordinationSingletonPolicyApplication = { status: "retry_in_settings" };
     }
   }
-  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups,coordinationPolicyApplication,coordinationSingletonPolicyApplication},{status:response.status});
+  // Store pending proposals for fully bound role pairs. This never writes active routes.
+  const subspaceRouteProposals: { created: number; existing: number; skipped: Array<{ source_role: string; target_role: string; reason: "role_unbound" }>; status: "not_requested" | "stored" | "retry_required" } =
+    { created: 0, existing: 0, skipped: [], status: "not_requested" };
+  if (blueprint.subspaceRouteProposals?.length) {
+    const ready: Array<{ source_subspace_id: string; target_subspace_id: string; allowed_kinds: string[]; allow_reply: boolean }> = [];
+    for (const proposal of blueprint.subspaceRouteProposals) {
+      const source = subspaceRoleBindings[proposal.source_role], target = subspaceRoleBindings[proposal.target_role];
+      if (source && target && source !== target) ready.push({ source_subspace_id: source, target_subspace_id: target, allowed_kinds: proposal.allowed_kinds, allow_reply: proposal.allow_reply });
+      else subspaceRouteProposals.skipped.push({ source_role: proposal.source_role, target_role: proposal.target_role, reason: "role_unbound" });
+    }
+    if (ready.length) {
+      try {
+        const stored = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/subspace-route-proposals/store?${new URLSearchParams({ root_space_id: spaceId, actor_id: identity.userId })}`, {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ blueprint_id: blueprint.id, proposals: ready }) }));
+        const result = stored.ok ? await stored.json<{ created?: number; existing?: number }>().catch(() => ({} as { created?: number; existing?: number })) : null;
+        if (result) { subspaceRouteProposals.created = result.created ?? 0; subspaceRouteProposals.existing = result.existing ?? 0; subspaceRouteProposals.status = "stored"; }
+        else subspaceRouteProposals.status = "retry_required";
+      } catch { subspaceRouteProposals.status = "retry_required"; }
+    } else subspaceRouteProposals.status = "stored";
+  }
+  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups,coordinationPolicyApplication,coordinationSingletonPolicyApplication,subspaceRouteProposals},{status:response.status});
 });
 
 async function installFirstPartySpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string, extensionId: string,
@@ -8288,6 +8332,29 @@ app.post("/spaces/:spaceId/subspace-blackboard/routes", async (c) => {
     id: body.id, source_subspace_id: body.source_subspace_id, target_subspace_id: body.target_subspace_id,
     allowed_kinds: body.allowed_kinds, allow_reply: body.allow_reply,
   }));
+});
+
+// Static paths on purpose (no dynamic segment followed by a static suffix); the proposal id travels in the body.
+app.get("/spaces/:spaceId/subspace-route-proposals", async (c) => {
+  const { spaceId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return forwardToSpaceDO(stub, `/subspace-route-proposals?${new URLSearchParams({ root_space_id: spaceId, actor_id: userId })}`, "GET");
+});
+
+app.post("/spaces/:spaceId/subspace-route-proposals/decide", async (c) => {
+  const { spaceId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  let body: { id?: unknown; decision?: unknown; route_id?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8192)); } catch { return c.json({ error_code: "invalid_decision" }, 400); }
+  if (!body || typeof body.id !== "string" || (body.decision !== "approve" && body.decision !== "dismiss")
+      || (body.decision === "approve" && typeof body.route_id !== "string")) return c.json({ error_code: "invalid_decision" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  // The SpaceDO re-checks manage on BOTH subspaces at decision time and returns one opaque 404 otherwise.
+  return forwardToSpaceDO(stub, `/subspace-route-proposals/decide?${new URLSearchParams({ root_space_id: spaceId, actor_id: userId })}`, "POST",
+    JSON.stringify({ id: body.id, decision: body.decision, ...(body.decision === "approve" ? { route_id: body.route_id } : {}) }));
 });
 
 app.get("/spaces/:spaceId/subspace-blackboard/routes", async (c) => {

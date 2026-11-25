@@ -160,4 +160,26 @@ describe("subspace blackboard routes", () => {
       expect(await write.json()).toMatchObject({ resource_ref: ref });
     }
   });
+  it("serves subspace route proposals on static paths and derives actor and parent from the session", async () => {
+    const { env, forwarded, secret } = environment();
+    const requestHeaders = { ...headers(secret), "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const list = await spacesWorker.fetch(new Request("https://spaces.test/spaces/root/subspace-route-proposals", { headers: requestHeaders }), env);
+    expect(list.status).toBe(200);
+    const listed = new URL(forwarded.at(-1)!.url);
+    expect(listed.pathname).toBe("/subspace-route-proposals");
+    expect(listed.searchParams.get("root_space_id")).toBe("root");
+    expect(listed.searchParams.get("actor_id")).toBe("authenticated-owner");
+    const decide = await spacesWorker.fetch(new Request("https://spaces.test/spaces/root/subspace-route-proposals/decide", {
+      method: "POST", headers: requestHeaders, body: JSON.stringify({ id: "srp_1", decision: "approve", route_id: "route-1", actor_id: "forged" }) }), env);
+    expect(decide.status).toBe(200);
+    const sent = forwarded.at(-1)!;
+    expect(new URL(sent.url).searchParams.get("actor_id")).toBe("authenticated-owner");
+    expect(await sent.json()).toEqual({ id: "srp_1", decision: "approve", route_id: "route-1" });
+    const before = forwarded.length;
+    for (const body of [{ id: "srp_1", decision: "maybe" }, { id: "srp_1", decision: "approve" }, { decision: "dismiss" }])
+      expect((await spacesWorker.fetch(new Request("https://spaces.test/spaces/root/subspace-route-proposals/decide", { method: "POST", headers: requestHeaders, body: JSON.stringify(body) }), env)).status).toBe(400);
+    expect(forwarded.length).toBe(before);
+    const anonymous = await spacesWorker.fetch(new Request("https://spaces.test/spaces/root/subspace-route-proposals"), env);
+    expect(anonymous.status).toBe(401);
+  });
 });

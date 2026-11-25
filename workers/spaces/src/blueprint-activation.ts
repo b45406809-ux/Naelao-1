@@ -1,4 +1,4 @@
-import { validateBlueprintBusinessRoles, validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type BlueprintBusinessRoleResourceRefV1, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateBlueprintBusinessRoles, validateBlueprintSubspaceRoles, type BlueprintSubspaceRolesV1, validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type BlueprintBusinessRoleResourceRefV1, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 export interface BlueprintActivationDependency {
   extension_id: string;
@@ -32,6 +32,9 @@ export interface BlueprintActivationPreview {
     onboarding_steps: NonNullable<SpaceBlueprint["businessRoles"]>[number]["onboardingSteps"];
     spending_suggestion: NonNullable<SpaceBlueprint["businessRoles"]>[number]["spendingSuggestion"] | null;
     status: "proposal_requires_owner_review"; grants_applied: false }>;
+  /** Symbolic roles and route proposals declared by the template. Never grants or routes; the owner maps and approves. */
+  subspace_roles: BlueprintSubspaceRolesV1["roles"];
+  route_proposals: BlueprintSubspaceRolesV1["proposals"];
   coordination_defaults: SpaceBlueprint["coordinationDefaults"] | null;
   expected_usage_defaults: SpaceBlueprint["expectedUsage"] | null;
   dependencies: BlueprintActivationDependency[];
@@ -73,6 +76,13 @@ export function previewBlueprintActivation(
     businessRoleProposals = validateBlueprintBusinessRoles(blueprint.businessRoles, { projects: blueprint.projects,
       requiredExtensions: blueprint.requiredExtensions ?? [],
       ...(blueprint.extensionRequirements ? { extensionRequirements: blueprint.extensionRequirements } : {}) });
+  }
+  let subspaceRoles: BlueprintSubspaceRolesV1 = { roles: [], proposals: [] };
+  if (blueprint.subspaceRolesSchemaVersion !== undefined || blueprint.subspaceRoles !== undefined || blueprint.subspaceRouteProposals !== undefined) {
+    if (blueprint.subspaceRolesSchemaVersion !== 1) throw new Error("Unsupported subspace roles schema version");
+    subspaceRoles = validateBlueprintSubspaceRoles({
+      ...(blueprint.subspaceRoles !== undefined ? { roles: blueprint.subspaceRoles } : {}),
+      ...(blueprint.subspaceRouteProposals !== undefined ? { proposals: blueprint.subspaceRouteProposals } : {}) });
   }
   const dependencies = [...new Set(blueprint.requiredExtensions ?? [])]
     .sort()
@@ -230,6 +240,8 @@ export function previewBlueprintActivation(
       resource_reviews: (role.resourceRequests ?? []).map(request => businessRoleResourceReview(request.resource, request.actions)),
       assistant: role.assistant ?? null, onboarding_steps: role.onboardingSteps ?? [], spending_suggestion: role.spendingSuggestion ?? null,
       status: "proposal_requires_owner_review" as const, grants_applied: false as const })),
+    subspace_roles: subspaceRoles.roles,
+    route_proposals: subspaceRoles.proposals,
     coordination_defaults: blueprint.coordinationDefaults ? structuredClone(blueprint.coordinationDefaults) : null,
     expected_usage_defaults: blueprint.expectedUsage ? structuredClone(blueprint.expectedUsage) : null,
     dependencies,

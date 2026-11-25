@@ -287,4 +287,84 @@ describe("SpaceDO directed subspace blackboard", () => {
       expect((await broadcast({ id: "b3", resource_ref: ref }, false)).status).toBe(400);
     });
   });
+
+  describe("blueprint route proposals", () => {
+    const call = (space: SpaceDO, path: string, actor: string, method = "GET", body?: unknown) =>
+      space.fetch(new Request(`https://space${path}${path.includes("?") ? "&" : "?"}root_space_id=root&actor_id=${actor}`, {
+        method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) }));
+    const routeCount = (storage: ReturnType<typeof createDOStorage>) =>
+      storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM subspace_blackboard_routes").toArray()[0]!.n;
+    const proposal = { source_subspace_id: "dept-a", target_subspace_id: "dept-b", allowed_kinds: ["finding", "question"], allow_reply: true };
+
+    async function stored() {
+      const ctx = await fixture();
+      ctx.storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('dept-a','sales-admin','admin')");
+      const result = await call(ctx.space, "/subspace-route-proposals/store", "root-owner", "POST", { blueprint_id: "tpl", proposals: [proposal] });
+      expect(await result.json()).toEqual({ created: 1, existing: 0 });
+      const listed = await (await call(ctx.space, "/subspace-route-proposals", "root-owner")).json<{ proposals: Array<{ id: string }> }>();
+      return { ...ctx, id: listed.proposals[0]!.id };
+    }
+
+    it("lists mapping options and validates bindings against manageable current children", async () => {
+      const { space } = await fixture();
+      expect(await (await call(space, "/subspace-role-bindings/options", "root-owner")).json()).toMatchObject({ subspaces: expect.arrayContaining([{ id: "dept-a", name: "Sales" }]) });
+      expect(await (await call(space, "/subspace-role-bindings/options", "sales-editor")).json()).toEqual({ subspaces: [] });
+      expect((await call(space, "/subspace-role-bindings/validate", "root-owner", "POST", { bindings: { sales: "dept-a" } })).status).toBe(200);
+      for (const bindings of [{ sales: "other-dept" }, { sales: "root" }, { sales: "missing" }, { sales: 1 }])
+        expect((await call(space, "/subspace-role-bindings/validate", "root-owner", "POST", { bindings })).status).toBe(400);
+      expect((await call(space, "/subspace-role-bindings/validate", "sales-editor", "POST", { bindings: { sales: "dept-a" } })).status).toBe(400);
+    });
+
+    it("stores pending proposals without writing any active route and is idempotent", async () => {
+      const { space, storage } = await fixture();
+      const body = { blueprint_id: "tpl", proposals: [proposal] };
+      expect(await (await call(space, "/subspace-route-proposals/store", "root-owner", "POST", body)).json()).toEqual({ created: 1, existing: 0 });
+      expect(await (await call(space, "/subspace-route-proposals/store", "root-owner", "POST", body)).json()).toEqual({ created: 0, existing: 1 });
+      expect(routeCount(storage)).toBe(0);
+      expect(storage.sql.exec("SELECT status FROM subspace_route_proposals").toArray()).toEqual([{ status: "proposed" }]);
+      expect((await call(space, "/subspace-route-proposals/store", "sales-editor", "POST", body)).status).toBe(400);
+    });
+
+    it("creates exactly one active route on approval and returns 409 for any second decision", async () => {
+      const { space, storage, id } = await stored();
+      const approved = await call(space, "/subspace-route-proposals/decide", "root-owner", "POST", { id, decision: "approve", route_id: "route-from-proposal" });
+      expect(approved.status).toBe(201);
+      expect(routeCount(storage)).toBe(1);
+      expect(storage.sql.exec("SELECT id,source_subspace_id,target_subspace_id,allowed_kinds_json,allow_reply,status FROM subspace_blackboard_routes").toArray())
+        .toEqual([{ id: "route-from-proposal", source_subspace_id: "dept-a", target_subspace_id: "dept-b", allowed_kinds_json: '["finding","question"]', allow_reply: 1, status: "active" }]);
+      expect((await call(space, "/subspace-route-proposals/decide", "root-owner", "POST", { id, decision: "approve", route_id: "route-2" })).status).toBe(409);
+      expect((await call(space, "/subspace-route-proposals/decide", "root-owner", "POST", { id, decision: "dismiss" })).status).toBe(409);
+      expect(routeCount(storage)).toBe(1);
+      expect(await (await call(space, "/subspace-route-proposals", "root-owner")).json()).toEqual({ proposals: [] });
+    });
+
+    it("refuses approval without manage on the target and leaves the proposal pending", async () => {
+      const { space, storage, id } = await stored();
+      for (const actor of ["sales-admin", "sales-editor", "research-member"]) {
+        expect((await call(space, "/subspace-route-proposals/decide", actor, "POST", { id, decision: "approve", route_id: "r-denied" })).status).toBe(404);
+        expect(await (await call(space, "/subspace-route-proposals", actor)).json()).toEqual({ proposals: [] });
+      }
+      expect(routeCount(storage)).toBe(0);
+      expect(storage.sql.exec("SELECT status FROM subspace_route_proposals").toArray()).toEqual([{ status: "proposed" }]);
+    });
+
+    it("re-checks manage at decision time and releases the claim when route creation fails", async () => {
+      const { space, storage, id } = await stored();
+      storage.sql.exec("UPDATE spaces SET status='suspended' WHERE id='dept-b'");
+      expect((await call(space, "/subspace-route-proposals/decide", "root-owner", "POST", { id, decision: "approve", route_id: "r-stale" })).status).toBe(404);
+      storage.sql.exec("UPDATE spaces SET status='active' WHERE id='dept-b'");
+      expect((await call(space, "/subspace-route-proposals/decide", "root-owner", "POST", { id, decision: "approve", route_id: "bad id with spaces" })).status).toBe(400);
+      expect(storage.sql.exec("SELECT status FROM subspace_route_proposals").toArray()).toEqual([{ status: "proposed" }]);
+      expect((await call(space, "/subspace-route-proposals/decide", "root-owner", "POST", { id, decision: "approve", route_id: "r-ok" })).status).toBe(201);
+    });
+
+    it("creates no route when a proposal is dismissed", async () => {
+      const { space, storage, id } = await stored();
+      expect((await call(space, "/subspace-route-proposals/decide", "root-owner", "POST", { id, decision: "dismiss" })).status).toBe(200);
+      expect(routeCount(storage)).toBe(0);
+      expect(storage.sql.exec("SELECT status,decided_by FROM subspace_route_proposals").toArray()).toEqual([{ status: "dismissed", decided_by: "root-owner" }]);
+      expect((await call(space, "/subspace-route-proposals/decide", "root-owner", "POST", { id, decision: "approve", route_id: "r-late" })).status).toBe(409);
+      expect(routeCount(storage)).toBe(0);
+    });
+  });
 });
