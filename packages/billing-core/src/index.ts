@@ -235,6 +235,8 @@ export type { ResourceType, ResourceMetadata } from "./credits.js";
  */
 export { infraTimeToCredits } from "./credits.js";
 export type { InfraResourceType } from "./credits.js";
+export { EXTENSION_RESOURCE_UNIT_PRICES, priceExtensionResourceUnits } from "./credits.js";
+export type { ExtensionResourceUnits, ExtensionResourceUnitPrice } from "./credits.js";
 
 // See the comment near the top of this file — these must come last.
 export * from "./model-benchmarks.js";

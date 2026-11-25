@@ -100,3 +100,54 @@ export function infraTimeToCredits(resourceType: InfraResourceType, durationMs: 
   if (resourceType === "container") return calculateResourceCredits("container_hour", durationMs / 3_600_000);
   return calculateResourceCredits("isolate_run", 1);
 }
+
+/**
+ * Versioned starting rates for extension resource units that are recorded today but were never
+ * priced (spec D8). Each line rounds up once per settlement. These rates never change existing
+ * rate-card entries above; a new price version must be introduced rather than editing these.
+ */
+export const EXTENSION_RESOURCE_UNIT_PRICES = {
+  version: "ext-units-2026-11-25",
+  /** 1 credit per 100 invocations. */
+  invocationsPerCredit: 100,
+  /** 1 credit per job unit. */
+  jobUnitsPerCredit: 1,
+  /** 1 credit per 100 MiB of request/response payload. */
+  bytesPerCredit: 100 * 1024 * 1024,
+} as const;
+
+export interface ExtensionResourceUnits {
+  invocations: number;
+  jobUnits: number;
+  bytes: number;
+}
+
+export interface ExtensionResourceUnitPrice {
+  credits: number;
+  breakdown: { invocations: number; jobUnits: number; bytes: number };
+  priceVersion: string;
+}
+
+function unitCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError("invalid_resource_units");
+  }
+  return value;
+}
+
+/** Prices one settlement's extension resource units. Each line is rounded up once. */
+export function priceExtensionResourceUnits(units: ExtensionResourceUnits): ExtensionResourceUnitPrice {
+  const invocations = unitCount(units?.invocations);
+  const jobUnits = unitCount(units?.jobUnits);
+  const bytes = unitCount(units?.bytes);
+  const breakdown = {
+    invocations: Math.ceil(invocations / EXTENSION_RESOURCE_UNIT_PRICES.invocationsPerCredit),
+    jobUnits: Math.ceil(jobUnits / EXTENSION_RESOURCE_UNIT_PRICES.jobUnitsPerCredit),
+    bytes: Math.ceil(bytes / EXTENSION_RESOURCE_UNIT_PRICES.bytesPerCredit),
+  };
+  return {
+    credits: breakdown.invocations + breakdown.jobUnits + breakdown.bytes,
+    breakdown,
+    priceVersion: EXTENSION_RESOURCE_UNIT_PRICES.version,
+  };
+}

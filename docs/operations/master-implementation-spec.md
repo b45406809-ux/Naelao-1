@@ -464,13 +464,14 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused agents and router tests pass, plus typecheck.
 - **Result:** landed in the MS-13 commit. The detail handler let any Space member through `requireSpaceMembershipOrSessionAccess` before the Project check; a task with a `project_id` now requires Project access (denied = `404 not_found`), and tasks without one keep the session/Space rule. List and task-stop checks re-verified unchanged. New `project-task-detail.test.ts` 4/4 (the two denial cases fail without the fix); router allowlist now has `durable-tasks(/:id)` and `projects/:id/task-stop` with extension rejections. Agents full suite 2017 pass / 3 pre-existing failures (email-ocr-settings-route, telnyx-webhook, scheduled-job-dispatch); router 172 pass / 1 pre-existing (preferred-language); both typechecks clean.
 
-### - [ ] MS-14 — Versioned price table for unpriced extension resource units
+### - [x] MS-14 — Versioned price table for unpriced extension resource units
 
 - **Queue:** item 9, EP06. **Model:** Haiku. **Decision:** D8.
 - **Start here:** `packages/billing-core/src/credits.ts` (`calculateResourceCredits`, `ResourceType`), `packages/billing-core/src/index.ts` (`BILLING_CORE_RATE_CARD_VERSION`), `packages/billing-core/src/credits.test.ts`.
 - **Do:** add `EXTENSION_RESOURCE_UNIT_PRICES` (version string `"ext-units-2026-11-25"`) and `priceExtensionResourceUnits({invocations, jobUnits, bytes})` returning `{credits, breakdown:{invocations, jobUnits, bytes}, priceVersion}`, using D8 rates and rounding each line up once (`Math.ceil`). Non-negative integers only; anything else throws `invalid_resource_units`. All-zero input = 0 credits. Export it from the package index. Do **not** change any existing rate.
 - **Tests:** 0 → 0; 1 invocation → 1; 100 → 1; 101 → 2; 3 jobs → 3; 1 byte → 1; exactly 100 MiB → 1; 100 MiB + 1 byte → 2; combined breakdown; negative/fractional/NaN throw; existing rate tests unchanged.
 - **Done:** `pnpm --filter <billing-core package name> exec vitest run src/credits.test.ts` and typecheck pass.
+- **Result:** this commit. `EXTENSION_RESOURCE_UNIT_PRICES` (`ext-units-2026-11-25`) and `priceExtensionResourceUnits` added to `credits.ts` and exported from the package index; existing rate card untouched. `credits.test.ts` 11/11 (focused); `@naelao/billing-core` full suite 62/62 (14 files); typecheck clean; `git diff --check` clean. Local/mock only, no live pricing.
 
 ### - [ ] MS-15 — Owner usage view: estimated credits and cap warning
 
