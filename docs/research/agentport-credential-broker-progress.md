@@ -157,3 +157,22 @@ was made.
 
 **Exact next action:** begin CB05 by inventorying existing AgentPort provider SDK and MCP action
 contracts and choose a narrow local schema round-trip/authority-escalation gap to implement.
+
+## CB05 — Typed provider capability-schema declaration slice (2026-11-25)
+
+The provider SDK previously accepted `capabilitySchemas` as arbitrary JSON, including schemas
+for capabilities absent from the same manifest and permissive object schemas. It now exports a
+typed JSON-schema subset for action inputs, limits nested schema depth and field counts, requires
+closed object shapes, validates required-property references and primitive bounds, and only accepts
+schema keys present in the declared capability list. The normalized schema round-trips through
+`defineProvider` and `publishProvider`. This remains descriptive metadata: publishing registers a
+provider service only and does not create accounts, grants, adapter availability or authorization.
+
+The provider SDK test verifies schema round-trip, rejects undeclared capability schemas,
+`additionalProperties: true`, and unsupported schema fields, and confirms the published service
+has no grants field. Verification: provider SDK tests **2/2**, provider SDK typecheck and
+`git diff --check` pass. This is a local contract test; no live AgentPort service was registered.
+
+**Exact next action:** trace consumers of `capabilitySchemas` and UserPort action maps to ensure
+provider-declared schemas cannot bypass installed-adapter selection, owner grants or host-side
+argument validation; then add a local regression at the narrowest reachable boundary.

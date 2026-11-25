@@ -1125,13 +1125,19 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   SDK, manifest publishing, MCP action mapping and extension/template capability declarations.
   Implement one concrete typed contract or authority-escalation gap with round-trip tests; provider
   manifests must not mint grants or claim unverified operations.
+- **CB05 checkpoint:** provider SDK now validates typed, closed capability schemas and requires
+  every schema to match a capability declared in the same manifest. Schema round-trip and
+  undeclared/permissive schema rejection pass; publish remains metadata-only and creates no grant.
+  Provider SDK tests pass 2/2, typecheck and diff hygiene pass. **Exact next action:** inspect all
+  capability-schema/action-map consumers for any provider declaration bypass of installed-adapter,
+  owner-grant or host argument validation; add the narrowest local regression found.
 
-**Latest checkpoint:** CB04 locally issues a 120-second inbox-scoped AgentMail key with only the
-permission needed by each operation, validates returned scope/permission/expiry, and deletes it
-after dispatch. Local AgentMail and erasure suites pass 24/24, Agents typecheck and diff hygiene
-pass. Live expiry/revocation, regional support, parent permission and billing remain open under
-CB04 provider acceptance. **Exact next action:** inventory SDK/manifest/MCP/capability schema paths
-for CB05 and implement a narrow local round-trip or authority-escalation regression with tests.
+**Latest checkpoint:** CB04 local implementation is pushed at `5ac5fe7c`; AgentMail and erasure
+suites pass 24/24, Agents typecheck and diff hygiene pass. CB05 adds typed closed schemas in the
+provider SDK; schema round-trip/rejection tests pass 2/2 and SDK typecheck passes. Live AgentMail
+expiry/revocation, regional support, parent permission and billing remain open separately. **Exact
+next action:** inspect capability-schema and UserPort action-map consumers for adapter/grant/input
+validation bypasses and add a local regression if reachable.
 
 ## Ordered plan list
 
