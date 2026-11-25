@@ -106,3 +106,32 @@ deletion, rotation, or deployment was performed.
 credential exchange. Record the candidate APIs and evidence; if none supports a lower-authority,
 bounded token contract, leave CB04 blocked on exact provider documentation/sandbox evidence and
 continue with the next locally ready CB05 adapter/developer contract task.
+
+## CB04 — Provider candidate evidence (2026-11-25)
+
+The AgentMail API is a viable scoped-key candidate for a local implementation slice. Its official
+API documents `POST /v0/inboxes/{inbox_id}/api-keys`, returning a one-time API key and key ID;
+`DELETE /v0/inboxes/{inbox_id}/api-keys/{api_key_id}` returns 204. Its permission model is a
+whitelist intersected with inbox scope, and child-key permissions cannot exceed the creating
+credential. Bearer-key creation documents optional `expires_at`; an inbox scope plus explicit
+permission whitelist and bounded expiry reduces the authority and exposure period of the key used
+for each host operation. [Create inbox-scoped key](https://docs.agentmail.to/api-reference/inboxes/api-keys/create),
+[delete inbox-scoped key](https://docs.agentmail.to/api-reference/inboxes/api-keys/delete),
+[permissions and scope](https://docs.agentmail.to/permissions),
+[API key expiry](https://docs.agentmail.to/api-reference/api-keys/create),
+[AgentMail key lifecycle changelog](https://docs.agentmail.to/changelog/2026/3/18).
+
+The issued credential is still a transferable bearer token; the cited contract does not bind it to
+an audience or holder. No refresh operation is documented for these bearer keys; the host must
+mint a replacement from its existing owner credential. AgentMail documents deletion/revocation,
+but this evidence does not establish expiry enforcement or revocation latency in a live account.
+The public key API reference uses the US API host; availability and identical behavior on the
+existing EU host require provider confirmation. The API-key pages do not state a separate payer
+or a price for key creation; retaining the same AgentMail account is an inference, not confirmed
+billing behavior. No provider API has been called.
+
+**Exact next action:** implement the scoped-key wrapper locally for the existing user-connected
+AgentMail operation path, request only the permission required by that operation, impose a short
+expiry, delete the issued key after dispatch, and test scope/permission/expiry validation, cleanup,
+and key non-disclosure. Keep live expiry, revocation, region and billing behavior open for provider
+acceptance.

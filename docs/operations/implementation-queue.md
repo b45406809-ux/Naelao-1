@@ -1102,19 +1102,21 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   `agentmail.test.ts` plus `erasure-product-scope.test.ts` pass 23/23, Agents typecheck and diff
   check pass. Upstream key invalidation/rotation, inbox/message deletion, and webhook removal are
   unverified. Evidence: [CB ledger](../research/agentport-credential-broker-progress.md).
-- [ ] **CB04 — Provider-minted temporary credential feasibility.** Identify provider candidates
-  already reachable through the repository and verify official API support for token exchange or
-  temporary credentials, including scope, audience/holder, TTL, refresh, revocation, regions and
-  payer. Implement only if an exact provider contract reduces authority; otherwise record the
-  concrete evidence dependency and move to independent CB05 local contract work.
+- [ ] **CB04 — Provider-minted temporary credential feasibility.** AgentMail documents an
+  inbox-scoped API key endpoint, permission whitelist intersected with inbox scope, optional key
+  expiry, and a key-delete endpoint. A short-lived key with only the AgentMail permission required
+  for each existing host operation reduces authority, so proceed with a local wrapper and fixtures.
+  The credential remains a transferable bearer with no documented audience/holder binding;
+  refresh means minting a replacement with the owner credential. Live expiry enforcement,
+  revocation latency, EU endpoint support and billing effects remain provider acceptance items.
+  See source links and evidence boundary in the [CB ledger](../research/agentport-credential-broker-progress.md).
 
-**Latest checkpoint:** CB03 local lifecycle slice implements fail-closed AgentPort revoke and
-credential scrubbing during scoped user erasure, and verifies same-owner reconnect replaces the
-encrypted key without returning it. `agentmail.test.ts` and `erasure-product-scope.test.ts` pass
-23/23; Agents typecheck and `git diff --check` pass. Upstream deletion and key invalidation remain
-unverified. **Exact next action:** assess CB04 against official provider API documentation for
-temporary credential exchange, then continue with independent CB05 contract work if no candidate
-meets the plan's bounded-authority criteria.
+**Latest checkpoint:** CB03 local erasure and reconnect verification is pushed at `cb62c884`;
+focused suites pass 23/23, Agents typecheck and diff check pass. CB04 source review found the
+AgentMail inbox-scoped API key endpoint, permission whitelist, optional expiry and delete route.
+It narrows a key to one inbox and one host operation; audience/holder binding and live enforcement
+remain unverified. **Exact next action:** implement the operation-scoped, short-lived AgentMail key
+wrapper and local cleanup/permission/expiry fixtures; leave live acceptance separate.
 
 ## Ordered plan list
 
