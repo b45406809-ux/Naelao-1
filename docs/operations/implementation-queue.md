@@ -818,7 +818,7 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **Blocked · APW04 — Retention schedule approval.** Personal and Project Fabric/Wiki plus
   promoted vectors have no approved TTL or erase schedule; current code only decays facts and caps
   unpromoted episodes. Resume after a retention owner approves per-class duration and deletion
-  semantics. Do not introduce a new expiry without that policy. Under D9 (owner-approved 2026-11-25) the run-log retention slice (MS-21) has landed locally behind `RUN_LOG_RETENTION_ENABLED` (default off); memory retention (MS-22) and the live schedule remain open.
+  semantics. Do not introduce a new expiry without that policy. Under D9 (owner-approved 2026-11-25) the run-log retention slice (MS-21) has landed locally behind `RUN_LOG_RETENTION_ENABLED` (default off); Project-memory retention (MS-22) has landed locally behind `PROJECT_MEMORY_RETENTION_ENABLED` (default off): SpaceDO migration 163, a deletion tombstone, an owner/admin memory hold and a bounded alarm sweep of 30-day-deleted Projects; personal memory, live acceptance and the live schedule remain open.
 - [x] **APW05 — Goal/task and runtime admission/accounting comparison.** Goal workers inherit bounded
   token budgets and ordinary model calls reserve against configured Project spend caps or plan token
   quotas; System One decisions use separate durable Billing holds. These do not define an aggregate

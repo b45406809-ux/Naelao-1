@@ -537,13 +537,14 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused test, full agents suite, typecheck.
 - **Result:** landed locally behind `RUN_LOG_RETENTION_ENABLED` (default off, in every wrangler vars block and the agents Env type); `pruneRunLogs(now)` runs from `openDurableRun` beside `pruneDurableRuns`; deletes `run_wal` (finished, 90 days) and `run_traces` (`ts` 90 days), and clears `sub_agents.checkpoint_json` for terminal workers untouched 90 days; 200 rows per table per pass; active runs excluded; `run-log-retention.test.ts` 6/6 (new); full agents suite 2063 passed with only the 3 known failures; typecheck and `git diff --check` pass. Commit: see git log (`feat(agents): MS-21`). Local evidence only.
 
-### - [ ] MS-22 — Project-memory retention with a memory hold
+### - [x] MS-22 — Project-memory retention with a memory hold
 
 - **Queue:** item 2, APW04. **Model:** Sonnet. **Decision:** D9.
 - **Start here:** `workers/spaces/src/do/SpaceDO.ts` project memory tables (`project_facts`, `project_fabric`, `project_wiki`, ~l.1032-1062), the Project delete path (find how a Project is deleted: soft-delete column or row removal), `workers/spaces/src/do/project-memory-forget.test.ts`, the SpaceDO alarm / scheduled hook.
 - **Do:** find and record how Project deletion works. Add a SpaceDO migration with a `project_memory_holds` table (project_id, reason, actor_id, created_at, expires_at nullable) and owner/admin routes to set/clear a hold (static path + query params, Hono rule). Behind `PROJECT_MEMORY_RETENTION_ENABLED`, a bounded sweep deletes memory rows of Projects deleted more than 30 days ago unless an unexpired hold exists. If Project deletion leaves no deletion timestamp, add one in the same migration and set it on delete. Add the flag `"false"` to spaces `wrangler.toml`.
 - **Tests:** memory of a Project deleted 31 days ago is removed; 29 days kept; live Project untouched; hold blocks; expired hold does not block; non-admin hold change refused with not-found shape; flag off removes nothing.
 - **Done:** focused tests, **full** `naelao-spaces` suite, typecheck.
+- **Result:** landed locally behind `PROJECT_MEMORY_RETENTION_ENABLED` (default off, every wrangler vars block). Project delete only archived the row and never touched memory, so migration 163 adds `project_deletion_tombstones` (set by the delete route via `/internal/project-deletion-mark`, first timestamp kept) and `project_memory_holds`; owner/admin `GET/PUT/DELETE /spaces/:spaceId/project-memory-hold?project_id=` (others get the not-found shape; no router allowlist entry); a SpaceDO `alarm()` sweeps at most 5 Projects / 500 rows per pass (flag on, tombstone older than 30 days, no unexpired hold, Project not active), counts-only log. `project-memory-retention.test.ts` 9/9; full spaces suite only the 4 known failures; typecheck and `git diff --check` pass. Commit: see git log (`feat(spaces): MS-22`). Local evidence only; Projects deleted before this change have no tombstone and are not swept.
 
 ### - [ ] MS-23 — Preference resolver (pure function)
 

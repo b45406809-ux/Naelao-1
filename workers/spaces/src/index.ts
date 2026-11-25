@@ -107,6 +107,7 @@ export interface Env {
   SUBSPACE_RESOURCE_LINKS_ENABLED?: string;
   /** Opt-in bounded hash-only verification; does not change the read source. */
   WORKSPACE_DUAL_READ_ENABLED?: string;
+  PROJECT_MEMORY_RETENTION_ENABLED?: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   SPACE_DO: DurableObjectNamespace<SpaceDO>;
@@ -7758,6 +7759,10 @@ app.delete("/spaces/:spaceId/projects/:projectId", async c => {
   if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
   const archived = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(tenantId)}`, "PATCH", JSON.stringify({ status: "archived" }));
   if (!archived.ok) return new Response(archived.body, { status: archived.status, headers: { "content-type": "application/json" } });
+  // D9: record the first deletion time so project memory can expire 30 days later. Best effort;
+  // a retried delete records it again (the first timestamp is kept).
+  await forwardToSpaceDO(stub, `/internal/project-deletion-mark?project_id=${encodeURIComponent(projectId)}`, "POST")
+    .catch(() => null);
   try {
     await retireProjectCoordination(c.env.PLATFORM_DB, tenantId, spaceId, projectId);
   } catch {
@@ -7774,6 +7779,33 @@ app.delete("/spaces/:spaceId/projects/:projectId", async c => {
   return Response.json({ ...(result && typeof result === "object" ? result as Record<string, unknown> : { error_code: "project_workspace_cleanup_unavailable" }), archived: true }, {
     status: cleanup.status, headers: { "cache-control": "no-store" },
   });
+});
+
+// D9 Project memory hold: owner/admin only (not a product end-user surface, so no router
+// allowlist entry). Static path with the Project in the query. Every authorization failure
+// returns the same not-found shape.
+app.all("/spaces/:spaceId/project-memory-hold", async c => {
+  const spaceId = c.req.param("spaceId");
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!["GET", "PUT", "DELETE"].includes(c.req.method)) return c.json({ error_code: "method_not_allowed" }, 405);
+  if (!tenantId || !identity.userId) throw notFound("Project");
+  const role = identity.role === "product_end_user"
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, tenantId)
+    : identity.role;
+  if (role !== "owner" && role !== "admin") throw notFound("Project");
+  const projectId = c.req.query("project_id") ?? "";
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) return c.json({ error_code: "invalid_memory_hold" }, 400);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT 1 AS found FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first();
+  if (!space) throw notFound("Project");
+  let body: string | undefined;
+  if (c.req.method === "PUT") {
+    try { body = await readBoundedRequestText(c.req.raw, 4 * 1024); }
+    catch { return c.json({ error_code: "invalid_memory_hold" }, 400); }
+  }
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/project-memory-hold?project_id=${encodeURIComponent(projectId)}&actor_id=${encodeURIComponent(identity.userId)}`, c.req.method, body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
 });
 
 // The erasure tombstone is the durable source for cleanup progress. Return only bounded metadata

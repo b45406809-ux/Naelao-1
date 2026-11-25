@@ -89,8 +89,9 @@ describe("project workspace deletion route", () => {
     const first = await send({ confirm: true });
     expect(first.status).toBe(200);
     expect(await first.json()).toMatchObject({ archived: true, hasMore: true, nextCursor: "opaque-page-1", providerConnectionsDeleted: false });
-    expect(spaceCalls.map(call => call.method)).toEqual(["GET", "PATCH"]);
-    expect(order.slice(0, 4)).toEqual(["space:GET", "space:PATCH", "coordination:retire", "agent:cleanup"]);
+    expect(spaceCalls.map(call => call.method)).toEqual(["GET", "PATCH", "POST"]);
+    expect(spaceCalls[2]?.path).toBe("/internal/project-deletion-mark");
+    expect(order.slice(0, 5)).toEqual(["space:GET", "space:PATCH", "space:POST", "coordination:retire", "agent:cleanup"]);
     expect(coordinationBatches[0]).toHaveLength(6);
     expect(coordinationBatches[0]?.[0]).toContain("request_id IN (SELECT id FROM space_blackboard_requests");
     expect(coordinationBatches[0]?.[1]).toContain("DELETE FROM space_blackboard_requests");
@@ -127,7 +128,7 @@ describe("project workspace deletion route", () => {
     }), env);
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error_code: "project_coordination_cleanup_unavailable", archived: true, retryable: true });
-    expect(spaceMethods).toEqual(["GET", "PATCH"]);
+    expect(spaceMethods).toEqual(["GET", "PATCH", "POST"]);
     expect(agentFetch).not.toHaveBeenCalled();
   });
 

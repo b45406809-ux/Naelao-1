@@ -5,6 +5,7 @@ import { parseArtifactLinters, lintArtifact } from "@naelao/agent-sdk";
 import { normalizeWorkspacePath } from "../../../agents/src/script-engine/workspace-paths.js";
 import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, execute, queryAll, queryOne, validateMigrationSequence } from "@naelao/db";
+import { clearProjectMemoryHold, getProjectMemoryHold, hasPendingProjectMemoryTombstones, markProjectDeleted, PROJECT_MEMORY_RETENTION_DAYS, setProjectMemoryHold, sweepDeletedProjectMemory } from "./project-memory-retention.js";
 import type { Migration } from "@naelao/db";
 import { recordExternalMessage } from "../project-external-quota.js";
 import {
@@ -3595,6 +3596,23 @@ const MIGRATIONS: Migration[] = [
       );
       CREATE INDEX idx_subspace_route_proposals_status ON subspace_route_proposals(status,created_at);`,
   },
+  {
+    version: 163,
+    description: "record Project deletion time and Project-level memory holds for D9 memory retention",
+    up: `CREATE TABLE project_deletion_tombstones (
+        project_id TEXT PRIMARY KEY,
+        deleted_at TEXT NOT NULL,
+        memory_purged_at TEXT
+      );
+      CREATE INDEX idx_project_deletion_tombstones_due ON project_deletion_tombstones(memory_purged_at,deleted_at);
+      CREATE TABLE project_memory_holds (
+        project_id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT
+      );`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3612,6 +3630,8 @@ export interface SpaceDOEnv {
   PLATFORM_SECRET: string;
   UNIFIED_WORKSPACE_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
+  /** D9: delete memory of Projects deleted 30+ days ago. Only the exact string "true" enables it. */
+  PROJECT_MEMORY_RETENTION_ENABLED?: string;
   PLATFORM_DB?: D1Database;
   /** Optional stable, separately managed key for archive encryption. Keep stable across deploys. */
   SPACE_ARCHIVE_KEY?: string;
@@ -7160,6 +7180,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.rememberProjectFact(projFactsMatch[1], request);
       if (method === "GET" && projFactsMatch?.[1])
         return this.recallProjectFacts(projFactsMatch[1], url.searchParams);
+      if (url.pathname === "/internal/project-deletion-mark" && method === "POST")
+        return this.markProjectDeletion(url.searchParams);
+      if (url.pathname === "/project-memory-hold")
+        return this.handleProjectMemoryHold(request, url.searchParams);
+
       const projFactIdMatch = url.pathname.match(
         /^\/projects\/([^/]+)\/memory\/facts\/([^/]+)$/
       );
@@ -11398,6 +11423,59 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       roleRank
     );
     return Response.json({ deleted: true });
+  }
+
+  /** Called by the router after a Project delete archived the Project; keeps the first timestamp. */
+  private async markProjectDeletion(params: URLSearchParams): Promise<Response> {
+    const projectId = params.get("project_id") ?? "";
+    const sql = this.ctx.storage.sql as never;
+    if (!projectId || !queryOne(sql, "SELECT id FROM projects WHERE id=?", projectId))
+      return Response.json({ error_code: "not_found" }, { status: 404 });
+    markProjectDeleted(sql, projectId, Date.now());
+    await this.armProjectMemoryAlarm(Date.now() + PROJECT_MEMORY_RETENTION_DAYS * 86_400_000);
+    return Response.json({ marked: true });
+  }
+
+  /** Owner/admin authority is enforced by the router; this only validates and stores the hold. */
+  private async handleProjectMemoryHold(request: Request, params: URLSearchParams): Promise<Response> {
+    const projectId = params.get("project_id") ?? "";
+    const sql = this.ctx.storage.sql as never;
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId) || !queryOne(sql, "SELECT id FROM projects WHERE id=?", projectId))
+      return Response.json({ error_code: "not_found" }, { status: 404 });
+    if (request.method === "GET") return Response.json({ hold: getProjectMemoryHold(sql, projectId) ?? null });
+    if (request.method === "DELETE") return Response.json({ cleared: clearProjectMemoryHold(sql, projectId) });
+    if (request.method !== "PUT") return Response.json({ error_code: "method_not_allowed" }, { status: 405 });
+    const actorId = params.get("actor_id") ?? "";
+    let body: { reason?: unknown; expires_at?: unknown };
+    try { body = await request.json() as typeof body; } catch { return Response.json({ error_code: "invalid_memory_hold" }, { status: 400 }); }
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    let expiresAt: string | null = null;
+    if (body.expires_at !== undefined && body.expires_at !== null) {
+      const ms = typeof body.expires_at === "string" ? Date.parse(body.expires_at) : NaN;
+      if (!Number.isFinite(ms) || ms <= Date.now()) return Response.json({ error_code: "invalid_memory_hold" }, { status: 400 });
+      expiresAt = new Date(ms).toISOString();
+    }
+    if (!actorId || actorId.length > 128 || !reason || reason.length > 500)
+      return Response.json({ error_code: "invalid_memory_hold" }, { status: 400 });
+    return Response.json({ hold: setProjectMemoryHold(sql, { projectId, reason, actorId, expiresAt }, Date.now()) });
+  }
+
+  private async armProjectMemoryAlarm(atMs: number): Promise<void> {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > atMs) await this.ctx.storage.setAlarm(atMs);
+  }
+
+  /** D9 sweep host: bounded per pass, counts-only log, re-armed while tombstones remain. */
+  async alarm(): Promise<void> {
+    const sql = this.ctx.storage.sql as never;
+    let more = false;
+    if (this.env.PROJECT_MEMORY_RETENTION_ENABLED === "true") {
+      const result = sweepDeletedProjectMemory(sql, Date.now());
+      more = result.more;
+      if (result.rows || result.projects) console.log(`[project-memory-retention] projects=${result.projects} rows=${result.rows}`);
+    }
+    if (more) await this.armProjectMemoryAlarm(Date.now() + 60_000);
+    else if (hasPendingProjectMemoryTombstones(sql)) await this.armProjectMemoryAlarm(Date.now() + 86_400_000);
   }
 
   private async recordProjectFabric(
