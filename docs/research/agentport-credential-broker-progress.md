@@ -426,3 +426,35 @@ are separate. Managed AgentMail credit reservations cover provision/renew, not e
 verified existing tenant budget/payer/price contract for message sends before adding Naelao charges;
 otherwise record that missing contract as a blocker. Provider reconciliation remains blocked on a
 verified outcome lookup/retry procedure.
+
+## CB06 — Local control review complete; external contracts remain (2026-11-25)
+
+The CB06 local pass is complete through `4db9426c`. Source and fixture review covers standing-mode
+approval, recipient allowlisting, AgentPort account/service/agent/grant/expiry checks, atomic daily
+send admission, identical-key claim races, changed-payload conflicts, timeout fencing, pre-dispatch
+claim cleanup, callback claim/ack/replay, bounded send results, temporary-key cleanup and
+credential/log leakage. AgentPort action receipts remain separate from the local AgentMail send
+effect receipt, and owner status reports indeterminate send count without exposing hashes or
+content. Focused AgentMail and scoped-erasure tests pass **28/28**; Agents typecheck and
+`git diff --check` pass. No provider operation or deployment ran.
+
+Approval and request-count limits are implemented. Managed-service credits reserve AgentMail
+provisioning and renewal, but not individual messages. `managed_service_cost_budgets.ts` documents
+its threshold as a dashboard warning and does not gate provider dispatch. The AgentMail usage
+snapshot exposes quantities, not monetary cost; the repo contains no verified AgentMail per-send
+rate, invoice ingestion, tenant payer allocation or owner-approved currency cap. A monetary budget
+cannot be connected safely until those are authoritative.
+
+Provider-side recovery remains open. AgentMail's official idempotency docs describe same-key send
+retry, but there is no documented read-only lookup by key and live timeout/replay behavior is
+unaccepted. The owner status reports unresolved count while sends remain fenced. AgentPort action
+authorization does not issue an enforceable one-shot permit that spans a remote AgentMail send, so
+the cross-system grant-revocation race has no local atomic solution in the current contract.
+
+**Exact resume conditions:** obtain an authoritative AgentMail payer/rate/cost and customer-charge
+contract; separately authorize disposable provider credentials to verify child-key expiry/delete,
+idempotency and regional/billing/callback/revocation behavior and determine an accepted indeterminate
+send reconciliation procedure; and define an enforceable grant-revocation permit if atomic
+revocation is required. Deployment remains a separate authorization. Queue readiness review found no
+other plan with a newly ready local slice, so `AGENTS.md` has no current-task pointer until one of
+these dependencies changes.

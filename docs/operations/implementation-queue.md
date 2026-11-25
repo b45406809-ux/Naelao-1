@@ -1198,23 +1198,38 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   than passing through the provider response object. Idempotent replay returns the saved minimal
   receipt. A fixture includes thread, body, recipient and debug fields and verifies they are not
   returned. AgentMail plus erasure suites pass 28/28, Agents typecheck and diff hygiene pass.
+- [x] **CB06 local source audit — approvals, caps, action/effect audit and callback recovery.**
+  Standing autonomy and recipient allowlist are revalidated before send; AgentPort checks current
+  account/service/agent/grant and expiry and persists an action receipt; an atomic local effect
+  receipt enforces idempotency and daily count caps; signed callback receipts claim, queue, ack and
+  fence replay. Timeout remains indeterminate and visible in owner status. Focused tests above
+  verify these local controls. No standalone approval, wallet-budget or per-message monetary source
+  was found for AgentMail sends.
+- [ ] **CB06 payer/price/budget contract.** Managed-service credit reservations cover AgentMail
+  provision and renewal only. Existing managed-service cost budgets evaluate alerts and do not gate
+  dispatch. No verified per-message AgentMail cost feed/invoice import, tenant payer allocation,
+  message price, or owner-approved send cap in currency exists. Resume this slice when the provider
+  payer/rate and customer charge contract are authoritative and available to the send admission
+  path; do not create Naelao charges from a count-only ceiling.
 - [ ] **CB06 provider/live acceptance.** With separately authorized disposable AgentMail credentials,
   verify temporary-key expiry/revocation, provider idempotency, regional support, billing and
-  callback/revocation behavior. Keep deployment separate and gated by its own authorization.
+  callback/revocation behavior. Also resolve whether a provider-supported lookup or accepted retry
+  procedure can reconcile indeterminate sends and whether an enforceable cross-system revocation
+  permit exists. Keep deployment separate and gated by its own authorization.
+- [ ] **CB06 deployment acceptance.** Remains separate until the reviewed account, payer, region and
+  recovery contracts pass live acceptance and deployment is explicitly authorized.
 
-**Latest checkpoint:** CB06 now fences replay after an indeterminate send and rechecks account,
-identity and current send policy after authorization and temporary-key creation before dispatch.
-The timeout replay and policy-change race regressions pass; AgentMail plus scoped-erasure tests pass
-26/26, Agents typecheck and diff hygiene pass. AgentMail's published `Idempotency-Key` documentation
-promises replay of a completed send, but no live behavior has been accepted. CB04 temporary-key
-expiry/revocation, region, parent permission and billing acceptance also remain open. AgentPort has
-no atomic grant permit spanning provider dispatch, leaving a residual cross-system revocation race.
-**Exact next action:** finish the CB06 source pass for approval, budget, billing, action audit and
-operation recovery. Existing source enforces standing autonomy, recipient allowlist, AgentPort
-grant and daily cap; local action/effect receipts now have focused coverage. Identify whether an
-existing tenant budget applies to AgentMail message sends and record the authoritative payer/price
-contract. Do not add a charge without that contract. Keep indeterminate effect resolution blocked
-pending a verified provider reconciliation contract; keep live acceptance and deployment separate.
+**Latest checkpoint:** local CB06 controls and source audit are verified through `4db9426c`;
+AgentMail plus erasure suites pass **28/28**, Agents typecheck and diff hygiene pass. The pushed
+slices cover indeterminate replay, current policy rechecks, callback replay, cross-tenant and grant
+expiry boundaries, payload substitution, early unknown-action rejection, credential/result
+redaction, atomic duplicate-send and daily-cap admission, outcome accuracy, and owner-visible
+reconciliation state. AgentMail's published idempotency retry documentation is not live acceptance.
+No per-message cost/payer contract, documented send lookup, or atomic AgentPort-to-provider
+revocation permit exists. The queue-wide review found no independent local task ready. **Exact next
+action:** resume the payer/price task when its authoritative contract is available; resume provider
+acceptance only with separately authorized disposable credentials; keep deployment as a distinct
+authorization gate. The queue remains blocked with work open.
 
 ## Ordered plan list
 
@@ -1235,7 +1250,7 @@ ledgers when moving to another plan.
 10. [ ] **Paused; no current code-ready task.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md). TBR08's workflow-resource dispatch slice is locally fixed; broad channel/provider/cache/delegation acceptance remains partial. TBR11's direct-script per-effect ceiling needs an owner-approved admission contract; role-to-resource mapping and private-Project policy remain unresolved.
 11. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
 12. [ ] **Source reconciled; provider work remains gated by terms, API and pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
-13. [ ] **Active; local host-proxy slice ready.** [AgentPort credential broker and constrained provider actions](../research/agentport-credential-broker-plan.md) · [CB ledger](../research/agentport-credential-broker-progress.md). CB01 is complete; continue CB02 using the scoped internal AgentMail tool route. CB4A remains an expired informational draft; derivative credentials and rollout require verified API, terms and live evidence.
+13. [ ] **Blocked; CB01–CB05 and CB06 local controls are verified.** [AgentPort credential broker and constrained provider actions](../research/agentport-credential-broker-plan.md) · [CB ledger](../research/agentport-credential-broker-progress.md). CB06 still needs the authoritative managed-send payer/price/budget contract, provider reconciliation and revocation acceptance with separately authorized disposable credentials, and a separate deployment authorization. CB4A remains an expired informational draft.
 14. [ ] **Source reconciled; provider work remains gated by API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
 15. [ ] **Paused; source and focused local regression tests verified; migration/live acceptance blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Resume on the separate migration authorization, configured test-account and provider/UI acceptance dependencies recorded above.
 16. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
@@ -1289,6 +1304,31 @@ usage/invoice evidence. The other paused plans retain the specific policy, provi
 deployed-evidence dependencies in the table. I found no independent local implementation,
 integration or verification task ready. The queue remains blocked with work open; deployment and live
 acceptance remain separate, and rollout gates stay disabled. Resume when a listed dependency changes.
+
+## Final queue readiness review — 2026-11-25 (after AgentPort credential broker local controls)
+
+The CB06 local implementation and audit are complete through commit `4db9426c`. The focused
+AgentMail and erasure suites pass **28/28**, Agents typecheck and diff hygiene pass. The source pass
+confirms standing autonomy/recipient checks, current AgentPort account/service/agent/grant/expiry
+authorization, atomic daily admission, durable local send and action receipts, signed callback
+replay fencing, bounded result handling, credential redaction and owner-visible unknown state.
+CB06 remains open for three concrete reasons: there is no verified per-message provider price,
+tenant payer allocation or invoice/cost feed to connect a monetary budget; AgentMail has no
+documented read-only send lookup by idempotency key and its documented retry behavior has not been
+live accepted; and AgentPort exposes no enforceable one-shot revocation permit spanning remote
+provider dispatch. Live expiry, revocation latency, regional support and billing acceptance require
+separately authorized disposable credentials. Deployment remains a separate authorization gate.
+
+I reviewed every other unchecked plan against the current ordered plan list, the 2026-11-24
+readiness table and each linked latest owner ledger. No dependency changed and no independent local
+implementation or verification task became ready: APW/PW need owner-approved contracts or staging
+receipts; S/U and SPR need supported providers, jurisdiction configuration or live Cloudflare
+receipts; SC needs durable consent/cap contracts; K/EP/TBR/P need their recorded identity, price,
+policy, practitioner or deployed-evidence prerequisites; AgentPort messaging and AgentPhone need
+verified terms/API/payer/region contracts; WhatsApp needs migration authorization and test account;
+the two prototypes need practitioner-approved scope. The CB06 status and provider work remain open.
+The queue is blocked with work remaining and rollout/deployment disabled. Resume when one of these
+exact dependencies changes; keep `AGENTS.md` without an active pointer until then.
 
 ## Checkpoint archive
 

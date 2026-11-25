@@ -23,15 +23,6 @@ session, or a specific blocker leaves no ready work.
    the commit. If the environment is still starting or reconnecting, wait for readiness and
    resume from the checkout when it returns.
 
-## Current task
-
-**CB06 — Verify local credential broker controls and recovery.** Resume from the active
-checklist in [implementation-queue.md](docs/operations/implementation-queue.md#active-plan--agentport-credential-broker).
-Start with AgentMail send replay after an indeterminate provider result. Prevent a second dispatch
-until reconciliation and add focused timeout/replay verification. Continue reviewing local cross-
-tenant, grant, policy, callback, leakage and revocation-race controls; track provider acceptance and
-deployment separately.
-
 ## Save progress inside each task
 
 - Break the active task into small slices that can be checked on their own. Commit and push
