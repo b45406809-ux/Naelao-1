@@ -1255,6 +1255,7 @@ ledgers when moving to another plan.
 15. [ ] **Paused; source and focused local regression tests verified; migration/live acceptance blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Resume on the separate migration authorization, configured test-account and provider/UI acceptance dependencies recorded above.
 16. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
 17. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
+18. [ ] **Queued for product discovery.** [Founder Growth TODO](../research/founder-growth-todo.md). First action is to collect recent first-hand evidence from multiple founder channels and group it by recurring workflow. Use that evidence to pick a paid managed pilot in a founder-owned Space before packaging a template.
 
 ## Queue readiness review — 2026-11-24 (after `4e040d97`)
 
