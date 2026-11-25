@@ -2173,8 +2173,18 @@ export interface ProjectExtensionResourceGrantSnapshot {
   grants: ProjectExtensionResourceGrant[];
   object_usage: { object_count: number; bytes: number };
 }
+export type ProjectExtensionCapStatus = "ok" | "warning" | "reached" | null;
+export function projectExtensionCapStatusLabel(status: ProjectExtensionCapStatus | undefined) {
+  if (status === "reached") return "monthly cap reached; new work is refused until the window or cap changes";
+  if (status === "warning") return "at least 80% of the monthly cap is used";
+  if (status === "ok") return "within the monthly cap";
+  return "no monthly cap approved";
+}
 export interface ProjectExtensionResourceUsageSnapshot {
   installation_id: string; generation: number;
+  estimated_unit_credits: { estimate_only: true; credits: number; price_version: string;
+    breakdown: { invocations: number; job_units: number; bytes: number } };
+  cap_status: ProjectExtensionCapStatus;
   credit_usage: { window_start: string; unit: "internal_credits"; settled_credits: number; held_credits: number;
     monthly_cap: number | null; remaining_credits: number | null; budget_revision: number | null };
   resource_units: { window_start: string; invocations: number; job_units: number; request_response_bytes: number };

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { approveProjectExtensionResourceGrant, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, hasReviewableProjectExtensionResources, projectExtensionSetupStatusLabel, reviewProjectExtensionUpdate, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget } from "./api";
+import { approveProjectExtensionResourceGrant, getProjectExtensionResourceGrants, getProjectExtensionResourceUsage, hasReviewableProjectExtensionResources, projectExtensionCapStatusLabel, projectExtensionSetupStatusLabel, reviewProjectExtensionUpdate, revokeProjectExtensionResourceGrant, setProjectExtensionResourceBudget } from "./api";
 
 describe("Project extension resource grant caller", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -29,6 +29,21 @@ describe("Project extension resource grant caller", () => {
     expect(new URL(url).pathname).toBe("/v1/spaces/space%20one/projects/project%2F1/extension-installations/install%3A1/resource-grants/usage");
     expect(init.cache).toBe("no-store");
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer session-token");
+  });
+
+  it("parses the estimate-only unit credits and cap status from the usage snapshot", async () => {
+    const usage = { installation_id: "install:1", generation: 3, cap_status: "warning",
+      estimated_unit_credits: { estimate_only: true, credits: 7, price_version: "ext-units-2026-11-25", breakdown: { invocations: 2, job_units: 3, bytes: 2 } },
+      credit_usage: { window_start: "2026-11-01 00:00:00", unit: "internal_credits", settled_credits: 800, held_credits: 0, monthly_cap: 1000, remaining_credits: 200, budget_revision: 1 },
+      resource_units: { window_start: "2026-11-01 00:00:00", invocations: 101, job_units: 3, request_response_bytes: 104857601 }, operations: [], receipts: [] };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(usage)));
+    const result = await getProjectExtensionResourceUsage("space", "project", "install:1", { sessionToken: "session-token", endUserId: "project-owner" });
+    expect(result.estimated_unit_credits).toEqual(usage.estimated_unit_credits);
+    expect(result.cap_status).toBe("warning");
+    expect(projectExtensionCapStatusLabel(result.cap_status)).toBe("at least 80% of the monthly cap is used");
+    expect(projectExtensionCapStatusLabel("reached")).toContain("reached");
+    expect(projectExtensionCapStatusLabel("ok")).toBe("within the monthly cap");
+    expect(projectExtensionCapStatusLabel(null)).toBe("no monthly cap approved");
   });
 
   it("submits the exact install generation and current manifest pin for a read-only candidate review", async () => {

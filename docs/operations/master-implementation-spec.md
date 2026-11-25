@@ -473,13 +473,14 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** `pnpm --filter <billing-core package name> exec vitest run src/credits.test.ts` and typecheck pass.
 - **Result:** this commit. `EXTENSION_RESOURCE_UNIT_PRICES` (`ext-units-2026-11-25`) and `priceExtensionResourceUnits` added to `credits.ts` and exported from the package index; existing rate card untouched. `credits.test.ts` 11/11 (focused); `@naelao/billing-core` full suite 62/62 (14 files); typecheck clean; `git diff --check` clean. Local/mock only, no live pricing.
 
-### - [ ] MS-15 — Owner usage view: estimated credits and cap warning
+### - [x] MS-15 — Owner usage view: estimated credits and cap warning
 
 - **Queue:** item 9, EP06. **Model:** Haiku. **Decision:** D8. **Needs:** MS-14.
 - **Start here:** `workers/spaces/src/index.ts` route for `projectExtensionResourceUsagePath` (~l.6832; it sums this month's invocations, job units and bytes and compares settled `infra_credits` + holds with the cap). Shell caller in `apps/shell/src/lib/resource-grants-api.ts` and its test.
 - **Do:** add to the JSON response `estimated_unit_credits` (from `priceExtensionResourceUnits`, with `price_version`), and `cap_status`: `"ok"`, `"warning"` (used+held ≥ 80% of the monthly cap) or `"reached"` (≥ 100%). Label it estimate-only; this route charges nothing. Show `cap_status` and the estimate in the existing Shell owner usage panel (find it from the API caller).
 - **Tests:** route test for each `cap_status` boundary (79%, 80%, 100%) and the estimate field; Shell API parser test.
 - **Done:** focused tests, **full** `naelao-spaces` suite (only the 5 known pre-existing failures), typechecks.
+- **Result:** this commit. Usage route adds `estimated_unit_credits` (estimate-only, `ext-units-2026-11-25`, never added to settled or held credits) and `cap_status` (`ok` / `warning` at settled+held >= 80% / `reached` at >= 100% of the monthly cap; `null` with no approved cap). Shell owner panel shows cap status and the estimate. New route tests cover 79%, 80%, 100% boundaries, the estimate and no-cap. `project-extension-agent-maintenance` 10/10 (its exact-match receipts assertion was stale and is now partial, and its usage-query check is by value); `resource-grants-api` 6/6; full `naelao-spaces` 754 pass / 5 fail (4 known pre-existing: executive-contacts, gadget-mcp-crud x2, project-extension-lifecycle; plus `extension-schema-update` concurrent-retry test, which passes 3/3 in isolation). Spaces typecheck clean; Shell tsc 142 errors, identical set to baseline, none under `.next/types`; `git diff --check` clean. Local/mock only, nothing charged.
 
 ### - [ ] MS-16 — Charge priced resource units inside the run reservation
 

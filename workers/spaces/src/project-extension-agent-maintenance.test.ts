@@ -8,7 +8,13 @@ const proposalPath = "/spaces/space-a/projects/project-a/extension-installations
 const resourceGrantPath = "/spaces/space-a/projects/project-a/extension-installations/instance-a/resource-grants";
 const resourceBudgetPath = `${resourceGrantPath}/budget`;
 
-function setup(options: { projectOwner?: string; readable?: boolean; publisherActive?: boolean; trusted?: boolean; usageRows?: unknown[] } = {}) {
+type UsageAggregate = { window_start: string; settled_credits: number; resource_invocations: number; resource_job_units: number;
+  request_response_bytes: number; invalid_resource_unit_rows: number; held_credits: number };
+const zeroUsage: UsageAggregate = { window_start: "2026-11-01 00:00:00", settled_credits: 0, resource_invocations: 0,
+  resource_job_units: 0, request_response_bytes: 0, invalid_resource_unit_rows: 0, held_credits: 0 };
+
+function setup(options: { projectOwner?: string; readable?: boolean; publisherActive?: boolean; trusted?: boolean; usageRows?: unknown[];
+  usage?: Partial<UsageAggregate>; budget?: { max_run_credits: number; monthly_credits: number; revision: number; installation_generation: number } | null } = {}) {
   const forwarded: Request[] = [];
   const usageQueries: unknown[][] = [];
   const installation = {
@@ -28,7 +34,8 @@ function setup(options: { projectOwner?: string; readable?: boolean; publisherAc
       if (url.pathname === "/projects/project-a/automation-access") return options.readable === false
         ? Response.json({ error_code: "forbidden" }, { status: 403 }) : Response.json({ project_id: "project-a", can_read: true });
       if (url.pathname === "/extension-resource-grants") return Response.json({ installation: { instance_id: "instance-a", extension_id: "ext_project_voice",
-        tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", generation: 4, manifest_sha256: "a".repeat(64) }, requirements: [], grants: [], operation_usage: [] });
+        tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", generation: 4, manifest_sha256: "a".repeat(64) }, requirements: [], grants: [], operation_usage: [],
+        budget: options.budget === undefined ? null : options.budget });
       if (url.pathname === "/workflow-installation") return options.trusted === false
         ? Response.json({ error_code: "not_found" }, { status: 404 }) : Response.json(installation);
       return Response.json({ forwarded: true, method: request.method, path: url.pathname });
@@ -36,7 +43,8 @@ function setup(options: { projectOwner?: string; readable?: boolean; publisherAc
   };
   const env = {
     PLATFORM_SECRET: secret,
-    PLATFORM_DB: { prepare: (sql: string) => ({ bind: (...values: unknown[]) => ({ first: async () => options.publisherActive === false ? null : { active: 1 },
+    PLATFORM_DB: { prepare: (sql: string) => ({ bind: (...values: unknown[]) => ({ first: async () => sql.includes("scoped_month_usage")
+        ? { ...zeroUsage, ...options.usage } : options.publisherActive === false ? null : { active: 1 },
       all: async () => { usageQueries.push(values); return { results: sql.includes("extension_resource_jobs") ? options.usageRows ?? [] : [] }; } }) }) },
     SPACE_DO: { idFromName: (name: string) => name, get: () => stub },
   } as never;
@@ -131,12 +139,52 @@ describe("Project extension agent maintenance routes", () => {
     const owner = setup({ projectOwner: "project-owner", usageRows: [row] });
     const response = await call(owner.env, `${resourceGrantPath}/usage`, { userId: "project-owner", role: "editor" });
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ installation_id: "instance-a", generation: 4, operations: [], receipts: [row] });
-    expect(owner.usageQueries[0]).toEqual(["tenant-a", "space-a", "project-a", "instance-a", "ext_project_voice", "a".repeat(64), 4]);
+    await expect(response.json()).resolves.toMatchObject({ installation_id: "instance-a", generation: 4, operations: [], receipts: [row] });
+    expect(owner.usageQueries).toContainEqual(["tenant-a", "space-a", "project-a", "instance-a", "ext_project_voice", "a".repeat(64), 4]);
 
     const denied = setup({ projectOwner: "different-owner", usageRows: [row] });
     expect((await call(denied.env, `${resourceGrantPath}/usage`, { userId: "editor-a", role: "editor" })).status).toBe(403);
     expect(denied.usageQueries).toHaveLength(0);
+  });
+
+  it("shows estimated unit credits and cap status at the 79%, 80% and 100% boundaries", async () => {
+    const budget = { max_run_credits: 200, monthly_credits: 1000, revision: 1, installation_generation: 4 };
+    const cases: Array<[Partial<UsageAggregate>, string]> = [
+      [{ settled_credits: 500, held_credits: 289 }, "ok"],
+      [{ settled_credits: 500, held_credits: 300 }, "warning"],
+      [{ settled_credits: 999, held_credits: 0 }, "warning"],
+      [{ settled_credits: 600, held_credits: 400 }, "reached"],
+      [{ settled_credits: 1200, held_credits: 0 }, "reached"],
+    ];
+    for (const [usage, expected] of cases) {
+      const owner = setup({ projectOwner: "project-owner", budget, usage });
+      const response = await call(owner.env, `${resourceGrantPath}/usage`, { userId: "project-owner", role: "editor" });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { cap_status: string; credit_usage: { monthly_cap: number } };
+      expect(body.cap_status).toBe(expected);
+      expect(body.credit_usage.monthly_cap).toBe(1000);
+    }
+  });
+
+  it("reports an estimate from the versioned price table without charging anything", async () => {
+    const budget = { max_run_credits: 200, monthly_credits: 1000, revision: 1, installation_generation: 4 };
+    const owner = setup({ projectOwner: "project-owner", budget,
+      usage: { resource_invocations: 101, resource_job_units: 3, request_response_bytes: 104_857_601, settled_credits: 10 } });
+    const response = await call(owner.env, `${resourceGrantPath}/usage`, { userId: "project-owner", role: "editor" });
+    const body = await response.json() as { estimated_unit_credits: unknown; cap_status: string; credit_usage: { settled_credits: number; held_credits: number } };
+    expect(body.estimated_unit_credits).toEqual({ estimate_only: true, credits: 7, price_version: "ext-units-2026-11-25",
+      breakdown: { invocations: 2, job_units: 3, bytes: 2 } });
+    expect(body.cap_status).toBe("ok");
+    expect(body.credit_usage.settled_credits).toBe(10);
+    expect(body.credit_usage.held_credits).toBe(0);
+  });
+
+  it("reports no cap status when no monthly cap is approved", async () => {
+    const owner = setup({ projectOwner: "project-owner", budget: null, usage: { settled_credits: 5000 } });
+    const response = await call(owner.env, `${resourceGrantPath}/usage`, { userId: "project-owner", role: "editor" });
+    const body = await response.json() as { cap_status: unknown; estimated_unit_credits: { credits: number } };
+    expect(body.cap_status).toBeNull();
+    expect(body.estimated_unit_credits.credits).toBe(0);
   });
 
   it("allows only the exact Project owner to set an installation resource budget", async () => {

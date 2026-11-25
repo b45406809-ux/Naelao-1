@@ -28,7 +28,7 @@ import { dispatchPendingProductAccountSecurityOutbox } from "./product-account-s
 import { dispatchPendingProductAuthEmails } from "./product-auth-email-outbox.js";
 import type { ProvisionMessage } from "./create-space.js";
 import { requireSpaceMembership, resolveEndUserSpaceRole } from "./space-auth.js";
-import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, priceExtensionResourceUnits } from "@naelao/billing-core";
 import { registerProjectMcpRoutes } from "./routes/mcp.js";
 import { extensionRuntimeWork, registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
 import { registerExtensionGadgetRoutes } from "./routes/extension-gadget.js";
@@ -6918,10 +6918,23 @@ app.get(projectExtensionResourceUsagePath, async c => {
       .bind(identity.tenantId, spaceId, projectId, instanceId, install.extension_id, install.manifest_sha256, install.generation)
       .all<{ job_id: string; requirement_id: string; status: string; dispatch_attempts: number; payload_bytes: number;
         deadline_at: number; created_at: number; updated_at: number; started_at: number | null; completed_at: number | null }>();
+    // Estimate only: this view charges nothing. Priced units are charged inside the run reservation (MS-16),
+    // so the estimate is never added to settled or held credits. The cap status uses the same
+    // settled + held window as the admission check: >=80% warns, >=100% means the cap is reached.
+    const unitPrice = priceExtensionResourceUnits({ invocations: resourceInvocations, jobUnits: resourceJobUnits, bytes: requestResponseBytes });
+    const monthlyCap = budget?.monthly_credits ?? null;
+    const usedCredits = settledCredits + heldCredits;
+    const capStatus = monthlyCap === null ? null
+      : usedCredits >= monthlyCap ? "reached" as const
+      : usedCredits * 100 >= monthlyCap * 80 ? "warning" as const : "ok" as const;
     return c.json({ installation_id: instanceId, generation: install.generation,
+      estimated_unit_credits: { estimate_only: true as const, credits: unitPrice.credits,
+        breakdown: { invocations: unitPrice.breakdown.invocations, job_units: unitPrice.breakdown.jobUnits, bytes: unitPrice.breakdown.bytes },
+        price_version: unitPrice.priceVersion },
+      cap_status: capStatus,
       credit_usage: { window_start: usageRow.window_start, unit: "internal_credits" as const,
         settled_credits: settledCredits, held_credits: heldCredits,
-        monthly_cap: budget?.monthly_credits ?? null,
+        monthly_cap: monthlyCap,
         remaining_credits: budget ? Math.max(0, budget.monthly_credits! - settledCredits - heldCredits) : null,
         budget_revision: budget?.revision ?? null },
       resource_units: { window_start: usageRow.window_start, invocations: resourceInvocations, job_units: resourceJobUnits,
