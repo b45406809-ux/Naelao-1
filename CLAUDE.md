@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-19**: Bill Naelao-managed AgentMail sends.
-MS-01 to MS-18 are done; MS-19 to MS-25 implement the owner-approved decisions D8 (prices and caps),
+Master implementation spec, **MS-20**: Worker-branch retention in the Coordinator.
+MS-01 to MS-19 are done; MS-20 to MS-25 implement the owner-approved decisions D8 (prices and caps),
 D9 (retention) and D10 (preferences). Follow [the spec](docs/operations/master-implementation-spec.md).
 Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 

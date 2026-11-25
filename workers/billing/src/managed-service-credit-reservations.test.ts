@@ -437,6 +437,39 @@ describe("managed service credit reservations", () => {
     expect((await h.post("/internal/managed-services/credits/reserve",renewal)).status).toBe(403);
   });
 
+  it("admits a quote-less AgentMail send only with an admitted operation, entitlement and scoped mandate, and still requires quotes for provision and renew",async()=>{
+    const h = harness();
+    enableAgentMailEntitlement(h.db.db);
+    h.db.db.prepare(`UPDATE managed_service_capability_versions SET operations_json='["provision","renew","send"]' WHERE provider='agentmail' AND service_id='agentmail' AND version=1`).run();
+    h.db.db.prepare(`INSERT INTO managed_service_plan_entitlements(
+      plan_tier,provider,service_id,capability_version,operation_name,region,price_version,max_credits_per_operation,credits_per_operation,max_operations_per_period,status,verified_by,verified_at,valid_until,created_at,updated_at)
+      VALUES('free','agentmail','agentmail',1,'send','us','agentmail-send-v1',50,5,NULL,'active','test-operator',datetime('now'),'2099-01-01T00:00:00.000Z',datetime('now'),datetime('now'))`).run();
+    const send = { reservation_id: "agentmail-send-rsv-a", operation_id: "agentmail-send-op-a", space_id: "space-a", provider: "agentmail", service_id: "agentmail",
+      operation_name: "send", region: "us", payer_type: "organization", payer_id: "org-a", agentport_agent_id: "agent-a", credits: 5, price_version: "agentmail-send-v1" };
+    const mandate = (scopes: string[]) => h.db.db.prepare(`INSERT INTO managed_service_payer_mandates(id,tenant_id,payer_type,payer_id,mandate_key,authorized_by_user_id,
+      operation_scopes_json,max_credits_per_operation,auto_renew,status,created_at,updated_at,agentport_agent_id,max_credits_per_period,period_days)
+      VALUES('mandate-send','org-a','organization','org-a','agentmail-send:agent-a','user-a',?,50,0,'active',datetime('now'),datetime('now'),'agent-a',10000,30)`).run(JSON.stringify(scopes));
+    // No admitted operation row: refused even though price and entitlement exist.
+    mandate(["agentmail:agentmail:send"]);
+    expect((await h.post("/internal/managed-services/credits/reserve", send)).status).toBe(409);
+    h.db.db.prepare(`INSERT INTO managed_service_operations(operation_id,tenant_id,space_id,provider,service_id,operation_name,region,capability_version,idempotency_key,request_sha256,status,created_at,updated_at)
+      VALUES(?,'org-a',?,'agentmail','agentmail','send','us',1,?,?, 'running',datetime('now'),datetime('now'))`).run(send.operation_id, send.space_id, send.operation_id, "1".repeat(64));
+    const held = await h.post("/internal/managed-services/credits/reserve", send);
+    expect(held.status).toBe(201);
+    expect(await held.json()).toMatchObject({ reserved: true, status: "held", credits: 5 });
+    expect(h.db.db.prepare("SELECT quote_id,credits,status FROM managed_service_credit_reservations WHERE id=?").get(send.reservation_id)).toEqual({ quote_id: null, credits: 5, status: "held" });
+    expect((await h.post("/internal/managed-services/credits/reserve", send)).status).toBe(200);
+    // A mandate without the send scope refuses.
+    h.db.db.prepare("DELETE FROM managed_service_credit_reservations").run();
+    h.db.db.prepare(`UPDATE managed_service_payer_mandates SET operation_scopes_json='["agentmail:agentmail:provision"]'`).run();
+    expect((await h.post("/internal/managed-services/credits/reserve", send)).status).toBe(403);
+    // Provision and renew keep their quote requirement.
+    const provision = { ...send, reservation_id: "agentmail-prov-rsv", operation_id: "agentmail-prov-op", operation_name: "provision", credits: 300, price_version: "agentmail-rental-v1" };
+    expect((await h.post("/internal/managed-services/credits/reserve", provision)).status).toBe(400);
+    const renew = { ...provision, reservation_id: "agentmail-renew-rsv", operation_id: "agentmail-renew-op", operation_name: "renew" };
+    expect((await h.post("/internal/managed-services/credits/reserve", renew)).status).toBe(400);
+  });
+
   it("requires an exact AgentMail quote and replays it after active price changes",async()=>{
     const h=harness();allowAgentMailPayer(h.db.db);createOperation(h.db.db,reservation);
     const noQuote=await h.post("/internal/managed-services/credits/reserve",{...reservation,quote_id:undefined,requester_user_id:undefined});

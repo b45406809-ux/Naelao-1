@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { mintInternalToken } from "@naelao/http";
 import type { AgentsEnv } from "../index.js";
 import { connectUserAgentMail,callAgentMailTool,createManagedAgentMailQuote,provisionManagedAgentMail,getAssistantAgentMailStatus,getAgentPortThreadAssistantRoutes,receiveAgentPortNotification,sweepManagedAgentMailRentals,sweepManagedAgentMailReconciliations,stopManagedAgentMailRenewal,revokeAgentPortOwnerLink,setAgentPortEventAssistant,setAgentPortThreadAssistant } from "./agentmail.js";
-import { ensureIdentity,ensureAgentPortAssistantIdentity } from "./core.js";
+import { ensureIdentity,ensureAgentPortAssistantIdentity,sealCommunication } from "./core.js";
 import { registerCommunicationRoutes } from "./routes.js";
 import { eraseCommunicationIdentities } from "./erasure.js";
 import { fixture,scope } from "../../../../tests/fixtures/assistant-communications.js";
@@ -1094,5 +1094,150 @@ describe("MS-12 remaining local controls",()=>{
     expect(provider.calls).toMatchObject({keyCreates:1,keyDeletes:1,sendCalls:0});
     expect(await f.db.prepare("SELECT status FROM assistant_agentmail_sends WHERE connection_id=?").bind(conn.accountId).first())
       .toBeNull();
+  });
+});
+
+describe("MS-19 managed AgentMail send billing",()=>{
+  afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks();});
+  const allowed="allowed@example.test";
+  type BillingCall={action:string;body:Record<string,unknown>};
+  async function ms19Setup(f:ReturnType<typeof fixture>,label:string,opts:{mode?:"naelao_managed"|"user_connected";flag?:boolean;price?:number|null;reserve?:()=>Response|Promise<Response>;daily?:number}={}){
+    const identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
+    const mode=opts.mode??"naelao_managed",accountId=`mail-ms19-${label}`,inboxId=`inbox-ms19-${label}`;
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,agentport_account_id,
+      owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'user',?,?,?,'active',datetime('now'),datetime('now'))`)
+      .bind(accountId,"tenant","space",identity.id,agentId,`account-ms19-${label}`,mode,inboxId,`${label}@example.test`).run();
+    await f.db.prepare("UPDATE assistant_communication_identities SET autonomy_json=? WHERE id=?")
+      .bind(JSON.stringify({mode:"standing",recipients:[allowed],dailySendLimit:opts.daily??10}),identity.id).run();
+    await f.db.prepare(`UPDATE managed_service_capability_versions SET status='verified',verified_by='test-operator',verified_at=?,valid_until='2099-01-01T00:00:00.000Z',regions_json='["us"]'
+      WHERE provider='agentmail' AND service_id='agentmail' AND version=1`).bind(new Date().toISOString()).run();
+    if(opts.price!==null)await f.db.prepare(`INSERT INTO managed_service_plan_entitlements(
+      plan_tier,provider,service_id,capability_version,operation_name,region,price_version,max_credits_per_operation,credits_per_operation,
+      max_operations_per_period,status,verified_by,verified_at,valid_until,created_at,updated_at)
+      VALUES('free','agentmail','agentmail',1,'send','us','agentmail-send-v1',50,?,NULL,'active','test-operator',?,'2099-01-01T00:00:00.000Z',datetime('now'),datetime('now'))`)
+      .bind(opts.price??5,new Date().toISOString()).run();
+    const env=f.env as unknown as Record<string,unknown>;
+    env.AGENTMAIL_API_KEY=`parent-key-ms19-${label}`;env.AGENTMAIL_REGION="us";
+    if(opts.flag!==false)env.AGENTMAIL_SEND_BILLING_ENABLED="true";
+    const billingCalls:BillingCall[]=[];
+    const billing=vi.fn(async(request:Request)=>{
+      const action=new URL(request.url).pathname.split("/").pop()!;
+      billingCalls.push({action,body:await request.clone().json() as Record<string,unknown>});
+      if(action==="reserve"&&opts.reserve)return opts.reserve();
+      return Response.json({reserved:true,settled:true,uncertain:true,released:true});
+    });
+    env.BILLING_WORKER={fetch:billing};
+    return {accountId,inboxId,billingCalls,billing};
+  }
+  function ms19Provider(inboxId:string,send?:()=>Promise<Response>){
+    const calls={keyCreates:0,keyDeletes:0,sendCalls:0};
+    vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const request=new Request(input,init),url=new URL(request.url);
+      if(url.pathname.endsWith("/api-keys")&&request.method==="POST"){
+        const n=++calls.keyCreates,body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        return Response.json({api_key_id:`api_key_ms19_${n}`,api_key:`temp-key-ms19-${n}-9c1d2e3f4a5b`,inbox_id:inboxId,expires_at:body.expires_at,permissions:body.permissions});
+      }
+      if(url.pathname.includes("/api-keys/")&&request.method==="DELETE"){calls.keyDeletes++;return new Response(null,{status:204});}
+      if(url.pathname.endsWith("/messages/send")){calls.sendCalls++;return send?send():Response.json({message_id:`provider-message-ms19-${calls.sendCalls}`});}
+      return Response.json({});
+    }));
+    return calls;
+  }
+  const send=(f:ReturnType<typeof fixture>,key:string,to=allowed)=>callAgentMailTool(f.env,scope,"agentmail.send",{to,subject:"Hi",text:"Hello",idempotency_key:key});
+  const sendRow=(f:ReturnType<typeof fixture>,accountId:string)=>f.db.prepare("SELECT status FROM assistant_agentmail_sends WHERE connection_id=?").bind(accountId).all<{status:string}>();
+
+  it("reserves then settles a managed send and replays without a second reservation",async()=>{
+    const f=fixture(),s=await ms19Setup(f,"settle"),provider=ms19Provider(s.inboxId);
+    expect(await send(f,"bill-1")).toEqual({message_id:"provider-message-ms19-1"});
+    expect(s.billingCalls.map(call=>call.action)).toEqual(["reserve","uncertain","settle"]);
+    const reserve=s.billingCalls[0]!.body;
+    expect(reserve).toMatchObject({provider:"agentmail",service_id:"agentmail",operation_name:"send",region:"us",credits:5,price_version:"agentmail-send-v1",payer_type:"organization",payer_id:"tenant"});
+    expect(reserve.quote_id).toBeUndefined();
+    expect(s.billingCalls[1]!.body.reservation_id).toBe(reserve.reservation_id);
+    expect(s.billingCalls[2]!.body).toMatchObject({reservation_id:reserve.reservation_id,credits:5});
+    expect(await f.db.prepare("SELECT status,reservation_id,reserved_credits FROM managed_service_operations WHERE operation_id=?").bind(reserve.operation_id).first())
+      .toEqual({status:"complete",reservation_id:reserve.reservation_id,reserved_credits:5});
+    const replay=await send(f,"bill-1");
+    expect(replay).toMatchObject({message_id:"provider-message-ms19-1",idempotent:true});
+    expect(s.billingCalls).toHaveLength(3);
+    expect(provider.sendCalls).toBe(1);
+  });
+  it("derives the same reservation id from the same idempotency key and a different one for another key",async()=>{
+    const f=fixture(),s=await ms19Setup(f,"ids");ms19Provider(s.inboxId);
+    await send(f,"bill-a");await send(f,"bill-b");
+    const reserves=s.billingCalls.filter(call=>call.action==="reserve").map(call=>call.body.reservation_id);
+    expect(reserves).toHaveLength(2);expect(reserves[0]).not.toBe(reserves[1]);
+    expect(reserves[0]).toMatch(/^agentmail_send_rsv_naelao_[0-9a-f]{64}$/);
+  });
+  it("releases the reservation and frees the daily slot when dispatch fails before the provider call",async()=>{
+    const f=fixture(),s=await ms19Setup(f,"release",{daily:1});const provider=ms19Provider(s.inboxId);
+    // The recipient policy changes after temporary-key creation, so dispatch is denied before the provider send.
+    const original=globalThis.fetch;
+    vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const response=await original(input,init);
+      if(new URL(new Request(input,init).url).pathname.endsWith("/api-keys")&&(init?.method??"GET")==="POST")
+        await f.db.prepare("UPDATE assistant_agentmail_accounts SET status='retired' WHERE id=?").bind(s.accountId).run();
+      return response;
+    }));
+    await expect(send(f,"bill-release")).rejects.toThrow("agentmail_account_not_connected");
+    expect(provider.sendCalls).toBe(0);
+    expect(s.billingCalls.map(call=>call.action)).toEqual(["reserve","release"]);
+    expect(s.billingCalls[1]!.body).toMatchObject({outcome:"no_effect"});
+    expect((await sendRow(f,s.accountId)).results).toEqual([]);
+    expect(await f.db.prepare("SELECT status FROM managed_service_operations WHERE operation_id=?").bind(s.billingCalls[0]!.body.operation_id).first()).toEqual({status:"failed"});
+  });
+  it("marks the reservation uncertain, never settles or releases, when the provider outcome is unknown",async()=>{
+    const f=fixture(),s=await ms19Setup(f,"uncertain");
+    const provider=ms19Provider(s.inboxId,async()=>{throw new Error("simulated_provider_timeout");});
+    await expect(send(f,"bill-unknown")).rejects.toThrow("simulated_provider_timeout");
+    expect(provider.sendCalls).toBe(1);
+    expect(s.billingCalls.map(call=>call.action)).toEqual(["reserve","uncertain"]);
+    expect((await sendRow(f,s.accountId)).results).toEqual([{status:"indeterminate"}]);
+    expect(await f.db.prepare("SELECT status FROM managed_service_operations WHERE operation_id=?").bind(s.billingCalls[0]!.body.operation_id).first()).toEqual({status:"uncertain"});
+    await expect(send(f,"bill-unknown")).rejects.toThrow("agentmail_delivery_reconciliation_required");
+    expect(s.billingCalls).toHaveLength(2);
+  });
+  it("refuses with managed_service_price_unconfigured and sends nothing when no send price exists",async()=>{
+    const f=fixture(),s=await ms19Setup(f,"noprice",{price:null,daily:1}),provider=ms19Provider(s.inboxId);
+    await expect(send(f,"bill-noprice")).rejects.toThrow("managed_service_price_unconfigured");
+    expect(provider.keyCreates).toBe(0);expect(provider.sendCalls).toBe(0);
+    expect(s.billingCalls).toEqual([]);
+    expect((await sendRow(f,s.accountId)).results).toEqual([]);
+  });
+  it("does not reserve for a user-connected (BYO) account",async()=>{
+    const f=fixture(),s=await ms19Setup(f,"byo",{mode:"user_connected"});
+    const sealed=await sealCommunication(f.env,await ensureIdentity(f.env,scope),s.accountId,{apiKey:"agentmail-byo-parent-key-123456"});
+    await f.db.prepare("UPDATE assistant_agentmail_accounts SET credential_ciphertext=?,credential_iv=?,provider_region='us' WHERE id=?")
+      .bind(String(sealed.ciphertext),String(sealed.iv),s.accountId).run();
+    const provider=ms19Provider(s.inboxId);
+    const result=await callAgentMailTool(f.env,scope,"agentmail.send",{to:allowed,subject:"Hi",text:"Hello",idempotency_key:"bill-byo"},s.accountId);
+    expect(result).toMatchObject({message_id:expect.any(String)});
+    expect(provider.sendCalls).toBe(1);
+    expect(s.billingCalls).toEqual([]);
+  });
+  it("refuses without dispatch or a consumed daily slot when credits are insufficient",async()=>{
+    const f=fixture(),s=await ms19Setup(f,"broke",{daily:1,reserve:()=>Response.json({error_code:"infra_quota_exceeded"},{status:402})});
+    const provider=ms19Provider(s.inboxId);
+    await expect(send(f,"bill-broke-1")).rejects.toThrow("managed_service_billing_infra_quota_exceeded");
+    expect(provider.keyCreates).toBe(0);expect(provider.sendCalls).toBe(0);
+    expect((await sendRow(f,s.accountId)).results).toEqual([]);
+    expect(s.billingCalls.map(call=>call.action)).toEqual(["reserve"]);
+    expect(await f.db.prepare("SELECT status FROM managed_service_operations WHERE operation_id=?").bind(s.billingCalls[0]!.body.operation_id).first()).toEqual({status:"failed"});
+    // The daily slot was not consumed (limit is 1): a later send with credits available succeeds, on a fresh operation id.
+    (f.env as unknown as {BILLING_WORKER:{fetch:(request:Request)=>Promise<Response>}}).BILLING_WORKER={fetch:async request=>{
+      s.billingCalls.push({action:new URL(request.url).pathname.split("/").pop()!,body:await request.clone().json() as Record<string,unknown>});
+      return Response.json({reserved:true,settled:true,uncertain:true});}};
+    expect(await send(f,"bill-broke-1")).toMatchObject({message_id:expect.any(String)});
+    const reserves=s.billingCalls.filter(call=>call.action==="reserve");
+    expect(reserves).toHaveLength(2);
+    expect(reserves[1]!.body.operation_id).not.toBe(reserves[0]!.body.operation_id);
+  });
+  it("leaves today's behavior unchanged when the flag is off",async()=>{
+    const f=fixture(),s=await ms19Setup(f,"flagoff",{flag:false,price:null}),provider=ms19Provider(s.inboxId);
+    expect(await send(f,"bill-off")).toEqual({message_id:"provider-message-ms19-1"});
+    expect(provider.sendCalls).toBe(1);
+    expect(s.billingCalls).toEqual([]);
+    expect(await f.db.prepare("SELECT COUNT(*) AS n FROM managed_service_operations").first()).toEqual({n:0});
   });
 });

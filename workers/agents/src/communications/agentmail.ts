@@ -570,7 +570,7 @@ async function deferManagedOperationReconciliation(env:AgentsEnv,operationId:str
     .bind(errorCode,attempts,at.toISOString(),new Date(at.getTime()+delayMs).toISOString(),at.toISOString(),operationId,tenantId).run();
 }
 type ManagedAgentMailPrice={planTier:string;capabilityVersion:number;priceVersion:string;credits:number;maxCredits:number;maxOperationsPerPeriod:number|null};
-async function resolveManagedAgentMailPrice(env:AgentsEnv,scope:CommunicationScope,operation:"provision"|"renew",region:string,now=new Date()):Promise<ManagedAgentMailPrice>{
+async function resolveManagedAgentMailPrice(env:AgentsEnv,scope:CommunicationScope,operation:"provision"|"renew"|"send",region:string,now=new Date()):Promise<ManagedAgentMailPrice>{
   const org=await env.PLATFORM_DB.prepare("SELECT plan_tier FROM orgs WHERE id=? AND status='active'").bind(scope.tenantId).first<{plan_tier:string}>();
   if(!org)throw new Error("managed_service_tenant_unavailable");
   const entitlement=await env.PLATFORM_DB.prepare(`SELECT e.capability_version,e.price_version,e.credits_per_operation,e.max_credits_per_operation,e.max_operations_per_period
@@ -1022,6 +1022,58 @@ export async function connectUserAgentMail(env:AgentsEnv,scope:CommunicationScop
     .bind(new Date().toISOString(),scope.tenantId,agentId,accountId).run();
   return {connectionId:accountId,address:account.email_address,status:"active",mode:"user_connected",region,...link};
 }
+/**
+ * MS-19: reserve credits for one Naelao-managed AgentMail send. Billing's reserve handler needs no quote for `send`
+ * (quotes are required for provision/renew only) but does need an admitted `managed_service_operations` row, an
+ * active payer mandate scoped to `agentmail:agentmail:send`, and an active plan entitlement. Operation and
+ * reservation IDs derive from the send's idempotency hash; a retry after a released attempt gets the next suffix
+ * because Billing never reopens a released reservation.
+ */
+type ManagedSendBilling={scope:CommunicationScope;operationId:string;reservationId:string;credits:number};
+async function reserveManagedSendCredits(env:AgentsEnv,scope:CommunicationScope,account:AgentMailAccount,idemHash:string,requestHash:string):Promise<ManagedSendBilling>{
+  const region=account.provider_region??env.AGENTMAIL_REGION;
+  if(!region)throw new Error("managed_service_region_not_verified");
+  const price=await resolveManagedAgentMailPrice(env,scope,"send",region);
+  const base=await stableClientId(`${account.id}:send:${idemHash}`);
+  let operationId="",reuse=false;
+  for(let attempt=0;attempt<20;attempt++){
+    operationId=`agentmail_send_${base}${attempt?`_a${attempt}`:""}`;
+    const prior=await env.PLATFORM_DB.prepare("SELECT status,request_sha256 FROM managed_service_operations WHERE operation_id=? AND tenant_id=?")
+      .bind(operationId,scope.tenantId).first<{status:string;request_sha256:string}>();
+    if(!prior)break;
+    if(prior.request_sha256!==requestHash)throw new Error("managed_service_operation_conflict");
+    if(prior.status==="failed"){operationId="";continue;}
+    if(prior.status==="running"||prior.status==="pending"){reuse=true;break;}
+    throw new Error("agentmail_delivery_reconciliation_required");
+  }
+  if(!operationId)throw new Error("managed_service_operation_conflict");
+  const reservationId=`agentmail_send_rsv_${operationId.slice("agentmail_send_".length)}`;
+  const billingScope:CommunicationScope={...scope,role:"product_end_user"};
+  const mandateId=await ensureOrganizationPayerMandate(env,billingScope,{mandateKey:`agentmail-send:${account.agentport_agent_id}`,provider:"agentmail",serviceId:"agentmail",
+    operationName:"send",maxCreditsPerOperation:price.maxCredits,maxCreditsPerPeriod:10_000_000,periodDays:30,allowRenewal:false,agentPortAgentId:account.agentport_agent_id});
+  const at=new Date().toISOString();
+  if(!reuse)await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_operations(
+    operation_id,tenant_id,space_id,project_id,account_id,provider,service_id,capability_version,operation_name,region,idempotency_key,
+    request_sha256,status,price_version,reserved_credits,created_at,updated_at)
+    VALUES(?,?,?,?,(SELECT id FROM managed_service_accounts WHERE id=? AND tenant_id=?),'agentmail','agentmail',?,'send',?,?,?,'running',?,?,?,?)`)
+    .bind(operationId,scope.tenantId,scope.spaceId,scope.projectId??null,account.id,scope.tenantId,price.capabilityVersion,region,operationId,
+      requestHash,price.priceVersion,price.credits,at,at).run();
+  try{
+    await reserveManagedServiceCredits(env,billingScope,{reservationId,operationId,provider:"agentmail",serviceId:"agentmail",operationName:"send",region,
+      credits:price.credits,priceVersion:price.priceVersion,agentPortAgentId:account.agentport_agent_id,payerMandateId:mandateId});
+  }catch(error){
+    await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET status='failed',error_code=?,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'")
+      .bind(error instanceof Error?error.message.slice(0,100):"managed_service_reservation_failed",new Date().toISOString(),operationId,scope.tenantId).run();
+    throw error;
+  }
+  await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET reservation_id=?,updated_at=? WHERE operation_id=? AND tenant_id=?")
+    .bind(reservationId,new Date().toISOString(),operationId,scope.tenantId).run();
+  return {scope:billingScope,operationId,reservationId,credits:price.credits};
+}
+async function closeManagedSendOperation(env:AgentsEnv,billing:ManagedSendBilling,status:"complete"|"failed"|"uncertain",errorCode?:string){
+  await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET status=?,error_code=?,updated_at=? WHERE operation_id=? AND tenant_id=?")
+    .bind(status,errorCode??null,new Date().toISOString(),billing.operationId,billing.scope.tenantId).run().catch(()=>undefined);
+}
 export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,action:string,args:Record<string,unknown>,connectionId?:string){
   if(!AGENTMAIL_TOOL_ACTIONS.has(action))throw new Error("agentmail_operation_unsupported");
   const agentId=await ensureAgentPortAssistantIdentity(env,scope);
@@ -1081,17 +1133,34 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
       if(raced)throw new Error("agentmail_delivery_reconciliation_required");
       throw new Error("communication_daily_send_limit");
     }
-    let dispatchStarted=false;
+    let dispatchStarted=false,billing:ManagedSendBilling|null=null;
     try{
+      // Reservation runs after authority, idempotency and daily-limit checks and before any provider contact. A refusal here
+      // throws with dispatchStarted=false, so the catch below deletes the 'sending' row and the daily slot is not consumed.
+      if(env.AGENTMAIL_SEND_BILLING_ENABLED==="true"&&account.mode==="naelao_managed")
+        billing=await reserveManagedSendCredits(env,scope,account,idemHash,requestHash);
       const sent=await withTemporaryInboxKey(env,key,account.inbox_id,account.provider_region,"message_send",async temporaryKey=>{
         await assertAgentMailOperationAuthority(env,scope,account,args);
+        if(billing)await markManagedServiceCreditsUncertain(env,billing.scope,billing.reservationId);
         dispatchStarted=true;
         return provider(env,temporaryKey,call.path,{method:call.method,headers:{"Idempotency-Key":idem},body:JSON.stringify(payload)},account.provider_region);
       });
       await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='sent',provider_message_id=?,updated_at=? WHERE connection_id=? AND idempotency_hash=?")
         .bind(typeof sent.message_id==="string"?sent.message_id:null,new Date().toISOString(),account.id,idemHash).run();
+      if(billing){
+        // The message is already sent: a settlement failure must not fail the send. The reservation stays 'uncertain' for reconciliation.
+        const settled=await settleManagedServiceCredits(env,billing.scope,billing.reservationId,billing.credits).then(()=>true,()=>false);
+        await closeManagedSendOperation(env,billing,settled?"complete":"uncertain",settled?undefined:"managed_send_settlement_pending");
+      }
       return typeof sent.message_id==="string"?{message_id:sent.message_id}:{sent:true};
     }catch(error){
+      if(billing){
+        if(dispatchStarted)await closeManagedSendOperation(env,billing,"uncertain","agentmail_send_outcome_unknown");
+        else{
+          await releaseManagedServiceCredits(env,billing.scope,billing.reservationId,"no_effect").catch(()=>undefined);
+          await closeManagedSendOperation(env,billing,"failed",error instanceof Error?error.message.slice(0,100):"agentmail_send_not_dispatched");
+        }
+      }
       if(dispatchStarted)await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='indeterminate',updated_at=? WHERE connection_id=? AND idempotency_hash=?")
         .bind(new Date().toISOString(),account.id,idemHash).run();
       else await env.PLATFORM_DB.prepare("DELETE FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=? AND status='sending'")
