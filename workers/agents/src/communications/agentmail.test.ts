@@ -212,6 +212,8 @@ describe("AgentMail provider account boundary",()=>{
         return new Response(null,{status:204});
       }
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer temporary-send-key-123456");
+      if(url.pathname.endsWith("/messages/send"))return Response.json({message_id:"provider-message-1",thread_id:"private-thread",
+        text:"provider-private-body",to:"allowed@example.test",debug_secret:"provider-response-secret"});
       return Response.json({message_id:"provider-message-1"});
     });
     vi.stubGlobal("fetch",providerFetch);

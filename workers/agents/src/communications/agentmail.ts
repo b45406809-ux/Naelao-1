@@ -1064,7 +1064,7 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
     const requestHash=await hashString(JSON.stringify(payload)),idemHash=await hashString(idem),at=new Date().toISOString();
     const prior=await env.PLATFORM_DB.prepare("SELECT request_hash,status,provider_message_id FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=?").bind(account.id,idemHash).first<{request_hash:string;status:string;provider_message_id:string|null}>();
     if(prior&&prior.request_hash!==requestHash)throw new Error("agentmail_idempotency_conflict");
-    if(prior?.status==="sent")return {message_id:prior.provider_message_id,idempotent:true};
+    if(prior?.status==="sent")return {...(prior.provider_message_id?{message_id:prior.provider_message_id}:{sent:true}),idempotent:true};
     if(prior)throw new Error("agentmail_delivery_reconciliation_required");
     const claimed=await env.PLATFORM_DB.prepare(`INSERT INTO assistant_agentmail_sends(connection_id,idempotency_hash,request_hash,status,first_attempt_at,updated_at)
       SELECT ?,?,?, 'sending',?,? WHERE (SELECT COUNT(*) FROM assistant_agentmail_sends WHERE connection_id=?
@@ -1075,7 +1075,7 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
       const raced=await env.PLATFORM_DB.prepare("SELECT request_hash,status,provider_message_id FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=?")
         .bind(account.id,idemHash).first<{request_hash:string;status:string;provider_message_id:string|null}>();
       if(raced&&raced.request_hash!==requestHash)throw new Error("agentmail_idempotency_conflict");
-      if(raced?.status==="sent")return {message_id:raced.provider_message_id,idempotent:true};
+      if(raced?.status==="sent")return {...(raced.provider_message_id?{message_id:raced.provider_message_id}:{sent:true}),idempotent:true};
       if(raced)throw new Error("agentmail_delivery_reconciliation_required");
       throw new Error("communication_daily_send_limit");
     }
@@ -1088,7 +1088,7 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
       });
       await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='sent',provider_message_id=?,updated_at=? WHERE connection_id=? AND idempotency_hash=?")
         .bind(typeof sent.message_id==="string"?sent.message_id:null,new Date().toISOString(),account.id,idemHash).run();
-      return sent;
+      return typeof sent.message_id==="string"?{message_id:sent.message_id}:{sent:true};
     }catch(error){
       if(dispatchStarted)await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='indeterminate',updated_at=? WHERE connection_id=? AND idempotency_hash=?")
         .bind(new Date().toISOString(),account.id,idemHash).run();

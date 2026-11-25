@@ -405,3 +405,24 @@ is required before resolving an `indeterminate` receipt.
 **Exact next action:** finish CB06's local source pass for approval, budget, billing, action audit
 and operation recovery. Mark existing host integrations with fixture evidence, or record exact
 missing policies/data contracts. Keep provider outcome resolution and live acceptance separate.
+
+## CB06 — Bounded provider send response (2026-11-25)
+
+Successful `agentmail.send`, reply, reply-all and forward calls previously returned the full
+AgentMail provider response object to the assistant tool caller. They now persist the provider
+message ID and return only `{message_id}` (or `{sent:true}` if the successful response contains no
+string message ID). Replays return only the saved message ID plus the idempotent marker; no provider
+thread, message body, recipient echo or unknown response fields are forwarded.
+
+The send fixture now includes private thread/body/recipient/debug fields in AgentMail's success
+response and asserts the tool response remains the minimal receipt. Existing credential leakage
+assertions also cover parent and temporary keys. Verification: AgentMail plus scoped-erasure suites
+**28/28**, Agents typecheck and `git diff --check` pass. Local fixtures only.
+
+**Exact next action:** complete the CB06 source pass for approval, budget, billing, action audit and
+operation recovery. Current code validates standing autonomy/recipient allowlist, AgentPort grant,
+and an atomic daily send ceiling; the AgentPort authorization receipt and local send effect receipt
+are separate. Managed AgentMail credit reservations cover provision/renew, not each message. Find a
+verified existing tenant budget/payer/price contract for message sends before adding Naelao charges;
+otherwise record that missing contract as a blocker. Provider reconciliation remains blocked on a
+verified outcome lookup/retry procedure.
