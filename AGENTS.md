@@ -2,11 +2,11 @@
 
 ## Current task
 
-Subspace Blackboard Coordination, SBB04: complete end-to-end privacy and retry verification for
-handoff, fan-out, and revocation. SBB03.4 atomic bounded fan-out is locally verified; SBB03.3 is
-blocked on a signed-template symbolic-role and owner-binding contract. SBB03.2 exact assistant
-identity, SBB03.1 owner controls, SBB02 handoff, and SBB01 audit are locally verified. See [the
-active queue entry](docs/operations/implementation-queue.md#active-plan--subspace-blackboard-coordination).
+Subspace Blackboard Coordination, SBB04.2: inspect whether current resource grants can support
+separately scoped links in a handoff without adding new permissions. SBB04.1 core privacy, retry,
+fan-out and revocation tests are locally verified; SBB03.3 remains blocked on the signed-template
+symbolic-role/owner-binding contract. SBB03.4 fan-out, SBB03.2 assistant identity, SBB03.1 owner
+controls, SBB02 handoff and SBB01 audit are locally verified. See [the active queue entry](docs/operations/implementation-queue.md#active-plan--subspace-blackboard-coordination).
 
 ## Start or resume
 

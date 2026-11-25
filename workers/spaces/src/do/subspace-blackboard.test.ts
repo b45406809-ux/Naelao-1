@@ -32,14 +32,22 @@ describe("SpaceDO directed subspace blackboard", () => {
       body: JSON.stringify({ id: "route-sales-research", source_subspace_id: "dept-a", target_subspace_id: "dept-b", allowed_kinds: ["question", "completion"], allow_reply: true }),
     }));
     expect(await duplicateRoute.json()).toMatchObject({ route_id: "route-sales-research", deduplicated: true });
+    const conflictingRouteId = await space.fetch(new Request("https://space/subspace-blackboard/routes?root_space_id=root&actor_id=root-owner", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "route-sales-research", source_subspace_id: "dept-a", target_subspace_id: "dept-c", allowed_kinds: ["question", "completion"], allow_reply: true }),
+    }));
+    expect(conflictingRouteId.status).toBe(409);
     const listedRoutes = await space.fetch(new Request("https://space/subspace-blackboard/routes?root_space_id=root&subspace_id=dept-a&actor_id=root-owner"));
     expect(await listedRoutes.json()).toMatchObject({ routes: [{ route_id: "route-sales-research", can_manage: true }] });
 
     const question = await space.fetch(new Request("https://space/sub-spaces/dept-a/blackboard?root_space_id=root&actor_id=sales-editor", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ route_id: "route-sales-research", id: "q1", kind: "question", text: "Can you verify the cohort?" }),
+      body: JSON.stringify({ route_id: "route-sales-research", id: "q1", kind: "question", text: "Can you verify the cohort?", private_record_id: "must-not-cross" }),
     }));
     expect(question.status).toBe(201);
+    const questionBody = await question.json();
+    expect(questionBody).toMatchObject({ message: { id: "q1", text: "Can you verify the cohort?" } });
+    expect(questionBody).not.toHaveProperty("message.private_record_id");
     const duplicateQuestion = await space.fetch(new Request("https://space/sub-spaces/dept-a/blackboard?root_space_id=root&actor_id=sales-editor", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ route_id: "route-sales-research", id: "q1", kind: "question", text: "Can you verify the cohort?" }),
@@ -63,7 +71,7 @@ describe("SpaceDO directed subspace blackboard", () => {
   });
 
   it("hides boards from nonmembers and non-siblings, denies viewers and revokes live access", async () => {
-    const { space } = await fixture();
+    const { space, storage } = await fixture();
     const routeRequest = () => new Request("https://space/subspace-blackboard/routes?root_space_id=root&actor_id=root-owner", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ id: "route-sales-research", source_subspace_id: "dept-a", target_subspace_id: "dept-b", allowed_kinds: ["question"], allow_reply: false }),
@@ -74,6 +82,14 @@ describe("SpaceDO directed subspace blackboard", () => {
       body: JSON.stringify({ id: "route-not-sibling", source_subspace_id: "dept-a", target_subspace_id: "other-dept", allowed_kinds: ["question"], allow_reply: false }),
     }))).status).toBe(404);
 
+    for (let index = 0; index < 101; index++) storage.sql.exec(
+      `INSERT INTO subspace_blackboard_routes(id,source_subspace_id,target_subspace_id,allowed_kinds_json,allow_reply,status,route_revision,created_by,created_at,updated_at)
+       VALUES(?, 'dept-a', 'other-dept', '["question"]', 0, 'active', 1, 'legacy', '9999-12-31T00:00:00.000Z', '9999-12-31T00:00:00.000Z')`,
+      `stale-route-${String(index).padStart(3, "0")}`);
+    const participantRoutes = await space.fetch(new Request("https://space/subspace-blackboard/routes?root_space_id=root&subspace_id=dept-a&actor_id=sales-editor"));
+    expect(await participantRoutes.json()).toEqual({ routes: [{ route_id: "route-sales-research", source_subspace_id: "dept-a",
+      target_subspace_id: "dept-b", allow_reply: false, route_revision: 1, can_manage: false }], truncated: false });
+
     const viewerSend = await space.fetch(new Request("https://space/sub-spaces/dept-b/blackboard?root_space_id=root&actor_id=research-viewer", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ route_id: "route-sales-research", id: "viewer", kind: "question", text: "No" }),
@@ -81,6 +97,20 @@ describe("SpaceDO directed subspace blackboard", () => {
     expect(viewerSend.status).toBe(404);
     const strangerRead = await space.fetch(new Request("https://space/sub-spaces/dept-b/blackboard?root_space_id=root&actor_id=stranger&route_id=route-sales-research"));
     expect(strangerRead.status).toBe(404);
+
+    const forbiddenKind = await space.fetch(new Request("https://space/sub-spaces/dept-a/blackboard?root_space_id=root&actor_id=sales-editor", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ route_id: "route-sales-research", id: "forbidden-kind", kind: "secret", text: "Not declared" }),
+    }));
+    expect(forbiddenKind.status).toBe(404);
+    const unrelatedRoutes = await space.fetch(new Request("https://space/subspace-blackboard/routes?root_space_id=root&subspace_id=dept-d&actor_id=legal-member"));
+    expect(await unrelatedRoutes.json()).toEqual({ routes: [], truncated: false });
+    const unrelatedBoard = await space.fetch(new Request("https://space/sub-spaces/dept-d/blackboard?root_space_id=root&actor_id=legal-member&route_id=route-sales-research"));
+    expect(unrelatedBoard.status).toBe(404);
+
+    storage.sql.exec("DELETE FROM space_members WHERE space_id='dept-b' AND user_id='research-member'");
+    const removedMemberRead = await space.fetch(new Request("https://space/sub-spaces/dept-b/blackboard?root_space_id=root&actor_id=research-member&route_id=route-sales-research"));
+    expect(removedMemberRead.status).toBe(404);
 
     const revoked = await space.fetch(new Request("https://space/subspace-blackboard/routes/route-sales-research/revoke?root_space_id=root&actor_id=root-owner", { method: "POST" }));
     expect(revoked.status).toBe(200);
@@ -127,10 +157,10 @@ describe("SpaceDO directed subspace blackboard", () => {
     expect((await createRoute("route-sales-legal", "dept-d", ["finding"])).status).toBe(201);
     expect((await createRoute("route-sales-outsider", "other-dept", ["finding"])).status).toBe(404);
 
-    const send = (routeIds: string[], kind = "finding", id = "broadcast-1") => space.fetch(new Request(
+    const send = (routeIds: string[], kind = "finding", id = "broadcast-1", text = "Share the verified cohort total") => space.fetch(new Request(
       "https://space/sub-spaces/dept-a/blackboard/broadcast?root_space_id=root&actor_id=sales-editor", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id, route_ids: routeIds, kind, text: "Share the verified cohort total" }),
+        body: JSON.stringify({ id, route_ids: routeIds, kind, text }),
       }));
     const invalid = await send(["route-sales-research", "route-sales-outsider"]);
     expect(invalid.status).toBe(404);
@@ -149,7 +179,39 @@ describe("SpaceDO directed subspace blackboard", () => {
       { id: "broadcast-1", routeId: "route-sales-research", targetSubspaceId: "dept-b" },
     ] });
     expect(await (await send(["route-sales-research", "route-sales-finance"])).json()).toMatchObject({ deduplicated: true });
+    for (const [departmentId, actorId, routeId] of [
+      ["dept-b", "research-member", "route-sales-research"], ["dept-c", "finance-member", "route-sales-finance"],
+    ]) {
+      const board = await space.fetch(new Request(`https://space/sub-spaces/${departmentId}/blackboard?root_space_id=root&actor_id=${actorId}&route_id=${routeId}`));
+      expect(await board.json()).toMatchObject({ messages: [{ id: "broadcast-1", text: "Share the verified cohort total" }] });
+    }
+    expect((await space.fetch(new Request("https://space/sub-spaces/dept-b/blackboard?root_space_id=root&actor_id=research-member&route_id=route-sales-finance"))).status).toBe(404);
+    expect((await space.fetch(new Request("https://space/sub-spaces/dept-c/blackboard?root_space_id=root&actor_id=finance-member&route_id=route-sales-research"))).status).toBe(404);
     expect((await send(["route-sales-research"], "finding")).status).toBe(400);
     expect((await send(["route-sales-finance", "route-sales-legal"], "finding", "broadcast-1")).status).toBe(409);
+    expect((await send(["route-sales-finance", "route-sales-research"], "finding", "broadcast-1", "Changed payload")).status).toBe(409);
+
+    const revokeOneRecipient = await space.fetch(new Request("https://space/subspace-blackboard/routes/route-sales-finance/revoke?root_space_id=root&actor_id=root-owner", { method: "POST" }));
+    expect(revokeOneRecipient.status).toBe(200);
+    const hiddenRecipient = await space.fetch(new Request("https://space/sub-spaces/dept-c/blackboard?root_space_id=root&actor_id=finance-member&route_id=route-sales-finance"));
+    expect(hiddenRecipient.status).toBe(404);
+    const otherRecipient = await space.fetch(new Request("https://space/sub-spaces/dept-b/blackboard?root_space_id=root&actor_id=research-member&route_id=route-sales-research"));
+    expect(await otherRecipient.json()).toMatchObject({ messages: [{ id: "broadcast-1" }] });
+    expect((await send(["route-sales-finance", "route-sales-research"])).status).toBe(404);
+  });
+
+  it("bounds active routes per participant subspace", async () => {
+    const { space, storage } = await fixture();
+    const now = new Date().toISOString();
+    for (let index = 0; index < 100; index++) storage.sql.exec(
+      `INSERT INTO subspace_blackboard_routes(id,source_subspace_id,target_subspace_id,allowed_kinds_json,allow_reply,status,route_revision,created_by,created_at,updated_at)
+       VALUES(?, 'dept-a', 'dept-b', '["question"]', 0, 'active', 1, 'root-owner', ?, ?)`,
+      `route-limit-${String(index).padStart(3, "0")}`, now, now);
+    const response = await space.fetch(new Request("https://space/subspace-blackboard/routes?root_space_id=root&actor_id=root-owner", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "route-over-limit", source_subspace_id: "dept-a", target_subspace_id: "dept-c", allowed_kinds: ["question"], allow_reply: false }),
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "subspace_route_capacity_exceeded" });
   });
 });

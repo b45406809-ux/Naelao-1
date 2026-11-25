@@ -5,6 +5,7 @@ import spacesWorker from "../index.js";
 describe("subspace blackboard routes", () => {
   function environment() {
     const forwarded: Request[] = [];
+    const names: string[] = [];
     const stub = { fetch: vi.fn(async (request: Request) => {
       forwarded.push(request);
       const url = new URL(request.url);
@@ -14,9 +15,9 @@ describe("subspace blackboard routes", () => {
     const secret = "subspace-blackboard-route-test";
     const env = {
       PLATFORM_SECRET: secret,
-      SPACE_DO: { idFromName: (name: string) => name, get: () => stub },
+      SPACE_DO: { idFromName: (name: string) => { names.push(name); return name; }, get: () => stub },
     } as never;
-    return { env, forwarded, secret };
+    return { env, forwarded, names, secret };
   }
 
   const headers = (secret: string) => ({
@@ -82,6 +83,10 @@ describe("subspace blackboard routes", () => {
     expect(forwarded).toHaveLength(0);
 
     const token = await mintInternalToken(secret, "tenant-a");
+    const crossTenant = await spacesWorker.fetch(new Request(`${base}?route_id=route-1`, {
+      headers: { "x-naelao-tenant-id": "tenant-b", "x-naelao-agent-id": "assistant:space:dept-a", "x-naelao-internal-token": token },
+    }), env);
+    expect(crossTenant.status).toBe(403);
     const response = await spacesWorker.fetch(new Request(`${base}?route_id=route-1`, {
       headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-agent-id": "assistant:space:dept-a", "x-naelao-internal-token": token },
     }), env);
@@ -123,5 +128,20 @@ describe("subspace blackboard routes", () => {
     const assistantWrite = forwarded.filter(request => new URL(request.url).pathname === "/sub-spaces/dept-a/blackboard/broadcast").at(-1)!;
     expect(new URL(assistantWrite.url).searchParams.get("actor_id")).toBe("assistant:space:dept-a");
     expect(await assistantWrite.json()).toMatchObject({ id: "fanout-2", route_ids: ["r-b", "r-c"] });
+  });
+
+  it("keeps identical Space and actor IDs in separate tenant Durable Objects", async () => {
+    const { env, names, secret } = environment();
+    for (const tenantId of ["tenant-a", "tenant-b"]) {
+      const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/root/subspace-blackboard/routes?subspace_id=dept-a", {
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-user-id": "same-user",
+          "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, tenantId) },
+      }), env);
+      expect(response.status).toBe(200);
+    }
+    expect(names).toHaveLength(2);
+    expect(names[0]).toMatch(/:space:root$/);
+    expect(names[1]).toMatch(/:space:root$/);
+    expect(names[0]).not.toBe(names[1]);
   });
 });

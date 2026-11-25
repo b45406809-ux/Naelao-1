@@ -117,6 +117,9 @@ can read on demand.
   delivery, incomplete fan-out and revocation during a queued handoff. Verify that parent and
   recipient views, metadata, and derived counts obey the same permissions. Record production
   acceptance separately from local and staging results.
+  - [x] **SBB04.1 — Core route and fan-out privacy locally.** Tests cover tenant-HMAC mismatch, removed members, wrong assistant identity and viewer role, non-siblings, ignored extra payload fields, unsupported kinds, route/message/broadcast ID conflicts, exact duplicate fan-out, all-or-nothing rejection, per-recipient read isolation, revocation and hidden route-list counts. Route discovery filters active immediate sibling pairs in SQL before bounded pagination; route creation caps each participant at 100 active routes. Spaces suites pass **21/21**, Spaces typecheck and `git diff --check` pass. No deployment/live acceptance ran.
+  - [ ] **SBB04.2 — Separately scoped resource links.** Audit `cross_space_grants` and current resource readers. A message link is in scope only if the existing grant path independently reauthorizes the recipient and applies revocation; route membership itself must not create resource access.
+  - [ ] **SBB04.3 — Live acceptance/deployment.** Tracked separately from local and staging verification; rollout remains unauthorized here.
 
 ## SBB01 source audit — 2026-11-25
 
@@ -191,10 +194,6 @@ cannot create or revoke routes; those controls remain on the human owner/admin p
 SpaceDO and worker route suites pass **7/7**, prebuilt operations tests pass **3/3**, Spaces and
 Agents typechecks and `git diff --check` pass. Local only; no deployment or live acceptance ran.
 
-**SBB03.3 resume condition:** add a signed symbolic subspace-role/handoff schema and an explicit
-owner mapping/review input across authoring, preview and activation. Keep proposals inactive until
-actual active child IDs are bound and the owner approves them.
-
 **SBB03.3 source audit — 2026-11-25:** The signed `SpaceBlueprint` currently declares projects,
 assistant settings, coordination defaults, extension requirements and optional `businessRoles`.
 There is no department/subspace-role or handoff declaration. `businessRoles` are validated
@@ -208,8 +207,9 @@ template cannot be safely resolved into a route proposal yet: adding a bare role
 real subspace binding ambiguous. Resume SBB03.3 once a symbolic-role schema and owner mapping/review
 input exists across authoring, preview and activation. Template declarations alone must not grant.
 
-**Next implementation action:** SBB04, add the remaining end-to-end privacy and lifecycle cases
-listed in the queue, then review plan-wide readiness before closing any remaining blocker.
+**SBB03.3 resume condition:** add a signed symbolic subspace-role/handoff schema and an explicit
+owner mapping/review input across authoring, preview and activation. Keep proposals inactive until
+actual active child IDs are bound and the owner approves them.
 
 **SBB03.4 verified checkpoint:** SpaceDO migration 160 stores a stable broadcast identity with
 its canonical route set, sender and payload. Fan-out accepts 2–10 distinct sibling destinations
@@ -221,5 +221,11 @@ Route revocation still fences reads and retries. The focused Spaces suites pass 
 operation tests **4/4**, Router product-session tests **94/94**, Spaces/Agents/Shell typechecks and
 `git diff --check` pass. Local only; no deployment or live acceptance ran.
 
-**Next implementation action:** SBB04, add the remaining end-to-end privacy and lifecycle cases
-listed in the queue, then review plan-wide readiness before closing any remaining blocker.
+**SBB04.1 verified checkpoint:** The focused Spaces suites now pass **21/21**, covering the
+directed route and fan-out contract, current membership/assistant identity, cross-tenant HMAC
+mismatch, sibling and recipient isolation, unsupported message data, exact retries, all-or-nothing
+fan-out, revocation and stale-route count isolation. Spaces typecheck and `git diff --check` pass.
+This evidence is local only; no deployment or live acceptance ran.
+
+**Next implementation action:** SBB04.2, trace `cross_space_grants` and resource readers to see
+whether handoff links can rely on existing independent authorization and revocation checks.

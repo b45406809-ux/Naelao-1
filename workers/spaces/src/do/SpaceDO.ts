@@ -14759,6 +14759,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return same ? Response.json({ route_id: body.id, status: "active", deduplicated: true })
         : Response.json({ error_code: "route_id_conflict" }, { status: 409 });
     }
+    const sourceRouteCount = queryOne<{ count: number }>(this.ctx.storage.sql as never,
+      "SELECT COUNT(*) AS count FROM subspace_blackboard_routes WHERE status='active' AND (source_subspace_id=? OR target_subspace_id=?)", sourceId, sourceId)?.count ?? 0;
+    const targetRouteCount = queryOne<{ count: number }>(this.ctx.storage.sql as never,
+      "SELECT COUNT(*) AS count FROM subspace_blackboard_routes WHERE status='active' AND (source_subspace_id=? OR target_subspace_id=?)", targetId, targetId)?.count ?? 0;
+    if (sourceRouteCount >= 100 || targetRouteCount >= 100)
+      return Response.json({ error_code: "subspace_route_capacity_exceeded" }, { status: 409 });
     const now = new Date().toISOString();
     execute(this.ctx.storage.sql as never,
       `INSERT INTO subspace_blackboard_routes(id,source_subspace_id,target_subspace_id,allowed_kinds_json,allow_reply,status,route_revision,created_by,created_at,updated_at)
@@ -14773,10 +14779,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         || !this.canReadSubspaceBlackboard(rootId, subspaceId, actorId))
       return Response.json({ error_code: "board_unavailable" }, { status: 404 });
     const rows = queryAll<{ id: string; source_subspace_id: string; target_subspace_id: string; allow_reply: number; route_revision: number }>(this.ctx.storage.sql as never,
-      `SELECT id,source_subspace_id,target_subspace_id,allow_reply,route_revision FROM subspace_blackboard_routes
-       WHERE status='active' AND (source_subspace_id=? OR target_subspace_id=?) ORDER BY created_at,id LIMIT 101`, subspaceId, subspaceId);
-    const routes = rows.filter(route => this.subspaceBlackboardRows(rootId, route.source_subspace_id, route.target_subspace_id))
-      .slice(0, 100).map(route => ({ route_id: route.id, source_subspace_id: route.source_subspace_id,
+      `SELECT r.id,r.source_subspace_id,r.target_subspace_id,r.allow_reply,r.route_revision FROM subspace_blackboard_routes r
+       JOIN spaces source ON source.id=r.source_subspace_id JOIN spaces target ON target.id=r.target_subspace_id
+       JOIN spaces root ON root.id=?
+       WHERE r.status='active' AND (r.source_subspace_id=? OR r.target_subspace_id=?) AND r.source_subspace_id!=r.target_subspace_id
+         AND root.status='active' AND root.depth=0 AND root.parent_id IS NULL
+         AND source.status='active' AND source.depth=1 AND source.parent_id=root.id
+         AND target.status='active' AND target.depth=1 AND target.parent_id=root.id
+       ORDER BY r.created_at,r.id LIMIT 101`, rootId, subspaceId, subspaceId);
+    const routes = rows.slice(0, 100).map(route => ({ route_id: route.id, source_subspace_id: route.source_subspace_id,
         target_subspace_id: route.target_subspace_id, allow_reply: route.allow_reply === 1, route_revision: route.route_revision,
         can_manage: this.canManageSubspaceBlackboard(rootId, route.source_subspace_id, actorId)
           && this.canManageSubspaceBlackboard(rootId, route.target_subspace_id, actorId) }));
