@@ -340,3 +340,24 @@ Agents typecheck and `git diff --check` pass. Local fixtures/source only.
 current read-then-upsert pattern may allow two requests that both observe no receipt to mint child
 keys and dispatch; the provider idempotency header protects only under its documented contract.
 Make local receipt claiming atomic and add a barrier-driven two-request regression.
+
+## CB06 — Atomic claim for concurrent send retries (2026-11-25)
+
+The send flow previously selected a missing local receipt and then inserted with
+`ON CONFLICT ... DO UPDATE SET status='sending'`. Two identical requests could both read no row
+and both overwrite/continue into temporary-key creation. The insert now uses
+`ON CONFLICT(connection_id,idempotency_hash) DO NOTHING`. Only the caller whose insert changes one
+row proceeds; a loser re-reads the stored receipt, rejects a changed payload as an idempotency
+conflict, returns the existing result if it is already sent, or returns the reconciliation fence
+while its peer is still running/indeterminate.
+
+A barrier-driven two-request fixture makes both identical sends pass AgentPort authorization
+concurrently. It verifies exactly one temporary key create/delete and one provider send. The second
+request either receives the saved result if it observes the completed receipt, or remains fenced
+while the first is pending. Verification: AgentMail plus scoped-erasure suites **27/27**, Agents
+typecheck and `git diff --check` pass. Local D1 fixture only; no provider request was made.
+
+**Exact next action:** audit daily send-limit accounting under concurrent distinct idempotency keys
+and distinguish provider failures known to occur before dispatch from outcomes that may have been
+accepted. Fix locally where safe and retain a conservative reconciliation fence for unknown
+outcomes.

@@ -1065,8 +1065,15 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
     if(prior)throw new Error("agentmail_delivery_reconciliation_required");
     const daily=await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS n FROM assistant_agentmail_sends WHERE connection_id=? AND status='sent' AND first_attempt_at>=date('now')").bind(account.id).first<{n:number}>();
     if(!prior&&(daily?.n??0)>=(currentPolicy?.dailySendLimit??0))throw new Error("communication_daily_send_limit");
-    await env.PLATFORM_DB.prepare(`INSERT INTO assistant_agentmail_sends(connection_id,idempotency_hash,request_hash,status,first_attempt_at,updated_at) VALUES(?,?,?,'sending',?,?)
-      ON CONFLICT(connection_id,idempotency_hash) DO UPDATE SET status='sending',updated_at=excluded.updated_at`).bind(account.id,idemHash,requestHash,at,at).run();
+    const claimed=await env.PLATFORM_DB.prepare(`INSERT INTO assistant_agentmail_sends(connection_id,idempotency_hash,request_hash,status,first_attempt_at,updated_at)
+      VALUES(?,?,?,'sending',?,?) ON CONFLICT(connection_id,idempotency_hash) DO NOTHING`).bind(account.id,idemHash,requestHash,at,at).run();
+    if(!claimed.meta.changes){
+      const raced=await env.PLATFORM_DB.prepare("SELECT request_hash,status,provider_message_id FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=?")
+        .bind(account.id,idemHash).first<{request_hash:string;status:string;provider_message_id:string|null}>();
+      if(raced&&raced.request_hash!==requestHash)throw new Error("agentmail_idempotency_conflict");
+      if(raced?.status==="sent")return {message_id:raced.provider_message_id,idempotent:true};
+      throw new Error("agentmail_delivery_reconciliation_required");
+    }
     try{
       const sent=await withTemporaryInboxKey(env,key,account.inbox_id,account.provider_region,"message_send",temporaryKey=>
         assertAgentMailOperationAuthority(env,scope,account,args).then(()=>

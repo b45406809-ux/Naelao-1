@@ -279,6 +279,50 @@ describe("AgentMail provider account boundary",()=>{
     expect(await replay.json()).toMatchObject({error_code:"agentmail_delivery_reconciliation_required"});
     expect({keyCreates,keyDeletes,sendCalls}).toEqual({keyCreates:1,keyDeletes:1,sendCalls:1});
   });
+  it("atomically claims a send receipt before concurrent provider dispatch",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,agentport_account_id,
+      owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'user','naelao_managed','inbox-concurrent','concurrent@example.test','active',datetime('now'),datetime('now'))`)
+      .bind("mail-concurrent","tenant","space",identity.id,agentId,"account-concurrent").run();
+    await f.db.prepare("UPDATE assistant_communication_identities SET autonomy_json=? WHERE id=?")
+      .bind(JSON.stringify({mode:"standing",recipients:["allowed@example.test"],dailySendLimit:3}),identity.id).run();
+    (f.env as unknown as {AGENTMAIL_API_KEY:string}).AGENTMAIL_API_KEY="provider-key-concurrent-test";
+    const originalAgentPortFetch=f.env.AGENTPORT_WORKER.fetch;let authorizations=0;let releaseAuthorization!:()=>void;
+    const authorizationBarrier=new Promise<void>(resolve=>{releaseAuthorization=resolve;});
+    f.env.AGENTPORT_WORKER.fetch=vi.fn(async(request:Request)=>{
+      if(new URL(request.url).pathname.endsWith("/actions/authorize")){
+        authorizations++;if(authorizations===2)releaseAuthorization();await authorizationBarrier;
+      }
+      return originalAgentPortFetch(request);
+    });
+    let keyCreates=0,keyDeletes=0,sendCalls=0;
+    const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const request=new Request(input,init),url=new URL(request.url);
+      if(url.pathname.endsWith("/api-keys")&&request.method==="POST"){
+        keyCreates++;const body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        return Response.json({api_key_id:"api_key_concurrent",api_key:"temporary-concurrent-key-123456",inbox_id:"inbox-concurrent",
+          expires_at:body.expires_at,permissions:body.permissions});
+      }
+      if(url.pathname.endsWith("/api-keys/api_key_concurrent")&&request.method==="DELETE"){
+        keyDeletes++;return new Response(null,{status:204});
+      }
+      if(url.pathname.endsWith("/messages/send")){sendCalls++;return Response.json({message_id:"concurrent-message"});}
+      return Response.json({});
+    });
+    vi.stubGlobal("fetch",providerFetch);
+    const args={to:"allowed@example.test",subject:"Concurrent",text:"Hello",idempotency_key:"concurrent-send"};
+    const attempts=await Promise.allSettled([
+      callAgentMailTool(f.env,scope,"agentmail.send",args),
+      callAgentMailTool(f.env,scope,"agentmail.send",args),
+    ]);
+    expect(authorizations).toBe(2);
+    expect(attempts.every(attempt=>attempt.status==="fulfilled"
+      ||(attempt.reason instanceof Error&&attempt.reason.message==="agentmail_delivery_reconciliation_required"))).toBe(true);
+    expect({keyCreates,keyDeletes,sendCalls}).toEqual({keyCreates:1,keyDeletes:1,sendCalls:1});
+    expect(await f.db.prepare("SELECT status FROM assistant_agentmail_sends WHERE connection_id='mail-concurrent'").first())
+      .toEqual({status:"sent"});
+  });
   it("rechecks send policy after temporary-key creation before provider dispatch",async()=>{
     const f=fixture(),identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
     await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,agentport_account_id,
