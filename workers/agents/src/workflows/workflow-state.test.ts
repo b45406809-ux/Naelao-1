@@ -202,4 +202,22 @@ describe("WorkflowJournal usage accounting", () => {
     await expect(journal.prepareEffect("effect-b", "agent.run", "digest-b")).rejects.toThrow("workflow_effect_budget_exceeded");
     expect(first.created).toBe(true);
   });
+
+  it("accumulates run resource units durably and once per committed effect", async () => {
+    const fixture = storageFixture();
+    const journal = new WorkflowJournal(fixture.storage);
+    const result = { schema: 1 as const, r2_key: "result", sha256: "a".repeat(64), bytes: 2 };
+    const { effect } = await journal.prepareExternalEffect("effect-u", "extension.gadget.insert", "digest-u");
+    await journal.commitEffect(effect, result, 0, { unit: "byte", units: 300 });
+    await journal.commitEffect(effect, result, 0, { unit: "byte", units: 300 });
+    const second = await journal.prepareExternalEffect("effect-v", "extension.gadget.insert", "digest-v");
+    await journal.commitEffect(second.effect, result, 0, { unit: "request", units: 1 });
+    expect((await journal.read()).resourceUnits).toEqual({ invocations: 1, jobUnits: 0, bytes: 300 });
+    // Without units (flag off) the journal gains no resourceUnits field.
+    const off = storageFixture();
+    const offJournal = new WorkflowJournal(off.storage);
+    const prepared = await offJournal.prepareExternalEffect("effect-w", "extension.gadget.insert", "digest-w");
+    await offJournal.commitEffect(prepared.effect, result, 0);
+    expect(await offJournal.read()).not.toHaveProperty("resourceUnits");
+  });
 });

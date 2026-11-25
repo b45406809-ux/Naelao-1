@@ -4,10 +4,11 @@ import { WORKFLOW_CLASS_POLICIES, isTerminalWorkflow, validateDurableWorkflowIde
   resolveExtensionJobResourceRequest, resolveExtensionKnowledgeResourceRequest, resolveExtensionObjectResourceRequest, resolveExtensionStructuredDataRequest, type DurableJobOperationReceipt, type DurableKnowledgeOperationReceipt, type DurableObjectOperationReceipt,
   type DurableResourceOperationReceipt, type DurableStructuredDataOperationReceipt, type DurableWorkflowIdentity,
   type WorkflowCheckpointPointer, type DurableWorkflowStatus } from "@naelao/agent-sdk";
+import { EXTENSION_RESOURCE_UNIT_PRICES } from "@naelao/billing-core";
 import { WorkflowJournal, type WorkflowJournalStorage, type WorkflowJournalRecord } from "../workflows/workflow-state.js";
 import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, resolveApprovedKnowledgeGrant, resolveApprovedObjectGrant, resolveApprovedStructuredDataGrant,
   resolveApprovedJobsGrant, workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
-import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowResourceUsage, reportWorkflowStepInfraUsage } from "../workflows/report-infra-usage.js";
+import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowResourceUsage, reportWorkflowStepInfraUsage, priceRunResourceUnitsForSettlement } from "../workflows/report-infra-usage.js";
 import type { Env } from "../env.js";
 import { readBoundedResponseText } from "../shared/bounded-response-text.js";
 
@@ -235,6 +236,7 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       // A prepared receipt after a crash proves neither failure nor success. Never repeat it.
       throw new Error("workflow_effect_reconciliation_required:" + key);
     }
+    const pricingEnabled = this.env.EXTENSION_RESOURCE_PRICING_ENABLED === "true";
     const started = Date.now();
     try {
       if (!this.env.AGENTS_WORKER) throw new Error("workflow_effect_host_unavailable");
@@ -249,6 +251,7 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       const pointer = await this.putArtifact(runId, result);
       const credits = await reportWorkflowStepInfraUsage(this.env as Env, identity.tenantId, identity.spaceId, Date.now() - started, runId + ":" + key, false,
         { ...(identity.projectId ? { projectId: identity.projectId } : {}), ...(identity.installationId ? { installationId: identity.installationId } : {}), runId });
+      let pricedUnits: { unit: "request" | "job" | "byte"; units: number } | undefined;
       if (resourceReceipt && identity.projectId && identity.installationId) {
         const responseBytes = new TextEncoder().encode(JSON.stringify(result)).byteLength;
         const requestBytes = resourceReceipt.requestBytes;
@@ -256,13 +259,15 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
           : resourceReceipt.meteringUnit === "job" ? 1 : requestBytes + responseBytes;
         await reportWorkflowResourceUsage(this.env as Env, identity.tenantId, identity.spaceId, runId + ":" + key + ":resource-units",
           resourceReceipt.meteringUnit ?? "request", meteredUnits,
-          { projectId: identity.projectId, installationId: identity.installationId, runId });
+          { projectId: identity.projectId, installationId: identity.installationId, runId },
+          pricingEnabled ? { priceVersion: EXTENSION_RESOURCE_UNIT_PRICES.version } : undefined);
+        if (pricingEnabled) pricedUnits = { unit: resourceReceipt.meteringUnit ?? "request", units: meteredUnits };
         resourceReceipt.meteredUnits = meteredUnits;
         if (effect.resourceReceipt) effect.resourceReceipt.meteredUnits = meteredUnits;
       }
       // Receipt and measured usage must commit together. If the worker dies after the
       // external effect, replay must neither repeat it nor lose its credits at settlement.
-      await this.journal.commitEffect(activeEffect, pointer, credits);
+      await this.journal.commitEffect(activeEffect, pointer, credits, pricedUnits);
       await this.authorize(runId);
       return result;
     } catch (error) {
@@ -369,7 +374,12 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     }
     // Failed/cancelled work may still have completed billable effects. Settle measured use
     // for every terminal state; use the reserved ceiling only when an effect is indeterminate.
-    const settlement = record.usageUncertain ? record.budgetCredits : record.usedCredits;
+    let settlement = record.usageUncertain ? record.budgetCredits : record.usedCredits;
+    // D8 (flag off = unchanged): priced resource units ride inside the same reservation, priced
+    // once here and capped at the remaining hold. Uncertain usage already settles at the ceiling.
+    if (this.env.EXTENSION_RESOURCE_PRICING_ENABLED === "true" && !record.usageUncertain && record.resourceUnits) {
+      settlement = record.usedCredits + priceRunResourceUnitsForSettlement(record.resourceUnits, record.usedCredits, record.budgetCredits).credits;
+    }
     await finalizeWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.reservationId, "settle", settlement);
     await this.journal.patch({ cleanupPending: false });
     if (record.identity.expiresAt > Date.now()) await this.ctx.storage.setAlarm(record.identity.expiresAt);

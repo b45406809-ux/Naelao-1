@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowResourceUsage, reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
+import { priceRunResourceUnitsForSettlement, finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowResourceUsage, reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
 
 function env(fetcher: (request: Request) => Promise<Response>) {
   return { PLATFORM_SECRET: "secret", BILLING_WORKER: { fetch: fetcher } } as never;
@@ -53,5 +53,22 @@ describe("workflow budget contract", () => {
   it("fails the effect path when the durable usage meter cannot accept the event", async () => {
     await expect(reportWorkflowResourceUsage(env(async () => new Response(null, { status: 503 })), "tenant", "space", "meter-1", "request", 1,
       { projectId: "project-1", installationId: "install-1", runId: "workflow-1" })).rejects.toThrow("workflow_resource_meter_failed:503");
+  });
+
+  it("marks priced-in-settlement unit rows without pricing them", async () => {
+    const requests: Request[] = [];
+    const fetcher = vi.fn(async (request: Request) => { requests.push(request); return new Response(null, { status: 201 }); });
+    await reportWorkflowResourceUsage(env(fetcher), "tenant", "space", "wf:step:resource-units", "request", 1,
+      { projectId: "project-1", installationId: "install-1", runId: "wf" }, { priceVersion: "ext-units-2026-11-25" });
+    const body = await requests[0]!.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ priced_in_settlement: true, price_version: "ext-units-2026-11-25", rate_card_version: "ext-units-2026-11-25" });
+    expect(body).not.toHaveProperty("cost_credits");
+  });
+
+  it("prices accumulated run units once and never above the remaining hold", () => {
+    expect(priceRunResourceUnitsForSettlement({ invocations: 101, jobUnits: 3, bytes: 1 }, 1, 100).credits).toBe(2 + 3 + 1);
+    expect(priceRunResourceUnitsForSettlement({ invocations: 0, jobUnits: 50, bytes: 0 }, 2, 5).credits).toBe(3);
+    expect(priceRunResourceUnitsForSettlement({ invocations: 0, jobUnits: 50, bytes: 0 }, 9, 5).credits).toBe(0);
+    expect(priceRunResourceUnitsForSettlement(undefined, 0, 5).credits).toBe(0);
   });
 });

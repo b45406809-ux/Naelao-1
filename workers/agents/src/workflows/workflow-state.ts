@@ -7,6 +7,7 @@ export interface WorkflowJournalStorage {
   put<T>(key: string, value: T): Promise<void>;
   transaction<T>(callback: (storage: WorkflowJournalStorage) => Promise<T>): Promise<T>;
 }
+export interface WorkflowResourceUnits { invocations: number; jobUnits: number; bytes: number }
 export interface WorkflowJournalRecord extends DurableWorkflowRecord {
   input: WorkflowCheckpointPointer;
   inputDigest: string;
@@ -15,6 +16,8 @@ export interface WorkflowJournalRecord extends DurableWorkflowRecord {
   installationBudgetCredits?: number;
   installationBudgetRevision?: number;
   usedCredits: number;
+  /** Accumulated extension resource units (only when EXTENSION_RESOURCE_PRICING_ENABLED). Priced once at settlement. */
+  resourceUnits?: WorkflowResourceUnits;
   artifactKeys: string[];
   artifactBytes: number;
   effectCount: number;
@@ -165,8 +168,10 @@ export class WorkflowJournal {
       return { effect, created: true };
     });
   }
-  async commitEffect(effect: DurableEffectRecord, result: WorkflowCheckpointPointer, credits: number): Promise<void> {
+  async commitEffect(effect: DurableEffectRecord, result: WorkflowCheckpointPointer, credits: number,
+    resourceUnits?: { unit: "request" | "job" | "byte"; units: number }): Promise<void> {
     if (!Number.isFinite(credits) || credits < 0) throw new Error("workflow_usage_invalid");
+    if (resourceUnits && (!Number.isSafeInteger(resourceUnits.units) || resourceUnits.units < 0)) throw new Error("workflow_usage_invalid");
     await this.storage.transaction(async (storage) => {
       const run = await storage.get<WorkflowJournalRecord>("run");
       if (!run) throw new Error("workflow_not_found");
@@ -189,8 +194,15 @@ export class WorkflowJournal {
       const preserveLegacyUncertainty = run.usageUncertain === true && run.uncertainEffects === undefined;
       await storage.put("effect:" + effect.key, { ...effect, status: "committed", result, usageCredits: credits,
         ...(resourceReceipt ? { resourceReceipt } : {}) });
+      // Same transaction as the receipt: a replayed commit returns above and cannot add twice.
+      const prior = run.resourceUnits ?? { invocations: 0, jobUnits: 0, bytes: 0 };
+      const accumulated = resourceUnits ? {
+        invocations: prior.invocations + (resourceUnits.unit === "request" ? resourceUnits.units : 0),
+        jobUnits: prior.jobUnits + (resourceUnits.unit === "job" ? resourceUnits.units : 0),
+        bytes: prior.bytes + (resourceUnits.unit === "byte" ? resourceUnits.units : 0) } : undefined;
       await storage.put("run", { ...run, activeEffects, uncertainEffects,
-        usageUncertain: preserveLegacyUncertainty || uncertainEffects.length > 0, usedCredits, updatedAt: Date.now() });
+        usageUncertain: preserveLegacyUncertainty || uncertainEffects.length > 0, usedCredits,
+        ...(accumulated ? { resourceUnits: accumulated } : {}), updatedAt: Date.now() });
     });
   }
   async markIndeterminate(effect: DurableEffectRecord): Promise<void> {

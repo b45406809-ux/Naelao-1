@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-16**: Charge priced resource units inside the run reservation.
-MS-01 to MS-13 are done; MS-14 to MS-25 implement the owner-approved decisions D8 (prices and caps),
+Master implementation spec, **MS-17**: Default caps for new extension installations.
+MS-01 to MS-16 are done; MS-17 to MS-25 implement the owner-approved decisions D8 (prices and caps),
 D9 (retention) and D10 (preferences). Follow [the spec](docs/operations/master-implementation-spec.md).
 Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 

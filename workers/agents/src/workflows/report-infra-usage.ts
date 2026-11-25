@@ -7,7 +7,7 @@
  * Best-effort throughout — a reporting failure never fails the workflow step it's timing.
  */
 import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
-import { infraTimeToCredits, BILLING_CORE_RATE_CARD_VERSION } from "@naelao/billing-core";
+import { infraTimeToCredits, BILLING_CORE_RATE_CARD_VERSION, priceExtensionResourceUnits } from "@naelao/billing-core";
 import type { Env } from "../env.js";
 
 export interface WorkflowUsageDimensions {
@@ -30,6 +30,8 @@ export async function reportWorkflowResourceUsage(
   meteringUnit: "request" | "byte" | "job",
   meteredUnits: number,
   dimensions: WorkflowUsageDimensions & { projectId: string; installationId: string; runId: string },
+  /** D8: when set, the row stays unpriced (no cost_credits) and is marked as charged in settlement. */
+  pricedInSettlement?: { priceVersion: string },
 ): Promise<void> {
   if (!env.BILLING_WORKER) throw new Error("workflow_resource_meter_unavailable");
   if (!Number.isSafeInteger(meteredUnits) || meteredUnits < 0 || meteredUnits > 5 * 1024 * 1024)
@@ -43,6 +45,7 @@ export async function reportWorkflowResourceUsage(
     headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
     body: JSON.stringify({ event_type: eventType, quantity: meteredUnits, unit, schema_version: 2,
       space_id: spaceId, project_id: dimensions.projectId, installation_id: dimensions.installationId, run_id: dimensions.runId,
+      ...(pricedInSettlement ? { rate_card_version: pricedInSettlement.priceVersion, priced_in_settlement: true, price_version: pricedInSettlement.priceVersion } : {}),
       idempotency_key: idempotencyKey }),
   }));
   if (!response.ok) throw new Error("workflow_resource_meter_failed:" + response.status);
@@ -124,4 +127,17 @@ export async function finalizeWorkflowBudget(
     body: JSON.stringify({ reservation_id: reservationId, ...(action === "settle" && typeof usedCredits === "number" ? { quantity: Math.max(0, Math.ceil(usedCredits)) } : {}) }),
   }));
   if (!response.ok) throw new Error("workflow budget " + action + " failed (" + response.status + ")");
+}
+
+/** D8: prices a run's accumulated resource units once (round up per line, once per settlement)
+ * and returns the credits to add to the settle quantity, never above the run's hold. The billing
+ * settle also charges min(quantity, held), so this is a second, independent bound. */
+export function priceRunResourceUnitsForSettlement(
+  units: { invocations: number; jobUnits: number; bytes: number } | undefined,
+  usedCredits: number,
+  heldCredits: number | undefined,
+): { credits: number; priceVersion: string } {
+  const priced = priceExtensionResourceUnits(units ?? { invocations: 0, jobUnits: 0, bytes: 0 });
+  const headroom = heldCredits === undefined ? priced.credits : Math.max(0, Math.ceil(heldCredits) - Math.ceil(usedCredits));
+  return { credits: Math.min(priced.credits, headroom), priceVersion: priced.priceVersion };
 }

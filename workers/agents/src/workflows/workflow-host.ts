@@ -9,6 +9,8 @@ import type { WorkflowRunDO } from "../do/WorkflowRunDO.js";
 export interface WorkflowProviderInstance { id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }>; terminate(): Promise<void>; restart(): Promise<void>; sendEvent(event: { type: string; payload: unknown }): Promise<void> }
 export interface DurableWorkflowHostEnv {
   PLATFORM_SECRET: string;
+  /** D8: "true" charges priced extension resource units inside the run reservation. Default off. */
+  EXTENSION_RESOURCE_PRICING_ENABLED?: string | undefined;
   /** Bound on the Agents Worker. Used to revoke durable workflow grants immediately when the
    * owning tenant or Space is suspended. Optional in isolated workflow unit fixtures. */
   PLATFORM_DB?: D1Database | undefined;

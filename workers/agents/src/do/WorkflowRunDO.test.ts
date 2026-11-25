@@ -272,6 +272,31 @@ describe("WorkflowRunDO persisted authorization", () => {
     expect(requests[0]).toMatchObject({ path: "/internal/workflows/budget/settle", body: { reservation_id: "reservation-a", quantity: 0 } });
   });
 
+  for (const [label, flag, held, expected] of [["flag off", undefined, 5, 1], ["flag on", "true", 5, 4], ["flag on, capped at hold", "true", 3, 3]] as const) {
+    it("settles run credits with priced resource units: " + label, async () => {
+      const h = harness();
+      const identity = {
+        schema: 1, runId: "run-a", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+        grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-a",
+        startKey: "start-a", reservationId: "reservation-a", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+      } as DurableWorkflowIdentity;
+      identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+      await h.instance.initialize(identity, {
+        schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-a/input.json", sha256: "b".repeat(64), bytes: 2,
+      }, { budgetCredits: held });
+      h.values.set("run", { ...(h.values.get("run") as WorkflowJournalRecord), status: "running", usedCredits: 1,
+        resourceUnits: { invocations: 101, jobUnits: 1, bytes: 0 } });
+      (h.env as { EXTENSION_RESOURCE_PRICING_ENABLED?: string }).EXTENSION_RESOURCE_PRICING_ENABLED = flag;
+      const requests: Array<{ path: string; body: unknown }> = [];
+      h.env.BILLING_WORKER = { async fetch(request: Request) {
+        requests.push({ path: new URL(request.url).pathname, body: await request.json() });
+        return Response.json({ ok: true });
+      } };
+      await h.instance.finish("run-a", "failed", "workflow failed");
+      expect(requests[0]).toMatchObject({ path: "/internal/workflows/budget/settle", body: { reservation_id: "reservation-a", quantity: expected } });
+    });
+  }
+
   it("settles the reserved ceiling when an in-flight external effect becomes stale and indeterminate", async () => {
     const h = harness();
     const identity = {

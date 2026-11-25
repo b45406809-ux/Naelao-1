@@ -16,6 +16,7 @@ describe("workflow budget v2 settlement", () => {
       readFileSync(join(__dirname, "../../infra/migrations/0109_usage_events_v2.sql"), "utf8"),
       readFileSync(join(__dirname, "../../infra/migrations/0110_workflow_usage_dimensions.sql"), "utf8"),
       readFileSync(join(__dirname, "../../infra/migrations/0180_managed_service_credit_reservations.sql"), "utf8"),
+      readFileSync(join(__dirname, "../../infra/migrations/0266_extension_installation_workflow_budgets.sql"), "utf8"),
     ]);
     const metered: Array<Record<string, unknown>> = [];
     const token = await mintInternalToken(SECRET, "tenant-a");
@@ -79,6 +80,18 @@ describe("workflow budget v2 settlement", () => {
     }), env, ctx);
     expect(await settleReleased.json()).toMatchObject({ settled: false });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE run_id='run-release'").get()).toEqual({ count: 0 });
+    // MS-16: a settle quantity that includes priced resource credits is still capped at the hold,
+    // and a replayed settle never writes a second usage row.
+    await billingWorker.fetch(new Request("https://billing.naelao.com/internal/workflows/budget/reserve", {
+      method: "POST", headers, body: JSON.stringify({ reservation_id: "run-priced", workflow_id: "run-priced", space_id: "space-a", budget_key: "priced", credits: 3,
+        expires_at: new Date(Date.now() + 60_000).toISOString() }),
+    }), env, ctx);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await billingWorker.fetch(new Request("https://billing.naelao.com/internal/workflows/budget/settle", {
+        method: "POST", headers, body: JSON.stringify({ reservation_id: "run-priced", quantity: 10 }),
+      }), env, ctx);
+    }
+    expect(db.db.prepare("SELECT COUNT(*) AS count, SUM(cost_credits) AS credits FROM usage_events WHERE run_id='run-priced'").get()).toEqual({ count: 1, credits: 3 });
     db.db.close();
   });
 });
