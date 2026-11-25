@@ -12,6 +12,8 @@ type AgentMailAccount={id:string;tenant_id:string;space_id:string;project_id:str
 type ManagedServiceAccountState="provisioning"|"active"|"billing_hold"|"suspended"|"retirement_review_required"|"revoking"|"revoked"|"retired"|"failed"|"unknown";
 const API="https://api.agentmail.to/v0";
 const EU_API="https://api.agentmail.eu/v0";
+const AGENTMAIL_TOOL_ACTIONS=new Set(["agentmail.inbox","agentmail.search","agentmail.threads","agentmail.read","agentmail.attachment",
+  "agentmail.draft","agentmail.send","agentmail.reply","agentmail.reply_all","agentmail.forward"]);
 function id(prefix:string){return `${prefix}_${crypto.randomUUID().replaceAll("-","")}`;}
 async function stableClientId(value:string){const bytes=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value)));return `naelao_${[...bytes].map(x=>x.toString(16).padStart(2,"0")).join("")}`;}
 async function recordManagedServiceAccount(env:AgentsEnv,account:AgentMailAccount,state?:ManagedServiceAccountState,capabilityVersion:number|null=null,region:string|null=null){
@@ -1016,6 +1018,7 @@ export async function connectUserAgentMail(env:AgentsEnv,scope:CommunicationScop
   return {connectionId:accountId,address:account.email_address,status:"active",mode:"user_connected",region,...link};
 }
 export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,action:string,args:Record<string,unknown>,connectionId?:string){
+  if(!AGENTMAIL_TOOL_ACTIONS.has(action))throw new Error("agentmail_operation_unsupported");
   const agentId=await ensureAgentPortAssistantIdentity(env,scope);
   const account=await env.PLATFORM_DB.prepare(`SELECT * FROM assistant_agentmail_accounts
     WHERE tenant_id=? AND space_id=? AND project_id IS ? AND agentport_agent_id=? AND status='active'

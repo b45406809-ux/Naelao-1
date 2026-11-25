@@ -320,3 +320,23 @@ fixtures only.
 **Exact next action:** audit duplicate/unknown dispatch and temporary-key, result, and log leakage
 controls. Add a focused test if source behavior is not already covered; then record precise live
 provider requirements and the remaining cross-system revocation limitation.
+
+## CB06 — Unknown operation and credential disclosure checks (2026-11-25)
+
+An unsupported `agentmail-operation` previously reached AgentPort authorization using the default
+read capability before the operation lookup eventually failed. `callAgentMailTool` now rejects
+unknown operation names at entry, and the internal route maps that contract error to HTTP 400. The
+route fixture verifies no additional AgentPort action authorization or provider request occurs.
+
+The send success and provider-timeout fixtures now assert that neither the host-held parent key nor
+the temporary child key appears in tool responses. Source review found no credential logging in
+the AgentMail operation or route path; `provider()` converts upstream failures to status-only
+codes. The parameter/source review also confirms fixed account inbox paths, URL-encoded message and
+attachment segments, URLSearchParams query construction, and authorization inputs that exclude
+search text and send payload fields. Verification: AgentMail plus scoped-erasure suites **26/26**,
+Agents typecheck and `git diff --check` pass. Local fixtures/source only.
+
+**Exact next action:** review durable send receipt claiming for concurrent identical requests. The
+current read-then-upsert pattern may allow two requests that both observe no receipt to mint child
+keys and dispatch; the provider idempotency header protects only under its documented contract.
+Make local receipt claiming atomic and add a barrier-driven two-request regression.

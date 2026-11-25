@@ -147,6 +147,12 @@ describe("AgentMail provider account boundary",()=>{
       body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.inbox",connection_id:"mail-other-tenant",args:{limit:10}})},f.env);
     expect(foreignTenant.status).toBe(502);
     expect(await foreignTenant.json()).toMatchObject({error_code:"agentmail_account_not_connected"});
+    const authorizationsBefore=f.env.AGENTPORT_WORKER.fetch.mock.calls.filter(([request])=>new URL((request as Request).url).pathname.endsWith("/actions/authorize")).length;
+    const unknownOperation=await app.request("/internal/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.unknown",connection_id:"mail-a",args:{}})},f.env);
+    expect(unknownOperation.status).toBe(400);
+    expect(await unknownOperation.json()).toMatchObject({error_code:"agentmail_operation_unsupported"});
+    expect(f.env.AGENTPORT_WORKER.fetch.mock.calls.filter(([request])=>new URL((request as Request).url).pathname.endsWith("/actions/authorize"))).toHaveLength(authorizationsBefore);
     expect(providerFetch.mock.calls.filter(([input])=>new URL(String(input)).pathname.endsWith("/messages")).length).toBe(1);
     expect((await getAssistantAgentMailStatus(f.env,scope)).connections.map((connection)=>connection.address))
       .not.toContain("private@example.test");
@@ -204,7 +210,10 @@ describe("AgentMail provider account boundary",()=>{
         args:{to,subject,text:"Hello",idempotency_key}})},f.env);
     const sent=await request("allowed@example.test","send-1");
     expect(sent.status).toBe(200);
-    expect(await sent.json()).toEqual({result:{message_id:"provider-message-1"}});
+    const sentBody=await sent.json();
+    expect(sentBody).toEqual({result:{message_id:"provider-message-1"}});
+    expect(JSON.stringify(sentBody)).not.toContain("provider-key-for-test");
+    expect(JSON.stringify(sentBody)).not.toContain("temporary-send-key-123456");
     const replay=await request("allowed@example.test","send-1");
     expect(replay.status).toBe(200);
     expect(await replay.json()).toMatchObject({result:{message_id:"provider-message-1",idempotent:true}});
@@ -259,7 +268,10 @@ describe("AgentMail provider account boundary",()=>{
         args:{to:"allowed@example.test",subject:"One attempt",text:"Hello",idempotency_key:"timeout-send"}})},f.env);
     const first=await request();
     expect(first.status).toBe(502);
-    expect(await first.json()).toMatchObject({error_code:"simulated_provider_timeout"});
+    const firstBody=await first.json();
+    expect(firstBody).toMatchObject({error_code:"simulated_provider_timeout"});
+    expect(JSON.stringify(firstBody)).not.toContain("provider-key-timeout-test");
+    expect(JSON.stringify(firstBody)).not.toContain("temporary-timeout-key-123456");
     expect(await f.db.prepare("SELECT status FROM assistant_agentmail_sends WHERE connection_id='mail-timeout'").first())
       .toEqual({status:"indeterminate"});
     const replay=await request();

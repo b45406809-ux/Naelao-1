@@ -1172,6 +1172,11 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   `agentmail_idempotency_conflict`; the route maps that conflict to 409 rather than 502. Existing
   tests retain recipient, autonomy, daily cap and same-request replay checks. AgentMail plus
   erasure tests pass 26/26, Agents typecheck and diff hygiene pass.
+- [x] **CB06 local control slice — unknown action and credential leakage.** Unknown AgentMail
+  operations are rejected before AgentPort authorization and mapped to 400. Success and provider
+  timeout responses are asserted to exclude both parent and temporary API keys. Source review of
+  `agentmail.ts` and its route found no credential logging; provider errors expose only a status
+  code. AgentMail plus erasure tests pass 26/26, Agents typecheck and diff hygiene pass.
 - [ ] **CB06 provider/live acceptance.** With separately authorized disposable AgentMail credentials,
   verify temporary-key expiry/revocation, provider idempotency, regional support, billing and
   callback/revocation behavior. Keep deployment separate and gated by its own authorization.
@@ -1183,11 +1188,11 @@ The timeout replay and policy-change race regressions pass; AgentMail plus scope
 promises replay of a completed send, but no live behavior has been accepted. CB04 temporary-key
 expiry/revocation, region, parent permission and billing acceptance also remain open. AgentPort has
 no atomic grant permit spanning provider dispatch, leaving a residual cross-system revocation race.
-**Exact next action:** audit duplicate/unknown dispatch handling and temporary-key/result/log
-leakage boundaries against fixtures. The caller argument review found fixed provider account paths,
-encoded message/attachment path components, URLSearchParams query encoding, and host-only provider
-credentials; document evidence and add a focused regression for any remaining gap. Keep the residual
-cross-system revocation race and provider/live requirements explicitly blocked.
+**Exact next action:** review the durable send receipt claim for simultaneous identical requests.
+The current read-then-upsert pattern may let concurrent callers both dispatch even though
+AgentMail's documented idempotency header is sent. Make local receipt claiming atomic and add a
+barrier-driven two-request regression. Then review unknown provider outcomes and local reconciliation;
+keep the residual cross-system revocation race and provider/live requirements explicitly blocked.
 
 ## Ordered plan list
 
