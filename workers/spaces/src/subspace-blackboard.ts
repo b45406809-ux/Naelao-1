@@ -27,6 +27,35 @@ export interface SubspaceBlackboardMessage {
   text: string;
   createdAt: string;
   replyTo?: string;
+  resource_ref?: SubspaceResourceRef;
+}
+
+export interface SubspaceResourceRef {
+  type: "knowledge_document";
+  target_space_id: string;
+  document_id: string;
+}
+
+const resourceIdentifier = (value: unknown): value is string =>
+  typeof value === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(value);
+
+/** Validates an untrusted reference and returns it in canonical key order, or null when invalid. Grants nothing. */
+export function parseSubspaceResourceRef(value: unknown, kind: unknown): SubspaceResourceRef | null {
+  if (kind !== "artifact" || !value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const keys = Object.keys(input).sort().join(",");
+  if (keys !== "document_id,target_space_id,type" || input.type !== "knowledge_document"
+      || !resourceIdentifier(input.target_space_id) || !resourceIdentifier(input.document_id)) return null;
+  return { type: "knowledge_document", target_space_id: input.target_space_id, document_id: input.document_id };
+}
+
+export const serializeSubspaceResourceRef = (ref: SubspaceResourceRef | undefined | null): string | null =>
+  ref ? JSON.stringify({ type: ref.type, target_space_id: ref.target_space_id, document_id: ref.document_id }) : null;
+
+/** Parses the stored column defensively; malformed storage yields no reference. */
+export function readStoredSubspaceResourceRef(json: unknown): SubspaceResourceRef | undefined {
+  if (typeof json !== "string") return undefined;
+  try { return parseSubspaceResourceRef(JSON.parse(json), "artifact") ?? undefined; } catch { return undefined; }
 }
 
 const identifier = (value: unknown): value is string =>
@@ -59,6 +88,7 @@ export function createSubspaceBlackboardMessage(input: {
   kind: unknown;
   text: unknown;
   replyTo?: unknown;
+  resourceRef?: SubspaceResourceRef;
 }, route: SubspaceBlackboardRoute, senderSubspaceId: string, senderId: string,
 existing: readonly SubspaceBlackboardMessage[], now: string): SubspaceBlackboardMessage {
   if (route.status !== "active" || !identifier(route.id) || !identifier(route.sourceSubspaceId)
@@ -94,6 +124,7 @@ existing: readonly SubspaceBlackboardMessage[], now: string): SubspaceBlackboard
     text: input.text,
     createdAt: now,
     ...(isTargetReply ? { replyTo: input.replyTo as string } : {}),
+    ...(input.resourceRef ? { resource_ref: input.resourceRef } : {}),
   };
 }
 

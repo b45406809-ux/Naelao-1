@@ -81,7 +81,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
 
 ## Tasks
 
-### - [ ] MS-01 — Resource references on subspace blackboard messages (storage + publish)
+### - [x] MS-01 — Resource references on subspace blackboard messages (storage + publish)
 
 - **Queue:** item 19, SBB04.2 follow-up. **Model:** Sonnet. **Decision:** D1, D2.
 - **Goal:** a sender can attach one knowledge-document reference to an `artifact` message. Storing
@@ -118,6 +118,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
   - a broadcast copies the ref to every recipient copy;
   - the read path returns only the ref.
 - **Done:** focused Spaces and Agents suites pass, typecheck passes.
+- **Landed:** commit recorded in git log (`feat: MS-01 ...`); focused Spaces 26/26 + Agents 5/5, Spaces typecheck and Agents typecheck clean; full Spaces suite 730 pass / 5 pre-existing failures (project-extension-agent-maintenance, executive-contacts, gadget-mcp-crud, project-extension-lifecycle).
 
 ### - [ ] MS-02 — Recipient-side resource resolver
 

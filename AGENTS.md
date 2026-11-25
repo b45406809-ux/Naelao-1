@@ -2,9 +2,9 @@
 
 ## Current task
 
-Master implementation spec, **MS-01**: resource references on subspace blackboard messages. Follow
+Master implementation spec, **MS-02**: recipient-side resource resolver. Follow
 [the spec](docs/operations/master-implementation-spec.md); it lists the decided contracts (D1–D7),
-files, tests and done criteria for MS-01 to MS-12. Keep this pointer and `CLAUDE.md` in sync
+files, tests and done criteria for MS-02 to MS-12. Keep this pointer and `CLAUDE.md` in sync
 (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume

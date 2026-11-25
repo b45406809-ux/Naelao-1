@@ -104,6 +104,7 @@ export interface Env {
   NAELAO_DASHBOARD_TENANT_ID?: string;
   DATA_JURISDICTION?: "eu";
   UNIFIED_WORKSPACE_ENABLED?: string;
+  SUBSPACE_RESOURCE_LINKS_ENABLED?: string;
   /** Opt-in bounded hash-only verification; does not change the read source. */
   WORKSPACE_DUAL_READ_ENABLED?: string;
   PLATFORM_SECRET: string;
@@ -8324,16 +8325,17 @@ app.post("/spaces/:spaceId/sub-spaces/:subId/blackboard", async (c) => {
   const { spaceId, subId } = c.req.param();
   const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
-  let body: { route_id?: unknown; id?: unknown; kind?: unknown; text?: unknown; reply_to?: unknown };
+  let body: { route_id?: unknown; id?: unknown; kind?: unknown; text?: unknown; reply_to?: unknown; resource_ref?: unknown };
   try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8192)); } catch { return c.json({ error_code: "invalid_message" }, 400); }
   if (!body || typeof body.route_id !== "string" || typeof body.id !== "string" || typeof body.kind !== "string" || typeof body.text !== "string")
     return c.json({ error_code: "invalid_message" }, 400);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   if (!(await authorizeDepartmentMember(stub, userId, subId, "read")).permitted) return c.json({ error_code: "board_unavailable" }, 404);
-  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: userId });
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: userId, resource_links: c.env.SUBSPACE_RESOURCE_LINKS_ENABLED === "true" ? "true" : "false" });
   return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard?${query}`, "POST", JSON.stringify({
     route_id: body.route_id, id: body.id, kind: body.kind, text: body.text,
     ...(typeof body.reply_to === "string" ? { reply_to: body.reply_to } : {}),
+    ...(body.resource_ref !== undefined ? { resource_ref: body.resource_ref } : {}),
   }));
 });
 
@@ -8341,16 +8343,17 @@ app.post("/spaces/:spaceId/sub-spaces/:subId/blackboard/broadcast", async (c) =>
   const { spaceId, subId } = c.req.param();
   const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
-  let body: { id?: unknown; route_ids?: unknown; kind?: unknown; text?: unknown };
+  let body: { id?: unknown; route_ids?: unknown; kind?: unknown; text?: unknown; resource_ref?: unknown };
   try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)); }
   catch { return c.json({ error_code: "invalid_broadcast" }, 400); }
   if (!body || typeof body.id !== "string" || !Array.isArray(body.route_ids) || typeof body.kind !== "string" || typeof body.text !== "string")
     return c.json({ error_code: "invalid_broadcast" }, 400);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   if (!(await authorizeDepartmentMember(stub, userId, subId, "read")).permitted) return c.json({ error_code: "board_unavailable" }, 404);
-  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: userId });
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: userId, resource_links: c.env.SUBSPACE_RESOURCE_LINKS_ENABLED === "true" ? "true" : "false" });
   return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard/broadcast?${query}`, "POST", JSON.stringify({
     id: body.id, route_ids: body.route_ids, kind: body.kind, text: body.text,
+    ...(body.resource_ref !== undefined ? { resource_ref: body.resource_ref } : {}),
   }));
 });
 
@@ -8379,16 +8382,17 @@ app.post("/internal/spaces/:spaceId/sub-spaces/:subId/blackboard", async (c) => 
     return c.json({ error_code: "forbidden" }, 403);
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(subId)
       || !/^assistant:space:[A-Za-z0-9._:-]{1,160}$/.test(actorId)) return c.json({ error_code: "board_unavailable" }, 404);
-  let body: { route_id?: unknown; id?: unknown; kind?: unknown; text?: unknown; reply_to?: unknown };
+  let body: { route_id?: unknown; id?: unknown; kind?: unknown; text?: unknown; reply_to?: unknown; resource_ref?: unknown };
   try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8192)); }
   catch { return c.json({ error_code: "invalid_message" }, 400); }
   if (!body || typeof body.route_id !== "string" || typeof body.id !== "string"
       || typeof body.kind !== "string" || typeof body.text !== "string") return c.json({ error_code: "invalid_message" }, 400);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: actorId });
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: actorId, resource_links: c.env.SUBSPACE_RESOURCE_LINKS_ENABLED === "true" ? "true" : "false" });
   return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard?${query}`, "POST", JSON.stringify({
     route_id: body.route_id, id: body.id, kind: body.kind, text: body.text,
     ...(typeof body.reply_to === "string" ? { reply_to: body.reply_to } : {}),
+    ...(body.resource_ref !== undefined ? { resource_ref: body.resource_ref } : {}),
   }));
 });
 
@@ -8400,15 +8404,16 @@ app.post("/internal/spaces/:spaceId/sub-spaces/:subId/blackboard/broadcast", asy
     return c.json({ error_code: "forbidden" }, 403);
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(subId)
       || !/^assistant:space:[A-Za-z0-9._:-]{1,160}$/.test(actorId)) return c.json({ error_code: "board_unavailable" }, 404);
-  let body: { id?: unknown; route_ids?: unknown; kind?: unknown; text?: unknown };
+  let body: { id?: unknown; route_ids?: unknown; kind?: unknown; text?: unknown; resource_ref?: unknown };
   try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)); }
   catch { return c.json({ error_code: "invalid_broadcast" }, 400); }
   if (!body || typeof body.id !== "string" || !Array.isArray(body.route_ids) || typeof body.kind !== "string" || typeof body.text !== "string")
     return c.json({ error_code: "invalid_broadcast" }, 400);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: actorId });
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: actorId, resource_links: c.env.SUBSPACE_RESOURCE_LINKS_ENABLED === "true" ? "true" : "false" });
   return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard/broadcast?${query}`, "POST", JSON.stringify({
     id: body.id, route_ids: body.route_ids, kind: body.kind, text: body.text,
+    ...(body.resource_ref !== undefined ? { resource_ref: body.resource_ref } : {}),
   }));
 });
 

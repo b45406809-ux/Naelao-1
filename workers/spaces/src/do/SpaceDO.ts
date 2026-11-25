@@ -62,7 +62,8 @@ import { isSpaceSharedDependencyPinList, isSpaceSharedGadgetMigrationRetentionPl
 import { PRODUCT_USER_CHAT_EXPORT_MAX_BYTES, PRODUCT_USER_CHAT_EXPORT_MAX_MESSAGES,
   PRODUCT_USER_CHAT_EXPORT_MAX_SESSIONS } from "../product-user-data-export.js";
 import { isCurrentProjectBoundExtensionUpdate, type ProjectBoundExtensionUpdateClaims } from "../project-extension-update-review.js";
-import { createSubspaceBlackboardMessage, isImmediateActiveSiblingPair, visibleSubspaceBlackboardMessages,
+import { createSubspaceBlackboardMessage, isImmediateActiveSiblingPair, parseSubspaceResourceRef, readStoredSubspaceResourceRef,
+  serializeSubspaceResourceRef, visibleSubspaceBlackboardMessages, type SubspaceResourceRef,
   type SubspaceBlackboardKind, type SubspaceBlackboardMessage, type SubspaceBlackboardRoute } from "../subspace-blackboard.js";
 
 type BlueprintProjectKnowledgeSelections = Record<string, Record<string, string[]>>;
@@ -452,6 +453,15 @@ function rowToTriggerRule(row: EventTriggerRow): TriggerRule {
 }
 
 // ── Schema migrations ────────────────────────────────────────────────────────
+type StoredBlackboardMessage = SubspaceBlackboardMessage & { resourceRefJson?: string | null };
+
+/** Maps a stored row to the public message shape: the reference only, never the document. */
+function hydrateBlackboardMessage(row: StoredBlackboardMessage): SubspaceBlackboardMessage {
+  const { resourceRefJson, replyTo, ...rest } = row;
+  const ref = readStoredSubspaceResourceRef(resourceRefJson);
+  return { ...rest, ...(replyTo ? { replyTo } : {}), ...(ref ? { resource_ref: ref } : {}) };
+}
+
 const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -3555,6 +3565,12 @@ const MIGRATIONS: Migration[] = [
       );
       CREATE INDEX idx_subspace_blackboard_broadcasts_sender
         ON subspace_blackboard_broadcasts(source_subspace_id,sender_id,created_at);`,
+  },
+  {
+    version: 161,
+    description: "store optional knowledge-document resource references on subspace blackboard messages and broadcasts",
+    up: `ALTER TABLE subspace_blackboard_messages ADD COLUMN resource_ref_json TEXT;
+      ALTER TABLE subspace_blackboard_broadcasts ADD COLUMN resource_ref_json TEXT;`,
   },
 ];
 
@@ -6966,11 +6982,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.listSubspaceBlackboardMessages(decodeURIComponent(subspaceBlackboardMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("route_id") ?? "", url.searchParams.get("actor_id") ?? "");
       }
       if (subspaceBlackboardMatch?.[1] && method === "POST") {
-        return this.publishSubspaceBlackboardMessage(request, decodeURIComponent(subspaceBlackboardMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
+        return this.publishSubspaceBlackboardMessage(request, decodeURIComponent(subspaceBlackboardMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "", url.searchParams.get("resource_links") === "true");
       }
       const subspaceBlackboardBroadcastMatch = url.pathname.match(/^\/sub-spaces\/([^/]+)\/blackboard\/broadcast$/);
       if (subspaceBlackboardBroadcastMatch?.[1] && method === "POST") {
-        return this.publishSubspaceBlackboardBroadcast(request, decodeURIComponent(subspaceBlackboardBroadcastMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
+        return this.publishSubspaceBlackboardBroadcast(request, decodeURIComponent(subspaceBlackboardBroadcastMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "", url.searchParams.get("resource_links") === "true");
       }
       // GET /spaces/:id — fetch a single space row (meta)
       const spaceRowMatch = url.pathname.match(/^\/spaces\/([^/]+)$/);
@@ -14814,19 +14830,31 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         || (!this.canReadSubspaceBlackboard(rootId, subspaceId, actorId)
           && !this.isSubspaceBlackboardAssistant(rootId, subspaceId, actorId)))
       return Response.json({ error_code: "board_unavailable" }, { status: 404 });
-    const rows = queryAll<SubspaceBlackboardMessage>(this.ctx.storage.sql as never,
+    const rows = queryAll<StoredBlackboardMessage>(this.ctx.storage.sql as never,
       `SELECT id,route_id AS routeId,source_subspace_id AS sourceSubspaceId,target_subspace_id AS targetSubspaceId,
-       sender_subspace_id AS senderSubspaceId,sender_id AS senderId,kind,text,created_at AS createdAt,reply_to AS replyTo
+       sender_subspace_id AS senderSubspaceId,sender_id AS senderId,kind,text,created_at AS createdAt,reply_to AS replyTo,resource_ref_json AS resourceRefJson
        FROM subspace_blackboard_messages WHERE route_id=? ORDER BY created_at DESC,id DESC LIMIT 100`, routeId);
-    const messages = visibleSubspaceBlackboardMessages(route, subspaceId, rows.map(row => ({ ...row, ...(row.replyTo ? { replyTo: row.replyTo } : {}) })));
+    const messages = visibleSubspaceBlackboardMessages(route, subspaceId, rows.map(row => hydrateBlackboardMessage(row)));
     return Response.json({ route_id: routeId, messages, truncated: rows.length === 100, untrusted: true });
   }
 
-  private async publishSubspaceBlackboardMessage(request: Request, senderSubspaceId: string, rootId: string, actorId: string): Promise<Response> {
-    let body: { route_id?: unknown; id?: unknown; kind?: unknown; text?: unknown; reply_to?: unknown };
+  private resourceRefInHierarchy(rootId: string, ref: SubspaceResourceRef): boolean {
+    const row = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+      "SELECT id FROM spaces WHERE id=? AND (id=? OR parent_id=?)", ref.target_space_id, rootId, rootId);
+    return Boolean(row);
+  }
+
+  private async publishSubspaceBlackboardMessage(request: Request, senderSubspaceId: string, rootId: string, actorId: string, resourceLinksEnabled = false): Promise<Response> {
+    let body: { route_id?: unknown; id?: unknown; kind?: unknown; text?: unknown; reply_to?: unknown; resource_ref?: unknown };
     try { body = JSON.parse(await readBoundedRequestText(request, 8192)); } catch { return Response.json({ error_code: "invalid_message" }, { status: 400 }); }
     if (!body || typeof body.route_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.route_id)
         || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(actorId)) return Response.json({ error_code: "invalid_message" }, { status: 400 });
+    let resourceRef: SubspaceResourceRef | undefined;
+    if (body.resource_ref !== undefined) {
+      if (!resourceLinksEnabled) return Response.json({ error_code: "resource_links_disabled" }, { status: 400 });
+      resourceRef = parseSubspaceResourceRef(body.resource_ref, body.kind) ?? undefined;
+      if (!resourceRef) return Response.json({ error_code: "invalid_message" }, { status: 400 });
+    }
     const route = this.readSubspaceBlackboardRoute(body.route_id);
     if (!route || route.status !== "active" || !this.subspaceBlackboardRows(rootId, route.sourceSubspaceId, route.targetSubspaceId)
         || (!this.canReadSubspaceBlackboard(rootId, senderSubspaceId, actorId)
@@ -14834,34 +14862,37 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         || (!this.canWriteSubspaceBlackboard(rootId, senderSubspaceId, actorId)
           && !this.isSubspaceBlackboardAssistant(rootId, senderSubspaceId, actorId)))
       return Response.json({ error_code: "board_unavailable" }, { status: 404 });
-    const rows = queryAll<SubspaceBlackboardMessage>(this.ctx.storage.sql as never,
+    const rows = queryAll<StoredBlackboardMessage>(this.ctx.storage.sql as never,
       `SELECT id,route_id AS routeId,source_subspace_id AS sourceSubspaceId,target_subspace_id AS targetSubspaceId,
-       sender_subspace_id AS senderSubspaceId,sender_id AS senderId,kind,text,created_at AS createdAt,reply_to AS replyTo
+       sender_subspace_id AS senderSubspaceId,sender_id AS senderId,kind,text,created_at AS createdAt,reply_to AS replyTo,resource_ref_json AS resourceRefJson
        FROM subspace_blackboard_messages WHERE route_id=? ORDER BY created_at,id`, route.id);
     const existing = rows.find(message => message.id === body.id);
     if (existing) {
       const same = existing.senderId === actorId && existing.senderSubspaceId === senderSubspaceId
-        && existing.kind === body.kind && existing.text === body.text && (existing.replyTo ?? undefined) === body.reply_to;
-      return same ? Response.json({ message: existing, deduplicated: true, untrusted: true })
+        && existing.kind === body.kind && existing.text === body.text && (existing.replyTo ?? undefined) === body.reply_to
+        && (existing.resourceRefJson ?? null) === serializeSubspaceResourceRef(resourceRef);
+      return same ? Response.json({ message: hydrateBlackboardMessage(existing), deduplicated: true, untrusted: true })
         : Response.json({ error_code: "message_id_conflict" }, { status: 409 });
     }
     if (rows.length >= 500) return Response.json({ error_code: "board_capacity_exceeded" }, { status: 409 });
+    if (resourceRef && !this.resourceRefInHierarchy(rootId, resourceRef)) return Response.json({ error_code: "invalid_message" }, { status: 400 });
     const message = (() => {
-      try { return createSubspaceBlackboardMessage({ id: body.id, kind: body.kind, text: body.text, ...(body.reply_to !== undefined ? { replyTo: body.reply_to } : {}) }, route, senderSubspaceId, actorId, rows, new Date().toISOString()); }
+      try { return createSubspaceBlackboardMessage({ id: body.id, kind: body.kind, text: body.text, ...(body.reply_to !== undefined ? { replyTo: body.reply_to } : {}), ...(resourceRef ? { resourceRef } : {}) }, route, senderSubspaceId, actorId, rows.map(hydrateBlackboardMessage), new Date().toISOString()); }
       catch { return null; }
     })();
     if (!message) return Response.json({ error_code: "message_scope_denied" }, { status: 404 });
     try {
       execute(this.ctx.storage.sql as never,
-        `INSERT INTO subspace_blackboard_messages(id,route_id,source_subspace_id,target_subspace_id,sender_subspace_id,sender_id,kind,text,created_at,reply_to)
-         VALUES(?,?,?,?,?,?,?,?,?,?)`, message.id, message.routeId, message.sourceSubspaceId, message.targetSubspaceId,
-        message.senderSubspaceId, message.senderId, message.kind, message.text, message.createdAt, message.replyTo ?? null);
+        `INSERT INTO subspace_blackboard_messages(id,route_id,source_subspace_id,target_subspace_id,sender_subspace_id,sender_id,kind,text,created_at,reply_to,resource_ref_json)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?)`, message.id, message.routeId, message.sourceSubspaceId, message.targetSubspaceId,
+        message.senderSubspaceId, message.senderId, message.kind, message.text, message.createdAt, message.replyTo ?? null,
+        serializeSubspaceResourceRef(message.resource_ref));
     } catch { return Response.json({ error_code: "message_scope_denied" }, { status: 409 }); }
     return Response.json({ message, untrusted: true }, { status: 201 });
   }
 
-  private async publishSubspaceBlackboardBroadcast(request: Request, senderSubspaceId: string, rootId: string, actorId: string): Promise<Response> {
-    let body: { id?: unknown; route_ids?: unknown; kind?: unknown; text?: unknown };
+  private async publishSubspaceBlackboardBroadcast(request: Request, senderSubspaceId: string, rootId: string, actorId: string, resourceLinksEnabled = false): Promise<Response> {
+    let body: { id?: unknown; route_ids?: unknown; kind?: unknown; text?: unknown; resource_ref?: unknown };
     try { body = JSON.parse(await readBoundedRequestText(request, 16 * 1024)) as typeof body; }
     catch { return Response.json({ error_code: "invalid_broadcast" }, { status: 400 }); }
     const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
@@ -14872,6 +14903,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         || new Set(body.route_ids).size !== body.route_ids.length || typeof body.kind !== "string"
         || !validKinds.includes(body.kind) || typeof body.text !== "string" || !body.text.trim() || body.text.length > 4000)
       return Response.json({ error_code: "invalid_broadcast" }, { status: 400 });
+    let resourceRef: SubspaceResourceRef | undefined;
+    if (body.resource_ref !== undefined) {
+      if (!resourceLinksEnabled) return Response.json({ error_code: "resource_links_disabled" }, { status: 400 });
+      resourceRef = parseSubspaceResourceRef(body.resource_ref, body.kind) ?? undefined;
+      if (!resourceRef) return Response.json({ error_code: "invalid_broadcast" }, { status: 400 });
+    }
+    const resourceRefJson = serializeSubspaceResourceRef(resourceRef);
 
     const canWrite = this.canWriteSubspaceBlackboard(rootId, senderSubspaceId, actorId)
       || this.isSubspaceBlackboardAssistant(rootId, senderSubspaceId, actorId);
@@ -14885,28 +14923,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (new Set(routes.map(route => route!.targetSubspaceId)).size !== routes.length)
       return Response.json({ error_code: "broadcast_recipients_invalid" }, { status: 400 });
 
-    const prior = queryOne<{ sender_id: string; route_ids_json: string; kind: string; text: string; created_at: string }>(this.ctx.storage.sql as never,
-      "SELECT sender_id,route_ids_json,kind,text,created_at FROM subspace_blackboard_broadcasts WHERE source_subspace_id=? AND id=?",
+    if (resourceRef && !this.resourceRefInHierarchy(rootId, resourceRef)) return Response.json({ error_code: "invalid_broadcast" }, { status: 400 });
+
+    const prior = queryOne<{ sender_id: string; route_ids_json: string; kind: string; text: string; created_at: string; resource_ref_json: string | null }>(this.ctx.storage.sql as never,
+      "SELECT sender_id,route_ids_json,kind,text,created_at,resource_ref_json FROM subspace_blackboard_broadcasts WHERE source_subspace_id=? AND id=?",
       senderSubspaceId, body.id);
     if (prior) {
       const same = prior.sender_id === actorId && prior.route_ids_json === JSON.stringify(routeIds)
-        && prior.kind === body.kind && prior.text === body.text;
+        && prior.kind === body.kind && prior.text === body.text && (prior.resource_ref_json ?? null) === resourceRefJson;
       if (!same) return Response.json({ error_code: "broadcast_id_conflict" }, { status: 409 });
-      const messages = routes.map(route => queryOne<SubspaceBlackboardMessage>(this.ctx.storage.sql as never,
+      const messages = routes.map(route => queryOne<StoredBlackboardMessage>(this.ctx.storage.sql as never,
         `SELECT id,route_id AS routeId,source_subspace_id AS sourceSubspaceId,target_subspace_id AS targetSubspaceId,
-         sender_subspace_id AS senderSubspaceId,sender_id AS senderId,kind,text,created_at AS createdAt,reply_to AS replyTo
+         sender_subspace_id AS senderSubspaceId,sender_id AS senderId,kind,text,created_at AS createdAt,reply_to AS replyTo,resource_ref_json AS resourceRefJson
          FROM subspace_blackboard_messages WHERE route_id=? AND id=?`, route!.id, body.id));
       if (messages.some(message => !message)) return Response.json({ error_code: "broadcast_recovery_required" }, { status: 503 });
-      return Response.json({ id: body.id, messages, deduplicated: true, untrusted: true });
+      return Response.json({ id: body.id, messages: messages.map(message => hydrateBlackboardMessage(message!)), deduplicated: true, untrusted: true });
     }
 
     const prepared = routes.map(route => {
-      const rows = queryAll<SubspaceBlackboardMessage>(this.ctx.storage.sql as never,
+      const rows = queryAll<StoredBlackboardMessage>(this.ctx.storage.sql as never,
         `SELECT id,route_id AS routeId,source_subspace_id AS sourceSubspaceId,target_subspace_id AS targetSubspaceId,
-         sender_subspace_id AS senderSubspaceId,sender_id AS senderId,kind,text,created_at AS createdAt,reply_to AS replyTo
+         sender_subspace_id AS senderSubspaceId,sender_id AS senderId,kind,text,created_at AS createdAt,reply_to AS replyTo,resource_ref_json AS resourceRefJson
          FROM subspace_blackboard_messages WHERE route_id=? ORDER BY created_at,id`, route!.id);
       if (rows.length >= 500) return null;
-      try { return createSubspaceBlackboardMessage({ id: body.id, kind: body.kind, text: body.text }, route!, senderSubspaceId, actorId, rows, new Date().toISOString()); }
+      try { return createSubspaceBlackboardMessage({ id: body.id, kind: body.kind, text: body.text, ...(resourceRef ? { resourceRef } : {}) }, route!, senderSubspaceId, actorId, rows.map(hydrateBlackboardMessage), new Date().toISOString()); }
       catch { return null; }
     });
     if (prepared.some(message => !message)) return Response.json({ error_code: "broadcast_scope_denied" }, { status: 409 });
@@ -14916,12 +14956,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     try {
       this.ctx.storage.transactionSync(() => {
         execute(this.ctx.storage.sql as never,
-          `INSERT INTO subspace_blackboard_broadcasts(source_subspace_id,id,sender_id,route_ids_json,kind,text,created_at)
-           VALUES(?,?,?,?,?,?,?)`, senderSubspaceId, body.id, actorId, JSON.stringify(routeIds), body.kind, body.text, createdAt);
+          `INSERT INTO subspace_blackboard_broadcasts(source_subspace_id,id,sender_id,route_ids_json,kind,text,created_at,resource_ref_json)
+           VALUES(?,?,?,?,?,?,?,?)`, senderSubspaceId, body.id, actorId, JSON.stringify(routeIds), body.kind, body.text, createdAt, resourceRefJson);
         for (const message of messages) execute(this.ctx.storage.sql as never,
-          `INSERT INTO subspace_blackboard_messages(id,route_id,source_subspace_id,target_subspace_id,sender_subspace_id,sender_id,kind,text,created_at,reply_to)
-           VALUES(?,?,?,?,?,?,?,?,?,NULL)`, message.id, message.routeId, message.sourceSubspaceId, message.targetSubspaceId,
-          message.senderSubspaceId, message.senderId, message.kind, message.text, message.createdAt);
+          `INSERT INTO subspace_blackboard_messages(id,route_id,source_subspace_id,target_subspace_id,sender_subspace_id,sender_id,kind,text,created_at,reply_to,resource_ref_json)
+           VALUES(?,?,?,?,?,?,?,?,?,NULL,?)`, message.id, message.routeId, message.sourceSubspaceId, message.targetSubspaceId,
+          message.senderSubspaceId, message.senderId, message.kind, message.text, message.createdAt, resourceRefJson);
       });
     } catch { return Response.json({ error_code: "broadcast_scope_denied" }, { status: 409 }); }
     return Response.json({ id: body.id, messages, untrusted: true }, { status: 201 });

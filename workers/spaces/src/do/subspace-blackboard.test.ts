@@ -214,4 +214,77 @@ describe("SpaceDO directed subspace blackboard", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error_code: "subspace_route_capacity_exceeded" });
   });
+
+  describe("resource references", () => {
+    const ref = { type: "knowledge_document", target_space_id: "dept-a", document_id: "doc-1" };
+    async function withRoutes() {
+      const { space, storage } = await fixture();
+      for (const [id, target] of [["route-sales-research", "dept-b"], ["route-sales-finance", "dept-c"]])
+        expect((await space.fetch(new Request("https://space/subspace-blackboard/routes?root_space_id=root&actor_id=root-owner", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id, source_subspace_id: "dept-a", target_subspace_id: target, allowed_kinds: ["artifact", "finding"], allow_reply: false }),
+        }))).status).toBe(201);
+      const publish = (body: Record<string, unknown>, links = true) => space.fetch(new Request(
+        `https://space/sub-spaces/dept-a/blackboard?root_space_id=root&actor_id=sales-editor${links ? "&resource_links=true" : ""}`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ route_id: "route-sales-research", id: "a1", kind: "artifact", text: "See doc", ...body }),
+        }));
+      const broadcast = (body: Record<string, unknown>, links = true) => space.fetch(new Request(
+        `https://space/sub-spaces/dept-a/blackboard/broadcast?root_space_id=root&actor_id=sales-editor${links ? "&resource_links=true" : ""}`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: "b1", route_ids: ["route-sales-research", "route-sales-finance"], kind: "artifact", text: "See doc", ...body }),
+        }));
+      return { space, storage, publish, broadcast };
+    }
+
+    it("accepts a reference on artifact messages when enabled and returns only the reference", async () => {
+      const { space, publish } = await withRoutes();
+      const created = await publish({ resource_ref: { ...ref } });
+      expect(created.status).toBe(201);
+      expect(await created.json()).toMatchObject({ message: { id: "a1", resource_ref: ref } });
+      const read = await space.fetch(new Request("https://space/sub-spaces/dept-b/blackboard?root_space_id=root&actor_id=research-member&route_id=route-sales-research"));
+      const body = await read.json() as { messages: Array<Record<string, unknown>> };
+      expect(body.messages[0]!.resource_ref).toEqual(ref);
+      expect(Object.keys(body.messages[0]!.resource_ref as object).sort()).toEqual(["document_id", "target_space_id", "type"]);
+      expect(body.messages[0]).not.toHaveProperty("resourceRefJson");
+    });
+
+    it("rejects references on non-artifact kinds, malformed refs, foreign hierarchy and when the flag is off", async () => {
+      const { publish } = await withRoutes();
+      expect((await publish({ kind: "finding", resource_ref: ref })).status).toBe(400);
+      expect((await publish({ resource_ref: { ...ref, type: "file" } })).status).toBe(400);
+      expect((await publish({ resource_ref: { ...ref, extra: "x" } })).status).toBe(400);
+      expect((await publish({ resource_ref: { ...ref, document_id: "bad id!" } })).status).toBe(400);
+      expect((await publish({ resource_ref: { ...ref, target_space_id: "other-dept" } })).status).toBe(400);
+      const off = await publish({ resource_ref: ref }, false);
+      expect(off.status).toBe(400);
+      expect(await off.json()).toEqual({ error_code: "resource_links_disabled" });
+      expect((await publish({})).status).toBe(201);
+    });
+
+    it("treats a changed reference on replay as a conflict and an identical replay as a duplicate", async () => {
+      const { publish } = await withRoutes();
+      expect((await publish({ resource_ref: ref })).status).toBe(201);
+      const same = await publish({ resource_ref: ref });
+      expect(await same.json()).toMatchObject({ deduplicated: true, message: { id: "a1", resource_ref: ref } });
+      expect((await publish({ resource_ref: { ...ref, document_id: "doc-2" } })).status).toBe(409);
+      expect((await publish({})).status).toBe(409);
+    });
+
+    it("copies the reference to every broadcast recipient and compares it on replay", async () => {
+      const { space, broadcast } = await withRoutes();
+      const created = await broadcast({ resource_ref: ref });
+      expect(created.status).toBe(201);
+      const body = await created.json() as { messages: Array<{ resource_ref?: unknown }> };
+      expect(body.messages.map(message => message.resource_ref)).toEqual([ref, ref]);
+      for (const [dept, actor, route] of [["dept-b", "research-member", "route-sales-research"], ["dept-c", "finance-member", "route-sales-finance"]]) {
+        const read = await space.fetch(new Request(`https://space/sub-spaces/${dept}/blackboard?root_space_id=root&actor_id=${actor}&route_id=${route}`));
+        expect(await read.json()).toMatchObject({ messages: [{ id: "b1", resource_ref: ref }] });
+      }
+      expect(await (await broadcast({ resource_ref: ref })).json()).toMatchObject({ deduplicated: true, messages: [{ resource_ref: ref }, { resource_ref: ref }] });
+      expect((await broadcast({ resource_ref: { ...ref, document_id: "doc-2" } })).status).toBe(409);
+      expect((await broadcast({ id: "b2", kind: "finding", resource_ref: ref })).status).toBe(400);
+      expect((await broadcast({ id: "b3", resource_ref: ref }, false)).status).toBe(400);
+    });
+  });
 });

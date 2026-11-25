@@ -144,4 +144,20 @@ describe("subspace blackboard routes", () => {
     expect(names[1]).toMatch(/:space:root$/);
     expect(names[0]).not.toBe(names[1]);
   });
+
+  it("passes the resource-links flag from the worker env, never from the caller", async () => {
+    for (const flag of [undefined, "true"]) {
+      const { env, forwarded, secret } = environment();
+      (env as { SUBSPACE_RESOURCE_LINKS_ENABLED?: string }).SUBSPACE_RESOURCE_LINKS_ENABLED = flag;
+      const requestHeaders = { ...headers(secret), "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+      const ref = { type: "knowledge_document", target_space_id: "dept-a", document_id: "doc-1" };
+      await spacesWorker.fetch(new Request("https://spaces.test/spaces/root/sub-spaces/dept-a/blackboard?resource_links=true", {
+        method: "POST", headers: requestHeaders,
+        body: JSON.stringify({ route_id: "r1", id: "m1", kind: "artifact", text: "Doc", resource_ref: ref }),
+      }), env);
+      const write = forwarded.find(request => new URL(request.url).pathname === "/sub-spaces/dept-a/blackboard")!;
+      expect(new URL(write.url).searchParams.get("resource_links")).toBe(flag === "true" ? "true" : "false");
+      expect(await write.json()).toMatchObject({ resource_ref: ref });
+    }
+  });
 });

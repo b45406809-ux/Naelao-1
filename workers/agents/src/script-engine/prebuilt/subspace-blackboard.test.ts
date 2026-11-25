@@ -41,4 +41,21 @@ describe("subspace blackboard assistant operations", () => {
   it("does not expose any route grant or revocation operation", () => {
     expect(Object.keys(subspaceBlackboard.operations).sort()).toEqual(["subspace.blackboard.broadcast", "subspace.blackboard.publish", "subspace.blackboard.read"]);
   });
+
+  it("passes a validated resource_ref through publish and broadcast", async () => {
+    const fetch = vi.fn(async () => Response.json({ messages: [], untrusted: true }));
+    const ctx = { env: { tenantId: "tenant-a", spaceId: "root", agentId: "assistant:space:dept-a", platformSecret: "secret", spacesWorker: { fetch } } } as unknown as PrebuiltOpContext;
+    const resource_ref = { document_id: "doc-1", type: "knowledge_document", target_space_id: "dept-a" };
+    await subspaceBlackboard.operations["subspace.blackboard.publish"]!({ subspace_id: "dept-a", route_id: "r1", id: "m1", kind: "artifact", text: "Doc", resource_ref }, ctx);
+    expect(await (fetch.mock.calls[0]![0] as Request).json()).toEqual({ id: "m1", kind: "artifact", text: "Doc",
+      resource_ref: { type: "knowledge_document", target_space_id: "dept-a", document_id: "doc-1" } });
+    await subspaceBlackboard.operations["subspace.blackboard.broadcast"]!({ subspace_id: "dept-a", id: "b1", route_ids: ["r1", "r2"], kind: "artifact", text: "Doc", resource_ref }, ctx);
+    expect(await (fetch.mock.calls[1]![0] as Request).json()).toMatchObject({ resource_ref: { document_id: "doc-1" } });
+    for (const bad of [{ ...resource_ref, type: "file" }, { ...resource_ref, document_id: "bad id" }, { ...resource_ref, extra: 1 }, "doc-1"])
+      expect(() => subspaceBlackboard.operations["subspace.blackboard.publish"]!({ subspace_id: "dept-a", route_id: "r1", id: "m2", kind: "artifact", text: "Doc", resource_ref: bad }, ctx))
+        .toThrow("subspace_blackboard_resource_ref_invalid");
+    expect(() => subspaceBlackboard.operations["subspace.blackboard.publish"]!({ subspace_id: "dept-a", route_id: "r1", id: "m3", kind: "finding", text: "Doc", resource_ref }, ctx))
+      .toThrow("subspace_blackboard_resource_ref_invalid");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
 });
