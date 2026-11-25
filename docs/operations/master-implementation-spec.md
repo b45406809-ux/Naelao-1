@@ -566,6 +566,13 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Tests:** snapshot applied to capacity, model and ceiling; later preference change does not affect the running goal; fetch failure falls back; flag off unchanged.
 - **Done:** focused tests, full agents suite, typecheck.
 
+### - [ ] MS-26 — Resume a budget-held goal after the ceiling is raised
+
+- **Queue:** item 2, APW05. **Model:** Sonnet. **Decision:** D8. **Found during:** MS-18 review.
+- **Problem:** with `GOAL_CREDIT_CEILING_ENABLED` on, `executeGoalDag` returns early with `budgetHold` set and ready tasks still `pending`. The raise route clears the hold, but nothing re-runs the goal, and the caller of `executeGoalDag` (`goal-planner.ts` and its run) may treat the early return as the goal's end.
+- **Do:** make the goal's caller recognise `budgetHold` as a waiting (not finished) outcome and report `awaiting_budget_approval` to the user; after a successful raise, re-enter the same goal journal through the existing run-resume path (find how interrupted/HITL-waiting runs resume in `NaelaoAgentDO`), so pending tasks dispatch once admitted. Add a flag-on test through `NaelaoAgentDO` covering hold, raise and resume, and settlement in `publish`.
+- **Done:** focused tests, full agents suite, typecheck.
+
 ---
 
 ## Not in this spec (still needs you or live access)
