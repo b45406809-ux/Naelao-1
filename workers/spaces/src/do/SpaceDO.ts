@@ -462,6 +462,10 @@ function hydrateBlackboardMessage(row: StoredBlackboardMessage): SubspaceBlackbo
   return { ...rest, ...(replyTo ? { replyTo } : {}), ...(ref ? { resource_ref: ref } : {}) };
 }
 
+/** D8 starting caps for a new PROJECT_BOUND extension installation (MS-17). Existing policy rows are never touched. */
+const DEFAULT_EXTENSION_INSTALLATION_BUDGET = { maxRunCredits: 200, monthlyCredits: 1000 } as const;
+const DEFAULT_EXTENSION_INSTALLATION_BUDGET_ACTOR = "system:extension_install_default";
+
 const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -19617,6 +19621,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
                removed_at=NULL,release_version=excluded.release_version`,
             instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, instanceKey, ownerKey, body.installedBy,
             body.deferActivation ? "staging" : "active", now, manifest.bundle?.version ?? null, body.upgrade ? 1 : 0);
+          // MS-17: a new (or re-installed after removal) project installation starts with the default caps.
+          // ON CONFLICT DO NOTHING keeps any existing policy row unchanged. Upgrades of a live installation are not new installs.
+          if (body.scope === "PROJECT_BOUND" && body.projectId && (!existingInstance || existingInstance.status === "removed" || existingInstance.status === "expired")) {
+            const installedGeneration = queryOne<{ generation: number }>(this.ctx.storage.sql as never,
+              "SELECT generation FROM extension_instances WHERE instance_id=?", instanceId)?.generation;
+            if (!installedGeneration) throw new Error("extension_default_budget_generation_unavailable");
+            const seeded = this.ctx.storage.sql.exec(`INSERT INTO extension_installation_budgets
+              (tenant_id,space_id,project_id,instance_id,installation_generation,max_run_credits,monthly_credits,revision,
+               approved_by,approved_at,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,1,?,?,?,?)
+              ON CONFLICT(instance_id) DO NOTHING`, body.tenantId, body.spaceId, body.projectId, instanceId, installedGeneration,
+              DEFAULT_EXTENSION_INSTALLATION_BUDGET.maxRunCredits, DEFAULT_EXTENSION_INSTALLATION_BUDGET.monthlyCredits,
+              DEFAULT_EXTENSION_INSTALLATION_BUDGET_ACTOR, now, DEFAULT_EXTENSION_INSTALLATION_BUDGET_ACTOR, now);
+            if (seeded.rowsWritten === 1) execute(this.ctx.storage.sql as never, `INSERT INTO extension_installation_budget_events
+              (event_id,tenant_id,space_id,project_id,instance_id,installation_generation,revision,max_run_credits,monthly_credits,actor_id,created_at)
+              VALUES(?,?,?,?,?,?,1,?,?,?,?)`, crypto.randomUUID(), body.tenantId, body.spaceId, body.projectId, instanceId, installedGeneration,
+              DEFAULT_EXTENSION_INSTALLATION_BUDGET.maxRunCredits, DEFAULT_EXTENSION_INSTALLATION_BUDGET.monthlyCredits,
+              DEFAULT_EXTENSION_INSTALLATION_BUDGET_ACTOR, now);
+          }
           if (projectUpdateClaims) {
             const generation = queryOne<{ generation: number }>(this.ctx.storage.sql as never,
               "SELECT generation FROM extension_instances WHERE instance_id=?", instanceId)?.generation;

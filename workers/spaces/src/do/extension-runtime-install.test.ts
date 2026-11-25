@@ -129,18 +129,20 @@ describe("runtime extension installation", () => {
         expect.objectContaining({ requirement_id: "attachments", kind: "objects", requested_tables: [] }),
         expect.objectContaining({ requirement_id: "background", kind: "jobs", requested_tables: [], requested_workflows: ["process_job"] }),
         expect.objectContaining({ requirement_id: "knowledge_search", kind: "knowledge", requested_tables: [], requested_publications: ["owner_docs"] })]),
-      budget: null, grants: [], object_usage: { object_count: 0, bytes: 0 }, operation_usage: [],
+      budget: { max_run_credits: 200, monthly_credits: 1000, revision: 1, installation_generation: 1, approved_by: "system:extension_install_default" },
+      grants: [], object_usage: { object_count: 0, bytes: 0 }, operation_usage: [],
       dependency_inventory: { declared: [], resolved: true, active: [] } });
     const setBudget = (expectedRevision: number, maxRunCredits = 25, monthlyCredits = 250) => space.fetch(new Request("http://space/extension-resource-budget", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
         actorId: "owner", expectedRevision, maxRunCredits, monthlyCredits }) }));
-    const budget = await setBudget(0);
+    // MS-17: install seeds the default policy at revision 1, so the owner's first write expects revision 1.
+    const budget = await setBudget(1);
     expect(budget.status, await budget.clone().text()).toBe(200);
-    expect(await budget.json()).toMatchObject({ instance_id: installationId, installation_generation: 1, max_run_credits: 25, monthly_credits: 250, revision: 1, approved_by: "owner" });
-    expect(await (await setBudget(0)).json()).toMatchObject({ replayed: true, revision: 1 });
-    expect((await setBudget(0, 26, 250)).status).toBe(409);
-    expect((await setBudget(0, 251, 250)).status).toBe(403);
-    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_installation_budget_events WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(1);
+    expect(await budget.json()).toMatchObject({ instance_id: installationId, installation_generation: 1, max_run_credits: 25, monthly_credits: 250, revision: 2, approved_by: "owner" });
+    expect(await (await setBudget(1)).json()).toMatchObject({ replayed: true, revision: 2 });
+    expect((await setBudget(1, 26, 250)).status).toBe(409);
+    expect((await setBudget(1, 251, 250)).status).toBe(403);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_installation_budget_events WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(2);
     const approve = (expectedRevision: number, operations = ["get"]) => space.fetch(new Request("http://space/extension-resource-grants", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
         requirementId: "records", actorId: "owner", expectedRevision, operations, tables: ["records"] }) }));
@@ -206,10 +208,10 @@ describe("runtime extension installation", () => {
       tenant_id: "tenant", space_id: "space", instance_id: installationId,
     });
     const workflowSnapshot = await space.fetch(new Request(workflowInstallationUrl, { headers }));
-    expect(await workflowSnapshot.json()).toMatchObject({ budget: { max_run_credits: 25, monthly_credits: 250, revision: 1, installation_generation: 1 } });
-    expect((await setBudget(1, 20, 200)).status).toBe(200);
+    expect(await workflowSnapshot.json()).toMatchObject({ budget: { max_run_credits: 25, monthly_credits: 250, revision: 2, installation_generation: 1 } });
+    expect((await setBudget(2, 20, 200)).status).toBe(200);
     const updatedWorkflowSnapshot = await space.fetch(new Request(workflowInstallationUrl, { headers }));
-    expect(await updatedWorkflowSnapshot.json()).toMatchObject({ budget: { max_run_credits: 20, monthly_credits: 200, revision: 2, installation_generation: 1 } });
+    expect(await updatedWorkflowSnapshot.json()).toMatchObject({ budget: { max_run_credits: 20, monthly_credits: 200, revision: 3, installation_generation: 1 } });
     const claimObject = (operationId: string) => space.fetch(new Request("http://space/extension-resource-operation", { method: "POST", headers,
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId, requirementId: "attachments",
         operationId, resourceKind: "objects", gadgetId: "objects", table: "objects", manifestSha256: approvedObjectBody.manifest_sha256,
@@ -991,6 +993,43 @@ describe("runtime extension installation", () => {
     space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);
     const list = await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project"));
     expect(await list.json()).toMatchObject({ installations: [{ instance: { instance_id: installed.installationId, scope: "SPACE_SHARED" } }] });
+  });
+
+  it("seeds the D8 default caps for a new project installation, never overwrites an existing policy, and re-seeds after removal", async () => {
+    const storage = createDOStorage(), secret = "install-default-budget-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
+    const install = () => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: manifest(), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["native-execution"] }) }));
+    const budgetRow = (instanceId: string) => storage.sql.exec<{ max_run_credits: number; monthly_credits: number; revision: number;
+      installation_generation: number; approved_by: string }>("SELECT max_run_credits,monthly_credits,revision,installation_generation,approved_by FROM extension_installation_budgets WHERE instance_id=?", instanceId).toArray()[0];
+    const eventCount = (instanceId: string) => storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM extension_installation_budget_events WHERE instance_id=?", instanceId).toArray()[0]?.count;
+
+    const first = await install();
+    expect(first.status, await first.clone().text()).toBe(201);
+    const { installationId } = await first.json() as { installationId: string };
+    expect(budgetRow(installationId)).toEqual({ max_run_credits: 200, monthly_credits: 1000, revision: 1, installation_generation: 1,
+      approved_by: "system:extension_install_default" });
+    expect(eventCount(installationId)).toBe(1);
+
+    // Stand-in for an owner-approved policy (the owner PUT needs a signed bundle release, which this manifest lacks).
+    storage.sql.exec("UPDATE extension_installation_budgets SET max_run_credits=25,monthly_credits=250,revision=2,approved_by='owner',updated_by='owner' WHERE instance_id=?", installationId);
+
+    // An install replay of the same active installation must not reseed or overwrite the owner's policy.
+    expect((await install()).status).toBe(201);
+    expect(budgetRow(installationId)).toMatchObject({ max_run_credits: 25, monthly_credits: 250, revision: 2 });
+    expect(eventCount(installationId)).toBe(1);
+
+    // Removal clears the policy; a reinstall is a new generation and gets the default again.
+    const removed = await space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({ tenant_id: "tenant",
+      space_id: "space", project_id: "project-a", instance_id: installationId }), { method: "DELETE" }));
+    expect(removed.status, await removed.clone().text()).toBe(200);
+    expect(budgetRow(installationId)).toBeUndefined();
+    const reinstalled = await install();
+    expect(reinstalled.status, await reinstalled.clone().text()).toBe(201);
+    expect(budgetRow(installationId)).toEqual({ max_run_credits: 200, monthly_credits: 1000, revision: 1, installation_generation: 2,
+      approved_by: "system:extension_install_default" });
   });
 
   it("creates distinct named instances of the same project extension without sharing IDs", async () => {
