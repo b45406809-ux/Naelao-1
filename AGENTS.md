@@ -1,5 +1,12 @@
 # Naelao implementation instructions
 
+## Current task
+
+Master implementation spec, **MS-01**: resource references on subspace blackboard messages. Follow
+[the spec](docs/operations/master-implementation-spec.md); it lists the decided contracts (D1–D7),
+files, tests and done criteria for MS-01 to MS-12. Keep this pointer and `CLAUDE.md` in sync
+(`cp AGENTS.md CLAUDE.md`).
+
 ## Start or resume
 
 When the user says **start** or **continue** in this repo, run the implementation queue on
