@@ -1128,16 +1128,19 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
 - **CB05 checkpoint:** provider SDK now validates typed, closed capability schemas and requires
   every schema to match a capability declared in the same manifest. Schema round-trip and
   undeclared/permissive schema rejection pass; publish remains metadata-only and creates no grant.
-  Provider SDK tests pass 2/2, typecheck and diff hygiene pass. **Exact next action:** inspect all
-  capability-schema/action-map consumers for any provider declaration bypass of installed-adapter,
-  owner-grant or host argument validation; add the narrowest local regression found.
+  Provider SDK tests pass 2/2 and typecheck passes. The MCP gate now recomputes each selected
+  tool's deterministic `mcp.tool.<sha256 prefix>` action and rejects substituted, duplicate or
+  oversized stored mappings before authorization; MCP gate tests pass 10/10, MCP Hub typecheck and
+  diff hygiene pass. **Exact next action:** audit extension/template capability declarations
+  against installed adapters and owner-grant checks; implement a reachable local escalation test
+  or record the concrete contract blocker, then proceed to CB06 local controls.
 
-**Latest checkpoint:** CB04 local implementation is pushed at `5ac5fe7c`; AgentMail and erasure
-suites pass 24/24, Agents typecheck and diff hygiene pass. CB05 adds typed closed schemas in the
-provider SDK; schema round-trip/rejection tests pass 2/2 and SDK typecheck passes. Live AgentMail
-expiry/revocation, regional support, parent permission and billing remain open separately. **Exact
-next action:** inspect capability-schema and UserPort action-map consumers for adapter/grant/input
-validation bypasses and add a local regression if reachable.
+**Latest checkpoint:** CB05 adds typed closed schemas in the provider SDK and checks MCP UserPort
+tool/action mapping integrity before AgentPort authorization. Provider SDK tests pass 2/2, MCP gate
+tests pass 10/10, both package typechecks and diff hygiene pass. AgentMail live expiry/revocation,
+region, parent permission and billing remain open under CB04 provider acceptance. **Exact next
+action:** inspect extension/template capability declarations against installed adapters and owner
+grants; implement any reachable local escalation fix, then continue with CB06 local controls.
 
 ## Ordered plan list
 

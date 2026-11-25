@@ -22,6 +22,7 @@ type BindingRow = {
   tool_actions_json: string;
   provider_connection_sha256: string;
 };
+const MAX_BOUND_TOOLS = 50;
 
 async function sha256(value: string) {
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
@@ -106,9 +107,19 @@ export async function authorizeUserPortConnectorTool(input: {
   let actions: Array<{ toolName: string; action: string }>;
   try {
     const parsed: unknown = JSON.parse(binding.tool_actions_json);
-    if (!Array.isArray(parsed)) throw new Error("invalid");
-    actions = parsed as Array<{ toolName: string; action: string }>;
-    if (actions.some((entry) => !entry || typeof entry.toolName !== "string" || typeof entry.action !== "string")) throw new Error("invalid");
+    if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > MAX_BOUND_TOOLS) throw new Error("invalid");
+    actions = [];
+    for (const value of parsed) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid");
+      const entry = value as Record<string, unknown>;
+      const toolName = entry.toolName, action = entry.action;
+      if (typeof toolName !== "string" || !toolName.trim() || toolName.length > 200 || typeof action !== "string")
+        throw new Error("invalid");
+      const expectedAction = `mcp.tool.${(await sha256(toolName)).slice(0, 48)}`;
+      if (action !== expectedAction || actions.some((prior) => prior.toolName === toolName || prior.action === action))
+        throw new Error("invalid");
+      actions.push({ toolName, action });
+    }
   } catch { return { required: true, allowed: false, status: 503, errorCode: "agentport_connector_manifest_invalid" }; }
   const selected = actions.find((entry) => entry.toolName === input.toolName);
   if (!selected) return { required: true, allowed: false, status: 403, errorCode: "agentport_connector_operation_not_selected" };

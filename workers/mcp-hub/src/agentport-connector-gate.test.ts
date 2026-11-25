@@ -3,7 +3,7 @@ import { authorizeUserPortConnectorTool } from "./agentport-connector-gate.js";
 
 function binding(overrides: Record<string, unknown> = {}) {
   return { alias_id:"alias-1",current_alias_id:"alias-1",alias_server_id:"server-1",server_id:"server-1",scope:"space",project_id:null,user_id:null,provider:"composio",provider_connection_id:"connected-account-1",
-    enabled:1,account_id:"acct-1",agent_id:"agent-1",owner_link_status:"active",tool_actions_json:JSON.stringify([{toolName:"GMAIL_SEND",action:"mcp.tool.abc123"}]),
+    enabled:1,account_id:"acct-1",agent_id:"agent-1",owner_link_status:"active",tool_actions_json:JSON.stringify([{toolName:"GMAIL_SEND",action:"mcp.tool.bd8e8a3d125ea17a0eb2b37e8dc2dd35197de727dc881a5a"}]),
     provider_connection_sha256:"",status:"active",...overrides };
 }
 async function connectionHash(value: string) {
@@ -48,7 +48,7 @@ describe("UserPort AgentPort action boundary", () => {
     expect(f.fetch).toHaveBeenCalledTimes(1);
     const request = f.fetch.mock.calls[0]?.[0] as Request;
     const body = await request.clone().json() as Record<string,unknown>;
-    expect(body).toMatchObject({agentId:"agent-1",action:"mcp.tool.abc123",resourceRef:"alias-1"});
+    expect(body).toMatchObject({agentId:"agent-1",action:"mcp.tool.bd8e8a3d125ea17a0eb2b37e8dc2dd35197de727dc881a5a",resourceRef:"alias-1"});
     expect(JSON.stringify(body)).not.toContain("private@example.com");
   });
 
@@ -64,6 +64,27 @@ describe("UserPort AgentPort action boundary", () => {
     const f = env([binding({provider_connection_sha256:await connectionHash("connected-account-1")})]);
     await expect(authorizeUserPortConnectorTool({...base,toolName:"GMAIL_DELETE",env:f.env})).resolves.toMatchObject({
       required:true,allowed:false,status:403,errorCode:"agentport_connector_operation_not_selected",
+    });
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a persisted tool-to-action substitution before AgentPort authorization", async () => {
+    const row = binding({provider_connection_sha256:await connectionHash("connected-account-1"),
+      tool_actions_json:JSON.stringify([{toolName:"GMAIL_SEND",action:"mcp.tool.415c5a31ab954925c6095dbb10f48fa9d3335710ab637a79"}])});
+    const f = env([row]);
+    await expect(authorizeUserPortConnectorTool({...base,env:f.env})).resolves.toMatchObject({
+      required:true,allowed:false,status:503,errorCode:"agentport_connector_manifest_invalid",
+    });
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate tool/action entries in persisted connector state", async () => {
+    const action={toolName:"GMAIL_SEND",action:"mcp.tool.bd8e8a3d125ea17a0eb2b37e8dc2dd35197de727dc881a5a"};
+    const row=binding({provider_connection_sha256:await connectionHash("connected-account-1"),
+      tool_actions_json:JSON.stringify([action,action])});
+    const f=env([row]);
+    await expect(authorizeUserPortConnectorTool({...base,env:f.env})).resolves.toMatchObject({
+      required:true,allowed:false,status:503,errorCode:"agentport_connector_manifest_invalid",
     });
     expect(f.fetch).not.toHaveBeenCalled();
   });

@@ -176,3 +176,22 @@ has no grants field. Verification: provider SDK tests **2/2**, provider SDK type
 **Exact next action:** trace consumers of `capabilitySchemas` and UserPort action maps to ensure
 provider-declared schemas cannot bypass installed-adapter selection, owner grants or host-side
 argument validation; then add a local regression at the narrowest reachable boundary.
+
+The consumer trace found no runtime consumer of provider-declared `capabilitySchemas`; AgentPort
+stores and returns them as metadata. In the MCP UserPort gate, synchronized `tool_actions_json`
+was parsed for strings and the selected tool was forwarded using its stored action unchanged.
+Since the sync path deterministically binds each tool name to
+`mcp.tool.<sha256(toolName)[0:48]>`, the gate now recomputes and checks that exact binding and
+rejects duplicate or oversized mappings before AgentPort authorization. This prevents a stale or
+malformed stored mapping from substituting a different action for the selected tool. The existing
+AgentPort grant check remains the authority boundary; the gate still sends only the selected
+symbolic action and opaque request digest, never provider arguments.
+
+Tests reject action substitution and duplicate stored mappings before authorization while
+preserving selection and owner-scope behavior. MCP gate suite passes **10/10**; MCP Hub typecheck
+and diff hygiene pass. The broader MCP server still validates dispatched provider schemas at its
+existing connector adapter boundary; no capability-schema runtime execution is added here.
+
+**Exact next action:** audit extension and template capability declarations against installed
+adapter registries and owner-grant checks; implement and test any locally reachable declaration-to-
+execution escalation, or record its exact missing contract and proceed to CB06 local controls.
