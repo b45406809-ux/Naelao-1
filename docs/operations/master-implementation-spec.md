@@ -120,7 +120,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused Spaces and Agents suites pass, typecheck passes.
 - **Landed:** commit recorded in git log (`feat: MS-01 ...`); focused Spaces 26/26 + Agents 5/5, Spaces typecheck and Agents typecheck clean; full Spaces suite 730 pass / 5 pre-existing failures (project-extension-agent-maintenance, executive-contacts, gadget-mcp-crud, project-extension-lifecycle).
 
-### - [ ] MS-02 — Recipient-side resource resolver
+### - [x] MS-02 — Recipient-side resource resolver
 
 - **Queue:** item 19, SBB04.2. **Model:** Sonnet. **Decision:** D1, D2.
 - **Goal:** the recipient of a message opens the referenced document. Their own current capability
@@ -172,6 +172,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
   - another tenant's HMAC → 404;
   - the assistant identity for the wrong subspace → 404.
 - **Done:** the full `naelao-spaces` suite passes (rule 5), plus typecheck.
+- **Landed:** commit recorded in git log (`feat: MS-02 ...`); new resolver test 12/12, existing subspace-blackboard suites and migrations test green (38 across 4 files); Spaces typecheck clean; full Spaces suite 742 pass / 5 pre-existing failures (project-extension-agent-maintenance, executive-contacts, gadget-mcp-crud x2, project-extension-lifecycle). Deviation: the recipient subspace is not in the request, so the DO derives it from the message target and checks reader/assistant there; the worker then re-checks `authorizeDepartmentMember` (user) or the exact assistant id against the returned grantee. `/cross-space-audit` now also accepts action `read_via_message`.
 
 ### - [ ] MS-03 — Shell: show and open message resource links
 

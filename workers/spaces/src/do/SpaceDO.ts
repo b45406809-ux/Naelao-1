@@ -6977,6 +6977,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && subspaceBlackboardRevokeMatch?.[1]) {
         return this.revokeSubspaceBlackboardRoute(decodeURIComponent(subspaceBlackboardRevokeMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
       }
+      if (method === "GET" && url.pathname === "/subspace-blackboard/resource-authorize") {
+        return this.authorizeSubspaceBlackboardResource(url.searchParams, url.searchParams.get("resource_links") === "true");
+      }
       const subspaceBlackboardMatch = url.pathname.match(/^\/sub-spaces\/([^/]+)\/blackboard$/);
       if (subspaceBlackboardMatch?.[1] && method === "GET") {
         return this.listSubspaceBlackboardMessages(decodeURIComponent(subspaceBlackboardMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("route_id") ?? "", url.searchParams.get("actor_id") ?? "");
@@ -14838,6 +14841,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ route_id: routeId, messages, truncated: rows.length === 100, untrusted: true });
   }
 
+  /** Recipient-only. Returns the caller's OWN accepted capability for the referenced document, or one opaque 404. */
+  private authorizeSubspaceBlackboardResource(params: URLSearchParams, resourceLinksEnabled: boolean): Response {
+    const unavailable = () => Response.json({ error_code: "resource_unavailable" }, { status: 404 });
+    const rootId = params.get("root_space_id") ?? "";
+    const routeId = params.get("route_id") ?? "";
+    const messageId = params.get("message_id") ?? "";
+    const actorId = params.get("actor_id") ?? "";
+    if (!resourceLinksEnabled || !rootId || !routeId || !messageId || !actorId) return unavailable();
+    const route = this.readSubspaceBlackboardRoute(routeId);
+    if (!route || route.status !== "active" || !this.subspaceBlackboardRows(rootId, route.sourceSubspaceId, route.targetSubspaceId)) return unavailable();
+    const message = queryOne<{ target_subspace_id: string; resource_ref_json: string | null }>(this.ctx.storage.sql as never,
+      "SELECT target_subspace_id,resource_ref_json FROM subspace_blackboard_messages WHERE route_id=? AND id=?", routeId, messageId);
+    const ref = readStoredSubspaceResourceRef(message?.resource_ref_json);
+    if (!message || !ref) return unavailable();
+    const recipient = message.target_subspace_id;
+    if (recipient !== route.sourceSubspaceId && recipient !== route.targetSubspaceId) return unavailable();
+    if (!this.canReadSubspaceBlackboard(rootId, recipient, actorId) && !this.isSubspaceBlackboardAssistant(rootId, recipient, actorId)) return unavailable();
+    if (!this.resourceRefInHierarchy(rootId, ref)) return unavailable();
+    const accepted = queryOne<{ capability_token: string }>(this.ctx.storage.sql as never,
+      `SELECT capability_token FROM accepted_cross_space_documents
+       WHERE grantee_space_id=? AND target_space_id=? AND document_id=? AND accepted_by=? AND revoked_at IS NULL AND expires_at>?`,
+      recipient, ref.target_space_id, ref.document_id, actorId, new Date().toISOString());
+    if (!accepted) return unavailable();
+    return Response.json({ target_space_id: ref.target_space_id, document_id: ref.document_id,
+      grantee_space_id: recipient, capability_token: accepted.capability_token });
+  }
+
   private resourceRefInHierarchy(rootId: string, ref: SubspaceResourceRef): boolean {
     const row = queryOne<{ id: string }>(this.ctx.storage.sql as never,
       "SELECT id FROM spaces WHERE id=? AND (id=? OR parent_id=?)", ref.target_space_id, rootId, rootId);
@@ -15392,7 +15422,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private async recordCrossSpaceAccess(request: Request): Promise<Response> {
     const body = await request.json<{ grantee_space_id?: string; target_space_id?: string; resource_id?: string; actor_id?: string; action?: string }>().catch(() => ({} as { grantee_space_id?: string; target_space_id?: string; resource_id?: string; actor_id?: string; action?: string }));
-    const validRead = body.resource_id?.startsWith("knowledge-document:") && body.action === "read";
+    const validRead = body.resource_id?.startsWith("knowledge-document:") && (body.action === "read" || body.action === "read_via_message");
     const validInvoke = body.resource_id?.startsWith("worker:") && body.action === "invoke";
     if (!body.grantee_space_id || !body.target_space_id || !body.actor_id || !(validRead || validInvoke)) {
       return Response.json({ error_code: "bad_request" }, { status: 400 });

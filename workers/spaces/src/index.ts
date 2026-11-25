@@ -8417,6 +8417,58 @@ app.post("/internal/spaces/:spaceId/sub-spaces/:subId/blackboard/broadcast", asy
   }));
 });
 
+// Static path on purpose: IDs travel in the query string, never as a dynamic segment after
+// /subspace-blackboard (see the Hono route-table note on /internal/space-types-record-install).
+// Every failure is the same opaque 404; only a Knowledge size-limit 413 passes through.
+app.get("/spaces/:spaceId/subspace-blackboard/resource", async (c) => {
+  const { spaceId } = c.req.param();
+  const unavailable = () => c.json({ error_code: "resource_unavailable" }, 404);
+  try {
+    const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+    const idPattern = /^[A-Za-z0-9._:-]{1,160}$/;
+    const routeId = c.req.query("route_id") ?? "";
+    const messageId = c.req.query("message_id") ?? "";
+    if (c.env.SUBSPACE_RESOURCE_LINKS_ENABLED !== "true" || !tenantId || !c.env.KNOWLEDGE_WORKER
+        || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)
+        || !idPattern.test(spaceId) || !idPattern.test(routeId) || !idPattern.test(messageId)) return unavailable();
+    const agentId = c.req.header("x-naelao-agent-id") ?? "";
+    const userId = c.req.header("x-naelao-user-id") ?? "";
+    const assistant = /^assistant:space:[A-Za-z0-9._:-]{1,160}$/.test(agentId);
+    const actorId = assistant ? agentId : userId;
+    if (!actorId || !idPattern.test(actorId)) return unavailable();
+    const stub = await spaceDoStub(c.env, spaceId, tenantId);
+    const authorized = await forwardToSpaceDO(stub, `/subspace-blackboard/resource-authorize?${new URLSearchParams({
+      root_space_id: spaceId, route_id: routeId, message_id: messageId, actor_id: actorId, resource_links: "true" })}`, "GET");
+    if (!authorized.ok) return unavailable();
+    const grant = await authorized.json<{ target_space_id?: unknown; document_id?: unknown; grantee_space_id?: unknown; capability_token?: unknown }>().catch(() => null);
+    if (!grant || typeof grant.target_space_id !== "string" || typeof grant.document_id !== "string"
+        || typeof grant.grantee_space_id !== "string" || typeof grant.capability_token !== "string") return unavailable();
+    if (assistant ? agentId !== `assistant:space:${grant.grantee_space_id}`
+        : !(await authorizeDepartmentMember(stub, userId, grant.grantee_space_id, "read")).permitted) return unavailable();
+    const resourceId = `knowledge-document:${grant.document_id}`;
+    const check = await forwardToSpaceDO(stub, `/cross-space-check?${new URLSearchParams({
+      user_id: actorId, requesting_space_id: grant.grantee_space_id, target_space_id: grant.target_space_id,
+      resource_id: resourceId, permission: "read", capability_token: grant.capability_token })}`, "GET");
+    const checked = check.ok ? await check.json<{ permitted?: unknown }>().catch(() => null) : null;
+    if (checked?.permitted !== true) return unavailable();
+    const knowledge = await c.env.KNOWLEDGE_WORKER.fetch(new Request(
+      `http://knowledge-worker/internal/spaces/${encodeURIComponent(grant.target_space_id)}/kb/documents/${encodeURIComponent(grant.document_id)}/shared`,
+      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
+    if (knowledge.status === 413) return c.json({ error_code: "document_share_size_limit" }, 413);
+    if (!knowledge.ok) return unavailable();
+    const body = await readBoundedResponseJson<{ document?: { id?: unknown; title?: unknown; source_url?: unknown; content?: unknown } }>(knowledge, 512 * 1024).catch(() => null);
+    const doc = body?.document;
+    if (!doc || typeof doc.id !== "string" || typeof doc.title !== "string" || typeof doc.content !== "string") return unavailable();
+    const audit = await forwardToSpaceDO(stub, "/cross-space-audit", "POST", JSON.stringify({
+      grantee_space_id: grant.grantee_space_id, target_space_id: grant.target_space_id, resource_id: resourceId,
+      actor_id: actorId, action: "read_via_message" }));
+    if (!audit.ok) return unavailable();
+    return c.json({ document: { id: doc.id, title: doc.title, source_url: typeof doc.source_url === "string" ? doc.source_url : null, content: doc.content } });
+  } catch {
+    return unavailable();
+  }
+});
+
 app.post("/spaces/:spaceId/projects/:projectId/promote", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const identity = getCallerIdentity(c);
