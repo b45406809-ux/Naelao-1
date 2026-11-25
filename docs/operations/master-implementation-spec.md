@@ -546,13 +546,14 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused tests, **full** `naelao-spaces` suite, typecheck.
 - **Result:** landed locally behind `PROJECT_MEMORY_RETENTION_ENABLED` (default off, every wrangler vars block). Project delete only archived the row and never touched memory, so migration 163 adds `project_deletion_tombstones` (set by the delete route via `/internal/project-deletion-mark`, first timestamp kept) and `project_memory_holds`; owner/admin `GET/PUT/DELETE /spaces/:spaceId/project-memory-hold?project_id=` (others get the not-found shape; no router allowlist entry); a SpaceDO `alarm()` sweeps at most 5 Projects / 500 rows per pass (flag on, tombstone older than 30 days, no unexpired hold, Project not active), counts-only log. `project-memory-retention.test.ts` 9/9; full spaces suite only the 4 known failures; typecheck and `git diff --check` pass. Commit: see git log (`feat(spaces): MS-22`). Local evidence only; Projects deleted before this change have no tombstone and are not swept.
 
-### - [ ] MS-23 — Preference resolver (pure function)
+### - [x] MS-23 — Preference resolver (pure function)
 
 - **Queue:** item 2, APW06. **Model:** Haiku. **Decision:** D10.
 - **Start here:** `packages/entitlements/src/index.ts` (`getExecutionLimits`), `packages/billing-core/src/plans.ts` (`clampPlanParallelism`), `workers/agents/src/script-engine/worker-model-routing.ts`.
 - **Do:** create `workers/agents/src/shared/worker-preferences.ts` exporting `resolveWorkerPreferences({planLimits, spaceLimits?, projectSettings?, userPreferences?, modelTierCost})` → `{workerCount, allowedModelTiers, preferredModelTier, fallbackTiers, goalCreditCeiling, sources}`. Tightest wins per field; defaults workerCount 3 and ceiling 200; admin max clamped to 1–10 and plan limit; a user value above the limit is clamped and reported in `sources`; `fallbackTiers` = allowed tiers whose cost ≤ the preferred tier's cost, cheapest last. No I/O.
 - **Tests:** each layer tightening; user cannot exceed admin; admin cannot exceed plan; defaults; fallback never more expensive; empty allowed set → host default only.
 - **Done:** focused test and typecheck.
+- **Result:** landed locally as a pure resolver `resolveWorkerPreferences` in `workers/agents/src/shared/worker-preferences.ts` (no I/O, no wiring; flag not needed). `worker-preferences.test.ts` 19/19; agents typecheck and `git diff --check` pass. Commit: see git log (`feat(agents): MS-23`).
 
 ### - [ ] MS-24 — Store preferences and limits, with audit
 
