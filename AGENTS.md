@@ -25,11 +25,12 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**CB05 — Define and verify the local unified adapter/developer contract.** Resume from the active
+**CB06 — Verify local credential broker controls and recovery.** Resume from the active
 checklist in [implementation-queue.md](docs/operations/implementation-queue.md#active-plan--agentport-credential-broker).
-Audit existing AgentPort provider SDK, manifest publishing, MCP action mapping, and extension/template
-capability declarations. Implement one concrete typed-contract or authority-escalation gap with
-round-trip tests; keep provider acceptance and deployment separately tracked.
+Start with AgentMail send replay after an indeterminate provider result. Prevent a second dispatch
+until reconciliation and add focused timeout/replay verification. Continue reviewing local cross-
+tenant, grant, policy, callback, leakage and revocation-race controls; track provider acceptance and
+deployment separately.
 
 ## Save progress inside each task
 

@@ -1121,26 +1121,41 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   US and EU, that the parent grant can manage child keys, and whether key creation changes billing.
   Resume only with provider sandbox credentials and acceptance evidence; this does not block
   independent CB05 local contract work.
-- [ ] **CB05 — Unified adapter and developer contract (local).** Audit existing AgentPort provider
-  SDK, manifest publishing, MCP action mapping and extension/template capability declarations.
-  Implement one concrete typed contract or authority-escalation gap with round-trip tests; provider
-  manifests must not mint grants or claim unverified operations.
+- [x] **CB05 — Unified adapter and developer contract (local).** Provider SDK capability schemas
+  are now typed, closed object schemas bound to declared capabilities and round-trip through
+  metadata-only manifest publishing. MCP UserPort dispatch recomputes the deterministic action
+  binding for each selected tool and rejects duplicate, oversized or substituted stored mappings
+  before AgentPort authorization. Extension/template requirements remain host gatekeeper requests;
+  schemas do not create grants. Provider SDK tests pass 2/2; MCP gate tests pass 10/10; provider SDK
+  and MCP Hub typechecks and diff hygiene pass. Commits `f9f4945a` and `79623759`; see the [CB
+  ledger](../research/agentport-credential-broker-progress.md). No live registration or provider
+  action was performed.
 - **CB05 checkpoint:** provider SDK now validates typed, closed capability schemas and requires
   every schema to match a capability declared in the same manifest. Schema round-trip and
   undeclared/permissive schema rejection pass; publish remains metadata-only and creates no grant.
   Provider SDK tests pass 2/2 and typecheck passes. The MCP gate now recomputes each selected
   tool's deterministic `mcp.tool.<sha256 prefix>` action and rejects substituted, duplicate or
   oversized stored mappings before authorization; MCP gate tests pass 10/10, MCP Hub typecheck and
-  diff hygiene pass. **Exact next action:** audit extension/template capability declarations
-  against installed adapters and owner-grant checks; implement a reachable local escalation test
-  or record the concrete contract blocker, then proceed to CB06 local controls.
+  diff hygiene pass. The extension/template source pass found their requirements remain host
+  gatekeeper requests. **Exact next action:** make AgentMail sends fail closed on an existing
+  indeterminate receipt and test timeout plus replay does not dispatch a duplicate.
+- [ ] **CB06 — Controls, accounting and acceptance.** Integrate existing approval, budget, billing,
+  idempotency and operation-recovery authorities. Verify cross-tenant isolation, revoked/expired
+  grants, malicious recipient/tool input, parameter substitution, stale policy, duplicate/unknown
+  dispatch, provider timeout, callback replay, token leakage, log redaction and revocation race.
+- [ ] **CB06 local control slice.** Fail closed when a send already has an `indeterminate` receipt;
+  a replay must not dispatch again before reconciliation. Test timeout and same-request replay, then
+  review the existing CB02–CB05 fixtures against the remaining local controls.
+- [ ] **CB06 provider/live acceptance.** With separately authorized disposable AgentMail credentials,
+  verify temporary-key expiry/revocation, provider idempotency, regional support, billing and
+  callback/revocation behavior. Keep deployment separate and gated by its own authorization.
 
-**Latest checkpoint:** CB05 adds typed closed schemas in the provider SDK and checks MCP UserPort
-tool/action mapping integrity before AgentPort authorization. Provider SDK tests pass 2/2, MCP gate
-tests pass 10/10, both package typechecks and diff hygiene pass. AgentMail live expiry/revocation,
-region, parent permission and billing remain open under CB04 provider acceptance. **Exact next
-action:** inspect extension/template capability declarations against installed adapters and owner
-grants; implement any reachable local escalation fix, then continue with CB06 local controls.
+**Latest checkpoint:** CB05 is locally verified and checked off: provider SDK schemas are strict
+metadata bound to declared capabilities, MCP gate action mappings are deterministic and checked
+before authorization, and extension/template capability requests remain separate from grants.
+CB04 AgentMail live expiry/revocation, regional support, parent permission and billing remain open.
+**Exact next action:** make AgentMail sends fail closed on an existing indeterminate receipt and
+test timeout plus replay does not dispatch a duplicate; then continue the CB06 local control review.
 
 ## Ordered plan list
 

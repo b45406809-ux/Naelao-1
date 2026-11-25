@@ -192,6 +192,16 @@ preserving selection and owner-scope behavior. MCP gate suite passes **10/10**; 
 and diff hygiene pass. The broader MCP server still validates dispatched provider schemas at its
 existing connector adapter boundary; no capability-schema runtime execution is added here.
 
-**Exact next action:** audit extension and template capability declarations against installed
-adapter registries and owner-grant checks; implement and test any locally reachable declaration-to-
-execution escalation, or record its exact missing contract and proceed to CB06 local controls.
+The final source pass confirms there is no consumer that treats provider-authored capability
+schemas as executable authority. Extension manifests are strictly parsed and their capability
+requirements must be a subset of the gatekeeper set supplied by the trusted Space install path;
+the runtime performs its own installation/grant checks. Template setup similarly checks its
+declared setup requirements against the host-provided gatekeeper capabilities and owner flow.
+These existing controls plus the provider SDK schema and MCP mapping checks complete the local
+CB05 contract slice. No declaration creates an AgentPort grant by itself.
+
+**Exact next action:** continue CB06 local controls with the AgentMail send indeterminate recovery
+gap. A failed/unknown provider send is persisted as `indeterminate`, but a repeat request currently
+re-dispatches because the provider idempotency contract is not verified. Fail closed on an
+indeterminate receipt, test that no second dispatch occurs, and record the need for an explicit
+reconciliation path.
