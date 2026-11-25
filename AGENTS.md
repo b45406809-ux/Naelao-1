@@ -23,6 +23,14 @@ session, or a specific blocker leaves no ready work.
    the commit. If the environment is still starting or reconnecting, wait for readiness and
    resume from the checkout when it returns.
 
+## Current task
+
+**CB02 — Add the scoped host execution path for AgentMail operations.** Resume from the active
+checklist in [implementation-queue.md](docs/operations/implementation-queue.md#active-plan--agentport-credential-broker).
+Permit only the internal assistant tool operation through the agent path while retaining current
+tenant/Space/Project access, owner identity, account scope, AgentPort grant, autonomy, recipient,
+daily-limit and idempotency checks. Add local route regressions before selecting another slice.
+
 ## Save progress inside each task
 
 - Break the active task into small slices that can be checked on their own. Commit and push

@@ -1,0 +1,50 @@
+# AgentPort credential broker progress
+
+## CB01 — Current-source and threat-model audit (2026-11-25)
+
+### Credential and identity paths
+
+| Path | Current implementation | Security boundary and remaining evidence |
+| --- | --- | --- |
+| AgentPort identity key | `createSealedAgentKey` generates an Ed25519 key pair. The private key is AES-GCM encrypted with an HKDF key derived from `AGENTPORT_JWT_SECRET` and agent ID, then stored with the public JWK in `agentport_identity_keys`. | This is an AgentPort signing key, not an upstream provider secret. The shared Worker secret is its root of trust; key rotation/separation and deployed key custody need the existing secret-storage/deployment evidence. |
+| AgentPort mandate | Owner-authorized `/agents/:id/credentials` signs an audience-origin and action-scoped `agentport_mandate_v1`, capped at 900 seconds, and records its JTI and expiry. Owner revoke stamps the JTI; a status endpoint reports active/revoked/expired. | The local verifier checks signature, issuer, audience and time but does not query JTI status or itself enforce action scope/type. Repository search found no production resource consumer of this helper; the test verifies issuance. A consuming resource must enforce the intended scope and status contract. Revocation cannot be claimed upstream without a verified resource check. |
+| AgentPort account/grant | Account `credential_ref` is a reference, not stored provider material. Account, agent, service capability and unexpired grant/permission are checked by `actions/authorize` and `access/check`. | Authorization receipts are idempotent decisions, not dispatch or effect receipts. `access/check` can return the opaque `credentialRef` to an authorized caller. Keep it non-authoritative and out of model-visible context. Revoke changes account/grants/subscriptions/channels; in-flight provider effects remain separately uncertain. |
+| UserPort MCP connector | `authorizeUserPortConnectorTool` requires a current owner-linked alias, exact Space/Project/user scope, provider binding and owner-selected tool/action mapping. It sends AgentPort an operation/resource and request digest before MCP Hub dispatches to the selected Composio, Pipedream or direct connector path. | This gate does not itself execute the provider operation or use AgentPort's `credential_ref`; provider credentials remain in connector-specific host configuration. The authorization and external effect are separate, so revocation can race a dispatch already admitted. Provider manifests and selected tool names do not prove API support or grant terms. |
+| AgentMail | User-connected API keys are encrypted with AES-GCM using the tenant-derived communications KEK and identity/account AAD; managed accounts use the Agents Worker `AGENTMAIL_API_KEY`. `providerKeyFor` decrypts/reads the key only inside the Agents Worker; the provider helper sends it as a Bearer header and bounds JSON responses at 2 MiB. | The model receives operation results, not the credential. The account and AgentPort grant are checked before the explicit operation map; sends additionally require standing owner autonomy, an allowed recipient, daily limit and an idempotency key. Send state records request hash, provider ID and `indeterminate`; retry safety depends on provider idempotency/reconciliation behavior that has not been live-verified. |
+| AgentMail unlink | Owner unlink journals an exact operation, retires local user-connected accounts, clears encrypted API/webhook credentials, revokes AgentPort accounts/grants/subscriptions and retries uncertain local revoke through the existing reconciler. | Local secret removal does not prove provider-side inbox/message deletion or upstream API-key invalidation. Managed-account retirement and billing are a distinct lifecycle. |
+| Provider SDK and manifests | `@agentport/provider-sdk` validates and publishes provider metadata, declared auth/capabilities and schemas. It does not implement provider dispatch or transfer secrets. | Declarations are not executable adapters, current API/terms evidence, regional availability, metering or a permission grant. Unknown manifest fields are not copied into the published service shape. |
+
+### Threat review and local gap
+
+The reviewed paths address basic cross-tenant lookup through tenant-bound rows and authenticated
+internal calls; AgentMail additionally binds inbox selection to current Space/Project/user and
+rechecks current AgentPort grant. The critical broker threats remain confused-deputy selection of an
+account/recipient, a compromised worker attempting credential exfiltration, stale/revoked grant at
+the dispatch boundary, idempotency replay with changed input, uncertain provider effects, provider
+manifest overclaim, credential leakage through logs/results, webhook replay and incomplete unlink.
+Current source does not make the generic AgentPort authorization receipt an atomic external-effect
+permit; cross-service revoke/dispatch races and provider behavior remain explicit limits.
+
+The reachable `assistant-mail` prebuilt tool posts `agentmail-operation` to the internal
+assistant-communications route with host-supplied tenant/user/Space/Project context and an internal
+token. The internal agent action allowlist omits `agentmail-operation`, returning
+`human_control_required` before it reaches the existing owner identity, scoped account, grant,
+autonomy, recipient, daily-limit and send-idempotency checks. The public owner route can perform the
+operation, but widening the generic internal agent allowlist would not be an acceptable fix. CB02
+should allow only this exact host assistant operation through a scoped execution path and keep every
+existing owner/grant/policy check in force.
+
+### Verification
+
+- `@agentport/api-worker`: `src/core/routes.test.ts`, `src/core/core.test.ts` — **20/20**.
+- `@naelao/agents-worker`: `src/communications/agentmail.test.ts` — **17/17**.
+- `@naelao/mcp-hub-worker`: connector gate and UserPort revocation suites — **10/10**.
+- `@agentport/provider-sdk`: `src/index.test.ts` — **2/2**.
+
+These are local fixtures only. No provider action, provider-token mint, live credential, deployment,
+or provider API/terms acceptance was exercised.
+
+**Exact next action:** implement CB02 by admitting `agentmail-operation` only on the internal
+assistant-agent route, then prove owner-scoped success and cross-scope, revoked-grant, disallowed
+recipient and non-standing-autonomy denial at the route boundary. Preserve AgentMail's encrypted
+host credential and send idempotency path; do not expose a key or add a generic HTTP proxy.

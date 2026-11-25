@@ -1073,6 +1073,28 @@ plus boundary suites pass 123/123 (two provider/live tests skipped), Agents type
 or resume APW08 definition/deadline work after its owners approve the versioned schema and expiry
 contract. Keep APW09 live acceptance blocked until its exact staging/provider prerequisites are met.
 
+## Active plan — AgentPort credential broker
+
+See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress ledger](../research/agentport-credential-broker-progress.md).
+
+- [x] **CB01 — Source and threat-model audit.** The audit traced AgentPort mandate key storage and
+  revocation, account/grant authorization, UserPort MCP mediation, provider manifests, AgentMail
+  credential storage/use/unlink, result exposure, idempotency and uncertain sends. The source audit
+  identifies the internal assistant AgentMail operation gate as the next local slice. AgentPort
+  route/core tests pass 20/20; AgentMail tests pass 17/17; MCP gate/revocation tests pass 10/10; provider
+  SDK tests pass 2/2. Local source/fixture evidence only; no provider action, deployment or live claim.
+- [ ] **CB02 — Scoped host execution path for AgentMail operations.** Permit the existing internal
+  `assistant-mail` tool caller through the agent operation allowlist while retaining current scope,
+  identity owner, active account, AgentPort grant, autonomy, recipient, daily-limit and idempotency
+  checks. Prove allowed owner execution and denied cross-scope/revoked cases through the internal
+  route. Do not expose provider credentials or add provider-token minting.
+
+**Latest checkpoint:** Fast-forwarded to `46e73106` and completed CB01's current-source/threat-model
+audit. Findings and exact caller paths are in the CB ledger. Four focused suites pass 49/49; exact
+next action: update the internal `handle()` agent action allowlist and add route regressions for the
+scoped AgentMail assistant operation, then run the AgentMail and Agents route tests and typecheck.
+No live provider behavior was exercised.
+
 ## Ordered plan list
 
 Unchecked entries mean work or reconciliation remains, even where the linked ledgers already
@@ -1092,7 +1114,7 @@ ledgers when moving to another plan.
 10. [ ] **Paused; no current code-ready task.** [Template business roles and member onboarding](../research/template-business-roles-and-member-onboarding-plan.md) · [TBR ledger](../research/template-business-roles-and-member-onboarding-progress.md). TBR08's workflow-resource dispatch slice is locally fixed; broad channel/provider/cache/delegation acceptance remains partial. TBR11's direct-script per-effect ceiling needs an owner-approved admission contract; role-to-resource mapping and private-Project policy remain unresolved.
 11. [ ] **Paused; no local source-only task is ready.** [Platform completion and guided templates](../research/platform-completion-and-guided-templates-plan.md) · [P ledger](../research/platform-completion-and-guided-templates-progress.md). Resume when one of the recorded policy, provider, resource-inventory or deployed-acceptance dependencies changes.
 12. [ ] **Source reconciled; provider work remains gated by terms, API and pricing evidence.** [AgentPort managed messaging providers](../research/agentport-messaging-providers-managed-resale-plan.md) · [progress ledger](../research/agentport-messaging-providers-managed-resale-progress.md)
-13. [ ] **Queued; source audit required before implementation.** [AgentPort credential broker and constrained provider actions](../research/agentport-credential-broker-plan.md). Use existing AgentPort identity, account grants, host-held AgentMail credentials, idempotent effects and revocation. CB4A is an expired informational draft. Begin with CB01 source/threat-model audit; provider-token minting and rollout require verified API, terms and live evidence.
+13. [ ] **Active; local host-proxy slice ready.** [AgentPort credential broker and constrained provider actions](../research/agentport-credential-broker-plan.md) · [CB ledger](../research/agentport-credential-broker-progress.md). CB01 is complete; continue CB02 using the scoped internal AgentMail tool route. CB4A remains an expired informational draft; derivative credentials and rollout require verified API, terms and live evidence.
 14. [ ] **Source reconciled; provider work remains gated by API, commercial and regional evidence.** [AgentPhone and AgentPort adapter evaluation](../research/agentphone-agentport-adapter-evaluation-plan.md) · [AP ledger](../research/agentphone-agentport-adapter-evaluation-progress.md)
 15. [ ] **Paused; source and focused local regression tests verified; migration/live acceptance blocked.** [WhatsApp member routing, extension testing, SDK and starter templates](../../new%20plan/WHATSAPP-MEMBER-ROUTING-AND-EXTENSION-TESTING-PLAN.md). Resume on the separate migration authorization, configured test-account and provider/UI acceptance dependencies recorded above.
 16. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)

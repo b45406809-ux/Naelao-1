@@ -22,6 +22,11 @@ Reference paths include `workers/agentport/src/core/routes.ts`, `core/identity.t
 `workers/agents/src/communications/agentmail.ts`, `workers/mcp-hub/src/agentport-connector-gate.ts`,
 and the provider-specific communication adapters. Source names may move. Reconcile the current branch and tests at implementation time.
 
+The completed **CB01 source and threat-model audit** is recorded in the
+[credential-broker progress ledger](agentport-credential-broker-progress.md). It identifies the
+current host-held AgentMail path and the next local CB02 integration slice; it does not claim
+provider-minted credentials or live provider acceptance.
+
 ## Trust and credential model
 
 Separate these records and responsibilities:
