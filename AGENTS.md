@@ -2,10 +2,9 @@
 
 ## Current task
 
-Master implementation spec, **MS-13**: Project-scoped task detail, then product-user access to durable
-tasks and Stop. MS-01 to MS-12 are done. Follow [the spec](docs/operations/master-implementation-spec.md);
-it lists the decided contracts (D1–D7), files, tests and done criteria. Keep this pointer and
-`CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+The [master implementation spec](docs/operations/master-implementation-spec.md) MS-01 to MS-13 is
+complete. Remaining queue items are blocked on owner decisions or live access (see the spec's "Not in
+this spec" table and the queue). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 

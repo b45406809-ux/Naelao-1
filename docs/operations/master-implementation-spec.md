@@ -439,7 +439,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Result:** landed locally; `agentmail.test.ts` 34/34 (27 before, 7 new in `MS-12 remaining local controls`); source fix in `assertAgentMailOperationAuthority` so a supplied recipient entry that fails address parsing refuses the send instead of being silently dropped; Agents typecheck and `git diff --check` pass. Local evidence only.
 
 
-### - [ ] MS-13 — Project-scoped task detail, then let product users reach durable tasks and Stop
+### - [x] MS-13 — Project-scoped task detail, then let product users reach durable tasks and Stop
 
 - **Queue:** item 2, APW06. **Model:** Sonnet. **Decision:** D4. Found during MS-08.
 - **Problem:** the agents worker's `GET /spaces/:spaceId/tasks/:taskId` lets any Space member read
@@ -459,6 +459,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
   - a Project member can read their own Project's task;
   - the router allowlist accepts the three paths and rejects their extensions.
 - **Done:** focused agents and router tests pass, plus typecheck.
+- **Result:** landed in the MS-13 commit. The detail handler let any Space member through `requireSpaceMembershipOrSessionAccess` before the Project check; a task with a `project_id` now requires Project access (denied = `404 not_found`), and tasks without one keep the session/Space rule. List and task-stop checks re-verified unchanged. New `project-task-detail.test.ts` 4/4 (the two denial cases fail without the fix); router allowlist now has `durable-tasks(/:id)` and `projects/:id/task-stop` with extension rejections. Agents full suite 2017 pass / 3 pre-existing failures (email-ocr-settings-route, telnyx-webhook, scheduled-job-dispatch); router 172 pass / 1 pre-existing (preferred-language); both typechecks clean.
 
 ---
 

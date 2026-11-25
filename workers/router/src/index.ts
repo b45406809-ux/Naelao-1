@@ -633,6 +633,9 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
 // authority, verified email and all durable invitation rules are enforced by the Spaces Worker.
 export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/runtime-catalog$/,
+  // MS-13: Agents enforces Project access on durable task list/detail and on Stop.
+  /^\/spaces\/([^/]+)\/durable-tasks(?:\/[^/]+)?$/,
+  /^\/spaces\/([^/]+)\/projects\/[^/]+\/task-stop$/,
   /^\/spaces\/([^/]+)\/runtime-installations$/,
   /^\/spaces\/([^/]+)\/sessions(\/|$)/,
   /^\/spaces\/([^/]+)\/shell\/manifest$/,

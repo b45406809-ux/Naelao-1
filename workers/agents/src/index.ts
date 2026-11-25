@@ -4463,11 +4463,16 @@ app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
   const initialResponse = await stub.fetch(`http://task-do/tasks/${encodeURIComponent(taskId)}?timeout=0`);
   if (!initialResponse.ok) return initialResponse;
   const task = await initialResponse.json<{ session_id?: unknown; project_id?: unknown; status?: unknown }>().catch((): { session_id?: unknown; project_id?: unknown; status?: unknown } => ({}));
-  const sessionAccess = typeof task.session_id === "string" && await requireSpaceMembershipOrSessionAccess(c, spaceId, task.session_id);
+  // MS-13: a Project task is readable only with access to that Project; Space membership alone
+  // (which is what requireSpaceMembershipOrSessionAccess grants) must not expose it.
+  const taskProjectId = typeof task.project_id === "string" && task.project_id ? task.project_id : null;
+  let sessionAccess = false;
   let projectAccess = false;
-  if (!sessionAccess && typeof task.project_id === "string" && task.project_id) {
-    try { await requireProjectAccessForManagedProfile(c, spaceId, task.project_id, false); projectAccess = true; }
+  if (taskProjectId) {
+    try { await requireProjectAccessForManagedProfile(c, spaceId, taskProjectId, false); projectAccess = true; }
     catch { projectAccess = false; }
+  } else {
+    sessionAccess = typeof task.session_id === "string" && await requireSpaceMembershipOrSessionAccess(c, spaceId, task.session_id);
   }
   if (!sessionAccess && !projectAccess) {
     // Do not reveal whether a task in another conversation exists.

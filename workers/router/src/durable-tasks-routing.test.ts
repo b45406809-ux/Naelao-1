@@ -49,9 +49,9 @@ describe("Shell durable task routing (MS-08)", () => {
     expect(agents).toEqual([]);
   });
 
-  it("does not allowlist durable tasks for product end users", () => {
-    // Task detail trusts any Space membership, so identity alone must not reach it.
-    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/durable-tasks"))).toBe(false);
-    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/durable-tasks/t"))).toBe(false);
+  it("allowlists durable task list and detail for product end users, but not extensions", () => {
+    // Agents enforces Project access on both the list and the detail handlers (MS-13).
+    for (const path of ["/spaces/s/durable-tasks", "/spaces/s/durable-tasks/t"]) expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
+    for (const path of ["/spaces/s/durable-tasks/t/x", "/spaces/s/durable-tasks/"]) expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
   });
 });

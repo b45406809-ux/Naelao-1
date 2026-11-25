@@ -210,3 +210,12 @@ describe("planner worker conflict review routing", () => {
     ]) expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
   });
 });
+
+describe("product user durable task routing (MS-13)", () => {
+  it.each(["/spaces/s/durable-tasks", "/spaces/s/durable-tasks/t", "/spaces/s/projects/p/task-stop"])("accepts %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
+  });
+  it.each(["/spaces/x/durable-tasks/y/z", "/spaces/x/projects/y/task-stop/extra", "/spaces/x/durable-tasks/y/"])("rejects %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
+  });
+});

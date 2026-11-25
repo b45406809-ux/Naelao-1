@@ -25,9 +25,8 @@ describe("Project task stop routing (MS-07)", () => {
     expect(spacesFetch).not.toHaveBeenCalled();
   });
 
-  it("does not add the stop path to the product end-user identity allowlist", () => {
-    // Product end users do not reach Project task detail through that allowlist today.
-    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/projects/p/task-stop"))).toBe(false);
-    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/tasks/t"))).toBe(false);
+  it("allowlists the stop path for product end users, but not extensions or the bare task path", () => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/projects/p/task-stop"))).toBe(true);
+    for (const path of ["/spaces/s/projects/p/task-stop/extra", "/spaces/s/tasks/t"]) expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
   });
 });
