@@ -205,3 +205,31 @@ gap. A failed/unknown provider send is persisted as `indeterminate`, but a repea
 re-dispatches because the provider idempotency contract is not verified. Fail closed on an
 indeterminate receipt, test that no second dispatch occurs, and record the need for an explicit
 reconciliation path.
+
+## CB06 — Indeterminate send replay fence (2026-11-25)
+
+AgentMail sends now return the saved result only when a receipt is `sent`; any existing non-sent
+receipt, including `sending` and `indeterminate`, returns
+`agentmail_delivery_reconciliation_required` (HTTP 409) before temporary-key creation or provider
+dispatch. A changed payload under the same local idempotency key remains an idempotency conflict.
+This prevents a delayed or uncertain retry from silently overwriting the durable receipt and
+re-dispatching.
+
+A focused route test simulates a timeout after provider dispatch begins. The first request returns
+502 and leaves an `indeterminate` receipt; an identical retry returns 409. Assertions confirm the
+temporary key was created/deleted once and the send endpoint was called once. Verification:
+`agentmail.test.ts` plus `erasure-product-scope.test.ts` **25/25**, Agents typecheck and
+`git diff --check` pass. Local fixtures only; no provider request was made.
+
+Official AgentMail [idempotency documentation](https://docs.agentmail.to/idempotency) says send
+requests carrying `Idempotency-Key` replay the original `message_id`/`thread_id` without another
+send, and keys expire 24 hours after send completion. Its [error reference](https://docs.agentmail.to/errors#conflict)
+also documents a conflict while a request is in progress and says an incomplete failure becomes
+retryable after a short window. This is documentation evidence, not live acceptance or a lookup
+endpoint. The conservative local fence remains until an explicit reconciliation/retry policy is
+implemented and tested; live provider semantics are separately tracked in CB06 acceptance.
+
+**Exact next action:** audit the remaining CB06 local controls against source and fixtures:
+cross-tenant isolation, expired/revoked grants, malicious inputs and parameter substitution, stale
+policy, duplicate/unknown dispatch, callback replay, credential leakage/log redaction, and
+revocation races. Implement and verify the first independent local gap.

@@ -1038,10 +1038,10 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
     if(!/^[A-Za-z0-9._:-]{1,200}$/.test(idem))throw new Error("agentmail_idempotency_key_required");
     const payload={...(call.body as Record<string,unknown>)};delete payload.idempotency_key;delete payload.messageId;
     const requestHash=await hashString(JSON.stringify(payload)),idemHash=await hashString(idem),at=new Date().toISOString();
-    const prior=await env.PLATFORM_DB.prepare("SELECT request_hash,status,provider_message_id,first_attempt_at FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=?").bind(account.id,idemHash).first<{request_hash:string;status:string;provider_message_id:string|null;first_attempt_at:string}>();
+    const prior=await env.PLATFORM_DB.prepare("SELECT request_hash,status,provider_message_id FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=?").bind(account.id,idemHash).first<{request_hash:string;status:string;provider_message_id:string|null}>();
     if(prior&&prior.request_hash!==requestHash)throw new Error("agentmail_idempotency_conflict");
     if(prior?.status==="sent")return {message_id:prior.provider_message_id,idempotent:true};
-    if(prior&&Date.now()-Date.parse(prior.first_attempt_at)>24*60*60_000)throw new Error("agentmail_delivery_reconciliation_required");
+    if(prior)throw new Error("agentmail_delivery_reconciliation_required");
     const daily=await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS n FROM assistant_agentmail_sends WHERE connection_id=? AND status='sent' AND first_attempt_at>=date('now')").bind(account.id).first<{n:number}>();
     if(!prior&&(daily?.n??0)>=policy.dailySendLimit)throw new Error("communication_daily_send_limit");
     await env.PLATFORM_DB.prepare(`INSERT INTO assistant_agentmail_sends(connection_id,idempotency_hash,request_hash,status,first_attempt_at,updated_at) VALUES(?,?,?,'sending',?,?)

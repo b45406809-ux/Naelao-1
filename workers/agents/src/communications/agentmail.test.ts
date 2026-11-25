@@ -215,6 +215,47 @@ describe("AgentMail provider account boundary",()=>{
     expect(providerFetch.mock.calls.filter(([input])=>new URL(String(input)).pathname.endsWith("/messages/send")).length).toBe(1);
     expect(providerFetch.mock.calls.filter(([input])=>new URL(String(input)).pathname.endsWith("/api-keys")).length).toBe(1);
   });
+  it("does not redispatch an indeterminate send when the provider request times out",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,agentport_account_id,
+      owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'user','naelao_managed','inbox-timeout','timeout@example.test','active',datetime('now'),datetime('now'))`)
+      .bind("mail-timeout","tenant","space",identity.id,agentId,"account-timeout").run();
+    await f.db.prepare("UPDATE assistant_communication_identities SET autonomy_json=? WHERE id=?")
+      .bind(JSON.stringify({mode:"standing",recipients:["allowed@example.test"],dailySendLimit:3}),identity.id).run();
+    (f.env as unknown as {AGENTMAIL_API_KEY:string}).AGENTMAIL_API_KEY="provider-key-timeout-test";
+    let keyCreates=0,keyDeletes=0,sendCalls=0;
+    const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const request=new Request(input,init),url=new URL(request.url);
+      if(url.pathname.endsWith("/api-keys")&&request.method==="POST"){
+        keyCreates++;
+        const body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        return Response.json({api_key_id:"api_key_timeout",api_key:"temporary-timeout-key-123456",inbox_id:"inbox-timeout",
+          expires_at:body.expires_at,permissions:body.permissions});
+      }
+      if(url.pathname.endsWith("/api-keys/api_key_timeout")&&request.method==="DELETE"){
+        keyDeletes++;return new Response(null,{status:204});
+      }
+      if(url.pathname.endsWith("/messages/send")){sendCalls++;throw new Error("simulated_provider_timeout");}
+      return Response.json({});
+    });
+    vi.stubGlobal("fetch",providerFetch);
+    const app=new Hono<{Bindings:AgentsEnv}>();registerCommunicationRoutes(app);
+    const headers={"content-type":"application/json","x-naelao-tenant-id":scope.tenantId,"x-naelao-user-id":scope.userId,
+      "x-naelao-role":scope.role,"x-naelao-internal-token":await mintInternalToken("secret",scope.tenantId)};
+    const request=()=>app.request("/internal/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.send",
+        args:{to:"allowed@example.test",subject:"One attempt",text:"Hello",idempotency_key:"timeout-send"}})},f.env);
+    const first=await request();
+    expect(first.status).toBe(502);
+    expect(await first.json()).toMatchObject({error_code:"simulated_provider_timeout"});
+    expect(await f.db.prepare("SELECT status FROM assistant_agentmail_sends WHERE connection_id='mail-timeout'").first())
+      .toEqual({status:"indeterminate"});
+    const replay=await request();
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toMatchObject({error_code:"agentmail_delivery_reconciliation_required"});
+    expect({keyCreates,keyDeletes,sendCalls}).toEqual({keyCreates:1,keyDeletes:1,sendCalls:1});
+  });
   it("revokes and scrubs scoped AgentMail credentials before erasing the assistant identity",async()=>{
     const f=fixture(),identity=await ensureIdentity(f.env,scope);
     vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL)=>{
