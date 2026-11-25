@@ -29,7 +29,7 @@ class Storage {
   }
 }
 
-function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unifiedEnabled?: boolean; runtimeControl?: "ok" | "flush_failure" | "activation_failure" | "oversized";
+function setup(options: { retentionEnabled?: boolean; liveEnabled?: boolean; liveVerifier?: boolean; unifiedEnabled?: boolean; runtimeControl?: "ok" | "flush_failure" | "activation_failure" | "oversized";
   analytics?: boolean; analyticsFailure?: boolean;
   candidateSelection?: { runtimeId: string; allocationGeneration: number };
   authorityMissing?: string[];
@@ -117,7 +117,8 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
     ...(verifier ? { LIVE_CAPABILITY_VERIFIER: verifier as unknown as Fetcher } : {}),
     ...(runtimeControl ? { LIVE_RUNTIME_CONTROL: runtimeControl as unknown as Fetcher } : {}),
     ...(options.runtimeControlNamespace ? { LIVE_RUNTIME_CONTROL_DO: options.runtimeControlNamespace } : {}),
-    UNIFIED_WORKSPACE_ENABLED: options.unifiedEnabled ? "true" : "false" };
+    UNIFIED_WORKSPACE_ENABLED: options.unifiedEnabled ? "true" : "false",
+    WORKER_BRANCH_RETENTION_ENABLED: options.retentionEnabled ? "true" : "false" };
   const instance = new WorkspaceCoordinatorDO({ storage } as never, env as never);
   return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, metadata, customMetadata, r2, verificationState,
     analyticsPoints, runtimeResponseWasCancelled: () => runtimeResponseCancelled };
@@ -2025,5 +2026,207 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(observed.head.revision).toBe(2);
     expect(observed.entries).toHaveLength(1);
     expect(["a.txt", "b.txt"]).toContain(observed.entries[0]?.path);
+  });
+});
+
+describe("WorkspaceCoordinatorDO worker-branch retention (D9)", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const contentKey = (hash: string) => `workspace-v1/tenant/space/project/global/content/${hash}`;
+  async function init(options: { retentionEnabled?: boolean } = { retentionEnabled: true }) {
+    const ctx = setup(options);
+    await call(ctx.instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    return ctx;
+  }
+  /** A worker branch with one unique file; its writer session is closed like a finished worker's. */
+  async function workerBranch(instance: WorkspaceCoordinatorDO, branch: string, text?: string) {
+    expect((await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch })).status).toBe(200);
+    if (text !== undefined) {
+      const openResponse = await call(instance, "/v1/open", { scope, branch, actorId: "worker", runtimeId: `rt-${branch.replace(/[^a-z0-9]/g, "-")}`, allocationGeneration: 1 });
+      const opened = await openResponse.json() as { session: { id: string; baseRevision: number } };
+      if (!opened.session) throw new Error(`open failed ${openResponse.status} ${JSON.stringify(opened)}`);
+      const written = await call(instance, "/v1/checkpoint", { sessionId: opened.session.id, allocationGeneration: 1, fence: 0, baseRevision: opened.session.baseRevision,
+        idempotencyKey: `cp-${branch.replace(/[^a-z0-9]/g, "-")}`, changes: [{ path: "unique.txt", expectedHash: null, contentBase64: btoa(text) }] });
+      expect(written.status).toBe(200);
+      await call(instance, "/v1/close", { sessionId: opened.session.id });
+    }
+  }
+  const retire = (instance: WorkspaceCoordinatorDO, branch: string, outcome: string, extra: Record<string, unknown> = {}) =>
+    call(instance, "/v1/branch/retire", { scope, branch, outcome, endedAt: Date.now(), ...extra });
+  const hasHead = (storage: Storage, branch: string) => storage.values.has(`head:${branch}`);
+  const atDaysFromNow = (days: number) => vi.spyOn(Date, "now").mockReturnValue(Date.now() + days * DAY);
+
+  it("records a retirement idempotently and never deletes while recording", async () => {
+    const { instance, storage } = await init();
+    await workerBranch(instance, "workers/a");
+    const first = await retire(instance, "workers/a", "published");
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ retired: true, replay: false, outcome: "published" });
+    const row = storage.values.get("worker-retire:workers/a");
+    const replay = await retire(instance, "workers/a", "published");
+    expect(await replay.json()).toMatchObject({ retired: true, replay: true });
+    expect(storage.values.get("worker-retire:workers/a")).toEqual(row);
+    expect([...storage.values.keys()].filter(key => key.startsWith("worker-retire-due:"))).toHaveLength(1);
+    expect(hasHead(storage, "workers/a")).toBe(true);
+  });
+
+  it("refuses non-worker, canonical, unknown and malformed retirements", async () => {
+    const { instance, storage } = await init();
+    await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/task-1" });
+    for (const branch of ["main", "runs/task-1", "workers/", "workersx/a"]) {
+      expect((await retire(instance, branch, "ended")).status).toBe(400);
+    }
+    expect((await retire(instance, "workers/missing", "ended")).status).toBe(404);
+    await workerBranch(instance, "workers/a");
+    expect((await retire(instance, "workers/a", "deleted")).status).toBe(400);
+    expect((await call(instance, "/v1/branch/retire", { scope, branch: "workers/a", outcome: "ended", endedAt: "nope" })).status).toBe(400);
+    expect([...storage.values.keys()].some(key => key.startsWith("worker-retire"))).toBe(false);
+  });
+
+  it("deletes a published branch only after 7 days and an ended branch only after 30 days", async () => {
+    const { instance, storage } = await init();
+    await workerBranch(instance, "workers/pub");
+    await workerBranch(instance, "workers/end");
+    await retire(instance, "workers/pub", "published");
+    await retire(instance, "workers/end", "ended");
+    await instance.alarm();
+    expect(hasHead(storage, "workers/pub") && hasHead(storage, "workers/end")).toBe(true);
+    try {
+      atDaysFromNow(6.9);
+      await instance.alarm();
+      expect(hasHead(storage, "workers/pub")).toBe(true);
+      vi.restoreAllMocks();
+      atDaysFromNow(7.1);
+      await instance.alarm();
+      expect(hasHead(storage, "workers/pub")).toBe(false);
+      expect(storage.values.has("branch-base:workers/pub")).toBe(false);
+      expect(storage.values.has("worker-retire:workers/pub")).toBe(false);
+      expect(hasHead(storage, "workers/end")).toBe(true);
+      vi.restoreAllMocks();
+      atDaysFromNow(29.9);
+      await instance.alarm();
+      expect(hasHead(storage, "workers/end")).toBe(true);
+      vi.restoreAllMocks();
+      atDaysFromNow(30.1);
+      await instance.alarm();
+      expect(hasHead(storage, "workers/end")).toBe(false);
+      expect(hasHead(storage, "main")).toBe(true);
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it("deletes nothing when the flag is off, even long after the period", async () => {
+    const { instance, storage } = await init({ retentionEnabled: false });
+    await workerBranch(instance, "workers/a");
+    expect((await retire(instance, "workers/a", "published")).status).toBe(200);
+    try {
+      atDaysFromNow(60);
+      await instance.alarm();
+      await instance.alarm();
+    } finally { vi.restoreAllMocks(); }
+    expect(hasHead(storage, "workers/a")).toBe(true);
+    expect(storage.values.has("branch-base:workers/a")).toBe(true);
+    expect(storage.values.has("worker-retire:workers/a")).toBe(true);
+  });
+
+  it("is blocked by an active legal hold and resumes once the hold is released", async () => {
+    const { instance, storage } = await init();
+    await workerBranch(instance, "workers/a");
+    await retire(instance, "workers/a", "published");
+    const policy = { scope, actorId: "owner-a", stagingRetentionDays: 30, reason: "Preserve project history for review." };
+    expect((await call(instance, "/v1/retention/policy", { ...policy, legalHold: true })).status).toBe(200);
+    try {
+      atDaysFromNow(10);
+      await instance.alarm();
+      expect(hasHead(storage, "workers/a")).toBe(true);
+      expect((await call(instance, "/v1/retention/policy", { ...policy, legalHold: false, reason: "Review concluded; resume cleanup." })).status).toBe(200);
+      await instance.alarm();
+      expect(hasHead(storage, "workers/a")).toBe(false);
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it("keeps a branch whose head advanced after retirement", async () => {
+    const { instance, storage } = await init();
+    await workerBranch(instance, "workers/a");
+    await retire(instance, "workers/a", "published");
+    const opened = await (await call(instance, "/v1/open", { scope, branch: "workers/a", actorId: "worker", runtimeId: "rt", allocationGeneration: 1 })).json() as { session: { id: string } };
+    expect((await call(instance, "/v1/checkpoint", { sessionId: opened.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "later", changes: [{ path: "later.txt", expectedHash: null, contentBase64: btoa("late work") }] })).status).toBe(200);
+    await call(instance, "/v1/close", { sessionId: opened.session.id });
+    try {
+      atDaysFromNow(40);
+      await instance.alarm();
+    } finally { vi.restoreAllMocks(); }
+    expect(hasHead(storage, "workers/a")).toBe(true);
+    expect(storage.values.get("worker-retire:workers/a")).toMatchObject({ status: "kept" });
+    expect([...storage.values.keys()].some(key => key.startsWith("worker-retire-due:"))).toBe(false);
+  });
+
+  it("keeps a branch that still has an active session or a child branch", async () => {
+    const { instance, storage } = await init();
+    await workerBranch(instance, "workers/busy");
+    await workerBranch(instance, "workers/parent");
+    expect((await call(instance, "/v1/branch", { scope, sourceBranch: "workers/parent", branch: "workers/child" })).status).toBe(200);
+    await call(instance, "/v1/open", { scope, branch: "workers/busy", actorId: "worker", runtimeId: "rt", allocationGeneration: 1 });
+    await retire(instance, "workers/busy", "ended");
+    await retire(instance, "workers/parent", "published");
+    try {
+      atDaysFromNow(40);
+      await instance.alarm();
+    } finally { vi.restoreAllMocks(); }
+    expect(hasHead(storage, "workers/busy") && hasHead(storage, "workers/parent") && hasHead(storage, "workers/child")).toBe(true);
+  });
+
+  it("deletes a bounded batch per pass and re-arms the alarm while more remain", async () => {
+    const { instance, storage } = await init();
+    const names = Array.from({ length: 25 }, (_, index) => `workers/w${String(index).padStart(2, "0")}`);
+    for (const name of names) { await workerBranch(instance, name); await retire(instance, name, "published"); }
+    try {
+      atDaysFromNow(8);
+      await instance.alarm();
+      expect(names.filter(name => hasHead(storage, name))).toHaveLength(5);
+      expect(storage.alarmAt).not.toBeNull();
+      expect(storage.alarmAt!).toBeLessThanOrEqual(Date.now() + 1_000);
+      // A running content-GC sweep from an earlier alarm defers retention until it completes.
+      for (let attempts = 0; attempts < 40 && names.some(name => hasHead(storage, name)); attempts++) await instance.alarm();
+      expect(names.filter(name => hasHead(storage, name))).toHaveLength(0);
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it("removes only the branch's own roots so content GC reclaims unique bytes and keeps shared bytes", async () => {
+    const { instance, storage, objects } = await init();
+    // The one-time legacy backfill (which preserves pre-revision history) is long complete in practice.
+    await storage.put("content_gc_backfill_complete", true);
+    const sharedBytes = new TextEncoder().encode("shared by main and worker");
+    const sharedHash = await sha256Hex(sharedBytes);
+    objects.set(contentKey(sharedHash), sharedBytes);
+    // Main publishes the shared file before the worker branches from it.
+    const mainSession = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "owner", runtimeId: "rt-main", allocationGeneration: 1 })).json() as { session: { id: string } };
+    expect((await call(instance, "/v1/checkpoint", { sessionId: mainSession.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "main-shared", changes: [{ path: "shared.txt", expectedHash: null, contentBase64: btoa("shared by main and worker") }] })).status).toBe(200);
+    await call(instance, "/v1/close", { sessionId: mainSession.session.id });
+    await workerBranch(instance, "workers/a", "unique worker bytes");
+    const uniqueHash = await sha256Hex(new TextEncoder().encode("unique worker bytes"));
+    expect(objects.has(contentKey(uniqueHash))).toBe(true);
+    expect(objects.has(contentKey(sharedHash))).toBe(true);
+    await retire(instance, "workers/a", "published");
+    const workerHeadManifest = (storage.values.get("head:workers/a") as { manifestHash: string }).manifestHash;
+    try {
+      atDaysFromNow(8);
+      await instance.alarm();
+      expect(hasHead(storage, "workers/a")).toBe(false);
+      // Every GC root of the retired branch is gone (receipts are not roots and expire by TTL).
+      expect([...storage.values.keys()].filter(key => key.includes("workers/a") && !key.startsWith("expiry:") && !key.startsWith("receipt:"))).toEqual([]);
+      // Bytes are untouched by retention itself.
+      expect(objects.has(contentKey(uniqueHash))).toBe(true);
+      expect(objects.has(`workspace-v1/tenant/space/project/global/manifests/${workerHeadManifest}.json`)).toBe(true);
+      for (let attempts = 0; attempts < 40; attempts++) {
+        const response = await call(instance, "/v1/gc/content", {});
+        expect(response.status).toBe(200);
+        if (!storage.values.has("content_gc")) break;
+      }
+    } finally { vi.restoreAllMocks(); }
+    expect(objects.has(contentKey(uniqueHash))).toBe(false);
+    expect(objects.has(contentKey(sharedHash))).toBe(true);
+    expect(objects.has(`workspace-v1/tenant/space/project/global/manifests/${workerHeadManifest}.json`)).toBe(false);
+    expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({ entries: [{ path: "shared.txt" }] });
   });
 });

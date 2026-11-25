@@ -39,6 +39,8 @@ interface Env {
   LIVE_RUNTIME_CONTROL_DO?: DurableObjectNamespace<LiveRuntimeControlDO>;
   LIVE_RUNTIME_AGENT?: Fetcher;
   UNIFIED_WORKSPACE_ENABLED?: string;
+  /** D9: worker-branch retention sweep. Anything but "true" means the sweep never deletes. */
+  WORKER_BRANCH_RETENTION_ENABLED?: string;
   ANALYTICS?: AnalyticsEngineDataset;
 }
 type WorkspaceOpsMetricCategory = "" | "published" | "noop" | "conflicted" | "replayed" | "rejected" |
@@ -189,6 +191,11 @@ const WORKSPACE_MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const WORKSPACE_CONTENT_GC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const WORKSPACE_MAINTENANCE_RETRY_MS = 60 * 1000;
 const REVISION_EVENT_RETENTION = 500;
+const WORKER_BRANCH_PUBLISHED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const WORKER_BRANCH_ENDED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const WORKER_BRANCH_RETENTION_BATCH = 20;
+const WORKER_BRANCH_CLEANUP_KEY_BUDGET = 500;
+const WORKER_BRANCH_SCAN_LIMIT = 5000;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
@@ -293,6 +300,24 @@ function stageKey(sessionId: string, stageId: string): string { return `stage:${
 function revisionEventKey(branch: string, revision: number): string { return `revision:${branch}:${revision}`; }
 function retainedRevisionKey(branch: string, revision: number): string { return `retained-revision:${branch}:${String(revision).padStart(16, "0")}`; }
 function subscriptionKey(branch: string, subscriberId: string): string { return `subscription:${branch}:${subscriberId}`; }
+function workerRetireKey(branch: string): string { return `worker-retire:${branch}`; }
+function workerRetireDueKey(dueAt: number, branch: string): string { return `worker-retire-due:${String(dueAt).padStart(15, "0")}:${branch}`; }
+/** Worker branches are the only branches retention may ever touch; never main or a task branch. */
+function isRetirableWorkerBranch(branch: unknown): branch is string {
+  return validateWorkspaceBranch(branch) && branch.startsWith("workers/") && branch.length > "workers/".length;
+}
+interface WorkerBranchRetirement {
+  branch: string;
+  outcome: "published" | "ended";
+  endedAt: number;
+  recordedAt: number;
+  /** Head at retirement. A different head at deletion time means the branch was reused: keep it. */
+  headRevision: number;
+  headManifestHash: string;
+  dueAt: number;
+  dueKey: string;
+  status: "retired" | "deleting" | "kept";
+}
 function expiryKey(expiresAt: number, nonce: string): string { return `expiry:${String(expiresAt).padStart(13, "0")}:${nonce}`; }
 function gcMarksRoot(scope: WorkspaceScope): string { return `workspace-v1/${keyScope(scope)}/gc/marks/`; }
 function gcMarksPrefix(scope: WorkspaceScope, epoch: string): string { return `${gcMarksRoot(scope)}${epoch}/`; }
@@ -326,6 +351,14 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       return;
     }
     await this.processLiveCheckpoint();
+    // Retention runs before content GC so the roots it removes are not marked by this pass.
+    // A failure here never blocks the existing maintenance below.
+    let workerRetentionHasMore = false;
+    try {
+      workerRetentionHasMore = (await this.sweepWorkerBranchRetention()).hasMore;
+    } catch {
+      console.error("worker_branch_retention_failed");
+    }
     const startedAt = Date.now();
     const previous = await this.ctx.storage.get<{ failures: number }>("workspace_gc_status") ?? { failures: 0 };
     try {
@@ -349,7 +382,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
 
       const metadataResult = await this.collectMetadata();
       if (!metadataResult.ok) throw new Error(`metadata:${metadataResult.status}`);
-      const hasMore = stageBody.hasMore || Boolean(await this.ctx.storage.get("content_gc"));
+      const hasMore = stageBody.hasMore || workerRetentionHasMore || Boolean(await this.ctx.storage.get("content_gc"));
       await this.ctx.storage.put("workspace_gc_status", {
         status: hasMore ? "running" : "complete", startedAt: new Date(startedAt).toISOString(),
         ...(hasMore ? {} : { completedAt: new Date().toISOString() }), failures: 0,
@@ -357,6 +390,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       });
       await this.scheduleAlarmAt(Date.now() + (hasMore ? 1_000 : WORKSPACE_MAINTENANCE_INTERVAL_MS));
       await this.scheduleMetadataExpiry();
+      await this.scheduleWorkerBranchRetention();
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 500) : "workspace_gc_failed";
       await this.ctx.storage.put("workspace_gc_status", {
@@ -418,6 +452,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (await this.ctx.storage.get<WorkspaceScope>("scope")) await this.scheduleAlarmAt(Date.now() + WORKSPACE_MAINTENANCE_INTERVAL_MS);
     const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
     if (migration && migration.status !== "verified" && url.pathname !== "/v1/migration/status" && url.pathname !== "/v1/migration/import") return fail("workspace_migration_barrier_active", 423);
+    if (request.method === "POST" && url.pathname === "/v1/branch/retire") return this.retireWorkerBranch(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/archive/export") return this.exportArchiveSnapshot(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/archive/restore") return this.restoreArchiveSnapshot(body!, tenantId);
     if (request.method === "POST" && ["/v1/initialize", "/v1/open", "/v1/renew", "/v1/branch", "/v1/merge", "/v1/checkpoint", "/v1/stage", "/v1/handoff", "/v1/close", "/v1/revoke", "/v1/subscriptions/ack", "/v1/live-checkpoint/request"].includes(url.pathname)) {
@@ -2609,6 +2644,151 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     });
     if ("error" in policy) return fail(policy.error, 423);
     return json({ policy });
+  }
+
+  /**
+   * Record that a worker branch's result was published or that the worker ended without
+   * publication. Recording never deletes anything and works with the retention flag off.
+   */
+  private async retireWorkerBranch(body: Record<string, unknown>, tenantId: string): Promise<Response> {
+    const validated = await this.validateScope(body.scope, body.branch, tenantId);
+    if (validated instanceof Response) return validated;
+    if (!isRetirableWorkerBranch(validated.branch)) return fail("invalid_worker_branch");
+    const outcome = body.outcome;
+    if (outcome !== "published" && outcome !== "ended") return fail("invalid_retire_outcome");
+    const now = Date.now();
+    const parsedEndedAt = typeof body.endedAt === "number" ? body.endedAt : typeof body.endedAt === "string" ? Date.parse(body.endedAt) : NaN;
+    if (!Number.isFinite(parsedEndedAt) || parsedEndedAt < 0) return fail("invalid_retire_ended_at");
+    const endedAt = Math.min(Math.floor(parsedEndedAt), now);
+    const branch = validated.branch;
+    const result = await this.ctx.storage.transaction(async (tx) => {
+      if (await tx.get<boolean>("erased")) return { error: "erased" as const };
+      const head = await tx.get<WorkspaceHead>(headKey(branch));
+      if (!head) return { error: "not_found" as const };
+      const prior = await tx.get<WorkerBranchRetirement>(workerRetireKey(branch));
+      if (prior) {
+        const sameHead = prior.headRevision === head.revision && prior.headManifestHash === head.manifestHash;
+        if (prior.status === "deleting" || (sameHead && prior.outcome === outcome && prior.status === "retired")) {
+          return { replay: true as const, record: prior };
+        }
+        await tx.delete(prior.dueKey);
+      }
+      // The retention period is measured from the Coordinator's clock at recording time, never
+      // from the caller-supplied endedAt, which is informational only.
+      const dueAt = now + (outcome === "published" ? WORKER_BRANCH_PUBLISHED_RETENTION_MS : WORKER_BRANCH_ENDED_RETENTION_MS);
+      const record: WorkerBranchRetirement = { branch, outcome, endedAt, recordedAt: now, headRevision: head.revision,
+        headManifestHash: head.manifestHash, dueAt, dueKey: workerRetireDueKey(dueAt, branch), status: "retired" };
+      await tx.put(workerRetireKey(branch), record);
+      await tx.put(record.dueKey, branch);
+      return { replay: false as const, record };
+    });
+    if ("error" in result) return result.error === "erased" ? fail("workspace_erased", 410) : fail("workspace_branch_not_found", 404);
+    if (!result.replay) await this.scheduleWorkerBranchRetention();
+    return json({ retired: true, replay: result.replay, branch, outcome: result.record.outcome, dueAt: new Date(result.record.dueAt).toISOString() });
+  }
+
+  private async scheduleWorkerBranchRetention(): Promise<void> {
+    if (this.env.WORKER_BRANCH_RETENTION_ENABLED !== "true") return;
+    const page = await this.ctx.storage.list<string>({ prefix: "worker-retire-due:", limit: 1 });
+    const key = [...page.keys()][0];
+    if (!key) return;
+    const dueAt = Number(key.slice("worker-retire-due:".length).split(":", 1)[0]);
+    if (Number.isSafeInteger(dueAt)) await this.scheduleAlarmAt(Math.max(dueAt, Date.now() + 1_000));
+  }
+
+  /**
+   * D9 retention. Deletes only the head/base metadata of retired `workers/*` branches (plus the
+   * branch's own retained-revision, revision-event and subscription keys, which are content GC
+   * roots) after the retention period. R2 bytes are never touched here: the existing content GC
+   * reclaims whatever is no longer reachable from any other branch, revision or active session.
+   * Bounded per pass; the caller re-arms the alarm when `hasMore`.
+   */
+  private async sweepWorkerBranchRetention(): Promise<{ deleted: number; kept: number; deferred: number; hasMore: boolean }> {
+    const none = { deleted: 0, kept: 0, deferred: 0, hasMore: false };
+    if (this.env.WORKER_BRANCH_RETENTION_ENABLED !== "true") return none;
+    const policy = await this.ctx.storage.get<WorkspaceRetentionPolicy>("workspace_retention_policy");
+    const hold = policy?.legalHold;
+    if (hold && (!hold.expiresAt || Date.parse(hold.expiresAt) > Date.now())) return none;
+    if (await this.contentGcLocked()) return none;
+    const now = Date.now();
+    const due = await this.ctx.storage.list<string>({ prefix: "worker-retire-due:", limit: WORKER_BRANCH_RETENTION_BATCH + 1 });
+    const dueKeys = [...due.keys()].filter((key) => Number(key.slice("worker-retire-due:".length).split(":", 1)[0]) <= now);
+    if (!dueKeys.length) return none;
+    // Branches still in use: an active session, or a child branch forked from it.
+    const busy = new Set<string>();
+    const sessions = await this.ctx.storage.list<Session>({ prefix: "session:", limit: WORKER_BRANCH_SCAN_LIMIT });
+    const bases = await this.ctx.storage.list<{ parentBranch?: string }>({ prefix: "branch-base:", limit: WORKER_BRANCH_SCAN_LIMIT });
+    if (sessions.size >= WORKER_BRANCH_SCAN_LIMIT || bases.size >= WORKER_BRANCH_SCAN_LIMIT) return none;
+    for (const session of sessions.values()) if (session.status === "active") busy.add(session.branch);
+    for (const base of bases.values()) if (typeof base.parentBranch === "string") busy.add(base.parentBranch);
+    let deleted = 0, kept = 0, deferred = 0, processed = 0;
+    let cleanupBudget = WORKER_BRANCH_CLEANUP_KEY_BUDGET;
+    let hasMore = dueKeys.length > WORKER_BRANCH_RETENTION_BATCH;
+    for (const dueKey of dueKeys.slice(0, WORKER_BRANCH_RETENTION_BATCH)) {
+      processed++;
+      const branch = due.get(dueKey);
+      if (!isRetirableWorkerBranch(branch)) { await this.ctx.storage.delete(dueKey); continue; }
+      const step = await this.ctx.storage.transaction(async (tx) => {
+        const record = await tx.get<WorkerBranchRetirement>(workerRetireKey(branch));
+        if (!record || record.dueKey !== dueKey) { await tx.delete(dueKey); return "stale" as const; }
+        if (record.status === "deleting") return "cleanup" as const;
+        if (record.status === "kept") { await tx.delete(dueKey); return "kept" as const; }
+        const policyNow = await tx.get<WorkspaceRetentionPolicy>("workspace_retention_policy");
+        const holdNow = policyNow?.legalHold;
+        if (holdNow && (!holdNow.expiresAt || Date.parse(holdNow.expiresAt) > Date.now())) return "hold" as const;
+        if (await tx.get<boolean>("erased")) return "hold" as const;
+        const head = await tx.get<WorkspaceHead>(headKey(branch));
+        if (!head) { await tx.delete(dueKey); await tx.delete(workerRetireKey(branch)); return "stale" as const; }
+        if (head.revision !== record.headRevision || head.manifestHash !== record.headManifestHash) {
+          await tx.put(workerRetireKey(branch), { ...record, status: "kept" } satisfies WorkerBranchRetirement);
+          await tx.delete(dueKey);
+          return "kept" as const;
+        }
+        if (busy.has(branch)) {
+          const dueAt = Date.now() + WORKSPACE_MAINTENANCE_INTERVAL_MS;
+          const next = { ...record, dueAt, dueKey: workerRetireDueKey(dueAt, branch) };
+          await tx.delete(dueKey);
+          await tx.put(next.dueKey, branch);
+          await tx.put(workerRetireKey(branch), next);
+          return "deferred" as const;
+        }
+        // Remove the branch head and base first. From here the branch is gone; only metadata
+        // cleanup remains and is resumed through the same due index.
+        const dueAt = Date.now();
+        const next: WorkerBranchRetirement = { ...record, status: "deleting", dueAt, dueKey: workerRetireDueKey(dueAt, branch) };
+        await tx.delete(headKey(branch));
+        await tx.delete(branchBaseKey(branch));
+        await tx.delete(dueKey);
+        await tx.put(next.dueKey, branch);
+        await tx.put(workerRetireKey(branch), next);
+        return "cleanup" as const;
+      });
+      if (step === "kept") kept++;
+      else if (step === "deferred" || step === "hold") deferred++;
+      else if (step === "cleanup") {
+        // Retained revisions, revision events and subscriptions of this exact branch. Branch
+        // names cannot contain ":", so these prefixes cannot match another branch.
+        let exhausted = true;
+        for (const prefix of [`retained-revision:${branch}:`, `revision:${branch}:`, `subscription:${branch}:`]) {
+          while (cleanupBudget > 0) {
+            const page = await this.ctx.storage.list({ prefix, limit: Math.min(128, cleanupBudget) });
+            if (!page.size) break;
+            await this.ctx.storage.delete([...page.keys()]);
+            cleanupBudget -= page.size;
+          }
+          if ((await this.ctx.storage.list({ prefix, limit: 1 })).size) { exhausted = false; break; }
+        }
+        if (exhausted) {
+          await this.ctx.storage.transaction(async (tx) => {
+            const record = await tx.get<WorkerBranchRetirement>(workerRetireKey(branch));
+            if (record) { await tx.delete(record.dueKey); await tx.delete(workerRetireKey(branch)); }
+          });
+          deleted++;
+        } else hasMore = true;
+      }
+    }
+    console.log("worker_branch_retention_sweep", { processed, deleted, kept, deferred, hasMore });
+    return { deleted, kept, deferred, hasMore };
   }
 
   /** Expiry indexes are ordered by deadline so each invocation performs a bounded sweep. */

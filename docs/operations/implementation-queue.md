@@ -725,7 +725,11 @@ See the [plan](../research/resumable-workers-durable-workflows-and-branches-plan
   acceptance ran.
 - [ ] **Blocked · PW01 — Worker-branch retention and deletion semantics.** The current ledgers do
   not define an approved branch TTL or deletion policy. Preserve staged branch content; resume when
-  the applicable owner approves retention, cleanup and recovery semantics.
+  the applicable owner approves retention, cleanup and recovery semantics. D9 (owner-approved
+  2026-11-25) now defines 7 days after publication and 30 days after failed/terminated end; MS-20
+  landed the local slice (Coordinator `/v1/branch/retire`, flag-gated alarm sweep, NaelaoAgentDO
+  retire calls) behind `WORKER_BRANCH_RETENTION_ENABLED`, default off. Local evidence only; live
+  enablement and deployed acceptance remain.
 - [x] **PW02 — Correlate directed help requests with durable replies.** Task-blackboard messages can
   include an authenticated reply reference. The transaction checks the original question/blocker
   was addressed to the replying worker and the reply includes the original sender; existing host
@@ -1250,7 +1254,7 @@ ledgers when moving to another plan.
 
 1. [ ] **Paused; no ready source task after final APW review.** [Planner investigation and worker reuse](../research/planner-investigation-and-worker-reuse-plan.md) · [checklist](#paused-plan--planner-investigation-and-worker-reuse). APW02/APW09 local comparison and boundary verification are complete. APW07 classification, APW08 contracts and APW09 live acceptance remain blocked below and in the APW ledger.
 2. [ ] **Earlier APW work remains open under existing dependencies.** [Adaptive planner, worker coordination and memory](../research/adaptive-planner-worker-swarm-memory-plan.md) · [APW ledger](../research/adaptive-planner-worker-swarm-memory-progress.md). A review-only APW07 shared-decision/distinct-path signal is implemented; full conflict classification and APW08 deadline/reusable-definition work need owner-reviewed contracts. APW04–APW06 and APW09 retain policy/authority/evaluation gates. Cross-DO recovery/publication and economics acceptance need authorized staging. Fixed a Shell durable-task list routing bug (it reached the Spaces AVOS task DAG; now `/durable-tasks` routes to Agents).
-3. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention is blocked on approved policy. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
+3. [ ] [Resumable workers, durable workflows and branches](../research/resumable-workers-durable-workflows-and-branches-plan.md) · [PW ledger](../research/resumable-workers-durable-workflows-and-branches-progress.md). No ready tasks remain; worker-branch retention landed locally (MS-20, flag off) and awaits live enablement. Use the [planner and worker isolation plan](../research/planner-worker-isolation-and-conflict-resolution-plan.md) and platform section 12 for the existing PW contracts.
 4. [ ] **Paused; Project runtime changes are tracked under SPR.** [Managed services and sidecar runtime](../research/managed-services-and-sidecar-runtime-plan.md) · [S/U ledger](../research/managed-services-and-sidecar-implementation-progress.md). Resume independent work when its recorded dependencies change.
 5. [ ] **Paused; local acceptance complete, live acceptance blocked.** [One Tier 6 container per Project](../research/single-project-tier-6-runtime-plan.md) · [SPR checklist](#paused-plan--single-project-tier-6-runtime). This plan owns the new runtime constraint for S4 and the affected S3/U10 callers.
 6. [ ] **Paused; no ready source task.** [Shared compute scheduling and budget](../research/shared-compute-scheduling-and-budget-plan.md) · [SC ledger](../research/shared-compute-scheduling-and-budget-progress.md). Resume SC03 when durable invocation consent, exact alarm-safe authority revalidation and pre-dispatch reservation are supported; resume SC04 when owner-approved Space/Project caps exist.

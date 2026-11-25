@@ -30,7 +30,7 @@ function fixture() {
     const body = await request.json<Record<string, any>>(); requests.push(body);
     return new Promise<Response>(resolve => finishes.push((result = { result: { ok: true, output: "done", tokens_used: 10 } }, status = 200) => resolve(Response.json(result, { status }))));
   } }) } as unknown as DurableObjectNamespace;
-  const host = (bound = true) => {
+  const host = (bound = true, extraEnv: Record<string, unknown> = {}) => {
     const sql = { exec: (query: string, ...args: unknown[]) => {
       const normalized = query.replace(/\s+/g, " ").trim();
       const cursor = (rows: unknown[] = [], rowsWritten = 0) => ({ toArray: () => rows, rowsWritten });
@@ -71,6 +71,10 @@ function fixture() {
       if (normalized.startsWith("SELECT late_result_json FROM sub_agents")) {
         const row = workers.get(String(args[0]));
         return cursor(row ? [{ late_result_json: row.late_result_json }] : []);
+      }
+      if (normalized.startsWith("SELECT workspace_branch, configuration_json FROM sub_agents")) {
+        const row = workers.get(String(args[0]));
+        return cursor(row ? [{ workspace_branch: row.workspace_branch, configuration_json: row.configuration_json }] : []);
       }
       if (normalized.startsWith("SELECT configuration_json FROM sub_agents")) {
         const row = workers.get(String(args[0]));
@@ -163,9 +167,9 @@ function fixture() {
       return cursor();
     } };
     const storage = { sql, transactionSync: (callback: () => void) => callback(), put: async (key: string, value: unknown) => { storageValues.set(key, value); },
-      get: async (key: string) => storageValues.get(key) };
+      get: async (key: string) => storageValues.get(key), delete: async (key: string) => storageValues.delete(key) };
     return new NaelaoAgentDO({ storage, id: { toString: () => "parent-do" } } as never,
-      { PLATFORM_SECRET: "test-signing-key", ...(bound ? { CONCURRENCY_DO: concurrency } : {}) } as never) as unknown as Host;
+      { PLATFORM_SECRET: "test-signing-key", ...(bound ? { CONCURRENCY_DO: concurrency } : {}), ...extraEnv } as never) as unknown as Host;
   };
   const runtime = { scriptsBucket: {}, tenantId: "tenant", spaceId: "space", agentId: "parent", rootRunId: "root",
     delegationDepth: 2, delegationPlanner: true, effectiveRole: "editor", callerRole: "product_end_user",
@@ -509,5 +513,83 @@ describe("host delegation admission", () => {
     f.finishes[0]!();
     await run;
     expect(row).toMatchObject({ status: "running", attempt: 2, result: null, tokens_used: 0 });
+  });
+});
+
+describe("worker-branch retirement calls (D9)", () => {
+  function retireFixture(options: { coordinator?: "ok" | "error" | "throw" } = {}) {
+    const f = fixture();
+    const retires: Array<Record<string, any>> = [];
+    const coordinator = { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (path !== "/v1/branch/retire") return Response.json({ error_code: "not_found" }, { status: 404 });
+      retires.push(await request.json<Record<string, any>>());
+      if (options.coordinator === "throw") throw new Error("coordinator unavailable");
+      return options.coordinator === "error" ? Response.json({ error_code: "boom" }, { status: 503 }) : Response.json({ retired: true });
+    } }) } as unknown as DurableObjectNamespace;
+    const host = () => f.host(true, { UNIFIED_WORKSPACE_ENABLED: "true", WORKSPACE_COORDINATOR: coordinator });
+    const seed = (id: string, branch: string | null, status = "running") => f.workers.set(id, {
+      id, parent_run_id: "parent-run", status, goal: "task", workspace_branch: branch,
+      configuration_json: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project" }),
+      attempt: 1, checkpoint_json: null, checkpoint_updated_at: null, result: null, error: null, updated_at: Date.now(),
+      budget_tokens: 1000, tokens_used: 0, late_result_json: null, late_result_at: null, late_result_attempt: null,
+    } as never);
+    return { f, retires, host, seed };
+  }
+
+  it("retires a terminated worker's branch as ended", async () => {
+    const { f, retires, host, seed } = retireFixture();
+    seed("w1", "workers/w1");
+    expect(await f.terminate(host(), "w1")).toBe(true);
+    expect(retires).toHaveLength(1);
+    expect(retires[0]).toMatchObject({ branch: "workers/w1", outcome: "ended", scope: { tenantId: "tenant", spaceId: "space", projectId: "project" } });
+    expect(f.storageValues.has("worker-branch-retire-pending:w1")).toBe(false);
+  });
+
+  it("does not retire task branches, workers without a branch, or workers that were not running", async () => {
+    const { f, retires, host, seed } = retireFixture();
+    seed("t1", "task/isolated"); seed("n1", null); seed("d1", "workers/d1", "done");
+    await f.terminate(host(), "t1"); await f.terminate(host(), "n1"); await f.terminate(host(), "d1");
+    expect(retires).toHaveLength(0);
+  });
+
+  it("never fails termination when the Coordinator errors or throws, and leaves a durable marker", async () => {
+    for (const mode of ["error", "throw"] as const) {
+      const { f, retires, host, seed } = retireFixture({ coordinator: mode });
+      seed("w2", "workers/w2");
+      expect(await f.terminate(host(), "w2")).toBe(true);
+      expect(retires).toHaveLength(1);
+      expect(f.workers.get("w2")?.status).toBe("terminated");
+      expect(f.storageValues.get("worker-branch-retire-pending:w2")).toMatchObject({ outcome: "ended" });
+    }
+  });
+
+  it("is a no-op when the unified workspace is not enabled", async () => {
+    const { f, retires, seed } = retireFixture();
+    seed("w3", "workers/w3");
+    expect(await f.terminate(f.host(), "w3")).toBe(true);
+    expect(retires).toHaveLength(0);
+  });
+
+  it("retires as published after a published merge and as ended after a failed worker", async () => {
+    for (const scenario of [{ ok: true, outcome: "published" }, { ok: false, outcome: "ended" }] as const) {
+      const { f, retires, host } = retireFixture();
+      const merge = async () => ({ conflicts: [], validationReceipts: [], published: true });
+      const run = f.spawn(host(), [{ goal: "task", workspace_branch: "workers/w4" }], merge);
+      await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+      f.finishes[0]!(scenario.ok ? { result: { ok: true, output: "done", tokens_used: 1 } } : { result: { ok: false, error: "boom" } }, scenario.ok ? 200 : 500);
+      await run;
+      expect(retires.map(item => item.outcome)).toEqual([scenario.outcome]);
+    }
+  });
+
+  it("does not retire a successful worker whose result was not published", async () => {
+    const { f, retires, host } = retireFixture();
+    const merge = async () => ({ conflicts: [{ path: "a.txt", reason: "overlapping_change" }], validationReceipts: [], published: false });
+    const run = f.spawn(host(), [{ goal: "task", workspace_branch: "workers/w5" }], merge);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    f.finishes[0]!();
+    await run;
+    expect(retires).toHaveLength(0);
   });
 });

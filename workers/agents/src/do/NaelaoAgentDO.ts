@@ -5669,6 +5669,44 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
+  /**
+   * D9: tell the Coordinator a worker branch is retired (`published` result or `ended` without
+   * publication). Best effort and bounded: it never throws and never delays the worker path for
+   * more than a short timeout. A failure leaves a durable marker; a missed retire only means the
+   * branch is kept, because the Coordinator deletes nothing it has not been told to retire.
+   */
+  private async retireWorkerBranchBestEffort(subId: string, outcome: "published" | "ended"): Promise<void> {
+    try {
+      const row = this.ctx.storage.sql.exec(`SELECT workspace_branch, configuration_json FROM sub_agents WHERE id=?`, subId)
+        .toArray()[0] as { workspace_branch: string | null; configuration_json: string | null } | undefined;
+      const branch = row?.workspace_branch;
+      if (!branch || !branch.startsWith("workers/")) return;
+      const config = JSON.parse(row?.configuration_json ?? "{}") as { tenantId?: string; spaceId?: string; projectId?: string };
+      const bindings = this.env as unknown as {
+        UNIFIED_WORKSPACE_ENABLED?: string;
+        WORKSPACE_COORDINATOR?: DurableObjectNamespace;
+        DATA_JURISDICTION?: "eu";
+        PLATFORM_SECRET: string;
+      };
+      if (!config.tenantId || !config.spaceId || !config.projectId || bindings.UNIFIED_WORKSPACE_ENABLED !== "true" || !bindings.WORKSPACE_COORDINATOR) return;
+      const scope: WorkspaceScope = { tenantId: config.tenantId, spaceId: config.spaceId, projectId: config.projectId,
+        jurisdiction: bindings.DATA_JURISDICTION === "eu" ? "eu" : "global" };
+      const markerKey = `worker-branch-retire-pending:${subId}`;
+      try {
+        const response = await workspaceCoordinatorRequest(bindings, scope, "/v1/branch/retire",
+          { method: "POST", body: { scope, branch, outcome, endedAt: Date.now() }, signal: AbortSignal.timeout(3_000) });
+        if (!response.ok) { await response.body?.cancel().catch(() => undefined); throw new Error(`status_${response.status}`); }
+        await response.body?.cancel().catch(() => undefined);
+        await this.ctx.storage.delete(markerKey).catch(() => undefined);
+      } catch (error) {
+        console.warn("worker_branch_retire_failed", { outcome, reason: error instanceof Error ? error.message.slice(0, 40) : "error" });
+        await this.ctx.storage.put(markerKey, { outcome, at: Date.now() }).catch(() => undefined);
+      }
+    } catch {
+      console.warn("worker_branch_retire_failed", { outcome, reason: "exception" });
+    }
+  }
+
   private async readSubAgentCheckpointPin(tenantId: string, spaceId: string, projectId: string | undefined, branch: string): Promise<{
     branch: string; revision: number; manifestHash: string;
   } | undefined> {
@@ -6059,9 +6097,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               ...(lateResult !== undefined ? { late_result: lateResult } : {}) };
           }
           let output: unknown = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
+          let workerResultPublished = false;
           if (ok && workspaceBranch) {
             if (mergeWorkerWorkspace && workspaceBranch.startsWith("workers/")) {
               const mergeOutcome = await mergeWorkerWorkspace(subId, workspaceBranch, attempt);
+              workerResultPublished = mergeOutcome.published;
               if (mergeOutcome.conflicts.length || mergeOutcome.validationReceipts.length || mergeOutcome.published) {
                 output = withWorkerMergeConflicts(output, mergeOutcome.conflicts, {
                   validationReceipts: mergeOutcome.validationReceipts,
@@ -6109,6 +6149,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             return { ...cancelledResult(current?.status), model_used: modelResolution.model,
               ...(lateResult !== undefined ? { late_result: lateResult } : {}) };
           }
+          // D9: a published result, or a worker that ended failed (not waiting for input), retires its
+          // branch. Unpublished successful work is never retired: it may still await conflict resolution.
+          if (workerResultPublished) await this.retireWorkerBranchBestEffort(subId, "published");
+          else if (!ok && !awaitingPlanner && !awaitingHuman) await this.retireWorkerBranchBestEffort(subId, "ended");
           await recordWorkerWidgetEvent(ok ? "worker.completed" : awaitingPlanner || awaitingHuman ? "worker.waiting" : "worker.failed",
             ok ? "done" : awaitingPlanner ? "awaiting_planner_input" : awaitingHuman ? "awaiting_human_input" : "failed", modelResolution.model);
           if (!ok && (awaitingPlanner || awaitingHuman)) await recordWorkerWidgetEvent("task.blocked", awaitingPlanner ? "awaiting_planner_input" : "awaiting_human_input", modelResolution.model);
@@ -6145,6 +6189,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               : undefined;
             return { ...cancelledResult(current?.status), ...(lateResult !== undefined ? { late_result: lateResult } : {}) };
           }
+          await this.retireWorkerBranchBestEffort(subId, "ended");
           return { id: subId, ok: false, status: "failed", error: msg };
         } finally {
           if (leafSlotKey) await this.releaseConcurrencySlot(leafSlotKey, subId);
@@ -6967,6 +7012,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       return Response.json({ error_code: "worker_session_inactive" }, { status: 409 });
     }
+    if (status === "failed") await this.retireWorkerBranchBestEffort(id, "ended");
     return Response.json({ ok: true });
   }
 
@@ -7040,7 +7086,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private terminateSubAgentImpl(id: string): Promise<boolean> {
     const updated = this.ctx.storage.sql.exec(`UPDATE sub_agents SET status = 'terminated', updated_at = ? WHERE id = ? AND status IN ('running','awaiting_planner_input','awaiting_human_input','interrupted')`, Date.now(), id);
-    return Promise.resolve(updated.rowsWritten === 1);
+    if (updated.rowsWritten !== 1) return Promise.resolve(false);
+    // D9: a terminated worker never publishes. The retire call is bounded and never fails termination.
+    return this.retireWorkerBranchBestEffort(id, "ended").then(() => true);
   }
 
   /**
