@@ -980,3 +980,119 @@ describe("AgentMail provider account boundary",()=>{
       .toMatchObject({status:"active",next_billing_at:"2026-03-31T00:00:00.000Z"});
   });
 });
+
+describe("MS-12 remaining local controls",()=>{
+  afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks();});
+  async function ms12Connection(f:ReturnType<typeof fixture>,label:string,allowed:string[],dailySendLimit=10){
+    const identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
+    const accountId=`mail-ms12-${label}`,inboxId=`inbox-ms12-${label}`,parentKey=`parent-key-ms12-${label}-7f3a`;
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,agentport_account_id,
+      owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'user','naelao_managed',?,?,'active',datetime('now'),datetime('now'))`)
+      .bind(accountId,"tenant","space",identity.id,agentId,`account-ms12-${label}`,inboxId,`${label}@example.test`).run();
+    await f.db.prepare("UPDATE assistant_communication_identities SET autonomy_json=? WHERE id=?")
+      .bind(JSON.stringify({mode:"standing",recipients:allowed,dailySendLimit}),identity.id).run();
+    (f.env as unknown as {AGENTMAIL_API_KEY:string}).AGENTMAIL_API_KEY=parentKey;
+    return {identity,accountId,inboxId,parentKey};
+  }
+  function ms12Provider(conn:{inboxId:string},hooks:{beforeKeyReturn?:()=>Promise<void>;send?:()=>Promise<Response>}={}){
+    const calls={keyCreates:0,keyDeletes:0,sendCalls:0,sendBodies:[] as Record<string,unknown>[]};
+    const fetchFn=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const request=new Request(input,init),url=new URL(request.url);
+      if(url.pathname.endsWith("/api-keys")&&request.method==="POST"){
+        const n=++calls.keyCreates,body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        await hooks.beforeKeyReturn?.();
+        return Response.json({api_key_id:`api_key_ms12_${n}`,api_key:`temp-key-ms12-${n}-9c1d2e3f4a5b`,inbox_id:conn.inboxId,
+          expires_at:body.expires_at,permissions:body.permissions});
+      }
+      if(url.pathname.includes("/api-keys/")&&request.method==="DELETE"){calls.keyDeletes++;return new Response(null,{status:204});}
+      if(url.pathname.endsWith("/messages/send")){
+        calls.sendCalls++;calls.sendBodies.push(await request.json() as Record<string,unknown>);
+        if(hooks.send)return hooks.send();
+        return Response.json({message_id:`provider-message-ms12-${calls.sendCalls}`});
+      }
+      return Response.json({});
+    });
+    vi.stubGlobal("fetch",fetchFn);
+    return {fetchFn,calls};
+  }
+  async function ms12Send(f:ReturnType<typeof fixture>,args:Record<string,unknown>){
+    const app=new Hono<{Bindings:AgentsEnv}>();registerCommunicationRoutes(app);
+    const headers={"content-type":"application/json","x-naelao-tenant-id":scope.tenantId,"x-naelao-user-id":scope.userId,
+      "x-naelao-role":scope.role,"x-naelao-internal-token":await mintInternalToken("secret",scope.tenantId)};
+    return app.request("/internal/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.send",args})},f.env);
+  }
+  const allowedAddress="allowed@example.test";
+  const maliciousRecipients:[string,unknown][]=[
+    ["CRLF header injection",`${allowedAddress}\r\nBcc: attacker@evil.example`],
+    ["two @ signs",`${allowedAddress}@evil.example@allowed.test`],
+    ["display name carrying an unapproved address",`Boss <attacker@evil.example>`],
+    ["10k-character address",`${"a".repeat(10_000)}@example.test`],
+  ];
+  for(const [label,malicious] of maliciousRecipients){
+    it(`rejects a malicious recipient (${label}) before temporary-key creation or send`,async()=>{
+      const f=fixture();await ms12Connection(f,"malicious",[allowedAddress]);
+      const provider=ms12Provider({inboxId:"inbox-ms12-malicious"});
+      const alone=await ms12Send(f,{to:malicious,subject:"Malicious",text:"Hello",idempotency_key:`malicious-alone-${label.length}`});
+      expect(alone.status).toBe(403);
+      expect(await alone.json()).toMatchObject({error_code:"communication_recipient_not_approved"});
+      const mixed=await ms12Send(f,{to:[allowedAddress,malicious],subject:"Malicious",text:"Hello",idempotency_key:`malicious-mixed-${label.length}`});
+      expect(mixed.status).toBe(403);
+      expect(await mixed.json()).toMatchObject({error_code:"communication_recipient_not_approved"});
+      expect(provider.fetchFn).not.toHaveBeenCalled();
+      expect(provider.calls).toMatchObject({keyCreates:0,keyDeletes:0,sendCalls:0});
+    });
+  }
+  it("refuses a send whose recipient was substituted after approval for an allowlisted recipient",async()=>{
+    const f=fixture();await ms12Connection(f,"substitute",[allowedAddress]);
+    const provider=ms12Provider({inboxId:"inbox-ms12-substitute"});
+    const approved=await ms12Send(f,{to:allowedAddress,subject:"Approved",text:"Hello",idempotency_key:"substitute-1"});
+    expect(approved.status).toBe(200);
+    const substitutedSameKey=await ms12Send(f,{to:"other@example.test",subject:"Approved",text:"Hello",idempotency_key:"substitute-1"});
+    expect(substitutedSameKey.status).toBe(403);
+    expect(await substitutedSameKey.json()).toMatchObject({error_code:"communication_recipient_not_approved"});
+    const substitutedNewKey=await ms12Send(f,{to:"other@example.test",subject:"Approved",text:"Hello",idempotency_key:"substitute-2"});
+    expect(substitutedNewKey.status).toBe(403);
+    expect(await substitutedNewKey.json()).toMatchObject({error_code:"communication_recipient_not_approved"});
+    expect(provider.calls).toMatchObject({keyCreates:1,keyDeletes:1,sendCalls:1});
+    expect(provider.calls.sendBodies.map(body=>body.to)).toEqual([allowedAddress]);
+  });
+  it("keeps the parent, temporary key and message body out of every console call on success, timeout and provider error",async()=>{
+    const f=fixture(),conn=await ms12Connection(f,"logs",[allowedAddress]);
+    const body="SECRET-BODY-TEXT-7731";
+    const spies=(["log","info","warn","error"] as const).map(method=>vi.spyOn(console,method).mockImplementation(()=>{}));
+    const logged=():string[]=>spies.flatMap(spy=>spy.mock.calls.flat().map(arg=>
+      arg instanceof Error?`${arg.name} ${arg.message} ${arg.stack??""}`:typeof arg==="string"?arg:(()=>{try{return JSON.stringify(arg)??"";}catch{return "";}})()+" "+String(arg)));
+    const tempKeys=["temp-key-ms12-1-9c1d2e3f4a5b","temp-key-ms12-2-9c1d2e3f4a5b","temp-key-ms12-3-9c1d2e3f4a5b"];
+
+    ms12Provider({inboxId:conn.inboxId});
+    const success=await ms12Send(f,{to:allowedAddress,subject:"Logs",text:body,idempotency_key:"logs-success"});
+    expect(success.status).toBe(200);
+
+    ms12Provider({inboxId:conn.inboxId},{send:async()=>{throw new Error("simulated_provider_timeout");}});
+    const timeout=await ms12Send(f,{to:allowedAddress,subject:"Logs",text:body,idempotency_key:"logs-timeout"});
+    expect(timeout.status).toBe(502);
+
+    ms12Provider({inboxId:conn.inboxId},{send:async()=>Response.json({error:body,api_key:tempKeys[2]},{status:500})});
+    const providerError=await ms12Send(f,{to:allowedAddress,subject:"Logs",text:body,idempotency_key:"logs-error"});
+    expect(providerError.status).toBeGreaterThanOrEqual(500);
+
+    const output=logged().join("\n");
+    for(const secret of [conn.parentKey,body,...tempKeys])expect(output).not.toContain(secret);
+    expect(output).not.toContain(conn.parentKey);
+  });
+  it("denies dispatch and deletes the temporary key when the connection is revoked after key creation",async()=>{
+    const f=fixture(),conn=await ms12Connection(f,"revoke-race",[allowedAddress]);
+    const provider=ms12Provider({inboxId:conn.inboxId},{beforeKeyReturn:async()=>{
+      await f.db.prepare("UPDATE assistant_agentmail_accounts SET status='retired',updated_at=? WHERE id=?")
+        .bind(new Date().toISOString(),conn.accountId).run();
+    }});
+    const response=await ms12Send(f,{to:allowedAddress,subject:"Revoked",text:"Hello",idempotency_key:"revoke-race-send"});
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(await response.json()).toMatchObject({error_code:"agentmail_account_not_connected"});
+    expect(provider.calls).toMatchObject({keyCreates:1,keyDeletes:1,sendCalls:0});
+    expect(await f.db.prepare("SELECT status FROM assistant_agentmail_sends WHERE connection_id=?").bind(conn.accountId).first())
+      .toBeNull();
+  });
+});

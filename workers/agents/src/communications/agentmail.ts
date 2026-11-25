@@ -444,7 +444,9 @@ async function assertAgentMailOperationAuthority(env:AgentsEnv,scope:Communicati
     const policy=validateAutonomy(JSON.parse(current.autonomy_json));
     if(policy.mode!=="standing")throw new Error("communication_approval_required");
     const recipients=[...normalizeRecipients(sendArgs.to),...normalizeRecipients(sendArgs.cc),...normalizeRecipients(sendArgs.bcc)];
-    if(!recipients.length||recipients.some(recipient=>!policy.recipients.includes(recipient)))
+    // Every supplied entry must parse as an address; normalizeRecipients drops malformed entries, which must not shrink the checked set.
+    const suppliedCount=[sendArgs.to,sendArgs.cc,sendArgs.bcc].flatMap(value=>Array.isArray(value)?value:[value]).filter(value=>value!==undefined&&value!==null).length;
+    if(!recipients.length||recipients.length!==suppliedCount||recipients.some(recipient=>!policy.recipients.includes(recipient)))
       throw new Error("communication_recipient_not_approved");
     return policy;
   }

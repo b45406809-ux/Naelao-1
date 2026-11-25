@@ -419,7 +419,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
   - with the flag off, the cache is never read.
 - **Done:** focused tests and Agents typecheck pass.
 
-### - [ ] MS-12 — AgentMail remaining local control tests
+### - [x] MS-12 — AgentMail remaining local control tests
 
 - **Queue:** item 13, the CB06 umbrella's untested points. **Model:** Haiku.
 - **Start here:** `workers/agents/src/communications/agentmail.ts` and `agentmail.test.ts`
@@ -436,6 +436,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
     (a fixture hook like the existing "policy changes during key creation" test). Dispatch is
     denied and the temporary key is deleted.
 - **Done:** the AgentMail suite passes with the new cases.
+- **Result:** landed locally; `agentmail.test.ts` 34/34 (27 before, 7 new in `MS-12 remaining local controls`); source fix in `assertAgentMailOperationAuthority` so a supplied recipient entry that fails address parsing refuses the send instead of being silently dropped; Agents typecheck and `git diff --check` pass. Local evidence only.
 
 ---
 
