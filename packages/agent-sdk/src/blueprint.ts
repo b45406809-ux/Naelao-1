@@ -5,6 +5,7 @@ import { PROJECT_KINDS } from "./canvas-runtime.js";
 import { validateBlueprintSetupSchema } from "./blueprint-setup-fields.js";
 import { validateSpaceCoordinationSingletonKeys } from "./space-coordination.js";
 import { validateBlueprintBusinessRoles } from "./blueprint-business-roles.js";
+import { validateBlueprintSubspaceRoles } from "./blueprint-subspace-roles.js";
 
 const BLUEPRINT_EXTENSION_SCOPES = new Set<GadgetScope>(["USER_PRIVATE", "SPACE_WIDE", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
 const BLUEPRINT_PERMISSION_ACTIONS = new Set<PermissionAction>(["read", "write", "execute", "network", "admin"]);
@@ -103,6 +104,15 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
       requiredExtensions: copy.requiredExtensions ?? [],
       ...(copy.extensionRequirements ? { extensionRequirements: copy.extensionRequirements } : {}),
     });
+  }
+  if (copy.subspaceRolesSchemaVersion !== undefined || copy.subspaceRoles !== undefined || copy.subspaceRouteProposals !== undefined) {
+    if (copy.subspaceRolesSchemaVersion !== 1) throw new Error("Unsupported subspace roles schema version");
+    const declared = validateBlueprintSubspaceRoles({
+      ...(copy.subspaceRoles !== undefined ? { roles: copy.subspaceRoles } : {}),
+      ...(copy.subspaceRouteProposals !== undefined ? { proposals: copy.subspaceRouteProposals } : {}),
+    });
+    copy.subspaceRoles = declared.roles;
+    copy.subspaceRouteProposals = declared.proposals;
   }
   if (copy.coordinationDefaults !== undefined) {
     const defaults = copy.coordinationDefaults as unknown;

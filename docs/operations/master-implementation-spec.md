@@ -189,7 +189,9 @@ safe defaults. The owner can override any of them; until then, implement exactly
   - Sent messages show only *"Linked document"*, with no button.
 - **Done:** Shell typecheck passes (rule 3). No new tests are required.
 
-### - [ ] MS-04 — Blueprint schema: symbolic subspace roles and route proposals
+### - [x] MS-04 — Blueprint schema: symbolic subspace roles and route proposals
+
+- **Result:** landed in the MS-04 commit (see git log); agent-sdk 276/277 pass (new file 7 tests; the one failure, foundry-space version 1.4.0 vs 1.3.0, is pre-existing), typecheck clean.
 
 - **Queue:** item 19, SBB03.3. **Model:** Sonnet. **Decision:** D3.
 - **Start here:** `packages/agent-sdk/src/types.ts` (`SpaceBlueprint`),

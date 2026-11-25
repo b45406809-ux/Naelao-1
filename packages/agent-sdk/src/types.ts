@@ -1,3 +1,4 @@
+import type { BlueprintSubspaceRoleV1, BlueprintSubspaceRouteProposalV1 } from "./blueprint-subspace-roles.js";
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "USER_PRIVATE" | "SPACE_WIDE" | "PROJECT_BOUND";
 /** Canonical installation scopes plus legacy names retained for already-installed manifests. */
@@ -337,6 +338,12 @@ export interface SpaceBlueprint {
   businessRolesSchemaVersion?: 1;
   /** Template-authored role proposals. These never grant permissions by themselves. */
   businessRoles?: BlueprintBusinessRoleV1[];
+  /** Optional additive signed contract for symbolic subspace roles; absent on legacy blueprints. */
+  subspaceRolesSchemaVersion?: 1;
+  /** Symbolic subspace roles. These never create grants, subspaces or routes. */
+  subspaceRoles?: BlueprintSubspaceRoleV1[];
+  /** Route proposals between declared roles. These never create routes; the owner approves later. */
+  subspaceRouteProposals?: BlueprintSubspaceRouteProposalV1[];
   /** Required when any project declares setupFields. */
   setupSchemaVersion?: 1 | 2;
   /** Optional signed, data-only migrations for owner-reviewed template setup updates. */
