@@ -117,6 +117,9 @@ describe("logical subspace blackboard identity routing", () => {
   it.each([
     "/spaces/s/subspace-blackboard/routes",
     "/spaces/s/subspace-blackboard/routes/route-a/revoke",
+    "/spaces/s/subspace-blackboard/resource",
+    "/spaces/s/subspace-route-proposals",
+    "/spaces/s/subspace-route-proposals/decide",
     "/spaces/s/sub-spaces/dept-a/blackboard",
     "/spaces/s/sub-spaces/dept-a/blackboard/broadcast",
   ])("resolves product-session identity for %s", path => {
@@ -125,6 +128,8 @@ describe("logical subspace blackboard identity routing", () => {
 
   it.each([
     "/spaces/s/subspace-blackboard/routes/route-a/revoke/other",
+    "/spaces/s/subspace-blackboard/resource/x",
+    "/spaces/s/subspace-route-proposals/decide/x",
     "/spaces/s/sub-spaces/dept-a/blackboard/other",
     "/spaces/s/sub-spaces/dept-a/blackboard/broadcast/other",
     "/spaces/s/sub-spaces/dept-a/admin",

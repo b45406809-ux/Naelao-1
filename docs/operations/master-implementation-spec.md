@@ -276,7 +276,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
   - activation without bindings behaves as before.
 - **Done:** the full `naelao-spaces` suite passes, plus typecheck.
 
-### - [ ] MS-06 — Shell: role mapping at activation and a proposals inbox
+### - [x] MS-06 — Shell: role mapping at activation and a proposals inbox
 
 - **Queue:** item 19. **Model:** Haiku. **Depends on:** MS-05.
 - **Do:**
@@ -286,6 +286,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
     proposals ("Sales → Support: findings, questions") with **Approve** and **Dismiss** buttons.
   - Copy must say that approving lets these two departments send each other the listed message types.
 - **Done:** Shell typecheck passes (rule 3).
+- **Result:** Activation review shows one role-to-subspace select per declared role ("Don't map" default) and sends `subspace_role_bindings`; department page lists "Suggested department links" with Approve/Dismiss and the required copy. Also added router allowlist entries for `subspace-blackboard/resource` and `subspace-route-proposals(/decide)` so product-session users reach the MS-02/MS-05 routes (router tests 99/99). Shell typecheck error count unchanged (142 before and after; no errors in touched files). Local evidence only.
 
 ### - [ ] MS-07 — Stop a Project task (owner/admin) with a durable receipt
 

@@ -2,7 +2,7 @@
 
 ## Current task
 
-Master implementation spec, **MS-06**: Shell: role mapping at activation and a proposals inbox. Follow
+Master implementation spec, **MS-07**: Stop a Project task (owner/admin) with a durable receipt. Follow
 [the spec](docs/operations/master-implementation-spec.md); it lists the decided contracts (D1–D7),
 files, tests and done criteria for MS-06 to MS-12. Keep this pointer and `CLAUDE.md` in sync
 (`cp AGENTS.md CLAUDE.md`).

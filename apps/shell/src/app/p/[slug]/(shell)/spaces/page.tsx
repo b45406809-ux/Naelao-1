@@ -116,7 +116,7 @@ export default function SpacesPage() {
   const [createError, setCreateError] = React.useState<string | null>(null);
   const [activationNotice, setActivationNotice] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
-  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; applyCoordinationDefault?: boolean; applyCoordinationSingletonDefault?: boolean; extensionRequirementsReviewed?: boolean; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">>; projectKnowledgeSelections?: Record<string, Record<string, string[]>> } | null>(null);
+  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; applyCoordinationDefault?: boolean; applyCoordinationSingletonDefault?: boolean; extensionRequirementsReviewed?: boolean; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">>; projectKnowledgeSelections?: Record<string, Record<string, string[]>>; subspaceRoleBindings?: Record<string, string> } | null>(null);
   const [knowledgeSetupProjects, setKnowledgeSetupProjects] = React.useState<{ spaceId: string; projectIds: string[] } | null>(null);
   const [dependencyImports, setDependencyImports] = React.useState<Record<string, TemplateDependencyImportProgress>>({});
   const [dependencyImportBusy, setDependencyImportBusy] = React.useState<string | null>(null);
@@ -511,7 +511,7 @@ export default function SpacesPage() {
       }));
       const result = await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem, setupValues,
         activationReview.applyCoordinationDefault === true, hasExtensionRequirements && activationReview.extensionRequirementsReviewed === true,
-        activationReview.applyCoordinationSingletonDefault === true, activationReview.projectKnowledgeSelections ?? {});
+        activationReview.applyCoordinationSingletonDefault === true, activationReview.projectKnowledgeSelections ?? {}, activationReview.subspaceRoleBindings ?? {});
       if (result.coordinationSingletonPolicyApplication?.status === "active_duplicates") {
         setActivationNotice("The Space Template was installed, but its singleton suggestion was not applied because multiple active facts use one of those keys. Resolve the duplicates in Space Settings; the owner policy was left unchanged.");
         setActivationReview(current => current ? { ...current, applyCoordinationSingletonDefault: false } : current);
@@ -1105,6 +1105,25 @@ export default function SpacesPage() {
                   onChange={event => setActivationReview(current => current ? { ...current, extensionRequirementsReviewed: event.target.checked } : current)} />
                 <span>I reviewed these exact signed package requirements. This confirmation records template setup review and does not grant permissions or knowledge access.</span>
               </label>
+            </section>}
+            {(activationReview.preview.subspace_roles ?? []).length > 0 && <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
+              <strong>Sub-space role mapping</strong>
+              <p style={{ margin: "4px 0", color: "var(--text3)" }}>Optionally map each template role to one of this Space’s sub-spaces. Unmapped roles are skipped.</p>
+              {(activationReview.preview.subspace_roles ?? []).map(role => <label key={role.key} style={{ display: "block", marginTop: 8 }}>
+                <span>{role.name}</span>
+                <select value={activationReview.subspaceRoleBindings?.[role.key] ?? ""} onChange={event => {
+                  const value = event.target.value;
+                  setActivationReview(current => {
+                    if (!current) return current;
+                    const next = { ...(current.subspaceRoleBindings ?? {}) };
+                    if (value) next[role.key] = value; else delete next[role.key];
+                    return { ...current, subspaceRoleBindings: next };
+                  });
+                }}>
+                  <option value="">Don't map</option>
+                  {(activationReview.preview.subspace_mapping_options ?? []).map(option => <option key={option.id} value={option.id}>{option.name}</option>)}
+                </select>
+              </label>)}
             </section>}
             <strong>Template evaluation</strong>
             <p>{activationReview.preview.evaluation.passed}/{activationReview.preview.evaluation.total} checks passed · {activationReview.preview.evaluation.evidence} · issued {new Date(activationReview.preview.evaluation.issued_at).toLocaleDateString()}</p>

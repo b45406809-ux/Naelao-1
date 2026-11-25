@@ -654,6 +654,8 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // The Spaces Worker applies current subspace manager/member checks to route configuration,
   // board reads and writes. Product-session identity alone never activates a sibling route.
   /^\/spaces\/([^/]+)\/subspace-blackboard\/routes(?:\/[^/]+\/revoke)?$/,
+  /^\/spaces\/([^/]+)\/subspace-blackboard\/resource$/,
+  /^\/spaces\/([^/]+)\/subspace-route-proposals(?:\/decide)?$/,
   /^\/spaces\/([^/]+)\/preferences$/,
   // The Spaces worker resolves current membership for registry reads and owner/admin for writes;
   // each published fact is disclosed to every active member and remains advisory only.

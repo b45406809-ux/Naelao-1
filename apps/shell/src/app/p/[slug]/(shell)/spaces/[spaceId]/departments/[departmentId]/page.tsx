@@ -12,6 +12,8 @@ import {
   listDepartments,
   listSubspaceBlackboardMessages,
   listSubspaceBlackboardRoutes,
+  decideSubspaceRouteProposal,
+  listSubspaceRouteProposals,
   openSubspaceResource,
   publishSubspaceBlackboardBroadcast,
   publishSubspaceBlackboardMessage,
@@ -21,7 +23,9 @@ import {
   type SubspaceBlackboardMessage,
   type SubspaceBlackboardRoute,
   type SubspaceResourceDocument,
+  type SubspaceRouteProposal,
 } from "@/lib/api";
+import { ApiError } from "@/lib/request";
 
 export default function DepartmentProjectsPage() {
   const params = useParams<{ spaceId: string; departmentId: string }>();
@@ -43,6 +47,9 @@ export default function DepartmentProjectsPage() {
   const [boardNotice, setBoardNotice] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [proposals, setProposals] = React.useState<SubspaceRouteProposal[]>([]);
+  const [proposalError, setProposalError] = React.useState<string | null>(null);
+  const [proposalsUnavailable, setProposalsUnavailable] = React.useState(false);
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null,
     [session?.session_token, session?.end_user_id]);
 
@@ -94,6 +101,39 @@ export default function DepartmentProjectsPage() {
     setRoutes(nextRoutes);
     setMessagesByRoute(Object.fromEntries(routeMessages));
   }, [creds, params.spaceId, params.departmentId]);
+
+  const refreshProposals = React.useCallback(async () => {
+    if (!creds) return;
+    try {
+      setProposals(await listSubspaceRouteProposals(params.spaceId, creds));
+      setProposalError(null);
+      setProposalsUnavailable(false);
+    } catch (reason) {
+      setProposals([]);
+      if (reason instanceof ApiError && (reason.status === 404 || reason.status === 403)) {
+        setProposalsUnavailable(true);
+        return;
+      }
+      setProposalError(reason instanceof Error ? reason.message : "Couldn't load suggested links");
+    }
+  }, [creds, params.spaceId]);
+
+  React.useEffect(() => { void refreshProposals(); }, [refreshProposals]);
+
+  const decideProposal = async (proposal: SubspaceRouteProposal, decision: "approve" | "dismiss") => {
+    if (!creds) return;
+    setProposalError(null);
+    try {
+      await decideSubspaceRouteProposal(params.spaceId, decision === "approve"
+        ? { id: proposal.id, decision, route_id: crypto.randomUUID() }
+        : { id: proposal.id, decision }, creds);
+      await refreshProposals();
+      if (decision === "approve") await refreshBlackboard().catch(() => undefined);
+    } catch (reason) {
+      setProposalError(reason instanceof Error ? reason.message : "Couldn't update this suggestion");
+      await refreshProposals();
+    }
+  };
 
   const addBlackboardRoute = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -192,6 +232,8 @@ export default function DepartmentProjectsPage() {
     }
   };
 
+  const relevantProposals = department ? proposals.filter(item => item.source_subspace_id === department.id || item.target_subspace_id === department.id) : [];
+
   if (loading) return <div className="page-view">Loading subspace…</div>;
   if (error || !department) return <main className="page-view"><h1>Subspace unavailable</h1><output>{error ?? "This subspace is unavailable."}</output></main>;
 
@@ -218,6 +260,23 @@ export default function DepartmentProjectsPage() {
           ))}
         </div>
       )}
+
+      {!proposalsUnavailable && (relevantProposals.length > 0 || proposalError) && <section aria-labelledby="suggested-links-title" style={{ marginTop: 32 }}>
+        <header className="page-header">
+          <h2 id="suggested-links-title" className="page-title">Suggested department links</h2>
+          <p className="page-subtitle">Approving lets these two departments send each other the listed message types.</p>
+        </header>
+        {proposalError && <p role="alert" style={{ color: "#dc2626" }}>{proposalError}</p>}
+        <div style={{ display: "grid", gap: 10 }}>
+          {relevantProposals.map(proposal => <article key={proposal.id} className="card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <span>{proposal.source_subspace_name} → {proposal.target_subspace_name}: {proposal.allowed_kinds.join(", ")}</span>
+            <span style={{ display: "flex", gap: 8 }}>
+              <button type="button" onClick={() => void decideProposal(proposal, "approve")}>Approve</button>
+              <button type="button" onClick={() => void decideProposal(proposal, "dismiss")}>Dismiss</button>
+            </span>
+          </article>)}
+        </div>
+      </section>}
 
       <section aria-labelledby="subspace-blackboard-title" style={{ marginTop: 32 }}>
         <header className="page-header">

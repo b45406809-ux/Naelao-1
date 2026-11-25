@@ -1432,6 +1432,28 @@ export async function openSubspaceResource(spaceId: string, routeId: string, mes
   return result.document;
 }
 
+export interface SubspaceRouteProposal {
+  id: string; blueprint_id: string;
+  source_subspace_id: string; source_subspace_name: string;
+  target_subspace_id: string; target_subspace_name: string;
+  allowed_kinds: string[]; allow_reply: boolean; status: string; created_at: string;
+}
+
+export async function listSubspaceRouteProposals(spaceId: string, session: SessionCredentials): Promise<SubspaceRouteProposal[]> {
+  const result = await apiFetch<{ proposals: SubspaceRouteProposal[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/subspace-route-proposals`,
+    { session, cache: "no-store" },
+  );
+  return result.proposals;
+}
+
+export function decideSubspaceRouteProposal(spaceId: string, body: { id: string; decision: "approve" | "dismiss"; route_id?: string },
+  session: SessionCredentials): Promise<{ id: string; status: string; route_id?: string }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/subspace-route-proposals/decide`, {
+    method: "POST", session, body: JSON.stringify(body), cache: "no-store",
+  });
+}
+
 export async function publishSubspaceBlackboardMessage(spaceId: string, departmentId: string, input: {
   routeId: string; id: string; kind: SubspaceBlackboardMessage["kind"]; text: string; replyTo?: string;
 }, session: SessionCredentials): Promise<void> {
@@ -3895,11 +3917,13 @@ export interface SpaceTemplateActivationResult extends Record<string, unknown> {
 export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials,
   approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}, setupValues: SpaceTemplateSetupValues = {}, applyCoordinationDefault = false,
   confirmExtensionRequirements = false, applyCoordinationSingletonDefault = false,
-  projectKnowledgeSelections: Record<string, Record<string, string[]>> = {}): Promise<SpaceTemplateActivationResult> {
+  projectKnowledgeSelections: Record<string, Record<string, string[]>> = {},
+  subspaceRoleBindings: Record<string, string> = {}): Promise<SpaceTemplateActivationResult> {
   return apiFetch<SpaceTemplateActivationResult>(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, {
     method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, setup_values: setupValues,
       apply_coordination_default: applyCoordinationDefault, apply_coordination_singleton_default: applyCoordinationSingletonDefault,
-      extension_requirements_reviewed: confirmExtensionRequirements, project_knowledge_selections: projectKnowledgeSelections }),
+      extension_requirements_reviewed: confirmExtensionRequirements, project_knowledge_selections: projectKnowledgeSelections,
+      ...(Object.keys(subspaceRoleBindings).length ? { subspace_role_bindings: subspaceRoleBindings } : {}) }),
   });
 }
 export interface SpaceTemplateSetupDraftSnapshot {
@@ -4038,6 +4062,9 @@ export interface SpaceTemplateActivationPreview {
   runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted"; project_slots_required?: number; project_slots_limit?: number; resources?: { cpu_cores: number; memory_mb: number } }>;
   setup_credentials: Array<{ name: string; description: string; required: boolean }>;
   blockers: string[]; requires_human_activation: true; installs_or_grants_applied: false;
+  subspace_roles?: Array<{ key: string; name: string; description?: string }>;
+  route_proposals?: Array<{ source_role: string; target_role: string; allowed_kinds: string[]; allow_reply: boolean }>;
+  subspace_mapping_options?: Array<{ id: string; name: string }>;
   security: { publishable: boolean; blockers?: string[] };
   evaluation: { passed: number; total: number; evidence: "literal-lint" | "state-delta"; issued_at: string };
   cost_estimate: {
