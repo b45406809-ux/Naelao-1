@@ -7808,6 +7808,79 @@ app.all("/spaces/:spaceId/project-memory-hold", async c => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
 });
 
+// D10 / MS-24 worker preferences. Static paths with IDs in the query string; every authorization
+// failure returns the same not-found shape. The caller's own user id always comes from the verified
+// identity headers, never from the request.
+async function resolveWorkerPreferenceRole(c: any, spaceId: string): Promise<{ role: string; userId: string; tenantId: string } | null> {
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId || !identity.userId || identity.userId.length > 128) return null;
+  const role = identity.role === "product_end_user"
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, tenantId)
+    : identity.role;
+  if (!role || !["owner", "admin", "member", "viewer"].includes(role)) return null;
+  const space = await c.env.PLATFORM_DB.prepare("SELECT 1 AS found FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first();
+  return space ? { role, userId: identity.userId, tenantId } : null;
+}
+async function workerPreferenceResponse(res: Response): Promise<Response> {
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+}
+const workerPreferenceLimitsPath = "/spaces/:spaceId/worker-preference-limits";
+app.use(workerPreferenceLimitsPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.all(workerPreferenceLimitsPath, async c => {
+  const spaceId = c.req.param("spaceId");
+  if (!["GET", "PUT"].includes(c.req.method)) return c.json({ error_code: "method_not_allowed" }, 405);
+  const caller = await resolveWorkerPreferenceRole(c, spaceId);
+  if (!caller) throw notFound("Space");
+  const projectId = c.req.query("project_id") ?? "";
+  if (projectId && !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) return c.json({ error_code: "invalid_worker_preference_limits" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, caller.tenantId);
+  let authorized = caller.role === "owner" || caller.role === "admin";
+  // Same rule as the other Project owner routes (resolveProjectExtensionOwnerAuthority): a Project
+  // `owner` member may manage that one Project's override, never the Space-level limits.
+  if (!authorized && projectId) {
+    const members = await stub.fetch(new Request(`http://space-do/projects/${encodeURIComponent(projectId)}/members`, { headers: { "x-naelao-tenant-id": caller.tenantId } }));
+    const list = members.ok ? await members.json<{ data?: Array<{ user_id?: string; role?: string }> }>().catch(() => null) : null;
+    authorized = list?.data?.some(m => m.user_id === caller.userId && m.role === "owner") ?? false;
+  }
+  if (!authorized) throw notFound("Space");
+  let body: string | undefined;
+  if (c.req.method === "PUT") {
+    try { body = await readBoundedRequestText(c.req.raw, 8 * 1024); }
+    catch { return c.json({ error_code: "invalid_worker_preference_limits" }, 400); }
+  }
+  const res = await forwardToSpaceDO(stub, `/worker-preference-limits?project_id=${encodeURIComponent(projectId)}&actor_id=${encodeURIComponent(caller.userId)}`, c.req.method, body);
+  return workerPreferenceResponse(res);
+});
+
+const workerUserPreferencesPath = "/spaces/:spaceId/worker-user-preferences";
+app.use(workerUserPreferencesPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.all(workerUserPreferencesPath, async c => {
+  const spaceId = c.req.param("spaceId");
+  if (!["GET", "PUT"].includes(c.req.method)) return c.json({ error_code: "method_not_allowed" }, 405);
+  const caller = await resolveWorkerPreferenceRole(c, spaceId);
+  if (!caller) throw notFound("Space");
+  let body: string | undefined;
+  if (c.req.method === "PUT") {
+    try { body = await readBoundedRequestText(c.req.raw, 4 * 1024); }
+    catch { return c.json({ error_code: "invalid_worker_user_preferences" }, 400); }
+  }
+  const stub = await spaceDoStub(c.env, spaceId, caller.tenantId);
+  const res = await forwardToSpaceDO(stub, `/worker-user-preferences?user_id=${encodeURIComponent(caller.userId)}`, c.req.method, body);
+  return workerPreferenceResponse(res);
+});
+
+const workerPreferenceAuditPath = "/spaces/:spaceId/worker-preference-audit";
+app.use(workerPreferenceAuditPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.get(workerPreferenceAuditPath, async c => {
+  const spaceId = c.req.param("spaceId");
+  const caller = await resolveWorkerPreferenceRole(c, spaceId);
+  if (!caller || (caller.role !== "owner" && caller.role !== "admin")) throw notFound("Space");
+  const limit = /^\d{1,3}$/.test(c.req.query("limit") ?? "") ? c.req.query("limit")! : "";
+  const stub = await spaceDoStub(c.env, spaceId, caller.tenantId);
+  return workerPreferenceResponse(await forwardToSpaceDO(stub, `/worker-preference-audit${limit ? `?limit=${limit}` : ""}`, "GET"));
+});
+
 // The erasure tombstone is the durable source for cleanup progress. Return only bounded metadata
 // for Project IDs the current Space owner/admin supplied; raw R2 cursors and tombstone IDs remain
 // internal so the status endpoint cannot be used to inspect cleanup implementation details.

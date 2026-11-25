@@ -5,6 +5,7 @@ import { parseArtifactLinters, lintArtifact } from "@naelao/agent-sdk";
 import { normalizeWorkspacePath } from "../../../agents/src/script-engine/workspace-paths.js";
 import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, execute, queryAll, queryOne, validateMigrationSequence } from "@naelao/db";
+import { AUDIT_LIST_DEFAULT, AUDIT_LIST_MAX, getLimits as getWorkerLimits, getUserPreferences as getWorkerUserPreferences, listAudit as listWorkerPreferenceAudit, putLimits as putWorkerLimits, putUserPreferences as putWorkerUserPreferences, validateLimitsBody, validateUserPreferencesBody } from "./worker-preferences-store.js";
 import { clearProjectMemoryHold, getProjectMemoryHold, hasPendingProjectMemoryTombstones, markProjectDeleted, PROJECT_MEMORY_RETENTION_DAYS, setProjectMemoryHold, sweepDeletedProjectMemory } from "./project-memory-retention.js";
 import type { Migration } from "@naelao/db";
 import { recordExternalMessage } from "../project-external-quota.js";
@@ -3613,6 +3614,34 @@ const MIGRATIONS: Migration[] = [
         expires_at TEXT
       );`,
   },
+  {
+    version: 164,
+    description: "store D10 worker preference limits, per-user preferences and their audit trail",
+    up: `CREATE TABLE worker_preference_limits (
+        project_id TEXT NOT NULL PRIMARY KEY, -- '' is the Space-level row; a Project id is an override
+        max_workers INTEGER,
+        allowed_model_tiers_json TEXT,
+        goal_credit_ceiling INTEGER,
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE worker_user_preferences (
+        user_id TEXT NOT NULL PRIMARY KEY,
+        worker_count INTEGER,
+        preferred_model_tier TEXT,
+        goal_credit_ceiling INTEGER,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE worker_preference_audit (
+        id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        before_json TEXT,
+        after_json TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_worker_preference_audit_created ON worker_preference_audit(created_at);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -7184,6 +7213,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.markProjectDeletion(url.searchParams);
       if (url.pathname === "/project-memory-hold")
         return this.handleProjectMemoryHold(request, url.searchParams);
+      if (url.pathname === "/worker-preference-limits")
+        return this.handleWorkerPreferenceLimits(request, url.searchParams);
+      if (url.pathname === "/worker-user-preferences")
+        return this.handleWorkerUserPreferences(request, url.searchParams);
+      if (url.pathname === "/worker-preference-audit" && method === "GET")
+        return Response.json({ entries: listWorkerPreferenceAudit(this.ctx.storage.sql as never,
+          parseBoundedInteger(url.searchParams.get("limit"), AUDIT_LIST_DEFAULT, 1, AUDIT_LIST_MAX)) });
 
       const projFactIdMatch = url.pathname.match(
         /^\/projects\/([^/]+)\/memory\/facts\/([^/]+)$/
@@ -11461,6 +11497,37 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!actorId || actorId.length > 128 || !reason || reason.length > 500)
       return Response.json({ error_code: "invalid_memory_hold" }, { status: 400 });
     return Response.json({ hold: setProjectMemoryHold(sql, { projectId, reason, actorId, expiresAt }, Date.now()) });
+  }
+
+  /** D10. Authority (Space owner/admin, or Project owner for an override) is enforced by the Worker route. */
+  private async handleWorkerPreferenceLimits(request: Request, params: URLSearchParams): Promise<Response> {
+    const projectId = params.get("project_id") ?? "";
+    const sql = this.ctx.storage.sql as never;
+    if (projectId && (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId) || !queryOne(sql, "SELECT id FROM projects WHERE id=?", projectId)))
+      return Response.json({ error_code: "not_found" }, { status: 404 });
+    if (request.method === "GET") return Response.json({ scope: projectId ? "project" : "space", project_id: projectId || null, limits: getWorkerLimits(sql, projectId) });
+    if (request.method !== "PUT") return Response.json({ error_code: "method_not_allowed" }, { status: 405 });
+    const actorId = params.get("actor_id") ?? "";
+    if (!actorId || actorId.length > 128) return Response.json({ error_code: "invalid_worker_preference_limits" }, { status: 400 });
+    const parsed = validateLimitsBody(await request.json().catch(() => null));
+    if (!parsed.ok) return Response.json({ error_code: "invalid_worker_preference_limits" }, { status: 400 });
+    if (typeof this.ctx.storage.transactionSync !== "function") return Response.json({ error_code: "worker_preferences_storage_unavailable" }, { status: 503 });
+    const changed = this.ctx.storage.transactionSync(() => putWorkerLimits(sql, projectId, parsed.value, actorId, new Date().toISOString())).changed;
+    return Response.json({ scope: projectId ? "project" : "space", project_id: projectId || null, limits: getWorkerLimits(sql, projectId), changed });
+  }
+
+  /** D10. The router passes the authenticated caller as user_id; the Worker never takes it from the client. */
+  private async handleWorkerUserPreferences(request: Request, params: URLSearchParams): Promise<Response> {
+    const userId = params.get("user_id") ?? "";
+    const sql = this.ctx.storage.sql as never;
+    if (!userId || userId.length > 128) return Response.json({ error_code: "not_found" }, { status: 404 });
+    if (request.method === "GET") return Response.json({ preferences: getWorkerUserPreferences(sql, userId) });
+    if (request.method !== "PUT") return Response.json({ error_code: "method_not_allowed" }, { status: 405 });
+    const parsed = validateUserPreferencesBody(await request.json().catch(() => null));
+    if (!parsed.ok) return Response.json({ error_code: "invalid_worker_user_preferences" }, { status: 400 });
+    if (typeof this.ctx.storage.transactionSync !== "function") return Response.json({ error_code: "worker_preferences_storage_unavailable" }, { status: 503 });
+    const changed = this.ctx.storage.transactionSync(() => putWorkerUserPreferences(sql, userId, parsed.value, new Date().toISOString())).changed;
+    return Response.json({ preferences: getWorkerUserPreferences(sql, userId), changed });
   }
 
   private async armProjectMemoryAlarm(atMs: number): Promise<void> {

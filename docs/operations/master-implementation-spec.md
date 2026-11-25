@@ -555,13 +555,14 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused test and typecheck.
 - **Result:** landed locally as a pure resolver `resolveWorkerPreferences` in `workers/agents/src/shared/worker-preferences.ts` (no I/O, no wiring; flag not needed). `worker-preferences.test.ts` 19/19; agents typecheck and `git diff --check` pass. Commit: see git log (`feat(agents): MS-23`).
 
-### - [ ] MS-24 — Store preferences and limits, with audit
+### - [x] MS-24 — Store preferences and limits, with audit
 
 - **Queue:** item 2, APW06. **Model:** Sonnet. **Decision:** D10. **Needs:** MS-23.
 - **Start here:** `SpaceDO.ts` `user_settings` (~l.1751) and Project policy columns; spaces routes near user settings; router `PRODUCT_END_USER_PATH_PATTERNS`.
 - **Do:** SpaceDO migration with `worker_preference_limits` (Space-level admin limits, optional per-Project override), `worker_user_preferences` (per user, per Space) and `worker_preference_audit` (actor, scope, before_json, after_json, created_at). Routes (static paths, query params): GET/PUT admin limits (owner/admin only), GET/PUT own user preferences (any member, own row only), GET audit (owner/admin). Validate with the MS-23 bounds. Add the router allowlist entries and tests.
 - **Tests:** admin set/read; member cannot set limits (not-found shape); user edits only their own row; values outside bounds rejected; every change writes one audit row; router allowlist accept/reject.
 - **Done:** focused tests, full `naelao-spaces` and router suites, typechecks.
+- **Result:** landed locally: SpaceDO migration 164 (`worker_preference_limits` keyed by `project_id` with `''` = Space level, `worker_user_preferences`, `worker_preference_audit`); `GET/PUT /spaces/:spaceId/worker-preference-limits[?project_id=]` (Space owner/admin, or a Project owner member for that Project override), `GET/PUT .../worker-user-preferences` (any member, caller's own row only), `GET .../worker-preference-audit` (owner/admin); non-authorized get the not-found shape; one audit row per changed PUT in one DO transaction; three anchored router patterns. `worker-preferences.test.ts` 12/12; `SpaceDO-migrations.test.ts` 10/10; full spaces suite only the 4 known failures; router suite only the known preferred-language failure; typechecks and `git diff --check` pass. Commit: see git log (`feat(spaces,router): MS-24`). Local evidence only.
 
 ### - [ ] MS-25 — Apply preferences when a goal starts
 

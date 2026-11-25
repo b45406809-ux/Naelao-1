@@ -660,6 +660,12 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/subspace-blackboard\/resource$/,
   /^\/spaces\/([^/]+)\/subspace-route-proposals(?:\/decide)?$/,
   /^\/spaces\/([^/]+)\/preferences$/,
+  // D10 worker preferences. Product session identity only; the Spaces worker authorizes: any member
+  // for the caller's own user preferences, Space owner/admin (or a Project owner for one Project
+  // override) for limits, Space owner/admin for the audit trail.
+  /^\/spaces\/([^/]+)\/worker-preference-limits$/,
+  /^\/spaces\/([^/]+)\/worker-user-preferences$/,
+  /^\/spaces\/([^/]+)\/worker-preference-audit$/,
   // The Spaces worker resolves current membership for registry reads and owner/admin for writes;
   // each published fact is disclosed to every active member and remains advisory only.
   /^\/spaces\/([^/]+)\/coordination-registry(?:\/(?:preview|[^/]+)|\/v2(?:\/(?:preview|[^/]+))?)?$/,

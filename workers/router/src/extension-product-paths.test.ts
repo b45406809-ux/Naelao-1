@@ -219,3 +219,14 @@ describe("product user durable task routing (MS-13)", () => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
   });
 });
+
+describe("product session routes for worker preferences (MS-24)", () => {
+  it.each(["/spaces/s/worker-preference-limits", "/spaces/s/worker-user-preferences", "/spaces/s/worker-preference-audit"])("allows %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
+  });
+  it("rejects look-alike and nested paths", () => {
+    for (const path of ["/spaces/s/worker-preference-limits/p", "/spaces/s/worker-preference-limits/", "/spaces/s/worker-user-preferences/other-user",
+      "/spaces/s/worker-preference-audit/export", "/spaces/s/worker-preferences", "/spaces/s/x/worker-preference-limits", "/worker-preference-limits"])
+      expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
+  });
+});

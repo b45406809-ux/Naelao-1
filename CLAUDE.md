@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-24**: Store preferences and limits, with audit.
-MS-01 to MS-23 are done; MS-24 and MS-25 implement the owner-approved decisions D8 (prices and caps),
+Master implementation spec, **MS-25**: Apply preferences when a goal starts.
+MS-01 to MS-24 are done; MS-25 implements the owner-approved decisions D8 (prices and caps),
 D9 (retention) and D10 (preferences). Follow [the spec](docs/operations/master-implementation-spec.md).
 Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
