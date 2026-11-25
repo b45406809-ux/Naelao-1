@@ -114,6 +114,10 @@ describe("AgentMail provider account boundary",()=>{
       owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
       VALUES(?,?,?,?,?,?,'other','user_connected','foreign-inbox','private@example.test','active',datetime('now','+2 seconds'),datetime('now','+2 seconds'))`)
       .bind("mail-foreign","tenant","space",identity.id,agentId,"account-foreign").run();
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,agentport_account_id,
+      owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,'user','naelao_managed','foreign-tenant-inbox','foreign-tenant@example.test','active',datetime('now'),datetime('now'))`)
+      .bind("mail-other-tenant","other-tenant","space",identity.id,agentId,"account-other-tenant").run();
     (f.env as unknown as {AGENTMAIL_API_KEY:string}).AGENTMAIL_API_KEY="provider-key-for-test";
     const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
       const request=new Request(input,init),url=new URL(request.url);
@@ -139,6 +143,10 @@ describe("AgentMail provider account boundary",()=>{
       body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.inbox",connection_id:"mail-foreign",args:{limit:10}})},f.env);
     expect(denied.status).toBe(502);
     expect(await denied.json()).toMatchObject({error_code:"agentmail_account_not_connected"});
+    const foreignTenant=await app.request("/internal/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.inbox",connection_id:"mail-other-tenant",args:{limit:10}})},f.env);
+    expect(foreignTenant.status).toBe(502);
+    expect(await foreignTenant.json()).toMatchObject({error_code:"agentmail_account_not_connected"});
     expect(providerFetch.mock.calls.filter(([input])=>new URL(String(input)).pathname.endsWith("/messages")).length).toBe(1);
     expect((await getAssistantAgentMailStatus(f.env,scope)).connections.map((connection)=>connection.address))
       .not.toContain("private@example.test");

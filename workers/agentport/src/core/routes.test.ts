@@ -138,7 +138,10 @@ describe("AgentPort internal registry API", () => {
       resourceRef: "inbox-1", idempotencyKey: "search-action-1" })).status).toBe(422);
     expect((await call(`/accounts/${account.id}/actions/authorize`, "POST", { ...action, resourceRef: "inbox-1:message-2" })).status).toBe(409);
     expect((await call(`/accounts/${account.id}/actions/authorize`, "POST", { ...action, action: "messages.send", idempotencyKey: "send-action-1" })).status).toBe(422);
-    await call(`/grants/${(db.prepare("SELECT id FROM agentport_account_grants WHERE account_id=?").get(account.id) as { id: string }).id}`, "DELETE");
+    const grantId = (db.prepare("SELECT id FROM agentport_account_grants WHERE account_id=?").get(account.id) as { id: string }).id;
+    db.prepare("UPDATE agentport_account_grants SET expires_at=? WHERE id=?").run(new Date(Date.now() - 1000).toISOString(), grantId);
+    expect((await call(`/accounts/${account.id}/actions/authorize`, "POST", { ...action, idempotencyKey: "expired-action" })).status).toBe(403);
+    await call(`/grants/${grantId}`, "DELETE");
     expect((await call(`/accounts/${account.id}/actions/authorize`, "POST", { ...action, idempotencyKey: "revoked-action" })).status).toBe(403);
     db.close();
   });

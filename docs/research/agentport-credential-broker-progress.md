@@ -278,3 +278,23 @@ was sent.
 coverage at the AgentMail-to-AgentPort boundary, then malicious arguments/parameter substitution,
 duplicate or unknown dispatch, and credential leakage/log redaction. Verify or add the narrowest
 local regression for the first gap.
+
+## CB06 — Tenant scope and grant expiry boundary fixtures (2026-11-25)
+
+The internal AgentMail account query already constrains tenant, Space, Project, AgentPort assistant
+identity and owner. Its fixture now includes a second-tenant account with deliberately matching
+Space, owner and assistant ID, and proves a caller cannot select it by connection ID; provider
+dispatch count remains unchanged. AgentPort's action authorization query already requires an
+active account, agent, service and grant whose expiry is null or in the future. The route fixture
+now advances an otherwise active grant past its expiry and verifies authorization returns 403;
+existing adjacent assertions cover a revoked grant, undeclared capability, and a reused
+idempotency key with changed resource/action.
+
+Verification: AgentMail suite **25/25**; AgentPort `routes.test.ts` plus `core.test.ts` **20/20**;
+Agents and AgentPort typechecks and `git diff --check` pass. Local fixtures only; no external
+provider request was made.
+
+**Exact next action:** inspect AgentMail argument normalization, URL construction and payload/hash
+binding for malformed or substituted values; add focused tests for any gap. Then audit duplicate or
+unknown dispatch, child-key/result leakage and credential log redaction. Keep callback replay
+coverage and the exact cross-system revocation limitation recorded above.

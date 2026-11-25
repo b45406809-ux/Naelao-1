@@ -1161,6 +1161,12 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   now replays an already queued delivery and verifies the endpoint acknowledges with 204 without
   a second session-queue send or AgentPort claim. The focused callback integration test passes; it
   runs within the AgentMail suite recorded above. This is local fixture evidence only.
+- [x] **CB06 local control slice — tenant and grant expiry boundary tests.** The AgentMail internal
+  route rejects a connection ID belonging to another tenant even when its owner and AgentPort
+  assistant ID match, before any provider call. AgentPort action authorization rejects a grant
+  after its `expires_at` passes; existing coverage also rejects a revoked grant, action mismatch
+  and resource substitution. AgentMail tests pass 25/25; AgentPort route/core tests pass 20/20;
+  both workers typecheck and `git diff --check` passes. These are local fixtures.
 - [ ] **CB06 provider/live acceptance.** With separately authorized disposable AgentMail credentials,
   verify temporary-key expiry/revocation, provider idempotency, regional support, billing and
   callback/revocation behavior. Keep deployment separate and gated by its own authorization.
@@ -1172,10 +1178,10 @@ The timeout replay and policy-change race regressions pass; AgentMail plus scope
 promises replay of a completed send, but no live behavior has been accepted. CB04 temporary-key
 expiry/revocation, region, parent permission and billing acceptance also remain open. AgentPort has
 no atomic grant permit spanning provider dispatch, leaving a residual cross-system revocation race.
-**Exact next action:** audit the remaining CB06 local controls (cross-tenant scope, expired/revoked
-grants, malicious tool input/parameter substitution, duplicate or unknown dispatch, callback
-and credential leakage/log redaction) against source and fixtures; implement and verify the first
-independent local gap, and record non-local dependencies precisely.
+**Exact next action:** audit AgentMail tool arguments and parameter binding for malformed or
+substituted values, then verify duplicate/unknown dispatch handling and temporary-key/result/log
+leakage boundaries against fixtures. Implement and verify the first independent local gap; keep the
+residual cross-system revocation race and provider/live requirements explicitly blocked.
 
 ## Ordered plan list
 
