@@ -2,9 +2,9 @@
 
 ## Current task
 
-Master implementation spec, **MS-11**: Identity-complete semantic response-cache key. Follow
+Master implementation spec, **MS-12**: AgentMail remaining local control tests. Follow
 [the spec](docs/operations/master-implementation-spec.md); it lists the decided contracts (D1–D7),
-files, tests and done criteria for MS-11 to MS-12. Keep this pointer and `CLAUDE.md` in sync
+files, tests and done criteria for MS-12. Keep this pointer and `CLAUDE.md` in sync
 (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume

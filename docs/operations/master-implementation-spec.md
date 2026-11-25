@@ -394,9 +394,10 @@ safe defaults. The owner can override any of them; until then, implement exactly
   is rejected; an unknown field is rejected; an unknown model is rejected.
 - **Done:** focused tests and typecheck pass.
 
-### - [ ] MS-11 — Identity-complete semantic response-cache key
+### - [x] MS-11 — Identity-complete semantic response-cache key
 
 - **Queue:** item 8, K20. **Model:** Sonnet. **Decision:** D7.
+- **Result:** key-only (not wired): `workers/agents/src/shared/response-cache-identity.ts`, tests 18/18, agents typecheck clean; the index.ts site has no existing memory or grant revision, so serving stays off. Commit: this commit.
 - **Start here:**
   - The comment at `workers/agents/src/index.ts` ~line 2445, which explains why the cache is
     not used there.

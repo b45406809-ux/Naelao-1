@@ -2446,6 +2446,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // contains only a Space and approximate query, so a hit can bypass the current Project
   // assistant_mode, membership, budget and revocation gates below or return another actor's data.
   // Knowledge's separate retrieval caches run after their current scope and role are resolved.
+  // `responseCacheIdentity` (shared/response-cache-identity.ts) now defines the identity-complete key, but this site still has no caller memory revision or grant revision (no existing monotonic value for either), so it stays unwired.
 
   // §A1.17 Phase Q: "closing the tab should never lose an in-flight run" — the durable
   // Workflow+TaskDO path (G-AX04) is now the DEFAULT for an ordinary chat run whenever it's
