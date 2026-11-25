@@ -100,7 +100,7 @@ can read on demand.
 
 ## Queued implementation
 
-- [ ] **Audit entry points and define the scope.** Trace logical subspace membership, parent-linked
+- [x] **Audit entry points and define the scope.** Trace logical subspace membership, parent-linked
   Space identity, assistant routing, and existing blackboard recipients from host entry to store.
   Record the authoritative immediate-sibling check and the exact permission path for private
   subspaces. Select a supported pair of sibling subspaces for the first fixture.
@@ -117,3 +117,46 @@ can read on demand.
   delivery, incomplete fan-out and revocation during a queued handoff. Verify that parent and
   recipient views, metadata, and derived counts obey the same permissions. Record production
   acceptance separately from local and staging results.
+
+## SBB01 source audit — 2026-11-25
+
+The selected runtime model is the **logical department hierarchy inside one parent SpaceDO**.
+`docs/product-space-subspace.md` says a Space owns projects and may contain logical subspaces in
+its SpaceDO; this is distinct from a D1 Space row's `parent_space_id`, which is used by supported
+root/child Space creation paths. Do not infer blackboard siblings from a D1 parent link alone.
+
+The authoritative immediate-sibling predicate for the selected entry point is: resolve both
+participant rows from the same parent SpaceDO; require the parent row to be active, depth 0 and
+rooted (`parent_id IS NULL`); require each participant to be a distinct active depth-1 row whose
+`parent_id` equals that root. Derive tenant and parent from the authenticated server route and
+DO binding; never accept a sender, recipient, or parent identity from message content.
+
+The existing member path is `GET /spaces/:spaceId/sub-spaces/:subId/members` in
+`workers/spaces/src/index.ts`: it resolves the actor, uses the parent SpaceDO, and calls
+`authorizeDepartmentMember(..., "read")`, which asks `/hierarchy-authorize` for the target. The
+SpaceDO grants direct target membership; for a department it also grants a direct parent owner or
+admin. It does not inherit a sibling's membership. Management uses the same authoritative check
+with `action=manage`. Existing `cross_space_grants` are resource-scoped and are not a blackboard
+grant. The private Project checks remain separate and must still run when a message links to a
+Project or artifact.
+
+`space_assistants` binds exactly `assistant:space:<id>` to each hierarchy row; a root assistant is
+a `DIRECTOR`, and a department assistant is a `DEPARTMENT_LEAD` with the parent assistant ID.
+Agent dispatch is addressed to a server-selected `(tenant, space, agent)`; no reachable sibling
+blackboard router or assistant relay was found. The parent assistant therefore need not relay a
+message. The task blackboard is a useful pattern for typed bounded messages, signed worker
+identity, explicit directed grants, idempotency and current actor access, but its current scope is
+one goal/DAG (`tenant`, `Space`, optional Project, root run, parent Agent DO), not departments.
+
+**Supported fixture pair:** the existing
+`workers/spaces/src/do/project-subspace-migration-preflight.test.ts` fixture creates `dept-a`
+(Sales) and `dept-b` (Research) as active depth-1 children of `root`; it also creates `other-dept`
+under `other-root` as a non-sibling control. These stable fixture IDs will be used for the first
+directed-route tests. Source audit found no ambiguity in the selected logical-department path.
+Any separate D1 child-Space journey remains outside this first route until an entry point maps it
+to the same authoritative parent SpaceDO hierarchy.
+
+**Next implementation action:** define the parent-owned route/message tables and the host API
+that revalidates both child memberships and active sibling relationship at configuration,
+publish, read and reply. Start with one explicit directed grant for `dept-a` → `dept-b`; keep
+sharing off until the grant is active.
