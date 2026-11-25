@@ -199,9 +199,9 @@ describe("AgentMail provider account boundary",()=>{
     const app=new Hono<{Bindings:AgentsEnv}>();registerCommunicationRoutes(app);
     const headers={"content-type":"application/json","x-naelao-tenant-id":scope.tenantId,"x-naelao-user-id":scope.userId,
       "x-naelao-role":scope.role,"x-naelao-internal-token":await mintInternalToken("secret",scope.tenantId)};
-    const request=(to:string,idempotency_key:string)=>app.request("/internal/assistant-communications",{method:"POST",headers,
+    const request=(to:string,idempotency_key:string,subject="Approved")=>app.request("/internal/assistant-communications",{method:"POST",headers,
       body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.send",
-        args:{to,subject:"Approved",text:"Hello",idempotency_key}})},f.env);
+        args:{to,subject,text:"Hello",idempotency_key}})},f.env);
     const sent=await request("allowed@example.test","send-1");
     expect(sent.status).toBe(200);
     expect(await sent.json()).toEqual({result:{message_id:"provider-message-1"}});
@@ -209,6 +209,9 @@ describe("AgentMail provider account boundary",()=>{
     expect(replay.status).toBe(200);
     expect(await replay.json()).toMatchObject({result:{message_id:"provider-message-1",idempotent:true}});
     expect(providerFetch.mock.calls.filter(([input])=>new URL(String(input)).pathname.endsWith("/messages/send")).length).toBe(1);
+    const substituted=await request("allowed@example.test","send-1","Substituted subject");
+    expect(substituted.status).toBe(409);
+    expect(await substituted.json()).toMatchObject({error_code:"agentmail_idempotency_conflict"});
     const recipientDenied=await request("other@example.test","send-2");
     expect(recipientDenied.status).toBe(403);
     expect(await recipientDenied.json()).toMatchObject({error_code:"communication_recipient_not_approved"});

@@ -1167,6 +1167,11 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   after its `expires_at` passes; existing coverage also rejects a revoked grant, action mismatch
   and resource substitution. AgentMail tests pass 25/25; AgentPort route/core tests pass 20/20;
   both workers typecheck and `git diff --check` passes. These are local fixtures.
+- [x] **CB06 local control slice — send parameter substitution.** Reusing a successful send key
+  with a changed subject now has a regression proving the stored payload hash rejects it as
+  `agentmail_idempotency_conflict`; the route maps that conflict to 409 rather than 502. Existing
+  tests retain recipient, autonomy, daily cap and same-request replay checks. AgentMail plus
+  erasure tests pass 26/26, Agents typecheck and diff hygiene pass.
 - [ ] **CB06 provider/live acceptance.** With separately authorized disposable AgentMail credentials,
   verify temporary-key expiry/revocation, provider idempotency, regional support, billing and
   callback/revocation behavior. Keep deployment separate and gated by its own authorization.
@@ -1178,10 +1183,11 @@ The timeout replay and policy-change race regressions pass; AgentMail plus scope
 promises replay of a completed send, but no live behavior has been accepted. CB04 temporary-key
 expiry/revocation, region, parent permission and billing acceptance also remain open. AgentPort has
 no atomic grant permit spanning provider dispatch, leaving a residual cross-system revocation race.
-**Exact next action:** audit AgentMail tool arguments and parameter binding for malformed or
-substituted values, then verify duplicate/unknown dispatch handling and temporary-key/result/log
-leakage boundaries against fixtures. Implement and verify the first independent local gap; keep the
-residual cross-system revocation race and provider/live requirements explicitly blocked.
+**Exact next action:** audit duplicate/unknown dispatch handling and temporary-key/result/log
+leakage boundaries against fixtures. The caller argument review found fixed provider account paths,
+encoded message/attachment path components, URLSearchParams query encoding, and host-only provider
+credentials; document evidence and add a focused regression for any remaining gap. Keep the residual
+cross-system revocation race and provider/live requirements explicitly blocked.
 
 ## Ordered plan list
 

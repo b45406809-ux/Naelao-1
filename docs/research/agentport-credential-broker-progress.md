@@ -298,3 +298,25 @@ provider request was made.
 binding for malformed or substituted values; add focused tests for any gap. Then audit duplicate or
 unknown dispatch, child-key/result leakage and credential log redaction. Keep callback replay
 coverage and the exact cross-system revocation limitation recorded above.
+
+## CB06 — Send parameter substitution response and boundary review (2026-11-25)
+
+The send path hashes the provider payload (excluding only the locally handled idempotency key and
+reply message ID) against the durable connection-scoped send key. It rejects a different payload
+before child-key creation or provider dispatch. AgentPort separately binds its authorization
+receipt to account, action and resource reference. A new fixture reuses a successful send's key with
+a changed subject and verifies the local payload conflict is surfaced as HTTP 409. This exposed a
+route status-mapping gap: `agentmail_idempotency_conflict` previously defaulted to 502; errors
+containing `conflict` now map to 409.
+
+Source review found the provider inbox is selected from the scoped account, not caller arguments;
+message/attachment IDs are URL-encoded in path segments; query arguments use `URLSearchParams`;
+send payload hashes bind all content fields; raw search arguments are not sent to AgentPort as
+authorization parameters. Existing tests cover recipient allowlist, standing autonomy, malformed
+idempotency key, owner/tenant scope, and action/resource substitution. Verification:
+AgentMail plus scoped-erasure suites **26/26**, Agents typecheck and `git diff --check` pass. Local
+fixtures only.
+
+**Exact next action:** audit duplicate/unknown dispatch and temporary-key, result, and log leakage
+controls. Add a focused test if source behavior is not already covered; then record precise live
+provider requirements and the remaining cross-system revocation limitation.
