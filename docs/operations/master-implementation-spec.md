@@ -31,7 +31,7 @@ first unchecked one unless told otherwise. The **Model** line says which model s
      path is under `.next/types`.
 4. **DO SQLite:** `?` placeholders only. Never run `PRAGMA` or `BEGIN/COMMIT` inside a Durable
    Object. Add new SpaceDO migrations by appending the next `version` to the `MIGRATIONS` array in
-   `workers/spaces/src/do/SpaceDO.ts` (the current last version is **162**). Update
+   `workers/spaces/src/do/SpaceDO.ts` (the current last version is **162**; check the array, an earlier task may have added more). Update
    `workers/spaces/src/do/SpaceDO-migrations.test.ts` if it asserts the latest version.
 5. **Hono routes in `workers/spaces/src/index.ts`:** do **not** add a route of the shape
    `/:dynamic/.../static-suffix` under an existing dynamic segment; it has repeatedly corrupted
@@ -76,6 +76,9 @@ safe defaults. The owner can override any of them; until then, implement exactly
 | D5 | Worker-output conflict classes are deterministic and always **candidates**, never confirmed. No classifier may spend model credits. |
 | D6 | Reusable worker definitions are parsed and validated only; nothing binds them to the host yet. A `long_running` definition must state its duration limits explicitly; there is no inferred default. |
 | D7 | A semantic response may be cached only when the cache key covers the full authority identity (tenant, Space, Project, user, role, memory revision, grant revision) and the response came from read-only operations. If any part is missing, the cache is bypassed. Flags stay off. |
+| D8 | **Prices and caps (owner-approved 2026-11-25).** 1 credit = $0.01 (`CREDITS_PER_USD`). The existing rate card in `packages/billing-core/src/credits.ts` is unchanged (token markup 1.15, `workflow_step`, `container_hour`). Only today's **unpriced** units get prices, as starting rates in one versioned table: extension resource **invocations 1 credit per 100** (rounded up), **job units 1 credit each**, **payload bytes 1 credit per 100 MiB** (rounded up). Round up per settlement, never per unit. Priced units are charged **inside** the run's existing Billing reservation, never as a separate unreserved charge. **Default caps** for a new extension installation: 200 credits per run, 1,000 credits per month; owner can change them (existing 1–10M validation). Usage at **≥80%** of the monthly cap shows a warning; at 100% admission already refuses new work while admitted work finishes. **Per-goal cap** default 200 credits: when a goal's settled plus held credits would exceed it, no new task is dispatched and the goal waits in `awaiting_budget_approval` until the owner raises the cap or stops it. **Managed sends:** a Naelao-managed AgentMail send reserves the configured `credits_per_operation` for `messages.send` from the sending Space's org before dispatch and settles after; no configured price = refuse (`managed_service_price_unconfigured`). A BYO (user-owned key) account is never charged by Naelao. Flags, all default **off**: `EXTENSION_RESOURCE_PRICING_ENABLED`, `GOAL_CREDIT_CEILING_ENABLED`, `AGENTMAIL_SEND_BILLING_ENABLED`. |
+| D9 | **Retention (owner-approved 2026-11-25).** Worker branches: **7 days** after the worker's result was published/merged, **30 days** after it ended failed, terminated or abandoned; then the Coordinator deletes the branch head and base so content GC can reclaim bytes. Run logs (`run_wal`, `run_traces`, and `sub_agents.checkpoint_json` of terminal workers): **90 days**. Project memory (`project_facts`, `project_fabric`, `project_wiki`): deleted **30 days** after the Project is deleted. Personal memory: no new expiry (existing decay stays); it is removed only by the user or by account deletion (account-deletion purge is out of scope here). An active **legal hold** blocks every deletion it covers; reuse the Coordinator's `legalHold` for branches and add a Project-level memory hold for Project memory. Owners may later shorten, never lengthen, these periods (not built now). Every sweep is bounded per pass, idempotent and logs counts only. Flags, all default **off**: `WORKER_BRANCH_RETENTION_ENABLED`, `RUN_LOG_RETENTION_ENABLED`, `PROJECT_MEMORY_RETENTION_ENABLED`. |
+| D10 | **Preferences (owner-approved 2026-11-25).** The **tightest** setting wins, layered platform (plan limits and code constants) → Space owner/admin limits → Project setting → user preference. Worker count: default **3** per goal; an admin may set a max from 1 to 10 (never above the plan limit); a user picks at or below it. Model: an admin sets the allowed model tiers; a user picks among them; when a chosen model is unavailable the host may fall back only to an allowed tier that is **not more expensive**. Budget: the per-goal cap (D8) is set by the admin; a user may set a lower personal per-goal cap. Preferences are snapshotted when a goal starts and never change running work. Every preference/limit change writes an audit row (actor, before, after, time). Flag `WORKER_PREFERENCES_ENABLED`, default **off** (off = today's behavior). |
 
 ---
 
@@ -461,15 +464,109 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused agents and router tests pass, plus typecheck.
 - **Result:** landed in the MS-13 commit. The detail handler let any Space member through `requireSpaceMembershipOrSessionAccess` before the Project check; a task with a `project_id` now requires Project access (denied = `404 not_found`), and tasks without one keep the session/Space rule. List and task-stop checks re-verified unchanged. New `project-task-detail.test.ts` 4/4 (the two denial cases fail without the fix); router allowlist now has `durable-tasks(/:id)` and `projects/:id/task-stop` with extension rejections. Agents full suite 2017 pass / 3 pre-existing failures (email-ocr-settings-route, telnyx-webhook, scheduled-job-dispatch); router 172 pass / 1 pre-existing (preferred-language); both typechecks clean.
 
+### - [ ] MS-14 — Versioned price table for unpriced extension resource units
+
+- **Queue:** item 9, EP06. **Model:** Haiku. **Decision:** D8.
+- **Start here:** `packages/billing-core/src/credits.ts` (`calculateResourceCredits`, `ResourceType`), `packages/billing-core/src/index.ts` (`BILLING_CORE_RATE_CARD_VERSION`), `packages/billing-core/src/credits.test.ts`.
+- **Do:** add `EXTENSION_RESOURCE_UNIT_PRICES` (version string `"ext-units-2026-11-25"`) and `priceExtensionResourceUnits({invocations, jobUnits, bytes})` returning `{credits, breakdown:{invocations, jobUnits, bytes}, priceVersion}`, using D8 rates and rounding each line up once (`Math.ceil`). Non-negative integers only; anything else throws `invalid_resource_units`. All-zero input = 0 credits. Export it from the package index. Do **not** change any existing rate.
+- **Tests:** 0 → 0; 1 invocation → 1; 100 → 1; 101 → 2; 3 jobs → 3; 1 byte → 1; exactly 100 MiB → 1; 100 MiB + 1 byte → 2; combined breakdown; negative/fractional/NaN throw; existing rate tests unchanged.
+- **Done:** `pnpm --filter <billing-core package name> exec vitest run src/credits.test.ts` and typecheck pass.
+
+### - [ ] MS-15 — Owner usage view: estimated credits and cap warning
+
+- **Queue:** item 9, EP06. **Model:** Haiku. **Decision:** D8. **Needs:** MS-14.
+- **Start here:** `workers/spaces/src/index.ts` route for `projectExtensionResourceUsagePath` (~l.6832; it sums this month's invocations, job units and bytes and compares settled `infra_credits` + holds with the cap). Shell caller in `apps/shell/src/lib/resource-grants-api.ts` and its test.
+- **Do:** add to the JSON response `estimated_unit_credits` (from `priceExtensionResourceUnits`, with `price_version`), and `cap_status`: `"ok"`, `"warning"` (used+held ≥ 80% of the monthly cap) or `"reached"` (≥ 100%). Label it estimate-only; this route charges nothing. Show `cap_status` and the estimate in the existing Shell owner usage panel (find it from the API caller).
+- **Tests:** route test for each `cap_status` boundary (79%, 80%, 100%) and the estimate field; Shell API parser test.
+- **Done:** focused tests, **full** `naelao-spaces` suite (only the 5 known pre-existing failures), typechecks.
+
+### - [ ] MS-16 — Charge priced resource units inside the run reservation
+
+- **Queue:** item 9, EP06. **Model:** Sonnet. **Decision:** D8. **Needs:** MS-14.
+- **Start here:** `workers/agents/src/workflows/report-infra-usage.ts` (`reportWorkflowResourceUsage`, `reserveWorkflowBudget`, `finalizeWorkflowBudget`), `workers/agents/src/workflows/WorkflowRunDO.ts` (~l.257), `workers/billing/src/index.ts` workflow `/settle` (~l.933, charges `min(quantity, held)`), `tests/unit/workflow-budget-settlement-v2.test.ts`.
+- **Do:** when `EXTENSION_RESOURCE_PRICING_ENABLED === "true"`, accumulate the run's priced resource credits (MS-14) in the run journal and add them to the quantity passed to the existing workflow settle, so the charge stays inside the reservation. Keep the per-unit usage rows unpriced (`cost_credits` null) and add `priced_in_settlement: true` plus `price_version` to their metadata so nothing is counted twice. Flag off = exactly today's behavior. Add the flag as `"false"` in the agents `wrangler.toml` vars (every env block that lists vars).
+- **Tests:** flag off → settle quantity unchanged; flag on → settle quantity includes resource credits; settle never exceeds the hold; replayed settle stays idempotent; unit rows carry metadata and no `cost_credits`.
+- **Done:** focused agents/billing tests, full agents suite (only 3 known failures), typecheck.
+
+### - [ ] MS-17 — Default caps for new extension installations
+
+- **Queue:** item 9, EP06. **Model:** Haiku. **Decision:** D8.
+- **Start here:** `workers/spaces/src/do/SpaceDO.ts` budget policy table (`max_run_credits`, `monthly_credits`, ~l.3420) and its read helper (~l.18559) / PUT handler (~l.18640); `resolveExtensionResourceBudget` in `workers/agents/src/workflows/workflow-host.ts` (~l.272); `workers/spaces/src/do/extension-runtime-install.test.ts`.
+- **Do:** first find out what happens today when an installation has **no** policy row and write it in the commit message. Then: when a **new** installation is created, insert a policy of 200 run / 1,000 monthly credits (revision 1) if none exists. Do not touch existing installations or rows. Owner PUT keeps working unchanged.
+- **Tests:** new install gets the default policy; an existing policy is never overwritten; reinstall/new generation behavior matches what the code does for other per-installation rows.
+- **Done:** focused test, full `naelao-spaces` suite, typecheck.
+
+### - [ ] MS-18 — Per-goal credit ceiling
+
+- **Queue:** item 2, APW05. **Model:** Sonnet. **Decision:** D8 (and D10 for who sets it).
+- **Start here:** `workers/agents/src/script-engine/goal-dag.ts`, `script-engine/prebuilt/goal-planner.ts`, `NaelaoAgentDO.ts` goal tables (`goal_dag_journals`, `goal_dispatch_outbox`, ~l.2083) and inference reservation/settlement (`reserveRunInferenceCost`, `settleRunBilling`, ~l.1497-1571, 8588-8671).
+- **Do:** behind `GOAL_CREDIT_CEILING_ENABLED`, store `credit_ceiling` (default 200) and `credits_settled` / `credits_held` per goal journal. Before dispatching a goal task, if settled + held + that task's estimated reservation would exceed the ceiling, do not dispatch; set the goal to `awaiting_budget_approval` and record why. Add an owner/admin action that raises the ceiling (resumes dispatch) — reuse the authority used by MS-07 task-stop. Settlements update `credits_settled` idempotently per reservation ID. Flag off = today's behavior. Add the flag `"false"` to agents `wrangler.toml`.
+- **Tests:** dispatch allowed under the ceiling; blocked at it with the waiting status; raise resumes; duplicate settlement counted once; non-owner raise refused with the not-found shape; flag off unchanged.
+- **Done:** focused tests, full agents suite, typecheck.
+
+### - [ ] MS-19 — Bill Naelao-managed AgentMail sends
+
+- **Queue:** item 13, CB06. **Model:** Sonnet. **Decision:** D8.
+- **Start here:** `workers/agents/src/communications/agentmail.ts` (`callAgentMailTool` ~l.1025-1106, `resolveManagedAgentMailPrice` ~l.573, `providerKeyFor` ~l.428), `communications/managed-service-billing.ts` (reserve/uncertain/settle/release helpers), `workers/billing/src/index.ts` `/internal/managed-services/credits/*` (~l.1186; it requires a `msq_` quote for provision/renew only), `agentmail.test.ts`.
+- **Do:** behind `AGENTMAIL_SEND_BILLING_ENABLED`, for `mode === "naelao_managed"` only: after authority, idempotency and daily-limit checks and **before** dispatch, resolve the `messages.send` price and reserve credits with reservation ID derived from the send's idempotency hash. Dispatch ok → settle; dispatch failed before the provider call → release; dispatch started and outcome unknown → mark uncertain (existing reconciliation owns it). Missing price → refuse with `managed_service_price_unconfigured`, nothing sent. A replayed `sent` idempotency row never reserves again. BYO accounts never reserve. Check whether Billing's reserve accepts a send without a quote; if it requires one, add the minimal Billing change and test it. Flag off = today's behavior; add it `"false"` to agents `wrangler.toml`.
+- **Tests:** managed send reserves then settles; failure before dispatch releases; unknown outcome marks uncertain; missing price refuses without dispatch; BYO no reservation; replay no second reservation; insufficient credits refuses without dispatch; flag off unchanged. Existing 34 AgentMail tests still pass.
+- **Done:** focused agents and billing tests, full agents suite, typecheck.
+
+### - [ ] MS-20 — Worker-branch retention in the Coordinator
+
+- **Queue:** item 3, PW01. **Model:** Sonnet. **Decision:** D9.
+- **Start here:** `workers/agents/src/workspace/WorkspaceCoordinatorDO.ts` (`createBranch` ~l.1699, `alarm` ~l.323, `collectStaging`/`collectMetadata`/`collectContent`, `legalHold` ~l.96, `setRetentionPolicy` ~l.2577); `NaelaoAgentDO.ts` (`reserveWorkerBranch` ~l.4136, `mergeWorkerWorkspace` ~l.4250, terminate ~l.7013); `WorkspaceCoordinatorDO.test.ts`.
+- **Do:** add a Coordinator route `/v1/branch/retire` `{branch, outcome: "published"|"ended", endedAt}` that records a retirement row (idempotent; only `workers/*` branches; never the canonical branch). Call it from `NaelaoAgentDO` when a worker's merge is published (`published`) and when a worker ends failed/terminated/interrupted without publication (`ended`); a call failure must not fail the worker path (log and leave it for a later retry). Behind `WORKER_BRANCH_RETENTION_ENABLED`, the alarm deletes the head/base keys of branches retired more than 7 days (`published`) or 30 days (`ended`) ago, bounded per pass, skipped under an active legal hold, and leaves bytes to the existing content GC. A branch with a newer head after retirement is not deleted.
+- **Tests:** retire idempotent; non-worker branch refused; deletion only after the period; legal hold blocks; flag off deletes nothing; head advanced after retire is kept; bounded batch re-arms.
+- **Done:** focused tests, full agents suite, typecheck.
+
+### - [ ] MS-21 — Run-log retention
+
+- **Queue:** item 2, APW04 (run state). **Model:** Haiku. **Decision:** D9.
+- **Start here:** `NaelaoAgentDO.ts` `pruneDurableRuns` (~l.7517, the template to copy), tables `run_wal` (~l.1632), `run_traces` (~l.1650), `sub_agents` (`checkpoint_json` ~l.2057), the alarm (~l.2556).
+- **Do:** behind `RUN_LOG_RETENTION_ENABLED`, add `pruneRunLogs(now)`: delete `run_wal` and `run_traces` rows older than 90 days, and set `checkpoint_json` to NULL for `sub_agents` in a terminal status (`done`, `failed`, `terminated`) not updated for 90 days. At most 200 rows per table per pass. Never touch rows of a run that is still active. Call it where `pruneDurableRuns` is called. Add the flag `"false"` to agents `wrangler.toml`.
+- **Tests:** old rows removed; 89-day rows kept; active run kept; running sub-agent checkpoint kept; batch limit; flag off removes nothing.
+- **Done:** focused test, full agents suite, typecheck.
+
+### - [ ] MS-22 — Project-memory retention with a memory hold
+
+- **Queue:** item 2, APW04. **Model:** Sonnet. **Decision:** D9.
+- **Start here:** `workers/spaces/src/do/SpaceDO.ts` project memory tables (`project_facts`, `project_fabric`, `project_wiki`, ~l.1032-1062), the Project delete path (find how a Project is deleted: soft-delete column or row removal), `workers/spaces/src/do/project-memory-forget.test.ts`, the SpaceDO alarm / scheduled hook.
+- **Do:** find and record how Project deletion works. Add a SpaceDO migration with a `project_memory_holds` table (project_id, reason, actor_id, created_at, expires_at nullable) and owner/admin routes to set/clear a hold (static path + query params, Hono rule). Behind `PROJECT_MEMORY_RETENTION_ENABLED`, a bounded sweep deletes memory rows of Projects deleted more than 30 days ago unless an unexpired hold exists. If Project deletion leaves no deletion timestamp, add one in the same migration and set it on delete. Add the flag `"false"` to spaces `wrangler.toml`.
+- **Tests:** memory of a Project deleted 31 days ago is removed; 29 days kept; live Project untouched; hold blocks; expired hold does not block; non-admin hold change refused with not-found shape; flag off removes nothing.
+- **Done:** focused tests, **full** `naelao-spaces` suite, typecheck.
+
+### - [ ] MS-23 — Preference resolver (pure function)
+
+- **Queue:** item 2, APW06. **Model:** Haiku. **Decision:** D10.
+- **Start here:** `packages/entitlements/src/index.ts` (`getExecutionLimits`), `packages/billing-core/src/plans.ts` (`clampPlanParallelism`), `workers/agents/src/script-engine/worker-model-routing.ts`.
+- **Do:** create `workers/agents/src/shared/worker-preferences.ts` exporting `resolveWorkerPreferences({planLimits, spaceLimits?, projectSettings?, userPreferences?, modelTierCost})` → `{workerCount, allowedModelTiers, preferredModelTier, fallbackTiers, goalCreditCeiling, sources}`. Tightest wins per field; defaults workerCount 3 and ceiling 200; admin max clamped to 1–10 and plan limit; a user value above the limit is clamped and reported in `sources`; `fallbackTiers` = allowed tiers whose cost ≤ the preferred tier's cost, cheapest last. No I/O.
+- **Tests:** each layer tightening; user cannot exceed admin; admin cannot exceed plan; defaults; fallback never more expensive; empty allowed set → host default only.
+- **Done:** focused test and typecheck.
+
+### - [ ] MS-24 — Store preferences and limits, with audit
+
+- **Queue:** item 2, APW06. **Model:** Sonnet. **Decision:** D10. **Needs:** MS-23.
+- **Start here:** `SpaceDO.ts` `user_settings` (~l.1751) and Project policy columns; spaces routes near user settings; router `PRODUCT_END_USER_PATH_PATTERNS`.
+- **Do:** SpaceDO migration with `worker_preference_limits` (Space-level admin limits, optional per-Project override), `worker_user_preferences` (per user, per Space) and `worker_preference_audit` (actor, scope, before_json, after_json, created_at). Routes (static paths, query params): GET/PUT admin limits (owner/admin only), GET/PUT own user preferences (any member, own row only), GET audit (owner/admin). Validate with the MS-23 bounds. Add the router allowlist entries and tests.
+- **Tests:** admin set/read; member cannot set limits (not-found shape); user edits only their own row; values outside bounds rejected; every change writes one audit row; router allowlist accept/reject.
+- **Done:** focused tests, full `naelao-spaces` and router suites, typechecks.
+
+### - [ ] MS-25 — Apply preferences when a goal starts
+
+- **Queue:** item 2, APW06. **Model:** Sonnet. **Decision:** D10. **Needs:** MS-18, MS-23, MS-24.
+- **Start here:** `NaelaoAgentDO.ts` worker capacity (~l.4886), model selection call (~l.5834), goal start in `goal-planner.ts` / `goal-dag.ts`.
+- **Do:** behind `WORKER_PREFERENCES_ENABLED`, at goal start fetch the limits and the starting user's preferences from Spaces, resolve them with MS-23, store the snapshot on the goal journal, and use it for worker capacity, model choice/fallback and the goal credit ceiling (MS-18). A fetch failure uses today's defaults and records `preferences_unavailable`. Running goals never re-read preferences. Add the flag `"false"` to agents `wrangler.toml`.
+- **Tests:** snapshot applied to capacity, model and ceiling; later preference change does not affect the running goal; fetch failure falls back; flag off unchanged.
+- **Done:** focused tests, full agents suite, typecheck.
+
 ---
 
 ## Not in this spec (still needs you or live access)
 
 | Queue item | Why it is not code-only |
 |---|---|
-| EP06 quotes, APW05 credit ceilings, CB06 payer/price | Need real prices and caps from you. |
-| PW01 branch retention, APW04 memory retention | Need retention durations from you. Building a deletion mechanism with no policy would delete nothing. |
 | TBR11 per-effect script ceiling | Code-only, but an atomic multi-effect reservation is subtle. It needs a stronger model and an owner-approved ceiling. |
-| APW06 topology/budget preferences | Need an authority/precedence decision from you. |
+| Turning on any D8–D10 flag; real provider prices; account-deletion purge of Personal memory; owner-shortened retention; a Shell UI for preferences | Rollout needs your authorization; the rest is follow-up after MS-14–25. |
 | SPR, U/S erasure, K21, K15, APW02/05/09, CB04/CB06 provider, WhatsApp, SBB04.3 | Need staging, deployment or provider access you must authorize. |
 | Cleaning, claims, Founder Growth | Need real practitioners or founders. |

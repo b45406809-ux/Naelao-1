@@ -2,9 +2,10 @@
 
 ## Current task
 
-The [master implementation spec](docs/operations/master-implementation-spec.md) MS-01 to MS-13 is
-complete. Remaining queue items are blocked on owner decisions or live access (see the spec's "Not in
-this spec" table and the queue). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+Master implementation spec, **MS-14**: versioned price table for unpriced extension resource units.
+MS-01 to MS-13 are done; MS-14 to MS-25 implement the owner-approved decisions D8 (prices and caps),
+D9 (retention) and D10 (preferences). Follow [the spec](docs/operations/master-implementation-spec.md).
+Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 
