@@ -360,9 +360,10 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused tests and Agents typecheck pass.
 - **Result:** landed in the MS-09 commit. `classifyWorkerOutputConflicts` in `workers/agents/src/do/worker-output-conflicts.ts` (pure, one candidate per class, `status:"candidate"`, `trusted:false`); `projectWorkerOutputConflictCandidates` runs it per decision revision and Goal Activity returns it as `workerOutputConflictCandidates` beside `decisionChangeCandidates`. The host has no `diff_text`, so shared source paths surface as `unknown` and `exported_interface` and `MIGRATIONS`-array evidence only fire when diff text is supplied. Shell UI not changed. New tests 9/9 (7 classifier, 2 projection); Agents typecheck passes; full Agents suite 1980 pass, 3 pre-existing failures.
 
-### - [ ] MS-10 — Versioned worker-definition parser (not host-bound)
+### - [x] MS-10 — Versioned worker-definition parser (not host-bound)
 
 - **Queue:** item 1/2, APW08. **Model:** Sonnet. **Decision:** D6.
+- **Result:** landed locally in the commit `feat: MS-10 versioned worker-definition parser`; `worker-definition.test.ts` 8/8, Agents typecheck and `git diff --check` pass; not wired to any dispatcher; op-name pattern fallback used (none existed).
 - **Do:** new file `workers/agents/src/script-engine/worker-definition.ts` exporting
   `parseWorkerDefinitionV1(value)`. Schema:
 
