@@ -323,7 +323,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused tests and Agents typecheck pass.
 - **Result:** landed in the MS-07 commit (see git log); `project-task-stop.test.ts` 10/10 and router task-stop routing 2/2, Agents typecheck clean; full Agents suite 1971 pass / 3 pre-existing failures (email-ocr-settings-route, telnyx-webhook, scheduled-job-dispatch), router 162 pass / 1 pre-existing (preferred-language). Receipt is `latest_control_receipt` on `GET /spaces/:spaceId/tasks/:taskId`; the stop and the conversation stop share `cancelRunInAgentDO`.
 
-### - [ ] MS-08 — Shell: Stop button on Project task detail
+### - [x] MS-08 — Shell: Stop button on Project task detail
 
 - **Queue:** item 2. **Model:** Haiku. **Depends on:** MS-07.
 - **Do:**
@@ -334,6 +334,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
   - After stopping, show the receipt outcome. For `uncertain`, say *"We couldn't confirm the stop.
     Check the result before retrying."*
 - **Done:** Shell typecheck passes (rule 3).
+- **Result:** landed in the MS-08 commit. Project activity tasks that are not terminal show **Stop task** (`stopProjectTask`) with the shared warning copy, the outcome (`uncertain` uses the specified text) and any `latest_control_receipt`; the button is always shown and a 403 renders as text because the page has no Project role data. Also fixed a routing bug: Shell `listDurableTasks` hit `/v1/spaces/:id/tasks`, which the router sends to the Spaces AVOS DAG; the router now has `GET /spaces/:id/durable-tasks(/:taskId)` forwarding to Agents (`/spaces/:id/tasks(/:taskId)`) and `/spaces/:id/tasks` is unchanged. Not added to the product end-user allowlist (task detail accepts any Space member). Router `durable-tasks-routing.test.ts` 4/4, router 166 pass / 1 pre-existing (preferred-language); Shell typecheck error count unchanged at 142.
 
 ### - [ ] MS-09 — Deterministic worker-output conflict candidates
 

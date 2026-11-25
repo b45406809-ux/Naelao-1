@@ -1536,6 +1536,16 @@ api.all("/spaces/:spaceId/projects/:projectId/assistant/project-journal/decision
 api.all("/spaces/:spaceId/projects/:projectId/assistant/project-journal/decisions/:decisionId/review", async c =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
+// Agents-owned durable tasks (TaskDO). `/spaces/:spaceId/tasks` on the Spaces Worker is the AVOS task
+// DAG, so Shell callers use this distinct prefix; the router path `/spaces/:id/tasks` is unchanged.
+api.get("/spaces/:spaceId/durable-tasks", async c => {
+  const url = new URL(c.req.url);
+  return proxyTo(c.env.AGENTS_WORKER, c.get("claims"), new Request(new URL(`/spaces/${encodeURIComponent(c.req.param("spaceId"))}/tasks${url.search}`, url), c.req.raw), c.env.PLATFORM_SECRET);
+});
+api.get("/spaces/:spaceId/durable-tasks/:taskId", async c => {
+  const url = new URL(c.req.url);
+  return proxyTo(c.env.AGENTS_WORKER, c.get("claims"), new Request(new URL(`/spaces/${encodeURIComponent(c.req.param("spaceId"))}/tasks/${encodeURIComponent(c.req.param("taskId"))}${url.search}`, url), c.req.raw), c.env.PLATFORM_SECRET);
+});
 // MS-07: stop a Project task (owner/admin or Project owner; enforced by Agents).
 api.post("/spaces/:spaceId/projects/:projectId/task-stop", async c =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)

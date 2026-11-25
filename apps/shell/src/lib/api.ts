@@ -1017,6 +1017,16 @@ export async function pollRun(
   };
 }
 
+export interface TaskStopReceipt {
+  id: string;
+  task_id: string;
+  action: string;
+  requested_by: string;
+  requested_at: string | number;
+  outcome: "stopped" | "already_terminal" | "uncertain" | string;
+  detail: string;
+}
+
 export interface DurableAgentTask {
   task_id: string;
   space_id: string;
@@ -1028,6 +1038,8 @@ export interface DurableAgentTask {
   created_at: string;
   /** Elapsed wall time; includes time spent waiting for user approval. */
   elapsed_ms?: number;
+  /** Most recent operator stop receipt for this task (MS-07); omitted when none exists. */
+  latest_control_receipt?: TaskStopReceipt;
   recovery?: {
     state: "checkpoint_available" | "no_durable_checkpoint" | "scope_mismatch" | "journal_unavailable";
     workflow_status?: string;
@@ -1059,7 +1071,14 @@ export async function listDurableTasks(spaceId: string, session: SessionCredenti
   if (scope.sessionId) query.set("session_id", scope.sessionId);
   if (scope.projectId) query.set("project_id", scope.projectId);
   if (cursor) query.set("cursor", cursor);
-  return apiFetch<{ tasks: DurableAgentTask[]; has_more: boolean; next_cursor: string | null }>(`/v1/spaces/${encodeURIComponent(spaceId)}/tasks?${query}`, { session, cache: "no-store" });
+  return apiFetch<{ tasks: DurableAgentTask[]; has_more: boolean; next_cursor: string | null }>(`/v1/spaces/${encodeURIComponent(spaceId)}/durable-tasks?${query}`, { session, cache: "no-store" });
+}
+
+/** Stop a Project task (owner/admin or Project owner; enforced by the Agents worker). */
+export async function stopProjectTask(spaceId: string, projectId: string, taskId: string, session: SessionCredentials) {
+  return apiFetch<{ task_id: string; project_id: string; outcome: "stopped" | "already_terminal" | "uncertain"; status: string; receipt: TaskStopReceipt }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/task-stop`,
+    { method: "POST", session, body: JSON.stringify({ task_id: taskId }) });
 }
 
 

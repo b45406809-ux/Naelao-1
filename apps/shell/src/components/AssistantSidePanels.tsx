@@ -59,6 +59,8 @@ import {
   listNotifications,
   markNotificationRead,
   listDurableTasks,
+  stopProjectTask,
+  type TaskStopReceipt,
   cancelRun,
   listLocalGrants,
   createLocalGrant,
@@ -323,6 +325,43 @@ function StopDurableTaskButton({ spaceId, sessionId, taskId, session, onStopped 
     <p style={{ color: "var(--text3)", fontSize: 11 }}>Stopping is cooperative. An in-flight operation may finish or be interrupted, and stopping does not undo external changes already committed.</p>
     {message && <p role="status" style={{ color: "var(--text3)", fontSize: 11 }}>{message}</p>}
   </div>;
+}
+
+function describeStopOutcome(outcome: string): string {
+  if (outcome === "stopped") return "Stop requested. The task may finish or be interrupted; committed external effects are not undone.";
+  if (outcome === "already_terminal") return "The task had already finished.";
+  return "We couldn't confirm the stop. Check the result before retrying.";
+}
+
+function StopProjectTaskButton({ spaceId, projectId, taskId, session, onStopped }: { spaceId: string; projectId: string; taskId: string; session: SessionCredentials; onStopped: () => void }) {
+  const [busy, setBusy] = React.useState(false);
+  const [outcome, setOutcome] = React.useState<string | null>(null);
+  const [error, setError] = React.useState("");
+  async function stop() {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await stopProjectTask(spaceId, projectId, taskId, session);
+      setOutcome(result.outcome);
+      onStopped();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not stop the task.");
+    } finally { setBusy(false); }
+  }
+  // Only a Project owner or Space owner/admin may stop; the server enforces it and a 403 is shown as text.
+  return <div style={{ marginTop: 6 }}>
+    <button type="button" className="btn btn-ghost btn-sm" onClick={() => void stop()} disabled={busy || (outcome !== null && outcome !== "uncertain")}>{busy ? "Stopping…" : "Stop task"}</button>
+    <p style={{ color: "var(--text3)", fontSize: 11 }}>It may finish or be interrupted; committed external effects are not undone.</p>
+    {outcome && <p role="status" style={{ color: "var(--text3)", fontSize: 11 }}>{describeStopOutcome(outcome)}</p>}
+    {error && <p role="alert" style={{ color: "var(--danger, #dc2626)", fontSize: 11 }}>{error}</p>}
+  </div>;
+}
+
+function StopReceiptLine({ receipt }: { receipt: TaskStopReceipt }) {
+  const at = new Date(receipt.requested_at);
+  return <p role="status" style={{ color: "var(--text3)", fontSize: 11 }}>
+    Last stop request: {receipt.outcome.replaceAll("_", " ")}{Number.isNaN(at.getTime()) ? "" : ` · ${at.toLocaleString()}`}
+  </p>;
 }
 
 function WorkerConflictResolutionEditor({ spaceId, session, sessionId, agentId, projectId, workerId, conflict, onResolved }: {
@@ -699,7 +738,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
   }, [refresh]);
   return <section aria-label="Durable tasks">
     <div className="tp-section">{projectId && !sessionId ? "Project activity" : "Conversation tasks"}</div>
-    <p className="workspace-tab-empty">{projectId && !sessionId ? "Most recent background tasks in this project. Project activity is read-only for run controls; open a task’s conversation to review it or answer approvals if you have access there." : "Background work remains available after leaving this page. Status refreshes every five seconds."}</p>
+    <p className="workspace-tab-empty">{projectId && !sessionId ? "Most recent background tasks in this project. Project owners and Space admins can stop a running task here; open a task’s conversation to review it or answer approvals if you have access there." : "Background work remains available after leaving this page. Status refreshes every five seconds."}</p>
     {loading && <p className="workspace-tab-empty">Loading task history…</p>}
     {error && <p role="status" className="workspace-tab-empty">{error}</p>}
     {!loading && !error && tasks.length === 0 && <p className="workspace-tab-empty">No durable tasks for this {projectId && !sessionId ? "project" : "conversation"} yet.</p>}
@@ -742,6 +781,8 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
           {worker.execution_ms !== undefined && <span>Runtime {formatElapsedTime(worker.execution_ms)}</span>}
         </div>)}
       </details>}
+      {projectId && !sessionId && task.status !== "complete" && task.status !== "failed" && <StopProjectTaskButton spaceId={spaceId} projectId={projectId} taskId={task.task_id} session={session} onStopped={() => void refresh()} />}
+      {task.latest_control_receipt && <StopReceiptLine receipt={task.latest_control_receipt} />}
       {sessionId && task.status === "processing" && <StopDurableTaskButton spaceId={spaceId} sessionId={sessionId} taskId={task.task_id} session={session} onStopped={() => void refresh()} />}
       {sessionId && taskCreatedArtifacts(task).map(artifact => <InlineArtifactCard key={artifact.artifact_id} spaceId={spaceId} artifactId={artifact.artifact_id} filename={artifact.filename} {...(artifact.content_type ? { contentType: artifact.content_type } : {})} session={session} />)}
       {projectId && taskCitations(task).length > 0 && <CitationBadges citations={taskCitations(task)} spaceId={spaceId} projectId={projectId} session={session} />}

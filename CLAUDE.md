@@ -2,9 +2,9 @@
 
 ## Current task
 
-Master implementation spec, **MS-08**: Shell: Stop button on Project task detail. Follow
+Master implementation spec, **MS-09**: Deterministic worker-output conflict candidates. Follow
 [the spec](docs/operations/master-implementation-spec.md); it lists the decided contracts (D1–D7),
-files, tests and done criteria for MS-08 to MS-12. Keep this pointer and `CLAUDE.md` in sync
+files, tests and done criteria for MS-09 to MS-12. Keep this pointer and `CLAUDE.md` in sync
 (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
