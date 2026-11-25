@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-21**: Run-log retention.
-MS-01 to MS-20 are done; MS-21 to MS-25 implement the owner-approved decisions D8 (prices and caps),
+Master implementation spec, **MS-22**: Project-memory retention with a memory hold.
+MS-01 to MS-21 are done; MS-22 to MS-25 implement the owner-approved decisions D8 (prices and caps),
 D9 (retention) and D10 (preferences). Follow [the spec](docs/operations/master-implementation-spec.md).
 Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 

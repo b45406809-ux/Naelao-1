@@ -1127,6 +1127,8 @@ export interface AgentDOEnv {
   GOAL_VERIFICATION_TEST_MODE?: string;
   /** Opt in new goal runs to durable, task-scoped completion messages. */
   TASK_BLACKBOARD_ENABLED?: string;
+  /** MS-21 (D9): delete finished run logs older than 90 days. Default off. */
+  RUN_LOG_RETENTION_ENABLED?: string;
   TASK_BLACKBOARD_DECISION_TEST_MODE?: string;
   /** Opt in to one bounded worker repair attempt after a confirmed goal task failure. */
   TASK_FIXER_ENABLED?: string;
@@ -7440,6 +7442,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         runId, sessionId, now, now
       );
       this.pruneDurableRuns();
+      this.pruneRunLogs(now);
     } catch { /* durability is an enhancement to observability; it never fails a run */ }
   }
 
@@ -7603,6 +7606,61 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         this.lastDurableWrite.delete(run_id);
       }
     } catch { /* pruning is housekeeping, never load-bearing */ }
+  }
+
+  /** MS-21 (D9): run-log retention. Behind RUN_LOG_RETENTION_ENABLED (default off; any value other
+   *  than "true" deletes nothing). Removes run_wal / run_traces rows and clears sub_agents
+   *  checkpoint_json for terminal workers once they are 90 days old. Each table is bounded to 200
+   *  rows per pass, and a run that is still active is never touched. Logs counts only. */
+  private static readonly RUN_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+  private static readonly RUN_LOG_RETENTION_BATCH = 200;
+  private pruneRunLogs(now: number): { walDeleted: number; tracesDeleted: number; checkpointsCleared: number } {
+    const none = { walDeleted: 0, tracesDeleted: 0, checkpointsCleared: 0 };
+    if (this.env.RUN_LOG_RETENTION_ENABLED !== "true") return none;
+    try {
+      const cutoff = now - NaelaoAgentDO.RUN_LOG_RETENTION_MS;
+      const batch = NaelaoAgentDO.RUN_LOG_RETENTION_BATCH;
+      // A run is active while its run_state row has no terminal_json (the same marker the cancel
+      // path uses) or its agent_runs row is in any non-terminal status.
+      const activeRuns = `SELECT run_id FROM run_state WHERE terminal_json IS NULL
+        UNION SELECT id FROM agent_runs WHERE status NOT IN ('completed','failed','cancelled')`;
+      const countWrites = (cursor: { toArray(): unknown[]; rowsWritten: number }): number => {
+        cursor.toArray();
+        return cursor.rowsWritten;
+      };
+      // run_wal has no created_at: age is COALESCE(finished_at, started_at), both ms.
+      // Pending rows are kept: they are the crash-recovery signal counted at startup.
+      const walDeleted = countWrites(this.ctx.storage.sql.exec(
+        `DELETE FROM run_wal WHERE rowid IN (
+           SELECT rowid FROM run_wal
+           WHERE status <> 'pending' AND COALESCE(finished_at, started_at) < ?
+             AND run_id NOT IN (${activeRuns})
+           LIMIT ?)`,
+        cutoff, batch
+      ));
+      // run_traces: ts is Date.now() ms, one row per step.
+      const tracesDeleted = countWrites(this.ctx.storage.sql.exec(
+        `DELETE FROM run_traces WHERE rowid IN (
+           SELECT rowid FROM run_traces
+           WHERE ts < ? AND run_id NOT IN (${activeRuns})
+           LIMIT ?)`,
+        cutoff, batch
+      ));
+      // sub_agents: updated_at is ms. Only terminal statuses (done|failed|terminated) lose their
+      // checkpoint; running, awaiting_* and interrupted workers keep it, as do workers whose
+      // parent run is still active. updated_at is left unchanged so the sweep stays idempotent.
+      const checkpointsCleared = countWrites(this.ctx.storage.sql.exec(
+        `UPDATE sub_agents SET checkpoint_json = NULL WHERE id IN (
+           SELECT id FROM sub_agents
+           WHERE status IN ('done','failed','terminated') AND checkpoint_json IS NOT NULL
+             AND updated_at < ? AND parent_run_id NOT IN (${activeRuns})
+           LIMIT ?)`,
+        cutoff, batch
+      ));
+      const counts = { walDeleted, tracesDeleted, checkpointsCleared };
+      if (walDeleted + tracesDeleted + checkpointsCleared > 0) console.info("run_log_retention", counts);
+      return counts;
+    } catch { return none; /* retention is housekeeping, never load-bearing */ }
   }
 
   /**

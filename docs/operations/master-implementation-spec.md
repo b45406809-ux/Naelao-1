@@ -528,13 +528,14 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused tests, full agents suite, typecheck.
 - **Result:** landed locally behind `WORKER_BRANCH_RETENTION_ENABLED` (default off, in every wrangler vars block). Coordinator `/v1/branch/retire` records a row plus a due index (idempotent, `workers/*` only); the alarm sweep (flag on, no legal hold, no content-GC lock, 20 branches per pass, re-armed) deletes `head:`/`branch-base:` and then the branch's own `retained-revision:`/`revision:`/`subscription:` keys (these are content-GC roots), never R2 bytes; head-advanced, active-session and child-branch branches are kept. NaelaoAgentDO retires `published` after a published merge and `ended` on failed/terminated workers (best effort, 3s timeout, durable pending marker). Commit: see git log (`feat(agents): MS-20`); `WorkspaceCoordinatorDO.test.ts` 92/92 (9 new), `delegation-admission.test.ts` 29/29 (6 new), full agents suite only the 3 known failures, typecheck and `git diff --check` pass. Local evidence only.
 
-### - [ ] MS-21 — Run-log retention
+### - [x] MS-21 — Run-log retention
 
 - **Queue:** item 2, APW04 (run state). **Model:** Haiku. **Decision:** D9.
 - **Start here:** `NaelaoAgentDO.ts` `pruneDurableRuns` (~l.7517, the template to copy), tables `run_wal` (~l.1632), `run_traces` (~l.1650), `sub_agents` (`checkpoint_json` ~l.2057), the alarm (~l.2556).
 - **Do:** behind `RUN_LOG_RETENTION_ENABLED`, add `pruneRunLogs(now)`: delete `run_wal` and `run_traces` rows older than 90 days, and set `checkpoint_json` to NULL for `sub_agents` in a terminal status (`done`, `failed`, `terminated`) not updated for 90 days. At most 200 rows per table per pass. Never touch rows of a run that is still active. Call it where `pruneDurableRuns` is called. Add the flag `"false"` to agents `wrangler.toml`.
 - **Tests:** old rows removed; 89-day rows kept; active run kept; running sub-agent checkpoint kept; batch limit; flag off removes nothing.
 - **Done:** focused test, full agents suite, typecheck.
+- **Result:** landed locally behind `RUN_LOG_RETENTION_ENABLED` (default off, in every wrangler vars block and the agents Env type); `pruneRunLogs(now)` runs from `openDurableRun` beside `pruneDurableRuns`; deletes `run_wal` (finished, 90 days) and `run_traces` (`ts` 90 days), and clears `sub_agents.checkpoint_json` for terminal workers untouched 90 days; 200 rows per table per pass; active runs excluded; `run-log-retention.test.ts` 6/6 (new); full agents suite 2063 passed with only the 3 known failures; typecheck and `git diff --check` pass. Commit: see git log (`feat(agents): MS-21`). Local evidence only.
 
 ### - [ ] MS-22 — Project-memory retention with a memory hold
 

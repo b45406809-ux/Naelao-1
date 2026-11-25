@@ -453,6 +453,8 @@ export interface AgentsEnv extends Cloudflare.Env {
   /** MS-19: bill Naelao-managed AgentMail sends against the Space's org credits. Default off. */
   AGENTMAIL_SEND_BILLING_ENABLED?: string;
   WORKER_BRANCH_RETENTION_ENABLED?: string;
+  /** MS-21: delete finished run logs older than 90 days. Default off. */
+  RUN_LOG_RETENTION_ENABLED?: string;
   /** Optional break-glass key for operator verification/revocation of provider capability evidence. */
   MANAGED_SERVICES_OPERATOR_SECRET?: string;
   AGENTMAIL_WEBHOOK_URL?: string;
