@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-12**: AgentMail remaining local control tests. Follow
-[the spec](docs/operations/master-implementation-spec.md); it lists the decided contracts (D1–D7),
+Master implementation spec, **MS-13**: Project-scoped task detail, then product-user access to durable
+tasks and Stop. MS-01 to MS-12 are done. Follow
 files, tests and done criteria for MS-12. Keep this pointer and `CLAUDE.md` in sync
 (`cp AGENTS.md CLAUDE.md`).
 

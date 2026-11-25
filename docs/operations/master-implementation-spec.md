@@ -438,6 +438,28 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** the AgentMail suite passes with the new cases.
 - **Result:** landed locally; `agentmail.test.ts` 34/34 (27 before, 7 new in `MS-12 remaining local controls`); source fix in `assertAgentMailOperationAuthority` so a supplied recipient entry that fails address parsing refuses the send instead of being silently dropped; Agents typecheck and `git diff --check` pass. Local evidence only.
 
+
+### - [ ] MS-13 — Project-scoped task detail, then let product users reach durable tasks and Stop
+
+- **Queue:** item 2, APW06. **Model:** Sonnet. **Decision:** D4. Found during MS-08.
+- **Problem:** the agents worker's `GET /spaces/:spaceId/tasks/:taskId` lets any Space member read
+  any task by ID, without checking Project access. MS-08 therefore left the new
+  `/spaces/:id/durable-tasks(/:id)` and `/spaces/:id/projects/:id/task-stop` routes off the router's
+  `PRODUCT_END_USER_PATH_PATTERNS`. As a result, a business owner signed in through the Shell
+  cannot see or stop background tasks.
+- **Do:**
+  1. In the task-detail handler, apply the same Project-access check the list handler already uses
+     whenever the task has a `project_id`. Return the existing not-found shape on failure.
+  2. Re-verify that the list, detail and task-stop handlers all enforce their own access checks for a
+     `product_end_user` caller. Then add allowlist patterns for those three paths and update
+     `workers/router/src/durable-tasks-routing.test.ts`, which currently asserts they are absent,
+     plus `extension-product-paths.test.ts`.
+- **Tests:**
+  - a member of Project A cannot read a Project B task by ID;
+  - a Project member can read their own Project's task;
+  - the router allowlist accepts the three paths and rejects their extensions.
+- **Done:** focused agents and router tests pass, plus typecheck.
+
 ---
 
 ## Not in this spec (still needs you or live access)
