@@ -1063,26 +1063,34 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
     if(prior&&prior.request_hash!==requestHash)throw new Error("agentmail_idempotency_conflict");
     if(prior?.status==="sent")return {message_id:prior.provider_message_id,idempotent:true};
     if(prior)throw new Error("agentmail_delivery_reconciliation_required");
-    const daily=await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS n FROM assistant_agentmail_sends WHERE connection_id=? AND status='sent' AND first_attempt_at>=date('now')").bind(account.id).first<{n:number}>();
-    if(!prior&&(daily?.n??0)>=(currentPolicy?.dailySendLimit??0))throw new Error("communication_daily_send_limit");
     const claimed=await env.PLATFORM_DB.prepare(`INSERT INTO assistant_agentmail_sends(connection_id,idempotency_hash,request_hash,status,first_attempt_at,updated_at)
-      VALUES(?,?,?,'sending',?,?) ON CONFLICT(connection_id,idempotency_hash) DO NOTHING`).bind(account.id,idemHash,requestHash,at,at).run();
+      SELECT ?,?,?, 'sending',?,? WHERE (SELECT COUNT(*) FROM assistant_agentmail_sends WHERE connection_id=?
+        AND status IN ('sent','sending','indeterminate') AND first_attempt_at>=date('now')) < ?
+      ON CONFLICT(connection_id,idempotency_hash) DO NOTHING`)
+      .bind(account.id,idemHash,requestHash,at,at,account.id,currentPolicy?.dailySendLimit??0).run();
     if(!claimed.meta.changes){
       const raced=await env.PLATFORM_DB.prepare("SELECT request_hash,status,provider_message_id FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=?")
         .bind(account.id,idemHash).first<{request_hash:string;status:string;provider_message_id:string|null}>();
       if(raced&&raced.request_hash!==requestHash)throw new Error("agentmail_idempotency_conflict");
       if(raced?.status==="sent")return {message_id:raced.provider_message_id,idempotent:true};
-      throw new Error("agentmail_delivery_reconciliation_required");
+      if(raced)throw new Error("agentmail_delivery_reconciliation_required");
+      throw new Error("communication_daily_send_limit");
     }
+    let dispatchStarted=false;
     try{
-      const sent=await withTemporaryInboxKey(env,key,account.inbox_id,account.provider_region,"message_send",temporaryKey=>
-        assertAgentMailOperationAuthority(env,scope,account,args).then(()=>
-          provider(env,temporaryKey,call.path,{method:call.method,headers:{"Idempotency-Key":idem},body:JSON.stringify(payload)},account.provider_region)));
+      const sent=await withTemporaryInboxKey(env,key,account.inbox_id,account.provider_region,"message_send",async temporaryKey=>{
+        await assertAgentMailOperationAuthority(env,scope,account,args);
+        dispatchStarted=true;
+        return provider(env,temporaryKey,call.path,{method:call.method,headers:{"Idempotency-Key":idem},body:JSON.stringify(payload)},account.provider_region);
+      });
       await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='sent',provider_message_id=?,updated_at=? WHERE connection_id=? AND idempotency_hash=?")
         .bind(typeof sent.message_id==="string"?sent.message_id:null,new Date().toISOString(),account.id,idemHash).run();
       return sent;
     }catch(error){
-      await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='indeterminate',updated_at=? WHERE connection_id=? AND idempotency_hash=?").bind(new Date().toISOString(),account.id,idemHash).run();
+      if(dispatchStarted)await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='indeterminate',updated_at=? WHERE connection_id=? AND idempotency_hash=?")
+        .bind(new Date().toISOString(),account.id,idemHash).run();
+      else await env.PLATFORM_DB.prepare("DELETE FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=? AND status='sending'")
+        .bind(account.id,idemHash).run();
       throw error;
     }
   }

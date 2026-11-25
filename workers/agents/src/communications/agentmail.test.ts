@@ -300,11 +300,11 @@ describe("AgentMail provider account boundary",()=>{
     const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
       const request=new Request(input,init),url=new URL(request.url);
       if(url.pathname.endsWith("/api-keys")&&request.method==="POST"){
-        keyCreates++;const body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
-        return Response.json({api_key_id:"api_key_concurrent",api_key:"temporary-concurrent-key-123456",inbox_id:"inbox-concurrent",
+        const keyId=`api_key_concurrent_${++keyCreates}`,body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        return Response.json({api_key_id:keyId,api_key:"temporary-concurrent-key-123456",inbox_id:"inbox-concurrent",
           expires_at:body.expires_at,permissions:body.permissions});
       }
-      if(url.pathname.endsWith("/api-keys/api_key_concurrent")&&request.method==="DELETE"){
+      if(url.pathname.includes("/api-keys/api_key_concurrent_")&&request.method==="DELETE"){
         keyDeletes++;return new Response(null,{status:204});
       }
       if(url.pathname.endsWith("/messages/send")){sendCalls++;return Response.json({message_id:"concurrent-message"});}
@@ -322,6 +322,18 @@ describe("AgentMail provider account boundary",()=>{
     expect({keyCreates,keyDeletes,sendCalls}).toEqual({keyCreates:1,keyDeletes:1,sendCalls:1});
     expect(await f.db.prepare("SELECT status FROM assistant_agentmail_sends WHERE connection_id='mail-concurrent'").first())
       .toEqual({status:"sent"});
+    await f.db.prepare("UPDATE assistant_communication_identities SET autonomy_json=? WHERE id=?")
+      .bind(JSON.stringify({mode:"standing",recipients:["allowed@example.test"],dailySendLimit:2}),identity.id).run();
+    const distinctAttempts=await Promise.allSettled([
+      callAgentMailTool(f.env,scope,"agentmail.send",{...args,idempotency_key:"daily-limit-a"}),
+      callAgentMailTool(f.env,scope,"agentmail.send",{...args,idempotency_key:"daily-limit-b"}),
+    ]);
+    expect(distinctAttempts.filter(attempt=>attempt.status==="fulfilled")).toHaveLength(1);
+    expect((distinctAttempts.find(attempt=>attempt.status==="rejected") as PromiseRejectedResult).reason)
+      .toMatchObject({message:"communication_daily_send_limit"});
+    expect({keyCreates,keyDeletes,sendCalls}).toEqual({keyCreates:2,keyDeletes:2,sendCalls:2});
+    expect(await f.db.prepare("SELECT COUNT(*) AS count FROM assistant_agentmail_sends WHERE connection_id='mail-concurrent' AND status='sent'").first())
+      .toEqual({count:2});
   });
   it("rechecks send policy after temporary-key creation before provider dispatch",async()=>{
     const f=fixture(),identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
@@ -359,7 +371,7 @@ describe("AgentMail provider account boundary",()=>{
     expect(await response.json()).toMatchObject({error_code:"communication_approval_required"});
     expect({keyDeletes,sendCalls}).toEqual({keyDeletes:1,sendCalls:0});
     expect(await f.db.prepare("SELECT status FROM assistant_agentmail_sends WHERE connection_id='mail-policy-race'").first())
-      .toEqual({status:"indeterminate"});
+      .toBeNull();
   });
   it("revokes and scrubs scoped AgentMail credentials before erasing the assistant identity",async()=>{
     const f=fixture(),identity=await ensureIdentity(f.env,scope);

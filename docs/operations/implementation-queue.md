@@ -1182,6 +1182,12 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   sent result or remains fenced for reconciliation. A barrier-driven pair of identical sends proves
   only one temporary key and one provider dispatch occur. AgentMail plus erasure tests pass 27/27,
   Agents typecheck and diff hygiene pass.
+- [x] **CB06 local control slice — concurrent daily-cap admission and outcome accuracy.** The same
+  atomic insert admits a send only while today's sent, sending and indeterminate receipts remain
+  below the policy limit, preventing concurrent distinct keys from exceeding the cap. Pre-dispatch
+  failures delete their un-dispatched claim so corrected attempts can retry; failures after the
+  provider call begins remain indeterminate. Concurrent duplicate and distinct-key cap tests pass
+  within the AgentMail 27/27 suite; Agents typecheck and diff hygiene pass.
 - [ ] **CB06 provider/live acceptance.** With separately authorized disposable AgentMail credentials,
   verify temporary-key expiry/revocation, provider idempotency, regional support, billing and
   callback/revocation behavior. Keep deployment separate and gated by its own authorization.
@@ -1193,10 +1199,11 @@ The timeout replay and policy-change race regressions pass; AgentMail plus scope
 promises replay of a completed send, but no live behavior has been accepted. CB04 temporary-key
 expiry/revocation, region, parent permission and billing acceptance also remain open. AgentPort has
 no atomic grant permit spanning provider dispatch, leaving a residual cross-system revocation race.
-**Exact next action:** audit daily send-limit accounting under concurrent distinct send keys and
-the treatment of provider errors that prove no dispatch versus errors with unknown outcomes. Add
-local coverage for any fix, then review provider acceptance and dependency handoff; keep the residual
-cross-system revocation race and live provider/deployment requirements explicitly blocked.
+**Exact next action:** review the durable `indeterminate` send recovery path for any independent
+local reconciliation or operator-visible state that can be implemented without inventing provider
+semantics. Cross-check CB06's full plan requirements for approval, budget, billing, callback and
+recovery integration; implement the next local-ready gap and keep live provider acceptance and
+deployment separate.
 
 ## Ordered plan list
 

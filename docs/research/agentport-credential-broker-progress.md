@@ -361,3 +361,25 @@ typecheck and `git diff --check` pass. Local D1 fixture only; no provider reques
 and distinguish provider failures known to occur before dispatch from outcomes that may have been
 accepted. Fix locally where safe and retain a conservative reconciliation fence for unknown
 outcomes.
+
+## CB06 — Atomic daily-cap admission and dispatch outcome state (2026-11-25)
+
+The send claim is now a single conditional `INSERT ... SELECT`: it reserves the idempotency receipt
+only when the count of today's `sent`, `sending`, and `indeterminate` rows is below the current
+standing-policy limit. This makes admission atomic across distinct idempotency keys as well as
+identical retries. The send path now records whether it crossed into the provider request: an error
+before that point deletes its `sending` claim because no provider send was attempted, while any
+failure after the request begins remains `indeterminate` and fenced. This includes key-revoke or
+local persistence failures after a possibly successful provider response, which remain uncertain.
+
+The concurrent regression also lowers the daily cap and races two distinct send keys after one
+successful send. Exactly one additional request is admitted; the other receives
+`communication_daily_send_limit` before a temporary key or provider dispatch. The policy-change
+during key creation test now confirms a pre-dispatch denial leaves no misleading indeterminate
+receipt. Verification: AgentMail plus scoped-erasure suites **27/27**, Agents typecheck and
+`git diff --check` pass. Local D1 fixtures only; no provider call was made.
+
+**Exact next action:** review the persisted indeterminate receipt for a safe local reconciliation
+interface or state transition, and cross-check CB06's plan requirements for approval, budget,
+billing, callback and recovery integration. Do not infer provider send completion from message
+listing; keep live acceptance separate.
