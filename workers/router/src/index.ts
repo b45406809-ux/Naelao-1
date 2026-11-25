@@ -1536,6 +1536,10 @@ api.all("/spaces/:spaceId/projects/:projectId/assistant/project-journal/decision
 api.all("/spaces/:spaceId/projects/:projectId/assistant/project-journal/decisions/:decisionId/review", async c =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
+// MS-07: stop a Project task (owner/admin or Project owner; enforced by Agents).
+api.post("/spaces/:spaceId/projects/:projectId/task-stop", async c =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
 api.post("/spaces/:spaceId/projects/:projectId/runtime-installations/:installationId/containers/:containerId/profile/reset", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );

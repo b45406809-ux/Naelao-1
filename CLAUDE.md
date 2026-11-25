@@ -2,9 +2,9 @@
 
 ## Current task
 
-Master implementation spec, **MS-07**: Stop a Project task (owner/admin) with a durable receipt. Follow
+Master implementation spec, **MS-08**: Shell: Stop button on Project task detail. Follow
 [the spec](docs/operations/master-implementation-spec.md); it lists the decided contracts (D1–D7),
-files, tests and done criteria for MS-06 to MS-12. Keep this pointer and `CLAUDE.md` in sync
+files, tests and done criteria for MS-08 to MS-12. Keep this pointer and `CLAUDE.md` in sync
 (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume

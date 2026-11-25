@@ -115,6 +115,19 @@ export class TaskDO extends DurableObject {
     if (!columns.some(column => column.name === "coordination_json")) this.ctx.storage.sql.exec("ALTER TABLE tasks ADD COLUMN coordination_json TEXT");
     this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_tasks_space ON tasks(space_id, created_at DESC)");
     this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(space_id, project_id, created_at DESC)");
+    // MS-07: durable receipt of every Project task stop request (never of pause/resume).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS task_control_receipts (
+        id           TEXT PRIMARY KEY,
+        task_id      TEXT NOT NULL,
+        action       TEXT NOT NULL,
+        requested_by TEXT NOT NULL,
+        requested_at INTEGER NOT NULL,
+        outcome      TEXT NOT NULL,
+        detail       TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_control_receipts_task ON task_control_receipts(task_id, requested_at DESC);
+    `);
     this.initialized = true;
   }
 
@@ -197,6 +210,28 @@ export class TaskDO extends DurableObject {
       const task = this.getTask(taskId);
       if (!task) return Response.json({ error: "not_found" }, { status: 404 });
       return Response.json(this.taskToApi(task));
+    }
+
+    // POST /tasks/:id/control-receipts — durably record a stop request outcome (MS-07). This only
+    // writes the receipt; it never changes the task status, so an `uncertain` outcome leaves the
+    // task exactly as it was.
+    const receiptMatch = url.pathname.match(/^\/tasks\/([^/]+)\/control-receipts$/);
+    if (method === "POST" && receiptMatch?.[1]) {
+      const value: unknown = await request.json().catch(() => undefined);
+      if (!value || typeof value !== "object" || Array.isArray(value)) return Response.json({ error: "invalid_request" }, { status: 400 });
+      const body = value as Record<string, unknown>;
+      if (body.action !== "stop" || typeof body.requested_by !== "string" || !body.requested_by.trim() || body.requested_by.length > 256 ||
+          !(["stopped", "already_terminal", "uncertain"] as unknown[]).includes(body.outcome) ||
+          (body.detail !== undefined && body.detail !== null && (typeof body.detail !== "string" || body.detail.length > 500)))
+        return Response.json({ error: "invalid_control_receipt" }, { status: 400 });
+      const task = this.getTask(receiptMatch[1]);
+      if (!task) return Response.json({ error: "not_found" }, { status: 404 });
+      const receiptId = crypto.randomUUID();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO task_control_receipts (id, task_id, action, requested_by, requested_at, outcome, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        receiptId, task.id, body.action, body.requested_by, Date.now(), body.outcome, (body.detail as string | null | undefined) ?? null
+      );
+      return Response.json({ receipt: this.latestControlReceipt(task.id), task: this.taskToApi(task) }, { status: 201 });
     }
 
     // GET /tasks — list tasks for a space
@@ -344,6 +379,16 @@ export class TaskDO extends DurableObject {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
+  private latestControlReceipt(taskId: string): Record<string, unknown> | undefined {
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT * FROM task_control_receipts WHERE task_id = ? ORDER BY requested_at DESC, rowid DESC LIMIT 1`, taskId)
+      .toArray() as unknown as Array<{ id: string; task_id: string; action: string; requested_by: string; requested_at: number; outcome: string; detail: string | null }>;
+    const row = rows[0];
+    if (!row) return undefined;
+    return { id: row.id, task_id: row.task_id, action: row.action, requested_by: row.requested_by,
+      requested_at: new Date(row.requested_at).toISOString(), outcome: row.outcome, detail: row.detail };
+  }
+
   private getTask(id: string): TaskRow | null {
     if (!validTaskId(id)) return null;
     const rows = this.ctx.storage.sql
@@ -351,6 +396,7 @@ export class TaskDO extends DurableObject {
       .toArray() as unknown as TaskRow[];
     if (rows[0] && rows[0].expires_at <= Date.now()) {
       this.ctx.storage.sql.exec(`DELETE FROM tasks WHERE id = ? AND expires_at <= ?`, id, Date.now());
+      this.ctx.storage.sql.exec(`DELETE FROM task_control_receipts WHERE task_id = ?`, id);
       return null;
     }
     return rows[0] ?? null;
@@ -392,6 +438,7 @@ export class TaskDO extends DurableObject {
         };
       }
     } catch { /* old or malformed snapshots remain unavailable */ }
+    const latestReceipt = this.latestControlReceipt(task.id);
     return {
       task_id: task.id,
       space_id: task.space_id,
@@ -403,6 +450,7 @@ export class TaskDO extends DurableObject {
       created_at: task.created_at,
       ...(elapsedMs !== undefined ? { elapsed_ms: elapsedMs } : {}),
       ...(coordinationSummary ? { coordination_summary: coordinationSummary } : {}),
+      ...(latestReceipt ? { latest_control_receipt: latestReceipt } : {}),
       expires_at: new Date(task.expires_at).toISOString(),
     };
   }
@@ -438,6 +486,7 @@ export class TaskDO extends DurableObject {
     this.ctx.storage.sql.exec(
       `DELETE FROM tasks WHERE expires_at <= ?`, nowMs
     );
+    this.ctx.storage.sql.exec(`DELETE FROM task_control_receipts WHERE task_id NOT IN (SELECT id FROM tasks)`);
 
     // Re-arm if more tasks to expire
     const rows = this.ctx.storage.sql

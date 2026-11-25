@@ -3905,6 +3905,21 @@ app.get("/spaces/:spaceId/sessions/:sessionId/agent/active-run", async (c) => {
   return c.json(await resp.json());
 });
 
+/** The single AgentDO stop handler call. The conversation stop route and the Project task stop
+ *  (MS-07) both go through here, so a run id (a durable task's id) is always cancelled in the same
+ *  AgentDO instance, with the same voice-control fallback. */
+async function cancelRunInAgentDO(env: AgentsEnv, tenantId: string, sessionId: string, runId: string, requestId?: string): Promise<Response> {
+  const stub = await getAgentDO(env, tenantId, sessionId, requestId);
+  let doResponse = await stub.fetch(
+    new Request(`http://agent-do/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" })
+  );
+  if (doResponse.status === 404) {
+    const control = await getAgentDO(env, tenantId, `${sessionId}:voice-control`, requestId);
+    doResponse = await control.fetch(new Request(`http://agent-do/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }));
+  }
+  return doResponse;
+}
+
 // ── POST /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/cancel ────────
 
 app.post(
@@ -3931,14 +3946,7 @@ app.post(
       throw forbidden("You don't have access to this conversation");
     }
 
-    const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
-    let doResponse = await stub.fetch(
-      new Request(`http://agent-do/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" })
-    );
-    if (doResponse.status === 404) {
-      const control = await getAgentDO(c.env, tenantId, `${sessionId}:voice-control`, c.get("requestId"));
-      doResponse = await control.fetch(new Request(`http://agent-do/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }));
-    }
+    const doResponse = await cancelRunInAgentDO(c.env, tenantId, sessionId, runId, c.get("requestId"));
 
     const doBody = await doResponse.json<unknown>();
     return c.json(doBody, doResponse.status as 200 | 400 | 404 | 500);
@@ -4472,6 +4480,60 @@ app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
     return c.json(await addTaskRecoverySummary(c.env, updated, tenantId, spaceId));
   }
   return c.json(await addTaskRecoverySummary(c.env, task as Record<string, unknown>, tenantId, spaceId));
+});
+
+// POST /spaces/:spaceId/projects/:projectId/task-stop — MS-07 / decision D4. Stop (never pause or
+// resume) a Project task. Authority: owner/admin of the owning Space (requireApprovalAuthority),
+// or a Project member whose role is `owner`; both resolved by projectDecisionReviewAccess. A stop
+// is forwarded to the SAME AgentDO handler the conversation stop uses and always leaves a durable
+// receipt in TaskDO. WorkflowRunDO.cancel is deliberately never used.
+const TASK_STOP_AGENT_TIMEOUT_MS = 10_000;
+app.post("/spaces/:spaceId/projects/:projectId/task-stop", async c => {
+  const { spaceId, projectId } = c.req.param();
+  const body = await c.req.json<{ task_id?: unknown }>().catch(() => null);
+  const taskId = body && typeof body.task_id === "string" ? body.task_id : "";
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(taskId)) return c.json({ error_code: "invalid_task_stop" }, 400);
+  const { tenantId, userId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
+  let authority: Awaited<ReturnType<typeof projectDecisionReviewAccess>>;
+  try { authority = await projectDecisionReviewAccess(c, spaceId, projectId, tenantId, userId); }
+  catch (error) {
+    if (error instanceof Error && error.message === "project_decision_authority_unavailable") return c.json({ error_code: error.message }, 503);
+    throw error;
+  }
+  if (!authority.canReview) return c.json({ error_code: "task_stop_requires_project_owner_or_space_admin" }, 403);
+
+  const stub = getTaskDO(c.env, spaceId);
+  const taskResponse = await stub.fetch(`http://task-do/tasks/${encodeURIComponent(taskId)}?timeout=0`);
+  const task = taskResponse.ok
+    ? await taskResponse.json<{ task_id?: string; session_id?: string; project_id?: string | null; status?: string }>().catch(() => null) : null;
+  // A task of another Project (or Space, or an expired one) is indistinguishable from a missing one.
+  if (!task || task.project_id !== projectId || typeof task.session_id !== "string") return c.json({ error_code: "not_found" }, 404);
+
+  let outcome: "stopped" | "already_terminal" | "uncertain";
+  let detail: string;
+  if (task.status === "complete" || task.status === "failed") {
+    outcome = "already_terminal"; detail = `Task was already ${task.status}.`;
+  } else {
+    outcome = "uncertain"; detail = "The stop could not be confirmed.";
+    try {
+      const response = await Promise.race([
+        cancelRunInAgentDO(c.env, tenantId, task.session_id, taskId, c.get("requestId")),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("task_stop_timeout")), TASK_STOP_AGENT_TIMEOUT_MS)),
+      ]);
+      const result = response.ok ? await response.json<{ status?: string }>().catch(() => null) : null;
+      if (result?.status === "cancelling" || result?.status === "cancelled") { outcome = "stopped"; detail = `The run reported ${result.status}.`; }
+      else detail = `The run did not confirm the stop (HTTP ${response.status}).`;
+    } catch (error) {
+      detail = error instanceof Error && error.message === "task_stop_timeout" ? "The run did not answer in time." : "The run could not be reached.";
+    }
+  }
+  const receiptResponse = await stub.fetch(`http://task-do/tasks/${encodeURIComponent(taskId)}/control-receipts`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "stop", requested_by: userId, outcome, detail }),
+  });
+  const saved = receiptResponse.ok ? await receiptResponse.json<{ receipt?: unknown; task?: { status?: string } }>().catch(() => null) : null;
+  if (!saved?.receipt) return c.json({ error_code: "task_stop_receipt_unavailable", outcome }, 502);
+  return c.json({ task_id: taskId, project_id: projectId, outcome, status: saved.task?.status ?? task.status, receipt: saved.receipt });
 });
 
 // Internal route: AgentTaskWorkflow calls this to execute the agent synchronously.

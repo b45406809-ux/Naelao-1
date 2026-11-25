@@ -288,7 +288,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** Shell typecheck passes (rule 3).
 - **Result:** Activation review shows one role-to-subspace select per declared role ("Don't map" default) and sends `subspace_role_bindings`; department page lists "Suggested department links" with Approve/Dismiss and the required copy. Also added router allowlist entries for `subspace-blackboard/resource` and `subspace-route-proposals(/decide)` so product-session users reach the MS-02/MS-05 routes (router tests 99/99). Shell typecheck error count unchanged (142 before and after; no errors in touched files). Local evidence only.
 
-### - [ ] MS-07 — Stop a Project task (owner/admin) with a durable receipt
+### - [x] MS-07 — Stop a Project task (owner/admin) with a durable receipt
 
 - **Queue:** item 2, APW06 "Project task pause/cancel controls" (stop only). **Model:** Sonnet. **Decision:** D4.
 - **Start here:**
@@ -321,6 +321,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
   - an AgentDO failure → `uncertain` and the TaskDO status is unchanged;
   - `WorkflowRunDO.cancel` is never invoked (spy on it).
 - **Done:** focused tests and Agents typecheck pass.
+- **Result:** landed in the MS-07 commit (see git log); `project-task-stop.test.ts` 10/10 and router task-stop routing 2/2, Agents typecheck clean; full Agents suite 1971 pass / 3 pre-existing failures (email-ocr-settings-route, telnyx-webhook, scheduled-job-dispatch), router 162 pass / 1 pre-existing (preferred-language). Receipt is `latest_control_receipt` on `GET /spaces/:spaceId/tasks/:taskId`; the stop and the conversation stop share `cancelRunInAgentDO`.
 
 ### - [ ] MS-08 — Shell: Stop button on Project task detail
 
