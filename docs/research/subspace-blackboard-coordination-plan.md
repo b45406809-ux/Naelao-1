@@ -194,3 +194,20 @@ Agents typechecks and `git diff --check` pass. Local only; no deployment or live
 **Next implementation action:** inspect signed blueprint declarations, activation and review flows.
 Resolve only unambiguous symbolic department roles to current logical subspace IDs, stage proposed
 routes inactive, and require an explicit owner approval before creating an active route.
+
+**SBB03.3 source audit — 2026-11-25:** The signed `SpaceBlueprint` currently declares projects,
+assistant settings, coordination defaults, extension requirements and optional `businessRoles`.
+There is no department/subspace-role or handoff declaration. `businessRoles` are validated
+employee-role/resource proposals (`packages/agent-sdk/src/blueprint-business-roles.ts`); they do
+not identify organizational subspaces. `instantiateBlueprint` validates and creates project
+artifacts, and SpaceDO activation replays that installation contract. The human owner activation
+page reviews setup, extension requirements and selected coordination defaults, but it has no
+symbolic-role-to-active-child mapping or route-approval inputs. The only supported route owner
+control today is explicit source/target child selection on the department page. Therefore a signed
+template cannot be safely resolved into a route proposal yet: adding a bare role ID would leave the
+real subspace binding ambiguous. Resume SBB03.3 once a symbolic-role schema and owner mapping/review
+input exists across authoring, preview and activation. Template declarations alone must not grant.
+
+**Next implementation action:** implement SBB03.4, validating a bounded recipient set of existing
+active directed routes as one unit before accepting any multi-recipient message. Keep recipient
+copies independently private, retry-safe and revocation-aware.
