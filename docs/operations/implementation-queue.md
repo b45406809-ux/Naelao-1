@@ -1188,6 +1188,11 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   failures delete their un-dispatched claim so corrected attempts can retry; failures after the
   provider call begins remain indeterminate. Concurrent duplicate and distinct-key cap tests pass
   within the AgentMail 27/27 suite; Agents typecheck and diff hygiene pass.
+- [x] **CB06 local control slice — owner-visible reconciliation state.** The scoped AgentMail
+  connection status now reports an indeterminate-send count and a reconciliation-required flag,
+  without exposing provider inbox IDs, payloads, idempotency hashes or credentials. A local fixture
+  verifies the signal. AgentMail plus erasure suites pass 28/28, Agents typecheck and diff hygiene
+  pass. This surfaces the blocker; it does not resolve the provider outcome.
 - [ ] **CB06 provider/live acceptance.** With separately authorized disposable AgentMail credentials,
   verify temporary-key expiry/revocation, provider idempotency, regional support, billing and
   callback/revocation behavior. Keep deployment separate and gated by its own authorization.
@@ -1199,11 +1204,11 @@ The timeout replay and policy-change race regressions pass; AgentMail plus scope
 promises replay of a completed send, but no live behavior has been accepted. CB04 temporary-key
 expiry/revocation, region, parent permission and billing acceptance also remain open. AgentPort has
 no atomic grant permit spanning provider dispatch, leaving a residual cross-system revocation race.
-**Exact next action:** review the durable `indeterminate` send recovery path for any independent
-local reconciliation or operator-visible state that can be implemented without inventing provider
-semantics. Cross-check CB06's full plan requirements for approval, budget, billing, callback and
-recovery integration; implement the next local-ready gap and keep live provider acceptance and
-deployment separate.
+**Exact next action:** finish the CB06 source pass for approval, budget, billing, action audit and
+operation recovery, marking each as locally integrated or naming its exact missing policy/source.
+For indeterminate sends, the owner status now surfaces a reconciliation-required count, but no
+provider lookup by idempotency key is documented. Keep any effect resolution blocked until a
+verified reconciliation contract exists; keep live provider acceptance and deployment separate.
 
 ## Ordered plan list
 

@@ -107,11 +107,12 @@ export async function getAssistantAgentMailStatus(env:AgentsEnv,scope:Communicat
   const rows=await env.PLATFORM_DB.prepare(`SELECT a.id,a.mode,a.email_address,a.status,a.activated_at,a.next_billing_at,
       (SELECT COUNT(*) FROM assistant_agentmail_event_receipts e WHERE e.account_id=a.id AND e.status='queued') AS received_count,
       (SELECT COUNT(*) FROM assistant_agentmail_sends s WHERE s.connection_id=a.id AND s.status='sent') AS sent_count,
+      (SELECT COUNT(*) FROM assistant_agentmail_sends s WHERE s.connection_id=a.id AND s.status='indeterminate') AS indeterminate_send_count,
       (SELECT MAX(value) FROM (SELECT MAX(e.created_at) AS value FROM assistant_agentmail_event_receipts e WHERE e.account_id=a.id AND e.status='queued' UNION ALL SELECT MAX(s.updated_at) AS value FROM assistant_agentmail_sends s WHERE s.connection_id=a.id AND s.status='sent')) AS last_activity_at
     FROM assistant_agentmail_accounts a WHERE tenant_id=? AND space_id=? AND project_id IS ?
       AND (a.mode='naelao_managed' OR a.owner_user_id=?) ORDER BY created_at DESC LIMIT 20`)
     .bind(scope.tenantId,scope.spaceId,scope.projectId??null,scope.userId)
-    .all<{id:string;mode:string;email_address:string;status:string;activated_at:string|null;next_billing_at:string|null;received_count:number;sent_count:number;last_activity_at:string|null}>();
+    .all<{id:string;mode:string;email_address:string;status:string;activated_at:string|null;next_billing_at:string|null;received_count:number;sent_count:number;indeterminate_send_count:number;last_activity_at:string|null}>();
   const routes=await env.PLATFORM_DB.prepare(`SELECT account_id,naelao_agent_id FROM assistant_agentport_event_routes
     WHERE tenant_id=? AND space_id=? AND project_id IS ? AND status='active'`).bind(scope.tenantId,scope.spaceId,scope.projectId??null)
     .all<{account_id:string;naelao_agent_id:string}>();
@@ -126,7 +127,9 @@ export async function getAssistantAgentMailStatus(env:AgentsEnv,scope:Communicat
     .first<{status:string;error_code:string|null;updated_at:string}>();
   return {provider:"agentmail",connections:rows.results.map(row=>({id:row.id,mode:row.mode,address:row.email_address,status:row.status,activatedAt:row.activated_at,nextBillingAt:row.next_billing_at,
     assistantId:assistantByAccount.get(row.id)??null,
-    receivedMessages:row.received_count,sentMessages:row.sent_count,lastActivityAt:row.last_activity_at,activity30d:!!row.last_activity_at&&Date.parse(row.last_activity_at)>=Date.now()-30*86400_000?"active":"idle"})),
+    receivedMessages:row.received_count,sentMessages:row.sent_count,indeterminateSends:row.indeterminate_send_count,
+    deliveryReconciliationRequired:row.indeterminate_send_count>0,lastActivityAt:row.last_activity_at,
+    activity30d:!!row.last_activity_at&&Date.parse(row.last_activity_at)>=Date.now()-30*86400_000?"active":"idle"})),
     ...(managedOperation?{lastManagedOperation:{status:managedOperation.status,errorCode:managedOperation.error_code,updatedAt:managedOperation.updated_at,reconciliationRequired:managedOperation.status==="uncertain"}}:{}),
     ...(latestOperation?.status==="held"?{lastProvisioningFailure:{errorCode:latestOperation.error_code,occurredAt:latestOperation.updated_at}}:{})};
 }

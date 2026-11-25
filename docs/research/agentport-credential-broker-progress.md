@@ -383,3 +383,25 @@ receipt. Verification: AgentMail plus scoped-erasure suites **27/27**, Agents ty
 interface or state transition, and cross-check CB06's plan requirements for approval, budget,
 billing, callback and recovery integration. Do not infer provider send completion from message
 listing; keep live acceptance separate.
+
+## CB06 — Owner-visible send recovery state (2026-11-25)
+
+The owner-scoped AgentMail connection status now includes `indeterminateSends` and
+`deliveryReconciliationRequired`. The aggregate is scoped to each already-selected connection and
+does not expose message content, provider IDs, request hashes or credentials. This gives an owner
+clear notice that a send needs reconciliation while leaving uncertain effects fenced.
+
+A local fixture inserts an indeterminate receipt and verifies the status signal while asserting
+that opaque provider/inbox and idempotency identifiers are not included. Verification: AgentMail
+plus scoped-erasure suites **28/28**, Agents typecheck and `git diff --check` pass. This is local
+fixture evidence only.
+
+The current AgentMail documentation describes retries with the same `Idempotency-Key`, but does not
+document a read-only send lookup by that key. Its documented retry may be safe under its provider
+contract; that behavior has not been live accepted here. The plan explicitly forbids inferring
+completion from message listing. A provider-supported lookup or separately accepted retry procedure
+is required before resolving an `indeterminate` receipt.
+
+**Exact next action:** finish CB06's local source pass for approval, budget, billing, action audit
+and operation recovery. Mark existing host integrations with fixture evidence, or record exact
+missing policies/data contracts. Keep provider outcome resolution and live acceptance separate.

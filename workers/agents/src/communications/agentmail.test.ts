@@ -29,6 +29,19 @@ async function quoteAgentMailProvision(f:ReturnType<typeof fixture>,identity:Awa
 
 describe("AgentMail provider account boundary",()=>{
   afterEach(()=>vi.unstubAllGlobals());
+  it("surfaces unresolved send reconciliation in owner-visible connection status",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,
+      owner_user_id,mode,inbox_id,email_address,status,created_at,updated_at)
+      VALUES('mail-recovery','tenant','space',?,?,'user','naelao_managed','recovery-inbox','recovery@example.test','active',datetime('now'),datetime('now'))`)
+      .bind(identity.id,agentId).run();
+    await f.db.prepare(`INSERT INTO assistant_agentmail_sends(connection_id,idempotency_hash,request_hash,status,first_attempt_at,updated_at)
+      VALUES('mail-recovery','opaque-idempotency-hash','opaque-request-hash','indeterminate',datetime('now'),datetime('now'))`).run();
+    const status=await getAssistantAgentMailStatus(f.env,scope);
+    expect(status.connections).toMatchObject([{id:"mail-recovery",indeterminateSends:1,deliveryReconciliationRequired:true}]);
+    expect(JSON.stringify(status)).not.toContain("recovery-inbox");
+    expect(JSON.stringify(status)).not.toContain("opaque-idempotency-hash");
+  });
   it("reads and idempotently persists documented inbox quantity metrics for an active owner connection",async()=>{
     const f=fixture(),identity=await ensureIdentity(f.env,scope),agentId=await ensureAgentPortAssistantIdentity(f.env,scope);
     await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,
