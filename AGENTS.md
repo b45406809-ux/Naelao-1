@@ -2,10 +2,10 @@
 
 ## Current task
 
-Subspace Blackboard Coordination, SBB02: implement one directed, parent-owned blackboard route
-between the supported logical sibling fixture `dept-a` → `dept-b`. Revalidate the active sibling
-relationship and participant membership on each operation, and keep reply authority explicit.
-SBB01's source audit and fixture selection are recorded in the plan. See [the active queue entry](docs/operations/implementation-queue.md#active-plan--subspace-blackboard-coordination).
+Subspace Blackboard Coordination, SBB03: trace and add explicit owner/assistant/template route
+configuration and revocation, keeping sharing disabled by default. Bind assistant board actions
+to their own subspace identity and current grants. SBB01 source audit and the locally verified
+SBB02 directed route are recorded in the plan. See [the active queue entry](docs/operations/implementation-queue.md#active-plan--subspace-blackboard-coordination).
 
 ## Start or resume
 

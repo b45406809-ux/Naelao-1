@@ -8270,6 +8270,62 @@ app.delete("/spaces/:spaceId/sub-spaces/:subId/members/:userId", async (c) => {
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
+app.post("/spaces/:spaceId/subspace-blackboard/routes", async (c) => {
+  const { spaceId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  let body: { id?: unknown; source_subspace_id?: unknown; target_subspace_id?: unknown; allowed_kinds?: unknown; allow_reply?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8192)); } catch { return c.json({ error_code: "invalid_route" }, 400); }
+  if (!body || typeof body.id !== "string" || typeof body.source_subspace_id !== "string" || typeof body.target_subspace_id !== "string"
+      || !Array.isArray(body.allowed_kinds) || typeof body.allow_reply !== "boolean") return c.json({ error_code: "invalid_route" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const sourceAccess = await authorizeDepartmentMember(stub, userId, body.source_subspace_id, "manage");
+  const targetAccess = await authorizeDepartmentMember(stub, userId, body.target_subspace_id, "manage");
+  if (!sourceAccess.permitted || !targetAccess.permitted) return c.json({ error_code: "route_unavailable" }, 404);
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: userId });
+  return forwardToSpaceDO(stub, `/subspace-blackboard/routes?${query}`, "POST", JSON.stringify({
+    id: body.id, source_subspace_id: body.source_subspace_id, target_subspace_id: body.target_subspace_id,
+    allowed_kinds: body.allowed_kinds, allow_reply: body.allow_reply,
+  }));
+});
+
+app.post("/spaces/:spaceId/subspace-blackboard/routes/:routeId/revoke", async (c) => {
+  const { spaceId, routeId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: userId });
+  return forwardToSpaceDO(stub, `/subspace-blackboard/routes/${encodeURIComponent(routeId)}/revoke?${query}`, "POST", "{}");
+});
+
+app.get("/spaces/:spaceId/sub-spaces/:subId/blackboard", async (c) => {
+  const { spaceId, subId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (!(await authorizeDepartmentMember(stub, userId, subId, "read")).permitted) return c.json({ error_code: "board_unavailable" }, 404);
+  const routeId = c.req.query("route_id") ?? "";
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: userId, route_id: routeId });
+  return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard?${query}`, "GET");
+});
+
+app.post("/spaces/:spaceId/sub-spaces/:subId/blackboard", async (c) => {
+  const { spaceId, subId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  let body: { route_id?: unknown; id?: unknown; kind?: unknown; text?: unknown; reply_to?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8192)); } catch { return c.json({ error_code: "invalid_message" }, 400); }
+  if (!body || typeof body.route_id !== "string" || typeof body.id !== "string" || typeof body.kind !== "string" || typeof body.text !== "string")
+    return c.json({ error_code: "invalid_message" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (!(await authorizeDepartmentMember(stub, userId, subId, "read")).permitted) return c.json({ error_code: "board_unavailable" }, 404);
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: userId });
+  return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard?${query}`, "POST", JSON.stringify({
+    route_id: body.route_id, id: body.id, kind: body.kind, text: body.text,
+    ...(typeof body.reply_to === "string" ? { reply_to: body.reply_to } : {}),
+  }));
+});
+
 app.post("/spaces/:spaceId/projects/:projectId/promote", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const identity = getCallerIdentity(c);

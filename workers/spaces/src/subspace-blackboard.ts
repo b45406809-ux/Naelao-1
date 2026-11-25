@@ -35,6 +35,25 @@ const kinds = new Set<SubspaceBlackboardKind>([
   "finding", "artifact", "question", "blocker", "risk", "completion", "verification",
 ]);
 
+export interface SubspaceHierarchyRow {
+  id: string;
+  parentId: string | null;
+  depth: number;
+  status: string;
+}
+
+/** The caller must load all three rows from the same parent SpaceDO. */
+export function isImmediateActiveSiblingPair(
+  parent: SubspaceHierarchyRow | null,
+  source: SubspaceHierarchyRow | null,
+  target: SubspaceHierarchyRow | null,
+): boolean {
+  return Boolean(parent && source && target && parent.status === "active" && parent.depth === 0
+    && parent.parentId === null && source.id !== target.id && source.status === "active"
+    && target.status === "active" && source.depth === 1 && target.depth === 1
+    && source.parentId === parent.id && target.parentId === parent.id);
+}
+
 export function createSubspaceBlackboardMessage(input: {
   id: unknown;
   kind: unknown;

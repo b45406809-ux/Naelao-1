@@ -104,7 +104,7 @@ can read on demand.
   Space identity, assistant routing, and existing blackboard recipients from host entry to store.
   Record the authoritative immediate-sibling check and the exact permission path for private
   subspaces. Select a supported pair of sibling subspaces for the first fixture.
-- [ ] **Implement one directed route.** Add a host-owned grant and a typed handoff with a visible
+- [x] **Implement one directed route.** Add a host-owned grant and a typed handoff with a visible
   entry on each participant's board. Support a separately permitted linked reply. Verify that
   transport does not require the parent assistant.
 - [ ] **Add owner, assistant and template configuration.** Resolve template role bindings to real
@@ -160,3 +160,17 @@ to the same authoritative parent SpaceDO hierarchy.
 that revalidates both child memberships and active sibling relationship at configuration,
 publish, read and reply. Start with one explicit directed grant for `dept-a` → `dept-b`; keep
 sharing off until the grant is active.
+
+**SBB02 verified checkpoint:** SpaceDO migration 159 adds parent-owned directed route and message
+records. The Spaces Worker derives actor and parent identities from authenticated routing, checks
+management/read access, and forwards only an allowlisted message shape. SpaceDO revalidates active
+immediate siblings and current roles at grant, publish, read and revoke. Messages are limited to
+4,000 characters; one directed reply is permitted only to an earlier source question/blocker; a
+route accepts at most 500 entries and board reads return at most 100. Stable IDs return the prior
+route/message for identical retries and reject changed payload reuse. Revoked routes stop reads.
+The route and board APIs operate through Spaces/SpaceDO; they do not depend on parent-assistant
+relay. The focused helper, DO and worker-route suites pass **8/8**, Spaces typecheck and
+`git diff --check` pass. Evidence is local only; no deployment or live acceptance ran.
+
+**Next task:** add owner/assistant/template route configuration and scoped handoff integration;
+the direct route remains opt-in and no route is created by default.

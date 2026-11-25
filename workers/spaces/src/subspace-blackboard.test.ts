@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSubspaceBlackboardMessage, visibleSubspaceBlackboardMessages, type SubspaceBlackboardMessage, type SubspaceBlackboardRoute } from "./subspace-blackboard.js";
+import { createSubspaceBlackboardMessage, isImmediateActiveSiblingPair, visibleSubspaceBlackboardMessages, type SubspaceBlackboardMessage, type SubspaceBlackboardRoute, type SubspaceHierarchyRow } from "./subspace-blackboard.js";
 
 const route: SubspaceBlackboardRoute = {
   id: "route-sales-research", sourceSubspaceId: "dept-a", targetSubspaceId: "dept-b",
@@ -8,6 +8,17 @@ const route: SubspaceBlackboardRoute = {
 const now = "2026-11-25T12:00:00.000Z";
 
 describe("directed subspace blackboard messages", () => {
+  it("accepts only active immediate children of the resolved root", () => {
+    const root: SubspaceHierarchyRow = { id: "root", parentId: null, depth: 0, status: "active" };
+    const sales: SubspaceHierarchyRow = { id: "dept-a", parentId: "root", depth: 1, status: "active" };
+    const research: SubspaceHierarchyRow = { id: "dept-b", parentId: "root", depth: 1, status: "active" };
+    const other: SubspaceHierarchyRow = { id: "other-dept", parentId: "other-root", depth: 1, status: "active" };
+    expect(isImmediateActiveSiblingPair(root, sales, research)).toBe(true);
+    expect(isImmediateActiveSiblingPair(root, sales, other)).toBe(false);
+    expect(isImmediateActiveSiblingPair(root, sales, { ...research, status: "suspended" })).toBe(false);
+    expect(isImmediateActiveSiblingPair({ ...root, depth: 1 }, sales, research)).toBe(false);
+  });
+
   it("creates source messages and permits one linked target reply", () => {
     const question = createSubspaceBlackboardMessage({ id: "q1", kind: "question", text: "Can you verify this?" }, route, "dept-a", "sales-user", [], now);
     const reply = createSubspaceBlackboardMessage({ id: "r1", kind: "completion", text: "Verified.", replyTo: "q1" }, route, "dept-b", "research-user", [question], now);
