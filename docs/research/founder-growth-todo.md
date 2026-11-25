@@ -95,9 +95,13 @@ they support the workflow.
 
 ## TODO
 
-- [ ] Create the prospect sheet and seed it from multiple permitted public sources. Cluster recent
-  first-hand evidence by workflow and separate confirmed pain from outreach hypotheses.
-- [ ] Hold discovery conversations with founders in the strongest cluster. Record repeated
+- [x] Seed a public evidence worksheet from multiple public channels and cluster first-hand
+  evidence by workflow. The initial evidence and confidence limits are recorded in
+  [Founder Growth public evidence worksheet](founder-growth-evidence.md); no contact data was
+  inferred or collected.
+- [ ] Hold discovery conversations with founders in the strongest cluster. **Blocked** until a
+  founder welcomes a conversation through a permitted route and outreach is separately authorized.
+  Record repeated
   needs, buying signals, current tools and permission requirements.
 - [ ] Select one workflow and write a paid pilot offer with a setup fee, monthly scope and delivery
   metric. Document optional commission terms if the available records support them.

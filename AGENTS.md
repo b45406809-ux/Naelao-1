@@ -1,5 +1,12 @@
 # Naelao implementation instructions
 
+## Current task
+
+Subspace Blackboard Coordination, SBB01: trace current authoritative sibling identities,
+membership, parent Space identity, assistant routing and task-blackboard callers. Record the
+immediate-sibling check, private-subspace permission path and a supported fixture pair before
+implementation. See [the active queue entry](docs/operations/implementation-queue.md#active-plan--subspace-blackboard-coordination).
+
 ## Start or resume
 
 When the user says **start** or **continue** in this repo, run the implementation queue on
