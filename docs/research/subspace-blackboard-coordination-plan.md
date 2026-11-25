@@ -118,7 +118,7 @@ can read on demand.
   recipient views, metadata, and derived counts obey the same permissions. Record production
   acceptance separately from local and staging results.
   - [x] **SBB04.1 — Core route and fan-out privacy locally.** Tests cover tenant-HMAC mismatch, removed members, wrong assistant identity and viewer role, non-siblings, ignored extra payload fields, unsupported kinds, route/message/broadcast ID conflicts, exact duplicate fan-out, all-or-nothing rejection, per-recipient read isolation, revocation and hidden route-list counts. Route discovery filters active immediate sibling pairs in SQL before bounded pagination; route creation caps each participant at 100 active routes. Spaces suites pass **21/21**, Spaces typecheck and `git diff --check` pass. No deployment/live acceptance ran.
-  - [ ] **SBB04.2 — Separately scoped resource links.** Audit `cross_space_grants` and current resource readers. A message link is in scope only if the existing grant path independently reauthorizes the recipient and applies revocation; route membership itself must not create resource access.
+  - [x] **SBB04.2 — Separately scoped resource links.** Source audit found an exact, expiring and revocable `cross_space_grants` capability, plus a Knowledge shared-document reader whose source comment requires a capability check before content fetch. No current caller joins authenticated route-recipient identity, the cross-space capability check, and the content read; accepted-document SpaceDO records have no public Spaces route or Knowledge reader integration. Keep resource links unavailable until a recipient-side resolver binds recipient subspace and current user/assistant identity to the exact target/resource, rechecks capability expiry/revocation at every fetch, and returns content only after authorization. Spaces grant tests pass **6/6**; Knowledge shared-reader tests pass **4/4**.
   - [ ] **SBB04.3 — Live acceptance/deployment.** Tracked separately from local and staging verification; rollout remains unauthorized here.
 
 ## SBB01 source audit — 2026-11-25
@@ -227,5 +227,33 @@ mismatch, sibling and recipient isolation, unsupported message data, exact retri
 fan-out, revocation and stale-route count isolation. Spaces typecheck and `git diff --check` pass.
 This evidence is local only; no deployment or live acceptance ran.
 
-**Next implementation action:** SBB04.2, trace `cross_space_grants` and resource readers to see
-whether handoff links can rely on existing independent authorization and revocation checks.
+## SBB04.2 source audit — 2026-11-25
+
+The Spaces owner route creates an exact `cross_space_grants` capability (resource ID, grantee
+Space, target Space, read/invoke permissions, expiry and revocation). `SpaceDO.checkCrossSpace`
+validates the signed token coordinates and checks the matching row is still unrevoked and
+unexpired. Spaces grant tests pass **6/6**, including exact-resource mismatch, owner-only revoke,
+expiry/permission bounds and immediate denial after revocation.
+
+Knowledge exposes the authenticated internal reader
+`GET /internal/spaces/:spaceId/kb/documents/:documentId/shared` for indexed Space-wide documents.
+Its source comment requires the caller to check the source Space capability first. The read returns
+document content but does not itself receive or validate recipient identity/capability. The only
+call sites found are the Knowledge reader tests; no Spaces, Agents, or other worker caller performs
+capability check followed by content read. Knowledge reader tests pass **4/4**.
+
+SpaceDO also has internal accepted-document record operations, but no public Spaces route forwards
+to them and no Knowledge reader consumes them. The accepted-record query alone does not tie a read
+to current route membership or the grant's live revocation state. Therefore the current pieces
+cannot safely back a message resource link: a route would expose only an identifier, while a
+recipient-side fetch path that revalidates access is absent. Resume when a resolver authenticates
+the recipient subspace and current user/assistant identity, checks the exact target/resource
+capability and its expiry/revocation on every read, and only then asks Knowledge for the content.
+Route membership must never imply resource permission.
+
+**Resume condition:** define how a current user or assistant proves membership in the exact grantee
+subspace, receives or accepts the exact capability, and invokes a recipient-side resolver that
+binds the capability to the route recipient and resource and rechecks expiry/revocation before each
+fetch. No message resource link is exposed before that resolver exists. SBB03.3 separately resumes
+after the signed symbolic subspace-role and owner mapping/review contract spans authoring, preview
+and activation. SBB04.3 live acceptance/deployment remains separately gated.

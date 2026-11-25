@@ -1256,9 +1256,9 @@ ledgers when moving to another plan.
 16. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
 17. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
 18. [ ] **Evidence seeded; discovery blocked.** [Founder Growth TODO](../research/founder-growth-todo.md) · [evidence worksheet](../research/founder-growth-evidence.md). The first-hand evidence seed and workflow cluster are recorded. The next action is a discovery conversation with a founder who welcomes replies; no outreach is authorized and no paid demand is established. Resume when a permitted, welcomed route and separate outreach authorization are available, or an inbound founder starts the conversation.
-19. [ ] **Active; audit scoped resource links and keep template binding blocked on its exact contract.** [Subspace Blackboard Coordination](../research/subspace-blackboard-coordination-plan.md). SBB04.1 core handoff/fan-out privacy, retry and revocation tests are locally verified (Spaces 21/21 plus typecheck). SBB03.3 remains blocked because signed blueprints have no subspace-role or owner binding contract. Next trace current `cross_space_grants` and resource-read callers to see whether a message can carry a reference that is independently reauthorized without broadening access. Live acceptance/deployment stays separately tracked.
+19. [ ] **Paused; no source-only task is ready after SBB04.2 audit.** [Subspace Blackboard Coordination](../research/subspace-blackboard-coordination-plan.md). SBB04.1 privacy checks pass locally (Spaces 21/21 plus typecheck). SBB04.2 found no recipient-side reader joining route-recipient identity with a current exact `cross_space_grants` capability and revocation check; the current grant API also does not provide a recipient-side token acceptance/read flow. Resume resource-link implementation after defining how a current user/assistant proves membership in the exact grantee subspace, receives/accepts the capability and calls a resolver that rechecks expiry/revocation on every fetch. SBB03.3 awaits the signed symbolic-role schema and owner mapping/review contract across authoring, preview and activation. SBB04.3 remains separately gated on authorized live acceptance/deployment.
 
-## Active plan — Subspace Blackboard Coordination
+## Latest plan checkpoint — Subspace Blackboard Coordination
 
 See the [plan](../research/subspace-blackboard-coordination-plan.md).
 
@@ -1270,12 +1270,42 @@ See the [plan](../research/subspace-blackboard-coordination-plan.md).
   - [ ] **SBB03.3 — Resolve template roles to proposed routes.** **Blocked:** the signed `SpaceBlueprint` has no department/subspace-role declarations or route proposals. Its `businessRoles` are employee-role/resource proposals, and `instantiateBlueprint` creates project artifacts. Activation review covers setup, extension requirements and coordination defaults, but accepts no role-to-child-space mapping or route approval. Resume after the symbolic-role binding and owner-review input contract is specified across blueprint authoring, activation preview and activation UI; signed template data must never create active grants.
   - [x] **SBB03.4 — Add bounded multi-recipient updates.** Migration 160 stores the source, sender, canonical recipient routes and payload under a stable broadcast ID. SpaceDO validates 2–10 distinct destination children, every active source route, current sibling pairs, allowed kind, capacity and sender write authority before one transaction writes the broadcast and all per-route message copies. Identical retries return the existing copies; changed recipient/payload reuse conflicts; revocation blocks retries and future reads. Spaces tests pass 19/19, Agents tests 4/4, Router path tests 94/94, Spaces/Agents/Shell typechecks and diff hygiene pass. Local only; no deployment/live acceptance ran.
   - [x] **SBB04.1 — Verify current directed-route and fan-out privacy/lifecycle behavior locally.** The regression suite covers non-siblings, tenant-HMAC mismatch, wrong assistant IDs and roles, removed memberships, ignored undeclared payload fields, invalid message kinds, conflicting route/message/broadcast IDs, exact duplicate fan-out (one copy per route), rejected incomplete fan-out, recipient-to-recipient isolation, route revocation, and hidden stale-route metadata/counts. Focused Spaces suites pass 21/21 and Spaces typecheck passes.
-  - [ ] **SBB04.2 — Audit separately scoped resource links.** Trace whether current `cross_space_grants` can authorize a resource reference attached to a route message without making route membership an implicit resource grant. Add only if the existing path rechecks recipient identity and revocation at read; otherwise record the exact missing contract.
+  - [x] **SBB04.2 — Audit separately scoped resource links.** Source audit found exact, expiring, revocable `cross_space_grants` and a Knowledge shared-document reader, but no caller binds the authenticated route recipient to a capability check and then reads the resource. SpaceDO accepted-document records have no public Spaces route or Knowledge reader integration. Keep message resource links unavailable until a recipient-side resolver binds recipient subspace and user/assistant identity to the exact target/resource, verifies the current capability and revocation at each fetch, and returns content only after that check. Spaces grant tests pass 6/6; Knowledge shared-reader tests pass 4/4. See the SBB04.2 source audit in the plan.
   - [ ] **SBB04.3 — Live acceptance and deployment.** Keep disabled and separately tracked; this local work does not authorize rollout or production data migration.
 
-**Latest checkpoint:** SBB04.1 verifies the core route and fan-out contract locally. It adds coverage for cross-tenant token mismatches, removed members, wrong assistant/role, non-sibling routes, unsupported kinds and fields, ambiguous retries, complete-or-no-write fan-out, separate recipient views, revocation and metadata/count isolation. Listing filters current active sibling routes before its bounded page and route creation caps each participant at 100 active routes. Focused Spaces suites pass **21/21**, Spaces typecheck and `git diff --check` pass. The prior SBB03.4 checkpoint also has Agents tests **4/4**, Router paths **94/94**, and Agents/Shell typechecks. Local only; no deployment/live acceptance ran.
+**Latest checkpoint:** SBB04.2 source audit confirms the exact grant token can be checked against current grant revocation, but no route-message resource consumer authenticates the recipient and performs that check before calling the Knowledge shared-document reader. Accepted-document lookup is only an internal SpaceDO record and is not integrated into a Spaces route or Knowledge content read. Focused cross-space grant tests pass **6/6** and Knowledge shared-reader tests pass **4/4**. Message resource links remain unavailable until a recipient-side resolver binds recipient subspace plus current user/assistant identity, exact target/resource and capability, rechecks expiry/revocation on each fetch, and only then returns resource content. SBB04.1 remains verified (Spaces **21/21**, typecheck and diff check pass). The prior SBB03.4 checkpoint also has Agents tests **4/4**, Router paths **94/94**, and Agents/Shell typechecks. Local only; no deployment/live acceptance ran.
 
-**Next action:** trace `cross_space_grants` and supported resource readers; determine whether an explicit message reference can reuse existing grants and revocation checks without creating access from route membership.
+**Resume action:** after the queue-wide readiness review, resume the first task whose recorded prerequisite changes. For SBB, resolve the recipient capability/token contract before adding resource links, or the signed-template symbolic-role/owner-binding contract before resuming SBB03.3. Keep SBB04.3 live acceptance/deployment separate.
+
+## Final queue readiness review — 2026-11-25 (after SBB04.2 resource-link audit)
+
+I reviewed all 19 unchecked entries in the ordered plan list against their current queue checklists,
+the latest linked owner ledgers, and the current source. The 2026-11-24 dependency table and the
+2026-11-25 CB06 review remain applicable to the other plans: APW/PW need owner-reviewed evidence,
+retention, deadline and reusable-definition contracts or authorized staging receipts; S/U/SPR need
+supported provider, jurisdiction, runtime and Cloudflare acceptance evidence; SC needs durable
+invocation consent and approved caps; K needs deployed mutation/revocation evidence, cache identity
+rules or provider scope/freshness/cleanup evidence; EP/TBR need approved prices/caps, identity and
+grant contracts; P needs its recorded resource, policy, platform-admin, event, accounting or
+artifact-rights contracts; AgentPort/AgentPhone need verified provider terms, APIs, payer/prices,
+regions and lifecycle evidence; WhatsApp needs migration authorization and a configured test
+account; the two prototypes need operator/practitioner-approved scope; Founder Growth needs an
+inbound founder or an authorized, welcomed discovery route. Their existing local implementation and
+verification notes were rechecked and revealed no new independent source-only slice.
+
+For SBB, focused local evidence is current: route/fan-out privacy tests pass **21/21**, cross-space
+grant tests pass **6/6**, and Knowledge shared-reader tests pass **4/4**. The SBB04.2 audit closes
+the source-audit task but identifies a concrete integration prerequisite: no API gives the recipient
+an accepted exact capability and no reader combines proof of current membership in the grantee
+subspace, current user/assistant identity, resource target and an expiry/revocation check before
+returning content. Define that recipient token acceptance and resolver contract before implementing
+resource links. SBB03.3 remains blocked on signed symbolic subspace roles and owner mapping/review
+inputs in authoring, preview and activation. SBB04.3 live acceptance/deployment remains separately
+unauthorized. No local implementation, integration or verification task is ready across the queue.
+
+The queue remains blocked with work open; keep rollout and deployment disabled. `AGENTS.md` has no
+active pointer until one of the listed dependencies changes. On resume, fetch the branch and select
+the first newly ready task from the ordered plan list; do not treat this checkpoint as completion.
 
 ## Queue readiness review — 2026-11-24 (after `4e040d97`)
 
