@@ -48,7 +48,8 @@ describe("task blackboard durable object route", () => {
       { headers: { "x-naelao-tenant-id": "t", "x-naelao-user-id": actor, "x-naelao-internal-token": token } },
     ));
 
-    const owner = await (await get("u")).json() as { goals: Array<{ decisionChangeCandidates?: unknown[] }> };
+    const owner = await (await get("u")).json() as { goals: Array<{ decisionChangeCandidates?: unknown[]; workerOutputConflictCandidates?: unknown[] }> };
+    expect(owner.goals[0]?.workerOutputConflictCandidates).toBeUndefined();
     expect(owner.goals[0]?.decisionChangeCandidates).toEqual([{
       decision, tasks: [
         { id: "api", reportedPaths: ["src/api.ts"] },
