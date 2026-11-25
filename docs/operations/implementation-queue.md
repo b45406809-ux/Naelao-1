@@ -1110,13 +1110,28 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   refresh means minting a replacement with the owner credential. Live expiry enforcement,
   revocation latency, EU endpoint support and billing effects remain provider acceptance items.
   See source links and evidence boundary in the [CB ledger](../research/agentport-credential-broker-progress.md).
+- [x] **CB04 local implementation.** AgentMail operation calls now use a 120-second inbox-scoped
+  key and exactly one permission (`message_read`, `message_send`, or `draft_create`), validate the
+  returned scope/permissions/expiry, and delete the key in `finally`. Bad scope fails closed and
+  still attempts deletion. Parent credentials are not sent on operation requests or returned to
+  callers. The focused AgentMail and erasure suites pass 24/24, Agents typecheck and diff hygiene
+  pass. No provider request was made.
+- [ ] **CB04 provider acceptance.** Confirm a disposable account can create the requested
+  inbox-scoped keys with bounded `expires_at`, that expiry and delete actually invalidate them in
+  US and EU, that the parent grant can manage child keys, and whether key creation changes billing.
+  Resume only with provider sandbox credentials and acceptance evidence; this does not block
+  independent CB05 local contract work.
+- [ ] **CB05 — Unified adapter and developer contract (local).** Audit existing AgentPort provider
+  SDK, manifest publishing, MCP action mapping and extension/template capability declarations.
+  Implement one concrete typed contract or authority-escalation gap with round-trip tests; provider
+  manifests must not mint grants or claim unverified operations.
 
-**Latest checkpoint:** CB03 local erasure and reconnect verification is pushed at `cb62c884`;
-focused suites pass 23/23, Agents typecheck and diff check pass. CB04 source review found the
-AgentMail inbox-scoped API key endpoint, permission whitelist, optional expiry and delete route.
-It narrows a key to one inbox and one host operation; audience/holder binding and live enforcement
-remain unverified. **Exact next action:** implement the operation-scoped, short-lived AgentMail key
-wrapper and local cleanup/permission/expiry fixtures; leave live acceptance separate.
+**Latest checkpoint:** CB04 locally issues a 120-second inbox-scoped AgentMail key with only the
+permission needed by each operation, validates returned scope/permission/expiry, and deletes it
+after dispatch. Local AgentMail and erasure suites pass 24/24, Agents typecheck and diff hygiene
+pass. Live expiry/revocation, regional support, parent permission and billing remain open under
+CB04 provider acceptance. **Exact next action:** inventory SDK/manifest/MCP/capability schema paths
+for CB05 and implement a narrow local round-trip or authority-escalation regression with tests.
 
 ## Ordered plan list
 

@@ -25,12 +25,11 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**CB04 — Assess provider-minted temporary credential feasibility.** Resume from the active
+**CB05 — Define and verify the local unified adapter/developer contract.** Resume from the active
 checklist in [implementation-queue.md](docs/operations/implementation-queue.md#active-plan--agentport-credential-broker).
-Check official API documentation for provider candidates already reachable in the repository and
-record exact evidence for scope, audience/holder, TTL, refresh, revocation, regions and payer. Only
-implement a provider flow if it reduces authority under a bounded, verifiable contract; otherwise
-record the dependency and continue with independent CB05 local contract work.
+Audit existing AgentPort provider SDK, manifest publishing, MCP action mapping, and extension/template
+capability declarations. Implement one concrete typed-contract or authority-escalation gap with
+round-trip tests; keep provider acceptance and deployment separately tracked.
 
 ## Save progress inside each task
 

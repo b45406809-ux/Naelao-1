@@ -135,3 +135,25 @@ AgentMail operation path, request only the permission required by that operation
 expiry, delete the issued key after dispatch, and test scope/permission/expiry validation, cleanup,
 and key non-disclosure. Keep live expiry, revocation, region and billing behavior open for provider
 acceptance.
+
+### CB04 local implementation slice
+
+The existing AgentMail host operation now requests one inbox-scoped child API key immediately
+before provider dispatch. It requests only `message_read`, `message_send`, or `draft_create` for
+the operation, sets expiry to 120 seconds, and uses the child only for that provider request. The
+response must contain the expected inbox ID, key ID and secret, the requested permission without
+any other enabled permission, and a returned expiry no later than the requested bound. The host
+then deletes the child key with the parent credential in `finally`; unconfirmed deletion fails
+closed. The parent key remains encrypted/host-held and is used only to create and delete operation
+keys. The temporary credential is never returned in the tool result.
+
+Local fixtures prove inbox/permission/expiry request shape, child-key dispatch, delete after
+dispatch, deletion after a wrong-inbox response, and that provider operations no longer send the
+parent credential. `agentmail.test.ts` plus `erasure-product-scope.test.ts` pass **24/24**, Agents
+typecheck and `git diff --check` pass. These fixtures do not establish AgentMail's live expiry or
+revocation enforcement, EU availability, or billing behavior. Parent credentials must hold the
+provider permission to create scoped keys; there is no broader-key fallback. No provider request
+was made.
+
+**Exact next action:** begin CB05 by inventorying existing AgentPort provider SDK and MCP action
+contracts and choose a narrow local schema round-trip/authority-escalation gap to implement.

@@ -115,8 +115,14 @@ describe("AgentMail provider account boundary",()=>{
       VALUES(?,?,?,?,?,?,'other','user_connected','foreign-inbox','private@example.test','active',datetime('now','+2 seconds'),datetime('now','+2 seconds'))`)
       .bind("mail-foreign","tenant","space",identity.id,agentId,"account-foreign").run();
     (f.env as unknown as {AGENTMAIL_API_KEY:string}).AGENTMAIL_API_KEY="provider-key-for-test";
-    const providerFetch=vi.fn(async(input:RequestInfo|URL)=>{
-      const url=new URL(String(input));
+    const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const request=new Request(input,init),url=new URL(request.url);
+      if(url.pathname.endsWith("/api-keys")&&request.method==="POST"){
+        const body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        return Response.json({api_key_id:`api_key_${url.pathname.includes("inbox-a")?"a":"b"}`,api_key:"temporary-agentmail-key-123456",
+          inbox_id:url.pathname.includes("inbox-a")?"inbox-a":"inbox-b",expires_at:body.expires_at,permissions:body.permissions});
+      }
+      if(url.pathname.includes("/api-keys/")&&request.method==="DELETE")return new Response(null,{status:204});
       return Response.json({messages:[{message_id:url.pathname.includes("inbox-a")?"message-a":"message-b"}]});
     });
     vi.stubGlobal("fetch",providerFetch);
@@ -127,12 +133,13 @@ describe("AgentMail provider account boundary",()=>{
       body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.inbox",connection_id:"mail-a",args:{limit:10}})},f.env);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({result:{messages:[{message_id:"message-a"}]}});
-    expect(new URL(String(providerFetch.mock.calls[0]?.[0])).pathname).toBe("/v0/inboxes/inbox-a/messages");
+    expect(providerFetch.mock.calls.map(([input,init])=>new Request(input,init))
+      .some(request=>new URL(request.url).pathname==="/v0/inboxes/inbox-a/messages")).toBe(true);
     const denied=await app.request("/internal/assistant-communications",{method:"POST",headers,
       body:JSON.stringify({spaceId:"space",projectId:null,action:"agentmail-operation",operation:"agentmail.inbox",connection_id:"mail-foreign",args:{limit:10}})},f.env);
     expect(denied.status).toBe(502);
     expect(await denied.json()).toMatchObject({error_code:"agentmail_account_not_connected"});
-    expect(providerFetch).toHaveBeenCalledOnce();
+    expect(providerFetch.mock.calls.filter(([input])=>new URL(String(input)).pathname.endsWith("/messages")).length).toBe(1);
     expect((await getAssistantAgentMailStatus(f.env,scope)).connections.map((connection)=>connection.address))
       .not.toContain("private@example.test");
   });
@@ -164,8 +171,20 @@ describe("AgentMail provider account boundary",()=>{
     await f.db.prepare("UPDATE assistant_communication_identities SET autonomy_json=? WHERE id=?")
       .bind(JSON.stringify({mode:"standing",recipients:["allowed@example.test"],dailySendLimit:1}),identity.id).run();
     (f.env as unknown as {AGENTMAIL_API_KEY:string}).AGENTMAIL_API_KEY="provider-key-for-test";
-    const providerFetch=vi.fn(async(_input:RequestInfo|URL,init?:RequestInit)=>{
-      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer provider-key-for-test");
+    let tempKeyCounter=0;
+    const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const request=new Request(input,init),url=new URL(request.url);
+      if(url.pathname.endsWith("/api-keys")&&request.method==="POST"){
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer provider-key-for-test");
+        const body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        return Response.json({api_key_id:`api_key_send_${++tempKeyCounter}`,api_key:"temporary-send-key-123456",inbox_id:"inbox-send",
+          expires_at:body.expires_at,permissions:body.permissions});
+      }
+      if(url.pathname.includes("/api-keys/")&&request.method==="DELETE"){
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer provider-key-for-test");
+        return new Response(null,{status:204});
+      }
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer temporary-send-key-123456");
       return Response.json({message_id:"provider-message-1"});
     });
     vi.stubGlobal("fetch",providerFetch);
@@ -181,7 +200,7 @@ describe("AgentMail provider account boundary",()=>{
     const replay=await request("allowed@example.test","send-1");
     expect(replay.status).toBe(200);
     expect(await replay.json()).toMatchObject({result:{message_id:"provider-message-1",idempotent:true}});
-    expect(providerFetch).toHaveBeenCalledOnce();
+    expect(providerFetch.mock.calls.filter(([input])=>new URL(String(input)).pathname.endsWith("/messages/send")).length).toBe(1);
     const recipientDenied=await request("other@example.test","send-2");
     expect(recipientDenied.status).toBe(403);
     expect(await recipientDenied.json()).toMatchObject({error_code:"communication_recipient_not_approved"});
@@ -193,7 +212,8 @@ describe("AgentMail provider account boundary",()=>{
     const approvalDenied=await request("allowed@example.test","send-4");
     expect(approvalDenied.status).toBe(409);
     expect(await approvalDenied.json()).toMatchObject({error_code:"communication_approval_required"});
-    expect(providerFetch).toHaveBeenCalledOnce();
+    expect(providerFetch.mock.calls.filter(([input])=>new URL(String(input)).pathname.endsWith("/messages/send")).length).toBe(1);
+    expect(providerFetch.mock.calls.filter(([input])=>new URL(String(input)).pathname.endsWith("/api-keys")).length).toBe(1);
   });
   it("revokes and scrubs scoped AgentMail credentials before erasing the assistant identity",async()=>{
     const f=fixture(),identity=await ensureIdentity(f.env,scope);
@@ -473,9 +493,18 @@ describe("AgentMail provider account boundary",()=>{
   it("validates and encrypts a user connected scoped inbox credential, then authorizes provider reads",async()=>{
     const f=fixture();
     const identity=await ensureIdentity(f.env,scope);
+    let temporaryKeyNumber=0;
     const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
       const request=new Request(input,init);
-      if(new URL(request.url).pathname.endsWith("/inboxes/inbox-1"))return Response.json({inbox_id:"inbox-1",email:"assistant@example.test"});
+      const path=new URL(request.url).pathname;
+      if(path.endsWith("/api-keys")&&request.method==="POST"){
+        const body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        const number=++temporaryKeyNumber;
+        return Response.json({api_key_id:`api_key_temp_${number}`,api_key:`agentmail-temporary-key-${number}-123456`,inbox_id:"inbox-1",
+          expires_at:body.expires_at,permissions:body.permissions});
+      }
+      if(path.includes("/api-keys/api_key_temp_")&&request.method==="DELETE")return new Response(null,{status:204});
+      if(path.endsWith("/inboxes/inbox-1"))return Response.json({inbox_id:"inbox-1",email:"assistant@example.test"});
       if(new URL(request.url).pathname.endsWith("/webhooks"))return Response.json({webhook_id:"agentmail-hook",secret:"whsec_dGVzdA=="});
       if(new URL(request.url).pathname.endsWith("/messages/search"))return Response.json({messages:[]});
       if(new URL(request.url).pathname.endsWith("/messages"))return Response.json({messages:[{message_id:"message-1",text:"provider content"}]});
@@ -498,11 +527,15 @@ describe("AgentMail provider account boundary",()=>{
     expect(await getAssistantAgentMailStatus(f.env,scope)).toMatchObject({connections:[{assistantId:null,receivedMessages:0,sentMessages:0,activity30d:"idle"}]});
     const response=await callAgentMailTool(f.env,scope,"agentmail.inbox",{limit:10});
     expect(response).toEqual({messages:[{message_id:"message-1",text:"provider content"}]});
-    const call=providerFetch.mock.calls.at(-1)!;
-    expect(new Headers(call[1]?.headers).get("authorization")).toBe("Bearer agentmail-scoped-secret-123456");
+    const firstMessageCall=providerFetch.mock.calls.map(([input,init])=>({request:new Request(input,init),init}))
+      .find(({request})=>new URL(request.url).pathname.endsWith("/messages"))!;
+    expect(new Headers(firstMessageCall.init?.headers).get("authorization")).toBe("Bearer agentmail-temporary-key-1-123456");
+    expect(new Headers(firstMessageCall.init?.headers).get("authorization")).not.toBe("Bearer agentmail-scoped-secret-123456");
     await callAgentMailTool(f.env,scope,"agentmail.inbox",{limit:5},connected.connectionId);
-    expect(new URL(String(providerFetch.mock.calls.at(-1)?.[0])).pathname).toBe("/v0/inboxes/inbox-1/messages");
-    expect(new URL(String(providerFetch.mock.calls.at(-1)?.[0])).origin).toBe("https://api.agentmail.eu");
+    const secondMessageCall=providerFetch.mock.calls.map(([input,init])=>new Request(input,init))
+      .filter(request=>new URL(request.url).pathname.endsWith("/messages")).at(-1)!;
+    expect(new URL(secondMessageCall.url).pathname).toBe("/v0/inboxes/inbox-1/messages");
+    expect(new URL(secondMessageCall.url).origin).toBe("https://api.agentmail.eu");
     await callAgentMailTool(f.env,scope,"agentmail.search",{query:"private sender text"},connected.connectionId);
     const authorizationRequest=f.env.AGENTPORT_WORKER.fetch.mock.calls.map(([request])=>request as Request)
       .filter(request=>new URL(request.url).pathname.endsWith("/actions/authorize")).at(-1);
@@ -545,6 +578,12 @@ describe("AgentMail provider account boundary",()=>{
     const oldKey="agentmail-old-key-123456",newKey="agentmail-new-key-123456";
     const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
       const request=new Request(input,init),path=new URL(request.url).pathname;
+      if(path.endsWith("/api-keys")&&request.method==="POST"){
+        const body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        return Response.json({api_key_id:"api_key_temp",api_key:"agentmail-temporary-key-123456",inbox_id:"inbox-rotate",
+          expires_at:body.expires_at,permissions:body.permissions});
+      }
+      if(path.endsWith("/api-keys/api_key_temp")&&request.method==="DELETE")return new Response(null,{status:204});
       if(path.endsWith("/inboxes/inbox-rotate"))return Response.json({inbox_id:"inbox-rotate",email:"rotate@example.test"});
       if(path.endsWith("/webhooks"))return Response.json({webhook_id:"rotate-hook",secret:"rotate-webhook-secret"});
       if(path.endsWith("/messages"))return Response.json({messages:[{message_id:"after-rotation"}]});
@@ -566,9 +605,43 @@ describe("AgentMail provider account boundary",()=>{
     expect(result).toEqual({messages:[{message_id:"after-rotation"}]});
     const messageRequest=providerFetch.mock.calls.map(([input,init])=>new Request(input,init))
       .find(request=>new URL(request.url).pathname.endsWith("/messages"));
-    expect(messageRequest&&new Headers(messageRequest.headers).get("authorization")).toBe(`Bearer ${newKey}`);
+    expect(messageRequest&&new Headers(messageRequest.headers).get("authorization")).toBe("Bearer agentmail-temporary-key-123456");
+    expect(messageRequest&&new Headers(messageRequest.headers).get("authorization")).not.toBe(`Bearer ${newKey}`);
+    const keyCreate=providerFetch.mock.calls.map(([input,init])=>new Request(input,init))
+      .find(request=>new URL(request.url).pathname.endsWith("/api-keys")&&request.method==="POST")!;
+    const keyCreateBody=await keyCreate.clone().json() as {permissions:Record<string,boolean>;expires_at:string};
+    expect(new URL(keyCreate.url).pathname).toBe("/v0/inboxes/inbox-rotate/api-keys");
+    expect(keyCreateBody.permissions).toEqual({message_read:true});
+    expect(Date.parse(keyCreateBody.expires_at)-Date.now()).toBeGreaterThan(0);
+    expect(Date.parse(keyCreateBody.expires_at)-Date.now()).toBeLessThanOrEqual(120_000);
+    expect(providerFetch.mock.calls.some(([input,init])=>new URL(String(input)).pathname.endsWith("/api-keys/api_key_temp")
+      &&init?.method==="DELETE")).toBe(true);
     expect(JSON.stringify(result)).not.toContain(oldKey);
     expect(JSON.stringify(result)).not.toContain(newKey);
+  });
+  it("rejects a temporary key returned for another inbox and deletes its key id",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope);
+    let operationCalls=0,deleteCalls=0;
+    const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const request=new Request(input,init),path=new URL(request.url).pathname;
+      if(path.endsWith("/inboxes/inbox-scope-check"))return Response.json({inbox_id:"inbox-scope-check",email:"scope@example.test"});
+      if(path.endsWith("/webhooks"))return Response.json({webhook_id:"scope-hook",secret:"scope-webhook-secret"});
+      if(path.endsWith("/api-keys")&&request.method==="POST"){
+        const body=await request.json() as {permissions:Record<string,boolean>;expires_at:string};
+        return Response.json({api_key_id:"api_key_wrong_scope",api_key:"agentmail-temp-wrong-scope-123456",inbox_id:"other-inbox",
+          expires_at:body.expires_at,permissions:body.permissions});
+      }
+      if(path.endsWith("/api-keys/api_key_wrong_scope")&&request.method==="DELETE"){
+        deleteCalls++;return new Response(null,{status:204});
+      }
+      operationCalls++;return Response.json({messages:[]});
+    });
+    vi.stubGlobal("fetch",providerFetch);
+    const connected=await connectUserAgentMail(f.env,scope,identity,{inboxId:"inbox-scope-check",apiKey:"agentmail-parent-scope-check-123456"});
+    await expect(callAgentMailTool(f.env,scope,"agentmail.inbox",{limit:1},connected.connectionId))
+      .rejects.toThrow("agentmail_temporary_credential_contract_invalid");
+    expect(operationCalls).toBe(0);
+    expect(deleteCalls).toBe(1);
   });
   it("provisions one managed inbox per distinct assistant and charges 300 credits once",async()=>{
     const f=fixture();const identity=await ensureIdentity(f.env,scope);const billingRequests:Array<{path:string;body:Record<string,unknown>}>=[];

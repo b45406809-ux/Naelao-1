@@ -54,6 +54,36 @@ async function provider(env:AgentsEnv,key:string,path:string,init:RequestInit={}
   if(!response.ok)throw new Error(`agentmail_provider_${response.status}`);
   return payload;
 }
+async function withTemporaryInboxKey<T>(env:AgentsEnv,parentKey:string,inboxId:string,region:string|null|undefined,
+  permission:string,operation:(key:string)=>Promise<T>):Promise<T>{
+  const expiresAtMs=Date.now()+120_000,expiresAt=new Date(expiresAtMs).toISOString();
+  const path=`/inboxes/${encodeURIComponent(inboxId)}/api-keys`;
+  const created=await provider(env,parentKey,path,{method:"POST",body:JSON.stringify({
+    name:`naelao-operation-${crypto.randomUUID()}`,expires_at:expiresAt,permissions:{[permission]:true},
+  })},region);
+  const keyId=typeof created.api_key_id==="string"?created.api_key_id:"";
+  const temporaryKey=typeof created.api_key==="string"?created.api_key:"";
+  const returnedPermissions=created.permissions&&typeof created.permissions==="object"&&!Array.isArray(created.permissions)
+    ?created.permissions as Record<string,unknown>:{};
+  const actualExpiry=typeof created.expires_at==="string"?Date.parse(created.expires_at):NaN;
+  try{
+    if(!/^[A-Za-z0-9._:-]{1,200}$/.test(keyId)||temporaryKey.length<16||temporaryKey.length>4096
+      ||created.inbox_id!==inboxId||!Number.isFinite(actualExpiry)||actualExpiry<=Date.now()||actualExpiry>expiresAtMs+5_000
+      ||returnedPermissions[permission]!==true
+      ||Object.entries(returnedPermissions).some(([name,value])=>value===true&&name!==permission))
+      throw new Error("agentmail_temporary_credential_contract_invalid");
+    return await operation(temporaryKey);
+  }finally{
+    if(keyId.length>0&&keyId.length<=200){
+      const selected=providerRegion(region),base=selected==="eu"?(env.AGENTMAIL_API_BASE_URL_EU??EU_API):(env.AGENTMAIL_API_BASE_URL??API);
+      let response:Response;
+      try{
+        response=await fetch(`${base}${path}/${encodeURIComponent(keyId)}`,{method:"DELETE",headers:{authorization:`Bearer ${parentKey}`,accept:"application/json"},signal:AbortSignal.timeout(5_000)});
+      }catch{throw new Error("agentmail_temporary_credential_revoke_unconfirmed");}
+      if(response.status!==204)throw new Error("agentmail_temporary_credential_revoke_unconfirmed");
+    }
+  }
+}
 async function agentPort(env:AgentsEnv,tenantId:string,path:string,method="GET",body?:unknown){
   const client=new AgentPortServiceClient({baseUrl:"https://agentport.internal/internal/agentport",headers:{"content-type":"application/json","x-agentport-tenant-id":tenantId,"x-agentport-actor-role":"client_system","x-agentport-actor-id":tenantId,"x-agentport-internal-token":await mintInternalToken(env.PLATFORM_SECRET,tenantId)},fetch:(input,init)=>env.AGENTPORT_WORKER.fetch(new Request(input,init))});
   const response=await client.request(path,{method,...(body===undefined?{}:{body:JSON.stringify(body)})});
@@ -1017,7 +1047,8 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
     await env.PLATFORM_DB.prepare(`INSERT INTO assistant_agentmail_sends(connection_id,idempotency_hash,request_hash,status,first_attempt_at,updated_at) VALUES(?,?,?,'sending',?,?)
       ON CONFLICT(connection_id,idempotency_hash) DO UPDATE SET status='sending',updated_at=excluded.updated_at`).bind(account.id,idemHash,requestHash,at,at).run();
     try{
-      const sent=await provider(env,key,call.path,{method:call.method,headers:{"Idempotency-Key":idem},body:JSON.stringify(payload)},account.provider_region);
+      const sent=await withTemporaryInboxKey(env,key,account.inbox_id,account.provider_region,"message_send",temporaryKey=>
+        provider(env,temporaryKey,call.path,{method:call.method,headers:{"Idempotency-Key":idem},body:JSON.stringify(payload)},account.provider_region));
       await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='sent',provider_message_id=?,updated_at=? WHERE connection_id=? AND idempotency_hash=?")
         .bind(typeof sent.message_id==="string"?sent.message_id:null,new Date().toISOString(),account.id,idemHash).run();
       return sent;
@@ -1026,7 +1057,9 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
       throw error;
     }
   }
-  return provider(env,key,call.path,{method:call.method,...(call.body===undefined?{}:{body:JSON.stringify(call.body)})},account.provider_region);
+  const permission=action==="agentmail.draft"?"draft_create":"message_read";
+  return withTemporaryInboxKey(env,key,account.inbox_id,account.provider_region,permission,temporaryKey=>
+    provider(env,temporaryKey,call.path,{method:call.method,...(call.body===undefined?{}:{body:JSON.stringify(call.body)})},account.provider_region));
 }
 function buildQuery(args:Record<string,unknown>){const params=new URLSearchParams();for(const [key,value]of Object.entries(args))if(typeof value==="string"||typeof value==="number"||typeof value==="boolean")params.set(key,value.toString());const query=params.toString();return query?`?${query}`:"";}
 async function hashString(value:string){const bytes=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value)));return [...bytes].map(x=>x.toString(16).padStart(2,"0")).join("");}
