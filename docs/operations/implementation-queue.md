@@ -1256,6 +1256,7 @@ ledgers when moving to another plan.
 16. [ ] **Paused; fictional static demo source is complete; operator validation is required for further workflow work.** [Commercial cleaning Space template](../research/commercial-cleaning-space-template-plan.md) · [progress ledger](../research/commercial-cleaning-space-template-progress.md)
 17. [ ] **Paused; the private static Blueprint is complete; a functional workflow awaits approved scope and practitioner validation.** [Corporate recovery claims prototype](../research/corporate-recovery-claims-prototype-plan.md) · [progress ledger](../research/corporate-recovery-claims-prototype-progress.md)
 18. [ ] **Queued for product discovery.** [Founder Growth TODO](../research/founder-growth-todo.md). First action is to collect recent first-hand evidence from multiple founder channels and group it by recurring workflow. Use that evidence to pick a paid managed pilot in a founder-owned Space before packaging a template.
+19. [ ] **Queued.** [Subspace Blackboard Coordination](../research/subspace-blackboard-coordination-plan.md). Each subspace can send, receive and reply to authorized sibling updates on its own board. First action: trace authoritative sibling identities, membership and existing blackboard callers before implementing one directed handoff.
 
 ## Queue readiness review — 2026-11-24 (after `4e040d97`)
 
