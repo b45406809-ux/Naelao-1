@@ -25,11 +25,12 @@ session, or a specific blocker leaves no ready work.
 
 ## Current task
 
-**CB03 — Verify AgentMail credential lifecycle and leakage boundaries.** Resume from the active
+**CB04 — Assess provider-minted temporary credential feasibility.** Resume from the active
 checklist in [implementation-queue.md](docs/operations/implementation-queue.md#active-plan--agentport-credential-broker).
-Trace encryption/key derivation, reconnection/rotation, unlink and tenant/user erasure. Add local
-verification for secret deletion and result/log/SDK leakage boundaries; keep upstream provider
-deletion/rotation claims blocked on provider evidence.
+Check official API documentation for provider candidates already reachable in the repository and
+record exact evidence for scope, audience/holder, TTL, refresh, revocation, regions and payer. Only
+implement a provider flow if it reduces authority under a bounded, verifiable contract; otherwise
+record the dependency and continue with independent CB05 local contract work.
 
 ## Save progress inside each task
 

@@ -5,6 +5,7 @@ import type { AgentsEnv } from "../index.js";
 import { connectUserAgentMail,callAgentMailTool,createManagedAgentMailQuote,provisionManagedAgentMail,getAssistantAgentMailStatus,getAgentPortThreadAssistantRoutes,receiveAgentPortNotification,sweepManagedAgentMailRentals,sweepManagedAgentMailReconciliations,stopManagedAgentMailRenewal,revokeAgentPortOwnerLink,setAgentPortEventAssistant,setAgentPortThreadAssistant } from "./agentmail.js";
 import { ensureIdentity,ensureAgentPortAssistantIdentity } from "./core.js";
 import { registerCommunicationRoutes } from "./routes.js";
+import { eraseCommunicationIdentities } from "./erasure.js";
 import { fixture,scope } from "../../../../tests/fixtures/assistant-communications.js";
 
 async function verifyTestAgentMailCapability(f:ReturnType<typeof fixture>){
@@ -193,6 +194,53 @@ describe("AgentMail provider account boundary",()=>{
     expect(approvalDenied.status).toBe(409);
     expect(await approvalDenied.json()).toMatchObject({error_code:"communication_approval_required"});
     expect(providerFetch).toHaveBeenCalledOnce();
+  });
+  it("revokes and scrubs scoped AgentMail credentials before erasing the assistant identity",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope);
+    vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL)=>{
+      const path=new URL(String(input)).pathname;
+      if(path.endsWith("/inboxes/erase-inbox"))return Response.json({inbox_id:"erase-inbox",email:"erase@example.test"});
+      if(path.endsWith("/webhooks"))return Response.json({webhook_id:"erase-hook",secret:"erase-webhook-secret"});
+      return Response.json({});
+    }));
+    const connected=await connectUserAgentMail(f.env,scope,identity,{inboxId:"erase-inbox",apiKey:"agentmail-erasure-secret-123456"});
+    (f.env.SCRIPTS_R2 as unknown as {list:(input:{prefix:string;limit:number})=>Promise<{objects:never[];truncated:boolean}>}).list=
+      vi.fn(async()=>({objects:[],truncated:false}));
+    const agentPortFetch=f.env.AGENTPORT_WORKER.fetch as ReturnType<typeof vi.fn>;
+    await eraseCommunicationIdentities(f.env,"tenant","space","user");
+    const account=await f.db.prepare(`SELECT status,email_address,inbox_id,credential_ciphertext,credential_iv,
+      agentmail_webhook_secret_ciphertext,agentport_webhook_secret_ciphertext,agentport_account_id
+      FROM assistant_agentmail_accounts WHERE id=?`).bind(connected.connectionId).first<Record<string,unknown>>();
+    expect(account).toMatchObject({status:"retired",email_address:"erased",inbox_id:`erased:${connected.connectionId}`,
+      credential_ciphertext:null,credential_iv:null,agentmail_webhook_secret_ciphertext:null,
+      agentport_webhook_secret_ciphertext:null,agentport_account_id:null});
+    expect(await f.db.prepare("SELECT lifecycle_state,credential_ref,agentport_account_id,provider_resource_ref FROM managed_service_accounts WHERE id=?")
+      .bind(connected.connectionId).first<Record<string,unknown>>()).toMatchObject({lifecycle_state:"retired",credential_ref:null,
+        agentport_account_id:null,provider_resource_ref:`erased:${connected.connectionId}`});
+    expect(await f.db.prepare("SELECT id FROM assistant_communication_identities WHERE id=?").bind(identity.id).first()).toBeNull();
+    expect(agentPortFetch.mock.calls.some(([request])=>new URL((request as Request).url).pathname===
+      `/internal/agentport/accounts/${connected.accountId}/revoke`)).toBe(true);
+  });
+  it("keeps the communication identity when AgentPort account revocation is unconfirmed during erasure",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope);
+    vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL)=>{
+      const path=new URL(String(input)).pathname;
+      if(path.endsWith("/inboxes/erase-pending"))return Response.json({inbox_id:"erase-pending",email:"pending@example.test"});
+      if(path.endsWith("/webhooks"))return Response.json({webhook_id:"pending-hook",secret:"pending-webhook-secret"});
+      return Response.json({});
+    }));
+    const connected=await connectUserAgentMail(f.env,scope,identity,{inboxId:"erase-pending",apiKey:"agentmail-pending-secret-123456"});
+    (f.env.SCRIPTS_R2 as unknown as {list:(input:{prefix:string;limit:number})=>Promise<{objects:never[];truncated:boolean}>}).list=
+      vi.fn(async()=>({objects:[],truncated:false}));
+    const agentPortFetch=f.env.AGENTPORT_WORKER.fetch as ReturnType<typeof vi.fn>;
+    agentPortFetch.mockImplementation(async(request:Request)=>new URL(request.url).pathname.endsWith(`/accounts/${connected.accountId}/revoke`)
+      ? Response.json({error_code:"temporary_failure"},{status:503}) : Response.json({revoked:true}));
+    await expect(eraseCommunicationIdentities(f.env,"tenant","space","user"))
+      .rejects.toThrow("agentmail_erasure_agentport_revoke_unconfirmed");
+    expect(await f.db.prepare("SELECT status,credential_ciphertext FROM assistant_agentmail_accounts WHERE id=?")
+      .bind(connected.connectionId).first<Record<string,unknown>>()).toMatchObject({status:"active",credential_ciphertext:expect.any(String)});
+    expect(await f.db.prepare("SELECT id,status FROM assistant_communication_identities WHERE id=?")
+      .bind(identity.id).first<Record<string,unknown>>()).toMatchObject({id:identity.id,status:"active"});
   });
   it("accepts an owner-selected AgentMail API region and persists it before later provider calls",async()=>{
     const f=fixture();
@@ -491,6 +539,36 @@ describe("AgentMail provider account boundary",()=>{
     const identity=await ensureIdentity(f.env,scope);
     await expect(connectUserAgentMail(f.env,scope,identity,{inboxId:"inbox-1",apiKey:"agentmail-scoped-secret-123456"})).rejects.toThrow("agentmail_inbox_mismatch");
     expect(await f.db.prepare("SELECT COUNT(*) AS n FROM assistant_agentmail_accounts").first<{n:number}>()).toMatchObject({n:0});
+  });
+  it("replaces the encrypted credential on owner reconnect without returning either key",async()=>{
+    const f=fixture(),identity=await ensureIdentity(f.env,scope);
+    const oldKey="agentmail-old-key-123456",newKey="agentmail-new-key-123456";
+    const providerFetch=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const request=new Request(input,init),path=new URL(request.url).pathname;
+      if(path.endsWith("/inboxes/inbox-rotate"))return Response.json({inbox_id:"inbox-rotate",email:"rotate@example.test"});
+      if(path.endsWith("/webhooks"))return Response.json({webhook_id:"rotate-hook",secret:"rotate-webhook-secret"});
+      if(path.endsWith("/messages"))return Response.json({messages:[{message_id:"after-rotation"}]});
+      return Response.json({});
+    });
+    vi.stubGlobal("fetch",providerFetch);
+    const first=await connectUserAgentMail(f.env,scope,identity,{inboxId:"inbox-rotate",apiKey:oldKey});
+    const before=await f.db.prepare("SELECT credential_ciphertext,credential_iv FROM assistant_agentmail_accounts WHERE id=?")
+      .bind(first.connectionId).first<{credential_ciphertext:string;credential_iv:string}>();
+    const reconnected=await connectUserAgentMail(f.env,scope,identity,{inboxId:"inbox-rotate",apiKey:newKey,region:"eu"});
+    const after=await f.db.prepare("SELECT credential_ciphertext,credential_iv,provider_region FROM assistant_agentmail_accounts WHERE id=?")
+      .bind(first.connectionId).first<{credential_ciphertext:string;credential_iv:string;provider_region:string}>();
+    expect(reconnected.connectionId).toBe(first.connectionId);
+    expect(after).toMatchObject({provider_region:"eu"});
+    expect(after?.credential_ciphertext).not.toBe(before?.credential_ciphertext);
+    expect(JSON.stringify(reconnected)).not.toContain(oldKey);
+    expect(JSON.stringify(reconnected)).not.toContain(newKey);
+    const result=await callAgentMailTool(f.env,scope,"agentmail.inbox",{limit:5},first.connectionId);
+    expect(result).toEqual({messages:[{message_id:"after-rotation"}]});
+    const messageRequest=providerFetch.mock.calls.map(([input,init])=>new Request(input,init))
+      .find(request=>new URL(request.url).pathname.endsWith("/messages"));
+    expect(messageRequest&&new Headers(messageRequest.headers).get("authorization")).toBe(`Bearer ${newKey}`);
+    expect(JSON.stringify(result)).not.toContain(oldKey);
+    expect(JSON.stringify(result)).not.toContain(newKey);
   });
   it("provisions one managed inbox per distinct assistant and charges 300 credits once",async()=>{
     const f=fixture();const identity=await ensureIdentity(f.env,scope);const billingRequests:Array<{path:string;body:Record<string,unknown>}>=[];

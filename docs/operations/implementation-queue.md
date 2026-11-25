@@ -1090,17 +1090,31 @@ See the [plan](../research/agentport-credential-broker-plan.md) and [CB progress
   standing autonomy, daily limit and no duplicate provider call on replay. The daily-limit error now
   maps to 429. AgentMail tests pass 19/19, Agents typecheck and `git diff --check` pass. See the CB
   ledger; no provider action or live acceptance was run.
-- [ ] **CB03 — Local credential lifecycle and leakage review.** Trace the AgentMail credential
-  encryption/key derivation, reconnection/rotation, unlink and tenant/user erasure callers. Verify
-  locally testable secret deletion and no credential in result/log/SDK paths, then record exact
-  upstream provider deletion/rotation dependencies. Do not claim upstream purge.
+- [x] **CB03 — Local credential lifecycle and leakage review.** User-connected credential and
+  webhook secrets remain AES-GCM encrypted under the tenant-derived communications key with
+  identity/account AAD; same-owner inbox reconnect replaces the local ciphertext after regional
+  inbox validation. Owner unlink clears local secrets and reconciles AgentPort revoke. Scoped user
+  erasure now confirms AgentPort revoke before scrubbing AgentMail credentials, webhook references
+  and managed-service pointers; failed revoke preserves the identity and credential for retry.
+  Tests verify replacement key use, absence from connect/tool results, scoped erasure, and
+  fail-closed revoke; existing unlink tests verify local secret deletion and blocked reuse. Source
+  review found no AgentMail credential logging and the provider SDK remains metadata-only.
+  `agentmail.test.ts` plus `erasure-product-scope.test.ts` pass 23/23, Agents typecheck and diff
+  check pass. Upstream key invalidation/rotation, inbox/message deletion, and webhook removal are
+  unverified. Evidence: [CB ledger](../research/agentport-credential-broker-progress.md).
+- [ ] **CB04 — Provider-minted temporary credential feasibility.** Identify provider candidates
+  already reachable through the repository and verify official API support for token exchange or
+  temporary credentials, including scope, audience/holder, TTL, refresh, revocation, regions and
+  payer. Implement only if an exact provider contract reduces authority; otherwise record the
+  concrete evidence dependency and move to independent CB05 local contract work.
 
-**Latest checkpoint:** Fast-forwarded to `46e73106`; CB01 source/threat-model audit is pushed in
-`31bbcd10` with four focused suites passing 49/49. CB02 adds the scoped internal AgentMail route,
-preserves existing owner/grant/policy checks, and maps the daily limit to 429. AgentMail tests pass
-19/19, Agents typecheck and `git diff --check` pass; no live provider behavior was exercised. **Exact
-next action:** audit CB03 credential rotation, unlink and erasure paths, then add local verification
-for the current host-held credential lifecycle and leakage boundaries.
+**Latest checkpoint:** CB03 local lifecycle slice implements fail-closed AgentPort revoke and
+credential scrubbing during scoped user erasure, and verifies same-owner reconnect replaces the
+encrypted key without returning it. `agentmail.test.ts` and `erasure-product-scope.test.ts` pass
+23/23; Agents typecheck and `git diff --check` pass. Upstream deletion and key invalidation remain
+unverified. **Exact next action:** assess CB04 against official provider API documentation for
+temporary credential exchange, then continue with independent CB05 contract work if no candidate
+meets the plan's bounded-authority criteria.
 
 ## Ordered plan list
 

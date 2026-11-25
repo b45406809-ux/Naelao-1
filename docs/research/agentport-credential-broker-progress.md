@@ -72,3 +72,37 @@ key rotation/reconnection, account unlink and tenant/user erasure callers. Add t
 verifiable deletion/rotation and leakage boundaries. Record upstream inbox/key deletion and any
 unsupported rotation semantics as provider acceptance dependencies; do not claim provider-side
 erasure.
+
+## CB03 — Local credential lifecycle and leakage review (2026-11-25)
+
+The lifecycle trace confirms user-connected AgentMail API keys and webhook secrets use AES-GCM
+under the tenant-derived communications key with identity/account AAD. `providerKeyFor` decrypts
+only inside the Agents Worker. Reconnecting the same owner and inbox validates the replacement
+key against the selected regional API before replacing the stored ciphertext and region. This is
+local reauthorization with an owner-supplied key; it does not revoke or invalidate a prior
+provider-issued key. Owner unlink clears local API/webhook ciphertext and performs AgentPort
+account revoke through its durable reconciliation path. Product/user erasure previously removed
+the communication identity without scrubbing its AgentMail account rows; erasure now enumerates
+accounts in the exact tenant/Space/identity/owner scope, confirms AgentPort account revocation,
+then clears local credentials and webhook identifiers, retires the AgentMail/managed-service
+rows, and continues identity erasure. If AgentPort revoke cannot be confirmed, the operation
+fails closed before scrubbing or deleting the identity so it can be retried safely.
+
+Focused tests verify reconnect replaces the encrypted key and subsequent provider dispatch uses
+the replacement; connection and tool result shapes contain neither key; scoped erasure clears
+credential/webhook storage and retires account references; and unconfirmed AgentPort revoke
+preserves the identity and stored credential for retry. Existing owner-unlink coverage verifies
+local credential removal, AgentPort revoke and denial of later operations. Source review found no
+AgentMail credential logging in the operation or route implementation, and the provider SDK is
+metadata-only. Verification: `agentmail.test.ts` and `erasure-product-scope.test.ts` **23/23**;
+Agents typecheck and `git diff --check` pass. This is local fixture/source evidence only.
+
+Upstream AgentMail API-key invalidation/rotation, inbox and message deletion, webhook removal,
+and behavior after old-key replacement remain unverified. Managed-mode `AGENTMAIL_API_KEY`
+rotation is a deployment secret operation and is outside local row erasure. No live provider call,
+deletion, rotation, or deployment was performed.
+
+**Exact next action:** assess CB04 for a provider with documented and verifiable temporary
+credential exchange. Record the candidate APIs and evidence; if none supports a lower-authority,
+bounded token contract, leave CB04 blocked on exact provider documentation/sandbox evidence and
+continue with the next locally ready CB05 adapter/developer contract task.

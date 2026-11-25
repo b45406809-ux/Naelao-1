@@ -1,4 +1,29 @@
 import type { AgentsEnv } from "../index.js";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
+
+type ErasedAgentMailAccount = { id: string; agentport_account_id: string | null };
+
+async function revokeAgentMailAccounts(env: AgentsEnv, tenantId: string, accounts: ErasedAgentMailAccount[]) {
+  const uniqueIds = [...new Set(accounts.flatMap(account => account.agentport_account_id ? [account.agentport_account_id] : []))];
+  for (const accountId of uniqueIds) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(accountId) || !env.AGENTPORT_WORKER)
+      throw new Error("agentmail_erasure_agentport_revoke_unavailable");
+    let response: Response;
+    try {
+      response = await env.AGENTPORT_WORKER.fetch(new Request(
+        `https://agentport.internal/internal/agentport/accounts/${encodeURIComponent(accountId)}/revoke`,
+        { method: "POST", headers: { "content-type": "application/json", "x-agentport-tenant-id": tenantId,
+          "x-agentport-actor-role": "client_system", "x-agentport-actor-id": tenantId,
+          "x-agentport-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) }, body: "{}" },
+      ));
+    } catch { throw new Error("agentmail_erasure_agentport_revoke_unconfirmed"); }
+    const result = await readBoundedResponseJson<{ revoked?: unknown }>(response, 64 * 1024)
+      .catch(() => ({} as { revoked?: unknown }));
+    if (!response.ok || result.revoked !== true)
+      throw new Error("agentmail_erasure_agentport_revoke_unconfirmed");
+  }
+}
+
 export async function eraseCommunicationIdentities(
   env: AgentsEnv,
   tenantId: string,
@@ -117,6 +142,25 @@ export async function eraseCommunicationIdentities(
       await (
         await import("./phone-lifecycle.js")
       ).detachAssistantPhonesForErasure(env, identity.id);
+      const mailAccounts = await env.PLATFORM_DB.prepare(`SELECT id,agentport_account_id FROM assistant_agentmail_accounts
+        WHERE tenant_id=? AND space_id=? AND assistant_identity_id=? ${userId ? "AND owner_user_id=?" : ""} ORDER BY id`)
+        .bind(tenantId, identity.space_id, identity.id, ...(userId ? [userId] : []))
+        .all<ErasedAgentMailAccount>();
+      await revokeAgentMailAccounts(env, tenantId, mailAccounts.results);
+      if (mailAccounts.results.length) {
+        const at = new Date().toISOString();
+        await env.PLATFORM_DB.batch(mailAccounts.results.flatMap(account => [
+          env.PLATFORM_DB.prepare(`UPDATE assistant_agentmail_accounts SET status='retired',email_address='erased',
+            inbox_id='erased:'||id,credential_ciphertext=NULL,credential_iv=NULL,agentmail_webhook_id=NULL,
+            agentmail_webhook_secret_ciphertext=NULL,agentmail_webhook_secret_iv=NULL,agentport_subscription_id=NULL,
+            agentport_webhook_secret_ciphertext=NULL,agentport_webhook_secret_iv=NULL,agentport_account_id=NULL,updated_at=?
+            WHERE id=? AND tenant_id=? AND space_id=? AND assistant_identity_id=? ${userId ? "AND owner_user_id=?" : ""}`)
+            .bind(at, account.id, tenantId, identity.space_id, identity.id, ...(userId ? [userId] : [])),
+          env.PLATFORM_DB.prepare(`UPDATE managed_service_accounts SET lifecycle_state='retired',credential_ref=NULL,
+            agentport_account_id=NULL,provider_resource_ref='erased:'||id,provider_account_ref=NULL,metadata_json='{"erased":true}',updated_at=?
+            WHERE id=? AND tenant_id=? AND provider='agentmail'`).bind(at, account.id, tenantId),
+        ]));
+      }
       await env.PLATFORM_DB.prepare(
         "UPDATE assistant_communication_identities SET status='erasing' WHERE id=? AND tenant_id=?"
       )
