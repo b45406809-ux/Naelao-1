@@ -3540,6 +3540,22 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_subspace_blackboard_messages_route
         ON subspace_blackboard_messages(route_id,created_at,id);`,
   },
+  {
+    version: 160,
+    description: "record atomic idempotent subspace blackboard fan-out sets",
+    up: `CREATE TABLE subspace_blackboard_broadcasts (
+        source_subspace_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        sender_id TEXT NOT NULL,
+        route_ids_json TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('finding','artifact','question','blocker','risk','completion','verification')),
+        text TEXT NOT NULL CHECK(length(text) BETWEEN 1 AND 4000),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(source_subspace_id,id)
+      );
+      CREATE INDEX idx_subspace_blackboard_broadcasts_sender
+        ON subspace_blackboard_broadcasts(source_subspace_id,sender_id,created_at);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -6951,6 +6967,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (subspaceBlackboardMatch?.[1] && method === "POST") {
         return this.publishSubspaceBlackboardMessage(request, decodeURIComponent(subspaceBlackboardMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
+      }
+      const subspaceBlackboardBroadcastMatch = url.pathname.match(/^\/sub-spaces\/([^/]+)\/blackboard\/broadcast$/);
+      if (subspaceBlackboardBroadcastMatch?.[1] && method === "POST") {
+        return this.publishSubspaceBlackboardBroadcast(request, decodeURIComponent(subspaceBlackboardBroadcastMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
       }
       // GET /spaces/:id — fetch a single space row (meta)
       const spaceRowMatch = url.pathname.match(/^\/spaces\/([^/]+)$/);
@@ -14827,6 +14847,73 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         message.senderSubspaceId, message.senderId, message.kind, message.text, message.createdAt, message.replyTo ?? null);
     } catch { return Response.json({ error_code: "message_scope_denied" }, { status: 409 }); }
     return Response.json({ message, untrusted: true }, { status: 201 });
+  }
+
+  private async publishSubspaceBlackboardBroadcast(request: Request, senderSubspaceId: string, rootId: string, actorId: string): Promise<Response> {
+    let body: { id?: unknown; route_ids?: unknown; kind?: unknown; text?: unknown };
+    try { body = JSON.parse(await readBoundedRequestText(request, 16 * 1024)) as typeof body; }
+    catch { return Response.json({ error_code: "invalid_broadcast" }, { status: 400 }); }
+    const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+    const validKinds = ["finding", "artifact", "question", "blocker", "risk", "completion", "verification"];
+    if (!body || typeof body.id !== "string" || !idPattern.test(body.id) || !idPattern.test(actorId)
+        || !Array.isArray(body.route_ids) || body.route_ids.length < 2 || body.route_ids.length > 10
+        || body.route_ids.some(id => typeof id !== "string" || !idPattern.test(id))
+        || new Set(body.route_ids).size !== body.route_ids.length || typeof body.kind !== "string"
+        || !validKinds.includes(body.kind) || typeof body.text !== "string" || !body.text.trim() || body.text.length > 4000)
+      return Response.json({ error_code: "invalid_broadcast" }, { status: 400 });
+
+    const canWrite = this.canWriteSubspaceBlackboard(rootId, senderSubspaceId, actorId)
+      || this.isSubspaceBlackboardAssistant(rootId, senderSubspaceId, actorId);
+    if (!canWrite) return Response.json({ error_code: "board_unavailable" }, { status: 404 });
+    const routeIds = [...body.route_ids as string[]].sort();
+    const routes = routeIds.map(routeId => this.readSubspaceBlackboardRoute(routeId));
+    if (routes.some(route => !route || route.status !== "active" || route.sourceSubspaceId !== senderSubspaceId
+        || !route.allowedKinds.includes(body.kind as SubspaceBlackboardKind)
+        || !this.subspaceBlackboardRows(rootId, route.sourceSubspaceId, route.targetSubspaceId)))
+      return Response.json({ error_code: "broadcast_scope_denied" }, { status: 404 });
+    if (new Set(routes.map(route => route!.targetSubspaceId)).size !== routes.length)
+      return Response.json({ error_code: "broadcast_recipients_invalid" }, { status: 400 });
+
+    const prior = queryOne<{ sender_id: string; route_ids_json: string; kind: string; text: string; created_at: string }>(this.ctx.storage.sql as never,
+      "SELECT sender_id,route_ids_json,kind,text,created_at FROM subspace_blackboard_broadcasts WHERE source_subspace_id=? AND id=?",
+      senderSubspaceId, body.id);
+    if (prior) {
+      const same = prior.sender_id === actorId && prior.route_ids_json === JSON.stringify(routeIds)
+        && prior.kind === body.kind && prior.text === body.text;
+      if (!same) return Response.json({ error_code: "broadcast_id_conflict" }, { status: 409 });
+      const messages = routes.map(route => queryOne<SubspaceBlackboardMessage>(this.ctx.storage.sql as never,
+        `SELECT id,route_id AS routeId,source_subspace_id AS sourceSubspaceId,target_subspace_id AS targetSubspaceId,
+         sender_subspace_id AS senderSubspaceId,sender_id AS senderId,kind,text,created_at AS createdAt,reply_to AS replyTo
+         FROM subspace_blackboard_messages WHERE route_id=? AND id=?`, route!.id, body.id));
+      if (messages.some(message => !message)) return Response.json({ error_code: "broadcast_recovery_required" }, { status: 503 });
+      return Response.json({ id: body.id, messages, deduplicated: true, untrusted: true });
+    }
+
+    const prepared = routes.map(route => {
+      const rows = queryAll<SubspaceBlackboardMessage>(this.ctx.storage.sql as never,
+        `SELECT id,route_id AS routeId,source_subspace_id AS sourceSubspaceId,target_subspace_id AS targetSubspaceId,
+         sender_subspace_id AS senderSubspaceId,sender_id AS senderId,kind,text,created_at AS createdAt,reply_to AS replyTo
+         FROM subspace_blackboard_messages WHERE route_id=? ORDER BY created_at,id`, route!.id);
+      if (rows.length >= 500) return null;
+      try { return createSubspaceBlackboardMessage({ id: body.id, kind: body.kind, text: body.text }, route!, senderSubspaceId, actorId, rows, new Date().toISOString()); }
+      catch { return null; }
+    });
+    if (prepared.some(message => !message)) return Response.json({ error_code: "broadcast_scope_denied" }, { status: 409 });
+    const messages = prepared as SubspaceBlackboardMessage[];
+    const createdAt = messages[0]!.createdAt;
+    for (const message of messages) message.createdAt = createdAt;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        execute(this.ctx.storage.sql as never,
+          `INSERT INTO subspace_blackboard_broadcasts(source_subspace_id,id,sender_id,route_ids_json,kind,text,created_at)
+           VALUES(?,?,?,?,?,?,?)`, senderSubspaceId, body.id, actorId, JSON.stringify(routeIds), body.kind, body.text, createdAt);
+        for (const message of messages) execute(this.ctx.storage.sql as never,
+          `INSERT INTO subspace_blackboard_messages(id,route_id,source_subspace_id,target_subspace_id,sender_subspace_id,sender_id,kind,text,created_at,reply_to)
+           VALUES(?,?,?,?,?,?,?,?,?,NULL)`, message.id, message.routeId, message.sourceSubspaceId, message.targetSubspaceId,
+          message.senderSubspaceId, message.senderId, message.kind, message.text, message.createdAt);
+      });
+    } catch { return Response.json({ error_code: "broadcast_scope_denied" }, { status: 409 }); }
+    return Response.json({ id: body.id, messages, untrusted: true }, { status: 201 });
   }
 
   private getSpaceRow(id: string): Response {

@@ -12,6 +12,7 @@ import {
   listDepartments,
   listSubspaceBlackboardMessages,
   listSubspaceBlackboardRoutes,
+  publishSubspaceBlackboardBroadcast,
   publishSubspaceBlackboardMessage,
   revokeSubspaceBlackboardRoute,
   type DepartmentOption,
@@ -33,6 +34,8 @@ export default function DepartmentProjectsPage() {
   const [selectedPeer, setSelectedPeer] = React.useState("");
   const [draftByRoute, setDraftByRoute] = React.useState<Record<string, string>>({});
   const [replyToByRoute, setReplyToByRoute] = React.useState<Record<string, string>>({});
+  const [broadcastRouteIds, setBroadcastRouteIds] = React.useState<string[]>([]);
+  const [broadcastDraft, setBroadcastDraft] = React.useState("");
   const [boardBusy, setBoardBusy] = React.useState(false);
   const [boardNotice, setBoardNotice] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -150,6 +153,31 @@ export default function DepartmentProjectsPage() {
     }
   };
 
+  const submitBroadcast = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!creds || !department) return;
+    const text = broadcastDraft.trim();
+    const selectedRoutes = routes.filter((route) => route.source_subspace_id === department.id && broadcastRouteIds.includes(route.route_id));
+    if (selectedRoutes.length < 2 || selectedRoutes.length > 10 || !text) return;
+    setBoardBusy(true);
+    setBoardNotice(null);
+    try {
+      await publishSubspaceBlackboardBroadcast(params.spaceId, department.id, {
+        id: crypto.randomUUID(), routeIds: selectedRoutes.map((route) => route.route_id), kind: "finding", text,
+      }, creds);
+      setBroadcastDraft("");
+      const routeMessages = await Promise.all(selectedRoutes.map(async (route) => [
+        route.route_id, await listSubspaceBlackboardMessages(params.spaceId, department.id, route.route_id, creds),
+      ] as const));
+      setMessagesByRoute((current) => ({ ...current, ...Object.fromEntries(routeMessages) }));
+      setBoardNotice(`Update delivered to ${selectedRoutes.length} authorized sibling routes.`);
+    } catch (reason) {
+      setBoardNotice(reason instanceof Error ? reason.message : "Could not deliver the multi-recipient update.");
+    } finally {
+      setBoardBusy(false);
+    }
+  };
+
   if (loading) return <div className="page-view">Loading subspace…</div>;
   if (error || !department) return <main className="page-view"><h1>Subspace unavailable</h1><output>{error ?? "This subspace is unavailable."}</output></main>;
 
@@ -199,6 +227,28 @@ export default function DepartmentProjectsPage() {
         )}
 
         {boardNotice && <p role="status" style={{ color: "var(--text2)" }}>{boardNotice}</p>}
+        {routes.filter((route) => route.source_subspace_id === department.id).length >= 2 && (
+          <form onSubmit={(event) => void submitBroadcast(event)} className="card" style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+            <strong>Send one update to several siblings</strong>
+            <fieldset style={{ display: "flex", gap: 12, flexWrap: "wrap", border: 0, padding: 0, margin: 0 }}>
+              <legend style={{ marginBottom: 6 }}>Choose 2–10 active routes</legend>
+              {routes.filter((route) => route.source_subspace_id === department.id).map((route) => (
+                <label key={route.route_id} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input type="checkbox" checked={broadcastRouteIds.includes(route.route_id)} disabled={boardBusy}
+                    onChange={(event) => setBroadcastRouteIds((current) => event.target.checked
+                      ? [...current, route.route_id].slice(0, 10) : current.filter((id) => id !== route.route_id))} />
+                  {departments.find((item) => item.id === route.target_subspace_id)?.name ?? "Sibling"}
+                </label>
+              ))}
+            </fieldset>
+            <textarea maxLength={4000} rows={3} value={broadcastDraft} onChange={(event) => setBroadcastDraft(event.target.value)}
+              aria-label="Multi-recipient finding" placeholder="Share a bounded finding with each selected sibling" />
+            <button type="submit" disabled={boardBusy || broadcastRouteIds.length < 2 || broadcastRouteIds.length > 10 || !broadcastDraft.trim()}>
+              Send to {broadcastRouteIds.length} siblings
+            </button>
+            <span style={{ color: "var(--text3)", fontSize: 12 }}>All routes are checked before delivery. Each sibling sees only its own copy.</span>
+          </form>
+        )}
         {routes.length === 0 ? (
           <p style={{ color: "var(--text3)" }}>No active sibling routes are visible to this subspace.</p>
         ) : (

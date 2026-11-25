@@ -98,4 +98,30 @@ describe("subspace blackboard routes", () => {
     expect(new URL(forwarded[1]!.url).searchParams.get("actor_id")).toBe("assistant:space:dept-a");
     expect(await forwarded[1]!.json()).toMatchObject({ id: "msg-1", route_id: "route-1" });
   });
+
+  it("forwards bounded fan-out only after user membership or internal assistant authentication", async () => {
+    const { env, forwarded, secret } = environment();
+    const userHeaders = { ...headers(secret), "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const userResponse = await spacesWorker.fetch(new Request("https://spaces.test/spaces/root/sub-spaces/dept-a/blackboard/broadcast", {
+      method: "POST", headers: userHeaders,
+      body: JSON.stringify({ id: "fanout-1", route_ids: ["r-b", "r-c"], kind: "finding", text: "Ready" }),
+    }), env);
+    expect(userResponse.status).toBe(200);
+    const userWrite = forwarded.find(request => new URL(request.url).pathname === "/sub-spaces/dept-a/blackboard/broadcast")!;
+    expect(new URL(userWrite.url).searchParams.get("actor_id")).toBe("authenticated-owner");
+
+    const base = "https://spaces.test/internal/spaces/root/sub-spaces/dept-a/blackboard/broadcast";
+    const denied = await spacesWorker.fetch(new Request(base, { method: "POST", headers: {
+      "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-agent-id": "assistant:space:dept-a",
+    }, body: JSON.stringify({ id: "fanout-2", route_ids: ["r-b", "r-c"], kind: "finding", text: "Ready" }) }), env);
+    expect(denied.status).toBe(403);
+    const assistant = await spacesWorker.fetch(new Request(base, { method: "POST", headers: {
+      "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-agent-id": "assistant:space:dept-a",
+      "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"),
+    }, body: JSON.stringify({ id: "fanout-2", route_ids: ["r-b", "r-c"], kind: "finding", text: "Ready" }) }), env);
+    expect(assistant.status).toBe(200);
+    const assistantWrite = forwarded.filter(request => new URL(request.url).pathname === "/sub-spaces/dept-a/blackboard/broadcast").at(-1)!;
+    expect(new URL(assistantWrite.url).searchParams.get("actor_id")).toBe("assistant:space:dept-a");
+    expect(await assistantWrite.json()).toMatchObject({ id: "fanout-2", route_ids: ["r-b", "r-c"] });
+  });
 });

@@ -191,9 +191,9 @@ cannot create or revoke routes; those controls remain on the human owner/admin p
 SpaceDO and worker route suites pass **7/7**, prebuilt operations tests pass **3/3**, Spaces and
 Agents typechecks and `git diff --check` pass. Local only; no deployment or live acceptance ran.
 
-**Next implementation action:** inspect signed blueprint declarations, activation and review flows.
-Resolve only unambiguous symbolic department roles to current logical subspace IDs, stage proposed
-routes inactive, and require an explicit owner approval before creating an active route.
+**SBB03.3 resume condition:** add a signed symbolic subspace-role/handoff schema and an explicit
+owner mapping/review input across authoring, preview and activation. Keep proposals inactive until
+actual active child IDs are bound and the owner approves them.
 
 **SBB03.3 source audit — 2026-11-25:** The signed `SpaceBlueprint` currently declares projects,
 assistant settings, coordination defaults, extension requirements and optional `businessRoles`.
@@ -208,6 +208,18 @@ template cannot be safely resolved into a route proposal yet: adding a bare role
 real subspace binding ambiguous. Resume SBB03.3 once a symbolic-role schema and owner mapping/review
 input exists across authoring, preview and activation. Template declarations alone must not grant.
 
-**Next implementation action:** implement SBB03.4, validating a bounded recipient set of existing
-active directed routes as one unit before accepting any multi-recipient message. Keep recipient
-copies independently private, retry-safe and revocation-aware.
+**Next implementation action:** SBB04, add the remaining end-to-end privacy and lifecycle cases
+listed in the queue, then review plan-wide readiness before closing any remaining blocker.
+
+**SBB03.4 verified checkpoint:** SpaceDO migration 160 stores a stable broadcast identity with
+its canonical route set, sender and payload. Fan-out accepts 2–10 distinct sibling destinations
+only when every selected route is active, sourced from the current subspace and permits the
+message kind. All checks, per-route capacity checks and write permissions complete before a
+single DO transaction writes the broadcast record and one separately routed message copy for each
+recipient. Exact retries return existing copies; reuse with changed recipients or content conflicts.
+Route revocation still fences reads and retries. The focused Spaces suites pass **19/19**, assistant
+operation tests **4/4**, Router product-session tests **94/94**, Spaces/Agents/Shell typechecks and
+`git diff --check` pass. Local only; no deployment or live acceptance ran.
+
+**Next implementation action:** SBB04, add the remaining end-to-end privacy and lifecycle cases
+listed in the queue, then review plan-wide readiness before closing any remaining blocker.

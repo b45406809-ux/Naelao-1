@@ -10,12 +10,13 @@ describe("SpaceDO directed subspace blackboard", () => {
     const now = new Date().toISOString();
     storage.sql.exec("INSERT INTO spaces(id,parent_id,name,space_type,tenancy_mode,depth,status,settings,created_at) VALUES(?,NULL,?,'launchpad','team',0,'active','{}',?),(?,NULL,?,'launchpad','team',0,'active','{}',?)",
       "root", "Company", now, "other-root", "Other Company", now);
-    storage.sql.exec("INSERT INTO spaces(id,parent_id,name,space_type,tenancy_mode,depth,status,settings,created_at) VALUES(?,?,'Sales','launchpad','team',1,'active','{}',?),(?,?,'Research','launchpad','team',1,'active','{}',?),(?,?,'Other','launchpad','team',1,'active','{}',?)",
-      "dept-a", "root", now, "dept-b", "root", now, "other-dept", "other-root", now);
-    storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('root','root-owner','owner'),('dept-a','sales-editor','editor'),('dept-b','research-member','member'),('dept-b','research-viewer','viewer')");
+    storage.sql.exec("INSERT INTO spaces(id,parent_id,name,space_type,tenancy_mode,depth,status,settings,created_at) VALUES(?,?,'Sales','launchpad','team',1,'active','{}',?),(?,?,'Research','launchpad','team',1,'active','{}',?),(?,?,'Finance','launchpad','team',1,'active','{}',?),(?,?,'Legal','launchpad','team',1,'active','{}',?),(?,?,'Other','launchpad','team',1,'active','{}',?)",
+      "dept-a", "root", now, "dept-b", "root", now, "dept-c", "root", now, "dept-d", "root", now, "other-dept", "other-root", now);
+    storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('root','root-owner','owner'),('dept-a','sales-editor','editor'),('dept-b','research-member','member'),('dept-b','research-viewer','viewer'),('dept-c','finance-member','member'),('dept-d','legal-member','member')");
     storage.sql.exec(`INSERT INTO space_assistants(space_id,assistant_actor_id,parent_assistant_actor_id,hierarchy_role)
       VALUES('root','assistant:space:root',NULL,'DIRECTOR'),('dept-a','assistant:space:dept-a','assistant:space:root','DEPARTMENT_LEAD'),
-      ('dept-b','assistant:space:dept-b','assistant:space:root','DEPARTMENT_LEAD')`);
+      ('dept-b','assistant:space:dept-b','assistant:space:root','DEPARTMENT_LEAD'),('dept-c','assistant:space:dept-c','assistant:space:root','DEPARTMENT_LEAD'),
+      ('dept-d','assistant:space:dept-d','assistant:space:root','DEPARTMENT_LEAD')`);
     return { space, storage };
   }
 
@@ -112,5 +113,43 @@ describe("SpaceDO directed subspace blackboard", () => {
     expect(revoked.status).toBe(200);
     const afterRevoke = await space.fetch(new Request("https://space/sub-spaces/dept-a/blackboard?root_space_id=root&actor_id=assistant:space:dept-a&route_id=route-assistant"));
     expect(afterRevoke.status).toBe(404);
+  });
+
+  it("validates multi-recipient routes before atomically storing isolated retry-safe copies", async () => {
+    const { space } = await fixture();
+    const createRoute = (id: string, target: string, kinds: string[]) => space.fetch(new Request("https://space/subspace-blackboard/routes?root_space_id=root&actor_id=root-owner", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, source_subspace_id: "dept-a", target_subspace_id: target, allowed_kinds: kinds, allow_reply: false }),
+    }));
+    expect((await createRoute("route-sales-research", "dept-b", ["finding"])).status).toBe(201);
+    expect((await createRoute("route-sales-research-alt", "dept-b", ["finding"])).status).toBe(201);
+    expect((await createRoute("route-sales-finance", "dept-c", ["finding"])).status).toBe(201);
+    expect((await createRoute("route-sales-legal", "dept-d", ["finding"])).status).toBe(201);
+    expect((await createRoute("route-sales-outsider", "other-dept", ["finding"])).status).toBe(404);
+
+    const send = (routeIds: string[], kind = "finding", id = "broadcast-1") => space.fetch(new Request(
+      "https://space/sub-spaces/dept-a/blackboard/broadcast?root_space_id=root&actor_id=sales-editor", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, route_ids: routeIds, kind, text: "Share the verified cohort total" }),
+      }));
+    const invalid = await send(["route-sales-research", "route-sales-outsider"]);
+    expect(invalid.status).toBe(404);
+    const incompatible = await send(["route-sales-research", "route-sales-finance"], "question");
+    expect(incompatible.status).toBe(404);
+    expect((await send(["route-sales-research", "route-sales-research-alt"])).status).toBe(400);
+    for (const routeId of ["route-sales-research", "route-sales-finance"]) {
+      const board = await space.fetch(new Request(`https://space/sub-spaces/${routeId.endsWith("finance") ? "dept-c" : "dept-b"}/blackboard?root_space_id=root&actor_id=${routeId.endsWith("finance") ? "finance-member" : "research-member"}&route_id=${routeId}`));
+      expect(await board.json()).toMatchObject({ messages: [] });
+    }
+
+    const sent = await send(["route-sales-finance", "route-sales-research"]);
+    expect(sent.status).toBe(201);
+    expect(await sent.json()).toMatchObject({ messages: [
+      { id: "broadcast-1", routeId: "route-sales-finance", targetSubspaceId: "dept-c" },
+      { id: "broadcast-1", routeId: "route-sales-research", targetSubspaceId: "dept-b" },
+    ] });
+    expect(await (await send(["route-sales-research", "route-sales-finance"])).json()).toMatchObject({ deduplicated: true });
+    expect((await send(["route-sales-research"], "finding")).status).toBe(400);
+    expect((await send(["route-sales-finance", "route-sales-legal"], "finding", "broadcast-1")).status).toBe(409);
   });
 });

@@ -650,7 +650,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/business-role-options$/,
   // Product members can read only their own signed, non-granting onboarding role summary.
   /^\/spaces\/([^/]+)\/my-business-roles$/,
-  /^\/spaces\/([^/]+)\/sub-spaces(?:\/[^/]+(?:\/(?:projects|members)(?:\/[^/]+)?|\/blackboard)?)?$/,
+  /^\/spaces\/([^/]+)\/sub-spaces(?:\/[^/]+(?:\/(?:projects|members)(?:\/[^/]+)?|\/blackboard(?:\/broadcast)?)?)?$/,
   // The Spaces Worker applies current subspace manager/member checks to route configuration,
   // board reads and writes. Product-session identity alone never activates a sibling route.
   /^\/spaces\/([^/]+)\/subspace-blackboard\/routes(?:\/[^/]+\/revoke)?$/,

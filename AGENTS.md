@@ -2,11 +2,11 @@
 
 ## Current task
 
-Subspace Blackboard Coordination, SBB03.4: add bounded multi-recipient updates across explicitly
-approved directed routes, validating every recipient before accepting any message. SBB03.3 is
-blocked on a signed-template symbolic-role and owner-binding contract; the source audit is recorded
-in the plan. SBB03.2 exact assistant identity, SBB03.1 owner controls, SBB02 handoff, and SBB01
-audit are locally verified. See [the active queue entry](docs/operations/implementation-queue.md#active-plan--subspace-blackboard-coordination).
+Subspace Blackboard Coordination, SBB04: complete end-to-end privacy and retry verification for
+handoff, fan-out, and revocation. SBB03.4 atomic bounded fan-out is locally verified; SBB03.3 is
+blocked on a signed-template symbolic-role and owner-binding contract. SBB03.2 exact assistant
+identity, SBB03.1 owner controls, SBB02 handoff, and SBB01 audit are locally verified. See [the
+active queue entry](docs/operations/implementation-queue.md#active-plan--subspace-blackboard-coordination).
 
 ## Start or resume
 

@@ -8337,6 +8337,23 @@ app.post("/spaces/:spaceId/sub-spaces/:subId/blackboard", async (c) => {
   }));
 });
 
+app.post("/spaces/:spaceId/sub-spaces/:subId/blackboard/broadcast", async (c) => {
+  const { spaceId, subId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  let body: { id?: unknown; route_ids?: unknown; kind?: unknown; text?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)); }
+  catch { return c.json({ error_code: "invalid_broadcast" }, 400); }
+  if (!body || typeof body.id !== "string" || !Array.isArray(body.route_ids) || typeof body.kind !== "string" || typeof body.text !== "string")
+    return c.json({ error_code: "invalid_broadcast" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (!(await authorizeDepartmentMember(stub, userId, subId, "read")).permitted) return c.json({ error_code: "board_unavailable" }, 404);
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: userId });
+  return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard/broadcast?${query}`, "POST", JSON.stringify({
+    id: body.id, route_ids: body.route_ids, kind: body.kind, text: body.text,
+  }));
+});
+
 // Assistant calls are internal-only. SpaceDO checks this actor against the immutable
 // assistant_actor_id stored for this exact active subspace before reading or writing.
 app.get("/internal/spaces/:spaceId/sub-spaces/:subId/blackboard", async (c) => {
@@ -8372,6 +8389,26 @@ app.post("/internal/spaces/:spaceId/sub-spaces/:subId/blackboard", async (c) => 
   return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard?${query}`, "POST", JSON.stringify({
     route_id: body.route_id, id: body.id, kind: body.kind, text: body.text,
     ...(typeof body.reply_to === "string" ? { reply_to: body.reply_to } : {}),
+  }));
+});
+
+app.post("/internal/spaces/:spaceId/sub-spaces/:subId/blackboard/broadcast", async (c) => {
+  const { spaceId, subId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const actorId = c.req.header("x-naelao-agent-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "forbidden" }, 403);
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(subId)
+      || !/^assistant:space:[A-Za-z0-9._:-]{1,160}$/.test(actorId)) return c.json({ error_code: "board_unavailable" }, 404);
+  let body: { id?: unknown; route_ids?: unknown; kind?: unknown; text?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)); }
+  catch { return c.json({ error_code: "invalid_broadcast" }, 400); }
+  if (!body || typeof body.id !== "string" || !Array.isArray(body.route_ids) || typeof body.kind !== "string" || typeof body.text !== "string")
+    return c.json({ error_code: "invalid_broadcast" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const query = new URLSearchParams({ root_space_id: spaceId, actor_id: actorId });
+  return forwardToSpaceDO(stub, `/sub-spaces/${encodeURIComponent(subId)}/blackboard/broadcast?${query}`, "POST", JSON.stringify({
+    id: body.id, route_ids: body.route_ids, kind: body.kind, text: body.text,
   }));
 });
 

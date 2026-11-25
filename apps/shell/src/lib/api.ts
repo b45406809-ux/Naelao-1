@@ -1426,6 +1426,15 @@ export async function publishSubspaceBlackboardMessage(spaceId: string, departme
   });
 }
 
+export async function publishSubspaceBlackboardBroadcast(spaceId: string, departmentId: string, input: {
+  id: string; routeIds: string[]; kind: SubspaceBlackboardMessage["kind"]; text: string;
+}, session: SessionCredentials): Promise<{ id: string; messages: SubspaceBlackboardMessage[]; deduplicated?: boolean }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/sub-spaces/${encodeURIComponent(departmentId)}/blackboard/broadcast`, {
+    method: "POST", session,
+    body: JSON.stringify({ id: input.id, route_ids: input.routeIds, kind: input.kind, text: input.text }),
+  });
+}
+
 export async function associateProjectDepartment(spaceId: string, projectId: string, departmentId: string, session: SessionCredentials): Promise<void> {
   await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/sub-spaces`, {
     method: "POST", body: JSON.stringify({ subspace_id: departmentId }), session,
