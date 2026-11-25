@@ -38,7 +38,8 @@ export interface GoalRoutingAdjustment {
   taskOutcome?: "completed" | "failed" | "needs_review";
   verificationOutcome?: "passed" | "failed" | "uncertain" | "not_required" | "unavailable";
 }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; taskDefinitions?: GoalTask[]; expansionReceipts?: Record<string, GoalExpansionReceipt>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number; policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed"; adjustments?: GoalRoutingAdjustment[] } }
+export interface GoalBudgetHold { state: "awaiting_budget_approval"; taskId: string; reason: string; at: number }
+export interface GoalDagJournal { budgetHold?: GoalBudgetHold; tasks: Record<string, GoalTaskState>; taskDefinitions?: GoalTask[]; expansionReceipts?: Record<string, GoalExpansionReceipt>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number; policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed"; adjustments?: GoalRoutingAdjustment[] } }
 export const MAX_GOAL_ROUTING_ADJUSTMENTS = 32;
 /** Automatic repair is an opt-in, host-budgeted path with a hard kernel ceiling. */
 export const MAX_GOAL_FIXERS_PER_RUN = 2;
@@ -62,6 +63,9 @@ export interface GoalDagHost {
   }>;
   recover(workerId: string): Promise<GoalWorkerResult | undefined>;
   publish(task: GoalTask, state: GoalTaskState): Promise<void>;
+  /** MS-18: optional per-goal credit admission, called once per ready task before its dispatch is
+   * claimed. `ok:false` means do not dispatch; the goal waits in `awaiting_budget_approval`. */
+  admitDispatch?(task: GoalTask): Promise<{ ok: true } | { ok: false; reason: string }>;
   /** Recheck active decision identity/revision and its workspace pin before dispatch or reuse. */
   validateTaskDecisions?(task: GoalTask): Promise<{ ok: true } | { ok: false; reason: string }>;
   /** Dynamic expansion is host-gated and remains disabled unless both the feature flag and these callbacks are present. */
@@ -630,14 +634,28 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     const slots = Math.max(0, journal.routing.selectedConcurrency - inFlight.size);
     const dispatch: GoalTask[] = [];
     const claimedResources = new Set(activeResources);
+    let budgetBlocked: GoalBudgetHold | undefined;
     for (const task of ready) {
       if (dispatch.length >= slots) break;
       if (journal.tasks[task.id]!.status !== "pending") continue;
       const resources = task.resource_keys ?? [];
       if (resources.some(key => claimedResources.has(key))) continue;
+      if (host.admitDispatch) {
+        const admission = await host.admitDispatch(task);
+        if (!admission.ok) { budgetBlocked = { state: "awaiting_budget_approval", taskId: task.id, reason: admission.reason.slice(0, 240), at: Date.now() }; break; }
+      }
       dispatch.push(task);
       for (const key of resources) claimedResources.add(key);
     }
+    if (budgetBlocked) {
+      journal.budgetHold = budgetBlocked;
+      if (!dispatch.length && inFlight.size === 0) {
+        // Nothing can run until the ceiling is raised; return instead of spinning. Ready tasks stay
+        // `pending`, so a later resume of the same journal dispatches them once admitted.
+        await save();
+        return journal;
+      }
+    } else if (journal.budgetHold) delete journal.budgetHold;
     for (const task of dispatch) {
       journal.tasks[task.id]!.dispatchId ??= `dispatch:${journal.tasks[task.id]!.workerId}:${(journal.tasks[task.id]!.dispatchId?.split(":").at(-1) ?? "1")}`;
       journal.tasks[task.id]!.status = "running";

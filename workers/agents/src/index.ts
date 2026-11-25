@@ -368,6 +368,8 @@ export { CompanyAutomationWorkflow } from "./workflows/company-automation-workfl
 
 export interface AgentsEnv extends Cloudflare.Env {
   ENVIRONMENT: string;
+  /** MS-18 / D8: per-goal credit ceiling and its raise route; off = the route answers not-found. */
+  GOAL_CREDIT_CEILING_ENABLED?: string;
   /** Full assistant-response caching stays off until exact caller and source freshness gates pass. */
   KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
@@ -4540,6 +4542,43 @@ app.post("/spaces/:spaceId/projects/:projectId/task-stop", async c => {
   const saved = receiptResponse.ok ? await receiptResponse.json<{ receipt?: unknown; task?: { status?: string } }>().catch(() => null) : null;
   if (!saved?.receipt) return c.json({ error_code: "task_stop_receipt_unavailable", outcome }, 502);
   return c.json({ task_id: taskId, project_id: projectId, outcome, status: saved.task?.status ?? task.status, receipt: saved.receipt });
+});
+
+// POST /spaces/:spaceId/projects/:projectId/goal-credit-ceiling — MS-18 / decisions D8, D10. Raise
+// the per-goal credit ceiling of the goal run `task_id` (the Project task id), which resumes dispatch
+// for a goal waiting in `awaiting_budget_approval`. Same authority as the MS-07 task stop
+// (projectDecisionReviewAccess: owning-Space owner/admin or Project `owner` member), but every
+// failure, including a missing flag or an unknown/foreign task, returns the one not-found shape.
+app.post("/spaces/:spaceId/projects/:projectId/goal-credit-ceiling", async c => {
+  const notFoundResponse = () => c.json({ error_code: "not_found" }, 404);
+  if (c.env.GOAL_CREDIT_CEILING_ENABLED !== "true") return notFoundResponse();
+  const { spaceId, projectId } = c.req.param();
+  const body = await c.req.json<{ task_id?: unknown; credit_ceiling?: unknown }>().catch(() => null);
+  const taskId = body && typeof body.task_id === "string" ? body.task_id : "";
+  const ceiling = body?.credit_ceiling;
+  let access: Awaited<ReturnType<typeof requireProjectAccessForManagedProfile>>;
+  try { access = await requireProjectAccessForManagedProfile(c, spaceId, projectId, false); } catch { return notFoundResponse(); }
+  const { tenantId, userId } = access;
+  let canReview = false;
+  try { canReview = (await projectDecisionReviewAccess(c, spaceId, projectId, tenantId, userId)).canReview; }
+  catch (error) {
+    if (error instanceof Error && error.message === "project_decision_authority_unavailable") return c.json({ error_code: error.message }, 503);
+    return notFoundResponse();
+  }
+  if (!canReview) return notFoundResponse();
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(taskId) || typeof ceiling !== "number" || !Number.isSafeInteger(ceiling) || ceiling < 1 || ceiling > 10_000_000) {
+    return c.json({ error_code: "invalid_goal_credit_ceiling" }, 400);
+  }
+  const taskResponse = await getTaskDO(c.env, spaceId).fetch(`http://task-do/tasks/${encodeURIComponent(taskId)}?timeout=0`);
+  const task = taskResponse.ok ? await taskResponse.json<{ session_id?: string; project_id?: string | null }>().catch(() => null) : null;
+  if (!task || task.project_id !== projectId || typeof task.session_id !== "string") return notFoundResponse();
+  const stub = await getAgentDO(c.env, tenantId, task.session_id, c.get("requestId"));
+  const response = await stub.fetch(new Request("http://agent-do/goal-credit-ceiling", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ parent_run_id: taskId, credit_ceiling: ceiling }) }));
+  if (response.status === 404) return notFoundResponse();
+  if (response.status === 409) return c.json({ error_code: "goal_credit_ceiling_not_raised" }, 409);
+  if (!response.ok) return c.json({ error_code: "goal_credit_ceiling_unavailable" }, 502);
+  return c.json({ task_id: taskId, project_id: projectId, credit_ceiling: ceiling, dispatch_unblocked: true });
 });
 
 // Internal route: AgentTaskWorkflow calls this to execute the agent synchronously.

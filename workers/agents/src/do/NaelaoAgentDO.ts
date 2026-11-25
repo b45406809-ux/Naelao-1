@@ -6,6 +6,7 @@ import { sandboxInstanceName, workspaceBranchScope } from "../script-engine/sand
 import { containerWorkerConcurrency, validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
+import { admitGoalTaskDispatch, ensureGoalCreditSchema, estimateGoalTaskCredits, raiseGoalCreditCeiling, settleGoalCreditReservation } from "../goal-credit-ceiling.js";
 import { executeGoalDag, MAX_GOAL_ROUTING_ADJUSTMENTS, type GoalDagJournal, type GoalRoutingAdjustment } from "../script-engine/goal-dag.js";
 import { persistGoalExpansionAdmission } from "../script-engine/goal-expansion-admission.js";
 import { createPlannerExcerptBudget } from "../script-engine/planner-excerpt-budget.js";
@@ -1136,6 +1137,8 @@ export interface AgentDOEnv {
   GOAL_DYNAMIC_EXPANSION_ENABLED?: string;
   /** Redundant-worker cancellation is disabled until its host safety gate is explicitly enabled. */
   GOAL_REDUNDANT_CANCELLATION_ENABLED?: string;
+  /** MS-18 / D8: per-goal credit ceiling. Off = no ceiling rows are written and dispatch is unchanged. */
+  GOAL_CREDIT_CEILING_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
   SYSTEM_ONE_MODEL?: string;
   /** Legacy selector accepted during rollout; provider aliases map to Clef Flash. */
@@ -2090,6 +2093,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
     )`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_goal_dispatch_outbox_run ON goal_dispatch_outbox(parent_run_id,status,updated_at)`);
+    ensureGoalCreditSchema(this.ctx.storage.sql);
     for (const ddl of [
       "ALTER TABLE sub_agents ADD COLUMN late_result_json TEXT",
       "ALTER TABLE sub_agents ADD COLUMN late_result_at INTEGER",
@@ -2286,6 +2290,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // POST /cancel — cancel all active runs for this DO
       if (method === "POST" && url.pathname === "/cancel") {
         return this.handleCancelAll();
+      }
+      // POST /goal-credit-ceiling — MS-18. Authorization is done by the Agents Worker route
+      // (owning-Space owner/admin or Project owner); a flag-off DO answers like an unknown path.
+      if (method === "POST" && url.pathname === "/goal-credit-ceiling") {
+        if (this.env.GOAL_CREDIT_CEILING_ENABLED !== "true") return Response.json({ error_code: "not_found" }, { status: 404 });
+        const body = await request.json<{ parent_run_id?: unknown; credit_ceiling?: unknown }>().catch(() => null);
+        if (!body || typeof body.parent_run_id !== "string" || typeof body.credit_ceiling !== "number") return Response.json({ error_code: "invalid_request" }, { status: 400 });
+        const result = raiseGoalCreditCeiling(this.ctx.storage.sql, { parentRunId: body.parent_run_id, ceiling: body.credit_ceiling });
+        if (!result.ok) return Response.json({ error_code: result.reason === "invalid_ceiling" ? "invalid_request" : result.reason }, { status: result.reason === "invalid_ceiling" ? 400 : result.reason === "not_found" ? 404 : 409 });
+        return Response.json({ ok: true, goals_raised: result.raised });
       }
       if (method === "POST" && (url.pathname === "/git/reset-hard" || url.pathname === "/rollback-to-turn")) {
         if (!this.env.ARTIFACT_WORKER) return Response.json({ error: "artifact repository unavailable" }, { status: 503 });
@@ -4964,6 +4978,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             }
           };
           const dynamicExpansionEnabled = this.env.GOAL_DYNAMIC_EXPANSION_ENABLED === "true";
+          const goalCreditCeilingEnabled = this.env.GOAL_CREDIT_CEILING_ENABLED === "true";
           const goalDispatchAuthorization = async (): Promise<boolean> => {
             if (!userId) return false;
             try {
@@ -5281,7 +5296,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 });
               } catch { /* runtime telemetry must not affect task completion */ }
             },
+            ...(goalCreditCeilingEnabled ? { admitDispatch: async (task: GoalTask) => {
+              // MS-18: hold the task's estimated reservation (budget_tokens priced as output tokens)
+              // against the per-goal ceiling before the dispatch intent is committed.
+              const admission = admitGoalTaskDispatch(this.ctx.storage.sql, {
+                journalKey: key, parentRunId, taskId: task.id, reservationId: `goal-credit:${key}:${task.id}`,
+                estimatedCredits: estimateGoalTaskCredits(task.budget_tokens, DEFAULT_WORKING_MODEL),
+              });
+              return admission;
+            } } : {}),
             publish: async (task, state) => {
+              if (goalCreditCeilingEnabled && ["completed", "failed", "cancelled", "needs_review"].includes(state.status)) {
+                const worker = this.ctx.storage.sql.exec<{ tokens_used: number | null }>("SELECT tokens_used FROM sub_agents WHERE id=?", state.workerId).toArray()[0];
+                settleGoalCreditReservation(this.ctx.storage.sql, { journalKey: key, reservationId: `goal-credit:${key}:${task.id}`,
+                  tokensUsed: Number(worker?.tokens_used ?? 0), budgetTokens: task.budget_tokens });
+              }
               if (enabled && userId && state.status === "completed") {
                 const recipients = taskCommunicationRecipients(task.id, tasks).map(taskId);
                 if (recipients.length) {

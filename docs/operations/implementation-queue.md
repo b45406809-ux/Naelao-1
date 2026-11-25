@@ -827,7 +827,9 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
 - [ ] **Blocked · APW05 — Aggregate goal credits and cost-aware scheduling.** No approved per-goal
   or per-task credit ceiling, cost/quality objective, or task-priority weights exist. Resume after
   those policies and their exact Billing reservation contract are approved; keep model/runtime
-  cost selection and automatic thrash control disabled meanwhile.
+  cost selection and automatic thrash control disabled meanwhile. MS-18 local slice landed (flag
+  `GOAL_CREDIT_CEILING_ENABLED`, off): a per-goal 200-credit ceiling gates task dispatch and an
+  owner/admin raise route resumes it; live Billing reservation acceptance remains.
 - [ ] **Blocked · APW05 — Provider USD acceptance.** Internal credits and per-inference price
   snapshots are not invoice-reconciled provider charges. Resume with staging/provider access,
   representative controlled task runs, approved thresholds and reconciled invoices; reuse the APW02

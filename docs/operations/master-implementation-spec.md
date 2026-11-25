@@ -501,13 +501,14 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Tests:** new install gets the default policy; an existing policy is never overwritten; reinstall/new generation behavior matches what the code does for other per-installation rows.
 - **Done:** focused test, full `naelao-spaces` suite, typecheck.
 
-### - [ ] MS-18 — Per-goal credit ceiling
+### - [x] MS-18 — Per-goal credit ceiling
 
 - **Queue:** item 2, APW05. **Model:** Sonnet. **Decision:** D8 (and D10 for who sets it).
 - **Start here:** `workers/agents/src/script-engine/goal-dag.ts`, `script-engine/prebuilt/goal-planner.ts`, `NaelaoAgentDO.ts` goal tables (`goal_dag_journals`, `goal_dispatch_outbox`, ~l.2083) and inference reservation/settlement (`reserveRunInferenceCost`, `settleRunBilling`, ~l.1497-1571, 8588-8671).
 - **Do:** behind `GOAL_CREDIT_CEILING_ENABLED`, store `credit_ceiling` (default 200) and `credits_settled` / `credits_held` per goal journal. Before dispatching a goal task, if settled + held + that task's estimated reservation would exceed the ceiling, do not dispatch; set the goal to `awaiting_budget_approval` and record why. Add an owner/admin action that raises the ceiling (resumes dispatch) — reuse the authority used by MS-07 task-stop. Settlements update `credits_settled` idempotently per reservation ID. Flag off = today's behavior. Add the flag `"false"` to agents `wrangler.toml`.
 - **Tests:** dispatch allowed under the ceiling; blocked at it with the waiting status; raise resumes; duplicate settlement counted once; non-owner raise refused with the not-found shape; flag off unchanged.
 - **Done:** focused tests, full agents suite, typecheck.
+- **Result:** this commit. With `GOAL_CREDIT_CEILING_ENABLED` on, `executeGoalDag` calls a new `admitDispatch` hook per ready task; `goal-credit-ceiling.ts` holds `budget_tokens` priced as output tokens via `tokensToCredits` against a per-journal ceiling (default 200) with idempotent per-reservation settlement and `awaiting_budget_approval` plus a recorded reason; owner/admin or Project owner raise via `POST /spaces/:spaceId/projects/:projectId/goal-credit-ceiling` (unauthorized = not-found shape). Flag off adds no hook and no rows. `goal-credit-ceiling.test.ts` 11/11; full Agents suite 2034 pass / 3 known failures; typecheck clean. Local/mock only; a blocked goal resumes on its next run after a raise.
 
 ### - [ ] MS-19 — Bill Naelao-managed AgentMail sends
 
