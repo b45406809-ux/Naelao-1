@@ -28,6 +28,8 @@ describe("SpaceDO directed subspace blackboard", () => {
       body: JSON.stringify({ id: "route-sales-research", source_subspace_id: "dept-a", target_subspace_id: "dept-b", allowed_kinds: ["question", "completion"], allow_reply: true }),
     }));
     expect(await duplicateRoute.json()).toMatchObject({ route_id: "route-sales-research", deduplicated: true });
+    const listedRoutes = await space.fetch(new Request("https://space/subspace-blackboard/routes?root_space_id=root&subspace_id=dept-a&actor_id=root-owner"));
+    expect(await listedRoutes.json()).toMatchObject({ routes: [{ route_id: "route-sales-research", can_manage: true }] });
 
     const question = await space.fetch(new Request("https://space/sub-spaces/dept-a/blackboard?root_space_id=root&actor_id=sales-editor", {
       method: "POST", headers: { "content-type": "application/json" },

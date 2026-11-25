@@ -6938,6 +6938,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/subspace-blackboard/routes") {
         return this.createSubspaceBlackboardRoute(request, url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
       }
+      if (method === "GET" && url.pathname === "/subspace-blackboard/routes") {
+        return this.listSubspaceBlackboardRoutes(url.searchParams.get("root_space_id") ?? "", url.searchParams.get("subspace_id") ?? "", url.searchParams.get("actor_id") ?? "");
+      }
       const subspaceBlackboardRevokeMatch = url.pathname.match(/^\/subspace-blackboard\/routes\/([^/]+)\/revoke$/);
       if (method === "POST" && subspaceBlackboardRevokeMatch?.[1]) {
         return this.revokeSubspaceBlackboardRoute(decodeURIComponent(subspaceBlackboardRevokeMatch[1]), url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
@@ -14727,6 +14730,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       `INSERT INTO subspace_blackboard_routes(id,source_subspace_id,target_subspace_id,allowed_kinds_json,allow_reply,status,route_revision,created_by,created_at,updated_at)
        VALUES(?,?,?,?,?,'active',1,?,?,?)`, body.id, sourceId, targetId, kindsJson, Number(body.allow_reply), actorId, now, now);
     return Response.json({ route_id: body.id, status: "active", route_revision: 1 }, { status: 201 });
+  }
+
+  private listSubspaceBlackboardRoutes(rootId: string, subspaceId: string, actorId: string): Response {
+    const valid = queryOne<{ id: string; parent_id: string | null; depth: number; status: string }>(this.ctx.storage.sql as never,
+      "SELECT id,parent_id,depth,status FROM spaces WHERE id=?", subspaceId);
+    if (!valid || valid.parent_id !== rootId || valid.depth !== 1 || valid.status !== "active"
+        || !this.canReadSubspaceBlackboard(rootId, subspaceId, actorId))
+      return Response.json({ error_code: "board_unavailable" }, { status: 404 });
+    const rows = queryAll<{ id: string; source_subspace_id: string; target_subspace_id: string; allow_reply: number; route_revision: number }>(this.ctx.storage.sql as never,
+      `SELECT id,source_subspace_id,target_subspace_id,allow_reply,route_revision FROM subspace_blackboard_routes
+       WHERE status='active' AND (source_subspace_id=? OR target_subspace_id=?) ORDER BY created_at,id LIMIT 101`, subspaceId, subspaceId);
+    const routes = rows.filter(route => this.subspaceBlackboardRows(rootId, route.source_subspace_id, route.target_subspace_id))
+      .slice(0, 100).map(route => ({ route_id: route.id, source_subspace_id: route.source_subspace_id,
+        target_subspace_id: route.target_subspace_id, allow_reply: route.allow_reply === 1, route_revision: route.route_revision,
+        can_manage: this.canManageSubspaceBlackboard(rootId, route.source_subspace_id, actorId)
+          && this.canManageSubspaceBlackboard(rootId, route.target_subspace_id, actorId) }));
+    return Response.json({ routes, truncated: rows.length > 100 });
   }
 
   private revokeSubspaceBlackboardRoute(routeId: string, rootId: string, actorId: string): Response {

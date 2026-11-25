@@ -174,3 +174,16 @@ relay. The focused helper, DO and worker-route suites pass **8/8**, Spaces typec
 
 **Next task:** add owner/assistant/template route configuration and scoped handoff integration;
 the direct route remains opt-in and no route is created by default.
+
+**SBB03.1 verified checkpoint:** Active routes are discoverable only from a subspace board after
+current membership is checked. The department page exposes explicit route creation and revocation
+for users who can manage both siblings, with source-board questions, target-board linked replies,
+and messages visible on each permitted board. `can_manage` is derived by SpaceDO; the page does not
+infer authorization. Sharing remains opt-in. Focused Spaces tests pass **9/9**, Router
+product-session path tests pass **92/92**, Shell typecheck and `git diff --check` pass. Local only;
+no deployment or live acceptance ran.
+
+**Next implementation action:** add an internal HMAC-gated assistant read/publish operation that
+compares the host-selected agent ID with the exact immutable `space_assistants.assistant_actor_id`
+for the selected active subspace. An assistant can use an already active route but cannot configure
+or revoke it.

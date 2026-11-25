@@ -113,6 +113,24 @@ describe("Space member invitation identity routing", () => {
   });
 });
 
+describe("logical subspace blackboard identity routing", () => {
+  it.each([
+    "/spaces/s/subspace-blackboard/routes",
+    "/spaces/s/subspace-blackboard/routes/route-a/revoke",
+    "/spaces/s/sub-spaces/dept-a/blackboard",
+  ])("resolves product-session identity for %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
+  });
+
+  it.each([
+    "/spaces/s/subspace-blackboard/routes/route-a/revoke/other",
+    "/spaces/s/sub-spaces/dept-a/blackboard/other",
+    "/spaces/s/sub-spaces/dept-a/admin",
+  ])("keeps unrelated department operations outside this identity route: %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
+  });
+});
+
 describe("Product-user billing status routing", () => {
   it("allows only the exact self-service status endpoint through product-session identity", () => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/customer-billing-status"))).toBe(true);

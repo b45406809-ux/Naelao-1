@@ -61,4 +61,14 @@ describe("subspace blackboard routes", () => {
     expect(board.status).toBe(404);
     expect(forwarded.some(request => new URL(request.url).pathname === "/sub-spaces/dept-b/blackboard")).toBe(false);
   });
+
+  it("lists routes only after checking the authenticated member on that subspace", async () => {
+    const { env, forwarded, secret } = environment();
+    const requestHeaders = { ...headers(secret), "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/root/subspace-blackboard/routes?subspace_id=dept-a", { headers: requestHeaders }), env);
+    expect(response.status).toBe(200);
+    const request = forwarded.find(item => new URL(item.url).pathname === "/subspace-blackboard/routes")!;
+    expect(new URL(request.url).searchParams.get("subspace_id")).toBe("dept-a");
+    expect(new URL(request.url).searchParams.get("actor_id")).toBe("authenticated-owner");
+  });
 });

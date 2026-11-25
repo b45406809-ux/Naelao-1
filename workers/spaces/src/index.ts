@@ -8289,6 +8289,17 @@ app.post("/spaces/:spaceId/subspace-blackboard/routes", async (c) => {
   }));
 });
 
+app.get("/spaces/:spaceId/subspace-blackboard/routes", async (c) => {
+  const { spaceId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  const subspaceId = c.req.query("subspace_id") ?? "";
+  if (!tenantId || !userId || !subspaceId) return c.json({ error_code: "board_unavailable" }, 404);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (!(await authorizeDepartmentMember(stub, userId, subspaceId, "read")).permitted) return c.json({ error_code: "board_unavailable" }, 404);
+  const query = new URLSearchParams({ root_space_id: spaceId, subspace_id: subspaceId, actor_id: userId });
+  return forwardToSpaceDO(stub, `/subspace-blackboard/routes?${query}`, "GET");
+});
+
 app.post("/spaces/:spaceId/subspace-blackboard/routes/:routeId/revoke", async (c) => {
   const { spaceId, routeId } = c.req.param();
   const { tenantId, userId } = getCallerIdentity(c);

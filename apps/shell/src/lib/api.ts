@@ -1364,6 +1364,68 @@ export async function listDepartmentProjects(spaceId: string, departmentId: stri
   return result.data;
 }
 
+export interface SubspaceBlackboardRoute {
+  route_id: string;
+  source_subspace_id: string;
+  target_subspace_id: string;
+  allow_reply: boolean;
+  route_revision: number;
+  can_manage: boolean;
+}
+
+export interface SubspaceBlackboardMessage {
+  id: string;
+  routeId: string;
+  sourceSubspaceId: string;
+  targetSubspaceId: string;
+  senderSubspaceId: string;
+  senderId: string;
+  kind: "finding" | "artifact" | "question" | "blocker" | "risk" | "completion" | "verification";
+  text: string;
+  createdAt: string;
+  replyTo?: string;
+}
+
+export async function listSubspaceBlackboardRoutes(spaceId: string, departmentId: string, session: SessionCredentials): Promise<SubspaceBlackboardRoute[]> {
+  const result = await apiFetch<{ routes: SubspaceBlackboardRoute[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/subspace-blackboard/routes?subspace_id=${encodeURIComponent(departmentId)}`,
+    { session, cache: "no-store" },
+  );
+  return result.routes;
+}
+
+export async function createSubspaceBlackboardRoute(spaceId: string, input: {
+  id: string; sourceSubspaceId: string; targetSubspaceId: string; allowedKinds: string[]; allowReply: boolean;
+}, session: SessionCredentials): Promise<{ route_id: string }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/subspace-blackboard/routes`, {
+    method: "POST", session,
+    body: JSON.stringify({ id: input.id, source_subspace_id: input.sourceSubspaceId, target_subspace_id: input.targetSubspaceId,
+      allowed_kinds: input.allowedKinds, allow_reply: input.allowReply }),
+  });
+}
+
+export async function revokeSubspaceBlackboardRoute(spaceId: string, routeId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/subspace-blackboard/routes/${encodeURIComponent(routeId)}/revoke`, { method: "POST", session });
+}
+
+export async function listSubspaceBlackboardMessages(spaceId: string, departmentId: string, routeId: string, session: SessionCredentials): Promise<SubspaceBlackboardMessage[]> {
+  const result = await apiFetch<{ messages: SubspaceBlackboardMessage[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/sub-spaces/${encodeURIComponent(departmentId)}/blackboard?route_id=${encodeURIComponent(routeId)}`,
+    { session, cache: "no-store" },
+  );
+  return result.messages;
+}
+
+export async function publishSubspaceBlackboardMessage(spaceId: string, departmentId: string, input: {
+  routeId: string; id: string; kind: SubspaceBlackboardMessage["kind"]; text: string; replyTo?: string;
+}, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/sub-spaces/${encodeURIComponent(departmentId)}/blackboard`, {
+    method: "POST", session,
+    body: JSON.stringify({ route_id: input.routeId, id: input.id, kind: input.kind, text: input.text,
+      ...(input.replyTo ? { reply_to: input.replyTo } : {}) }),
+  });
+}
+
 export async function associateProjectDepartment(spaceId: string, projectId: string, departmentId: string, session: SessionCredentials): Promise<void> {
   await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/sub-spaces`, {
     method: "POST", body: JSON.stringify({ subspace_id: departmentId }), session,
