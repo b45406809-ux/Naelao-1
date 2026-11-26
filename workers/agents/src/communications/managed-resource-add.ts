@@ -13,6 +13,7 @@ import {
   ManagedQuoteError, QUOTE_STRATEGY_CANDIDATES, computeQuoteBreakdown, createOfferingQuote, offeringPriceVersion, parseChargeComponents,
   verifyOfferingQuote, type OfferingQuote, type QuoteComponent,
 } from "./managed-quotes.js";
+import { registerProvisionedResource } from "./managed-resource-registration.js";
 import { markManagedServiceCreditsUncertain, releaseManagedServiceCredits, reserveManagedServiceCredits, settleManagedServiceCredits } from "./managed-service-billing.js";
 
 export type ResourceAccessMode = "managed" | "byok";
@@ -211,6 +212,10 @@ export interface ResourceProvisionResult {
   operationId: string;
   offeringId: string;
   resource: { resourceType: string; address?: string; status: string };
+  /** MS-47: the registered `managed_service_accounts` id; present only when the resource row was registered. */
+  resourceId?: string;
+  /** MS-47: true when an AgentPort account exists, so owner and template grants apply now instead of being deferred. */
+  agentPortLinked?: boolean;
 }
 
 export async function provisionManagedResource(
@@ -279,7 +284,14 @@ export async function provisionManagedResource(
     // The first period is paid here (the subscription charges the next one at renewal). A failed settle leaves the hold for reconciliation.
     await settleManagedServiceCredits(env, billingScope, reservationId, quoteRow!.credits).catch(() => undefined);
     await setStatus("complete");
-    return { operationId, offeringId: input.offeringId, resource: { resourceType: row.resource_type, status: result.resource.status, ...(result.resource.address ? { address: result.resource.address } : {}) } };
+    // MS-47 item 1: register the resource and its AgentPort account so grants can apply. The provider resource exists and is paid for,
+    // so a registration failure never fails the provision; the caller sees no resourceId and records its grants as deferred.
+    const registered = await registerProvisionedResource(env, scope, {
+      provider: row.provider, serviceId: row.service_id, capabilityVersion: result.capability_version, offeringId: input.offeringId,
+      resource: result.resource, region: input.region, displayName: input.displayName ?? null, now,
+    }).catch(() => null);
+    return { operationId, offeringId: input.offeringId, resource: { resourceType: row.resource_type, status: result.resource.status, ...(result.resource.address ? { address: result.resource.address } : {}) },
+      ...(registered ? { resourceId: registered.resourceId, agentPortLinked: registered.agentPortAccountId !== null } : {}) };
   } catch (error) {
     const code = error instanceof ProviderAdapterError ? error.code : "provision_failed";
     if (code === "outcome_unknown") {

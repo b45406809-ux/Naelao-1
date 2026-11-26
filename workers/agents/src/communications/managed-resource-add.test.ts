@@ -162,6 +162,65 @@ describe("MS-43 resource quote and provision", () => {
     expect(seen).toHaveLength(1);
   });
 
+  it("MS-47: registers the provisioned resource and an AgentPort account, so a named grant applies instead of deferring", async () => {
+    const h = harness(); h.seed({ id: "off-n", provider: "naelao", rank: 1, strategies: ["first_party"], components: h.rental(100) });
+    h.db.prepare("UPDATE managed_service_commercial_agreements SET agreement_type='first_party' WHERE provider='naelao'").run();
+    const calls: Array<{ method: string; path: string; body: Record<string, unknown> | null }> = [];
+    (h.env as unknown as { AGENTPORT_WORKER: Fetcher }).AGENTPORT_WORKER = { fetch: async (request: Request) => {
+      const path = new URL(request.url).pathname.replace("/internal/agentport", "");
+      const body = request.method === "POST" ? await request.json() as Record<string, unknown> : null;
+      calls.push({ method: request.method, path, body });
+      if (path === "/agents") return Response.json({ agent: { id: "agent-x" } }, { status: 201 });
+      if (path === "/services") return Response.json({ service: { id: body?.id } }, { status: 201 });
+      if (path.endsWith("/identity")) return Response.json({ identity: { principal: { id: "prn-org" } } });
+      if (path === "/accounts") return Response.json({ account: { id: "acct-new", status: "pending" } }, { status: 201 });
+      if (path.endsWith("/activate")) return Response.json({ account: { id: "acct-new", status: "active" } });
+      return Response.json({ grant: { id: "grt" } }, { status: 201 });
+    } } as unknown as Fetcher;
+    const adapter = { provider: "naelao", capabilities: () => [], lookup: async () => null, execute: async () => ({ operation: "x", data: null }),
+      provision: async () => ({ resource: { provider: "naelao", service_id: "naelao", resource_type: "email_inbox", provider_resource_ref: "inb_77", status: "active" as const, address: "box@mail.test" }, offering_id: "off-n", capability_version: 1 }) };
+    const env = h.env as unknown as AgentsEnv;
+    const scope = { tenantId: "tenant", spaceId: "space", userId: "user", role: "owner" as const };
+    const quote = (await (await h.post({ action: "resource-quote", resource_type: "email_inbox", region: "us" })).json() as { quote: { quoteId: string } }).quote;
+    const result = await provisionManagedResource(env, scope, { quoteId: quote.quoteId, offeringId: "off-n", region: "us" }, { "naelao/naelao": adapter });
+    expect(result).toMatchObject({ agentPortLinked: true, resourceId: expect.stringMatching(/^msa_/) });
+    expect(h.db.prepare(`SELECT provider_resource_ref,offering_id,access_mode,provisioning_strategy,tenant_id,space_id,agentport_account_id,agentport_link_status,lifecycle_state,resource_type
+      FROM managed_service_accounts WHERE id=?`).get(result.resourceId)).toEqual({ provider_resource_ref: "inb_77", offering_id: "off-n", access_mode: "managed", provisioning_strategy: "first_party",
+      tenant_id: "tenant", space_id: "space", agentport_account_id: "acct-new", agentport_link_status: "active", lifecycle_state: "active", resource_type: "email_inbox" });
+    const account = calls.find((c) => c.path === "/accounts")!;
+    expect(account.body).toMatchObject({ ownerType: "organization", ownerId: "tenant", externalAccountId: "inb_77", accountModel: "agent_native" });
+    // No grant is made by registration itself.
+    expect(calls.some((c) => c.path.endsWith("/grants"))).toBe(false);
+    // The MS-44 grant now applies to the new resource.
+    const db = h.db;
+    const AT = new Date().toISOString();
+    db.prepare("INSERT INTO agentport_principals(id,tenant_id,principal_type,external_id,created_at,updated_at) VALUES('prin-1','tenant','organization','tenant',?,?)").run(AT, AT);
+    db.exec("ALTER TABLE agentport_agents ADD COLUMN host_resource_id TEXT");
+    db.prepare(`INSERT INTO agentport_agents(id,tenant_id,principal_id,created_by,host_platform,host_resource_id,status,created_at,updated_at) VALUES('agent-1','tenant','prin-1','user','naelao','space-assistant:space','active',?,?)`).run(AT, AT);
+    const granted = await h.post({ action: "resource-grant", resource_id: result.resourceId, agent_id: "agent-1", actions: ["email.send"] });
+    expect(granted.status).toBe(200);
+    expect(calls.at(-1)).toMatchObject({ path: "/accounts/acct-new/grants", body: { agentId: "agent-1", permissions: ["email.send"] } });
+    // A replay of the registration reuses the row and the account.
+    const { registerProvisionedResource } = await import("./managed-resource-registration.js");
+    const again = await registerProvisionedResource(env, scope, { provider: "naelao", serviceId: "naelao", capabilityVersion: 1, offeringId: "off-n",
+      resource: { provider: "naelao", service_id: "naelao", resource_type: "email_inbox", provider_resource_ref: "inb_77", status: "active" }, region: "us" });
+    expect(again).toEqual({ resourceId: result.resourceId, agentPortAccountId: "acct-new" });
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM managed_service_accounts WHERE provider_resource_ref='inb_77'").get()).toEqual({ n: 1 });
+  });
+
+  it("MS-47: an AgentPort outage after the provider call keeps the resource, reports it unlinked and leaves grants deferred", async () => {
+    const h = harness(); h.seed({ id: "off-n", provider: "naelao", rank: 1, strategies: ["first_party"], components: h.rental(100) });
+    h.db.prepare("UPDATE managed_service_commercial_agreements SET agreement_type='first_party' WHERE provider='naelao'").run();
+    (h.env as unknown as { AGENTPORT_WORKER: Fetcher }).AGENTPORT_WORKER = { fetch: async () => new Response("down", { status: 503 }) } as unknown as Fetcher;
+    const adapter = { provider: "naelao", capabilities: () => [], lookup: async () => null, execute: async () => ({ operation: "x", data: null }),
+      provision: async () => ({ resource: { provider: "naelao", service_id: "naelao", resource_type: "email_inbox", provider_resource_ref: "inb_78", status: "active" as const }, offering_id: "off-n", capability_version: 1 }) };
+    const quote = (await (await h.post({ action: "resource-quote", resource_type: "email_inbox", region: "us" })).json() as { quote: { quoteId: string } }).quote;
+    const result = await provisionManagedResource(h.env as unknown as AgentsEnv, { tenantId: "tenant", spaceId: "space", userId: "user", role: "owner" },
+      { quoteId: quote.quoteId, offeringId: "off-n", region: "us" }, { "naelao/naelao": adapter });
+    expect(result.agentPortLinked).toBe(false);
+    expect(h.db.prepare("SELECT agentport_account_id FROM managed_service_accounts WHERE id=?").get(result.resourceId)).toEqual({ agentport_account_id: null });
+  });
+
   it("refuses an expired quote without calling the adapter or Billing", async () => {
     const h = harness(); h.seed({ id: "off-n", provider: "naelao", rank: 1, strategies: ["first_party"], components: h.rental(100) });
     h.db.prepare("UPDATE managed_service_commercial_agreements SET agreement_type='first_party' WHERE provider='naelao'").run();

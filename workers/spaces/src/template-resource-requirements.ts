@@ -197,7 +197,10 @@ export async function decideTemplateResourceProposal(env: TemplateResourceEnv, c
       await release();
       return { status: provisioned.status >= 500 ? 502 : provisioned.status, body: { error_code: code } };
     }
-    operationId = (await provisioned.json<{ operationId?: string }>().catch(() => ({} as { operationId?: string }))).operationId ?? null;
+    const done = await provisioned.json<{ operationId?: string; resourceId?: string; agentPortLinked?: boolean }>().catch(() => ({} as { operationId?: string; resourceId?: string; agentPortLinked?: boolean }));
+    operationId = done.operationId ?? null;
+    // MS-47: a registered resource with an AgentPort account takes the named grants now; otherwise they stay deferred.
+    if (done.resourceId && done.agentPortLinked === true && ID.test(done.resourceId)) resourceId = done.resourceId;
   }
 
   // Grants only after approval, only for agents the approver named, only on a resource that already has an AgentPort account.

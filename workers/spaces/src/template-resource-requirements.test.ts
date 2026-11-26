@@ -17,7 +17,7 @@ const artifact: SpaceBlueprint = {
   ],
 };
 
-async function harness(options: { flag?: boolean; provisionError?: string; resources?: Array<Record<string, unknown>>; quotePrice?: number } = {}) {
+async function harness(options: { flag?: boolean; provisionError?: string; linked?: boolean; resources?: Array<Record<string, unknown>>; quotePrice?: number } = {}) {
   const { flag = true, resources = [{ id: "res_existing", display_name: "Sales inbox", region: "us", access_mode: "managed" }], quotePrice = 100 } = options;
   const certificate = await certifyStateDeltaArtifact(artifact, { fixtures: Array.from({ length: 50 }, (_, i) => ({ id: `r-${i}` })) },
     { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, SECRET, TENANT);
@@ -45,7 +45,8 @@ async function harness(options: { flag?: boolean; provisionError?: string; resou
     if (action === "resource-quote") { counts.quote++; return Response.json({ quote: { quoteId: `msq_${"a".repeat(31)}${counts.quote}`, minMonthlyCredits: 100, credits: 100 } }); }
     if (action === "resource-provision") {
       counts.provision++;
-      return options.provisionError ? Response.json({ error_code: options.provisionError }, { status: 502 }) : Response.json({ operationId: "res_op_1", offeringId: "off_email", resource: { resourceType: "email.inbox", status: "active" } });
+      return options.provisionError ? Response.json({ error_code: options.provisionError }, { status: 502 }) : Response.json({ operationId: "res_op_1", offeringId: "off_email", resource: { resourceType: "email.inbox", status: "active" },
+        ...(options.linked ? { resourceId: "msa_new", agentPortLinked: true } : {}) });
     }
     if (action === "resource-grant") { counts.grant++; return Response.json({ ok: true }); }
     return new Response("nope", { status: 404 });
@@ -123,9 +124,20 @@ describe("template resource requirements (MS-44)", () => {
     expect(h.counts.quote).toBe(1);
     const created = [a, b].find((r) => r.status === 201)!;
     expect(await created.json()).toMatchObject({ status: "approved", choice: "create", operation_id: "res_op_1" });
-    // A newly provisioned resource has no AgentPort account yet, so named grants are deferred, not applied.
+    // A provision that reports no linked AgentPort account leaves named grants deferred, not applied.
     expect(h.counts.grant).toBe(0);
     expect((await h.proposals()).map((p) => p.requirement_key)).toEqual(["voice"]);
+  });
+
+  it("MS-47: a newly provisioned resource with an AgentPort account takes the named grants now", async () => {
+    const h = await harness({ linked: true });
+    await h.activate();
+    const inbox = (await h.proposals()).find((p) => p.requirement_key === "inbox")!;
+    const response = await h.call("template-resource-proposals", { method: "POST", body: approveCreate(inbox.id, { grant_agent_ids: { sales: ["agent-1"] } }) });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ status: "approved", resource_id: "msa_new", grants: [{ agent_id: "agent-1", status: "granted" }] });
+    expect(h.counts.grant).toBe(1);
+    expect(h.agentCalls.find((c) => c.action === "resource-grant")?.body).toMatchObject({ resource_id: "msa_new", agent_id: "agent-1" });
   });
 
   it("refuses to provision when the price changed after the owner saw it", async () => {
