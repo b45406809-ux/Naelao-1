@@ -1,13 +1,42 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 import { dispatchManagedServiceMeterOutbox } from "./index.js";
 import { createFakeD1 } from "../../../tests/stubs/d1-sqlite.js";
 
 const secret = "managed-service-test-secret";
+
+// MS-29: the managed-service reservation tests run twice, with MANAGED_OFFERINGS_ENABLED off and on. The flag-on
+// run seeds one offering and one approved agreement per capability row (test fixtures only), so existing behaviour
+// must be identical. `quote_policy` here is the fixture's statement of what the legacy hard-coded rules meant.
+let offeringsMode = false;
+export const FIXTURE_QUOTE_POLICY: Record<string, "none" | "required_for_recurring" | "always"> = {
+  agentmail: "required_for_recurring", cloudflare: "always",
+};
+export function seedOfferingsForCapabilities(db: ReturnType<typeof createFakeD1>["db"], quotePolicy: Record<string, string> = FIXTURE_QUOTE_POLICY) {
+  const caps = db.prepare(`SELECT provider,service_id,version,category FROM managed_service_capability_versions c
+    WHERE version=(SELECT MIN(version) FROM managed_service_capability_versions WHERE provider=c.provider AND service_id=c.service_id)`).all() as
+    Array<{ provider: string; service_id: string; version: number; category: string }>;
+  const ids = new Map<string, string[]>();
+  for (const cap of caps) {
+    // A test that seeds its own offering for a provider keeps full control of that provider's rows.
+    if (db.prepare("SELECT 1 AS present FROM managed_service_offerings WHERE provider=? AND service_id=?").get(cap.provider, cap.service_id)
+      && !db.prepare("SELECT 1 AS present FROM managed_service_offerings WHERE id=?").get(`offering-${cap.provider}-${cap.service_id}`)) continue;
+    const id = `offering-${cap.provider}-${cap.service_id}`;
+    db.prepare(`INSERT OR IGNORE INTO managed_service_offerings(id,provider,service_id,capability_version,resource_type,category,display_name,
+      access_modes_json,strategies_json,regions_json,configuration_schema_json,charge_components_json,quote_policy,data_handling_json,
+      preference_rank,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'["managed"]','["first_party","managed_master"]','["*"]','{}','[]',?,'{}',100,'available',1,1)`)
+      .run(id, cap.provider, cap.service_id, cap.version, "resource", cap.category ?? "model", `${cap.provider} ${cap.service_id}`, quotePolicy[cap.provider] ?? "none");
+    ids.set(cap.provider, [...(ids.get(cap.provider) ?? []), id]);
+  }
+  for (const [provider, offeringIds] of ids) db.prepare(`INSERT OR IGNORE INTO managed_service_commercial_agreements(id,provider,agreement_type,
+    permitted_offering_ids_json,permits_managed_provisioning,permits_master_account_distribution,permits_subaccount_distribution,permits_shared_resources,
+    permitted_regions_json,effective_from,expires_at,verification_status,approved_by,approved_at,created_at,updated_at)
+    VALUES(?,?,'standard_terms',?,1,1,0,0,'["*"]',0,NULL,'approved','test-operator',1,1,1)`).run(`agreement-${provider}`, provider, JSON.stringify(offeringIds));
+}
 
 function harness(planTier = "free") {
   const db = createFakeD1([
@@ -34,11 +63,15 @@ function harness(planTier = "free") {
     readFileSync(join(__dirname, "../../../infra/migrations/0192_managed_service_provider_cost_receipts.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0194_agentport_scoped_managed_service_spend.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0201_managed_service_meter_outbox.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../../infra/migrations/0291_managed_offerings_agreements_resources.sql"), "utf8"),
+    // Column from migration 0292 (the rest of 0292 recreates Telnyx triggers that need tables this harness does not load).
+    `ALTER TABLE managed_service_offerings ADD COLUMN testing_tenant_ids_json TEXT NOT NULL DEFAULT '[]';`,
   ]);
   const quotaValues = new Map<string, string>();
   const queueState: { messages: Array<Record<string, unknown>>; failNext: boolean } = { messages: [], failNext: false };
   const env = {
     ENVIRONMENT: "test",
+    ...(offeringsMode ? { MANAGED_OFFERINGS_ENABLED: "true" } : {}),
     PLATFORM_SECRET: secret,
     MANAGED_SERVICES_OPERATOR_SECRET: "operator-test-secret",
     PLATFORM_DB: db,
@@ -53,6 +86,7 @@ function harness(planTier = "free") {
     } },
   };
   const post = async (path: string, body: Record<string, unknown>, authorized = true) => {
+    if (offeringsMode && path === "/internal/managed-services/credits/reserve") seedOfferingsForCapabilities(db.db);
     const token = authorized ? await mintInternalToken(secret, "org-a") : "invalid";
     return worker.fetch(new Request(`https://billing.test${path}`, {
       method: "POST",
@@ -240,7 +274,8 @@ const reservation = {
   price_version: "agentmail-rental-v1",
 };
 
-describe("managed service credit reservations", () => {
+describe.each([false, true])("managed service credit reservations (MANAGED_OFFERINGS_ENABLED=%s)", (flag) => {
+  beforeEach(() => { offeringsMode = flag; });
   it("authorizes internal calls, deduplicates holds, retains uncertain outcomes, and settles once", async () => {
     const h = harness();
     allowAgentMailPayer(h.db.db);
@@ -727,5 +762,124 @@ describe("managed service credit reservations", () => {
     });
     expect(await summary.json()).toMatchObject({ provenance: "operator_imported", usage: [{ serviceId: "agentmail", kind: "email", providerCostMicros: 125_000 }] });
     expect(h.db.db.prepare("SELECT COUNT(*) AS count FROM managed_service_credit_reservations").get()).toEqual({ count: 0 });
+  });
+});
+
+// MS-29: provider-neutral reserve admission. Everything below uses a fictional provider ("acme") whose only
+// presence is offering, agreement, capability and entitlement rows: no billing code names it.
+describe("offering-driven reserve admission (MANAGED_OFFERINGS_ENABLED=true)", () => {
+  beforeEach(() => { offeringsMode = true; });
+  const acmeBase = { reservation_id: "acme-rsv", operation_id: "acme-op", space_id: "space-a", provider: "acme", service_id: "acme-svc",
+    operation_name: "run", region: "us", payer_type: "organization", payer_id: "org-a", agentport_agent_id: "agent-a", credits: 40, price_version: "acme-v1" };
+
+  function acme(db: ReturnType<typeof createFakeD1>["db"], opts: { quotePolicy?: string; offeringStatus?: string; agreementStatus?: string; capabilityStatus?: string; operations?: string[] } = {}) {
+    const operations = opts.operations ?? ["run", "provision"];
+    db.prepare(`INSERT INTO managed_service_capability_versions(provider,service_id,version,category,operations_json,regions_json,account_modes_json,
+      isolation_model,metering_json,evidence_json,status,verified_by,verified_at,valid_until,created_at,updated_at)
+      VALUES('acme','acme-svc',1,'model',?, '["us"]','["naelao_managed"]','operator-scoped-broker','{}','[]',?, 'test-operator',datetime('now'),'2099-01-01T00:00:00.000Z',datetime('now'),datetime('now'))`)
+      .run(JSON.stringify(operations), opts.capabilityStatus ?? "verified");
+    db.prepare(`INSERT INTO managed_service_offerings(id,provider,service_id,capability_version,resource_type,category,display_name,access_modes_json,strategies_json,
+      regions_json,configuration_schema_json,charge_components_json,quote_policy,data_handling_json,preference_rank,status,created_at,updated_at)
+      VALUES('offering-acme','acme','acme-svc',1,'resource','model','Acme','["managed"]','["managed_master"]','["us"]','{}','[]',?, '{}',100,?,1,1)`)
+      .run(opts.quotePolicy ?? "none", opts.offeringStatus ?? "available");
+    db.prepare(`INSERT INTO managed_service_commercial_agreements(id,provider,agreement_type,permitted_offering_ids_json,permits_managed_provisioning,
+      permits_master_account_distribution,permits_subaccount_distribution,permits_shared_resources,permitted_regions_json,effective_from,expires_at,
+      verification_status,approved_by,approved_at,created_at,updated_at)
+      VALUES('agreement-acme','acme','standard_terms','["offering-acme"]',1,1,0,0,'["us"]',0,NULL,?, 'test-operator',1,1,1)`).run(opts.agreementStatus ?? "approved");
+    for (const operationName of operations) db.prepare(`INSERT INTO managed_service_plan_entitlements(
+      plan_tier,provider,service_id,capability_version,operation_name,region,price_version,max_credits_per_operation,credits_per_operation,max_operations_per_period,status,verified_by,verified_at,valid_until,created_at,updated_at)
+      VALUES('free','acme','acme-svc',1,?,'us','acme-v1',1000,40,NULL,'active','test-operator',datetime('now'),'2099-01-01T00:00:00.000Z',datetime('now'),datetime('now'))`).run(operationName);
+    db.prepare(`INSERT INTO managed_service_payer_mandates(id,tenant_id,payer_type,payer_id,mandate_key,authorized_by_user_id,
+      operation_scopes_json,max_credits_per_operation,auto_renew,status,created_at,updated_at,agentport_agent_id,max_credits_per_period,period_days)
+      VALUES('mandate-acme','org-a','organization','org-a','acme:agent-a','user-a',?,1000,1,'active',datetime('now'),datetime('now'),'agent-a',2000,30)`)
+      .run(JSON.stringify(operations.map((operationName) => `acme:acme-svc:${operationName}`)));
+  }
+  const operationFor = (db: ReturnType<typeof createFakeD1>["db"], operationName: string, operationId: string) =>
+    db.prepare(`INSERT INTO managed_service_operations(operation_id,tenant_id,space_id,provider,service_id,operation_name,region,capability_version,idempotency_key,request_sha256,status,created_at,updated_at)
+      VALUES(?,'org-a','space-a','acme','acme-svc',?,'us',1,?,?, 'running',datetime('now'),datetime('now'))`).run(operationId, operationName, operationId, "1".repeat(64));
+
+  it("reserves for a new provider with no billing code change when quote_policy is none", async () => {
+    const h = harness();
+    acme(h.db.db);
+    operationFor(h.db.db, "run", "acme-op");
+    const response = await h.post("/internal/managed-services/credits/reserve", acmeBase);
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ reserved: true, status: "held", credits: 40 });
+  });
+
+  it("derives the quote requirement from quote_policy: always, required_for_recurring and none", async () => {
+    for (const [policy, runNeedsQuote, provisionNeedsQuote] of [["always", true, true], ["required_for_recurring", false, true], ["none", false, false]] as const) {
+      const h = harness();
+      acme(h.db.db, { quotePolicy: policy });
+      operationFor(h.db.db, "run", "acme-op");
+      operationFor(h.db.db, "provision", "acme-prov-op");
+      const run = await h.post("/internal/managed-services/credits/reserve", acmeBase);
+      expect(run.status, `${policy} run`).toBe(runNeedsQuote ? 400 : 201);
+      const provision = await h.post("/internal/managed-services/credits/reserve", { ...acmeBase, reservation_id: "acme-prov-rsv", operation_id: "acme-prov-op", operation_name: "provision" });
+      expect(provision.status, `${policy} provision`).toBe(provisionNeedsQuote ? 400 : 201);
+    }
+  });
+
+  it("validates a required quote exactly as before for a new provider", async () => {
+    const h = harness();
+    acme(h.db.db, { quotePolicy: "always" });
+    operationFor(h.db.db, "run", "acme-op");
+    const quoteId = `msq_${"d".repeat(32)}`;
+    h.db.db.prepare(`UPDATE managed_service_operations SET quote_id=? WHERE operation_id='acme-op'`).run(quoteId);
+    h.db.db.prepare(`INSERT INTO managed_service_operation_quotes(quote_id,tenant_id,space_id,requester_user_id,plan_tier,provider,service_id,operation_name,
+      region,capability_version,price_version,credits,status,operation_id,expires_at,consumed_at,created_at)
+      VALUES(?,'org-a','space-a','user-a','free','acme','acme-svc','run','us',1,'acme-v1',40,'consumed','acme-op','2099-01-01T00:00:00.000Z',datetime('now'),datetime('now'))`).run(quoteId);
+    const request = { ...acmeBase, quote_id: quoteId, requester_user_id: "user-a" };
+    const wrongOwner = await h.post("/internal/managed-services/credits/reserve", { ...request, requester_user_id: "user-b" });
+    expect(wrongOwner.status).toBe(409);
+    expect(await wrongOwner.json()).toMatchObject({ error_code: "managed_service_operation_quote_required" });
+    expect((await h.post("/internal/managed-services/credits/reserve", request)).status).toBe(201);
+  });
+
+  it("refuses closed with the admission error code for each unavailable case", async () => {
+    const cases: Array<[string, Parameters<typeof acme>[1] | null, string]> = [
+      ["no offering", null, "offering_unavailable"],
+      ["draft offering", { offeringStatus: "draft" }, "offering_unavailable"],
+      ["unverified capability", { capabilityStatus: "draft" }, "capability_unsupported"],
+      ["operation outside the capability", { operations: ["provision"] }, "capability_unsupported"],
+      ["revoked agreement", { agreementStatus: "revoked" }, "provider_not_approved"],
+      ["unapproved agreement", { agreementStatus: "under_review" }, "provider_not_approved"],
+    ];
+    for (const [label, opts, errorCode] of cases) {
+      const h = harness();
+      if (opts) acme(h.db.db, opts);
+      const response = await h.post("/internal/managed-services/credits/reserve", acmeBase);
+      expect(response.status, label).toBe(403);
+      expect(await response.json(), label).toEqual({ error_code: errorCode });
+      expect(h.db.db.prepare("SELECT COUNT(*) AS count FROM managed_service_credit_reservations").get(), label).toEqual({ count: 0 });
+    }
+  });
+
+  it("refuses an expired agreement and an unadmitted region, and leaves malformed requests to the normal 400", async () => {
+    const h = harness();
+    acme(h.db.db);
+    operationFor(h.db.db, "run", "acme-op");
+    h.db.db.prepare("UPDATE managed_service_commercial_agreements SET expires_at=1 WHERE id='agreement-acme'").run();
+    const expired = await h.post("/internal/managed-services/credits/reserve", acmeBase);
+    expect(expired.status).toBe(403);
+    expect(await expired.json()).toEqual({ error_code: "provider_not_approved" });
+    h.db.db.prepare("UPDATE managed_service_commercial_agreements SET expires_at=NULL WHERE id='agreement-acme'").run();
+    expect((await h.post("/internal/managed-services/credits/reserve", { ...acmeBase, region: "eu" })).status).toBe(403);
+    const malformed = await h.post("/internal/managed-services/credits/reserve", { ...acmeBase, provider: "Bad Provider" });
+    expect(malformed.status).toBe(400);
+  });
+
+  it("keeps the flag-on reserve path free of provider string literals", () => {
+    const forbidden = /agentmail|workers-ai|cloudflare|higgsfield|telnyx/i;
+    const policySource = readFileSync(join(__dirname, "managed-reserve-policy.ts"), "utf8");
+    const flagOn = policySource.slice(policySource.indexOf("export const RESERVE_STRATEGY_CANDIDATES"), policySource.indexOf("/** Flag-off rules"));
+    expect(flagOn.length).toBeGreaterThan(500);
+    expect(flagOn).not.toMatch(forbidden);
+    const index = readFileSync(join(__dirname, "index.ts"), "utf8");
+    const start = index.indexOf('app.post("/internal/managed-services/credits/reserve"');
+    const route = index.slice(start, index.indexOf("\napp.", start + 10));
+    expect(route.length).toBeGreaterThan(5000);
+    expect(route).toContain("MANAGED_OFFERINGS_ENABLED");
+    expect(route).not.toMatch(forbidden);
   });
 });

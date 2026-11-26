@@ -64,11 +64,13 @@ service = "naelao-spaces"
 ENVIRONMENT = "development"
 # Explicit local-only simulation switch. Named environments repeat this as false below.
 ALLOW_DEV_CHECKOUTS = "true"
+# MS-29: offering-driven reserve admission and quote policy. Off until the owner accepts it.
+MANAGED_OFFERINGS_ENABLED = "false"
 
 [env.staging]
 # wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
 # entirely; any var added above must be repeated per environment.
-vars = { ENVIRONMENT = "staging", ALLOW_DEV_CHECKOUTS = "false" }
+vars = { ENVIRONMENT = "staging", ALLOW_DEV_CHECKOUTS = "false", MANAGED_OFFERINGS_ENABLED = "false" }
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
@@ -80,7 +82,7 @@ service = "naelao-spaces-staging"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
-vars = { ENVIRONMENT = "production", ALLOW_DEV_CHECKOUTS = "false" }
+vars = { ENVIRONMENT = "production", ALLOW_DEV_CHECKOUTS = "false", MANAGED_OFFERINGS_ENABLED = "false" }
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"

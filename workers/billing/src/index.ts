@@ -25,6 +25,7 @@ import { validateDecisionUsageReceipt } from "./decision-usage.js";
 import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
 import { recordManagedProviderCostReceipts, summarizeManagedProviderCostReceipts, type ManagedProviderCostReceiptInput } from "./managed-service-provider-costs.js";
 import { isDevelopmentCheckoutAllowed } from "./checkout-policy.js";
+import { legacyReserveQuoteRules, resolveOfferingReserveRules } from "./managed-reserve-policy.js";
 import { isDunningEventMessage } from "@naelao/types";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
@@ -34,6 +35,8 @@ export interface BillingEnv {
   ENVIRONMENT: string;
   /** Explicit local/test-only opt-in for the simulated platform-plan checkout URL. */
   ALLOW_DEV_CHECKOUTS?: string;
+  /** MS-29: "true" resolves managed reserve admission and quote policy from offerings (default off). */
+  MANAGED_OFFERINGS_ENABLED?: string;
   /** Shared inter-worker HMAC secret (mintInternalToken/requireInternalHmac, @naelao/http) —
    *  needed to call spaces worker's internal routes directly (bypassing naelao-router). */
   PLATFORM_SECRET: string;
@@ -1192,10 +1195,20 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
   }>().catch(() => null);
   const reservationId = body?.reservation_id ?? "", operationId = body?.operation_id ?? "";
   const credits = body?.credits ?? 0, expiresIn = body?.expires_in_seconds ?? 172800;
-  const modelOperationRequiresQuote = body?.provider === "cloudflare" && body?.service_id === "workers-ai";
-  const agentMailOperationRequiresQuote = body?.provider === "agentmail" && body?.service_id === "agentmail"
-    && (body?.operation_name === "provision" || body?.operation_name === "renew");
-  const operationRequiresQuote = modelOperationRequiresQuote || agentMailOperationRequiresQuote;
+  // MS-29: with MANAGED_OFFERINGS_ENABLED, admission and the quote requirement come from offering data (MS-28
+  // admission, fail closed); otherwise the original rules apply unchanged. Admission runs only for a request whose
+  // routing fields are well-formed, so malformed requests still get the ordinary 400 below.
+  let quoteRules = legacyReserveQuoteRules(body);
+  if (c.env.MANAGED_OFFERINGS_ENABLED === "true"
+    && orgId && /^[a-z][a-z0-9_-]{1,63}$/.test(body?.provider ?? "") && /^[a-z][a-z0-9_.:-]{1,128}$/.test(body?.service_id ?? "")
+    && /^[a-z][a-z0-9_.:-]{1,128}$/.test(body?.operation_name ?? "") && /^[a-z0-9][a-z0-9-]{0,31}$/.test(body?.region ?? "")) {
+    const admission = await resolveOfferingReserveRules(c.env.PLATFORM_DB, {
+      tenantId: orgId, provider: body!.provider!, serviceId: body!.service_id!, operationName: body!.operation_name!, region: body!.region!,
+    });
+    if (!admission.ok) return c.json({ error_code: admission.error_code }, 403);
+    quoteRules = admission.rules;
+  }
+  const operationRequiresQuote = quoteRules.quoteRequired;
   if (!orgId || !/^[A-Za-z0-9._:-]{1,200}$/.test(reservationId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(operationId)
     || typeof body?.space_id !== "string" || body.space_id.length < 1 || body.space_id.length > 160
     || (body.project_id !== undefined && body.project_id !== null && (typeof body.project_id !== "string" || body.project_id.length > 128))
@@ -1288,8 +1301,7 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
       WHERE q.quote_id=? AND q.tenant_id=? AND q.space_id=? AND q.project_id IS ? AND q.requester_user_id=? AND q.plan_tier=?
         AND q.provider=? AND q.service_id=? AND q.operation_name=? AND q.model_id IS ? AND q.region=?
         AND q.price_version=? AND q.credits=? AND q.status='consumed' AND q.operation_id=?
-        AND o.quote_id=q.quote_id AND ((q.provider='agentmail' AND q.request_sha256 IS NOT NULL AND o.request_sha256=q.request_sha256)
-          OR (q.provider='cloudflare' AND q.request_sha256 IS NULL)) AND o.status='running'
+        AND o.quote_id=q.quote_id AND ${quoteRules.pinnedQuoteBindingSql} AND o.status='running'
         AND o.provider=q.provider AND o.service_id=q.service_id AND o.operation_name=q.operation_name AND o.model_id IS q.model_id AND o.region=q.region
         AND o.capability_version=q.capability_version`).bind(body.quote_id,orgId,body.space_id,body.project_id??null,body.requester_user_id,
           planTier,body.provider,body.service_id,body.operation_name,body.model_id??null,body.region,body.price_version,credits,operationId)
@@ -1306,7 +1318,7 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
     return c.json({error_code:"managed_service_model_price_unconfigured"},403);
   if(body.model_id&&credits!==modelCreditsPerOperation&&!acceptedPinnedQuote)
     return c.json({error_code:"managed_service_model_price_conflict"},409);
-  if(agentMailOperationRequiresQuote&&credits!==modelCreditsPerOperation&&!acceptedPinnedQuote)
+  if(quoteRules.exactPriceWithoutModel&&credits!==modelCreditsPerOperation&&!acceptedPinnedQuote)
     return c.json({error_code:"managed_service_price_conflict"},409);
   if(credits>entitlement.max_credits_per_operation)return c.json({error_code:"managed_service_entitlement_limit_exceeded"},402);
   const admittedCapabilityVersion=acceptedPinnedCapabilityVersion??entitlement.capability_version;
@@ -1347,7 +1359,8 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
       || quote.provider!==body.provider || quote.service_id!==body.service_id || quote.operation_name!==body.operation_name
       || quote.model_id!==(body.model_id??null) || quote.region!==body.region || quote.capability_version!==admittedCapabilityVersion
       || quote.price_version!==body.price_version || quote.credits!==credits
-      || (agentMailOperationRequiresQuote&&(!quote.request_sha256||quote.request_sha256!==operation.request_sha256)))
+      || (quoteRules.quoteRequestHashRequired&&(!quote.request_sha256||quote.request_sha256!==operation.request_sha256))
+      || (quoteRules.quoteRequestHashMustMatchWhenPresent&&quote.request_sha256!==null&&quote.request_sha256!==operation.request_sha256))
       return c.json({error_code:"managed_service_operation_quote_required"},409);
   }
   const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "infra_credits", planTier);
