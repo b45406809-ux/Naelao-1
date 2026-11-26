@@ -727,6 +727,18 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Do:** one host function running the MR-EXE-1 order (authenticate → AgentPort authorize → policy → approval bound to sha256 of the canonical payload → reserve → execute via adapter → settle/release/uncertain → outcome receipt appended to `agentport_action_receipts` with `previous_hash`). Move AgentMail send and Naelao Email send onto it behind `MANAGED_EXECUTION_PIPELINE_ENABLED`; flag off unchanged.
 - **Tests:** changed payload ⇒ `approval_invalidated`; approver ≠ proposer; LLM/external content cannot satisfy approval; outcome receipts chained; existing AgentMail tests pass flag off and on.
 
+### - [ ] MS-47 — P2/P3 leftovers: resource lifecycle and access
+
+- **Queue:** item 21. **Model:** Sonnet. Runs before MS-46. **From:** MS-36, MS-40..MS-44 Result lines.
+- **Do (behind existing flags):** (1) Managed Naelao Email provision registers a `managed_service_accounts` row and an AgentPort account so template and owner grants apply (MS-44 `deferred` grants become real); (2) owner suspend/resume action in the resources panel; (3) subscription reactivation after suspension (charge, then resume inbox sending via the MS-41 route); (4) Shell approval UI for template resource proposals plus router allowlist entries; (5) Shell resource-type list from offerings instead of hard-coded `inbox`.
+- **Tests:** one per item; full agents, spaces, router, email suites; Shell tsc not above baseline.
+
+### - [ ] MS-48 — Earlier review follow-ups
+
+- **Queue:** items 2, 3, 13, 21. **Model:** Sonnet. **From:** "Review follow-ups" row in Not-in-this-spec and MS-34.
+- **Do:** (1) stopping managed AgentMail also revokes the `agentmail-send:` mandate; (2) consumer for `worker-branch-retire-pending:` markers; (3) run-log pruning also from the AgentDO alarm; (4) webhook SSRF guard resolves hostnames via DoH (`cloudflare-dns.com`) and refuses private answers before delivery; (5) `listUpstreamResources` for AgentMail if its API supports listing (else record). Leave the MS-22 legacy backfill and the usage-events metadata column as recorded owner decisions.
+- **Tests:** one per item; affected full suites.
+
 ### - [ ] MS-46 — P4 provider event module
 
 - **Queue:** item 21. **Model:** Sonnet. **Spec:** MR-EVT-1..6, MD-9.
