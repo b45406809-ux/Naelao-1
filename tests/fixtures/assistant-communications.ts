@@ -176,7 +176,15 @@ export function fixture() {
   if (process.env.NAELAO_TEST_MANAGED_OFFERINGS === "on") enableManagedOfferingsFixture(db, env);
   // MS-45: NAELAO_TEST_MANAGED_EXECUTION_PIPELINE=on runs the same suites with sends going through the shared execution pipeline.
   if (process.env.NAELAO_TEST_MANAGED_EXECUTION_PIPELINE === "on") enableManagedExecutionPipelineFixture(db, env);
+  // MS-46: NAELAO_TEST_PROVIDER_EVENT_MODULE=on runs the same suites with the provider-event module enabled.
+  if (process.env.NAELAO_TEST_PROVIDER_EVENT_MODULE === "on") enableProviderEventModuleFixture(db, env);
   return { db, objects, env, send, fetch };
+}
+export function enableProviderEventModuleFixture(db: ReturnType<typeof createFakeD1>, env: AgentsEnv) {
+  // processed_webhook_events as left by migrations 0050 and 0052 (the spec calls it processed_webhook_events_v2).
+  db.db.exec("CREATE TABLE IF NOT EXISTS processed_webhook_events (provider TEXT NOT NULL, event_id TEXT NOT NULL, event_type TEXT NOT NULL DEFAULT '', processed_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (provider, event_id, event_type))");
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0310_provider_event_dead_letters.sql", import.meta.url), "utf8"));
+  (env as unknown as { PROVIDER_EVENT_MODULE_ENABLED: string }).PROVIDER_EVENT_MODULE_ENABLED = "true";
 }
 export function enableManagedExecutionPipelineFixture(db: ReturnType<typeof createFakeD1>, env: AgentsEnv) {
   db.db.exec(readFileSync(new URL("../../infra/migrations/0308_managed_execution_approvals.sql", import.meta.url), "utf8"));

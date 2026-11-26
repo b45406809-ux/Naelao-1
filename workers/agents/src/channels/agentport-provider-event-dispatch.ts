@@ -2,6 +2,8 @@ import { isCurrentAgentPortSubscription, type AgentPortSubscriptionState } from 
 import type { ProviderEventReferenceQueueMessage } from "./session-queue.js";
 
 export interface AgentPortProviderEventDispatchDeps {
+  /** MS-46 / MR-EVT-5: optional delivery-time grant check. Absent keeps the previous behavior. */
+  grantActive?(event: ProviderEventReferenceQueueMessage): Promise<boolean>;
   currentSubscription(event: ProviderEventReferenceQueueMessage): Promise<AgentPortSubscriptionState | null>;
   resolveAssistant(event: ProviderEventReferenceQueueMessage): Promise<{ assistantId: string; wakeEnabled: boolean; routeRevision: number;
     routeKind?: "account" | "thread"; routeKeySha256?: string | null } | null>;
@@ -39,6 +41,11 @@ export async function dispatchAgentPortProviderEvent(
     return;
   }
 
+  if (deps.grantActive && !await deps.grantActive(event)) {
+    await deps.markAccepted(event);
+    return;
+  }
+
   const route = await deps.resolveAssistant(event);
   if (!route || !route.wakeEnabled) {
     await deps.markAccepted(event);
@@ -69,6 +76,11 @@ export async function dispatchAgentPortProviderEvent(
   await deps.ensureSession(event, sessionId, assistantId);
   await deps.appendReference(event, sessionId, reference);
   const runId = await stableAgentPortEventRunId(event, assistantId);
+  // Re-check immediately before the wake: the grant may have been revoked while the session was prepared.
+  if (deps.grantActive && !await deps.grantActive(event)) {
+    await deps.markAccepted(event);
+    return;
+  }
   const accepted = await deps.wake({ event, sessionId, assistantId, runId, reference });
   if (!accepted) {
     await deps.markFailed(event);
