@@ -41,3 +41,13 @@ export async function agentGrantIsActive(db: Db, tenantId: string, accountId: st
       AND (expires_at IS NULL OR expires_at>?) LIMIT 1`).bind(tenantId, accountId, agentId, nowIso).first<{ ok: number }>();
   return !!row;
 }
+
+/** MS-49 route-level screen: true only when the agent has a grant row on the account that is revoked, suspended-by-status or expired.
+ * No row (or an unreadable table) is not "revoked" here: the wake path (`agentGrantIsActive`, strict) still decides whether anything is woken. */
+export async function agentGrantIsRevoked(db: Db, tenantId: string, accountId: string, agentId: string, nowIso = new Date().toISOString()): Promise<boolean> {
+  try {
+    const row = await db.prepare("SELECT status,expires_at FROM agentport_account_grants WHERE tenant_id=? AND account_id=? AND agent_id=? LIMIT 1")
+      .bind(tenantId, accountId, agentId).first<{ status: string; expires_at: string | null }>();
+    return !!row && (row.status !== "active" || (row.expires_at !== null && row.expires_at <= nowIso));
+  } catch { return false; }
+}

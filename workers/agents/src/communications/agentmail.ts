@@ -8,7 +8,7 @@ import { requireManagedServiceCapability } from "./managed-service-capabilities.
 import { ensureManagedServiceOwnerLink, ensureOrganizationPayerMandate, revokeOrganizationPayerMandate } from "./managed-service-ownership.js";
 import { agentPortCaller,executionPipelineEnabled,runManagedExecution } from "./execution-pipeline.js";
 import { loadAgentConfig } from "../script-engine/agent-config.js";
-import { agentMailProviderEventAdapter,claimProviderEvent,deadLetterProviderEvent,providerEventModuleEnabled,readAgentMailEvent,releaseProviderEvent } from "./provider-events/index.js";
+import { agentGrantIsRevoked,agentMailProviderEventAdapter,deadLetterProviderEvent,ingestProviderEvent,providerEventModuleEnabled,readAgentMailEvent } from "./provider-events/index.js";
 import { createOfferingQuote,managedOfferingsEnabled,verifyOfferingQuote } from "./managed-quotes.js";
 import { enrollManagedSubscription,managedSubscriptionsEnabled,resolveOfferingGraceDays,sweepManagedSubscriptions,type SubscriptionTypeHandler } from "./managed-subscriptions.js";
 
@@ -1480,34 +1480,49 @@ export async function receiveAgentMailWebhook(env:AgentsEnv,connectionId:string,
   const raw=await readBoundedRequestText(request,2*1024*1024).catch(()=>null);if(raw===null)return Response.json({error_code:"webhook_payload_invalid"},{status:413});
   const identity={id:account.assistant_identity_id,tenant_id:account.tenant_id} as CommunicationIdentity;
   const secret=String((await openCommunication(env,identity,account.id,{ciphertext:account.agentmail_webhook_secret_ciphertext,iv:account.agentmail_webhook_secret_iv,algorithm:"aes-256-gcm"})).secret??"");
-  // MS-46: the svix verifier lives in the provider-event module; flag off and on run the same verification.
-  if(!await agentMailProviderEventAdapter.verifyWebhook({rawBody:raw,headers:request.headers,secret}))return Response.json({error_code:"webhook_signature_invalid"},{status:401});
+  // MS-46: the svix verifier lives in the provider-event module. Flag off verifies here; flag on, `ingestProviderEvent` verifies first (MS-49).
+  if(!providerEventModuleEnabled(env)&&!await agentMailProviderEventAdapter.verifyWebhook({rawBody:raw,headers:request.headers,secret}))return Response.json({error_code:"webhook_signature_invalid"},{status:401});
+  const moduleOn=providerEventModuleEnabled(env);
+  const reference=()=>Response.json({error_code:"webhook_reference_invalid"},{status:400});
+  // The route's own side effects (event receipt journal, then the AgentPort hand-off). Flag on it runs as the module's delivery, after the dedup claim.
+  const deliver=async(eventId:string,messageId:string,threadId:string):Promise<Response>=>{
+    const at=new Date().toISOString();
+    await env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_agentmail_event_receipts(account_id,event_id,event_type,message_ref,thread_ref,status,created_at,updated_at) VALUES(?,?,'message.received',?,?,'pending',?,?)").bind(account.id,eventId,messageId,threadId,at,at).run();
+    const receipt=await env.PLATFORM_DB.prepare("SELECT status,message_ref,thread_ref FROM assistant_agentmail_event_receipts WHERE account_id=? AND event_id=?").bind(account.id,eventId).first<{status:string;message_ref:string|null;thread_ref:string|null}>();
+    if(!receipt||receipt.message_ref!==messageId||receipt.thread_ref!==threadId)return Response.json({error_code:"event_idempotency_conflict"},{status:409});
+    if(receipt.status==="queued")return new Response(null,{status:204});
+    const serviceId=`agentmail:${account.tenant_id}`;
+    const posted=await agentPort(env,account.tenant_id,"/events","POST",{serviceId,accountId:account.agentport_account_id,providerEventId:eventId,eventType:"message.received",threadRef:threadId,dataRef:messageId});
+    if(posted.response.status!==202&&posted.response.status!==200)return Response.json({error_code:"agentport_event_ingest_failed"},{status:503});
+    await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_event_receipts SET status='queued',updated_at=? WHERE account_id=? AND event_id=?").bind(new Date().toISOString(),account.id,eventId).run();
+    return new Response(null,{status:204});
+  };
+  if(moduleOn){
+    // MS-49: verify -> normalize -> tenant from provider_resource_ref (the inbox this account owns) -> dedup claim -> grant screen -> receipt journal and hand-off.
+    // Provider-facing statuses are those of the legacy path below.
+    const gated=await ingestProviderEvent(env,agentMailProviderEventAdapter,{rawBody:raw,headers:request.headers,secret,
+      resolveResource:async ref=>ref===account.inbox_id?{resourceId:account.id,tenantId:account.tenant_id}:null,
+      grantActive:async()=>!account.agentport_account_id||!account.agentport_agent_id||!await agentGrantIsRevoked(env.PLATFORM_DB,account.tenant_id,account.agentport_account_id,account.agentport_agent_id),
+      deliver:async envelope=>({response:await deliver(envelope.id,envelope.data.message_id??"",envelope.data.thread_id??"")})});
+    if(gated.error)throw gated.error;
+    if(gated.outcome==="unauthorized")return Response.json({error_code:"webhook_signature_invalid"},{status:401});
+    if(gated.outcome==="duplicate"||gated.outcome==="grant_revoked")return new Response(null,{status:204});
+    if(gated.outcome==="dead_lettered")return reference();
+    if(gated.outcome==="ignored"){
+      // The adapter keeps only message.received events with every reference; the route still answers each other case as before.
+      let event:Record<string,unknown>;try{event=JSON.parse(raw) as Record<string,unknown>;}catch{return Response.json({error_code:"webhook_json_invalid"},{status:400});}
+      if(event.event_type!=="message.received")return new Response(null,{status:204});
+      const fields=readAgentMailEvent(event);
+      await deadLetterProviderEvent(env.PLATFORM_DB,{provider:"agentmail",eventId:fields.eventId||"unknown",eventType:"message.received",resourceRef:typeof fields.inboxId==="string"?fields.inboxId:null,reason:"event_reference_invalid",rawBody:raw});
+      return reference();
+    }
+    return gated.response??new Response(null,{status:204});
+  }
   let event:Record<string,unknown>;try{event=JSON.parse(raw) as Record<string,unknown>;}catch{return Response.json({error_code:"webhook_json_invalid"},{status:400});}
   if(event.event_type!=="message.received")return new Response(null,{status:204});
   const {eventId,messageId,threadId,inboxId}=readAgentMailEvent(event);
-  const moduleOn=providerEventModuleEnabled(env);
-  if(!eventId||!messageId||!threadId||inboxId!==account.inbox_id){
-    // MR-EVT-3: a verified event for a resource this account does not own is dead-lettered (references and a body hash only); the response is unchanged.
-    if(moduleOn)await deadLetterProviderEvent(env.PLATFORM_DB,{provider:"agentmail",eventId:eventId||"unknown",eventType:"message.received",resourceRef:typeof inboxId==="string"?inboxId:null,reason:inboxId===account.inbox_id?"event_reference_invalid":"unknown_resource",rawBody:raw});
-    return Response.json({error_code:"webhook_reference_invalid"},{status:400});
-  }
-  const at=new Date().toISOString();
-  await env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_agentmail_event_receipts(account_id,event_id,event_type,message_ref,thread_ref,status,created_at,updated_at) VALUES(?,?,'message.received',?,?,'pending',?,?)").bind(account.id,eventId,messageId,threadId,at,at).run();
-  const receipt=await env.PLATFORM_DB.prepare("SELECT status,message_ref,thread_ref FROM assistant_agentmail_event_receipts WHERE account_id=? AND event_id=?").bind(account.id,eventId).first<{status:string;message_ref:string|null;thread_ref:string|null}>();
-  if(!receipt||receipt.message_ref!==messageId||receipt.thread_ref!==threadId)return Response.json({error_code:"event_idempotency_conflict"},{status:409});
-  if(receipt.status==="queued")return new Response(null,{status:204});
-  const serviceId=`agentmail:${account.tenant_id}`;
-  // MR-EVT-2: record the event in processed_webhook_events before the side effect. The receipt above stays the retry-aware gate; a failed hand-off releases the record.
-  if(moduleOn)await claimProviderEvent(env.PLATFORM_DB,"agentmail",eventId,"message.received").catch(()=>false);
-  let posted:Awaited<ReturnType<typeof agentPort>>;
-  try{posted=await agentPort(env,account.tenant_id,"/events","POST",{serviceId,accountId:account.agentport_account_id,providerEventId:eventId,eventType:"message.received",threadRef:threadId,dataRef:messageId});}
-  catch(error){if(moduleOn)await releaseProviderEvent(env.PLATFORM_DB,"agentmail",eventId,"message.received").catch(()=>undefined);throw error;}
-  if(posted.response.status!==202&&posted.response.status!==200){
-    if(moduleOn)await releaseProviderEvent(env.PLATFORM_DB,"agentmail",eventId,"message.received").catch(()=>undefined);
-    return Response.json({error_code:"agentport_event_ingest_failed"},{status:503});
-  }
-  await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_event_receipts SET status='queued',updated_at=? WHERE account_id=? AND event_id=?").bind(new Date().toISOString(),account.id,eventId).run();
-  return new Response(null,{status:204});
+  if(!eventId||!messageId||!threadId||inboxId!==account.inbox_id)return reference();
+  return deliver(eventId,messageId,threadId);
 }
 export async function receiveAgentPortNotification(env:AgentsEnv,connectionId:string,request:Request){
   const account=await env.PLATFORM_DB.prepare("SELECT * FROM assistant_agentmail_accounts WHERE id=? AND status='active'").bind(connectionId).first<AgentMailAccount & {agentport_webhook_secret_ciphertext:string|null;agentport_webhook_secret_iv:string|null;agentport_subscription_id:string|null}>();

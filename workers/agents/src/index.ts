@@ -150,7 +150,7 @@ import { handleChannelSessionQueue, type ChannelSessionQueueMessage, type Provid
 import { stableChannelSessionId as createStableChannelSessionId } from "./channels/channel-session-id.js";
 import { providerEventRuntimeAgentId } from "./channels/agentport-event-subscription.js";
 import { dispatchAgentPortProviderEvent } from "./channels/agentport-provider-event-dispatch.js";
-import { agentGrantIsActive, deadLetterProviderEvent, ingestProviderEvent, metaProviderEventAdapter, providerEventModuleEnabled } from "./communications/provider-events/index.js";
+import { agentGrantIsActive, ingestProviderEvent, metaProviderEventAdapter, providerEventModuleEnabled } from "./communications/provider-events/index.js";
 import { readSidecarRuntimeExecutionProfile, saveSidecarRuntimeExecutionProfile } from "./workspace/sidecar-runtime-execution-profile.js";
 import { readBoundedRequestText, readBoundedResponseText } from "./shared/bounded-response-text.js";
 import { handleSandboxWorkspaceBridge, reconcilePendingWorkspacePublications, sweepExpiredWorkspaceBlobs } from "./sandboxes/workspace-bridge.js";
