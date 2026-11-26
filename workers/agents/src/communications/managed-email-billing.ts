@@ -248,7 +248,45 @@ export function createNaelaoEmailSubscriptionHandler(adapter: Pick<NaelaoEmailAd
       if (!commit || !adapter.setSendingPaused) return;
       await adapter.setSendingPaused({ tenantId: sub.tenant_id, provider_resource_ref: commit.inbox_id, paused: true });
     },
+    /** MS-47: the overdue period is paid, so lift the billing pause (never an owner or operator pause). */
+    async onReactivated(env, sub) {
+      const commit = readCommitment(sub);
+      if (!commit || !adapter.setSendingPaused) return;
+      await resumeInboxAfterReactivation(env, adapter, sub.tenant_id, commit.inbox_id);
+    },
   };
+}
+
+const resumeFlag = (value: number) => `json_set(COALESCE(metadata_json,'{}'),'$.resume_pending',${value})`;
+
+/**
+ * MS-47: lifts the `subscription_suspended` pause after a paid reactivation. The pending flag is set before the call and cleared after it,
+ * so a crash or provider outage leaves a marker the sweep retries (`reconcilePendingInboxResumes`). An owner suspend stays in force.
+ */
+export async function resumeInboxAfterReactivation(env: AgentsEnv, adapter: Partial<Pick<NaelaoEmailAdapter, "setSendingPaused">>, tenantId: string, inboxId: string) {
+  if (!adapter.setSendingPaused) return;
+  const db = env.PLATFORM_DB;
+  const where = "tenant_id=? AND provider='naelao' AND service_id='email' AND provider_resource_ref=?";
+  await db.prepare(`UPDATE managed_service_accounts SET metadata_json=${resumeFlag(1)} WHERE ${where}`).bind(tenantId, inboxId).run();
+  await adapter.setSendingPaused({ tenantId, provider_resource_ref: inboxId, paused: false, reason: "subscription_suspended" });
+  const row = await db.prepare(`SELECT lifecycle_state,json_extract(metadata_json,'$.suspended_by') AS by FROM managed_service_accounts WHERE ${where}`)
+    .bind(tenantId, inboxId).first<{ lifecycle_state: string; by: string | null }>();
+  if (row?.lifecycle_state === "suspended" && row.by === "owner") await adapter.setSendingPaused({ tenantId, provider_resource_ref: inboxId, paused: true, reason: "owner_suspended" });
+  await db.prepare(`UPDATE managed_service_accounts SET metadata_json=${resumeFlag(0)} WHERE ${where}`).bind(tenantId, inboxId).run();
+}
+
+/** MS-47: retries a resume that failed after a paid reactivation, for subscriptions that are active again. Bounded per sweep. */
+export async function reconcilePendingInboxResumes(env: AgentsEnv, adapter: Partial<Pick<NaelaoEmailAdapter, "setSendingPaused">>, limit = 50): Promise<number> {
+  if (!adapter.setSendingPaused) return 0;
+  const rows = await env.PLATFORM_DB.prepare(`SELECT a.tenant_id,a.provider_resource_ref FROM managed_service_accounts a
+    JOIN managed_service_subscriptions s ON s.tenant_id=a.tenant_id AND s.resource_id=a.provider_resource_ref AND s.subscription_type=?
+    WHERE a.provider='naelao' AND a.service_id='email' AND json_extract(a.metadata_json,'$.resume_pending')=1 AND s.renewal_state IN ('active','renewing','grace')
+    ORDER BY a.updated_at LIMIT ?`).bind(NAELAO_EMAIL_SUBSCRIPTION_TYPE, limit).all<{ tenant_id: string; provider_resource_ref: string }>();
+  let resumed = 0;
+  for (const row of rows.results) {
+    try { await resumeInboxAfterReactivation(env, adapter, row.tenant_id, row.provider_resource_ref); resumed++; } catch { /* retried next sweep */ }
+  }
+  return resumed;
 }
 
 /** Sweeps due `naelao_email_inbox` subscriptions. A no-op unless MANAGED_SUBSCRIPTIONS_ENABLED and MANAGED_OFFERINGS_ENABLED are both "true". */
@@ -256,6 +294,7 @@ export async function sweepNaelaoEmailSubscriptions(env: AgentsEnv, adapter: Pic
   if (!managedSubscriptionsEnabled(env) || env.MANAGED_OFFERINGS_ENABLED !== "true" || !env.BILLING_WORKER) return null;
   const result = await sweepManagedSubscriptions(env, { [NAELAO_EMAIL_SUBSCRIPTION_TYPE]: createNaelaoEmailSubscriptionHandler(adapter) }, now);
   await reconcileSuspendedInboxPauses(env, adapter);
+  await reconcilePendingInboxResumes(env, adapter);
   return result;
 }
 

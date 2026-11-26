@@ -7,6 +7,7 @@ import { fixture as emailFixture, seedTenant, SECRET, type Fixture as EmailFixtu
 import { fixture as commsFixture, scope } from "../../../../tests/fixtures/assistant-communications.js";
 import type { AgentsEnv } from "../index.js";
 import { createNaelaoEmailAdapter } from "./providers/naelao-email.js";
+import { reactivateManagedResource, ResourceLifecycleError } from "./managed-resource-lifecycle.js";
 import { addMonthMs, emailOverageCredits, NAELAO_EMAIL_SUBSCRIPTION_TYPE, parseEmailInboxPricing, sweepNaelaoEmailSubscriptions } from "./managed-email-billing.js";
 
 const migration = (name: string) => readFileSync(new URL(`../../../../infra/migrations/${name}`, import.meta.url), "utf8");
@@ -273,6 +274,78 @@ describe("suspension pauses sending (MS-41)", () => {
     await h.sweep(PERIOD_END);
     expect(h.sub()).toMatchObject({ renewal_state: "active" });
     expect(paused(h, inbox)).toEqual({ p: 0, r: null });
+  });
+});
+
+describe("reactivation after suspension (MS-47 item 3)", () => {
+  const paused = (h: Awaited<ReturnType<typeof provisioned>>["h"], inbox: string) =>
+    h.email.db.prepare("SELECT sending_paused AS p, sending_pause_reason AS r FROM nemail_inboxes WHERE id=?").get(inbox) as { p: number; r: string | null };
+  const SUSPENDED_AT = new Date(PERIOD_END.getTime() + 8 * 86_400_000);
+  const REACTIVATE_AT = new Date(PERIOD_END.getTime() + 10 * 86_400_000);
+  async function suspended() {
+    const { h, inbox } = await provisioned();
+    h.sql.prepare(`INSERT INTO managed_service_accounts(id,tenant_id,space_id,provider,service_id,connection_mode,provider_resource_ref,credential_ref,owner_type,owner_id,
+      provider_payer_type,lifecycle_state,access_mode,metadata_json,created_at,updated_at)
+      VALUES('res-1',?,?,'naelao','email','naelao_managed',?,'c','organization',?,'platform','active','managed','{}','x','x')`).run(scope.tenantId, scope.spaceId, inbox, scope.tenantId);
+    h.failures.add("reserve:renew");
+    await h.sweep(PERIOD_END);
+    await h.sweep(SUSPENDED_AT);
+    expect(h.sub()).toMatchObject({ renewal_state: "suspended" });
+    expect(paused(h, inbox)).toEqual({ p: 1, r: "subscription_suspended" });
+    return { h, inbox, reactivate: () => reactivateManagedResource(h.env, { tenantId: scope.tenantId, spaceId: scope.spaceId }, "res-1", h.adapter, REACTIVATE_AT) };
+  }
+
+  it("charges the overdue period first, then activates the subscription and lifts the billing pause", async () => {
+    const { h, inbox, reactivate } = await suspended();
+    const suspendedAt = h.sub()!.suspended_at;
+    // The charge fails: nothing changes, sending stays paused, the release clock keeps its original start.
+    await expect(reactivate()).rejects.toMatchObject({ code: "charge_failed" });
+    expect(h.sub()).toMatchObject({ renewal_state: "suspended", suspended_at: suspendedAt });
+    expect(paused(h, inbox).p).toBe(1);
+    // Pay, then reactivate.
+    h.failures.clear();
+    const settlesBefore = h.billing.filter(b => b.action === "settle").length;
+    await expect(reactivate()).resolves.toEqual({ resourceId: "res-1", status: "reactivated", sendingResumed: true });
+    expect(h.sub()).toMatchObject({ renewal_state: "active", suspended_at: null, grace_started_at: null, current_period_start: PERIOD_END.getTime(), current_period_end: NEXT_END.getTime() });
+    expect(h.billing.filter(b => b.action === "settle").length - settlesBefore).toBe(1);
+    expect(h.charges().find(c => c.kind === "rental")).toMatchObject({ status: "settled", credits: 100 });
+    expect(paused(h, inbox)).toEqual({ p: 0, r: null });
+    // Nothing left to reactivate; a repeat does not charge again.
+    const reserves = h.reserves().length;
+    await expect(reactivate()).rejects.toMatchObject({ code: "invalid_state" });
+    expect(h.reserves().length).toBe(reserves);
+  });
+
+  it("keeps an owner's own suspend in force through a paid reactivation", async () => {
+    const { h, inbox, reactivate } = await suspended();
+    h.sql.prepare("UPDATE managed_service_accounts SET lifecycle_state='suspended',metadata_json='{\"suspended_by\":\"owner\"}' WHERE id='res-1'").run();
+    h.failures.clear();
+    await reactivate();
+    expect(h.sub()).toMatchObject({ renewal_state: "active" });
+    expect(paused(h, inbox)).toEqual({ p: 1, r: "owner_suspended" });
+  });
+
+  it("a resume that fails after the charge leaves a marker the next sweep retries", async () => {
+    const { h, inbox, reactivate } = await suspended();
+    h.failures.clear();
+    const real = h.adapter.setSendingPaused;
+    let down = true;
+    h.adapter.setSendingPaused = async (req) => { if (down) throw new Error("outcome_unknown"); return real(req); };
+    await expect(reactivate()).resolves.toMatchObject({ status: "reactivated", sendingResumed: false });
+    expect(h.sub()).toMatchObject({ renewal_state: "active" });
+    expect(paused(h, inbox).p).toBe(1);
+    expect(h.sql.prepare("SELECT json_extract(metadata_json,'$.resume_pending') AS p FROM managed_service_accounts WHERE id='res-1'").get()).toEqual({ p: 1 });
+    down = false;
+    await h.sweep(new Date(REACTIVATE_AT.getTime() + 1000));
+    expect(paused(h, inbox)).toEqual({ p: 0, r: null });
+    expect(h.sql.prepare("SELECT json_extract(metadata_json,'$.resume_pending') AS p FROM managed_service_accounts WHERE id='res-1'").get()).toEqual({ p: 0 });
+  });
+
+  it("needs both flags and a suspended subscription", async () => {
+    const { h, reactivate } = await suspended();
+    await expect(reactivateManagedResource({ ...h.env, MANAGED_SUBSCRIPTIONS_ENABLED: "false" } as AgentsEnv, { tenantId: scope.tenantId, spaceId: scope.spaceId }, "res-1", h.adapter)).rejects.toBeInstanceOf(ResourceLifecycleError);
+    h.sql.prepare("UPDATE managed_service_subscriptions SET renewal_state='active'").run();
+    await expect(reactivate()).rejects.toMatchObject({ code: "invalid_state" });
   });
 });
 

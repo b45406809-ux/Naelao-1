@@ -29,6 +29,8 @@ export interface SubscriptionTypeHandler {
   renew(env: AgentsEnv, subscription: ManagedSubscription, now: Date): Promise<RenewalResult>;
   /** Called once when the subscription is suspended (e.g. to move the resource registry row to `suspended`). */
   onSuspended?(env: AgentsEnv, subscription: ManagedSubscription, now: Date): Promise<void>;
+  /** MS-47: called after an owner reactivation has charged and made the subscription active again (e.g. to resume the resource). */
+  onReactivated?(env: AgentsEnv, subscription: ManagedSubscription, now: Date): Promise<void>;
 }
 export type SubscriptionSweepResult = {
   checked: number; renewed: number; billed: number; held: number; suspended: number; cancelled: number; notices: number; releasable: string[];
@@ -173,4 +175,50 @@ export async function sweepManagedSubscriptions(env: AgentsEnv, handlers: Record
   }
   out.releasable = (await listReleasableSubscriptions(db, now)).map(sub => sub.id);
   return out;
+}
+
+
+export type ReactivationResult =
+  | { status: "reactivated"; periodEnd: number; resumed: boolean }
+  | { status: "failed"; code: string }
+  | { status: "not_suspended" }
+  | { status: "busy" }
+  | { status: "cancelled" };
+
+/**
+ * MS-47 item 3: the owner's way out of `suspended`. The overdue renewal is charged first, through the same handler and the same
+ * idempotent charge rows the sweep uses (so a retry never bills a period twice); only after it succeeds does the subscription become
+ * active and the handler's `onReactivated` restore the resource. A failed charge leaves the subscription suspended, with its
+ * original `suspended_at` (the release clock is not reset).
+ */
+export async function reactivateManagedSubscription(
+  env: AgentsEnv, handler: SubscriptionTypeHandler, input: { subscriptionId: string; tenantId: string }, now = new Date(),
+): Promise<ReactivationResult> {
+  const db = env.PLATFORM_DB;
+  const nowMs = now.getTime();
+  const sub = await db.prepare("SELECT * FROM managed_service_subscriptions WHERE id=? AND tenant_id=? AND renewal_state='suspended'")
+    .bind(input.subscriptionId, input.tenantId).first<ManagedSubscription>();
+  if (!sub) return { status: "not_suspended" };
+  const claim = await db.prepare("UPDATE managed_service_subscriptions SET renewal_state='renewing',updated_at=? WHERE id=? AND updated_at=? AND renewal_state='suspended'")
+    .bind(nowMs, sub.id, sub.updated_at).run();
+  if (!claim.meta.changes) return { status: "busy" };
+  const claimed: ManagedSubscription = { ...sub, renewal_state: "renewing", updated_at: nowMs };
+  const restore = () => db.prepare("UPDATE managed_service_subscriptions SET renewal_state='suspended',updated_at=? WHERE id=? AND renewal_state='renewing'").bind(nowMs, sub.id).run();
+  let result: RenewalResult;
+  try { result = await handler.renew(env, claimed, now); }
+  catch (error) {
+    result = { status: "failed", code: error instanceof Error && /^[a-z][a-z0-9_:-]{1,100}$/.test(error.message) ? error.message : "managed_subscription_renewal_failed" };
+  }
+  if (result.status === "failed") { await restore(); return { status: "failed", code: result.code }; }
+  if (result.status === "noop") { await restore(); return { status: "busy" }; }
+  if (result.status === "cancelled") {
+    await db.prepare("UPDATE managed_service_subscriptions SET renewal_state='cancelled',updated_at=? WHERE id=? AND renewal_state='renewing'").bind(nowMs, sub.id).run();
+    return { status: "cancelled" };
+  }
+  await db.prepare(`UPDATE managed_service_subscriptions SET renewal_state='active',current_period_start=current_period_end,current_period_end=?,
+    grace_started_at=NULL,suspended_at=NULL,release_warning_at=NULL,last_renewal_operation_id=COALESCE(?,last_renewal_operation_id),updated_at=?
+    WHERE id=? AND renewal_state='renewing'`).bind(result.periodEnd, result.operationId ?? null, nowMs, sub.id).run();
+  let resumed = true;
+  try { await handler.onReactivated?.(env, { ...claimed, renewal_state: "active" }, now); } catch { resumed = false; }
+  return { status: "reactivated", periodEnd: result.periodEnd, resumed };
 }

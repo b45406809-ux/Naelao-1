@@ -7,12 +7,16 @@
 // shape) is the route's job. Provider refs, strategies and credential refs are never returned.
 import type { AgentsEnv } from "../index.js";
 import type { CommunicationScope } from "./core.js";
+import { NAELAO_EMAIL_SUBSCRIPTION_TYPE, createNaelaoEmailSubscriptionHandler } from "./managed-email-billing.js";
+import { managedSubscriptionsEnabled, reactivateManagedSubscription } from "./managed-subscriptions.js";
 import { NAELAO_EMAIL_PROVIDER, NAELAO_EMAIL_SERVICE_ID, createNaelaoEmailAdapter, type NaelaoEmailAdapter } from "./providers/naelao-email.js";
 
 export type ResourceLifecycleErrorCode =
-  | "bad_request" | "resource_not_found" | "capability_unsupported" | "invalid_state" | "subscription_suspended" | "provider_unavailable";
+  | "bad_request" | "resource_not_found" | "capability_unsupported" | "invalid_state" | "subscription_suspended" | "provider_unavailable"
+  | "charge_failed" | "reactivation_in_progress";
 const STATUS: Record<ResourceLifecycleErrorCode, number> = {
   bad_request: 400, resource_not_found: 404, capability_unsupported: 501, invalid_state: 409, subscription_suspended: 409, provider_unavailable: 503,
+  charge_failed: 402, reactivation_in_progress: 409,
 };
 export class ResourceLifecycleError extends Error {
   constructor(readonly code: ResourceLifecycleErrorCode) { super(code); this.name = "ResourceLifecycleError"; }
@@ -20,6 +24,7 @@ export class ResourceLifecycleError extends Error {
 }
 
 export type PauseAdapter = Pick<NaelaoEmailAdapter, "setSendingPaused">;
+export type ReactivationAdapter = Pick<NaelaoEmailAdapter, "usageForPeriod" | "lookup" | "setSendingPaused">;
 const ID = /^[A-Za-z0-9._:-]{1,200}$/;
 
 interface Row { id: string; provider: string; service_id: string; provider_resource_ref: string; lifecycle_state: string; metadata_json: string | null }
@@ -70,4 +75,24 @@ export async function resumeManagedResource(
       row_version=row_version+1,updated_at=? WHERE id=? AND tenant_id=? AND lifecycle_state='suspended'`)
     .bind(new Date().toISOString(), resourceId, scope.tenantId).run();
   return { resourceId, status: "active" };
+}
+
+/**
+ * MS-47 item 3: reactivates a resource whose subscription was suspended for non-payment. Charges the overdue period first (the
+ * subscription engine's own idempotent charge rows), then lifts the billing pause. Needs MANAGED_SUBSCRIPTIONS_ENABLED and
+ * MANAGED_OFFERINGS_ENABLED like the rest of the subscription flow; without them the resource looks unknown.
+ */
+export async function reactivateManagedResource(
+  env: AgentsEnv, scope: Pick<CommunicationScope, "tenantId" | "spaceId">, resourceId: string, adapter: ReactivationAdapter = createNaelaoEmailAdapter(env), now = new Date(),
+): Promise<{ resourceId: string; status: "reactivated"; sendingResumed: boolean }> {
+  if (!managedSubscriptionsEnabled(env) || env.MANAGED_OFFERINGS_ENABLED !== "true") throw new ResourceLifecycleError("resource_not_found");
+  const row = await load(env, scope, resourceId);
+  const sub = await env.PLATFORM_DB.prepare("SELECT id FROM managed_service_subscriptions WHERE tenant_id=? AND resource_id=? AND subscription_type=?")
+    .bind(scope.tenantId, row.provider_resource_ref, NAELAO_EMAIL_SUBSCRIPTION_TYPE).first<{ id: string }>();
+  if (!sub) throw new ResourceLifecycleError("invalid_state");
+  const result = await reactivateManagedSubscription(env, createNaelaoEmailSubscriptionHandler(adapter), { subscriptionId: sub.id, tenantId: scope.tenantId }, now);
+  if (result.status === "reactivated") return { resourceId, status: "reactivated", sendingResumed: result.resumed };
+  if (result.status === "failed") throw new ResourceLifecycleError("charge_failed");
+  if (result.status === "busy") throw new ResourceLifecycleError("reactivation_in_progress");
+  throw new ResourceLifecycleError("invalid_state");
 }

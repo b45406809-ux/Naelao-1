@@ -97,3 +97,19 @@ describe("owner suspend and resume (MS-47 item 2)", () => {
     expect(state(h)).toMatchObject({ s: "active" });
   });
 });
+
+describe("resource-reactivate route (MS-47 item 3)", () => {
+  it("is not-found for a non-owner and when the subscription flag is off, 409 without a suspended subscription, and never calls the provider", async () => {
+    const h = lifecycleHarness();
+    expect((await h.post({ action: "resource-reactivate", resource_id: "res-email" }, "member")).status).toBe(404);
+    const noSub = await h.post({ action: "resource-reactivate", resource_id: "res-email" });
+    expect(noSub.status).toBe(409);
+    expect(await noSub.json()).toEqual({ error_code: "invalid_state" });
+    h.db.prepare(`INSERT INTO managed_service_subscriptions(id,tenant_id,resource_id,subscription_type,offering_id,price_version,interval,current_period_start,current_period_end,
+      renewal_state,grace_days,created_at,updated_at) VALUES('sub-1','tenant','inb_1','naelao_email_inbox','off','v1','month',1,2,'active',7,1,1)`).run();
+    expect(await (await h.post({ action: "resource-reactivate", resource_id: "res-email" })).json()).toEqual({ error_code: "invalid_state" });
+    (h.env as unknown as Record<string, string>).MANAGED_SUBSCRIPTIONS_ENABLED = "false";
+    expect((await h.post({ action: "resource-reactivate", resource_id: "res-email" })).status).toBe(404);
+    expect(h.sending).toHaveLength(0);
+  });
+});
