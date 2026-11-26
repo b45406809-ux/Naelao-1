@@ -547,6 +547,9 @@ app.post("/billing/usage", async (c) => {
     service_authorization_revision?: string;
     payer_kind?: "plan_quota" | "platform" | "unknown";
     decision?: "allowed" | "denied" | "charged" | "released" | "failed" | "not_billable";
+    /** MS-48: MS-16 unit rows are charged inside the run settlement; persisted in metadata_json so nothing is counted twice. */
+    priced_in_settlement?: boolean;
+    price_version?: string;
     // G-AN09: Caller may supply an idempotency key; if absent, one is computed
     idempotency_key?: string;
   }>().catch(() => null);
@@ -569,9 +572,16 @@ app.post("/billing/usage", async (c) => {
     || (body.provider !== undefined && (body.provider.length < 1 || body.provider.length > 80))
     || (body.model_id !== undefined && (body.model_id.length < 1 || body.model_id.length > 160))
     || (body.connector_provider !== undefined && (body.connector_provider.length < 1 || body.connector_provider.length > 80))
-    || (body.runtime_tier !== undefined && (!Number.isInteger(body.runtime_tier) || body.runtime_tier < 1 || body.runtime_tier > 6))) {
+    || (body.runtime_tier !== undefined && (!Number.isInteger(body.runtime_tier) || body.runtime_tier < 1 || body.runtime_tier > 6))
+    || (body.priced_in_settlement !== undefined && typeof body.priced_in_settlement !== "boolean")
+    || (body.price_version !== undefined && (typeof body.price_version !== "string" || body.price_version.length < 1 || body.price_version.length > 80))) {
     return c.json({ error_code: "invalid_usage_event" }, 400);
   }
+  // MS-48 item 7: only these two keys are ever stored, in a fixed shape.
+  const metadataJson = body.priced_in_settlement !== undefined || body.price_version !== undefined
+    ? JSON.stringify({ ...(body.priced_in_settlement !== undefined ? { priced_in_settlement: body.priced_in_settlement } : {}),
+      ...(body.price_version !== undefined ? { price_version: body.price_version } : {}) })
+    : null;
   if ((body.service_identity_id === undefined) !== (body.service_authorization_revision === undefined)
     || (body.service_identity_id !== undefined && (!/^scheduled_job:[A-Za-z0-9_-]{1,128}$/.test(body.service_identity_id)
       || typeof body.service_authorization_revision !== "string" || body.service_authorization_revision.length < 1
@@ -597,10 +607,11 @@ app.post("/billing/usage", async (c) => {
   }
 
   // G-AN09: INSERT OR IGNORE on event_hash — if duplicate, silently skip (idempotent)
+  // The metadata_json column exists only after migration 0309; the statement names it only for rows that carry metadata.
   const result = await c.env.PLATFORM_DB.prepare(
     `INSERT OR IGNORE INTO usage_events (id, org_id, space_id, event_type, quantity, recorded_at, event_hash,
-       schema_version,unit,rate_card_version,cost_credits,project_id,installation_id,run_id,provider,model_id,connector_provider,runtime_tier,subject_hash,payer_kind,decision,service_identity_id,service_authorization_revision)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       schema_version,unit,rate_card_version,cost_credits,project_id,installation_id,run_id,provider,model_id,connector_provider,runtime_tier,subject_hash,payer_kind,decision,service_identity_id,service_authorization_revision${metadataJson !== null ? ",metadata_json" : ""})
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${metadataJson !== null ? ", ?" : ""})`
   )
     .bind(
       id,
@@ -626,6 +637,7 @@ app.post("/billing/usage", async (c) => {
       body.decision ?? null,
       body.service_identity_id ?? null,
       body.service_authorization_revision ?? null,
+      ...(metadataJson !== null ? [metadataJson] : []),
     )
     .run();
 

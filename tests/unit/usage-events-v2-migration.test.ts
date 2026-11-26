@@ -92,6 +92,45 @@ describe("usage events v2 migration", () => {
     db.db.close();
   });
 
+  it("MS-48: persists priced_in_settlement and price_version in metadata_json (migration 0309) and leaves other rows unchanged", async () => {
+    const db = createFakeD1([
+      `CREATE TABLE usage_events(id TEXT PRIMARY KEY,org_id TEXT NOT NULL,space_id TEXT,event_type TEXT NOT NULL,quantity INTEGER NOT NULL DEFAULT 1,recorded_at TEXT NOT NULL,event_hash TEXT UNIQUE);`,
+      readFileSync(join(__dirname, "../../infra/migrations/0109_usage_events_v2.sql"), "utf8"),
+      "ALTER TABLE usage_events ADD COLUMN service_identity_id TEXT; ALTER TABLE usage_events ADD COLUMN service_authorization_revision TEXT;",
+      readFileSync(join(__dirname, "../../infra/migrations/0309_usage_events_metadata.sql"), "utf8"),
+    ]);
+    const env = { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, PLATFORM_DB: db,
+      QUOTA_CACHE: { async get() { return null; }, async put() {}, async delete() {} }, BILLING_EVENTS: { async send() {} } } as never;
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    const post = (body: Record<string, unknown>) => billingWorker.fetch(new Request("https://billing.naelao.com/billing/usage", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      body: JSON.stringify({ schema_version: 2, unit: "invocations", payer_kind: "platform", decision: "allowed", ...body }) }), env, ctx);
+    expect((await post({ event_type: "extension_resource_requests", quantity: 1, rate_card_version: "ext-units-2026-11-25",
+      priced_in_settlement: true, price_version: "ext-units-2026-11-25", idempotency_key: "unit-1" })).status).toBe(201);
+    expect((await post({ event_type: "connector_calls", quantity: 1, idempotency_key: "plain-1" })).status).toBe(201);
+    expect(db.db.prepare("SELECT cost_credits,rate_card_version,metadata_json FROM usage_events WHERE event_type='extension_resource_requests'").get())
+      .toEqual({ cost_credits: null, rate_card_version: "ext-units-2026-11-25", metadata_json: JSON.stringify({ priced_in_settlement: true, price_version: "ext-units-2026-11-25" }) });
+    expect(db.db.prepare("SELECT metadata_json FROM usage_events WHERE event_type='connector_calls'").get()).toEqual({ metadata_json: null });
+    expect((await post({ event_type: "connector_calls", priced_in_settlement: "yes", idempotency_key: "bad-1" })).status).toBe(400);
+    expect((await post({ event_type: "connector_calls", price_version: "x".repeat(81), idempotency_key: "bad-2" })).status).toBe(400);
+    db.db.close();
+  });
+
+  it("MS-48: without migration 0309 a row with no metadata is still written exactly as before", async () => {
+    const db = createFakeD1([
+      `CREATE TABLE usage_events(id TEXT PRIMARY KEY,org_id TEXT NOT NULL,space_id TEXT,event_type TEXT NOT NULL,quantity INTEGER NOT NULL DEFAULT 1,recorded_at TEXT NOT NULL,event_hash TEXT UNIQUE);`,
+      readFileSync(join(__dirname, "../../infra/migrations/0109_usage_events_v2.sql"), "utf8"),
+      "ALTER TABLE usage_events ADD COLUMN service_identity_id TEXT; ALTER TABLE usage_events ADD COLUMN service_authorization_revision TEXT;",
+    ]);
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    const response = await billingWorker.fetch(new Request("https://billing.naelao.com/billing/usage", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      body: JSON.stringify({ schema_version: 2, event_type: "connector_calls", quantity: 1, unit: "invocations", payer_kind: "platform", idempotency_key: "pre-0309" }) }),
+    { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, PLATFORM_DB: db, QUOTA_CACHE: { async get() { return null; }, async put() {}, async delete() {} }, BILLING_EVENTS: { async send() {} } } as never, ctx);
+    expect(response.status).toBe(201);
+    db.db.close();
+  });
+
   it("scopes caller-supplied idempotency keys to the verified tenant", async () => {
     const db = createFakeD1([
       `CREATE TABLE usage_events(id TEXT PRIMARY KEY,org_id TEXT NOT NULL,space_id TEXT,event_type TEXT NOT NULL,quantity INTEGER NOT NULL DEFAULT 1,recorded_at TEXT NOT NULL,event_hash TEXT UNIQUE);`,
