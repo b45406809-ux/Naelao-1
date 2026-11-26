@@ -6,6 +6,7 @@ import { ensureAgentPortAssistantIdentity, type CommunicationIdentity, type Comm
 import { markManagedServiceCreditsUncertain,releaseManagedServiceCredits,reserveManagedServiceCredits,settleManagedServiceCredits } from "./managed-service-billing.js";
 import { requireManagedServiceCapability } from "./managed-service-capabilities.js";
 import { ensureManagedServiceOwnerLink, ensureOrganizationPayerMandate, revokeOrganizationPayerMandate } from "./managed-service-ownership.js";
+import { agentPortCaller,executionPipelineEnabled,runManagedExecution } from "./execution-pipeline.js";
 import { loadAgentConfig } from "../script-engine/agent-config.js";
 import { createOfferingQuote,managedOfferingsEnabled,verifyOfferingQuote } from "./managed-quotes.js";
 import { enrollManagedSubscription,managedSubscriptionsEnabled,resolveOfferingGraceDays,sweepManagedSubscriptions,type SubscriptionTypeHandler } from "./managed-subscriptions.js";
@@ -432,7 +433,9 @@ async function providerKeyFor(env:AgentsEnv,identity:CommunicationIdentity,accou
   if(!account.credential_ciphertext||!account.credential_iv)throw new Error("agentmail_credential_unavailable");
   return String((await openCommunication(env,identity,account.id,{ciphertext:account.credential_ciphertext,iv:account.credential_iv,algorithm:"aes-256-gcm"})).apiKey??"");
 }
-async function assertAgentMailOperationAuthority(env:AgentsEnv,scope:CommunicationScope,account:AgentMailAccount,sendArgs?:Record<string,unknown>){
+type AgentMailSendPolicy=ReturnType<typeof validateAutonomy>&{approvalRequired?:boolean};
+/** `allowApproval` (MS-45 pipeline only): a non-standing policy returns `approvalRequired` instead of refusing, and the allowlist is replaced by the approver's decision on the exact payload. */
+async function assertAgentMailOperationAuthority(env:AgentsEnv,scope:CommunicationScope,account:AgentMailAccount,sendArgs?:Record<string,unknown>,allowApproval=false):Promise<AgentMailSendPolicy|null>{
   const current=await env.PLATFORM_DB.prepare(`SELECT a.status AS account_status,i.status AS identity_status,i.autonomy_json
     FROM assistant_agentmail_accounts a JOIN assistant_communication_identities i ON i.id=a.assistant_identity_id
       AND i.tenant_id=? AND i.space_id=? AND i.project_id IS ? AND i.owner_user_id=?
@@ -444,13 +447,14 @@ async function assertAgentMailOperationAuthority(env:AgentsEnv,scope:Communicati
   if(!current)throw new Error("agentmail_account_not_connected");
   if(sendArgs){
     const policy=validateAutonomy(JSON.parse(current.autonomy_json));
-    if(policy.mode!=="standing")throw new Error("communication_approval_required");
+    const needsApproval=policy.mode!=="standing";
+    if(needsApproval&&!allowApproval)throw new Error("communication_approval_required");
     const recipients=[...normalizeRecipients(sendArgs.to),...normalizeRecipients(sendArgs.cc),...normalizeRecipients(sendArgs.bcc)];
     // Every supplied entry must parse as an address; normalizeRecipients drops malformed entries, which must not shrink the checked set.
     const suppliedCount=[sendArgs.to,sendArgs.cc,sendArgs.bcc].flatMap(value=>Array.isArray(value)?value:[value]).filter(value=>value!==undefined&&value!==null).length;
-    if(!recipients.length||recipients.length!==suppliedCount||recipients.some(recipient=>!policy.recipients.includes(recipient)))
+    if(!recipients.length||recipients.length!==suppliedCount||(!needsApproval&&recipients.some(recipient=>!policy.recipients.includes(recipient))))
       throw new Error("communication_recipient_not_approved");
-    return policy;
+    return needsApproval?{...policy,approvalRequired:true}:policy;
   }
   return null;
 }
@@ -1097,7 +1101,83 @@ async function closeManagedSendOperation(env:AgentsEnv,billing:ManagedSendBillin
   await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET status=?,error_code=?,updated_at=? WHERE operation_id=? AND tenant_id=?")
     .bind(status,errorCode??null,new Date().toISOString(),billing.operationId,billing.scope.tenantId).run().catch(()=>undefined);
 }
-export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,action:string,args:Record<string,unknown>,connectionId?:string){
+type AgentMailSendRun={agentId:string;action:string;capability:string;authorizationKey:string;resourceRef:string;payload:Record<string,unknown>;sendArgs:Record<string,unknown>;requestHash:string;
+  idemHash:string;idem:string;call:{method:string;path:string};providerKey:string;approvalId?:string};
+/**
+ * MS-45: the AgentMail send through the shared execution pipeline. Same checks and billing semantics as the flag-off path
+ * (authority, then idempotency and daily limit, then MS-19 reserve, then dispatch with a temporary key, then settle, release or uncertain),
+ * plus approval bound to the payload hash for a non-standing policy and an outcome receipt in AgentPort.
+ */
+async function runAgentMailSendPipeline(env:AgentsEnv,scope:CommunicationScope,account:AgentMailAccount,run:AgentMailSendRun):Promise<Record<string,unknown>>{
+  let approvalRequired=false,claimedSlot=false,dailySendLimit=0;
+  const operationId=`agentmail_exec_${account.id}_${run.idemHash.slice(0,32)}`;
+  return runManagedExecution<Record<string,unknown>,ManagedSendBilling>(env,{
+    tenantId:scope.tenantId,spaceId:scope.spaceId,projectId:scope.projectId??null,provider:"agentmail",operationId,
+    actor:{kind:"agent",id:run.agentId},principalId:scope.userId,agentId:run.agentId,agentPortAccountId:account.agentport_account_id??"",
+    capability:run.capability,resourceRef:run.resourceRef,authorizationKey:run.authorizationKey,operation:run.action,payload:run.payload,
+    ...(run.approvalId?{approvalId:run.approvalId}:{}),
+    agentPort:agentPortCaller(env,scope.tenantId),
+    policy:async()=>{
+      const currentPolicy=await assertAgentMailOperationAuthority(env,scope,account,run.sendArgs,true);
+      approvalRequired=currentPolicy?.approvalRequired===true;
+      dailySendLimit=currentPolicy?.dailySendLimit??0;
+      const prior=await env.PLATFORM_DB.prepare("SELECT request_hash,status,provider_message_id FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=?").bind(account.id,run.idemHash).first<{request_hash:string;status:string;provider_message_id:string|null}>();
+      if(prior&&prior.request_hash!==run.requestHash)throw new Error("agentmail_idempotency_conflict");
+      if(prior?.status==="sent")return {approvalRequired:false,replay:{...(prior.provider_message_id?{message_id:prior.provider_message_id}:{sent:true}),idempotent:true}};
+      if(prior)throw new Error("agentmail_delivery_reconciliation_required");
+      return {approvalRequired};
+    },
+    claim:async()=>{
+      const at=new Date().toISOString();
+      const claimed=await env.PLATFORM_DB.prepare(`INSERT INTO assistant_agentmail_sends(connection_id,idempotency_hash,request_hash,status,first_attempt_at,updated_at)
+        SELECT ?,?,?, 'sending',?,? WHERE (SELECT COUNT(*) FROM assistant_agentmail_sends WHERE connection_id=?
+          AND status IN ('sent','sending','indeterminate') AND first_attempt_at>=date('now')) < ?
+        ON CONFLICT(connection_id,idempotency_hash) DO NOTHING`)
+        .bind(account.id,run.idemHash,run.requestHash,at,at,account.id,dailySendLimit).run();
+      if(!claimed.meta.changes){
+        const raced=await env.PLATFORM_DB.prepare("SELECT request_hash,status,provider_message_id FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=?")
+          .bind(account.id,run.idemHash).first<{request_hash:string;status:string;provider_message_id:string|null}>();
+        if(raced&&raced.request_hash!==run.requestHash)throw new Error("agentmail_idempotency_conflict");
+        if(raced?.status==="sent")return {replay:{...(raced.provider_message_id?{message_id:raced.provider_message_id}:{sent:true}),idempotent:true}};
+        if(raced)throw new Error("agentmail_delivery_reconciliation_required");
+        throw new Error("communication_daily_send_limit");
+      }
+      claimedSlot=true;
+      return {};
+    },
+    reserve:async()=>env.AGENTMAIL_SEND_BILLING_ENABLED==="true"&&account.mode==="naelao_managed"?reserveManagedSendCredits(env,scope,account,run.idemHash,run.requestHash):null,
+    beforeDispatch:async billing=>{if(billing)await markManagedServiceCreditsUncertain(env,billing.scope,billing.reservationId);},
+    execute:(_billing,dispatch)=>withTemporaryInboxKey(env,run.providerKey,account.inbox_id,account.provider_region,"message_send",async temporaryKey=>{
+      // Race recheck after the temporary key exists: an approved send re-checks the account only (the approver already decided the recipients).
+      await assertAgentMailOperationAuthority(env,scope,account,approvalRequired?undefined:run.sendArgs,false);
+      await dispatch();
+      const sent=await provider(env,temporaryKey,run.call.path,{method:run.call.method,headers:{"Idempotency-Key":run.idem},body:JSON.stringify(run.payload)},account.provider_region);
+      return typeof sent.message_id==="string"?{message_id:sent.message_id}:{sent:true};
+    }),
+    onSuccess:async result=>{
+      await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='sent',provider_message_id=?,updated_at=? WHERE connection_id=? AND idempotency_hash=?")
+        .bind(typeof result.message_id==="string"?result.message_id:null,new Date().toISOString(),account.id,run.idemHash).run();
+    },
+    settle:async billing=>{
+      const settled=await settleManagedServiceCredits(env,billing.scope,billing.reservationId,billing.credits).then(()=>true,()=>false);
+      await closeManagedSendOperation(env,billing,settled?"complete":"uncertain",settled?undefined:"managed_send_settlement_pending");
+      return settled;
+    },
+    release:async(billing,error)=>{
+      await releaseManagedServiceCredits(env,billing.scope,billing.reservationId,"no_effect").catch(()=>undefined);
+      await closeManagedSendOperation(env,billing,"failed",error instanceof Error?error.message.slice(0,100):"agentmail_send_not_dispatched");
+    },
+    closeUncertain:async billing=>closeManagedSendOperation(env,billing,"uncertain","agentmail_send_outcome_unknown"),
+    onFailure:async(_error,dispatchStarted)=>{
+      if(!claimedSlot)return;
+      if(dispatchStarted)await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_sends SET status='indeterminate',updated_at=? WHERE connection_id=? AND idempotency_hash=?")
+        .bind(new Date().toISOString(),account.id,run.idemHash).run();
+      else await env.PLATFORM_DB.prepare("DELETE FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=? AND status='sending'")
+        .bind(account.id,run.idemHash).run();
+    },
+  });
+}
+export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,action:string,args:Record<string,unknown>,connectionId?:string,options:{approvalId?:string}={}){
   if(!AGENTMAIL_TOOL_ACTIONS.has(action))throw new Error("agentmail_operation_unsupported");
   const agentId=await ensureAgentPortAssistantIdentity(env,scope);
   const account=await env.PLATFORM_DB.prepare(`SELECT * FROM assistant_agentmail_accounts
@@ -1115,11 +1195,16 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
   const authorizationId=await stableClientId(`${account.id}:${action}:${operationKey}`);
   const providerResourceRef=[account.inbox_id,typeof args.messageId==="string"?args.messageId:"",typeof args.attachmentId==="string"?args.attachmentId:""]
     .filter(Boolean).join(":");
-  const authorization=await agentPort(env,scope.tenantId,`/accounts/${encodeURIComponent(account.agentport_account_id??"")}/actions/authorize`,"POST",
-    {agentId,action:capability,idempotencyKey:authorizationId,resourceRef:providerResourceRef});
-  if(authorization.result.decision!=="allow")throw new Error("agentmail_action_not_authorized");
   const sendOperation=["agentmail.send","agentmail.reply","agentmail.reply_all","agentmail.forward"].includes(action);
-  const currentPolicy=await assertAgentMailOperationAuthority(env,scope,account,sendOperation?args:undefined);
+  // MS-45: with MANAGED_EXECUTION_PIPELINE_ENABLED a send runs through runManagedExecution, which authorizes and checks policy itself.
+  const usePipeline=sendOperation&&executionPipelineEnabled(env);
+  let currentPolicy:AgentMailSendPolicy|null=null;
+  if(!usePipeline){
+    const authorization=await agentPort(env,scope.tenantId,`/accounts/${encodeURIComponent(account.agentport_account_id??"")}/actions/authorize`,"POST",
+      {agentId,action:capability,idempotencyKey:authorizationId,resourceRef:providerResourceRef});
+    if(authorization.result.decision!=="allow")throw new Error("agentmail_action_not_authorized");
+    currentPolicy=await assertAgentMailOperationAuthority(env,scope,account,sendOperation?args:undefined);
+  }
   const endpoint=`/inboxes/${encodeURIComponent(account.inbox_id)}`;
   const methods:Record<string,{method:string;path:string;body?:unknown}>={
     "agentmail.inbox":{method:"GET",path:`${endpoint}/messages${buildQuery(args)}`},
@@ -1139,6 +1224,8 @@ export async function callAgentMailTool(env:AgentsEnv,scope:CommunicationScope,a
     if(!/^[A-Za-z0-9._:-]{1,200}$/.test(idem))throw new Error("agentmail_idempotency_key_required");
     const payload={...(call.body as Record<string,unknown>)};delete payload.idempotency_key;delete payload.messageId;
     const requestHash=await hashString(JSON.stringify(payload)),idemHash=await hashString(idem),at=new Date().toISOString();
+    if(usePipeline)return runAgentMailSendPipeline(env,scope,account,{agentId,action,capability,authorizationKey:authorizationId,resourceRef:providerResourceRef,
+      payload,sendArgs:args,requestHash,idemHash,idem,call:{method:call.method,path:call.path},providerKey:key,...(options.approvalId?{approvalId:options.approvalId}:{})});
     const prior=await env.PLATFORM_DB.prepare("SELECT request_hash,status,provider_message_id FROM assistant_agentmail_sends WHERE connection_id=? AND idempotency_hash=?").bind(account.id,idemHash).first<{request_hash:string;status:string;provider_message_id:string|null}>();
     if(prior&&prior.request_hash!==requestHash)throw new Error("agentmail_idempotency_conflict");
     if(prior?.status==="sent")return {...(prior.provider_message_id?{message_id:prior.provider_message_id}:{sent:true}),idempotent:true};

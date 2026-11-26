@@ -174,7 +174,13 @@ export function fixture() {
   // MS-37: run the AgentMail and managed-model suites with MANAGED_OFFERINGS_ENABLED on by setting
   // NAELAO_TEST_MANAGED_OFFERINGS=on. Seeds one available offering and one approved agreement per quoted provider.
   if (process.env.NAELAO_TEST_MANAGED_OFFERINGS === "on") enableManagedOfferingsFixture(db, env);
+  // MS-45: NAELAO_TEST_MANAGED_EXECUTION_PIPELINE=on runs the same suites with sends going through the shared execution pipeline.
+  if (process.env.NAELAO_TEST_MANAGED_EXECUTION_PIPELINE === "on") enableManagedExecutionPipelineFixture(db, env);
   return { db, objects, env, send, fetch };
+}
+export function enableManagedExecutionPipelineFixture(db: ReturnType<typeof createFakeD1>, env: AgentsEnv) {
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0308_managed_execution_approvals.sql", import.meta.url), "utf8"));
+  (env as unknown as { MANAGED_EXECUTION_PIPELINE_ENABLED: string }).MANAGED_EXECUTION_PIPELINE_ENABLED = "true";
 }
 export function enableManagedOfferingsFixture(db: ReturnType<typeof createFakeD1>, env: AgentsEnv, chargeComponents: Record<string, unknown[]> = {}) {
   for (const name of ["0291_managed_offerings_agreements_resources.sql", "0292_managed_offering_testing_allowlist_and_telnyx_classification.sql", "0302_managed_service_offering_quotes.sql"]) {

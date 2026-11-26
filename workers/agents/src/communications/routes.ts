@@ -11,6 +11,7 @@ import {
   MAX_EMAIL_ATTACHMENT_BYTES,
   safeFilename,
 } from "../channels/cloudflare-email.js";
+import { decideExecutionApproval, ExecutionPipelineError } from "./execution-pipeline.js";
 import { connectUserAgentMail, callAgentMailTool, createManagedAgentMailQuote, getAssistantAgentMailStatus, getAgentPortSyncIdentity, getAgentPortThreadAssistantRoutes, provisionManagedAgentMail, readAgentMailUsage, receiveAgentMailWebhook, receiveAgentPortNotification, stopManagedAgentMailRenewal, revokeAgentPortOwnerLink, setAgentPortEventAssistant, setAgentPortThreadAssistant, syncAgentPortAgentMail } from "./agentmail.js";
 import { FindingsError, acknowledgeFinding, listFindings } from "./managed-reconciliation-findings.js";
 import { ManagedOfferingAdminError, approveCommercialAgreement, revokeCommercialAgreement, upsertCommercialAgreement, upsertManagedServiceOffering } from "./managed-offering-admin.js";
@@ -477,13 +478,21 @@ async function handle(c: C, agent: boolean) {
         if(c.req.method!=="POST")return c.json({error_code:"method_not_allowed"},405);
         const operation=typeof body.operation==="string"?body.operation:"";
         const connectionId=typeof body.connection_id==="string"?body.connection_id:undefined;
-        const result=await callAgentMailTool(c.env,scope,operation,body.args&&typeof body.args==="object"&&!Array.isArray(body.args)?body.args as Record<string,unknown>:{},connectionId);
+        const result=await callAgentMailTool(c.env,scope,operation,body.args&&typeof body.args==="object"&&!Array.isArray(body.args)?body.args as Record<string,unknown>:{},connectionId,
+          typeof body.approval_id==="string"&&/^mea_[a-f0-9]{32}$/.test(body.approval_id)?{approvalId:body.approval_id}:{});
         return c.json({result});
+      }
+      if(action==="agentmail-execution-approval") {
+        // MS-45: only an authenticated owner or admin (never an agent, which cannot reach this action) decides an approval, and never as its proposer.
+        if(c.req.method!=="POST"||typeof body.approval_id!=="string"||!/^mea_[a-f0-9]{32}$/.test(body.approval_id)||(body.decision!=="approve"&&body.decision!=="reject"))return c.json({error_code:"invalid_execution_approval"},400);
+        if(c.env.MANAGED_EXECUTION_PIPELINE_ENABLED!=="true")return c.json({error_code:"not_found"},404);
+        return c.json(await decideExecutionApproval(c.env,{tenantId:scope.tenantId,spaceId:scope.spaceId,approvalId:body.approval_id,decision:body.decision,approver:{kind:"user",id:scope.userId}}));
       }
       return c.json({error_code:"agentmail_action_unsupported"},400);
     } catch(error) {
       const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentmail_unavailable";
-      return c.json({error_code:code},code.includes("not_configured")?503:code.includes("not_found")?404:code.includes("not_authorized")||code.includes("recipient_not_approved")?403:code.includes("daily_send_limit")?429:code.includes("approval_required")||code.includes("capability")||code.includes("region_not_verified")||code.includes("region_unsupported")||code.includes("revoked")||code.includes("changed")||code.includes("conflict")||code.includes("quote")||code.includes("price")||code.includes("reconciliation_required")?409:code.includes("invalid")||code.includes("unsupported")?400:502);
+      const details=error instanceof ExecutionPipelineError&&error.details.approvalId?{approval_id:error.details.approvalId,payload_sha256:error.details.payloadSha256}:{};
+      return c.json({error_code:code,...details},code.startsWith("approval_")?409:code.includes("not_configured")?503:code.includes("not_found")?404:code.includes("not_authorized")||code.includes("recipient_not_approved")?403:code.includes("daily_send_limit")?429:code.includes("approval_required")||code.includes("capability")||code.includes("region_not_verified")||code.includes("region_unsupported")||code.includes("revoked")||code.includes("changed")||code.includes("conflict")||code.includes("quote")||code.includes("price")||code.includes("reconciliation_required")?409:code.includes("invalid")||code.includes("unsupported")?400:502);
     }
   }
   if(action.startsWith("higgsfield-")) {
