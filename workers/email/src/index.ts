@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { verifyInternalToken } from "@naelao/http";
 import { handleInbound } from "./inbound.js";
+import { parseFields, performSend } from "./send.js";
 import { SCOPES, authenticate, generateApiKey, isScope, keyPrefix, sha256Hex, type AuthContext, type Scope } from "./keys.js";
 
 export interface Env {
@@ -11,6 +12,8 @@ export interface Env {
   ENVIRONMENT?: string;
   NAELAO_EMAIL_ENABLED?: string;
   NAELAO_EMAIL_DOMAINS?: string;
+  /** Optional address that receives DSN/ARF reports for tenants (tenant resolved from the original Message-ID). */
+  NAELAO_EMAIL_BOUNCE_ADDRESS?: string;
 }
 type AppContext = Context<{ Bindings: Env; Variables: { auth: AuthContext } }>;
 
@@ -81,10 +84,12 @@ function requireScope(scope: Scope) {
 }
 
 /** Idempotency-Key replay: same key+operation+body replays the stored response; a different body is refused. */
-async function idempotent(c: AppContext, operation: string, bodyForHash: string, run: () => Promise<{ status: number; body: unknown }>) {
+type IdemResult = { status: number; body: unknown; cache?: boolean; headers?: Record<string, string> };
+async function idempotent(c: AppContext, operation: string, bodyForHash: string, run: () => Promise<IdemResult>, opts: { required?: boolean; keepClaimOnError?: boolean } = {}) {
   const key = c.req.header("idempotency-key");
-  const send = (status: number, body: unknown, replayed = false) => c.json(body as object, status as 200, replayed ? { "idempotent-replayed": "true" } : {});
-  if (key === undefined) { const r = await run(); return send(r.status, r.body); }
+  const send = (status: number, body: unknown, replayed = false, extra: Record<string, string> = {}) => c.json(body as object, status as 200, { ...extra, ...(replayed ? { "idempotent-replayed": "true" } : {}) });
+  if (key === undefined && opts.required) return c.json({ error_code: "idempotency_key_required", message: "The Idempotency-Key header is required." }, 400);
+  if (key === undefined) { const r = await run(); return send(r.status, r.body, false, r.headers); }
   if (!key || key.length > 128 || !/^[\x21-\x7e]+$/.test(key)) return c.json({ error_code: "invalid_idempotency_key", message: "Invalid Idempotency-Key." }, 400);
   const db = c.env.PLATFORM_DB, tenantId = c.get("auth").tenantId;
   const hash = await sha256Hex(`${operation}\n${bodyForHash}`);
@@ -98,14 +103,19 @@ async function idempotent(c: AppContext, operation: string, bodyForHash: string,
     if (row.status !== "completed" || row.response_status === null || row.response_json === null) return c.json({ error_code: "idempotency_in_progress", message: "A request with this Idempotency-Key is in progress." }, 409);
     return send(row.response_status, JSON.parse(row.response_json), true);
   }
-  let result: { status: number; body: unknown };
+  let result: IdemResult;
   try { result = await run(); } catch (e) {
-    await db.prepare("DELETE FROM nemail_idempotency WHERE nemail_tenant_id=? AND idem_key=? AND operation=?").bind(tenantId, key, operation).run();
+    // A send that may have reached the transport keeps its pending claim: the key can never trigger a second send.
+    if (!opts.keepClaimOnError) await db.prepare("DELETE FROM nemail_idempotency WHERE nemail_tenant_id=? AND idem_key=? AND operation=?").bind(tenantId, key, operation).run();
     throw e;
+  }
+  if (result.cache === false) {
+    await db.prepare("DELETE FROM nemail_idempotency WHERE nemail_tenant_id=? AND idem_key=? AND operation=?").bind(tenantId, key, operation).run();
+    return send(result.status, result.body, false, result.headers);
   }
   await db.prepare("UPDATE nemail_idempotency SET status='completed', response_status=?, response_json=? WHERE nemail_tenant_id=? AND idem_key=? AND operation=?")
     .bind(result.status, JSON.stringify(result.body), tenantId, key, operation).run();
-  return send(result.status, result.body);
+  return send(result.status, result.body, false, result.headers);
 }
 
 app.post("/v1/inboxes", requireScope("inboxes:write"), async c => {
@@ -254,6 +264,106 @@ app.get("/v1/threads/:id", requireScope("messages:read"), async c => {
   if (!t) return c.json(notFound, 404);
   const msgs = await c.env.PLATFORM_DB.prepare(`SELECT ${MSG_COLS},text_body FROM nemail_messages WHERE nemail_tenant_id=? AND thread_id=? ORDER BY received_at, id LIMIT ${MAX_PAGE}`).bind(tenantId, t.id).all<MsgRow>();
   return c.json({ data: { ...threadJson(t), messages: msgs.results.map(r => messageJson(r)) } }, 200, untrustedHeaders);
+});
+
+// ---- Outbound (MS-33). Check order is enforced in performSend (see send.ts). ----
+const parseBodyJson = (raw: string): unknown => { try { return raw ? JSON.parse(raw) : {}; } catch { return null; } };
+
+app.post("/v1/inboxes/:id/messages/send", requireScope("messages:send"), async c => {
+  const inboxId = c.req.param("id") as string, tenantId = c.get("auth").tenantId;
+  const raw = await c.req.text();
+  return idempotent(c, `messages.send:${inboxId}`, raw, () => performSend(c.env, tenantId, inboxId, parseBodyJson(raw)), { required: true, keepClaimOnError: true });
+});
+
+interface DraftRow { id: string; inbox_id: string; in_reply_to_message_id: string | null; to_json: string; cc_json: string; bcc_json: string; subject: string; text_body: string | null; html_body: string | null; status: string; sent_message_id: string | null; created_at: string; updated_at: string }
+const DRAFT_COLS = "id,inbox_id,in_reply_to_message_id,to_json,cc_json,bcc_json,subject,text_body,html_body,status,sent_message_id,created_at,updated_at";
+const draftJson = (r: DraftRow) => ({
+  id: r.id, inbox_id: r.inbox_id, in_reply_to_message_id: r.in_reply_to_message_id, to: parseJson<string[]>(r.to_json, []), cc: parseJson<string[]>(r.cc_json, []), bcc: parseJson<string[]>(r.bcc_json, []),
+  subject: r.subject, text: r.text_body, html: r.html_body, status: r.status, sent_message_id: r.sent_message_id, created_at: r.created_at, updated_at: r.updated_at,
+});
+const invalid = (c: AppContext, message: string) => c.json({ error_code: "invalid_request", message }, 400);
+
+app.post("/v1/inboxes/:id/drafts", requireScope("messages:send"), async c => {
+  const inboxId = c.req.param("id") as string, tenantId = c.get("auth").tenantId;
+  const raw = await c.req.text();
+  const parsed = parseFields(parseBodyJson(raw));
+  if (parsed.error) return invalid(c, parsed.error);
+  return idempotent(c, `drafts.create:${inboxId}`, raw, async () => {
+    if (!(await ownedInbox(c, inboxId))) return { status: 404, body: notFound, cache: false };
+    const f = parsed.fields, id = `drf_${crypto.randomUUID()}`;
+    await c.env.PLATFORM_DB.prepare("INSERT INTO nemail_drafts(id,nemail_tenant_id,inbox_id,in_reply_to_message_id,to_json,cc_json,bcc_json,subject,text_body,html_body) VALUES(?,?,?,?,?,?,?,?,?,?)")
+      .bind(id, tenantId, inboxId, f.in_reply_to_message_id ?? null, JSON.stringify(f.to ?? []), JSON.stringify(f.cc ?? []), JSON.stringify(f.bcc ?? []), f.subject ?? "", f.text ?? null, f.html ?? null).run();
+    const row = await c.env.PLATFORM_DB.prepare(`SELECT ${DRAFT_COLS} FROM nemail_drafts WHERE id=? AND nemail_tenant_id=?`).bind(id, tenantId).first<DraftRow>();
+    return { status: 201, body: { data: draftJson(row!) } };
+  });
+});
+
+app.get("/v1/drafts/:id", requireScope("messages:read"), async c => {
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT ${DRAFT_COLS} FROM nemail_drafts WHERE id=? AND nemail_tenant_id=? AND status != 'discarded'`).bind(c.req.param("id"), c.get("auth").tenantId).first<DraftRow>();
+  return row ? c.json({ data: draftJson(row) }, 200, untrustedHeaders) : c.json(notFound, 404);
+});
+
+app.patch("/v1/drafts/:id", requireScope("messages:send"), async c => {
+  const id = c.req.param("id") as string, tenantId = c.get("auth").tenantId;
+  const parsed = parseFields(parseBodyJson(await c.req.text()));
+  if (parsed.error) return invalid(c, parsed.error);
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT ${DRAFT_COLS} FROM nemail_drafts WHERE id=? AND nemail_tenant_id=? AND status != 'discarded'`).bind(id, tenantId).first<DraftRow>();
+  if (!row) return c.json(notFound, 404);
+  if (row.status !== "draft") return c.json({ error_code: "draft_not_editable", message: "A sent draft cannot be edited." }, 409);
+  const f = parsed.fields;
+  const res = await c.env.PLATFORM_DB.prepare("UPDATE nemail_drafts SET to_json=?,cc_json=?,bcc_json=?,subject=?,text_body=?,html_body=?,in_reply_to_message_id=?,updated_at=datetime('now') WHERE id=? AND nemail_tenant_id=? AND status='draft'")
+    .bind(JSON.stringify(f.to ?? parseJson<string[]>(row.to_json, [])), JSON.stringify(f.cc ?? parseJson<string[]>(row.cc_json, [])), JSON.stringify(f.bcc ?? parseJson<string[]>(row.bcc_json, [])),
+      f.subject ?? row.subject, "text" in f ? f.text ?? null : row.text_body, "html" in f ? f.html ?? null : row.html_body,
+      "in_reply_to_message_id" in f ? f.in_reply_to_message_id ?? null : row.in_reply_to_message_id, id, tenantId).run();
+  if (!((res.meta?.changes ?? 0) > 0)) return c.json({ error_code: "draft_not_editable", message: "A sent draft cannot be edited." }, 409);
+  const next = await c.env.PLATFORM_DB.prepare(`SELECT ${DRAFT_COLS} FROM nemail_drafts WHERE id=? AND nemail_tenant_id=?`).bind(id, tenantId).first<DraftRow>();
+  return c.json({ data: draftJson(next!) });
+});
+
+app.post("/v1/drafts/:id/send", requireScope("messages:send"), async c => {
+  const id = c.req.param("id") as string, tenantId = c.get("auth").tenantId, db = c.env.PLATFORM_DB;
+  return idempotent(c, `drafts.send:${id}`, "", async () => {
+    const d = await db.prepare(`SELECT ${DRAFT_COLS} FROM nemail_drafts WHERE id=? AND nemail_tenant_id=? AND status != 'discarded'`).bind(id, tenantId).first<DraftRow>();
+    if (!d) return { status: 404, body: notFound, cache: false };
+    if (d.status !== "draft") return { status: 409, body: { error_code: "draft_already_sent", message: "This draft was already sent." }, cache: false };
+    const input = { to: parseJson<string[]>(d.to_json, []), cc: parseJson<string[]>(d.cc_json, []), bcc: parseJson<string[]>(d.bcc_json, []), subject: d.subject, text: d.text_body, html: d.html_body, in_reply_to_message_id: d.in_reply_to_message_id };
+    return performSend(c.env, tenantId, d.inbox_id, input, {
+      claim: async () => ((await db.prepare("UPDATE nemail_drafts SET status='sent', updated_at=datetime('now') WHERE id=? AND nemail_tenant_id=? AND status='draft'").bind(id, tenantId).run()).meta?.changes ?? 0) > 0,
+      release: async () => { await db.prepare("UPDATE nemail_drafts SET status='draft', updated_at=datetime('now') WHERE id=? AND nemail_tenant_id=? AND status='sent' AND sent_message_id IS NULL").bind(id, tenantId).run(); },
+      onSent: async mid => { await db.prepare("UPDATE nemail_drafts SET sent_message_id=? WHERE id=? AND nemail_tenant_id=?").bind(mid, id, tenantId).run(); },
+    });
+  }, { required: true, keepClaimOnError: true });
+});
+
+// ---- Usage (meter email.message.sent) ----
+app.get("/v1/usage", requireScope("usage:read"), async c => {
+  const now = new Date().toISOString().slice(0, 7);
+  const period = c.req.query("period") ?? now;
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) return c.json({ error_code: "invalid_request", message: "period must be YYYY-MM." }, 400);
+  const tenantId = c.get("auth").tenantId, db = c.env.PLATFORM_DB;
+  const sent = await db.prepare("SELECT COALESCE(sum(quantity),0) AS n FROM nemail_usage WHERE nemail_tenant_id=? AND meter='email.message.sent' AND period=?").bind(tenantId, period).first<{ n: number }>();
+  // Storage = raw MIME bytes plus attachment bytes of messages created in the period (UTC month).
+  const raw = await db.prepare("SELECT COALESCE(sum(size_bytes),0) AS n FROM nemail_messages WHERE nemail_tenant_id=? AND substr(received_at,1,7)=?").bind(tenantId, period).first<{ n: number }>();
+  const att = await db.prepare("SELECT COALESCE(sum(a.size_bytes),0) AS n FROM nemail_attachments a WHERE a.nemail_tenant_id=? AND substr(a.created_at,1,7)=?").bind(tenantId, period).first<{ n: number }>();
+  return c.json({ data: { period, meter: "email.message.sent", sent_count: sent?.n ?? 0, storage_bytes: (raw?.n ?? 0) + (att?.n ?? 0) } });
+});
+
+// Operator route (HMAC, tenant id in x-naelao-tenant-id): pause/resume sending and set the per-tenant daily limit override.
+app.post("/internal/v1/tenants/sending", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!c.env.PLATFORM_SECRET || !tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden", message: "Forbidden." }, 403);
+  }
+  const body = await c.req.json<{ paused?: unknown; daily_send_limit_override?: unknown }>().catch(() => null);
+  const o = body?.daily_send_limit_override;
+  if (!body || (body.paused !== undefined && typeof body.paused !== "boolean") || (o !== undefined && o !== null && (!Number.isInteger(o) || (o as number) < 0 || (o as number) > 1_000_000)) ||
+    (body.paused === undefined && o === undefined)) return c.json({ error_code: "invalid_request", message: "Invalid sending request." }, 400);
+  if (!(await c.env.PLATFORM_DB.prepare("SELECT id FROM nemail_tenants WHERE id=?").bind(tenantId).first())) return c.json(notFound, 404);
+  if (body.paused === false) await c.env.PLATFORM_DB.prepare("UPDATE nemail_tenants SET sending_paused=0, sending_paused_reason=NULL, sending_resumed_at=datetime('now') WHERE id=?").bind(tenantId).run();
+  if (body.paused === true) await c.env.PLATFORM_DB.prepare("UPDATE nemail_tenants SET sending_paused=1, sending_paused_reason='operator', sending_paused_at=datetime('now') WHERE id=?").bind(tenantId).run();
+  if (o !== undefined) await c.env.PLATFORM_DB.prepare("UPDATE nemail_tenants SET daily_send_limit_override=? WHERE id=?").bind(o as number | null, tenantId).run();
+  const t = await c.env.PLATFORM_DB.prepare("SELECT sending_paused,sending_paused_reason,daily_send_limit_override FROM nemail_tenants WHERE id=?").bind(tenantId).first<{ sending_paused: number; sending_paused_reason: string | null; daily_send_limit_override: number | null }>();
+  return c.json({ data: { tenant_id: tenantId, sending_paused: t!.sending_paused === 1, sending_paused_reason: t!.sending_paused_reason, daily_send_limit_override: t!.daily_send_limit_override } });
 });
 
 export default {

@@ -25,10 +25,12 @@ ENVIRONMENT = "development"
 NAELAO_EMAIL_ENABLED = "false"
 # Comma-separated managed domains (OD-2: a dedicated subdomain). Empty = no inbox can be created.
 NAELAO_EMAIL_DOMAINS = ""
+# Optional address receiving DSN/ARF reports (empty = only reports sent to an inbox are processed).
+NAELAO_EMAIL_BOUNCE_ADDRESS = ""
 # PLATFORM_SECRET (HMAC for /internal/*) is set with: wrangler secret put PLATFORM_SECRET
 
 [env.staging]
-vars = { ENVIRONMENT = "staging", NAELAO_EMAIL_ENABLED = "false", NAELAO_EMAIL_DOMAINS = "" }
+vars = { ENVIRONMENT = "staging", NAELAO_EMAIL_ENABLED = "false", NAELAO_EMAIL_DOMAINS = "", NAELAO_EMAIL_BOUNCE_ADDRESS = "" }
 [[env.staging.d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
@@ -41,7 +43,7 @@ bucket_name = "naelao-email-raw-staging"
 name = "EMAIL"
 
 [env.production]
-vars = { ENVIRONMENT = "production", NAELAO_EMAIL_ENABLED = "false", NAELAO_EMAIL_DOMAINS = "" }
+vars = { ENVIRONMENT = "production", NAELAO_EMAIL_ENABLED = "false", NAELAO_EMAIL_DOMAINS = "", NAELAO_EMAIL_BOUNCE_ADDRESS = "" }
 [[env.production.d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"

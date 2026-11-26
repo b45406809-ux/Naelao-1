@@ -1,5 +1,6 @@
 import PostalMime from "postal-mime";
 import { sha256Hex } from "./keys.js";
+import { applyFeedback, parseFeedback } from "./feedback.js";
 
 export const MAX_MESSAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -9,6 +10,7 @@ const MAX_BODY_CHARS = 500_000;
 export interface InboundEnv {
   PLATFORM_DB: D1Database;
   NEMAIL_R2?: R2Bucket;
+  NAELAO_EMAIL_BOUNCE_ADDRESS?: string;
 }
 
 /** Strip angle brackets and whitespace from a Message-ID style token. */
@@ -52,8 +54,18 @@ const addr = (a: { address?: string | undefined } | undefined) => (a?.address ??
  */
 export async function handleInbound(message: ForwardableEmailMessage, env: InboundEnv, enabled: boolean): Promise<void> {
   const reject = (reason: string) => message.setReject(reason);
-  if (!enabled || !env.NEMAIL_R2) return reject("Naelao Email is unavailable");
+  if (!enabled) return reject("Naelao Email is unavailable");
   const recipient = (message.to ?? "").trim().toLowerCase();
+  const bounceAddress = (env.NAELAO_EMAIL_BOUNCE_ADDRESS ?? "").trim().toLowerCase();
+  if (bounceAddress && recipient === bounceAddress) {
+    // Configured bounce/complaint address: only DSN/ARF reports for our own outbound messages have any effect (tenant comes from the original Message-ID).
+    let report: Uint8Array | null = null;
+    try { report = await readBounded(message.raw); } catch { return reject("Message could not be read"); }
+    if (!report) return reject("Message exceeds the inbound size limit");
+    try { await applyFeedback(env.PLATFORM_DB, parseFeedback(report)); } catch { return reject("Temporary failure"); }
+    return;
+  }
+  if (!env.NEMAIL_R2) return reject("Naelao Email is unavailable");
   const inbox = await env.PLATFORM_DB.prepare("SELECT id, nemail_tenant_id FROM nemail_inboxes WHERE address=? AND status='active'")
     .bind(recipient).first<{ id: string; nemail_tenant_id: string }>();
   if (!inbox) return reject("Unknown recipient");
@@ -95,6 +107,8 @@ interface Ctx { tenantId: string; inboxId: string; messageId: string; recipient:
 
 async function ingest(message: ForwardableEmailMessage, env: InboundEnv, x: Ctx) {
   const db = env.PLATFORM_DB, r2 = env.NEMAIL_R2!;
+  // DSN/ARF reports addressed to an inbox: record suppressions/bounces (idempotent, tenant-scoped); the report is also stored as a normal message.
+  try { await applyFeedback(db, parseFeedback(x.bytes), x.tenantId); } catch { /* feedback is best effort; raw is already stored */ }
   type Parsed = Awaited<ReturnType<typeof PostalMime.parse>>;
   let parsed: Parsed | null = null;
   try {
