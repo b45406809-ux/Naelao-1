@@ -4,6 +4,7 @@ import { signJwt, verifyJwt } from "@naelao/auth";
 import { agentPortRoutes } from "./core/routes.js";
 import { handleAgentPortEmail } from "./email.js";
 import { deliverEventNotifications } from "./notifications.js";
+import { buildLinkedOrgStatements, orgLinkEnabled } from "./org-link.js";
 
 interface Env {
   PLATFORM_DB: D1Database;
@@ -15,6 +16,7 @@ interface Env {
   EMAIL_INGRESS_DOMAIN?: string;
   EMAIL_SENDING_DOMAIN?: string;
   EMAIL_PROVISIONING_ENABLED?: string;
+  AGENTPORT_ORG_LINK_ENABLED?: string;
 }
 interface ApiKeyRow { id: string; tenant_id: string; owner_type: string; owner_id: string; scopes_json: string; expires_at: string | null; }
 interface DeveloperTokenClaims { sub: string; tid: string; email: string; role: string; scopes: string[]; iat: number; exp: number; jti: string; tv?: number; }
@@ -266,8 +268,11 @@ app.post("/v1/auth/register", async c => {
   const existing = await c.env.PLATFORM_DB.prepare("SELECT id FROM agentport_developers WHERE email_normalized=?").bind(normalizedEmail).first();
   if (existing) return c.json({ error_code: "registration_unavailable", message: "This email cannot be registered." }, 409);
   const userId = crypto.randomUUID(); const tenantId = crypto.randomUUID(); const at = now();
+  const orgStatements = orgLinkEnabled(c.env)
+    ? buildLinkedOrgStatements(c.env.PLATFORM_DB, { tenantId, name: orgName, ownerDeveloperId: userId, at })
+    : [c.env.PLATFORM_DB.prepare("INSERT INTO agentport_organizations(id,name,owner_developer_id,status,created_at,updated_at) VALUES(?,?,?,'active',?,?)").bind(tenantId, orgName, userId, at, at)];
   await c.env.PLATFORM_DB.batch([
-    c.env.PLATFORM_DB.prepare("INSERT INTO agentport_organizations(id,name,owner_developer_id,status,created_at,updated_at) VALUES(?,?,?,'active',?,?)").bind(tenantId, orgName, userId, at, at),
+    ...orgStatements,
     c.env.PLATFORM_DB.prepare("INSERT INTO agentport_developers(id,tenant_id,email,email_normalized,password_hash,role,status,token_version,created_at,updated_at) VALUES(?,?,?,?,?,'owner','active',0,?,?)").bind(userId, tenantId, email, normalizedEmail, await hashPassword(password), at, at),
   ]);
   const token = await issueDeveloperToken(c.env, { id: userId, tenant_id: tenantId, email, role: "owner", token_version: 0 });

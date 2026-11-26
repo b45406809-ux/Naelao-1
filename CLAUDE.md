@@ -2,11 +2,7 @@
 
 ## Current task
 
-Master implementation spec, **MS-30**: P0 AgentPort standalone tenants get an `orgs` row (OD-7),
-from the owner-approved [Managed/Providers/AgentPort spec v2](new%20plan/V-spec.md)
-(all OD-1..OD-8 recommendations accepted 2026-11-26). MS-01 to MS-29 are done and every D8–D10 flag
-stays off. Follow [the master spec](docs/operations/master-implementation-spec.md).
-Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+V-spec P0 (MS-27..MS-30) is complete locally; next is P1 Naelao Email Release 1 — tasks to be written into the master spec from new plan/V-spec.md §12. Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 

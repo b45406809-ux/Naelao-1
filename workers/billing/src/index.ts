@@ -25,7 +25,7 @@ import { validateDecisionUsageReceipt } from "./decision-usage.js";
 import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
 import { recordManagedProviderCostReceipts, summarizeManagedProviderCostReceipts, type ManagedProviderCostReceiptInput } from "./managed-service-provider-costs.js";
 import { isDevelopmentCheckoutAllowed } from "./checkout-policy.js";
-import { legacyReserveQuoteRules, resolveOfferingReserveRules } from "./managed-reserve-policy.js";
+import { legacyReserveQuoteRules, offeringReserveRules, resolveOfferingReserveRules } from "./managed-reserve-policy.js";
 import { isDunningEventMessage } from "@naelao/types";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
@@ -1199,7 +1199,26 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
   // admission, fail closed); otherwise the original rules apply unchanged. Admission runs only for a request whose
   // routing fields are well-formed, so malformed requests still get the ordinary 400 below.
   let quoteRules = legacyReserveQuoteRules(body);
-  if (c.env.MANAGED_OFFERINGS_ENABLED === "true"
+  let heldReplay = false;
+  // An idempotent replay of an existing reservation (same id, operation and scope) returns it before admission runs, so a
+  // crash-retry is not refused only because the offering was disabled in between. Expired holds fall through to admission.
+  if (c.env.MANAGED_OFFERINGS_ENABLED === "true" && orgId && /^[A-Za-z0-9._:-]{1,200}$/.test(reservationId) && /^[A-Za-z0-9._:-]{1,200}$/.test(operationId)
+    && typeof body?.space_id === "string" && typeof body?.provider === "string" && typeof body?.service_id === "string" && typeof body?.operation_name === "string"
+    && body.payer_type === "organization" && body.payer_id === orgId && Number.isSafeInteger(credits)) {
+    const replay = await c.env.PLATFORM_DB.prepare(`SELECT id,status,credits,expires_at FROM managed_service_credit_reservations
+      WHERE org_id=? AND operation_id=? AND id=? AND space_id=? AND provider=? AND service_id=? AND operation_name=? AND payer_type=? AND payer_id=? AND credits=?
+        AND status IN ('held','settled','uncertain')`)
+      .bind(orgId, operationId, reservationId, body.space_id, body.provider, body.service_id, body.operation_name, body.payer_type, body.payer_id, credits)
+      .first<{ id: string; status: string; credits: number; expires_at: string | null }>();
+    if (replay && replay.status !== "held") return c.json({ reserved: true, reservation_id: replay.id, status: replay.status, credits, deduplicated: true });
+    // A live hold is still rechecked below against the mandate, entitlement, capability and quota (as flag off); only offering
+    // admission is skipped, and a supplied quote is validated as required.
+    if (replay && (!replay.expires_at || Date.parse(replay.expires_at) > Date.now())) {
+      heldReplay = true;
+      quoteRules = offeringReserveRules(body?.quote_id ? "always" : "none", body?.operation_name ?? "");
+    }
+  }
+  if (c.env.MANAGED_OFFERINGS_ENABLED === "true" && !heldReplay
     && orgId && /^[a-z][a-z0-9_-]{1,63}$/.test(body?.provider ?? "") && /^[a-z][a-z0-9_.:-]{1,128}$/.test(body?.service_id ?? "")
     && /^[a-z][a-z0-9_.:-]{1,128}$/.test(body?.operation_name ?? "") && /^[a-z0-9][a-z0-9-]{0,31}$/.test(body?.region ?? "")) {
     const admission = await resolveOfferingReserveRules(c.env.PLATFORM_DB, {

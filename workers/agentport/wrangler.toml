@@ -23,11 +23,12 @@ AGENTPORT_ISSUER = "https://agentport.naelao.com"
 EMAIL_SENDING_DOMAIN = ""
 EMAIL_INGRESS_DOMAIN = ""
 EMAIL_PROVISIONING_ENABLED = "false"
+AGENTPORT_ORG_LINK_ENABLED = "false"
 # AgentPort owns its developer JWT secret. Configure it and PLATFORM_SECRET via Wrangler secrets.
 # wrangler secret put AGENTPORT_JWT_SECRET; wrangler secret put PLATFORM_SECRET
 
 [env.staging]
-vars = { ENVIRONMENT = "staging", AGENTPORT_ISSUER = "https://agentport-staging.naelao.com", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "", EMAIL_PROVISIONING_ENABLED = "false" }
+vars = { ENVIRONMENT = "staging", AGENTPORT_ISSUER = "https://agentport-staging.naelao.com", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "", EMAIL_PROVISIONING_ENABLED = "false", AGENTPORT_ORG_LINK_ENABLED = "false" }
 [env.staging.triggers]
 crons = ["* * * * *"]
 [[env.staging.d1_databases]]
@@ -42,7 +43,7 @@ pattern = "agentport-staging.naelao.com/*"
 zone_name = "naelao.com"
 
 [env.production]
-vars = { ENVIRONMENT = "production", AGENTPORT_ISSUER = "https://agentport.naelao.com", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "", EMAIL_PROVISIONING_ENABLED = "false" }
+vars = { ENVIRONMENT = "production", AGENTPORT_ISSUER = "https://agentport.naelao.com", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "", EMAIL_PROVISIONING_ENABLED = "false", AGENTPORT_ORG_LINK_ENABLED = "false" }
 [env.production.triggers]
 crons = ["* * * * *"]
 [[env.production.d1_databases]]

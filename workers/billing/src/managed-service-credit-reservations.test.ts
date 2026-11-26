@@ -807,6 +807,24 @@ describe("offering-driven reserve admission (MANAGED_OFFERINGS_ENABLED=true)", (
     expect(await response.json()).toMatchObject({ reserved: true, status: "held", credits: 40 });
   });
 
+  it("replays an existing reservation before admission, but still admits a new reservation", async () => {
+    const h = harness();
+    acme(h.db.db);
+    operationFor(h.db.db, "run", "acme-op");
+    operationFor(h.db.db, "run", "acme-op-2");
+    const first = await h.post("/internal/managed-services/credits/reserve", acmeBase);
+    expect(first.status).toBe(201);
+    h.db.db.prepare("UPDATE managed_service_offerings SET status='disabled' WHERE id='offering-acme'").run();
+    const replay = await h.post("/internal/managed-services/credits/reserve", acmeBase);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ reserved: true, reservation_id: "acme-rsv", status: "held", credits: 40, deduplicated: true });
+    const fresh = await h.post("/internal/managed-services/credits/reserve", { ...acmeBase, reservation_id: "acme-rsv-2", operation_id: "acme-op-2" });
+    expect(fresh.status).toBe(403);
+    expect(await fresh.json()).toEqual({ error_code: "offering_unavailable" });
+    // a replay with a different scope is not a replay: it is admitted (and refused) like a new request
+    expect((await h.post("/internal/managed-services/credits/reserve", { ...acmeBase, space_id: "space-b" })).status).toBe(403);
+  });
+
   it("derives the quote requirement from quote_policy: always, required_for_recurring and none", async () => {
     for (const [policy, runNeedsQuote, provisionNeedsQuote] of [["always", true, true], ["required_for_recurring", false, true], ["none", false, false]] as const) {
       const h = harness();
