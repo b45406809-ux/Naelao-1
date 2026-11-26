@@ -3,6 +3,9 @@ import { verifyInternalToken } from "@naelao/http";
 import { handleInbound } from "./inbound.js";
 import { parseFields, performSend } from "./send.js";
 import { SCOPES, authenticate, generateApiKey, isScope, keyPrefix, sha256Hex, type AuthContext, type Scope } from "./keys.js";
+import { checkWebhookUrl } from "./ssrf.js";
+import { dispatchDue } from "./dispatch.js";
+import { WEBHOOK_EVENT_TYPES, encryptSecret, generateWebhookSecret, isWebhookEventType, webhookAad, webhookKeyUsable } from "./webhooks.js";
 
 export interface Env {
   PLATFORM_DB: D1Database;
@@ -14,6 +17,8 @@ export interface Env {
   NAELAO_EMAIL_DOMAINS?: string;
   /** Optional address that receives DSN/ARF reports for tenants (tenant resolved from the original Message-ID). */
   NAELAO_EMAIL_BOUNCE_ADDRESS?: string;
+  /** Worker secret (>= 32 chars). Derives the AES-256-GCM key that encrypts webhook signing secrets at rest. */
+  NEMAIL_WEBHOOK_KEY?: string;
 }
 type AppContext = Context<{ Bindings: Env; Variables: { auth: AuthContext } }>;
 
@@ -174,6 +179,43 @@ app.delete("/v1/inboxes/:id", requireScope("inboxes:write"), async c => {
     const res = await c.env.PLATFORM_DB.prepare("UPDATE nemail_inboxes SET status='deleted', deleted_at=? WHERE id=? AND nemail_tenant_id=? AND status != 'deleted'").bind(now, id, tenantId).run();
     if (!((res.meta?.changes ?? 0) > 0)) return { status: 404, body: notFound };
     await c.env.PLATFORM_DB.prepare("UPDATE nemail_addresses SET deleted_at=? WHERE inbox_id=? AND nemail_tenant_id=? AND deleted_at IS NULL").bind(now, id, tenantId).run();
+    return { status: 200, body: { data: { id, deleted: true } } };
+  });
+});
+
+// ---- Webhooks (MS-34). The signing secret is returned once and never stored in plaintext or the replay table. ----
+interface WebhookRow { id: string; url: string; event_types_json: string; status: string; created_at: string }
+const webhookJson = (r: WebhookRow) => ({ id: r.id, url: r.url, event_types: JSON.parse(r.event_types_json) as string[], status: r.status, created_at: r.created_at });
+
+// Not idempotent by design: a replayed response would have to contain the one-time secret, which must not be stored.
+app.post("/v1/webhooks", requireScope("webhooks:write"), async c => {
+  const body = await c.req.json<{ url?: unknown; event_types?: unknown }>().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error_code: "invalid_request", message: "Invalid webhook request." }, 400);
+  const dest = checkWebhookUrl(body.url);
+  if (!dest.ok) return c.json({ error_code: "invalid_webhook_url", message: `Webhook URL refused: ${dest.reason}.` }, 400);
+  const types = body.event_types;
+  if (!Array.isArray(types) || types.length < 1 || types.length > WEBHOOK_EVENT_TYPES.length || !types.every(isWebhookEventType) || new Set(types).size !== types.length) {
+    return c.json({ error_code: "invalid_request", message: `event_types must be a non-empty, duplicate-free subset of: ${WEBHOOK_EVENT_TYPES.join(", ")}.` }, 400);
+  }
+  if (!webhookKeyUsable(c.env.NEMAIL_WEBHOOK_KEY)) return c.json({ error_code: "offering_unavailable", message: "Webhook signing is not configured." }, 503);
+  const tenantId = c.get("auth").tenantId;
+  const id = `whk_${crypto.randomUUID()}`;
+  const secret = generateWebhookSecret();
+  const ciphertext = await encryptSecret(c.env.NEMAIL_WEBHOOK_KEY, secret, webhookAad(tenantId, id));
+  await c.env.PLATFORM_DB.prepare("INSERT INTO nemail_webhooks(id,nemail_tenant_id,url,event_types_json,secret_ciphertext) VALUES(?,?,?,?,?)")
+    .bind(id, tenantId, dest.href, JSON.stringify(types), ciphertext).run();
+  const row = await c.env.PLATFORM_DB.prepare("SELECT id,url,event_types_json,status,created_at FROM nemail_webhooks WHERE id=? AND nemail_tenant_id=?").bind(id, tenantId).first<WebhookRow>();
+  return c.json({ data: { ...webhookJson(row!), secret } }, 201, { "cache-control": "no-store" });
+});
+
+app.delete("/v1/webhooks/:id", requireScope("webhooks:write"), async c => {
+  const id = c.req.param("id"), tenantId = c.get("auth").tenantId;
+  return idempotent(c, `webhooks.delete:${id}`, "", async () => {
+    const now = new Date().toISOString();
+    const res = await c.env.PLATFORM_DB.prepare("UPDATE nemail_webhooks SET status='deleted', deleted_at=? WHERE id=? AND nemail_tenant_id=? AND deleted_at IS NULL").bind(now, id, tenantId).run();
+    if (!((res.meta?.changes ?? 0) > 0)) return { status: 404, body: notFound };
+    // No further attempts for this webhook, including rows already due.
+    await c.env.PLATFORM_DB.prepare("UPDATE nemail_webhook_deliveries SET status='cancelled', claimed_until=NULL, last_error='webhook_deleted', updated_at=? WHERE webhook_id=? AND nemail_tenant_id=? AND status='pending'").bind(now, id, tenantId).run();
     return { status: 200, body: { data: { id, deleted: true } } };
   });
 });
@@ -369,4 +411,9 @@ app.post("/internal/v1/tenants/sending", async c => {
 export default {
   fetch: app.fetch,
   email: (message: ForwardableEmailMessage, env: Env) => handleInbound(message, env, emailEnabled(env)),
+  // Every minute. Flag off: no-op. Work per run is bounded (see dispatch.ts).
+  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    if (!emailEnabled(env)) return;
+    ctx.waitUntil(dispatchDue(env).then(() => undefined));
+  },
 };

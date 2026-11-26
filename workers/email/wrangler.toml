@@ -20,6 +20,10 @@ bucket_name = "naelao-email-raw"
 [[send_email]]
 name = "EMAIL"
 
+# MS-34 webhook dispatcher (flag-gated in code; a no-op while NAELAO_EMAIL_ENABLED is "false").
+[triggers]
+crons = ["*/1 * * * *"]
+
 [vars]
 ENVIRONMENT = "development"
 NAELAO_EMAIL_ENABLED = "false"
@@ -28,6 +32,7 @@ NAELAO_EMAIL_DOMAINS = ""
 # Optional address receiving DSN/ARF reports (empty = only reports sent to an inbox are processed).
 NAELAO_EMAIL_BOUNCE_ADDRESS = ""
 # PLATFORM_SECRET (HMAC for /internal/*) is set with: wrangler secret put PLATFORM_SECRET
+# NEMAIL_WEBHOOK_KEY (>= 32 chars; encrypts webhook signing secrets) is set with: wrangler secret put NEMAIL_WEBHOOK_KEY
 
 [env.staging]
 vars = { ENVIRONMENT = "staging", NAELAO_EMAIL_ENABLED = "false", NAELAO_EMAIL_DOMAINS = "", NAELAO_EMAIL_BOUNCE_ADDRESS = "" }
@@ -41,6 +46,8 @@ binding = "NEMAIL_R2"
 bucket_name = "naelao-email-raw-staging"
 [[env.staging.send_email]]
 name = "EMAIL"
+[env.staging.triggers]
+crons = ["*/1 * * * *"]
 
 [env.production]
 vars = { ENVIRONMENT = "production", NAELAO_EMAIL_ENABLED = "false", NAELAO_EMAIL_DOMAINS = "", NAELAO_EMAIL_BOUNCE_ADDRESS = "" }
@@ -54,3 +61,5 @@ binding = "NEMAIL_R2"
 bucket_name = "naelao-email-raw-production"
 [[env.production.send_email]]
 name = "EMAIL"
+[env.production.triggers]
+crons = ["*/1 * * * *"]

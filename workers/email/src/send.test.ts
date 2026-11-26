@@ -16,7 +16,7 @@ interface Sent { from: string; to: string; raw: string }
 function fixture() {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE orgs(id TEXT PRIMARY KEY)");
-  for (const m of ["0294_naelao_email_core.sql", "0295_naelao_email_inbound.sql", "0296_naelao_email_outbound.sql"]) db.exec(mig(m));
+  for (const m of ["0294_naelao_email_core.sql", "0295_naelao_email_inbound.sql", "0296_naelao_email_outbound.sql", "0297_naelao_email_webhooks.sql"]) db.exec(mig(m));
   const stmt = (sql: string, values: unknown[]) => ({
     sql,
     first: async <T>() => db.prepare(sql).get(...(values as never[])) as T | undefined,

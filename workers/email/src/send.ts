@@ -1,4 +1,5 @@
 import { sha256Hex } from "./keys.js";
+import { deliveryEventByRecipientStmt } from "./events.js";
 
 export const MAX_RECIPIENTS = 50;
 export const NEW_TENANT_DAYS = 14;
@@ -230,6 +231,9 @@ export async function performSend(env: SendEnv, tenantId: string, inboxId: strin
     }
     results.push({ recipient: r, status });
     try { await db.prepare("UPDATE nemail_deliveries SET status=?, error_code=?, updated_at=datetime('now') WHERE message_id=? AND nemail_tenant_id=? AND recipient=?").bind(status, code, messageId, tenantId, r).run(); } catch { /* stays queued: reconcile manually */ }
+    // MS-34: sent/failed are final outcomes for the outbox. `unknown` emits nothing. The status write above is never rolled back by an outbox error.
+    const type = status === "sent" ? "email.delivery.sent" : status === "failed" ? "email.delivery.failed" : null;
+    if (type) { try { await deliveryEventByRecipientStmt(db, type, tenantId, messageId, r).run(); } catch { /* outbox row missing: delivery status is still recorded */ } }
   }
   const sentLike = results.some(r => r.status !== "failed");
   const overall = results.every(r => r.status === "sent") ? "sent" : results.every(r => r.status === "failed") ? "failed"

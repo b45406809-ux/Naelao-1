@@ -1,4 +1,5 @@
 // Bounce (DSN, RFC 3464) and complaint (ARF, RFC 5965) ingestion plus MR-EM-5 auto-pause.
+import { deliveryEventByIdStmt } from "./events.js";
 export interface FeedbackReport { kind: "bounce" | "complaint"; originalMessageId: string | null; recipients: string[] }
 
 export const MIN_SAMPLE_SENDS = 50;
@@ -94,7 +95,11 @@ export async function applyFeedback(db: D1Database, reports: FeedbackReport[], o
           ? "UPDATE nemail_deliveries SET status='bounced', updated_at=datetime('now') WHERE id=? AND status IN ('queued','sent','delivered','unknown')"
           : "UPDATE nemail_deliveries SET status='complained', updated_at=datetime('now') WHERE id=? AND status IN ('queued','sent','delivered','unknown','bounced')"
       ).bind(d.id).run();
-      if ((res.meta?.changes ?? 0) > 0) applied++;
+      if ((res.meta?.changes ?? 0) > 0) {
+        applied++;
+        // MS-34: the transition to bounced/complained is the outbox event (only on a real change, so replays emit nothing).
+        try { await deliveryEventByIdStmt(db, r.kind === "bounce" ? "email.delivery.bounced" : "email.delivery.complained", d.id).run(); } catch { /* status is recorded; outbox row best effort */ }
+      }
       if (d.status === "failed") continue; // never sent: nothing to suppress
       await db.prepare("INSERT OR IGNORE INTO nemail_suppressions(id,nemail_tenant_id,address,reason) VALUES(?,?,?,?)")
         .bind(`sup_${crypto.randomUUID()}`, tenantId, d.recipient, r.kind === "bounce" ? "hard_bounce" : "complaint").run();
