@@ -15,6 +15,8 @@ type ManagedServiceCreditRequest = {
   quoteId?: string;
   payerMandateId?:string;
   agentPortAgentId?:string;
+  /** MS-41: user-initiated spends compose the Project daily spend cap (flag MANAGED_LIMITS_COMPOSED_ENABLED). Renewals and sweeps leave it off. */
+  enforceProjectSpend?: boolean;
 };
 
 async function postCredits(
@@ -49,7 +51,33 @@ async function postCredits(
   return result;
 }
 
-export function reserveManagedServiceCredits(
+type ComposedLimit = { kind: "project_spend"; scope_key: string; headroom_credits: number };
+
+/**
+ * MS-41 / MR-COM-10: the Project daily spend cap lives in the Spaces DO. Headroom is cap minus spent and reserved there
+ * (Billing subtracts its own managed reservations carrying the same scope_key inside the reserve INSERT). Fails closed with a
+ * billing-shaped error when the cap cannot be read. Returns null when the Project has no cap.
+ */
+export async function projectSpendComposedLimit(env: AgentsEnv, scope: CommunicationScope): Promise<ComposedLimit | null> {
+  if (!scope.projectId) return null;
+  if (!env.SPACES_WORKER) throw new Error("managed_service_billing_limit_unavailable");
+  let body: { day?: unknown; cap?: unknown; spent_plus_reserved?: unknown };
+  try {
+    const response = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(scope.spaceId)}/projects/${encodeURIComponent(scope.projectId)}/spend`,
+      { method: "GET", headers: { "x-naelao-tenant-id": scope.tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, scope.tenantId) } }));
+    if (!response.ok) throw new Error("spend_unreadable");
+    body = await readBoundedResponseJson<typeof body>(response, 4096);
+  } catch { throw new Error("managed_service_billing_limit_unavailable"); }
+  if (typeof body.cap !== "number" || typeof body.spent_plus_reserved !== "number" || typeof body.day !== "string" || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(body.day)) {
+    throw new Error("managed_service_billing_limit_unavailable");
+  }
+  if (body.cap <= 0) return null;
+  const headroom = Math.min(10_000_000, Math.max(0, Math.floor(body.cap - body.spent_plus_reserved)));
+  return { kind: "project_spend", scope_key: `${scope.projectId}:${body.day}`, headroom_credits: headroom };
+}
+
+export async function reserveManagedServiceCredits(
   env: AgentsEnv,
   scope: CommunicationScope,
   request: ManagedServiceCreditRequest,
@@ -68,7 +96,9 @@ export function reserveManagedServiceCredits(
     || request.credits > 10_000_000) {
     throw new Error("managed_service_reservation_invalid");
   }
+  const limit = env.MANAGED_LIMITS_COMPOSED_ENABLED === "true" && request.enforceProjectSpend ? await projectSpendComposedLimit(env, scope) : null;
   return postCredits(env, scope, "reserve", {
+    ...(limit ? { composed_limits: [limit] } : {}),
     reservation_id: request.reservationId,
     operation_id: request.operationId,
     space_id: scope.spaceId,

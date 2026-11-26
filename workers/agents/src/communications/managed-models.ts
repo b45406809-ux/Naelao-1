@@ -441,7 +441,7 @@ export async function runManagedModelOperation(
     const reserved = await reserveManagedServiceCredits(env, scope, {
       reservationId, operationId: operation.operation_id, provider: PROVIDER, serviceId: SERVICE,
       operationName: OPERATION, modelId: input.modelId, region: REGION, credits: entitlement.credits_per_operation!, priceVersion: entitlement.price_version,
-      payerMandateId, quoteId: input.quoteId,
+      payerMandateId, quoteId: input.quoteId, enforceProjectSpend: true,
     }) as { reserved?: boolean; status?: string };
     if (reserved.reserved !== true || reserved.status !== "held") {
       await markUncertain(env, scope, operation.operation_id, reservationId, "managed_model_reservation_uncertain");

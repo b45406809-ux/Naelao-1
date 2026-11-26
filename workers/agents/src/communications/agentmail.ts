@@ -766,7 +766,7 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
   const workflowId=`agentmail_rent_${opId}`;const scopeForBilling:CommunicationScope={...scope,role:"product_end_user"};
   let reserved=false,providerDispatched=false;
   try{
-    await reserveManagedServiceCredits(env,scopeForBilling,{reservationId:workflowId,operationId:opId,provider:"agentmail",serviceId:"agentmail",operationName:"provision",region,credits:price.credits,priceVersion:price.priceVersion,quoteId,agentPortAgentId:agentId,payerMandateId:mandateId});reserved=true;
+    await reserveManagedServiceCredits(env,scopeForBilling,{reservationId:workflowId,operationId:opId,provider:"agentmail",serviceId:"agentmail",operationName:"provision",region,credits:price.credits,priceVersion:price.priceVersion,quoteId,agentPortAgentId:agentId,payerMandateId:mandateId,enforceProjectSpend:true});reserved=true;
     await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET reservation_id=?,reserved_credits=?,price_version=?,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'")
       .bind(workflowId,price.credits,price.priceVersion,new Date().toISOString(),opId,scope.tenantId).run();
     await markManagedServiceCreditsUncertain(env,scopeForBilling,workflowId);
@@ -1077,7 +1077,7 @@ async function reserveManagedSendCredits(env:AgentsEnv,scope:CommunicationScope,
       requestHash,price.priceVersion,price.credits,at,at).run();
   try{
     await reserveManagedServiceCredits(env,billingScope,{reservationId,operationId,provider:"agentmail",serviceId:"agentmail",operationName:"send",region,
-      credits:price.credits,priceVersion:price.priceVersion,agentPortAgentId:account.agentport_agent_id,payerMandateId:mandateId});
+      credits:price.credits,priceVersion:price.priceVersion,agentPortAgentId:account.agentport_agent_id,payerMandateId:mandateId,enforceProjectSpend:true});
   }catch(error){
     await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET status='failed',error_code=?,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'")
       .bind(error instanceof Error?error.message.slice(0,100):"managed_service_reservation_failed",new Date().toISOString(),operationId,scope.tenantId).run();

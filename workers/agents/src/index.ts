@@ -397,6 +397,8 @@ export interface AgentsEnv extends Cloudflare.Env {
   MANAGED_SUBSCRIPTIONS_ENABLED?: string;
   /** MS-38: daily inventory sweep + monthly cost comparison findings and the operator findings routes; off = no sweep, not-found shape. */
   MANAGED_RECONCILIATION_ENABLED?: string;
+  /** MS-41: with this on, managed reserves from Project scopes send the Project daily spend headroom as `composed_limits` (Billing reads its own copy of the flag). */
+  MANAGED_LIMITS_COMPOSED_ENABLED?: string;
   /** Full assistant-response caching stays off until exact caller and source freshness gates pass. */
   KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
