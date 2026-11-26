@@ -957,11 +957,13 @@ export async function stopManagedAgentMailRenewal(env:AgentsEnv,scope:Communicat
   if(!account||account.mode!=="naelao_managed")throw new Error("agentmail_managed_account_not_found");
   const mandateKey=`agentmail:${account.agentport_agent_id}`;
   const result=await revokeOrganizationPayerMandate(env,scope,mandateKey,"User stopped managed AgentMail renewal.");
+  // MS-48 item 1: the per-send mandate (agentmail-send:) is separate from the provision/renew mandate; revoke both. No-op when it was never created.
+  const sendResult=await revokeOrganizationPayerMandate(env,scope,`agentmail-send:${account.agentport_agent_id}`,"User stopped managed AgentMail renewal.");
   const at=new Date().toISOString();
   await env.PLATFORM_DB.prepare(`UPDATE assistant_agentmail_accounts SET retire_after=COALESCE(retire_after,next_billing_at),delete_at_period_end=1,updated_at=?
     WHERE id=? AND tenant_id=? AND mode='naelao_managed' AND status IN ('active','billing_hold')`)
     .bind(at,account.id,scope.tenantId).run();
-  return {connectionId:account.id,renewalStopped:true,retireAfter:account.next_billing_at,...result};
+  return {connectionId:account.id,renewalStopped:true,retireAfter:account.next_billing_at,...result,sendMandateRevoked:sendResult.revoked};
 }
 export async function revokeAgentPortOwnerLink(env:AgentsEnv,scope:CommunicationScope,linkId:string){
   const link=await env.PLATFORM_DB.prepare(`SELECT id,owner_type,owner_id,status FROM managed_service_owner_links

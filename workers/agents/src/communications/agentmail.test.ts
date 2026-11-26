@@ -1294,4 +1294,18 @@ describe("MS-19 managed AgentMail send billing",()=>{
     expect(s.billingCalls).toEqual([]);
     expect(await f.db.prepare("SELECT COUNT(*) AS n FROM managed_service_operations").first()).toEqual({n:0});
   });
+  it("MS-48: stopping managed AgentMail revokes the per-send mandate as well as the renewal mandate",async()=>{
+    const f=fixture(),s=await ms19Setup(f,"stopsend");ms19Provider(s.inboxId);
+    await send(f,"stop-1");
+    const agentId=(await f.db.prepare("SELECT agentport_agent_id AS a FROM assistant_agentmail_accounts WHERE id=?").bind(s.accountId).first<{a:string}>())!.a;
+    const status=async(key:string)=>(await f.db.prepare("SELECT status FROM managed_service_payer_mandates WHERE mandate_key=?").bind(key).first<{status:string}>())?.status;
+    expect(await status(`agentmail-send:${agentId}`)).toBe("active");
+    await f.db.prepare("UPDATE assistant_agentmail_accounts SET next_billing_at=datetime('now','+10 days') WHERE id=?").bind(s.accountId).run();
+    const stopped=await stopManagedAgentMailRenewal(f.env,scope,s.accountId);
+    expect(stopped).toMatchObject({renewalStopped:true,sendMandateRevoked:true});
+    expect(await status(`agentmail-send:${agentId}`)).toBe("revoked");
+    expect(await f.db.prepare("SELECT COUNT(*) AS n FROM managed_service_payer_mandate_audit WHERE action='revoked'").first<{n:number}>()).toEqual({n:1});
+    // Stopping again is a no-op.
+    expect(await stopManagedAgentMailRenewal(f.env,scope,s.accountId)).toMatchObject({sendMandateRevoked:false});
+  });
 });
