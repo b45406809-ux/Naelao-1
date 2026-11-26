@@ -1,0 +1,54 @@
+name = "naelao-email"
+main = "src/index.ts"
+compatibility_date = "2026-09-29"
+compatibility_flags = ["nodejs_compat"]
+# Public surface is the email() ingress and (later) a service binding; no routes or custom domains.
+workers_dev = false
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+# PLACEHOLDER bucket name: the R2 bucket is NOT created yet. An operator creates it (and the
+# staging/production variants below) before enabling NAELAO_EMAIL_ENABLED; used from MS-32 on.
+[[r2_buckets]]
+binding = "NEMAIL_R2"
+bucket_name = "naelao-email-raw"
+
+[[send_email]]
+name = "EMAIL"
+
+[vars]
+ENVIRONMENT = "development"
+NAELAO_EMAIL_ENABLED = "false"
+# Comma-separated managed domains (OD-2: a dedicated subdomain). Empty = no inbox can be created.
+NAELAO_EMAIL_DOMAINS = ""
+# PLATFORM_SECRET (HMAC for /internal/*) is set with: wrangler secret put PLATFORM_SECRET
+
+[env.staging]
+vars = { ENVIRONMENT = "staging", NAELAO_EMAIL_ENABLED = "false", NAELAO_EMAIL_DOMAINS = "" }
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+[[env.staging.r2_buckets]]
+binding = "NEMAIL_R2"
+bucket_name = "naelao-email-raw-staging"
+[[env.staging.send_email]]
+name = "EMAIL"
+
+[env.production]
+vars = { ENVIRONMENT = "production", NAELAO_EMAIL_ENABLED = "false", NAELAO_EMAIL_DOMAINS = "" }
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+[[env.production.r2_buckets]]
+binding = "NEMAIL_R2"
+bucket_name = "naelao-email-raw-production"
+[[env.production.send_email]]
+name = "EMAIL"
