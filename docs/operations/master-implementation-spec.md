@@ -588,6 +588,7 @@ safe defaults. The owner can override any of them; until then, implement exactly
 | Queue item | Why it is not code-only |
 |---|---|
 | TBR11 per-effect script ceiling | Code-only, but an atomic multi-effect reservation is subtle. It needs a stronger model and an owner-approved ceiling. |
+| Review follow-ups from MS-16–MS-25 (small, code-only) | (1) MS-19: stopping managed AgentMail revokes the provision mandate but not the `agentmail-send:` mandate; revoke both. (2) MS-20: `worker-branch-retire-pending:` markers have no retry consumer; a missed retire keeps the branch. (3) MS-21: run-log pruning runs only when a run opens, so idle AgentDOs are never swept; also run it from the alarm. (4) MS-22: Projects deleted before MS-22 have no tombstone and are never swept; backfill needs a decision. (5) MS-16: Billing `usage_events` has no metadata column, so `priced_in_settlement` is not persisted (only `rate_card_version`). (6) MS-24: viewers may set their own preferences; owner to confirm. |
 | Turning on any D8–D10 flag; real provider prices; account-deletion purge of Personal memory; owner-shortened retention; a Shell UI for preferences | Rollout needs your authorization; the rest is follow-up after MS-14–25. |
 | SPR, U/S erasure, K21, K15, APW02/05/09, CB04/CB06 provider, WhatsApp, SBB04.3 | Need staging, deployment or provider access you must authorize. |
 | Cleaning, claims, Founder Growth | Need real practitioners or founders. |
