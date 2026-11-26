@@ -12779,6 +12779,11 @@ export default {
       ])).then(result=>{
         if(result.deferred||result.failed)console.warn("Managed service operation reconciliation attention",result);
       }).catch(()=>{console.warn("AgentMail managed operation reconciliation postponed");}));
+      // MS-48: retry linking an AgentPort account for Managed resources whose first registration failed. No-op unless MANAGED_RESOURCES_PANEL_ENABLED is "true".
+      if(env.MANAGED_RESOURCES_PANEL_ENABLED==="true")_ctx.waitUntil(import("./communications/managed-resource-registration.js")
+        .then(module=>module.sweepManagedResourceAgentPortLinks(env))
+        .then(result=>{if(result&&(result.linked||result.failed))console.warn("Managed resource AgentPort link sweep",result);})
+        .catch(()=>{console.warn("Managed resource AgentPort link sweep postponed");}));
       // MS-38: daily inventory sweep and monthly cost comparison (findings only; claimed per period in D1; no-op with the flag off).
       if(env.MANAGED_RECONCILIATION_ENABLED==="true")_ctx.waitUntil(Promise.all([
         import("./communications/managed-reconciliation-findings.js"),

@@ -243,6 +243,59 @@ describe("MS-43 resource quote and provision", () => {
     expect(h.db.prepare("SELECT agentport_account_id FROM managed_service_accounts WHERE id=?").get(result.resourceId)).toEqual({ agentport_account_id: null });
   });
 
+  it("MS-48: the sweep links an AgentPort account for a resource whose first registration failed, once, without granting anything", async () => {
+    const h = harness(); h.seed({ id: "off-n", provider: "naelao", rank: 1, strategies: ["first_party"], components: h.rental(100) });
+    h.db.prepare("UPDATE managed_service_commercial_agreements SET agreement_type='first_party' WHERE provider='naelao'").run();
+    const calls: Array<{ path: string }> = [];
+    let down = true;
+    (h.env as unknown as { AGENTPORT_WORKER: Fetcher }).AGENTPORT_WORKER = { fetch: async (request: Request) => {
+      const path = new URL(request.url).pathname.replace("/internal/agentport", "");
+      calls.push({ path });
+      if (down) return new Response("down", { status: 503 });
+      if (path === "/agents") return Response.json({ agent: { id: "agent-x" } }, { status: 201 });
+      if (path === "/services") return Response.json({ service: { id: "svc" } }, { status: 201 });
+      if (path.endsWith("/identity")) return Response.json({ identity: { principal: { id: "prn-org" } } });
+      if (path === "/accounts") return Response.json({ account: { id: "acct-retry", status: "pending" } }, { status: 201 });
+      if (path.endsWith("/activate")) return Response.json({ account: { id: "acct-retry", status: "active" } });
+      return Response.json({}, { status: 201 });
+    } } as unknown as Fetcher;
+    const adapter = { provider: "naelao", capabilities: () => [], lookup: async () => null, execute: async () => ({ operation: "x", data: null }),
+      provision: async () => ({ resource: { provider: "naelao", service_id: "naelao", resource_type: "email_inbox", provider_resource_ref: "inb_79", status: "active" as const }, offering_id: "off-n", capability_version: 1 }) };
+    const quote = (await (await h.post({ action: "resource-quote", resource_type: "email_inbox", region: "us" })).json() as { quote: { quoteId: string } }).quote;
+    const env = h.env as unknown as AgentsEnv;
+    const result = await provisionManagedResource(env, { tenantId: "tenant", spaceId: "space", userId: "user", role: "owner" },
+      { quoteId: quote.quoteId, offeringId: "off-n", region: "us" }, { "naelao/naelao": adapter });
+    expect(result.agentPortLinked).toBe(false);
+    const { sweepManagedResourceAgentPortLinks } = await import("./managed-resource-registration.js");
+    const later = new Date(Date.now() + 10 * 60_000);
+    // Still down: counted as failed, the row stays unlinked and is rotated.
+    expect(await sweepManagedResourceAgentPortLinks(env, later)).toEqual({ checked: 1, linked: 0, failed: 1, skipped: 0 });
+    expect(h.db.prepare("SELECT agentport_account_id FROM managed_service_accounts WHERE id=?").get(result.resourceId)).toEqual({ agentport_account_id: null });
+    // Rotated: not retried again inside five minutes.
+    expect(await sweepManagedResourceAgentPortLinks(env, new Date(later.getTime() + 60_000))).toEqual({ checked: 0, linked: 0, failed: 0, skipped: 0 });
+    down = false;
+    const muchLater = new Date(later.getTime() + 20 * 60_000);
+    expect(await sweepManagedResourceAgentPortLinks(env, muchLater)).toEqual({ checked: 1, linked: 1, failed: 0, skipped: 0 });
+    expect(h.db.prepare("SELECT agentport_account_id,agentport_link_status FROM managed_service_accounts WHERE id=?").get(result.resourceId)).toEqual({ agentport_account_id: "acct-retry", agentport_link_status: "active" });
+    expect(calls.some((c) => c.path.endsWith("/grants"))).toBe(false);
+    // Idempotent: a linked row is never picked again.
+    expect(await sweepManagedResourceAgentPortLinks(env, new Date(muchLater.getTime() + 3_600_000))).toEqual({ checked: 0, linked: 0, failed: 0, skipped: 0 });
+  });
+
+  it("MS-48: the link sweep is a no-op with the flag off and skips resources of other kinds", async () => {
+    const h = harness();
+    const env = h.env as unknown as AgentsEnv;
+    (h.env as unknown as { AGENTPORT_WORKER: Fetcher }).AGENTPORT_WORKER = { fetch: async () => { throw new Error("must not be called"); } } as unknown as Fetcher;
+    const { sweepManagedResourceAgentPortLinks } = await import("./managed-resource-registration.js");
+    h.db.prepare(`INSERT INTO managed_service_accounts(id,tenant_id,space_id,provider,service_id,capability_version,connection_mode,provider_resource_ref,credential_ref,owner_type,owner_id,
+      provider_payer_type,provider_payer_id,credit_payer_type,credit_payer_id,region,lifecycle_state,metadata_json,created_at,updated_at,access_mode,provisioning_strategy)
+      VALUES('msa_byok','tenant','space','agentmail','agentmail',1,'user_connected','inbox-x','c','user','u','user','u','organization','tenant','us','active','{"registeredBy":"resource-provision"}','2020-01-01','2020-01-01','byok','first_party')`).run();
+    const later = new Date(Date.now() + 3_600_000);
+    expect(await sweepManagedResourceAgentPortLinks(env, later)).toMatchObject({ checked: 0 });
+    delete (h.env as unknown as { MANAGED_RESOURCES_PANEL_ENABLED?: string }).MANAGED_RESOURCES_PANEL_ENABLED;
+    expect(await sweepManagedResourceAgentPortLinks(env, later)).toBeNull();
+  });
+
   it("refuses an expired quote without calling the adapter or Billing", async () => {
     const h = harness(); h.seed({ id: "off-n", provider: "naelao", rank: 1, strategies: ["first_party"], components: h.rental(100) });
     h.db.prepare("UPDATE managed_service_commercial_agreements SET agreement_type='first_party' WHERE provider='naelao'").run();
