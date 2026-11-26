@@ -12838,8 +12838,11 @@ export default {
       if(env.MANAGED_RECONCILIATION_ENABLED==="true")_ctx.waitUntil(Promise.all([
         import("./communications/managed-reconciliation-findings.js"),
         import("./communications/providers/naelao-email.js"),
-      ]).then(([findings,naelaoEmail])=>findings.sweepManagedReconciliation(env,[
+        import("./communications/providers/agentmail.js"),
+      ]).then(([findings,naelaoEmail,agentmailInventory])=>findings.sweepManagedReconciliation(env,[
         {provider:naelaoEmail.NAELAO_EMAIL_PROVIDER,serviceId:naelaoEmail.NAELAO_EMAIL_SERVICE_ID,adapter:naelaoEmail.createNaelaoEmailAdapter(env)},
+        // MS-50: AgentMail org inbox listing with the platform key (naelao_managed accounts only). Skipped without a key; list-only.
+        ...(env.AGENTMAIL_API_KEY?[{provider:agentmailInventory.AGENTMAIL_PROVIDER,serviceId:agentmailInventory.AGENTMAIL_SERVICE_ID,connectionMode:agentmailInventory.AGENTMAIL_INVENTORY_CONNECTION_MODE,adapter:agentmailInventory.createAgentMailInventoryAdapter(env)}]:[]),
       ])).then(result=>{
         if(result.inventory&&(result.inventory.created||result.inventory.failed||result.inventory.truncated))console.warn("Managed inventory reconciliation attention",result.inventory);
         if(result.cost&&result.cost.created)console.warn("Managed cost reconciliation findings",result.cost);

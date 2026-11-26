@@ -2,9 +2,7 @@
 
 ## Current task
 
-Master implementation spec, **MS-50** ("AgentMail inventory listing for reconciliation"). MS-49 is done locally.
-V-spec P0–P4 are complete locally; P5 is parked by OD-1. Follow
-[the master spec](docs/operations/master-implementation-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+V-spec P0–P4 and cleanups are complete locally (MS-27..MS-50). P5 is parked by OD-1. Remaining work is owner rollout: apply migrations, Naelao Email domain/R2/secret/routing, operator approvals and prices, then enable flags in staging one at a time. Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 

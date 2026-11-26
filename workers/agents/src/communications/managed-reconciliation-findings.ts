@@ -91,7 +91,8 @@ const completeRun = (db: Db, kind: string, period: string, summary: unknown, now
 const releaseRun = (db: Db, kind: string, period: string) =>
   db.prepare("DELETE FROM managed_service_reconciliation_runs WHERE kind=? AND period=? AND status='running'").bind(kind, period).run();
 
-export type InventoryAdapter = { provider: string; serviceId: string; adapter: ProviderAdapterV1 };
+/** `connectionMode` limits the registry rows compared to those the adapter's credential can see (AgentMail: naelao_managed only). */
+export type InventoryAdapter = { provider: string; serviceId: string; adapter: ProviderAdapterV1; connectionMode?: string };
 export type InventorySweepResult = { adapters: number; skipped: number; failed: number; truncated: number; created: number; seen: number; resolved: number };
 
 type AccountRow = { id: string; tenant_id: string; provider_resource_ref: string; lifecycle_state: string; offering_id: string | null };
@@ -122,7 +123,7 @@ export async function sweepManagedInventory(env: Pick<AgentsEnv, "PLATFORM_DB">,
     try { upstream = await listAll(entry.adapter); } catch { result.failed++; continue; }
     if (!upstream) { result.truncated++; continue; }
     const accounts = (await db.prepare(`SELECT id,tenant_id,provider_resource_ref,lifecycle_state,offering_id FROM managed_service_accounts
-      WHERE provider=? AND service_id=?`).bind(entry.provider, entry.serviceId).all<AccountRow>()).results;
+      WHERE provider=? AND service_id=? AND (?3 IS NULL OR connection_mode=?3)`).bind(entry.provider, entry.serviceId, entry.connectionMode ?? null).all<AccountRow>()).results;
     const byRef = new Map(accounts.map(account => [account.provider_resource_ref, account]));
     const upstreamByRef = new Map(upstream.filter(r => r.provider === entry.provider && r.service_id === entry.serviceId).map(r => [r.provider_resource_ref, r]));
     const seenKeys = new Set<string>();
