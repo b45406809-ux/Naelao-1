@@ -228,7 +228,7 @@ CREATE TABLE managed_service_offerings (
   id TEXT PRIMARY KEY,                       -- e.g. off_naelao_email_inbox_v1
   provider TEXT NOT NULL,
   service_id TEXT NOT NULL,
-  capability_version TEXT NOT NULL,          -- FK to managed_service_capability_versions(provider, service_id, version)
+  capability_version INTEGER NOT NULL,       -- FK to managed_service_capability_versions(provider, service_id, version)
   resource_type TEXT NOT NULL,
   category TEXT NOT NULL,
   display_name TEXT NOT NULL,
