@@ -12755,6 +12755,13 @@ export default {
         }).catch(()=>{console.warn("Managed service cost-budget alert sweep postponed");}));
       _ctx.waitUntil(sweepPendingProviderEventRuns(env).catch(()=>{console.warn("Pending provider event wake sweep postponed");}));
       _ctx.waitUntil((await import("./communications/agentmail.js")).sweepManagedAgentMailRentals(env).catch(()=>{console.warn("AgentMail rental billing sweep postponed");}));
+      // MS-40: Managed Naelao Email inbox subscriptions (rental + period-end overage). No-op unless both subscription and offering flags are "true".
+      if(env.MANAGED_SUBSCRIPTIONS_ENABLED==="true"&&env.MANAGED_OFFERINGS_ENABLED==="true")_ctx.waitUntil(Promise.all([
+        import("./communications/managed-email-billing.js"),
+        import("./communications/providers/naelao-email.js"),
+      ]).then(([billing,naelaoEmail])=>billing.sweepNaelaoEmailSubscriptions(env,naelaoEmail.createNaelaoEmailAdapter(env)))
+        .then(result=>{if(result&&(result.held||result.suspended))console.warn("Naelao Email subscription attention",result);})
+        .catch(()=>{console.warn("Naelao Email subscription sweep postponed");}));
       _ctx.waitUntil(Promise.all([
         import("./communications/agentmail.js"),
         import("./communications/managed-service-reconciliation.js"),

@@ -76,6 +76,8 @@ VALUES
 -- Price (OD-3, a starting rate revisited after 30 days of measured cost; 1 credit = $0.01):
 --   rental 100 credits per month, which includes 1,000 sends (meter email.message.sent);
 --   usage 10 credits per additional 1,000 sends, rounded up per settlement (D8).
+-- MS-40: the capability also lists the billing-only operations `renew` (monthly rental, needs a quote) and `usage` (period-end overage settlement);
+--   the adapter never executes them. Plan entitlements for `renew` and `usage` (operator-verified) are still required before Billing admits them.
 -- Release 1 plan limits (MR-EM-8): 10 inboxes per tenant, new-tenant 100 sends/day for 14 days then 1,000/day.
 -- Region 'global': Naelao Email has one deployment. Timestamps are epoch milliseconds (2026-11-26T00:00:00Z = 1795651200000);
 -- capability timestamps are ISO-8601. INSERT OR IGNORE: re-running never overwrites an operator edit.
@@ -87,7 +89,7 @@ INSERT OR IGNORE INTO managed_service_capability_versions(
   status, created_at, updated_at)
 VALUES
   ('naelao', 'email', 1, 'email',
-   '["provision","deprovision","lookup","send","read"]', '["global"]', '["naelao_managed"]',
+   '["provision","deprovision","lookup","send","read","renew","usage"]', '["global"]', '["naelao_managed"]',
    'tenant_scoped_inboxes',
    '{"createIdempotency":"idempotency_key_header","unknownCreateRecovery":"lookup","scopedCredential":"per_tenant_api_key"}',
    '{"meters":["email.message.sent","email.storage"],"priceVersion":"operator_required"}',

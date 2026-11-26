@@ -9,6 +9,7 @@
 import { decryptAuthenticated, deriveKek, encryptAuthenticated, type EncryptedEnvelope } from "@naelao/crypto";
 import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { resolveOfferingAdmission, type OfferingAdmissionDb } from "@naelao/billing-core";
+import { enrollNaelaoEmailInboxSubscription } from "../managed-email-billing.js";
 import {
   ProviderAdapterError, capabilityUnsupported,
   type AuthorizedExecution, type CapabilityDescriptor, type Page, type DeprovisionReq, type ExecutionResult, type LookupReq, type OperationCtx,
@@ -20,6 +21,9 @@ export const NAELAO_EMAIL_SERVICE_ID = "email";
 /** Must match the verified capability version's operations (docs/operations/managed-offerings-seed.sql). */
 export const NAELAO_EMAIL_OPERATIONS = ["provision", "deprovision", "lookup", "send", "read"] as const;
 
+/** Billing-only operations of the same capability version (MS-40): admitted by Billing, never executed through the adapter. */
+export const NAELAO_EMAIL_BILLING_OPERATIONS = ["renew", "usage"] as const;
+
 const BASE = "https://naelao-email.internal";
 /** Tenant ids this adapter creates are `naelao-<tenant>`; the inventory lists only those (AgentPort and direct tenants are not Managed resources). */
 export const NAELAO_EMAIL_INVENTORY_TENANT_PREFIX = "naelao-";
@@ -29,6 +33,7 @@ const KEY_SCOPES = ["inboxes:read", "inboxes:write", "messages:read", "messages:
 
 export interface NaelaoEmailAdapterEnv {
   MANAGED_OFFERINGS_ENABLED?: string;
+  MANAGED_SUBSCRIPTIONS_ENABLED?: string;
   NAELAO_EMAIL?: Fetcher;
   PLATFORM_DB: D1Database;
   PLATFORM_SECRET: string;
@@ -44,7 +49,12 @@ export function redactSecrets(text: string): string {
 
 interface Reply { status: number; body: Record<string, unknown> | null }
 
-export function createNaelaoEmailAdapter(env: NaelaoEmailAdapterEnv, now: () => Date = () => new Date()): ProviderAdapterV1 {
+/** MS-40: the platform's own read of a Managed inbox's sent-message count (not part of the §8 contract). */
+export interface NaelaoEmailAdapter extends ProviderAdapterV1 {
+  usageForPeriod(req: { tenantId: string; provider_resource_ref: string; startMs: number; endMs: number }): Promise<{ sentCount: number }>;
+}
+
+export function createNaelaoEmailAdapter(env: NaelaoEmailAdapterEnv, now: () => Date = () => new Date()): NaelaoEmailAdapter {
   const enabled = () => {
     if (env.MANAGED_OFFERINGS_ENABLED !== "true") throw new ProviderAdapterError("offering_unavailable");
     if (!env.NAELAO_EMAIL) throw new ProviderAdapterError("provider_unavailable");
@@ -137,6 +147,9 @@ export function createNaelaoEmailAdapter(env: NaelaoEmailAdapterEnv, now: () => 
         });
       } catch { throw new ProviderAdapterError("offering_unavailable"); }
       if (!admission.ok) throw new ProviderAdapterError(admission.error_code);
+      // MS-40: with subscriptions on, a Managed inbox is never created without the billing scope to enroll it (no free inboxes).
+      const subscribe = env.MANAGED_SUBSCRIPTIONS_ENABLED === "true";
+      if (subscribe && (!req.spaceId || !req.userId)) throw new ProviderAdapterError("subscription_scope_required");
       const reply = await api(req.tenantId, "POST", "/v1/inboxes", {
         idempotencyKey: key,
         body: { ...(req.localPart ? { local_part: req.localPart } : {}), ...(req.displayName ? { display_name: req.displayName } : {}) },
@@ -144,7 +157,30 @@ export function createNaelaoEmailAdapter(env: NaelaoEmailAdapterEnv, now: () => 
       const data = reply.body?.data as Record<string, unknown> | undefined;
       if (![200, 201].includes(reply.status)) return refuse(reply);
       if (typeof data?.id !== "string") throw new ProviderAdapterError("outcome_unknown");
+      if (subscribe) {
+        // INSERT OR IGNORE: a replay of the same provision re-enrolls nothing and repairs a missed enrollment.
+        try {
+          await enrollNaelaoEmailInboxSubscription(env.PLATFORM_DB, {
+            tenantId: req.tenantId, inboxId: data.id, offeringId: admission.offering.id, chargeComponents: admission.offering.chargeComponents,
+            spaceId: req.spaceId!, projectId: req.projectId ?? null, userId: req.userId!, region: req.region, now: now(),
+          });
+        } catch { throw new ProviderAdapterError("subscription_enrollment_failed"); }
+      }
       return { resource: toResource(data), offering_id: admission.offering.id, capability_version: admission.capabilityVersion };
+    },
+
+    async usageForPeriod(req: { tenantId: string; provider_resource_ref: string; startMs: number; endMs: number }) {
+      enabled();
+      const ref = refPath(req.provider_resource_ref);
+      const tenant = nemailTenantId(req.tenantId);
+      const reply = await raw(new Request(`${BASE}/internal/v1/usage/period`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenant, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenant) },
+        body: JSON.stringify({ inbox_id: decodeURIComponent(ref), start_ms: req.startMs, end_ms: req.endMs }),
+      }));
+      const count = (reply.body?.data as { sent_count?: unknown } | undefined)?.sent_count;
+      if (reply.status !== 200 || typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return refuse(reply);
+      return { sentCount: count };
     },
 
     async lookup(req: LookupReq): Promise<ProviderResource | null> {

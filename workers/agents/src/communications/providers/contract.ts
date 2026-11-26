@@ -33,6 +33,10 @@ export interface ProvisionReq {
   offeringId?: string;
   localPart?: string;
   displayName?: string;
+  /** Billing scope of the requester. Needed (with `userId`) to enroll the resource in a subscription when MANAGED_SUBSCRIPTIONS_ENABLED. */
+  spaceId?: string;
+  projectId?: string | null;
+  userId?: string;
 }
 
 export interface ProvisionResult { resource: ProviderResource; offering_id: string; capability_version: number }

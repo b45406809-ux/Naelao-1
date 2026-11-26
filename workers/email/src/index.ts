@@ -98,6 +98,30 @@ app.post("/internal/v1/inventory/inboxes", async c => {
   return c.json({ data: { items: page.map(r => ({ id: r.id, address: r.address, status: r.status === "deleted" ? "deleted" : "active" })), ...(rows.results.length > limit ? { next_cursor: page[page.length - 1]!.id } : {}) } });
 });
 
+// Platform usage by period (MS-40): sent-message count for one inbox of a Managed tenant over [start_ms, end_ms), for the Agents
+// subscription settlement. HMAC-protected, tenant id in x-naelao-tenant-id. Only `naelao-` (Managed) tenants are answered: a direct
+// tenant, an AgentPort tenant or an unknown one gets the same 404, so nothing here can be used to bill or probe them.
+app.post("/internal/v1/usage/period", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!c.env.PLATFORM_SECRET || !tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden", message: "Forbidden." }, 403);
+  }
+  const body = await c.req.json<{ inbox_id?: unknown; start_ms?: unknown; end_ms?: unknown }>().catch(() => null);
+  if (!body || typeof body.inbox_id !== "string" || !/^inb_[A-Za-z0-9_-]{1,80}$/.test(body.inbox_id)
+    || !Number.isSafeInteger(body.start_ms) || !Number.isSafeInteger(body.end_ms) || (body.start_ms as number) < 0 || (body.end_ms as number) <= (body.start_ms as number)
+    || (body.end_ms as number) - (body.start_ms as number) > 100 * 86_400_000) {
+    return c.json({ error_code: "invalid_request", message: "Invalid usage request." }, 400);
+  }
+  if (!tenantId.startsWith("naelao-")) return c.json({ error_code: "not_found", message: "Not found." }, 404);
+  const sqlTime = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+  const inbox = await c.env.PLATFORM_DB.prepare("SELECT id FROM nemail_inboxes WHERE id=? AND nemail_tenant_id=?").bind(body.inbox_id, tenantId).first<{ id: string }>();
+  if (!inbox) return c.json({ error_code: "not_found", message: "Not found." }, 404);
+  const sent = await c.env.PLATFORM_DB.prepare(`SELECT COALESCE(sum(u.quantity),0) AS n FROM nemail_usage u JOIN nemail_messages m ON m.id=u.message_id
+    WHERE u.nemail_tenant_id=? AND u.meter='email.message.sent' AND m.inbox_id=? AND u.created_at>=? AND u.created_at<?`)
+    .bind(tenantId, body.inbox_id, sqlTime(body.start_ms as number), sqlTime(body.end_ms as number)).first<{ n: number }>();
+  return c.json({ data: { inbox_id: body.inbox_id, meter: "email.message.sent", start_ms: body.start_ms, end_ms: body.end_ms, sent_count: sent?.n ?? 0 } });
+});
+
 function requireScope(scope: Scope) {
   return async (c: AppContext, next: () => Promise<void>) => {
     const auth = await authenticate(c.env.PLATFORM_DB, c.req.header("authorization"));

@@ -12,7 +12,7 @@ import { agentPortRoutes } from "../../../../agentport/src/core/routes.js";
 import { fixture as commsFixture, scope } from "../../../../../tests/fixtures/assistant-communications.js";
 import { reserveManagedServiceCredits } from "../managed-service-billing.js";
 import type { AgentsEnv } from "../../index.js";
-import { createNaelaoEmailAdapter, NAELAO_EMAIL_OPERATIONS, redactSecrets } from "./naelao-email.js";
+import { createNaelaoEmailAdapter, NAELAO_EMAIL_BILLING_OPERATIONS, NAELAO_EMAIL_OPERATIONS, redactSecrets } from "./naelao-email.js";
 import { ProviderAdapterError } from "./contract.js";
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
@@ -96,7 +96,7 @@ describe("Naelao Email adapter contract", () => {
     const h = agentsHarness(emailFixture());
     expect(h.adapter.capabilities().map(c => c.operation)).toEqual([...NAELAO_EMAIL_OPERATIONS]);
     const declared = JSON.parse((h.sql.prepare("SELECT operations_json FROM managed_service_capability_versions WHERE provider='naelao' AND service_id='email'").get() as { operations_json: string }).operations_json) as string[];
-    expect(declared).toEqual(h.adapter.capabilities().map(c => c.operation));
+    expect(declared).toEqual([...h.adapter.capabilities().map(c => c.operation), ...NAELAO_EMAIL_BILLING_OPERATIONS]);
   });
 
   it("fails closed with the flag off or the binding missing, before any upstream call", async () => {
