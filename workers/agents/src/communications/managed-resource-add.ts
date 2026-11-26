@@ -148,6 +148,30 @@ export interface ResourceQuoteInput {
   now?: Date;
 }
 
+export interface ResourceTypeSummary { resourceType: string; category: string | null; optionCount: number; planRequired: boolean }
+
+/**
+ * MS-47 item 5: the resource types the add flow can offer, read from the offerings table instead of a hard-coded list. A type is listed
+ * when at least one of its offerings passes the same hard filters as `resource-options` for this tenant (Managed), or is held back only by
+ * the plan (`planRequired`). Draft, disabled and deprecated offerings never contribute a type.
+ */
+export async function listResourceTypes(
+  env: Pick<AgentsEnv, "PLATFORM_DB">,
+  scope: Pick<CommunicationScope, "tenantId">,
+  input: { now?: Date } = {},
+): Promise<{ types: ResourceTypeSummary[] }> {
+  const rows = (await env.PLATFORM_DB.prepare(`SELECT resource_type,MIN(category) AS category FROM managed_service_offerings
+    WHERE status IN ('testing','available','restricted') GROUP BY resource_type ORDER BY resource_type LIMIT 50`).all<{ resource_type: string; category: string | null }>()).results ?? [];
+  const types: ResourceTypeSummary[] = [];
+  for (const row of rows) {
+    if (!RESOURCE_TYPE.test(row.resource_type)) continue;
+    const options = await listResourceOptions(env, scope, { resourceType: row.resource_type, accessMode: "managed", ...(input.now ? { now: input.now } : {}) });
+    if (options.options.length === 0 && options.excluded.plan === 0) continue;
+    types.push({ resourceType: row.resource_type, category: row.category, optionCount: options.options.length, planRequired: options.options.length === 0 });
+  }
+  return { types };
+}
+
 function configurationOf(input: { localPart?: string | null; displayName?: string | null }) {
   return { localPart: input.localPart ?? "", displayName: input.displayName ?? "" };
 }

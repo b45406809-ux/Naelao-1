@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeComponent, parseManagedResources, parseResourceOptions, parseResourceQuote, resourceLifecycleActions, resourceModeLabel, resourceTitle } from "./managed-resources.js";
+import { describeComponent, parseManagedResources, parseResourceOptions, parseResourceQuote, parseResourceTypes, resourceLifecycleActions, resourceModeLabel, resourceTitle } from "./managed-resources.js";
 
 const good = { id: "r1", providerName: "AgentMail", status: "active", mode: "managed", displayName: "Support", category: "email", resourceType: "email_inbox",
   region: "us", projectId: null, assignedAgents: [{ agentId: "a1" }, { agentId: 3 }],
@@ -66,5 +66,18 @@ describe("MS-47 lifecycle actions", () => {
     expect(resourceLifecycleActions({ mode: "byok", status: "active", renewal: renewal("active") })).toEqual([]);
     expect(resourceLifecycleActions({ mode: "managed", status: "active", renewal: null })).toEqual([]);
     expect(resourceLifecycleActions({ mode: "managed", status: "failed", renewal: renewal("active") })).toEqual([]);
+  });
+});
+
+describe("MS-47 resource types from offerings", () => {
+  it("parses types with labels, drops duplicates and malformed values, and flags plan-gated types", () => {
+    expect(parseResourceTypes({ types: [
+      { resourceType: "email_inbox", optionCount: 2, planRequired: false },
+      { resourceType: "phone_number", planRequired: true },
+      { resourceType: "email_inbox" }, { resourceType: "Bad Type!" }, { resourceType: "" }, null, { resourceType: "inbox", extra: "x" }] }))
+      .toEqual([{ value: "email_inbox", label: "Email inbox", planRequired: false }, { value: "phone_number", label: "Phone number", planRequired: true },
+        { value: "inbox", label: "Inbox", planRequired: false }]);
+    expect(parseResourceTypes(null)).toEqual([]);
+    expect(parseResourceTypes({ types: "no" })).toEqual([]);
   });
 });

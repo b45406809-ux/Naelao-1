@@ -126,3 +126,25 @@ export function resourceLifecycleActions(resource: Pick<ManagedResource, "mode" 
   if (resource.status === "suspended") return ["resume"];
   return resource.status === "active" ? ["suspend"] : [];
 }
+
+// MS-47 item 5: the add flow's resource types come from the offerings (agents `resource-types`), not a hard-coded list.
+export type ResourceTypeView = { value: string; label: string; planRequired: boolean };
+
+export function resourceTypeLabel(resourceType: string): string {
+  const words = resourceType.replace(/[_-]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : resourceType;
+}
+
+export function parseResourceTypes(value: unknown): ResourceTypeView[] {
+  const list = rec(value)?.types;
+  if (!Array.isArray(list)) return [];
+  const seen = new Set<string>();
+  const out: ResourceTypeView[] = [];
+  for (const item of list) {
+    const t = rec(item), resourceType = str(t?.resourceType);
+    if (!t || !resourceType || seen.has(resourceType) || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(resourceType)) continue;
+    seen.add(resourceType);
+    out.push({ value: resourceType, label: resourceTypeLabel(resourceType), planRequired: t.planRequired === true });
+  }
+  return out;
+}

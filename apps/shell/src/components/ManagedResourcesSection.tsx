@@ -3,18 +3,16 @@
 import * as React from "react";
 import { assistantMailApi, type SessionCredentials } from "@/lib/api";
 import {
-  describeComponent, parseManagedResources, parseResourceOptions, parseResourceQuote, resourceLifecycleActions, resourceModeLabel, resourceTitle,
-  type ResourceLifecycleAction,
+  describeComponent, parseManagedResources, parseResourceOptions, parseResourceQuote, parseResourceTypes, resourceLifecycleActions, resourceModeLabel, resourceTitle,
+  type ResourceLifecycleAction, type ResourceTypeView,
   type ManagedResource, type ResourceOptionsView, type ResourceQuoteView,
 } from "@/lib/managed-resources";
-
-/** Resource types the add flow offers; the server decides which offerings of a type are eligible. */
-const RESOURCE_TYPES = [{ value: "inbox", label: "Email inbox" }];
 
 /** MS-43: type, then Managed or Bring your own, then Automatic or a provider, then the quote with every component, then approve. */
 function AddResourceFlow({ spaceId, session, onAdded }: { spaceId: string; session: SessionCredentials; onAdded: () => void }) {
   const [open, setOpen] = React.useState(false);
-  const [resourceType, setResourceType] = React.useState(RESOURCE_TYPES[0]!.value);
+  const [resourceTypes, setResourceTypes] = React.useState<ResourceTypeView[] | null>(null);
+  const [resourceType, setResourceType] = React.useState("");
   const [mode, setMode] = React.useState<"managed" | "byok">("managed");
   const [choice, setChoice] = React.useState("automatic");
   const [options, setOptions] = React.useState<ResourceOptionsView | null>(null);
@@ -23,8 +21,18 @@ function AddResourceFlow({ spaceId, session, onAdded }: { spaceId: string; sessi
   const [busy, setBusy] = React.useState(false);
   const fail = (error: unknown) => setMessage(error instanceof Error ? error.message : "That did not work. Try again.");
 
+  // MS-47: the types come from the offerings; the server decides again on every quote.
   React.useEffect(() => {
     if (!open) return;
+    let current = true;
+    assistantMailApi<unknown>(spaceId, session, { action: "resource-types" })
+      .then((result) => { if (!current) return; const types = parseResourceTypes(result); setResourceTypes(types); setResourceType((value) => types.some((t) => t.value === value) ? value : types[0]?.value ?? ""); })
+      .catch((error) => { if (current) { setResourceTypes([]); fail(error); } });
+    return () => { current = false; };
+  }, [open, spaceId, session]);
+
+  React.useEffect(() => {
+    if (!open || !resourceType) return;
     let current = true;
     setOptions(null); setQuote(null); setMessage(null); setChoice("automatic");
     assistantMailApi<unknown>(spaceId, session, { action: "resource-options", resource_type: resourceType, access_mode: mode })
@@ -61,9 +69,10 @@ function AddResourceFlow({ spaceId, session, onAdded }: { spaceId: string; sessi
       <div className="settings-row-label">Add a resource</div>
       <label className="settings-row-sub">1. Type{" "}
         <select value={resourceType} onChange={(event) => setResourceType(event.target.value)}>
-          {RESOURCE_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+          {(resourceTypes ?? []).map((type) => <option key={type.value} value={type.value}>{type.label}{type.planRequired ? " (paid plan)" : ""}</option>)}
         </select>
       </label>
+      {resourceTypes !== null && resourceTypes.length === 0 && <p className="settings-row-sub">No resource types are available right now.</p>}
       <label className="settings-row-sub">2. Account{" "}
         <select value={mode} onChange={(event) => setMode(event.target.value === "byok" ? "byok" : "managed")}>
           <option value="managed">{resourceModeLabel("managed")}</option>

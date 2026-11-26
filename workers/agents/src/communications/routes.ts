@@ -20,7 +20,7 @@ import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
 import { listManagedResources, managedResourcesPanelEnabled } from "./managed-resources.js";
 import { ResourceLifecycleError, reactivateManagedResource, resumeManagedResource, suspendManagedResource } from "./managed-resource-lifecycle.js";
 import { ResourceGrantError, grantManagedResourceToAgent } from "./managed-resource-grants.js";
-import { ResourceAddError, createResourceQuote, listResourceOptions, provisionManagedResource } from "./managed-resource-add.js";
+import { ResourceAddError, createResourceQuote, listResourceOptions, listResourceTypes, provisionManagedResource } from "./managed-resource-add.js";
 import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget } from "./managed-service-cost-budgets.js";
 import { createManagedModelQuote, runManagedModelOperation } from "./managed-models.js";
 import { discoverUserPortAgentPortConnector, revokeUserPortAgentPortConnector, revokeUserPortAgentPortOwnerLink, syncUserPortAgentPortConnector } from "./userport-agentport-sync.js";
@@ -245,10 +245,10 @@ async function handle(c: C, agent: boolean) {
     }
   }
   const preferences = await channelPreferences(c.env, scope);
-  if(action==="managed-resources"||action==="resource-options"||action==="resource-quote"||action==="resource-provision"||action==="resource-grant"||action==="resource-suspend"||action==="resource-resume"||action==="resource-reactivate"){
+  if(action==="managed-resources"||action==="resource-options"||action==="resource-types"||action==="resource-quote"||action==="resource-provision"||action==="resource-grant"||action==="resource-suspend"||action==="resource-resume"||action==="resource-reactivate"){
     // MS-42/MS-43: every failure (flag off, wrong method, not owner/admin) answers the same not-found shape (MR-SEC-2).
     const notFound=()=>c.json({error_code:"not_found"},404);
-    const expectedMethod=action==="managed-resources"||action==="resource-options"?"GET":"POST";
+    const expectedMethod=action==="managed-resources"||action==="resource-options"||action==="resource-types"?"GET":"POST";
     if(!managedResourcesPanelEnabled(c.env)||c.req.method!==expectedMethod)return notFound();
     const membership=await c.env.PLATFORM_DB.prepare("SELECT role FROM space_members WHERE space_id=? AND end_user_id=? AND suspended_at IS NULL")
       .bind(scope.spaceId,scope.userId).first<{role:string}>();
@@ -256,6 +256,10 @@ async function handle(c: C, agent: boolean) {
     if(!["owner","admin"].includes(effectiveRole??""))return notFound();
     if(action==="managed-resources"){
       try{return c.json(await listManagedResources(c.env,scope));}
+      catch{return c.json({error_code:"managed_resources_unavailable"},503);}
+    }
+    if(action==="resource-types"){
+      try{return c.json(await listResourceTypes(c.env,scope));}
       catch{return c.json({error_code:"managed_resources_unavailable"},503);}
     }
     if(action==="resource-suspend"||action==="resource-resume"||action==="resource-reactivate"){

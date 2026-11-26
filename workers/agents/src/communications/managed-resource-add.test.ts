@@ -126,6 +126,28 @@ describe("MS-43 resource quote and provision", () => {
     expect(await refused.json()).toEqual({ error_code: "offering_unavailable" });
   });
 
+  it("MS-47: lists resource types from the offerings, hides draft-only types and marks plan-gated ones", async () => {
+    const h = harness("free"); seedStandard(h);
+    h.db.prepare("UPDATE managed_service_offerings SET resource_type='phone_number',category='phone' WHERE id='off-d'").run();
+    h.db.prepare("UPDATE managed_service_offerings SET resource_type='draft_only' WHERE id='off-c'").run();
+    const free = await h.get("action=resource-types");
+    expect(free.status).toBe(200);
+    // Free: email_inbox keeps its usage-only offering; phone_number is rental-only, so it is listed but needs a paid plan; draft_only never appears.
+    expect(await free.json()).toEqual({ types: [
+      { resourceType: "email_inbox", category: "email", optionCount: 1, planRequired: false },
+      { resourceType: "phone_number", category: "phone", optionCount: 0, planRequired: true },
+    ] });
+    const paid = harness("growth"); seedStandard(paid);
+    paid.db.prepare("UPDATE managed_service_offerings SET resource_type='phone_number',category='phone' WHERE id='off-d'").run();
+    expect(await (await paid.get("action=resource-types")).json()).toEqual({ types: [
+      { resourceType: "email_inbox", category: "email", optionCount: 3, planRequired: false },
+      { resourceType: "phone_number", category: "phone", optionCount: 1, planRequired: false },
+    ] });
+    // Same not-found shape as the other actions: flag off.
+    (paid.env as unknown as Record<string, string>).MANAGED_RESOURCES_PANEL_ENABLED = "false";
+    expect((await paid.get("action=resource-types")).status).toBe(404);
+  });
+
   it("refuses a recurring quote on Free", async () => {
     const h = harness("free"); h.seed({ id: "off-a", provider: "alpha", rank: 1, components: h.rental(5) });
     const response = await h.post({ action: "resource-quote", resource_type: "email_inbox", region: "us" });
