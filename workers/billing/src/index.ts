@@ -25,6 +25,7 @@ import { validateDecisionUsageReceipt } from "./decision-usage.js";
 import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
 import { recordManagedProviderCostReceipts, summarizeManagedProviderCostReceipts, type ManagedProviderCostReceiptInput } from "./managed-service-provider-costs.js";
 import { isDevelopmentCheckoutAllowed } from "./checkout-policy.js";
+import { diagnoseBindingLimit, externalLimitAdmission, parseExternalLimits, type BindingLimit, type ExternalLimit } from "./composed-limits.js";
 import { legacyReserveQuoteRules, offeringReserveRules, resolveOfferingReserveRules } from "./managed-reserve-policy.js";
 import { isDunningEventMessage } from "@naelao/types";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
@@ -37,6 +38,8 @@ export interface BillingEnv {
   ALLOW_DEV_CHECKOUTS?: string;
   /** MS-29: "true" resolves managed reserve admission and quote policy from offerings (default off). */
   MANAGED_OFFERINGS_ENABLED?: string;
+  /** MS-39: "true" composes every applicable spending limit into the managed reserve admission (default off). */
+  MANAGED_LIMITS_COMPOSED_ENABLED?: string;
   /** Shared inter-worker HMAC secret (mintInternalToken/requireInternalHmac, @naelao/http) —
    *  needed to call spaces worker's internal routes directly (bypassing naelao-router). */
   PLATFORM_SECRET: string;
@@ -1186,13 +1189,20 @@ app.post("/internal/managed-services/model-entitlements/disable",async c=>{
   return c.json({disabled:true});
 });
 
+// MS-39: the refusal shape with MANAGED_LIMITS_COMPOSED_ENABLED on. `limit_kind` names the limit that bound.
+function budgetExceeded(c: { json: (body: unknown, status: 402) => Response }, bound: BindingLimit, periodDays: number): Response {
+  return c.json({ error_code: "budget_exceeded", limit_kind: bound.limit_kind, remaining_credits: bound.remaining_credits,
+    ...(bound.limit_kind === "mandate_period" ? { period_days: periodDays } : {}) }, 402);
+}
+
 app.post("/internal/managed-services/credits/reserve", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   const body = await c.req.json<{
     reservation_id?: string; operation_id?: string; space_id?: string; project_id?: string | null; requester_user_id?: string;
     provider?: string; service_id?: string; operation_name?: string; model_id?: string; quote_id?: string; region?: string; payer_type?: string; payer_id?: string; agentport_agent_id?: string; payer_mandate_id?:string;
-    credits?: number; price_version?: string; expires_in_seconds?: number;
+    credits?: number; price_version?: string; expires_in_seconds?: number; composed_limits?: unknown;
   }>().catch(() => null);
+  const composed = c.env.MANAGED_LIMITS_COMPOSED_ENABLED === "true";
   const reservationId = body?.reservation_id ?? "", operationId = body?.operation_id ?? "";
   const credits = body?.credits ?? 0, expiresIn = body?.expires_in_seconds ?? 172800;
   // MS-29: with MANAGED_OFFERINGS_ENABLED, admission and the quote requirement come from offering data (MS-28
@@ -1244,6 +1254,11 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
     || !Number.isSafeInteger(credits) || credits < 1 || credits > 10_000_000
     || !/^[A-Za-z0-9._:-]{1,100}$/.test(body.price_version ?? "")
     || !Number.isSafeInteger(expiresIn) || expiresIn < 60 || expiresIn > 91 * 86400) return c.json({ error_code: "bad_request" }, 400);
+  // MS-39: externally owned limits (per-install, per-goal, Project spend, grant maxSpend) arrive as caller-computed headroom.
+  const parsedLimits = composed ? parseExternalLimits(body.composed_limits) : { ok: true as const, limits: [] as ExternalLimit[] };
+  if (!parsedLimits.ok) return c.json({ error_code: "bad_request" }, 400);
+  const externalLimits = parsedLimits.limits;
+  const composedLimitsJson = composed ? JSON.stringify(externalLimits) : null;
   const existing = await c.env.PLATFORM_DB.prepare(`SELECT id,space_id,project_id,provider,service_id,operation_name,model_id,quote_id,region,payer_type,payer_id,agentport_agent_id,payer_mandate_id,credits,price_version,status,expires_at
     FROM managed_service_credit_reservations WHERE org_id=? AND operation_id=?`).bind(orgId, operationId)
     .first<{ id:string;space_id:string;project_id:string|null;provider:string;service_id:string;operation_name:string;model_id:string|null;quote_id:string|null;region:string;payer_type:string;payer_id:string;agentport_agent_id:string|null;payer_mandate_id:string|null;credits:number;price_version:string;status:string;expires_at:string|null }>();
@@ -1288,7 +1303,9 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
         .first<{id:string;agentport_agent_id:string|null;max_credits_per_operation:number;max_credits_per_period:number|null;period_days:number;auto_renew:number}>();
   if(!mandate)return c.json({error_code:"payer_mandate_required"},403);
   if(existingHeld && existing?.payer_mandate_id !== mandate.id)return c.json({error_code:"payer_mandate_changed"},403);
-  if(credits>mandate.max_credits_per_operation)return c.json({error_code:"payer_mandate_limit_exceeded"},402);
+  if(credits>mandate.max_credits_per_operation)return composed
+    ?c.json({error_code:"budget_exceeded",limit_kind:"mandate_per_operation",remaining_credits:mandate.max_credits_per_operation,legacy_error_code:"payer_mandate_limit_exceeded"},402)
+    :c.json({error_code:"payer_mandate_limit_exceeded"},402);
   if(body.operation_name==="renew"&&mandate.auto_renew!==1)return c.json({error_code:"payer_mandate_auto_renew_required"},403);
   if(existingHeld && mandate.max_credits_per_period!==null){
     const scopedSpend=await c.env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END),0) AS credits
@@ -1297,7 +1314,9 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
         AND (status IN ('settled','uncertain') OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))`)
       .bind(orgId,body.agentport_agent_id??null,mandate.id,operationId,mandate.period_days).first<{credits:number}>();
     if((scopedSpend?.credits??0)+credits>mandate.max_credits_per_period)
-      return c.json({error_code:"payer_mandate_period_limit_exceeded",period_days:mandate.period_days},402);
+      return composed
+        ?c.json({error_code:"budget_exceeded",limit_kind:"mandate_period",remaining_credits:Math.max(0,mandate.max_credits_per_period-(scopedSpend?.credits??0)),period_days:mandate.period_days,legacy_error_code:"payer_mandate_period_limit_exceeded"},402)
+        :c.json({error_code:"payer_mandate_period_limit_exceeded",period_days:mandate.period_days},402);
   }
   const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
   const entitlement = body.model_id
@@ -1339,7 +1358,9 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
     return c.json({error_code:"managed_service_model_price_conflict"},409);
   if(quoteRules.exactPriceWithoutModel&&credits!==modelCreditsPerOperation&&!acceptedPinnedQuote)
     return c.json({error_code:"managed_service_price_conflict"},409);
-  if(credits>entitlement.max_credits_per_operation)return c.json({error_code:"managed_service_entitlement_limit_exceeded"},402);
+  if(credits>entitlement.max_credits_per_operation)return composed
+    ?c.json({error_code:"budget_exceeded",limit_kind:"entitlement_per_operation",remaining_credits:entitlement.max_credits_per_operation,legacy_error_code:"managed_service_entitlement_limit_exceeded"},402)
+    :c.json({error_code:"managed_service_entitlement_limit_exceeded"},402);
   const admittedCapabilityVersion=acceptedPinnedCapabilityVersion??entitlement.capability_version;
   const capability=await c.env.PLATFORM_DB.prepare(`SELECT operations_json,regions_json,account_modes_json,status,valid_until FROM managed_service_capability_versions
     WHERE provider=? AND service_id=? AND version=?`).bind(body.provider,body.service_id,admittedCapabilityVersion)
@@ -1388,7 +1409,8 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
     if (!existing) return c.json({error_code:"reservation_identity_conflict"},409);
     if (!existing.expires_at || Date.parse(existing.expires_at) > Date.now())
       return c.json({reserved:true,reservation_id:existing.id,status:"held",credits,deduplicated:true});
-    const renewed = await c.env.PLATFORM_DB.prepare(`UPDATE managed_service_credit_reservations SET expires_at=?,updated_at=?
+    const renewalLimits = externalLimitAdmission(externalLimits, orgId, credits, operationId);
+    const renewed = await c.env.PLATFORM_DB.prepare(`UPDATE managed_service_credit_reservations SET expires_at=?,updated_at=?${composed?",composed_limits_json=?":""}
       WHERE id=? AND org_id=? AND operation_id=? AND status='held' AND expires_at<=?
         AND (? IS NULL OR COALESCE((SELECT SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END)
           FROM managed_service_credit_reservations WHERE org_id=? AND agentport_agent_id IS ? AND payer_mandate_id=? AND operation_id<>?
@@ -1400,13 +1422,17 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
         AND ? +
           (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) +
           (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now')) +
-          (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id=? AND operation_id<>? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?`)
-      .bind(expiresAt,new Date().toISOString(),existing.id,orgId,operationId,new Date().toISOString(),mandate.max_credits_per_period,orgId,
+          (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id=? AND operation_id<>? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?${renewalLimits.sql}`)
+      .bind(expiresAt,new Date().toISOString(),...(composed?[composedLimitsJson]:[]),existing.id,orgId,operationId,new Date().toISOString(),mandate.max_credits_per_period,orgId,
         body.agentport_agent_id??null,mandate.id,operationId,mandate.period_days,credits,mandate.max_credits_per_period,
         entitlement.max_operations_per_period,orgId,body.provider,body.service_id,body.operation_name,body.model_id??null,body.model_id??null,
         body.region,operationId,entitlement.max_operations_per_period,
-        credits,orgId,orgId,orgId,operationId,quota.limit).run();
+        credits,orgId,orgId,orgId,operationId,quota.limit,...renewalLimits.binds).run();
     if (renewed.meta.changes) return c.json({reserved:true,reservation_id:existing.id,status:"held",credits,deduplicated:true});
+    if (composed) {
+      const bound = await diagnoseBindingLimit({ db: c.env.PLATFORM_DB, orgId, credits, excludeOperationId: operationId, mandate, planLimit: quota.limit, external: externalLimits });
+      if (bound) return budgetExceeded(c, bound, mandate.period_days);
+    }
     if (mandate.max_credits_per_period !== null) {
       const scopedSpend = await c.env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END),0) AS credits
         FROM managed_service_credit_reservations WHERE org_id=? AND agentport_agent_id IS ? AND payer_mandate_id=? AND operation_id<>?
@@ -1418,9 +1444,10 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
     }
     return c.json({error_code:"infra_quota_exceeded",message:"Managed service credit allowance is unavailable",limit:quota.limit},402);
   }
+  const insertLimits = externalLimitAdmission(externalLimits, orgId, credits);
   const inserted = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_credit_reservations
-    (id,org_id,space_id,project_id,region,operation_id,provider,service_id,operation_name,model_id,payer_type,payer_id,credits,price_version,agentport_agent_id,payer_mandate_id,quote_id,status,expires_at,created_at,updated_at)
-    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'held',?,?,?
+    (id,org_id,space_id,project_id,region,operation_id,provider,service_id,operation_name,model_id,payer_type,payer_id,credits,price_version,agentport_agent_id,payer_mandate_id,quote_id,status,expires_at,created_at,updated_at${composed?",composed_limits_json":""})
+    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'held',?,?,?${composed?",?":""}
     WHERE (? IS NULL OR COALESCE((SELECT SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END)
       FROM managed_service_credit_reservations WHERE org_id=? AND agentport_agent_id IS ? AND payer_mandate_id=?
         AND created_at>=datetime('now','-' || ? || ' days')
@@ -1431,13 +1458,13 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
       AND ? +
       (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) +
       (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now')) +
-      (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id=? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?`)
+      (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id=? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?${insertLimits.sql}`)
     .bind(reservationId,orgId,body.space_id,body.project_id??null,body.region,operationId,body.provider,body.service_id,body.operation_name,body.model_id??null,
-      body.payer_type,body.payer_id,credits,body.price_version,body.agentport_agent_id??null,mandate.id,body.quote_id??null,expiresAt,new Date().toISOString(),new Date().toISOString(),
+      body.payer_type,body.payer_id,credits,body.price_version,body.agentport_agent_id??null,mandate.id,body.quote_id??null,expiresAt,new Date().toISOString(),new Date().toISOString(),...(composed?[composedLimitsJson]:[]),
       mandate.max_credits_per_period,orgId,body.agentport_agent_id??null,mandate.id,mandate.period_days,credits,mandate.max_credits_per_period,
       entitlement.max_operations_per_period,orgId,body.provider,body.service_id,body.operation_name,body.model_id??null,body.model_id??null,
       body.region,operationId,entitlement.max_operations_per_period,
-      credits,orgId,orgId,orgId,quota.limit).run();
+      credits,orgId,orgId,orgId,quota.limit,...insertLimits.binds).run();
   if (!inserted.meta.changes) {
     const raced = await c.env.PLATFORM_DB.prepare(`SELECT id,status,credits,space_id,project_id,region,provider,service_id,operation_name,model_id,payer_type,payer_id,agentport_agent_id,payer_mandate_id,price_version,quote_id
       FROM managed_service_credit_reservations WHERE org_id=? AND operation_id=?`)
@@ -1451,6 +1478,10 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
       return same&&["held","uncertain","settled"].includes(raced.status)
         ? c.json({reserved:true,reservation_id:raced.id,status:raced.status,credits,deduplicated:true})
         : c.json({error_code:"reservation_identity_conflict"},409);
+    }
+    if (composed) {
+      const bound = await diagnoseBindingLimit({ db: c.env.PLATFORM_DB, orgId, credits, mandate, planLimit: quota.limit, external: externalLimits });
+      if (bound) return budgetExceeded(c, bound, mandate.period_days);
     }
     if (mandate.max_credits_per_period !== null) {
       const scopedSpend = await c.env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END),0) AS credits

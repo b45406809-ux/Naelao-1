@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
+import { chunkSize, effectiveLimit, reserveIncrementally } from "./composed-limits.js";
 import { dispatchManagedServiceMeterOutbox } from "./index.js";
 import { createFakeD1 } from "../../../tests/stubs/d1-sqlite.js";
 
@@ -38,7 +39,7 @@ export function seedOfferingsForCapabilities(db: ReturnType<typeof createFakeD1>
     VALUES(?,?,'standard_terms',?,1,1,0,0,'["*"]',0,NULL,'approved','test-operator',1,1,1)`).run(`agreement-${provider}`, provider, JSON.stringify(offeringIds));
 }
 
-function harness(planTier = "free") {
+function harness(planTier = "free", composed?: boolean) {
   const db = createFakeD1([
     `CREATE TABLE orgs(id TEXT PRIMARY KEY,plan_tier TEXT); INSERT INTO orgs VALUES('org-a','${planTier}'); CREATE TABLE subscriptions(org_id TEXT PRIMARY KEY); CREATE TABLE invoices(stripe_invoice_id TEXT);`,
     `CREATE TABLE assistant_agentmail_accounts(id TEXT PRIMARY KEY,tenant_id TEXT,space_id TEXT,project_id TEXT,mode TEXT,inbox_id TEXT,pod_id TEXT,agentport_agent_id TEXT,agentport_account_id TEXT,owner_user_id TEXT,status TEXT,email_address TEXT,created_at TEXT,updated_at TEXT);`,
@@ -64,6 +65,7 @@ function harness(planTier = "free") {
     readFileSync(join(__dirname, "../../../infra/migrations/0194_agentport_scoped_managed_service_spend.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0201_managed_service_meter_outbox.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0291_managed_offerings_agreements_resources.sql"), "utf8"),
+    ...(composed !== undefined ? [readFileSync(join(__dirname, "../../../infra/migrations/0304_managed_service_composed_limits.sql"), "utf8")] : []),
     // Column from migration 0292 (the rest of 0292 recreates Telnyx triggers that need tables this harness does not load).
     `ALTER TABLE managed_service_offerings ADD COLUMN testing_tenant_ids_json TEXT NOT NULL DEFAULT '[]';`,
   ]);
@@ -72,6 +74,7 @@ function harness(planTier = "free") {
   const env = {
     ENVIRONMENT: "test",
     ...(offeringsMode ? { MANAGED_OFFERINGS_ENABLED: "true" } : {}),
+    ...(composed ? { MANAGED_LIMITS_COMPOSED_ENABLED: "true" } : {}),
     PLATFORM_SECRET: secret,
     MANAGED_SERVICES_OPERATOR_SECRET: "operator-test-secret",
     PLATFORM_DB: db,
@@ -899,5 +902,157 @@ describe("offering-driven reserve admission (MANAGED_OFFERINGS_ENABLED=true)", (
     expect(route.length).toBeGreaterThan(5000);
     expect(route).toContain("MANAGED_OFFERINGS_ENABLED");
     expect(route).not.toMatch(forbidden);
+  });
+});
+
+// MS-39: composed spending-limit admission (MANAGED_LIMITS_COMPOSED_ENABLED).
+describe("composed spending limits (MANAGED_LIMITS_COMPOSED_ENABLED)", () => {
+  type Limit = { kind: string; scope_key: string; headroom_credits: number };
+  const reserveOp = (h: ReturnType<typeof harness>, n: string, credits: number, composed_limits?: Limit[]) => {
+    const input = { ...reservation, reservation_id: `c-res-${n}`, operation_id: `c-op-${n}`, credits };
+    createOperation(h.db.db, input);
+    return { input, send: () => h.post("/internal/managed-services/credits/reserve", { ...input, ...(composed_limits ? { composed_limits } : {}) }) };
+  };
+  const reserve = async (h: ReturnType<typeof harness>, n: string, credits: number, limits?: Limit[]) => {
+    const response = await reserveOp(h, n, credits, limits).send();
+    return { status: response.status, body: await response.json() as Record<string, unknown> };
+  };
+  const heldTotal = (h: ReturnType<typeof harness>) => (h.db.db.prepare(
+    "SELECT COALESCE(SUM(credits),0) AS total FROM managed_service_credit_reservations WHERE status='held'").get() as { total: number }).total;
+
+  it("plan allowance binds alone", async () => {
+    const h = harness("free", true);
+    allowAgentMailPayer(h.db.db, 10_000, 1);
+    expect((await reserve(h, "p1", 3_000)).status).toBe(201);
+    expect(await reserve(h, "p2", 3_000)).toMatchObject({ status: 402, body: { error_code: "budget_exceeded", limit_kind: "plan_allowance", remaining_credits: 2_000 } });
+  });
+
+  it("mandate per-operation limit binds alone", async () => {
+    const h = harness("free", true);
+    allowAgentMailPayer(h.db.db, 300, 1);
+    expect(await reserve(h, "m1", 400)).toMatchObject({ status: 402, body: { error_code: "budget_exceeded", limit_kind: "mandate_per_operation", legacy_error_code: "payer_mandate_limit_exceeded" } });
+  });
+
+  it("mandate period limit binds alone", async () => {
+    const h = harness("free", true);
+    allowAgentMailPayer(h.db.db, 300, 1);
+    expect((await reserve(h, "d1", 300)).status).toBe(201);
+    expect((await reserve(h, "d2", 300)).status).toBe(201);
+    expect(await reserve(h, "d3", 300)).toMatchObject({ status: 402, body: { error_code: "budget_exceeded", limit_kind: "mandate_period", remaining_credits: 0, period_days: 30 } });
+  });
+
+  it("entitlement per-operation limit binds alone", async () => {
+    const h = harness("free", true);
+    allowAgentMailPayer(h.db.db, 10_000, 1);
+    h.db.db.prepare("UPDATE managed_service_plan_entitlements SET max_credits_per_operation=200").run();
+    expect(await reserve(h, "e1", 300)).toMatchObject({ status: 402, body: { error_code: "budget_exceeded", limit_kind: "entitlement_per_operation", remaining_credits: 200 } });
+  });
+
+  it.each(["per_install", "per_goal", "project_spend", "grant_max_spend"])("externally owned %s limit binds alone", async (kind) => {
+    const h = harness("free", true);
+    allowAgentMailPayer(h.db.db, 10_000, 1);
+    const limits = [{ kind, scope_key: "scope-1", headroom_credits: 500 }];
+    expect((await reserve(h, "x1", 300, limits)).status).toBe(201);
+    expect(await reserve(h, "x2", 300, limits)).toMatchObject({ status: 402, body: { error_code: "budget_exceeded", limit_kind: kind, remaining_credits: 200 } });
+    // A different scope key is a different limit.
+    expect((await reserve(h, "x3", 300, [{ kind, scope_key: "scope-2", headroom_credits: 500 }])).status).toBe(201);
+    // Billing counts settled spend, not the held amount.
+    const first = h.db.db.prepare("SELECT id FROM managed_service_credit_reservations WHERE operation_id='c-op-x1'").get() as { id: string };
+    expect((await h.post("/internal/managed-services/credits/settle", { reservation_id: first.id, credits: 100 })).status).toBe(200);
+    expect((await reserve(h, "x4", 300, limits)).status).toBe(201);
+    expect(effectiveLimit([{ kind: "plan_allowance", remaining: 9 }, { kind: "per_goal", remaining: 4 }, { kind: "mandate_period", remaining: null }])).toEqual({ kind: "per_goal", remaining: 4 });
+  });
+
+  it("the smallest of several composed limits binds", async () => {
+    const h = harness("free", true);
+    allowAgentMailPayer(h.db.db, 10_000, 1);
+    const limits = [{ kind: "per_goal", scope_key: "g", headroom_credits: 400 }, { kind: "project_spend", scope_key: "p", headroom_credits: 250 }];
+    expect((await reserve(h, "s1", 200, limits)).status).toBe(201);
+    expect(await reserve(h, "s2", 100, limits)).toMatchObject({ status: 402, body: { limit_kind: "project_spend", remaining_credits: 50 } });
+    expect((await reserve(h, "s3", 50, limits)).status).toBe(201);
+    expect(await reserve(h, "s4", 1, limits)).toMatchObject({ status: 402, body: { limit_kind: "project_spend", remaining_credits: 0 } });
+  });
+
+  it("parallel reserves never exceed the smallest limit", async () => {
+    const external = harness("free", true);
+    allowAgentMailPayer(external.db.db, 10_000, 1);
+    const limits = [{ kind: "per_install", scope_key: "i", headroom_credits: 250 }, { kind: "per_goal", scope_key: "g", headroom_credits: 900 }];
+    const ops = Array.from({ length: 8 }, (_, i) => reserveOp(external, `par-${i}`, 100, limits));
+    const results = await Promise.all(ops.map(op => op.send()));
+    expect(results.filter(r => r.status === 201)).toHaveLength(2);
+    expect(results.filter(r => r.status === 402)).toHaveLength(6);
+    for (const r of results.filter(x => x.status === 402)) expect(await r.json()).toMatchObject({ limit_kind: "per_install" });
+    expect(heldTotal(external)).toBe(200);
+
+    const period = harness("free", true);
+    allowAgentMailPayer(period.db.db, 100, 1);
+    period.db.db.prepare("UPDATE managed_service_payer_mandates SET max_credits_per_period=300").run();
+    const periodOps = Array.from({ length: 8 }, (_, i) => reserveOp(period, `perd-${i}`, 100));
+    const periodResults = await Promise.all(periodOps.map(op => op.send()));
+    expect(periodResults.filter(r => r.status === 201)).toHaveLength(3);
+    expect(heldTotal(period)).toBe(300);
+
+    const plan = harness("free", true);
+    allowAgentMailPayer(plan.db.db, 10_000, 1);
+    plan.db.db.prepare("UPDATE managed_service_payer_mandates SET max_credits_per_period=1000000").run();
+    const planOps = Array.from({ length: 6 }, (_, i) => reserveOp(plan, `plan-${i}`, 1_500));
+    const planResults = await Promise.all(planOps.map(op => op.send()));
+    expect(planResults.filter(r => r.status === 201)).toHaveLength(3);
+    expect(heldTotal(plan)).toBeLessThanOrEqual(5_000);
+  });
+
+  it("an expired hold cannot be renewed past an external limit", async () => {
+    const h = harness("free", true);
+    allowAgentMailPayer(h.db.db, 10_000, 1);
+    const limits = [{ kind: "per_goal", scope_key: "g", headroom_credits: 500 }];
+    const first = reserveOp(h, "r1", 300, limits);
+    expect((await first.send()).status).toBe(201);
+    h.db.db.prepare("UPDATE managed_service_credit_reservations SET expires_at=datetime('now','-1 minute') WHERE operation_id='c-op-r1'").run();
+    expect((await reserve(h, "r2", 300, limits)).status).toBe(201);
+    const renewed = await first.send();
+    expect(renewed.status).toBe(402);
+    expect(await renewed.json()).toMatchObject({ error_code: "budget_exceeded", limit_kind: "per_goal" });
+  });
+
+  it("chunked reservation stops at the limit", async () => {
+    const h = harness("free", true);
+    allowAgentMailPayer(h.db.db, 10_000, 1);
+    const limits = [{ kind: "per_goal", scope_key: "voice", headroom_credits: 250 }];
+    const result = await reserveIncrementally({
+      maxTotalCredits: 0, creditsPerSecond: 1,
+      reserveChunk: async ({ index, credits }) => (await reserve(h, `chunk-${index}`, credits, limits)).status === 201,
+    });
+    expect(result).toMatchObject({ stoppedBy: "refused", reservedCredits: 200 });
+    expect(result.chunks).toEqual([{ index: 0, credits: 100, seconds: 100 }, { index: 1, credits: 100, seconds: 100 }]);
+    expect(heldTotal(h)).toBe(200);
+    expect(chunkSize(0.1, null)).toEqual({ credits: 30, seconds: 300 });
+    expect(chunkSize(5, null)).toEqual({ credits: 100, seconds: 20 });
+    expect(chunkSize(1, 40)).toEqual({ credits: 40, seconds: 40 });
+    const capped = await reserveIncrementally({ maxTotalCredits: 150, creditsPerSecond: 1, reserveChunk: async () => true });
+    expect(capped).toMatchObject({ stoppedBy: "cap_reached", reservedCredits: 150 });
+    const finished = await reserveIncrementally({ maxTotalCredits: 0, creditsPerSecond: 1, reserveChunk: async () => true, usageFinished: ({ index }) => index === 1 });
+    expect(finished).toMatchObject({ stoppedBy: "finished", reservedCredits: 200 });
+  });
+
+  it("rejects malformed composed limits when the flag is on", async () => {
+    const h = harness("free", true);
+    allowAgentMailPayer(h.db.db, 10_000, 1);
+    const bad = [[{ kind: "per_goal", scope_key: "g", headroom_credits: -1 }], [{ kind: "unknown", scope_key: "g", headroom_credits: 1 }],
+      [{ kind: "per_goal", scope_key: "g", headroom_credits: 1 }, { kind: "per_goal", scope_key: "h", headroom_credits: 1 }]];
+    for (const [i, limits] of bad.entries()) expect((await reserve(h, `bad-${i}`, 100, limits)).status).toBe(400);
+  });
+
+  it("flag off is unchanged: limits ignored, legacy codes, no column needed", async () => {
+    const h = harness();
+    allowAgentMailPayer(h.db.db, 300, 1);
+    const tight = [{ kind: "per_goal", scope_key: "g", headroom_credits: 100 }];
+    expect((await reserve(h, "o1", 300, tight)).status).toBe(201);
+    expect((await reserve(h, "o2", 300, tight)).status).toBe(201);
+    expect(await reserve(h, "o3", 300, tight)).toMatchObject({ status: 402, body: { error_code: "payer_mandate_period_limit_exceeded" } });
+    expect(await reserve(h, "o4", 400)).toMatchObject({ status: 402, body: { error_code: "payer_mandate_limit_exceeded" } });
+    const withColumn = harness("free", false);
+    allowAgentMailPayer(withColumn.db.db, 300, 1);
+    expect((await reserve(withColumn, "o5", 300, tight)).status).toBe(201);
+    expect(withColumn.db.db.prepare("SELECT composed_limits_json AS v FROM managed_service_credit_reservations").get()).toEqual({ v: null });
   });
 });

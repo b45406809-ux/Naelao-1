@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-39**: P2 spending-limit composition (V-spec P2, tasks MS-39..MS-40).
-P0, P1, MS-36, MS-37 and MS-38 are complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md)
+Master implementation spec, **MS-40**: P2 bill Naelao Email usage through Managed (V-spec P2, last task).
+P0, P1 and MS-36..MS-39 are complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md)
 and [V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
