@@ -658,6 +658,36 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** worker, agentport, agents (known failures only) and billing suites; typechecks. P1 exit criteria in V-spec §17 met locally.
 - **Result:** this commit. AgentPort `/email/accounts` (provision, send, revoke) now calls Naelao Email over the new `NAELAO_EMAIL` service binding (`naelao-email`, `-staging`, `-production`) with the route contract unchanged; the per-tenant key is created through the internal HMAC tenant route on first use and held only as AES-GCM ciphertext in `agentport_naelao_email_tenants` (migration 0299, sealed under `AGENTPORT_JWT_SECRET`, same scheme as the identity keys), and the mailbox webhook secret is sealed per account. The native send/ingress code, the `email()` handler (inbound now belongs to Naelao Email), the `EMAIL` send binding and the two domain vars are removed from AgentPort. Naelao Email webhooks gained an optional `inbox_id` scope (migration 0298) so one tenant key can serve many mailboxes without cross-delivery. New Agents adapter `providers/naelao-email.ts` (`ProviderAdapterV1` subset in `providers/contract.ts`; capabilities provision, deprovision, lookup, send, read) behind `MANAGED_OFFERINGS_ENABLED`, fails closed through `resolveOfferingAdmission(first_party)` and a reservation id, own sealed key table (migration 0300), `capability_unsupported` for everything else. Seed rows for `off_naelao_email_inbox_v1`, an unverified `first_party` agreement and a draft `naelao/email` capability v1 appended to `docs/operations/managed-offerings-seed.sql` (not applied). End-to-end tests (real Naelao Email app over in-memory SQLite, fake Billing) create an inbox directly, via AgentPort and via the adapter after admission and reservation, plus admission refusals. Tests: email 63/63, agentport 36/36, agents 2135 passed with only the 3 known failures, billing 161/161, billing-core 68/68, wrangler vars parity 85/85; typechecks clean. Local/mock only. Caveats: AgentPort no longer writes inbound `message.received` rows to its own event ledger for email accounts, and its inbound webhook is now Naelao's references-only signed envelope (the SDK's `verifyAgentPortEmailWebhook` no longer matches it); live use needs Email Routing for the managed domain pointed at `naelao-email`.
 
+### - [ ] MS-36 — P2 subscriptions and generic renewal sweep
+
+- **Queue:** item 21 (V-spec P2). **Model:** Sonnet. **Spec:** V-spec §6.4, MR-COM-9, MR-LIFE-2.
+- **Do:** migration for `managed_service_subscriptions`; generic renewal sweep (reserve+charge before upstream commitment, grace → suspended, notices) behind `MANAGED_SUBSCRIPTIONS_ENABLED` (default "false"); re-express the AgentMail rental sweep (`sweepManagedAgentMailRentals`) as the first subscription type with identical behavior when the flag is off.
+- **Tests:** renew success; failure → grace → suspended; no double charge on replay; release only after MR-LIFE-2 grace; AgentMail rental tests pass unchanged with flag off and on.
+
+### - [ ] MS-37 — P2 generic quotes per offering policy
+
+- **Queue:** item 21. **Model:** Sonnet. **Spec:** MR-COM-4/7/8, §9.2. **Needs:** MS-29.
+- **Do:** one quote creator driven by offering `charge_components_json` (all mandatory components + minimum monthly cost), bound to tenant/offering/region/config hash/price_version, expiry ≤15 min; replaces provider-specific quote creators behind `MANAGED_OFFERINGS_ENABLED`.
+- **Tests:** components shown; expiry → `quote_expired`; changed price needs new quote; binding mismatch refused.
+
+### - [ ] MS-38 — P2 inventory and cost reconciliation findings
+
+- **Queue:** item 21. **Model:** Sonnet. **Spec:** MR-REC-1/2/3, §8 `listUpstreamResources`/`lookup`.
+- **Do:** `managed_service_reconciliation_findings` table; daily inventory sweep per adapter that supports listing (orphaned_upstream / missing_upstream / state_mismatch, never auto-delete); monthly cost comparison of provider cost receipts vs settled charges per provider+offering; operator read route.
+- **Tests:** seeded orphan/missing/mismatch found once (idempotent); nothing deleted; cost discrepancy finding.
+
+### - [ ] MS-39 — P2 spending-limit composition
+
+- **Queue:** item 21. **Model:** Sonnet. **Spec:** MR-COM-10/11, D8.
+- **Do:** one admission function computing the min of all applicable limits (plan allowance, mandate period/per-op, per-install, per-goal, Project spend cap, grant maxSpend) evaluated inside the reservation admission so parallel requests cannot overspend; incremental reservation helper for long-running usage (≤5 min or ≤100 credits per chunk, terminate when next chunk refused). Behind `MANAGED_LIMITS_COMPOSED_ENABLED`.
+- **Tests:** each limit binding alone; parallel reserves never exceed the smallest limit; chunked reservation stops at limit.
+
+### - [ ] MS-40 — P2 bill Naelao Email usage through Managed
+
+- **Queue:** item 21. **Model:** Sonnet. **Spec:** §9.4 `email.message.sent`, OD-3, MR-COM-2/5. **Needs:** MS-35, MS-36.
+- **Do:** Managed inboxes get a monthly subscription (rental 100 credits incl. 1,000 sends) and overage settlement (10 credits per extra 1,000, rounded up per settlement) from Naelao Email usage via the adapter; direct (non-Managed) Naelao Email tenants unaffected.
+- **Tests:** included allowance; overage rounding; idempotent settlement; direct tenants not billed.
+
 ---
 
 ## Not in this spec (still needs you or live access)

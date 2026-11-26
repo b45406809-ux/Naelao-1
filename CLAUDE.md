@@ -2,8 +2,9 @@
 
 ## Current task
 
-V-spec P0 and P1 are complete locally (MS-27..MS-35). Next is V-spec P2 (Commerce: subscriptions, quotes per policy,
-reconciliation, spending-limit composition) — tasks to be written into the master spec. Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+Master implementation spec, **MS-36**: P2 subscriptions and generic renewal sweep (V-spec P2, tasks
+MS-36..MS-40). P0 and P1 are complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md)
+and [V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 
