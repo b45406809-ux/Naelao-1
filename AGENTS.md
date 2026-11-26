@@ -2,7 +2,9 @@
 
 ## Current task
 
-V-spec P0–P3 are complete locally (MS-27..MS-44). Next is V-spec P4 (execution unification and provider event module) — tasks to be written into the master spec. Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+Master implementation spec, **MS-45**: P4 shared execution pipeline, then MS-46 provider event module.
+V-spec P0–P3 are complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md)
+and [V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 
