@@ -11,7 +11,7 @@ import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { resolveOfferingAdmission, type OfferingAdmissionDb } from "@naelao/billing-core";
 import {
   ProviderAdapterError, capabilityUnsupported,
-  type AuthorizedExecution, type CapabilityDescriptor, type DeprovisionReq, type ExecutionResult, type LookupReq, type OperationCtx,
+  type AuthorizedExecution, type CapabilityDescriptor, type Page, type DeprovisionReq, type ExecutionResult, type LookupReq, type OperationCtx,
   type ProviderAdapterV1, type ProviderResource, type ProvisionReq, type ProvisionResult,
 } from "./contract.js";
 
@@ -21,6 +21,10 @@ export const NAELAO_EMAIL_SERVICE_ID = "email";
 export const NAELAO_EMAIL_OPERATIONS = ["provision", "deprovision", "lookup", "send", "read"] as const;
 
 const BASE = "https://naelao-email.internal";
+/** Tenant ids this adapter creates are `naelao-<tenant>`; the inventory lists only those (AgentPort and direct tenants are not Managed resources). */
+export const NAELAO_EMAIL_INVENTORY_TENANT_PREFIX = "naelao-";
+const INVENTORY_TENANT = "naelao-inventory";
+const INVENTORY_PAGE_SIZE = 200;
 const KEY_SCOPES = ["inboxes:read", "inboxes:write", "messages:read", "messages:send", "usage:read"];
 
 export interface NaelaoEmailAdapterEnv {
@@ -150,6 +154,26 @@ export function createNaelaoEmailAdapter(env: NaelaoEmailAdapterEnv, now: () => 
       const data = reply.body?.data as Record<string, unknown> | undefined;
       if (reply.status !== 200 || typeof data?.id !== "string") return refuse(reply);
       return toResource(data);
+    },
+
+    /** MS-38: read-only. Uses the platform HMAC inventory route (no tenant key is opened); never deletes anything. */
+    async listUpstreamResources(cursor?: string): Promise<Page<ProviderResource>> {
+      enabled();
+      if (cursor !== undefined && !/^inb_[A-Za-z0-9_-]{1,80}$/.test(cursor)) throw new ProviderAdapterError("invalid_cursor");
+      const reply = await raw(new Request(`${BASE}/internal/v1/inventory/inboxes`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": INVENTORY_TENANT, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, INVENTORY_TENANT) },
+        body: JSON.stringify({ tenant_prefix: NAELAO_EMAIL_INVENTORY_TENANT_PREFIX, limit: INVENTORY_PAGE_SIZE, ...(cursor ? { cursor } : {}) }),
+      }));
+      const data = reply.body?.data as { items?: unknown; next_cursor?: unknown } | undefined;
+      if (reply.status !== 200 || !Array.isArray(data?.items)) return refuse(reply);
+      const items: ProviderResource[] = [];
+      for (const item of data.items as Array<Record<string, unknown>>) {
+        if (typeof item?.id !== "string" || !/^inb_[A-Za-z0-9_-]{1,80}$/.test(item.id)) throw new ProviderAdapterError("invalid_inventory_response");
+        items.push({ ...toResource(item), status: item.status === "deleted" ? "deleted" : "active" });
+      }
+      const next = typeof data.next_cursor === "string" && data.next_cursor ? data.next_cursor : undefined;
+      return { items, ...(next ? { next_cursor: next } : {}) };
     },
 
     async deprovision(req: DeprovisionReq, op: OperationCtx): Promise<void> {

@@ -395,6 +395,8 @@ export interface AgentsEnv extends Cloudflare.Env {
   MANAGED_OFFERINGS_ENABLED?: string;
   /** MS-36: generic managed subscription renewal sweep (communications/managed-subscriptions.ts). Off = legacy AgentMail rental sweep. */
   MANAGED_SUBSCRIPTIONS_ENABLED?: string;
+  /** MS-38: daily inventory sweep + monthly cost comparison findings and the operator findings routes; off = no sweep, not-found shape. */
+  MANAGED_RECONCILIATION_ENABLED?: string;
   /** Full assistant-response caching stays off until exact caller and source freshness gates pass. */
   KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
@@ -12765,6 +12767,16 @@ export default {
       ])).then(result=>{
         if(result.deferred||result.failed)console.warn("Managed service operation reconciliation attention",result);
       }).catch(()=>{console.warn("AgentMail managed operation reconciliation postponed");}));
+      // MS-38: daily inventory sweep and monthly cost comparison (findings only; claimed per period in D1; no-op with the flag off).
+      if(env.MANAGED_RECONCILIATION_ENABLED==="true")_ctx.waitUntil(Promise.all([
+        import("./communications/managed-reconciliation-findings.js"),
+        import("./communications/providers/naelao-email.js"),
+      ]).then(([findings,naelaoEmail])=>findings.sweepManagedReconciliation(env,[
+        {provider:naelaoEmail.NAELAO_EMAIL_PROVIDER,serviceId:naelaoEmail.NAELAO_EMAIL_SERVICE_ID,adapter:naelaoEmail.createNaelaoEmailAdapter(env)},
+      ])).then(result=>{
+        if(result.inventory&&(result.inventory.created||result.inventory.failed||result.inventory.truncated))console.warn("Managed inventory reconciliation attention",result.inventory);
+        if(result.cost&&result.cost.created)console.warn("Managed cost reconciliation findings",result.cost);
+      }).catch(()=>{console.warn("Managed reconciliation sweep postponed");}));
       _ctx.waitUntil(import("./communications/agentport-share-reconciliation.js")
         .then(module=>module.sweepManagedAgentPortShareRevocations(env))
         .then(result=>{

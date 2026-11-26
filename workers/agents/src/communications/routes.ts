@@ -12,6 +12,7 @@ import {
   safeFilename,
 } from "../channels/cloudflare-email.js";
 import { connectUserAgentMail, callAgentMailTool, createManagedAgentMailQuote, getAssistantAgentMailStatus, getAgentPortSyncIdentity, getAgentPortThreadAssistantRoutes, provisionManagedAgentMail, readAgentMailUsage, receiveAgentMailWebhook, receiveAgentPortNotification, stopManagedAgentMailRenewal, revokeAgentPortOwnerLink, setAgentPortEventAssistant, setAgentPortThreadAssistant, syncAgentPortAgentMail } from "./agentmail.js";
+import { FindingsError, acknowledgeFinding, listFindings } from "./managed-reconciliation-findings.js";
 import { ManagedOfferingAdminError, approveCommercialAgreement, revokeCommercialAgreement, upsertCommercialAgreement, upsertManagedServiceOffering } from "./managed-offering-admin.js";
 import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
@@ -1335,6 +1336,26 @@ export function registerCommunicationRoutes(
     agreementId:c.req.param("agreementId"),actorId,reason:b.reason as string,...(b.evidence_sha256!==undefined?{evidenceSha256:b.evidence_sha256 as string}:{})})));
   app.post("/internal/managed-services/agreements/:agreementId/revoke",c=>offeringAdmin(c,16*1024,(b,actorId)=>revokeCommercialAgreement(c.env.PLATFORM_DB,{
     agreementId:c.req.param("agreementId"),actorId,reason:b.reason as string})));
+  // MS-38: operator findings queue. Same operator-key auth as the MS-28 routes; flag off answers the not-found shape before any auth check.
+  const findingsGate=async(c:Context<{Bindings:AgentsEnv}>)=>{
+    if(c.env.MANAGED_RECONCILIATION_ENABLED!=="true")return c.json({error_code:"not_found"},404);
+    if(!c.env.MANAGED_SERVICES_OPERATOR_SECRET)return c.json({error_code:"managed_service_operator_key_unavailable"},503);
+    if(!constantTimeSecretEqual(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
+    return null;
+  };
+  app.get("/internal/managed-services/reconciliation-findings",async c=>{
+    const refused=await findingsGate(c);if(refused)return refused;
+    const q=new URL(c.req.url).searchParams;
+    try{return c.json(await listFindings(c.env.PLATFORM_DB,{status:q.get("status"),kind:q.get("kind"),provider:q.get("provider"),limit:q.get("limit"),cursor:q.get("cursor")}));}
+    catch(error){if(error instanceof FindingsError)return c.json({error_code:error.code},error.status);return c.json({error_code:"managed_reconciliation_request_failed"},400);}
+  });
+  app.post("/internal/managed-services/reconciliation-findings/:findingId/acknowledge",async c=>{
+    const refused=await findingsGate(c);if(refused)return refused;
+    const body=await readBoundedRequestText(c.req.raw,16*1024).then(text=>JSON.parse(text) as unknown).catch(()=>null);
+    if(!body||typeof body!=="object"||Array.isArray(body))return c.json({error_code:"bad_request"},400);
+    try{return c.json(await acknowledgeFinding(c.env.PLATFORM_DB,{id:c.req.param("findingId"),actorId:c.req.header("x-managed-services-operator-id")??"",reason:(body as Record<string,unknown>).reason}));}
+    catch(error){if(error instanceof FindingsError)return c.json({error_code:error.code},error.status);return c.json({error_code:"managed_reconciliation_request_failed"},400);}
+  });
   app.post("/internal/agentmail/webhook/:connectionId",async c=>receiveAgentMailWebhook(c.env,c.req.param("connectionId"),c.req.raw));
   app.post("/internal/agentport/event/:connectionId",async c=>receiveAgentPortNotification(c.env,c.req.param("connectionId"),c.req.raw));
   app.on(["GET", "POST"], "/spaces/:spaceId/assistant-communications", (c) =>

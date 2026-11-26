@@ -78,6 +78,26 @@ app.post("/internal/v1/tenants", async c => {
   return c.json({ data: { tenant_id: platformTenant, api_key: key, key_id: keyId, key_prefix: keyPrefix(key), scopes } }, 201, { "cache-control": "no-store" });
 });
 
+// Platform inventory (MS-38 / MR-REC-2): read-only page of inboxes whose tenant id starts with the caller's prefix, for the Agents
+// reconciliation sweep. HMAC-protected like the other /internal routes; never key-authenticated, never mutates.
+app.post("/internal/v1/inventory/inboxes", async c => {
+  const platformTenant = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!c.env.PLATFORM_SECRET || !platformTenant || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), platformTenant, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden", message: "Forbidden." }, 403);
+  }
+  const body = await c.req.json<{ tenant_prefix?: unknown; cursor?: unknown; limit?: unknown }>().catch(() => null);
+  if (!body || typeof body.tenant_prefix !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(body.tenant_prefix) ||
+    (body.cursor !== undefined && (typeof body.cursor !== "string" || !/^inb_[A-Za-z0-9_-]{1,80}$/.test(body.cursor))) ||
+    (body.limit !== undefined && (!Number.isInteger(body.limit) || (body.limit as number) < 1 || (body.limit as number) > 500))) {
+    return c.json({ error_code: "invalid_request", message: "Invalid inventory request." }, 400);
+  }
+  const limit = (body.limit as number | undefined) ?? 200;
+  const rows = await c.env.PLATFORM_DB.prepare("SELECT id,address,status,nemail_tenant_id FROM nemail_inboxes WHERE substr(nemail_tenant_id,1,?)=? AND id>? ORDER BY id LIMIT ?")
+    .bind(body.tenant_prefix.length, body.tenant_prefix, (body.cursor as string | undefined) ?? "", limit + 1).all<{ id: string; address: string; status: string; nemail_tenant_id: string }>();
+  const page = rows.results.slice(0, limit);
+  return c.json({ data: { items: page.map(r => ({ id: r.id, address: r.address, status: r.status === "deleted" ? "deleted" : "active" })), ...(rows.results.length > limit ? { next_cursor: page[page.length - 1]!.id } : {}) } });
+});
+
 function requireScope(scope: Scope) {
   return async (c: AppContext, next: () => Promise<void>) => {
     const auth = await authenticate(c.env.PLATFORM_DB, c.req.header("authorization"));

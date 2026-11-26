@@ -1,4 +1,4 @@
-// V-spec §8 provider adapter contract (MS-35 subset). Adapters live in providers/<provider>.ts.
+// V-spec §8 provider adapter contract (MS-35 subset, plus MS-38 `listUpstreamResources`). Adapters live in providers/<provider>.ts.
 // Only the members Naelao Email needs are declared here; optional members stay optional so later adapters can add them.
 
 export type ProvisioningStrategy = "first_party" | "managed_master" | "native_subaccount" | "customer_connection";
@@ -23,6 +23,8 @@ export interface ProviderResource {
   address?: string;
 }
 
+export interface Page<T> { items: T[]; /** Opaque; absent on the last page. */ next_cursor?: string }
+
 export interface ProvisionReq {
   tenantId: string;
   region: string;
@@ -46,6 +48,8 @@ export interface ProviderAdapterV1 {
   lookup(req: LookupReq): Promise<ProviderResource | null>;
   deprovision?(req: DeprovisionReq, op: OperationCtx): Promise<void>;
   execute(req: AuthorizedExecution, op: OperationCtx): Promise<ExecutionResult>;
+  /** MS-38 / MR-REC-2: read-only inventory of every resource the adapter's platform account holds upstream, one page per call. */
+  listUpstreamResources?(cursor?: string): Promise<Page<ProviderResource>>;
 }
 
 /** MR-ADP-1: an unsupported operation throws; it never succeeds without doing anything. */
