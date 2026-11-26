@@ -2,7 +2,9 @@
 
 ## Current task
 
-V-spec P0–P2 are complete locally (MS-27..MS-40). Next is V-spec P3 (OS experience: resources panel, add-resource flow, template resource requirements) — tasks to be written into the master spec. Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+Master implementation spec, **MS-41**: P2 wiring, then V-spec P3 (MS-42..MS-44). V-spec P0–P2 are
+complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md) and
+[V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 

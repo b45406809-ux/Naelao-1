@@ -693,6 +693,30 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Tests:** included allowance; overage rounding; idempotent settlement; direct tenants not billed.
 - **Result:** this commit. Behind `MANAGED_SUBSCRIPTIONS_ENABLED` (and `MANAGED_OFFERINGS_ENABLED` for the adapter) the `naelao-email` adapter enrolls a `naelao_email_inbox` subscription on a successful Managed provision (`INSERT OR IGNORE`, so a replay repairs a missed enrollment; with the flag on and no `spaceId`/`userId` on the request it refuses with `subscription_scope_required` before any inbox exists). Rental, included sends and the usage rate are read from the offering's charge components (`parseEmailInboxPricing`, fail closed; nothing hard-coded beyond the seed). `communications/managed-email-billing.ts`: at each period end the handler reads the inbox's sent count for that period, settles overage once (`ceil(extra / 1000) * 10`: 1,001 sends = 10 credits, 2,001 = 20, within 1,000 = nothing) and then reserves and settles the next rental (`renew`, with a consumed offering quote bound to the operation) before the period advances. Migration 0305 (not applied remotely) adds `managed_service_subscription_charges`, unique per (subscription, kind, period), which stores the first computed count and credits and makes settlement idempotent; reservation, operation and quote ids derive from the row. A failed overage or rental holds the subscription in the MS-36 grace and suspension flow, a deleted inbox is billed for its last period and then cancelled. The email worker gained HMAC `POST /internal/v1/usage/period` (per inbox, `[start, end)`), which answers only `naelao-` Managed tenants; direct and AgentPort tenants get 404, and they never get a subscription. The seed capability now also lists the billing-only operations `renew` and `usage`. The 5-minute tick runs `sweepNaelaoEmailSubscriptions` only when both flags are "true". Tests: new managed-email-billing 18/18, email worker 67/67 (4 new), full agents 2200 passed with only the 3 known failures, agents and email typechecks clean, wrangler vars parity passes, `git diff --check` clean, `pnpm install --frozen-lockfile` up to date (billing untouched; `wrangler-binding-parity` has 8 failures that also occur on the clean checkout). Local/mock only. Not done: operator-verified plan entitlements for `naelao/email` `renew` and `usage`, a caller that passes `spaceId`/`userId` to the adapter, pausing sending on suspension, and live acceptance.
 
+### - [ ] MS-41 — P2 wiring: connect the built pieces to their callers
+
+- **Queue:** item 21. **Model:** Sonnet. **Spec:** V-spec MR-COM-8/10/11, MR-REC-2. **Needs:** MS-36..MS-40.
+- **Do (all behind the existing flags, flag off unchanged):** (1) callers of the managed reserve that own per-install, per-goal, Project spend or grant maxSpend caps send `composed_limits` headroom; (2) long-running managed usage paths that exist today (voice/browser/compute where present) use `reserveIncrementally`; (3) AgentMail and Workers AI provision/run paths call `verifyOfferingQuote`; (4) the Managed Naelao Email provision path passes `spaceId`/`userId`; (5) a suspended `naelao_email_inbox` subscription pauses that inbox's sending in the email worker via an internal route, resumed on recovery. Skip any item whose caller does not exist yet and record it.
+- **Tests:** one per item; full agents, billing, email suites.
+
+### - [ ] MS-42 — P3 Resources panel
+
+- **Queue:** item 21 (V-spec P3). **Model:** Sonnet. **Spec:** MR-OS-1, MR-OS-3.
+- **Do:** provider-agnostic Shell resources list over `managed_resources` (provider, mode, assigned agents, usage, price, renewal, suspend/export actions), extending `ManagedServicesPanel`; backed by an owner/admin-scoped Spaces or agents read route; internal strategy names never shown. Flag `MANAGED_RESOURCES_PANEL_ENABLED`.
+- **Tests:** route isolation (not-found shape), Shell parser/render tests, typecheck baseline unchanged.
+
+### - [ ] MS-43 — P3 Add-resource flow
+
+- **Queue:** item 21. **Model:** Sonnet. **Spec:** MR-OS-2, MR-COM-4. **Needs:** MS-42.
+- **Do:** choose type → Managed/BYOK → Automatic/provider (hard filters then `preference_rank` then price, reason shown) → quote with all components → owner approval → provision operation. Same flag.
+- **Tests:** filtering/ranking, quote shown before approval, expired quote refused, non-owner refused.
+
+### - [ ] MS-44 — P3 Template resource requirements
+
+- **Queue:** item 21. **Model:** Sonnet. **Spec:** MD-11, MR-OS-4/5.
+- **Do:** `BlueprintResourceRequirementV1` in `@naelao/agent-sdk` with validation; activation lists reuse/create/connect/skip per requirement with prices; owner approval creates operations and grants; templates never create spend or grants alone (reuse the MS-04..06 pattern).
+- **Tests:** SDK validation; activation proposals; no spend/grant without approval; reuse offered first.
+
 ---
 
 ## Not in this spec (still needs you or live access)
