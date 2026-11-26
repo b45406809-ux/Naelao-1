@@ -2,7 +2,9 @@
 
 ## Current task
 
-V-spec P0–P4 are complete locally (MS-27..MS-48). Next is V-spec P5 (prepaid balance ledger), gated by OD-1 (approved: stay on plan allowance) — so no P5 work; remaining work is live acceptance and owner rollout. Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+Master implementation spec, **MS-49** (provider webhook routes through the event module), then **MS-50**
+(AgentMail inventory listing). V-spec P0–P4 are complete locally; P5 is parked by OD-1. Follow
+[the master spec](docs/operations/master-implementation-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 
