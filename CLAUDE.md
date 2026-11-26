@@ -2,9 +2,7 @@
 
 ## Current task
 
-Master implementation spec, **MS-46** ("P4 provider event module").
-V-spec P0–P3, MS-45 (P4 shared execution pipeline), MS-47 (P2/P3 leftovers) and MS-48 (earlier review follow-ups) are complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md)
-and [V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+V-spec P0–P4 are complete locally (MS-27..MS-48). Next is V-spec P5 (prepaid balance ledger), gated by OD-1 (approved: stay on plan allowance) — so no P5 work; remaining work is live acceptance and owner rollout. Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 
