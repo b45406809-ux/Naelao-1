@@ -2,7 +2,10 @@
 
 ## Current task
 
-V-spec P0 (MS-27..MS-30) is complete locally; next is P1 Naelao Email Release 1 — tasks to be written into the master spec from new plan/V-spec.md §12. Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+Master implementation spec, **MS-31**: Naelao Email worker scaffold, schema, API keys and inboxes
+(V-spec P1, tasks MS-31..MS-35). V-spec P0 (MS-27..MS-30) is complete locally; owner approved all
+OD-1..OD-8 recommendations. Follow [the master spec](docs/operations/master-implementation-spec.md)
+and [V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 
