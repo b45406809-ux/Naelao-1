@@ -6,7 +6,7 @@ import { normalizeWorkspacePath } from "../../../agents/src/script-engine/worksp
 import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, execute, queryAll, queryOne, validateMigrationSequence } from "@naelao/db";
 import { AUDIT_LIST_DEFAULT, AUDIT_LIST_MAX, getLimits as getWorkerLimits, getUserPreferences as getWorkerUserPreferences, listAudit as listWorkerPreferenceAudit, putLimits as putWorkerLimits, putUserPreferences as putWorkerUserPreferences, validateLimitsBody, validateUserPreferencesBody } from "./worker-preferences-store.js";
-import { clearProjectMemoryHold, getProjectMemoryHold, hasPendingProjectMemoryTombstones, markProjectDeleted, PROJECT_MEMORY_RETENTION_DAYS, setProjectMemoryHold, sweepDeletedProjectMemory } from "./project-memory-retention.js";
+import { clearProjectMemoryHold, getProjectMemoryHold, backfillLegacyDeletionTombstones, hasPendingProjectMemoryTombstones, markProjectDeleted, PROJECT_MEMORY_RETENTION_DAYS, setProjectMemoryHold, sweepDeletedProjectMemory } from "./project-memory-retention.js";
 import type { Migration } from "@naelao/db";
 import { recordExternalMessage } from "../project-external-quota.js";
 import {
@@ -7248,6 +7248,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.recallProjectFacts(projFactsMatch[1], url.searchParams);
       if (url.pathname === "/internal/project-deletion-mark" && method === "POST")
         return this.markProjectDeletion(url.searchParams);
+      if (url.pathname === "/internal/project-deletion-backfill" && method === "POST")
+        return this.handleProjectDeletionBackfill(url.searchParams);
       if (url.pathname === "/project-memory-hold")
         return this.handleProjectMemoryHold(request, url.searchParams);
       if (url.pathname === "/worker-preference-limits")
@@ -11512,6 +11514,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     markProjectDeleted(sql, projectId, Date.now());
     await this.armProjectMemoryAlarm(Date.now() + PROJECT_MEMORY_RETENTION_DAYS * 86_400_000);
     return Response.json({ marked: true });
+  }
+
+  /** MS-48 item 6: legacy tombstone backfill. The router authenticates and checks the flag; dry run is the default. */
+  private async handleProjectDeletionBackfill(params: URLSearchParams): Promise<Response> {
+    if (this.env.PROJECT_MEMORY_RETENTION_ENABLED !== "true") return Response.json({ error_code: "not_found" }, { status: 404 });
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !spaceId || !this.env.PLATFORM_DB) return Response.json({ error_code: "backfill_unavailable" }, { status: 503 });
+    const db = this.env.PLATFORM_DB;
+    const cursor = params.get("cursor") ?? undefined;
+    if (cursor !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(cursor)) return Response.json({ error_code: "invalid_backfill_request" }, { status: 400 });
+    const dryRun = params.get("dry_run") !== "false";
+    const report = await backfillLegacyDeletionTombstones(this.ctx.storage.sql as never, async (ids) => {
+      const found = new Map<string, string>();
+      const rows = await db.prepare(`SELECT project_id,requested_at FROM workspace_erasure_tombstones
+        WHERE tenant_id=? AND space_id=? AND project_id IN (${ids.map(() => "?").join(",")})`).bind(tenantId, spaceId, ...ids)
+        .all<{ project_id: string; requested_at: string }>();
+      for (const row of rows.results) found.set(row.project_id, row.requested_at);
+      return found;
+    }, { dryRun, cursor });
+    if (report.written > 0) await this.armProjectMemoryAlarm(Date.now() + 60_000);
+    console.log(`[project-memory-backfill] dry_run=${dryRun} scanned=${report.scanned} eligible=${report.eligible} written=${report.written}`);
+    return Response.json(report, { headers: { "cache-control": "no-store" } });
   }
 
   /** Owner/admin authority is enforced by the router; this only validates and stores the hold. */

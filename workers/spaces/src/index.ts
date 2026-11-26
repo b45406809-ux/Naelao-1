@@ -7798,6 +7798,25 @@ app.delete("/spaces/:spaceId/projects/:projectId", async c => {
   });
 });
 
+// MS-48 item 6: backfill project_deletion_tombstones for Projects archived before MS-22 that have a workspace
+// erasure tombstone. Internal (operator tooling, HMAC token), static path with the Space in the query, dry run by
+// default (`dry_run=false` writes). Flag off answers the not-found shape and never reaches the Space.
+app.post("/internal/project-deletion-backfill", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  if (c.env.PROJECT_MEMORY_RETENTION_ENABLED !== "true") return c.json({ error_code: "not_found" }, 404);
+  const spaceId = c.req.query("space_id") ?? "";
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(spaceId)) return c.json({ error_code: "invalid_backfill_request" }, 400);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT 1 AS found FROM spaces WHERE id=? AND tenant_id=?").bind(spaceId, tenantId).first();
+  if (!space) return c.json({ error_code: "not_found" }, 404);
+  const params = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, dry_run: c.req.query("dry_run") === "false" ? "false" : "true" });
+  const cursor = c.req.query("cursor");
+  if (cursor) params.set("cursor", cursor);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/internal/project-deletion-backfill?${params}`, "POST");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+
 // D9 Project memory hold: owner/admin only (not a product end-user surface, so no router
 // allowlist entry). Static path with the Project in the query. Every authorization failure
 // returns the same not-found shape.

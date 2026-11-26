@@ -147,3 +147,95 @@ describe("project memory hold route", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("MS-48 legacy deletion tombstone backfill", () => {
+  const secret = "retention-test";
+  const erasure = (rows: Record<string, string>) => ({
+    prepare: () => { const s = { bind: (..._a: unknown[]) => s, all: async () => ({ results: Object.entries(rows).map(([project_id, requested_at]) => ({ project_id, requested_at })) }) }; return s; },
+  });
+  async function build(flag: string | undefined, rows: Record<string, string>) {
+    const storage = createDOStorage();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, PLATFORM_DB: erasure(rows),
+      ...(flag ? { PROJECT_MEMORY_RETENTION_ENABLED: flag } : {}) } as never);
+    await space.fetch(new Request("http://space/"));
+    storage.sql.exec("INSERT INTO spaces(id,name,space_type,depth) VALUES('space','Test','business',0)");
+    const add = (id: string, status: string) => {
+      storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES(?,?,?,?)", id, "space", id, status);
+      storage.sql.exec("INSERT INTO project_facts(id,project_id,entity,relation,attribute,created_at,updated_at) VALUES(?,?,?,?,?,'x','x')", `f-${id}`, id, "e", "r", "a");
+    };
+    const run = (query = "") => space.fetch(new Request(`http://space/internal/project-deletion-backfill?tenant_id=t&space_id=space${query}`, { method: "POST" }));
+    const tombstone = (id: string) => storage.sql.exec("SELECT deleted_at FROM project_deletion_tombstones WHERE project_id=?", id).toArray()[0] as { deleted_at: string } | undefined;
+    return { storage, space, add, run, tombstone };
+  }
+
+  it("dry run reports counts and writes nothing; the real run writes only archived Projects with an erasure tombstone, using requested_at", async () => {
+    const requested = daysAgo(45);
+    const { add, run, tombstone, storage } = await build("true", { gone: requested, live: requested });
+    add("gone", "archived"); add("no-erasure", "archived"); add("live", "active");
+    const dry = await (await run()).json() as Record<string, unknown>;
+    expect(dry).toMatchObject({ dry_run: true, scanned: 2, eligible: 1, skipped_no_erasure: 1, written: 0 });
+    expect(tombstone("gone")).toBeUndefined();
+    const real = await (await run("&dry_run=false")).json() as Record<string, unknown>;
+    expect(real).toMatchObject({ dry_run: false, eligible: 1, written: 1 });
+    expect(tombstone("gone")).toEqual({ deleted_at: requested });
+    expect(tombstone("no-erasure")).toBeUndefined();
+    expect(tombstone("live")).toBeUndefined(); // an active Project is never touched, even with an erasure row
+    expect(await storage.getAlarm()).not.toBeNull();
+  });
+
+  it("is idempotent and keeps an existing tombstone", async () => {
+    const { add, run, tombstone, storage } = await build("true", { a: daysAgo(40), b: daysAgo(50) });
+    add("a", "archived"); add("b", "archived");
+    const existing = daysAgo(5);
+    storage.sql.exec("INSERT INTO project_deletion_tombstones(project_id,deleted_at) VALUES('b',?)", existing);
+    const first = await (await run("&dry_run=false")).json() as Record<string, number>;
+    expect(first.written).toBe(1);
+    const second = await (await run("&dry_run=false")).json() as Record<string, number>;
+    expect(second).toMatchObject({ scanned: 0, written: 0 });
+    expect(tombstone("b")!.deleted_at).toBe(existing);
+    expect((storage.sql.exec("SELECT COUNT(*) AS n FROM project_deletion_tombstones").toArray()[0] as { n: number }).n).toBe(2);
+  });
+
+  it("backfilled Projects older than 30 days are swept by the existing job", async () => {
+    const { add, run, space, storage } = await build("true", { gone: daysAgo(45) });
+    add("gone", "archived");
+    await run("&dry_run=false");
+    await space.alarm();
+    expect((storage.sql.exec("SELECT COUNT(*) AS n FROM project_facts WHERE project_id='gone'").toArray()[0] as { n: number }).n).toBe(0);
+  });
+
+  it("is bounded per page and returns a cursor", async () => {
+    const rows: Record<string, string> = {};
+    const { add, run } = await build("true", rows);
+    for (let i = 0; i < 52; i++) { const id = `p${String(i).padStart(2, "0")}`; add(id, "archived"); rows[id] = daysAgo(40); }
+    const page = await (await run()).json() as { scanned: number; next_cursor: string | null };
+    expect(page.scanned).toBe(50);
+    expect(page.next_cursor).toBe("p49");
+    expect((await (await run(`&cursor=${page.next_cursor}`)).json() as { scanned: number }).scanned).toBe(2);
+  });
+
+  it("flag off answers not-found and writes nothing", async () => {
+    const { add, run, tombstone } = await build(undefined, { gone: daysAgo(45) });
+    add("gone", "archived");
+    expect((await run("&dry_run=false")).status).toBe(404);
+    expect(tombstone("gone")).toBeUndefined();
+  });
+
+  it("the router route needs a valid internal token, the flag, and a Space of the tenant", async () => {
+    const calls: string[] = [];
+    const stub = { fetch: vi.fn(async (r: Request) => { calls.push(new URL(r.url).search); return Response.json({ dry_run: true }); }) };
+    const env = (flag?: string, found = true) => ({ ENVIRONMENT: "test", PLATFORM_SECRET: secret, ...(flag ? { PROJECT_MEMORY_RETENTION_ENABLED: flag } : {}),
+      PLATFORM_DB: { prepare: () => { const s: { bind: () => unknown; first: () => Promise<unknown> } = { bind: () => s, first: async () => (found ? { found: 1 } : null) }; return s; } },
+      SPACE_DO: { idFromName: (n: string) => n as never, get: () => stub } } as never);
+    const send = async (e: never, token = true, query = "space_id=space-a") => spacesWorker.fetch(new Request(`https://spaces.test/internal/project-deletion-backfill?${query}`, {
+      method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", ...(token ? { "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") } : {}) } }), e);
+    expect((await send(env("true"), false)).status).toBe(403);
+    expect((await send(env())).status).toBe(404);
+    expect((await send(env("true", false))).status).toBe(404);
+    expect(calls).toHaveLength(0);
+    expect((await send(env("true"))).status).toBe(200);
+    expect(calls[0]).toContain("dry_run=true");
+    expect((await send(env("true"), true, "space_id=space-a&dry_run=false")).status).toBe(200);
+    expect(calls[1]).toContain("dry_run=false");
+  });
+});

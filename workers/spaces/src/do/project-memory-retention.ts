@@ -67,3 +67,52 @@ export function sweepDeletedProjectMemory(sql: Sql, nowMs: number): { projects: 
   }
   return { projects, rows, more };
 }
+
+export const PROJECT_DELETION_BACKFILL_PAGE = 50;
+export interface DeletionBackfillReport {
+  dry_run: boolean;
+  scanned: number;
+  /** Archived Projects with no tombstone that have a workspace erasure tombstone with a usable `requested_at`. */
+  eligible: number;
+  /** Archived Projects with no workspace erasure tombstone: left alone (we do not know when they were deleted). */
+  skipped_no_erasure: number;
+  invalid_timestamp: number;
+  written: number;
+  next_cursor: string | null;
+}
+
+/**
+ * MS-48 item 6 (MS-22 legacy backfill). Projects archived before MS-22 have no `project_deletion_tombstones` row and are
+ * never swept. For archived Projects without a tombstone that DO have a workspace erasure tombstone, write a tombstone
+ * using its `requested_at` as `deleted_at`. Never touches an active Project (the SQL re-checks status), bounded to one
+ * page per call, idempotent (INSERT OR IGNORE keeps any existing tombstone), and `dryRun` writes nothing.
+ * `lookupErasure` returns project_id -> requested_at for the ids it is given (the erasure ledger lives in D1).
+ */
+export async function backfillLegacyDeletionTombstones(
+  sql: Sql,
+  lookupErasure: (projectIds: string[]) => Promise<Map<string, string>>,
+  opts: { dryRun: boolean; cursor?: string | undefined; limit?: number | undefined },
+): Promise<DeletionBackfillReport> {
+  const limit = Math.min(Math.max(opts.limit ?? PROJECT_DELETION_BACKFILL_PAGE, 1), PROJECT_DELETION_BACKFILL_PAGE);
+  const candidates = queryAll<{ id: string }>(sql, `SELECT p.id FROM projects p
+    WHERE p.status='archived' AND p.id > ? AND NOT EXISTS (SELECT 1 FROM project_deletion_tombstones t WHERE t.project_id=p.id)
+    ORDER BY p.id LIMIT ?`, opts.cursor ?? "", limit + 1);
+  const page = candidates.slice(0, limit);
+  const report: DeletionBackfillReport = { dry_run: opts.dryRun, scanned: page.length, eligible: 0, skipped_no_erasure: 0, invalid_timestamp: 0, written: 0,
+    next_cursor: candidates.length > limit ? page[page.length - 1]!.id : null };
+  if (!page.length) return report;
+  const erased = await lookupErasure(page.map(row => row.id));
+  for (const { id } of page) {
+    const requestedAt = erased.get(id);
+    if (requestedAt === undefined) { report.skipped_no_erasure++; continue; }
+    const ms = Date.parse(requestedAt);
+    if (!Number.isFinite(ms) || ms > Date.now()) { report.invalid_timestamp++; continue; }
+    report.eligible++;
+    if (opts.dryRun) continue;
+    execute(sql, `INSERT OR IGNORE INTO project_deletion_tombstones(project_id,deleted_at)
+      SELECT ?,? WHERE EXISTS (SELECT 1 FROM projects WHERE id=? AND status='archived')`, id, new Date(ms).toISOString(), id);
+    // The candidates had no tombstone, so a row now present was written by this call.
+    if (queryOne(sql, "SELECT 1 AS present FROM project_deletion_tombstones WHERE project_id=?", id)) report.written++;
+  }
+  return report;
+}
