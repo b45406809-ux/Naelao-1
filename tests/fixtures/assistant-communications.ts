@@ -171,7 +171,27 @@ export function fixture() {
       }),
     },
   } as unknown as AgentsEnv;
+  // MS-37: run the AgentMail and managed-model suites with MANAGED_OFFERINGS_ENABLED on by setting
+  // NAELAO_TEST_MANAGED_OFFERINGS=on. Seeds one available offering and one approved agreement per quoted provider.
+  if (process.env.NAELAO_TEST_MANAGED_OFFERINGS === "on") enableManagedOfferingsFixture(db, env);
   return { db, objects, env, send, fetch };
+}
+export function enableManagedOfferingsFixture(db: ReturnType<typeof createFakeD1>, env: AgentsEnv, chargeComponents: Record<string, unknown[]> = {}) {
+  for (const name of ["0291_managed_offerings_agreements_resources.sql", "0292_managed_offering_testing_allowlist_and_telnyx_classification.sql", "0302_managed_service_offering_quotes.sql"]) {
+    db.db.exec(readFileSync(new URL(`../../infra/migrations/${name}`, import.meta.url), "utf8"));
+  }
+  (env as unknown as { MANAGED_OFFERINGS_ENABLED: string }).MANAGED_OFFERINGS_ENABLED = "true";
+  for (const [provider, service] of [["agentmail", "agentmail"], ["cloudflare", "workers-ai"]] as const) {
+    const id = `offering-${provider}-${service}`;
+    db.db.prepare(`INSERT INTO managed_service_offerings(id,provider,service_id,capability_version,resource_type,category,display_name,
+      access_modes_json,strategies_json,regions_json,configuration_schema_json,charge_components_json,quote_policy,data_handling_json,
+      preference_rank,status,created_at,updated_at) VALUES(?,?,?,1,'resource','x',?,'["managed"]','["first_party","managed_master"]','["*"]','{}',?,'always','{}',100,'available',1,1)`)
+      .run(id, provider, service, `${provider} ${service}`, JSON.stringify(chargeComponents[provider] ?? []));
+    db.db.prepare(`INSERT INTO managed_service_commercial_agreements(id,provider,agreement_type,permitted_offering_ids_json,permits_managed_provisioning,
+      permits_master_account_distribution,permits_subaccount_distribution,permits_shared_resources,permitted_regions_json,effective_from,expires_at,
+      verification_status,approved_by,approved_at,created_at,updated_at) VALUES(?,?,'standard_terms',?,1,1,0,0,'["*"]',0,NULL,'approved','test-operator',1,1,1)`)
+      .run(`agreement-${provider}`, provider, JSON.stringify([id]));
+  }
 }
 export const scope: CommunicationScope = {
   tenantId: "tenant",

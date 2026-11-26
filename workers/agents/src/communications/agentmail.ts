@@ -7,6 +7,7 @@ import { markManagedServiceCreditsUncertain,releaseManagedServiceCredits,reserve
 import { requireManagedServiceCapability } from "./managed-service-capabilities.js";
 import { ensureManagedServiceOwnerLink, ensureOrganizationPayerMandate, revokeOrganizationPayerMandate } from "./managed-service-ownership.js";
 import { loadAgentConfig } from "../script-engine/agent-config.js";
+import { createOfferingQuote,managedOfferingsEnabled } from "./managed-quotes.js";
 import { enrollManagedSubscription,managedSubscriptionsEnabled,resolveOfferingGraceDays,sweepManagedSubscriptions,type SubscriptionTypeHandler } from "./managed-subscriptions.js";
 
 type AgentMailAccount={id:string;tenant_id:string;space_id:string;project_id:string|null;assistant_identity_id:string;agentport_agent_id:string;agentport_account_id:string|null;agentport_principal_id?:string|null;owner_link_id?:string|null;owner_user_id:string;mode:"naelao_managed"|"user_connected";pod_id:string|null;inbox_id:string;email_address:string;credential_ciphertext:string|null;credential_iv:string|null;provider_region?:"us"|"eu"|null;status:string;activated_at:string|null};
@@ -609,6 +610,21 @@ export async function createManagedAgentMailQuote(env:AgentsEnv,scope:Communicat
   const quoteId=`msq_${crypto.randomUUID().replaceAll("-","")}`;
   const expiresAt=new Date(now.getTime()+180_000).toISOString();
   const renewal=await resolveOptionalAgentMailRenewalPrice(env,scope,region,now);
+  const maxCreditsPerPeriod=Math.min(10_000_000,Math.max(price.maxCredits,renewal?.maxCredits??price.maxCredits)*2);
+  if(managedOfferingsEnabled(env)){
+    // MS-37: the generic offering-driven creator stores the same fields Billing validates; only the extra offering columns differ.
+    const generic=await createOfferingQuote(env,{scope:{tenantId:scope.tenantId,spaceId:scope.spaceId,projectId:scope.projectId??null,userId:scope.userId},
+      planTier:price.planTier,provider:"agentmail",serviceId:"agentmail",operationName:"provision",region,
+      configuration:{domain:env.AGENTMAIL_DEFAULT_DOMAIN??"",display},requestSha256,
+      priceOverride:{credits:price.credits,priceVersion:price.priceVersion,capabilityVersion:price.capabilityVersion},
+      renewal:renewal?{credits:renewal.credits,priceVersion:renewal.priceVersion,capabilityVersion:renewal.capabilityVersion,maxCreditsPerOperation:renewal.maxCredits}:null,
+      ttlMs:180_000,now});
+    return {quoteId:generic.quoteId,provider:"agentmail",serviceId:"agentmail",operationName:"provision",region,credits:price.credits,creditUnit:"naelao_credit",
+      priceVersion:price.priceVersion,maxCreditsPerOperation:price.maxCredits,renewalCredits:renewal?.credits??null,
+      renewalPriceVersion:renewal?.priceVersion??null,renewalMaxCreditsPerOperation:renewal?.maxCredits??null,
+      maxCreditsPerPeriod,autoRenewAvailable:!!renewal,status:"quoted" as const,expiresAt:generic.expiresAt,
+      offeringId:generic.offeringId,components:generic.components,mandatoryComponents:generic.mandatoryComponents,minMonthlyCredits:generic.minMonthlyCredits};
+  }
   await env.PLATFORM_DB.prepare(`INSERT INTO managed_service_operation_quotes(
     quote_id,tenant_id,space_id,project_id,requester_user_id,plan_tier,provider,service_id,operation_name,region,
     capability_version,price_version,credits,request_sha256,renewal_credits,renewal_price_version,renewal_capability_version,
@@ -620,8 +636,8 @@ export async function createManagedAgentMailQuote(env:AgentsEnv,scope:Communicat
   return {quoteId,provider:"agentmail",serviceId:"agentmail",operationName:"provision",region,credits:price.credits,creditUnit:"naelao_credit",
     priceVersion:price.priceVersion,maxCreditsPerOperation:price.maxCredits,renewalCredits:renewal?.credits??null,
     renewalPriceVersion:renewal?.priceVersion??null,renewalMaxCreditsPerOperation:renewal?.maxCredits??null,
-    maxCreditsPerPeriod:Math.min(10_000_000,Math.max(price.maxCredits,renewal?.maxCredits??price.maxCredits)*2),
-    autoRenewAvailable:!!renewal,status:"quoted",expiresAt};
+    maxCreditsPerPeriod,
+    autoRenewAvailable:!!renewal,status:"quoted" as const,expiresAt};
 }
 export async function provisionManagedAgentMail(env:AgentsEnv,scope:CommunicationScope,identity:CommunicationIdentity,displayName?:string,quoteId?:string){
   if(!env.AGENTMAIL_API_KEY||!env.AGENTMAIL_DEFAULT_DOMAIN)throw new Error("agentmail_managed_provisioning_not_configured");

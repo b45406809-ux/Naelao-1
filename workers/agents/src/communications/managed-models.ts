@@ -7,6 +7,7 @@ import {
   reserveManagedServiceCredits,
   settleManagedServiceCredits,
 } from "./managed-service-billing.js";
+import { createOfferingQuote, managedOfferingsEnabled, type QuoteComponent } from "./managed-quotes.js";
 import { ensureOrganizationPayerMandate, revokeOrganizationPayerMandate } from "./managed-service-ownership.js";
 
 const PROVIDER = "cloudflare";
@@ -75,6 +76,11 @@ export type ManagedModelQuote = {
   maxOutputTokens: number;
   status: "quoted";
   expiresAt: string;
+  /** Present only when MANAGED_OFFERINGS_ENABLED created the quote (MS-37). */
+  offeringId?: string;
+  components?: QuoteComponent[];
+  mandatoryComponents?: QuoteComponent[];
+  minMonthlyCredits?: number;
 };
 
 async function sha256(value: string): Promise<string> {
@@ -131,6 +137,18 @@ export async function createManagedModelQuote(
   validateModelRequest(input.modelId, input.prompt);
   if (!env.AI) throw new Error("managed_model_provider_unavailable");
   const { planTier, entitlement } = await resolveModelEntitlement(env, scope, input.modelId, now);
+  if (managedOfferingsEnabled(env)) {
+    // MS-37: the generic offering-driven creator stores the same fields Billing validates; only the extra offering columns differ.
+    const generic = await createOfferingQuote(env, { scope: { tenantId: scope.tenantId, spaceId: scope.spaceId, projectId: scope.projectId ?? null, userId: scope.userId },
+      planTier, provider: PROVIDER, serviceId: SERVICE, operationName: OPERATION, region: REGION, modelId: input.modelId,
+      maxOutputTokens: entitlement.max_output_tokens!, configuration: { model_id: input.modelId, max_output_tokens: entitlement.max_output_tokens },
+      priceOverride: { credits: entitlement.credits_per_operation!, priceVersion: entitlement.price_version, capabilityVersion: entitlement.capability_version },
+      ttlMs: 180_000, now });
+    return { quoteId: generic.quoteId, provider: PROVIDER, serviceId: SERVICE, operationName: OPERATION, modelId: input.modelId,
+      region: REGION, credits: entitlement.credits_per_operation!, creditUnit: "naelao_credit",
+      priceVersion: entitlement.price_version, maxOutputTokens: entitlement.max_output_tokens!, status: "quoted", expiresAt: generic.expiresAt,
+      offeringId: generic.offeringId, components: generic.components, mandatoryComponents: generic.mandatoryComponents, minMonthlyCredits: generic.minMonthlyCredits };
+  }
   const quoteId = `msq_${crypto.randomUUID().replaceAll("-", "")}`;
   const expiresAt = new Date(now.getTime() + 180_000).toISOString();
   await env.PLATFORM_DB.prepare(`INSERT INTO managed_service_operation_quotes(

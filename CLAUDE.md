@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-37**: P2 generic quotes per offering policy (V-spec P2, tasks MS-37..MS-40).
-P0, P1 and MS-36 are complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md)
+Master implementation spec, **MS-38**: P2 inventory and cost reconciliation findings (V-spec P2, tasks MS-38..MS-40).
+P0, P1, MS-36 and MS-37 are complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md)
 and [V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
