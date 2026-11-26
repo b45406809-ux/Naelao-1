@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { verifyInternalToken } from "@naelao/http";
+import { handleInbound } from "./inbound.js";
 import { SCOPES, authenticate, generateApiKey, isScope, keyPrefix, sha256Hex, type AuthContext, type Scope } from "./keys.js";
 
 export interface Env {
@@ -167,4 +168,95 @@ app.delete("/v1/inboxes/:id", requireScope("inboxes:write"), async c => {
   });
 });
 
-export default app;
+// ---- Read API (MS-32). Content is untrusted: html is returned as an inert string, never rendered. ----
+const MAX_PAGE = 100;
+const untrustedHeaders = { "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" };
+const encodeCursor = (a: string, b: string) => btoa(JSON.stringify([a, b])).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+function decodeCursor(value: string | undefined): [string, string] | null | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const v = JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/"))) as unknown;
+    return Array.isArray(v) && v.length === 2 && typeof v[0] === "string" && typeof v[1] === "string" && v[0].length < 64 && v[1].length < 100 ? [v[0], v[1]] : null;
+  } catch { return null; }
+}
+function pageParams(c: AppContext) {
+  const raw = c.req.query("limit");
+  const limit = raw === undefined ? 50 : /^\d{1,3}$/.test(raw) ? Number(raw) : 0;
+  const cursor = decodeCursor(c.req.query("cursor"));
+  if (limit < 1 || limit > MAX_PAGE || cursor === null) return null;
+  return { limit, cursor };
+}
+const badPage = (c: AppContext) => c.json({ error_code: "invalid_request", message: "Invalid limit (1-100) or cursor." }, 400);
+const parseJson = <T>(s: string | null, fallback: T): T => { try { return s ? JSON.parse(s) as T : fallback; } catch { return fallback; } };
+
+interface MsgRow { id: string; inbox_id: string; thread_id: string | null; direction: string; message_id_header: string | null; in_reply_to: string | null; references_json: string | null; from_address: string | null; from_name: string | null; to_json: string | null; cc_json: string | null; subject: string | null; size_bytes: number; state: string; error_code: string | null; received_at: string; text_body?: string | null; html_body?: string | null }
+const MSG_COLS = "id,inbox_id,thread_id,direction,message_id_header,in_reply_to,references_json,from_address,from_name,to_json,cc_json,subject,size_bytes,state,error_code,received_at";
+function messageJson(r: MsgRow, attachments?: unknown[]) {
+  const out: Record<string, unknown> = {
+    id: r.id, inbox_id: r.inbox_id, thread_id: r.thread_id, direction: r.direction, message_id: r.message_id_header, in_reply_to: r.in_reply_to,
+    references: parseJson<string[]>(r.references_json, []), from: r.from_address, from_name: r.from_name, to: parseJson<string[]>(r.to_json, []), cc: parseJson<string[]>(r.cc_json, []),
+    subject: r.subject, size_bytes: r.size_bytes, status: r.state, error_code: r.error_code, received_at: r.received_at,
+  };
+  if (r.text_body !== undefined) out.text = r.text_body ?? "";
+  if (r.html_body !== undefined) { out.html = r.html_body ?? ""; out.html_untrusted = true; }
+  if (attachments) out.attachments = attachments;
+  return out;
+}
+async function ownedInbox(c: AppContext, id: string) {
+  return c.env.PLATFORM_DB.prepare("SELECT id FROM nemail_inboxes WHERE id=? AND nemail_tenant_id=? AND status != 'deleted'").bind(id, c.get("auth").tenantId).first<{ id: string }>();
+}
+
+app.get("/v1/inboxes/:id/messages", requireScope("messages:read"), async c => {
+  const page = pageParams(c);
+  if (!page) return badPage(c);
+  const inboxId = c.req.param("id") as string, tenantId = c.get("auth").tenantId;
+  if (!(await ownedInbox(c, inboxId))) return c.json(notFound, 404);
+  const cur = page.cursor;
+  const rows = await c.env.PLATFORM_DB.prepare(
+    `SELECT ${MSG_COLS} FROM nemail_messages WHERE nemail_tenant_id=? AND inbox_id=? ${cur ? "AND (received_at < ? OR (received_at = ? AND id < ?))" : ""} ORDER BY received_at DESC, id DESC LIMIT ?`
+  ).bind(...[tenantId, inboxId, ...(cur ? [cur[0], cur[0], cur[1]] : []), page.limit + 1]).all<MsgRow>();
+  const more = rows.results.length > page.limit;
+  const items = rows.results.slice(0, page.limit);
+  const last = items[items.length - 1];
+  return c.json({ data: items.map(r => messageJson(r)), next_cursor: more && last ? encodeCursor(last.received_at, last.id) : null }, 200, untrustedHeaders);
+});
+
+app.get("/v1/messages/:id", requireScope("messages:read"), async c => {
+  const tenantId = c.get("auth").tenantId;
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT ${MSG_COLS},text_body,html_body FROM nemail_messages WHERE id=? AND nemail_tenant_id=?`).bind(c.req.param("id"), tenantId).first<MsgRow>();
+  if (!row) return c.json(notFound, 404);
+  const atts = await c.env.PLATFORM_DB.prepare("SELECT id,filename,content_type,size_bytes,sha256 FROM nemail_attachments WHERE message_id=? AND nemail_tenant_id=? ORDER BY created_at, id").bind(row.id, tenantId)
+    .all<{ id: string; filename: string; content_type: string; size_bytes: number; sha256: string | null }>();
+  return c.json({ data: messageJson(row, atts.results) }, 200, untrustedHeaders);
+});
+
+interface ThreadRow { id: string; inbox_id: string; subject: string; last_message_at: string | null; created_at: string }
+const threadJson = (r: ThreadRow) => ({ id: r.id, inbox_id: r.inbox_id, subject: r.subject, last_message_at: r.last_message_at, created_at: r.created_at });
+
+app.get("/v1/inboxes/:id/threads", requireScope("messages:read"), async c => {
+  const page = pageParams(c);
+  if (!page) return badPage(c);
+  const inboxId = c.req.param("id") as string, tenantId = c.get("auth").tenantId;
+  if (!(await ownedInbox(c, inboxId))) return c.json(notFound, 404);
+  const cur = page.cursor;
+  const rows = await c.env.PLATFORM_DB.prepare(
+    `SELECT id,inbox_id,subject,last_message_at,created_at FROM nemail_threads WHERE nemail_tenant_id=? AND inbox_id=? ${cur ? "AND (COALESCE(last_message_at,'') < ? OR (COALESCE(last_message_at,'') = ? AND id < ?))" : ""} ORDER BY COALESCE(last_message_at,'') DESC, id DESC LIMIT ?`
+  ).bind(...[tenantId, inboxId, ...(cur ? [cur[0], cur[0], cur[1]] : []), page.limit + 1]).all<ThreadRow>();
+  const more = rows.results.length > page.limit;
+  const items = rows.results.slice(0, page.limit);
+  const last = items[items.length - 1];
+  return c.json({ data: items.map(threadJson), next_cursor: more && last ? encodeCursor(last.last_message_at ?? "", last.id) : null }, 200, untrustedHeaders);
+});
+
+app.get("/v1/threads/:id", requireScope("messages:read"), async c => {
+  const tenantId = c.get("auth").tenantId;
+  const t = await c.env.PLATFORM_DB.prepare("SELECT id,inbox_id,subject,last_message_at,created_at FROM nemail_threads WHERE id=? AND nemail_tenant_id=?").bind(c.req.param("id"), tenantId).first<ThreadRow>();
+  if (!t) return c.json(notFound, 404);
+  const msgs = await c.env.PLATFORM_DB.prepare(`SELECT ${MSG_COLS},text_body FROM nemail_messages WHERE nemail_tenant_id=? AND thread_id=? ORDER BY received_at, id LIMIT ${MAX_PAGE}`).bind(tenantId, t.id).all<MsgRow>();
+  return c.json({ data: { ...threadJson(t), messages: msgs.results.map(r => messageJson(r)) } }, 200, untrustedHeaders);
+});
+
+export default {
+  fetch: app.fetch,
+  email: (message: ForwardableEmailMessage, env: Env) => handleInbound(message, env, emailEnabled(env)),
+};

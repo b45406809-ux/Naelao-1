@@ -8,12 +8,14 @@ import { generateApiKey, sha256Hex, keyPrefix } from "./keys.js";
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 const MIGRATION = readFileSync(fileURLToPath(new URL("../../../infra/migrations/0294_naelao_email_core.sql", import.meta.url)), "utf8");
+const MIGRATION_2 = readFileSync(fileURLToPath(new URL("../../../infra/migrations/0295_naelao_email_inbound.sql", import.meta.url)), "utf8");
 const SECRET = "s".repeat(32);
 
 function fixture(over: Partial<Env> = {}) {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE orgs(id TEXT PRIMARY KEY)");
   db.exec(MIGRATION);
+  db.exec(MIGRATION_2);
   const stmt = (sql: string, values: unknown[]) => ({
     sql,
     first: async <T>() => db.prepare(sql).get(...(values as never[])) as T | undefined,

@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-32**: Naelao Email inbound mail, threading, read API
-(V-spec P1, tasks MS-31..MS-35; MS-31 is done). V-spec P0 (MS-27..MS-30) is complete locally; owner approved all
+Master implementation spec, **MS-33**: Naelao Email: outbound send, drafts, suppression, abuse limits, usage
+(V-spec P1, tasks MS-31..MS-35; MS-31 and MS-32 are done). V-spec P0 (MS-27..MS-30) is complete locally; owner approved all
 OD-1..OD-8 recommendations. Follow [the master spec](docs/operations/master-implementation-spec.md)
 and [V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
