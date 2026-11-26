@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-41**: P2 wiring, then V-spec P3 (MS-42..MS-44). V-spec P0–P2 are
-complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md) and
+Master implementation spec, **MS-42** (P3 Resources panel), then MS-43 and MS-44. V-spec P0–P2 are
+complete locally (MS-41 wired what had callers). Follow [the master spec](docs/operations/master-implementation-spec.md) and
 [V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
