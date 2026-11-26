@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach,describe,expect,it,vi } from "vitest";
 import { Hono } from "hono";
 import { mintInternalToken } from "@naelao/http";
@@ -8,6 +9,10 @@ import { registerCommunicationRoutes } from "./routes.js";
 import { eraseCommunicationIdentities } from "./erasure.js";
 import { fixture,scope } from "../../../../tests/fixtures/assistant-communications.js";
 
+function enableSubscriptions(f:ReturnType<typeof fixture>){
+  (f.env as unknown as {MANAGED_SUBSCRIPTIONS_ENABLED:string}).MANAGED_SUBSCRIPTIONS_ENABLED="true";
+  f.db.db.exec(readFileSync(new URL("../../../../infra/migrations/0301_managed_service_subscriptions.sql",import.meta.url),"utf8"));
+}
 async function verifyTestAgentMailCapability(f:ReturnType<typeof fixture>){
   await f.db.prepare(`UPDATE managed_service_capability_versions SET status='verified',verified_by='test-operator',verified_at=?,valid_until='2099-01-01T00:00:00.000Z',regions_json='["us"]'
     WHERE provider='agentmail' AND service_id='agentmail' AND version=1`).bind(new Date().toISOString()).run();
@@ -938,8 +943,8 @@ describe("AgentMail provider account boundary",()=>{
     await expect(provisionManagedAgentMail(f.env,scope,identity)).rejects.toThrow("managed_service_region_not_verified");
     expect(billing).not.toHaveBeenCalled();
   });
-  it("renews managed mailboxes through the shared reservation and usage ledger path",async()=>{
-    const f=fixture();const identity=await ensureIdentity(f.env,scope);const billingActions:string[]=[];
+  for(const subscriptions of [false,true])it(`renews managed mailboxes through the shared reservation and usage ledger path (MANAGED_SUBSCRIPTIONS_ENABLED ${subscriptions?"on":"off"})`,async()=>{
+    const f=fixture();if(subscriptions)enableSubscriptions(f);const identity=await ensureIdentity(f.env,scope);const billingActions:string[]=[];
     const billing=vi.fn(async(request:Request)=>{const action=new URL(request.url).pathname.split("/").at(-1)??"";billingActions.push(action);
       if(action==="reserve"&&billingActions.filter(item=>item==="reserve").length===1)return Response.json({error_code:"managed_service_price_version_conflict"},{status:409});
       return Response.json({reserved:true,settled:true});});
@@ -978,6 +983,40 @@ describe("AgentMail provider account boundary",()=>{
       .first<Record<string,unknown>>()).toMatchObject({status:"consumed",request_sha256:expect.stringMatching(/^[a-f0-9]{64}$/),operation_id:expect.stringMatching(/^agentmail_renew_/) });
     expect(await f.db.prepare("SELECT status,next_billing_at FROM assistant_agentmail_accounts WHERE id='amc-renew'").first<Record<string,string>>())
       .toMatchObject({status:"active",next_billing_at:"2026-03-31T00:00:00.000Z"});
+    if(subscriptions)expect(await f.db.prepare("SELECT renewal_state,subscription_type,current_period_end FROM managed_service_subscriptions WHERE resource_id='amc-renew'").first<Record<string,unknown>>())
+      .toMatchObject({renewal_state:"active",subscription_type:"agentmail_rental",current_period_end:Date.parse("2026-03-31T00:00:00.000Z")});
+  });
+  it("moves an unpayable managed rental to grace, then suspended, without a second charge (subscriptions on)",async()=>{
+    const f=fixture();enableSubscriptions(f);const identity=await ensureIdentity(f.env,scope);const reserves:string[]=[];
+    const billing=vi.fn(async(request:Request)=>{const action=new URL(request.url).pathname.split("/").at(-1)??"";reserves.push(action);
+      return Response.json({error_code:"insufficient_credits"},{status:402});});
+    await verifyTestAgentMailCapability(f);
+    (f.env as unknown as {BILLING_WORKER:{fetch:typeof billing}}).BILLING_WORKER={fetch:billing};
+    const activated="2026-01-31T00:00:00.000Z",due="2026-02-28T00:00:00.000Z";
+    await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(
+      id,tenant_id,space_id,assistant_identity_id,agentport_agent_id,owner_user_id,mode,pod_id,inbox_id,email_address,status,activated_at,next_billing_at,created_at,updated_at)
+      VALUES('amc-grace','tenant','space',?,'agent-grace','user','naelao_managed','pod-1','inbox-grace','grace@mail.example.test','active',?,?,?,?)`)
+      .bind(identity.id,activated,due,activated,activated).run();
+    await f.db.prepare(`INSERT INTO managed_service_accounts(
+      id,tenant_id,space_id,provider,service_id,connection_mode,provider_resource_ref,provider_account_ref,
+      credential_ref,owner_type,owner_id,provider_payer_type,provider_payer_id,credit_payer_type,credit_payer_id,region,
+      lifecycle_state,metadata_json,created_at,updated_at)
+      VALUES('amc-grace','tenant','space','agentmail','agentmail','naelao_managed','inbox-grace','pod-1','amc-grace',
+      'organization','tenant','platform','naelao','organization','tenant','us','active','{}',?,?)`)
+      .bind(activated,activated).run();
+    const day=86_400_000,t0=new Date("2026-03-01T00:00:00.000Z");
+    expect(await sweepManagedAgentMailRentals(f.env,t0)).toMatchObject({checked:1,billed:0,held:1});
+    expect(await f.db.prepare("SELECT renewal_state,grace_days FROM managed_service_subscriptions WHERE resource_id='amc-grace'").first()).toMatchObject({renewal_state:"grace",grace_days:7});
+    expect(await f.db.prepare("SELECT status FROM assistant_agentmail_accounts WHERE id='amc-grace'").first()).toMatchObject({status:"billing_hold"});
+    expect(await sweepManagedAgentMailRentals(f.env,new Date(t0.getTime()+3*day))).toMatchObject({checked:1,held:1});
+    expect(await f.db.prepare("SELECT renewal_state FROM managed_service_subscriptions WHERE resource_id='amc-grace'").first()).toMatchObject({renewal_state:"grace"});
+    expect(await sweepManagedAgentMailRentals(f.env,new Date(t0.getTime()+7*day))).toMatchObject({checked:1,held:1});
+    expect(await f.db.prepare("SELECT renewal_state,suspended_at FROM managed_service_subscriptions WHERE resource_id='amc-grace'").first()).toMatchObject({renewal_state:"suspended"});
+    expect(await f.db.prepare("SELECT lifecycle_state FROM managed_service_accounts WHERE id='amc-grace'").first()).toMatchObject({lifecycle_state:"suspended"});
+    expect((await f.db.prepare("SELECT kind FROM managed_service_subscription_notices WHERE subscription_id='sub_amc-grace'").all<{kind:string}>()).results.map(r=>r.kind).sort()).toEqual(["renewal_failed_grace","suspended"]);
+    const callsAtSuspension=billing.mock.calls.length;
+    expect(await sweepManagedAgentMailRentals(f.env,new Date(t0.getTime()+8*day))).toMatchObject({checked:0,billed:0,held:0});
+    expect(billing.mock.calls.length).toBe(callsAtSuspension);
   });
 });
 

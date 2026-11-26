@@ -393,6 +393,8 @@ export interface AgentsEnv extends Cloudflare.Env {
   WORKER_PREFERENCES_ENABLED?: string;
   /** MS-28 / V-spec MD-3: offering and agreement admin routes; off = not-found shape. */
   MANAGED_OFFERINGS_ENABLED?: string;
+  /** MS-36: generic managed subscription renewal sweep (communications/managed-subscriptions.ts). Off = legacy AgentMail rental sweep. */
+  MANAGED_SUBSCRIPTIONS_ENABLED?: string;
   /** Full assistant-response caching stays off until exact caller and source freshness gates pass. */
   KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
   DATA_JURISDICTION?: "eu";

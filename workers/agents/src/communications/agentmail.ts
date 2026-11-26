@@ -7,6 +7,7 @@ import { markManagedServiceCreditsUncertain,releaseManagedServiceCredits,reserve
 import { requireManagedServiceCapability } from "./managed-service-capabilities.js";
 import { ensureManagedServiceOwnerLink, ensureOrganizationPayerMandate, revokeOrganizationPayerMandate } from "./managed-service-ownership.js";
 import { loadAgentConfig } from "../script-engine/agent-config.js";
+import { enrollManagedSubscription,managedSubscriptionsEnabled,resolveOfferingGraceDays,sweepManagedSubscriptions,type SubscriptionTypeHandler } from "./managed-subscriptions.js";
 
 type AgentMailAccount={id:string;tenant_id:string;space_id:string;project_id:string|null;assistant_identity_id:string;agentport_agent_id:string;agentport_account_id:string|null;agentport_principal_id?:string|null;owner_link_id?:string|null;owner_user_id:string;mode:"naelao_managed"|"user_connected";pod_id:string|null;inbox_id:string;email_address:string;credential_ciphertext:string|null;credential_iv:string|null;provider_region?:"us"|"eu"|null;status:string;activated_at:string|null};
 type ManagedServiceAccountState="provisioning"|"active"|"billing_hold"|"suspended"|"retirement_review_required"|"revoking"|"revoked"|"retired"|"failed"|"unknown";
@@ -1177,17 +1178,8 @@ function buildQuery(args:Record<string,unknown>){const params=new URLSearchParam
 async function hashString(value:string){const bytes=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value)));return [...bytes].map(x=>x.toString(16).padStart(2,"0")).join("");}
 function normalizeRecipients(value:unknown){const entries=Array.isArray(value)?value:[value];return entries.flatMap(item=>{const address=typeof item==="string"?item:item&&typeof item==="object"?String((item as Record<string,unknown>).email??(item as Record<string,unknown>).address??""):"";return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)?[address.toLowerCase()]:[];});}
 function addMonthlyAnniversary(value:string,anchorDay=new Date(value).getUTCDate()){const source=new Date(value);const next=new Date(Date.UTC(source.getUTCFullYear(),source.getUTCMonth()+1,1,source.getUTCHours(),source.getUTCMinutes(),source.getUTCSeconds()));const lastDay=new Date(Date.UTC(next.getUTCFullYear(),next.getUTCMonth()+1,0)).getUTCDate();next.setUTCDate(Math.min(anchorDay,lastDay));return next.toISOString();}
-export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date()){
-  if(!env.BILLING_WORKER)return {checked:0,billed:0,held:0,review:0};
-  const at=now.toISOString();
-  const expired=await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='retirement_review_required',updated_at=? WHERE mode='naelao_managed' AND status='active' AND retire_after IS NOT NULL AND retire_after<=?").bind(at,at).run();
-  if(expired.meta.changes)await env.PLATFORM_DB.prepare(`UPDATE managed_service_accounts SET lifecycle_state='retirement_review_required',updated_at=?
-    WHERE provider='agentmail' AND id IN (SELECT id FROM assistant_agentmail_accounts WHERE mode='naelao_managed' AND status='retirement_review_required' AND retire_after<=?)`).bind(at,at).run();
-  const due=await env.PLATFORM_DB.prepare("SELECT * FROM assistant_agentmail_accounts WHERE mode='naelao_managed' AND status IN ('active','billing_hold') AND retire_after IS NULL AND next_billing_at<=? ORDER BY next_billing_at LIMIT 50")
-    .bind(at).all<AgentMailAccount & {next_billing_at:string|null}>();
-  let billed=0,held=0;
-  await Promise.all(due.results.map(async account=>{
-    const next=account.next_billing_at;if(!next)return;
+async function renewAgentMailRental(env:AgentsEnv,account:AgentMailAccount & {next_billing_at:string|null},now:Date,at:string):Promise<"billed"|"held"|"noop">{
+    const next=account.next_billing_at;if(!next)return "noop";
     const digest=await stableClientId(`${account.id}:${next}:monthly-rental`);const operationId=`agentmail_renew_${digest}`;
     const workflowId=`agentmail_rent_${digest}`;const updated=at;
     const scope:CommunicationScope={tenantId:account.tenant_id,spaceId:account.space_id,...(account.project_id?{projectId:account.project_id}:{}),userId:account.owner_user_id,role:"product_end_user"};
@@ -1195,7 +1187,7 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
       .bind(account.id,account.tenant_id).first<{capability_version:number|null;region:string|null}>();
     if(!registry?.region){
       await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='billing_hold',last_error='managed_service_region_not_verified',updated_at=? WHERE id=? AND status IN ('active','billing_hold')")
-        .bind(updated,account.id).run();held++;return;
+        .bind(updated,account.id).run();return "held";
     }
     let price:ManagedAgentMailPrice;
     try{price=await resolveManagedAgentMailPrice(env,scope,"renew",registry.region,now);}
@@ -1204,7 +1196,7 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
       await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='billing_hold',last_error=?,updated_at=? WHERE id=? AND status IN ('active','billing_hold')")
         .bind(code,updated,account.id).run();
       await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET lifecycle_state='billing_hold',updated_at=? WHERE id=? AND tenant_id=?")
-        .bind(updated,account.id,account.tenant_id).run();held++;return;
+        .bind(updated,account.id,account.tenant_id).run();return "held";
     }
     const quoteDigest=await hashString(`agentmail-renew:${operationId}`);const quoteId=`msq_${quoteDigest.slice(0,32)}`;
     const consumedQuote=await env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,project_id,requester_user_id,plan_tier,provider,service_id,operation_name,
@@ -1235,7 +1227,7 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
         await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='billing_hold',last_error='managed_service_operation_quote_conflict',updated_at=? WHERE id=? AND status IN ('active','billing_hold')")
           .bind(updated,account.id).run();
         await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET lifecycle_state='billing_hold',updated_at=? WHERE id=? AND tenant_id=?")
-          .bind(updated,account.id,account.tenant_id).run();held++;return;
+          .bind(updated,account.id,account.tenant_id).run();return "held";
       }
       price={...price,capabilityVersion:consumedQuote.capability_version,priceVersion:consumedQuote.price_version,credits:consumedQuote.credits};
     }
@@ -1262,7 +1254,7 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
       await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='billing_hold',last_error='managed_service_operation_conflict',updated_at=? WHERE id=? AND status IN ('active','billing_hold')")
         .bind(updated,account.id).run();
       await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET lifecycle_state='billing_hold',updated_at=? WHERE id=? AND tenant_id=?")
-        .bind(updated,account.id,account.tenant_id).run();held++;return;
+        .bind(updated,account.id,account.tenant_id).run();return "held";
     }
     const operationClaim=await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='running',lease_until=?,error_code=NULL,updated_at=?
       WHERE operation_id=? AND tenant_id=? AND (status IN ('pending','held') OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))`)
@@ -1275,14 +1267,14 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
         await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET lifecycle_state='active',updated_at=? WHERE id=? AND tenant_id=?")
           .bind(updated,account.id,account.tenant_id).run();
       }
-      return;
+      return "noop";
     }
     await env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_agentmail_operations(operation_id,tenant_id,assistant_identity_id,operation,status,created_at,updated_at) VALUES(?,?,?,'renew','pending',?,?)")
       .bind(operationId,account.tenant_id,account.assistant_identity_id,updated,updated).run();
     const claimed=await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_operations SET status='running',attempt=attempt+1,lease_until=?,updated_at=? WHERE operation_id=? AND ((status IN ('pending','held') AND (lease_until IS NULL OR lease_until<=?)) OR (status='running' AND lease_until<=?))")
       .bind(new Date(now.getTime()+120_000).toISOString(),updated,operationId,updated,updated).run();
-    if(!claimed.meta.changes){await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET status='held',lease_until=NULL,error_code='legacy_operation_busy',updated_at=? WHERE operation_id=? AND status='running'").bind(updated,operationId).run();return;}
-    let reserved=false,settled=false;
+    if(!claimed.meta.changes){await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET status='held',lease_until=NULL,error_code='legacy_operation_busy',updated_at=? WHERE operation_id=? AND status='running'").bind(updated,operationId).run();return "noop";}
+    let reserved=false,settled=false,billed=0;
     try{
       if(!registry?.region)throw new Error("managed_service_region_not_verified");
       await reserveManagedServiceCredits(env,scope,{reservationId:workflowId,operationId,provider:"agentmail",serviceId:"agentmail",operationName:"renew",region:registry.region,
@@ -1306,8 +1298,62 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
         .bind(updated,account.id,account.tenant_id).run();
       await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET status=?,lease_until=NULL,error_code=?,updated_at=? WHERE operation_id=? AND status='running'")
         .bind(settled?"complete":"held",code,updated,operationId).run();
-      await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_operations SET status='held',lease_until=NULL,error_code=?,updated_at=? WHERE operation_id=? AND status='running'").bind(code,updated,operationId).run();held++;
+      await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_operations SET status='held',lease_until=NULL,error_code=?,updated_at=? WHERE operation_id=? AND status='running'").bind(code,updated,operationId).run();
     }
+    return billed?"billed":"held";
+}
+/** MS-36: the AgentMail monthly rental as the first managed subscription type (`agentmail_rental`). Used only when MANAGED_SUBSCRIPTIONS_ENABLED is "true". */
+const AGENTMAIL_SUBSCRIPTION_OFFERING_ID="offering-agentmail-agentmail";
+const AGENTMAIL_DUE_FILTER="mode='naelao_managed' AND status IN ('active','billing_hold') AND retire_after IS NULL";
+const agentMailRentalSubscriptionHandler:SubscriptionTypeHandler={
+  async renew(env,sub,now){
+    const at=now.toISOString();
+    const row=await env.PLATFORM_DB.prepare(`SELECT * FROM assistant_agentmail_accounts WHERE id=? AND tenant_id=? AND ${AGENTMAIL_DUE_FILTER}`)
+      .bind(sub.resource_id,sub.tenant_id).first<AgentMailAccount & {next_billing_at:string|null}>();
+    if(!row||!row.next_billing_at)return {status:"cancelled"};
+    if(row.next_billing_at>at)return {status:"noop",periodEnd:Date.parse(row.next_billing_at)};
+    const outcome=await renewAgentMailRental(env,row,now,at);
+    const after=await env.PLATFORM_DB.prepare("SELECT next_billing_at,last_error FROM assistant_agentmail_accounts WHERE id=? AND tenant_id=?")
+      .bind(sub.resource_id,sub.tenant_id).first<{next_billing_at:string|null;last_error:string|null}>();
+    if(after?.next_billing_at&&after.next_billing_at!==row.next_billing_at)return {status:"renewed",periodEnd:Date.parse(after.next_billing_at),billed:outcome==="billed"};
+    if(outcome==="held")return {status:"failed",code:after?.last_error??"managed_email_renewal_failed"};
+    return {status:"noop"};
+  },
+  async onSuspended(env,sub,now){
+    await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET lifecycle_state='suspended',updated_at=? WHERE id=? AND tenant_id=?")
+      .bind(now.toISOString(),sub.resource_id,sub.tenant_id).run();
+  },
+};
+async function enrollDueAgentMailSubscriptions(env:AgentsEnv,now:Date,at:string){
+  const missing=await env.PLATFORM_DB.prepare(`SELECT * FROM assistant_agentmail_accounts a WHERE ${AGENTMAIL_DUE_FILTER} AND next_billing_at IS NOT NULL AND next_billing_at<=?
+    AND NOT EXISTS(SELECT 1 FROM managed_service_subscriptions s WHERE s.tenant_id=a.tenant_id AND s.resource_id=a.id) ORDER BY next_billing_at LIMIT 50`)
+    .bind(at).all<AgentMailAccount & {next_billing_at:string|null;activated_at:string|null}>();
+  const graceDays=await resolveOfferingGraceDays(env.PLATFORM_DB,AGENTMAIL_SUBSCRIPTION_OFFERING_ID);
+  for(const account of missing.results){
+    const end=Date.parse(account.next_billing_at!);
+    const start=Date.parse(account.activated_at??"");
+    await enrollManagedSubscription(env.PLATFORM_DB,{tenantId:account.tenant_id,resourceId:account.id,subscriptionType:"agentmail_rental",
+      offeringId:AGENTMAIL_SUBSCRIPTION_OFFERING_ID,priceVersion:"agentmail-rental",periodStart:Number.isFinite(start)&&start<end?start:end,periodEnd:end,
+      graceDays,notifyUserId:account.owner_user_id,upstreamCommitment:{provider:"agentmail",resource:account.inbox_id},now:now.getTime()});
+  }
+}
+export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date()){
+  if(!env.BILLING_WORKER)return {checked:0,billed:0,held:0,review:0};
+  const at=now.toISOString();
+  const expired=await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='retirement_review_required',updated_at=? WHERE mode='naelao_managed' AND status='active' AND retire_after IS NOT NULL AND retire_after<=?").bind(at,at).run();
+  if(expired.meta.changes)await env.PLATFORM_DB.prepare(`UPDATE managed_service_accounts SET lifecycle_state='retirement_review_required',updated_at=?
+    WHERE provider='agentmail' AND id IN (SELECT id FROM assistant_agentmail_accounts WHERE mode='naelao_managed' AND status='retirement_review_required' AND retire_after<=?)`).bind(at,at).run();
+  if(managedSubscriptionsEnabled(env)){
+    await enrollDueAgentMailSubscriptions(env,now,at);
+    const swept=await sweepManagedSubscriptions(env,{agentmail_rental:agentMailRentalSubscriptionHandler},now);
+    return {checked:swept.checked,billed:swept.billed,held:swept.held,review:expired.meta.changes};
+  }
+  const due=await env.PLATFORM_DB.prepare("SELECT * FROM assistant_agentmail_accounts WHERE mode='naelao_managed' AND status IN ('active','billing_hold') AND retire_after IS NULL AND next_billing_at<=? ORDER BY next_billing_at LIMIT 50")
+    .bind(at).all<AgentMailAccount & {next_billing_at:string|null}>();
+  let billed=0,held=0;
+  await Promise.all(due.results.map(async account=>{
+    const outcome=await renewAgentMailRental(env,account,now,at);
+    if(outcome==="billed")billed++;else if(outcome==="held")held++;
   }));
   return {checked:due.results.length,billed,held,review:expired.meta.changes};
 }
