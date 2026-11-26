@@ -370,6 +370,8 @@ export interface AgentsEnv extends Cloudflare.Env {
   ENVIRONMENT: string;
   /** MS-18 / D8: per-goal credit ceiling and its raise route; off = the route answers not-found. */
   GOAL_CREDIT_CEILING_ENABLED?: string;
+  /** MS-25 / D10: apply Space/Project/user worker preferences at goal start; off = today's behavior. */
+  WORKER_PREFERENCES_ENABLED?: string;
   /** Full assistant-response caching stays off until exact caller and source freshness gates pass. */
   KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
   DATA_JURISDICTION?: "eu";

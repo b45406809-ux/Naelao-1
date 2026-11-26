@@ -156,4 +156,34 @@ describe("worker preference routes (Worker)", () => {
     const res = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/worker-user-preferences", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "u1", "x-naelao-role": "owner" } }), env);
     expect(res.status).toBeGreaterThanOrEqual(401);
   });
+
+  it("MS-25 internal read: HMAC required, scoped to the owned Space, returns only stored rows", async () => {
+    const { calls, env } = build();
+    const internal = async (query: string, token = true) => spacesWorker.fetch(new Request(`https://spaces.test/internal/worker-preferences?${query}`, {
+      headers: { "x-naelao-tenant-id": "tenant-a", ...(token ? { "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") } : {}) } }), env);
+    expect((await internal("space_id=space-a&user_id=u1", false)).status).toBeGreaterThanOrEqual(401);
+    expect(calls).toHaveLength(0);
+    expect((await internal("space_id=space-a")).status).toBe(404);
+    expect((await internal("space_id=space-a&user_id=u1&project_id=bad/id")).status).toBe(404);
+    expect((await internal("space_id=space-a&user_id=u1&project_id=p1")).status).toBe(200);
+    expect(calls[0]).toBe("GET /worker-preferences-effective?project_id=p1&user_id=u1");
+  });
+});
+
+describe("worker preferences effective rows (DO)", () => {
+  it("returns Space limits, the Project override and only the named user's row", async () => {
+    const { call } = await setup();
+    expect((await call("/worker-preferences-effective?user_id=u1")).json).toEqual({ space_limits: null, project_limits: null, user_preferences: null });
+    await call("/worker-preference-limits?actor_id=a", "PUT", { max_workers: 5, allowed_model_tiers: ["economy"] });
+    await call("/worker-preference-limits?project_id=p1&actor_id=a", "PUT", { goal_credit_ceiling: 50 });
+    await call("/worker-user-preferences?user_id=u1", "PUT", { worker_count: 2, preferred_model_tier: "economy" });
+    await call("/worker-user-preferences?user_id=u2", "PUT", { worker_count: 4 });
+    expect((await call("/worker-preferences-effective?project_id=p1&user_id=u1")).json).toEqual({
+      space_limits: { max_workers: 5, allowed_model_tiers: ["economy"], goal_credit_ceiling: null },
+      project_limits: { max_workers: null, allowed_model_tiers: null, goal_credit_ceiling: 50 },
+      user_preferences: { worker_count: 2, preferred_model_tier: "economy", goal_credit_ceiling: null },
+    });
+    expect((await call("/worker-preferences-effective?user_id=u3")).json.user_preferences).toBeNull();
+    expect((await call("/worker-preferences-effective?project_id=a%2Fb")).status).toBe(404);
+  });
 });

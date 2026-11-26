@@ -2,9 +2,9 @@
 
 ## Current task
 
-Master implementation spec, **MS-25**: Apply preferences when a goal starts.
-MS-01 to MS-24 are done; MS-25 implements the owner-approved decisions D8 (prices and caps),
-D9 (retention) and D10 (preferences). Follow [the spec](docs/operations/master-implementation-spec.md).
+Master implementation spec, **MS-26**: Resume a budget-held goal after the ceiling is raised.
+MS-01 to MS-25 are done; MS-26 completes the owner-approved decision D8 (prices and caps) follow-up
+found during MS-18 review. Follow [the spec](docs/operations/master-implementation-spec.md).
 Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume

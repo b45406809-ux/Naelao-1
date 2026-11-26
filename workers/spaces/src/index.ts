@@ -9225,6 +9225,22 @@ app.get("/internal/project-lifecycle", async (c) => {
   return forwardToSpaceDO(stub, `/project-lifecycle?${new URLSearchParams({ space_id: spaceId, project_id: projectId })}`, "GET");
 });
 
+// MS-25 (D10): internal, HMAC-only read of the stored preference rows for one goal start. Static
+// path with IDs in the query; not exposed through the router allowlist. The caller is the agents
+// worker, which supplies the starting user id from its own authenticated run scope.
+app.use("/internal/worker-preferences", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.get("/internal/worker-preferences", async (c) => {
+  const spaceId = c.req.query("space_id") ?? "";
+  const projectId = c.req.query("project_id") ?? "";
+  const userId = c.req.query("user_id") ?? "";
+  if (!spaceId || !userId || userId.length > 128 || (projectId && !/^[A-Za-z0-9_-]{1,128}$/.test(projectId))) return c.json({ error_code: "not_found" }, 404);
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: "not_found" }, 404);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const res = await forwardToSpaceDO(stub, `/worker-preferences-effective?${new URLSearchParams({ project_id: projectId, user_id: userId })}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+});
+
 app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);

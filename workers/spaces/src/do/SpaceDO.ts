@@ -7217,6 +7217,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.handleWorkerPreferenceLimits(request, url.searchParams);
       if (url.pathname === "/worker-user-preferences")
         return this.handleWorkerUserPreferences(request, url.searchParams);
+      if (url.pathname === "/worker-preferences-effective" && method === "GET")
+        return this.handleWorkerPreferencesEffective(url.searchParams);
       if (url.pathname === "/worker-preference-audit" && method === "GET")
         return Response.json({ entries: listWorkerPreferenceAudit(this.ctx.storage.sql as never,
           parseBoundedInteger(url.searchParams.get("limit"), AUDIT_LIST_DEFAULT, 1, AUDIT_LIST_MAX)) });
@@ -11517,6 +11519,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   /** D10. The router passes the authenticated caller as user_id; the Worker never takes it from the client. */
+  /** MS-25: stored rows for the agent host's goal-start snapshot. Read-only; callers are HMAC-gated. */
+  private async handleWorkerPreferencesEffective(params: URLSearchParams): Promise<Response> {
+    const projectId = params.get("project_id") ?? "";
+    const userId = params.get("user_id") ?? "";
+    if (projectId && !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) return Response.json({ error_code: "not_found" }, { status: 404 });
+    if (userId.length > 128) return Response.json({ error_code: "not_found" }, { status: 404 });
+    const sql = this.ctx.storage.sql as never;
+    const limits = (row: ReturnType<typeof getWorkerLimits>) => row === null ? null
+      : { max_workers: row.max_workers, allowed_model_tiers: row.allowed_model_tiers, goal_credit_ceiling: row.goal_credit_ceiling };
+    const own = userId ? getWorkerUserPreferences(sql, userId) : null;
+    return Response.json({
+      space_limits: limits(getWorkerLimits(sql, "")),
+      project_limits: projectId ? limits(getWorkerLimits(sql, projectId)) : null,
+      user_preferences: own === null ? null
+        : { worker_count: own.worker_count, preferred_model_tier: own.preferred_model_tier, goal_credit_ceiling: own.goal_credit_ceiling },
+    });
+  }
+
   private async handleWorkerUserPreferences(request: Request, params: URLSearchParams): Promise<Response> {
     const userId = params.get("user_id") ?? "";
     const sql = this.ctx.storage.sql as never;

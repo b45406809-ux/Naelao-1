@@ -564,13 +564,14 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused tests, full `naelao-spaces` and router suites, typechecks.
 - **Result:** landed locally: SpaceDO migration 164 (`worker_preference_limits` keyed by `project_id` with `''` = Space level, `worker_user_preferences`, `worker_preference_audit`); `GET/PUT /spaces/:spaceId/worker-preference-limits[?project_id=]` (Space owner/admin, or a Project owner member for that Project override), `GET/PUT .../worker-user-preferences` (any member, caller's own row only), `GET .../worker-preference-audit` (owner/admin); non-authorized get the not-found shape; one audit row per changed PUT in one DO transaction; three anchored router patterns. `worker-preferences.test.ts` 12/12; `SpaceDO-migrations.test.ts` 10/10; full spaces suite only the 4 known failures; router suite only the known preferred-language failure; typechecks and `git diff --check` pass. Commit: see git log (`feat(spaces,router): MS-24`). Local evidence only.
 
-### - [ ] MS-25 — Apply preferences when a goal starts
+### - [x] MS-25 — Apply preferences when a goal starts
 
 - **Queue:** item 2, APW06. **Model:** Sonnet. **Decision:** D10. **Needs:** MS-18, MS-23, MS-24.
 - **Start here:** `NaelaoAgentDO.ts` worker capacity (~l.4886), model selection call (~l.5834), goal start in `goal-planner.ts` / `goal-dag.ts`.
 - **Do:** behind `WORKER_PREFERENCES_ENABLED`, at goal start fetch the limits and the starting user's preferences from Spaces, resolve them with MS-23, store the snapshot on the goal journal, and use it for worker capacity, model choice/fallback and the goal credit ceiling (MS-18). A fetch failure uses today's defaults and records `preferences_unavailable`. Running goals never re-read preferences. Add the flag `"false"` to agents `wrangler.toml`.
 - **Tests:** snapshot applied to capacity, model and ceiling; later preference change does not affect the running goal; fetch failure falls back; flag off unchanged.
 - **Done:** focused tests, full agents suite, typecheck.
+- **Result:** this commit. With `WORKER_PREFERENCES_ENABLED` on, the goal host fetches stored rows from a new HMAC-only Spaces route `GET /internal/worker-preferences?space_id&project_id&user_id`, resolves them with `resolveWorkerPreferences` (plan limit = billing plan concurrency), stores the snapshot on `GoalDagJournal.preferences` (fetch failure stores `preferences_unavailable`; an existing journal is never re-read) and applies it as `min` on worker capacity, a tier policy over `resolveWorkerModel`/`selectWorkerModel` output (`worker-model-tier-policy.ts`: tier = billing-core cost tier; no user pick keeps host routing restricted to allowed tiers, a user pick falls back only to not-more-expensive tiers, same provider and effort ceiling) and the MS-18 default ceiling. New tests 12 agents unit + 3 DO-level + 2 spaces; full Agents suite 2097 pass / 3 known failures; full spaces 780 pass / 4 known failures; typechecks clean. Local/mock only.
 
 ### - [ ] MS-26 — Resume a budget-held goal after the ceiling is raised
 

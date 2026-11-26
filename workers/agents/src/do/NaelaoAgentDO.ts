@@ -6,6 +6,8 @@ import { sandboxInstanceName, workspaceBranchScope } from "../script-engine/sand
 import { containerWorkerConcurrency, validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
+import { fetchStoredWorkerPreferences, resolveGoalPreferencesSnapshot, unavailableGoalPreferences, usableGoalPreferences, type GoalPreferencesSnapshot } from "../goal-worker-preferences.js";
+import { applyWorkerModelTierPolicy } from "../script-engine/worker-model-tier-policy.js";
 import { admitGoalTaskDispatch, ensureGoalCreditSchema, estimateGoalTaskCredits, raiseGoalCreditCeiling, settleGoalCreditReservation } from "../goal-credit-ceiling.js";
 import { executeGoalDag, MAX_GOAL_ROUTING_ADJUSTMENTS, type GoalDagJournal, type GoalRoutingAdjustment } from "../script-engine/goal-dag.js";
 import { persistGoalExpansionAdmission } from "../script-engine/goal-expansion-admission.js";
@@ -1141,6 +1143,7 @@ export interface AgentDOEnv {
   GOAL_REDUNDANT_CANCELLATION_ENABLED?: string;
   /** MS-18 / D8: per-goal credit ceiling. Off = no ceiling rows are written and dispatch is unchanged. */
   GOAL_CREDIT_CEILING_ENABLED?: string;
+  WORKER_PREFERENCES_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
   SYSTEM_ONE_MODEL?: string;
   /** Legacy selector accepted during rollout; provider aliases map to Clef Flash. */
@@ -4902,7 +4905,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const planWorkerConcurrency = getExecutionLimits(planTier).concurrency;
           // The existing per-space worker-tree admission is three. Do not advertise a wider
           // runtime gate than the downstream worker dispatcher can actually honor.
-          const workerExecutionCapacity = Math.min(planWorkerConcurrency, MAX_CONCURRENT_SUB_AGENT_TREES);
+          // MS-25 / D10 (flag WORKER_PREFERENCES_ENABLED, default off): snapshot the Space/Project/user
+          // worker preferences ONCE when the goal starts and keep them on the goal journal. A goal that
+          // already has a journal never re-reads preferences (a journal without a snapshot stays without).
+          let goalPreferences: GoalPreferencesSnapshot | undefined;
+          let newGoalPreferences: GoalPreferencesSnapshot | undefined;
+          if (this.env.WORKER_PREFERENCES_ENABLED === "true") {
+            const stored = this.ctx.storage.sql.exec<{ journal_json: string }>("SELECT journal_json FROM goal_dag_journals WHERE journal_key=?", key).toArray()[0];
+            let existing: GoalDagJournal | undefined = prior;
+            if (stored) { try { existing = JSON.parse(stored.journal_json) as GoalDagJournal; } catch { existing = undefined; } }
+            if (existing || stored) goalPreferences = existing?.preferences;
+            else {
+              const rows = userId ? await fetchStoredWorkerPreferences({
+                spaces: this.env.SPACES_WORKER, headers: await this.internalHeaders(tenantId), spaceId, projectId, userId,
+                readJson: response => readBoundedResponseJson<unknown>(response, 64 * 1024),
+              }) : undefined;
+              goalPreferences = newGoalPreferences = rows ? resolveGoalPreferencesSnapshot(rows, planWorkerConcurrency) : unavailableGoalPreferences();
+            }
+          }
+          const appliedPreferences = usableGoalPreferences(goalPreferences) ? goalPreferences : undefined;
+          // Preferences can only lower capacity; today's plan and tree caps remain the hard limits.
+          const workerExecutionCapacity = Math.min(planWorkerConcurrency, MAX_CONCURRENT_SUB_AGENT_TREES, appliedPreferences?.workerCount ?? Number.MAX_SAFE_INTEGER);
           if (enabled && userId) await this.ctx.storage.put(`task-blackboard:scope:${hash}`, {
             tenantId, spaceId, projectId: projectId ?? null, actorId: userId,
             rootRunId: runtimeEnv?.rootRunId ?? parentRunId, parentDoId: this.ctx.id.toString(),
@@ -5100,6 +5123,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 return assessGoalResult(runtimeEnv.fastDecision!, task, result);
               },
             } : {}),
+            ...(newGoalPreferences ? { preferences: newGoalPreferences } : {}),
             workerId: taskId,
             load: async () => {
               const row = this.ctx.storage.sql.exec<{ journal_json: string }>("SELECT journal_json FROM goal_dag_journals WHERE journal_key=?", key).toArray()[0];
@@ -5304,6 +5328,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               const admission = admitGoalTaskDispatch(this.ctx.storage.sql, {
                 journalKey: key, parentRunId, taskId: task.id, reservationId: `goal-credit:${key}:${task.id}`,
                 estimatedCredits: estimateGoalTaskCredits(task.budget_tokens, DEFAULT_WORKING_MODEL),
+                ...(appliedPreferences ? { defaultCeiling: appliedPreferences.goalCreditCeiling } : {}),
               });
               return admission;
             } } : {}),
@@ -5908,6 +5933,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             ...(runtimeEnv?.privateWorkerModels ? { privateWorkerModels: runtimeEnv.privateWorkerModels } : {}),
             ...(typeof t["worker_model"] === "string" ? { requestedWorkerModel: t["worker_model"] } : {}),
           }, runtimeEnv?.fastDecision);
+        if (t["planner"] !== true) {
+          // MS-25: the goal's snapshotted tier policy narrows (never widens) the host's routing.
+          const goalPolicy = await this.goalPreferencesForWorker(subId);
+          if (goalPolicy) modelResolution = applyWorkerModelTierPolicy({
+            resolution: modelResolution, plannerModel, effort: effortLevel, privateRoute,
+            policy: { allowedModelTiers: goalPolicy.allowedModelTiers, preferredModelTier: goalPolicy.preferredModelTier,
+              fallbackTiers: goalPolicy.fallbackTiers, preferredSource: goalPolicy.sources.preferredModelTier },
+          });
+        }
         if (existing && typeof savedConfiguration?.model === "string") {
           modelResolution = { model: savedConfiguration.model, downgraded: false, reason: "resumed_worker_session_policy" };
         }
@@ -10390,6 +10424,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // service-binding call, bypassing naelao-router — workers_dev=false (layer 1) already blocks
   // outside traffic, but these calls must ALSO present a verified internal token so the target
   // worker's requireInternalHmac middleware (layer 3) accepts them.
+  /**
+   * MS-25: the usable preference snapshot stored on the goal journal a goal worker belongs to (goal
+   * worker ids are `<64-hex goal hash>:<task id>`). Never fetches; flag off or no snapshot = undefined.
+   */
+  private async goalPreferencesForWorker(workerId: string): Promise<Extract<GoalPreferencesSnapshot, { unavailable?: false }> | undefined> {
+    if (this.env.WORKER_PREFERENCES_ENABLED !== "true") return undefined;
+    const hash = /^([0-9a-f]{64}):/.exec(workerId)?.[1];
+    if (!hash) return undefined;
+    const row = this.ctx.storage.sql.exec<{ journal_json: string }>("SELECT journal_json FROM goal_dag_journals WHERE journal_key=?", `goal-dag:${hash}`).toArray()[0];
+    if (!row) return undefined;
+    try {
+      const snapshot = (JSON.parse(row.journal_json) as GoalDagJournal).preferences;
+      return usableGoalPreferences(snapshot) ? snapshot : undefined;
+    } catch { return undefined; }
+  }
+
   private async internalHeaders(tenantId: string, extra?: Record<string, string>): Promise<Record<string, string>> {
     return {
       "x-naelao-tenant-id": tenantId,

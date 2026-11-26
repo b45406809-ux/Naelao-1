@@ -39,7 +39,7 @@ export interface GoalRoutingAdjustment {
   verificationOutcome?: "passed" | "failed" | "uncertain" | "not_required" | "unavailable";
 }
 export interface GoalBudgetHold { state: "awaiting_budget_approval"; taskId: string; reason: string; at: number }
-export interface GoalDagJournal { budgetHold?: GoalBudgetHold; tasks: Record<string, GoalTaskState>; taskDefinitions?: GoalTask[]; expansionReceipts?: Record<string, GoalExpansionReceipt>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number; policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed"; adjustments?: GoalRoutingAdjustment[] } }
+export interface GoalDagJournal { /** MS-25: worker-preference snapshot taken once at goal start; never refreshed. */ preferences?: import("../goal-worker-preferences.js").GoalPreferencesSnapshot; budgetHold?: GoalBudgetHold; tasks: Record<string, GoalTaskState>; taskDefinitions?: GoalTask[]; expansionReceipts?: Record<string, GoalExpansionReceipt>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean; routing?: { mode: "single_worker" | "sequential" | "parallel"; taskCount: number; selectedConcurrency: number; hostConcurrencyCeiling: number; policy?: "progressive-v1"; adjustmentReason?: "initial_probe" | "verified_progress" | "failure_or_review" | "frontier_narrowed"; adjustments?: GoalRoutingAdjustment[] } }
 export const MAX_GOAL_ROUTING_ADJUSTMENTS = 32;
 /** Automatic repair is an opt-in, host-budgeted path with a hard kernel ceiling. */
 export const MAX_GOAL_FIXERS_PER_RUN = 2;
@@ -65,6 +65,8 @@ export interface GoalDagHost {
   publish(task: GoalTask, state: GoalTaskState): Promise<void>;
   /** MS-18: optional per-goal credit admission, called once per ready task before its dispatch is
    * claimed. `ok:false` means do not dispatch; the goal waits in `awaiting_budget_approval`. */
+  /** MS-25: snapshot to record on a NEW journal only; a loaded journal keeps its own. */
+  preferences?: import("../goal-worker-preferences.js").GoalPreferencesSnapshot;
   admitDispatch?(task: GoalTask): Promise<{ ok: true } | { ok: false; reason: string }>;
   /** Recheck active decision identity/revision and its workspace pin before dispatch or reuse. */
   validateTaskDecisions?(task: GoalTask): Promise<{ ok: true } | { ok: false; reason: string }>;
@@ -223,6 +225,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
   if (persistedFixerLimit !== undefined && (!Number.isSafeInteger(persistedFixerLimit) || persistedFixerLimit < 0 || persistedFixerLimit > MAX_GOAL_FIXERS_PER_RUN)) throw new Error("goal_journal_invalid_fixer_limit");
   const effectiveFixerLimit = persistedFixerLimit === undefined ? hostFixerLimit : Math.min(persistedFixerLimit, hostFixerLimit);
   const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, fixerEnabled: host.fixerEnabled === true, verificationRequired: host.verificationRequired === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
+  if (journal.preferences === undefined && host.preferences !== undefined) journal.preferences = structuredClone(host.preferences);
   journal.taskDefinitions = structuredClone(tasks);
   journal.expansionReceipts ??= {};
   // Recompute on every resume so a stale persisted choice can never exceed current host policy.
