@@ -92,7 +92,8 @@ describe("template resource requirements (MS-44)", () => {
     const first = await h.activate();
     expect(first.status).toBe(201);
     expect(await first.json()).toMatchObject({ resourceProposals: { created: 2, existing: 0, status: "stored" } });
-    expect(await h.proposals()).toMatchObject([{ requirement_key: "inbox", status: "proposed" }, { requirement_key: "voice", status: "proposed" }]);
+    // Both rows share a created_at millisecond, so the list order is not guaranteed: compare by key.
+    expect([...await h.proposals()].sort((a, b) => a.requirement_key.localeCompare(b.requirement_key))).toMatchObject([{ requirement_key: "inbox", status: "proposed" }, { requirement_key: "voice", status: "proposed" }]);
     expect(await (await h.activate()).json()).toMatchObject({ resourceProposals: { created: 0, existing: 2 } });
     expect(h.agentCalls.length).toBe(0);
     expect(h.counts).toEqual({ quote: 0, provision: 0, grant: 0 });

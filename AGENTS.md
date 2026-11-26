@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-47**: P2/P3 leftovers (resource lifecycle and access), then MS-48, then MS-46 (P4 provider event module).
-V-spec P0–P3 and MS-45 (P4 shared execution pipeline) are complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md)
+Master implementation spec, **MS-48** ("Earlier review follow-ups"), then MS-46 (P4 provider event module).
+V-spec P0–P3, MS-45 (P4 shared execution pipeline) and MS-47 (P2/P3 leftovers) are complete locally. Follow [the master spec](docs/operations/master-implementation-spec.md)
 and [V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
