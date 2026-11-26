@@ -733,6 +733,9 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/activate$/,
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/activation-preview$/,
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/setup-draft$/,
+  // MS-47: template resource proposals (list and approve/skip). The Spaces worker answers 404 for anyone who is not an owner or
+  // admin and while TEMPLATE_RESOURCE_REQUIREMENTS_ENABLED is off, so the exact path is the only thing opened here.
+  /^\/spaces\/([^/]+)\/template-resource-proposals$/,
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/setup-update-(?:preview|apply)$/,
   /^\/spaces\/([^/]+)\/blueprints\/installations$/,
   /^\/spaces\/([^/]+)\/shared-extension-installations\/([^/]+)(?:\/(?:filesystem-grants|lifecycle))?$/,
