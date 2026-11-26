@@ -2,7 +2,7 @@ import type { Context, Hono } from "hono";
 import { mintInternalToken, readBoundedRequestText, readBoundedResponseJson } from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import type { AgentsEnv } from "../index.js";
-import { authenticatedTelnyxEvent } from "../voice/telnyx-telephony.js";
+import { authenticatedTelnyxEvent, deadLetterProviderEvent, providerEventModuleEnabled } from "./provider-events/index.js";
 import { isE164 } from "../voice/twilio-telephony.js";
 import { channelPreferences, scopeAccess, storeBody, type CommunicationIdentity, type CommunicationScope } from "./core.js";
 import { resolveTelnyxAccount } from "./telnyx-account.js";
@@ -173,7 +173,12 @@ export function registerTelnyxWebhook(app: Hono<{ Bindings: AgentsEnv }>) {
     }
     if (!binding && number) binding = await c.env.PLATFORM_DB.prepare("SELECT * FROM assistant_phone_bindings WHERE provider='telnyx' AND payer='managed' AND phone_number=? AND status='active'")
       .bind(number).first<AssistantPhoneBinding>();
-    if (!binding) return c.json({ error_code: isCallEvent ? "call_binding_not_found" : "unsupported_message" }, 404);
+    if (!binding) {
+      // MR-EVT-3 (PROVIDER_EVENT_MODULE_ENABLED): a verified event whose resource is unknown is dead-lettered; the response is unchanged.
+      if (providerEventModuleEnabled(c.env)) await deadLetterProviderEvent(c.env.PLATFORM_DB, { provider: "telnyx", eventId: event.eventId, eventType: event.eventType,
+        resourceRef: (isCallEvent && typeof callControlId === "string" ? callControlId : number) ?? null, reason: "unknown_resource", rawBody: raw });
+      return c.json({ error_code: isCallEvent ? "call_binding_not_found" : "unsupported_message" }, 404);
+    }
     if (!binding) return c.json({ error_code: "not_found" }, 404);
     const identity = await c.env.PLATFORM_DB.prepare("SELECT * FROM assistant_communication_identities WHERE id=? AND status='active'")
       .bind(binding.identity_id).first<CommunicationIdentity>();

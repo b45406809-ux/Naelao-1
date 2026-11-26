@@ -1,6 +1,7 @@
 import { readBoundedResponseJson } from "@naelao/http";
 import { PhoneProviderError } from "../communications/phone-provider.js";
 import { isE164 } from "./twilio-telephony.js";
+import { decodeFixedBase64 as decode, verifyTelnyxWebhook, authenticatedTelnyxEvent, type TelnyxEvent } from "../communications/provider-events/telnyx.js";
 
 export interface TelnyxCredentials { apiKey: string; publicKey: string }
 export interface TelnyxAvailablePhoneNumber {
@@ -14,43 +15,9 @@ export interface TelnyxAvailablePhoneNumber {
   monthlyCostMinor: number;
   currency: string;
 }
-function decode(value: string, size: number): Uint8Array {
-  if (value.length !== Math.ceil(size / 3) * 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) throw new Error("invalid_base64");
-  const bytes = Uint8Array.from(atob(value), char => char.charCodeAt(0));
-  if (bytes.length !== size) throw new Error("invalid_base64");
-  return bytes;
-}
-
-/** Authenticate exact bytes before parsing. Timestamp validation limits replay age;
- * callers must also durably deduplicate event IDs before dispatching any side effect. */
-export async function verifyTelnyxWebhook(input: {
-  rawBody: string; publicKey: string; signature: string | null; timestamp: string | null; nowSeconds?: number;
-}): Promise<boolean> {
-  try {
-    if (!input.signature || !input.timestamp || !/^\d{1,16}$/.test(input.timestamp)
-      || new TextEncoder().encode(input.rawBody).byteLength > 256 * 1024) return false;
-    const timestamp = Number(input.timestamp), now = input.nowSeconds ?? Math.floor(Date.now() / 1000);
-    if (!Number.isSafeInteger(timestamp) || !Number.isSafeInteger(now) || Math.abs(now - timestamp) > 300) return false;
-    const key = await crypto.subtle.importKey("raw", decode(input.publicKey, 32), { name: "Ed25519" }, false, ["verify"]);
-    return await crypto.subtle.verify("Ed25519", key, decode(input.signature, 64), new TextEncoder().encode(`${input.timestamp}|${input.rawBody}`));
-  } catch { return false; }
-}
-
-export interface TelnyxEvent {
-  provider: "telnyx"; eventId: string; eventType: string; occurredAt: string; payload: Record<string, unknown>;
-}
-/** Verification is deliberately part of parsing, so callers cannot accidentally use unsigned JSON. */
-export async function authenticatedTelnyxEvent(input: Parameters<typeof verifyTelnyxWebhook>[0]): Promise<TelnyxEvent> {
-  if (!await verifyTelnyxWebhook(input)) throw new Error("telnyx_webhook_unauthorized");
-  let body: { data?: { id?: unknown; event_type?: unknown; occurred_at?: unknown; payload?: unknown } };
-  try { body = JSON.parse(input.rawBody); } catch { throw new Error("telnyx_webhook_invalid"); }
-  const data = body?.data;
-  if (!data || typeof data.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(data.id)
-    || typeof data.event_type !== "string" || !/^(call|message|streaming)\.[a-z0-9_.]{1,100}$/.test(data.event_type)
-    || typeof data.occurred_at !== "string" || data.occurred_at.length > 64 || !Number.isFinite(Date.parse(data.occurred_at))
-    || !data.payload || typeof data.payload !== "object" || Array.isArray(data.payload)) throw new Error("telnyx_webhook_invalid");
-  return { provider: "telnyx", eventId: data.id, eventType: data.event_type, occurredAt: data.occurred_at, payload: data.payload as Record<string, unknown> };
-}
+// MS-46: the Telnyx verifier lives in the provider-event module; these re-exports keep every existing caller and test unchanged.
+export { verifyTelnyxWebhook, authenticatedTelnyxEvent };
+export type { TelnyxEvent };
 
 /** Fixed Telnyx v2 resources. No automatic mutation retries or provider failover:
  * a lost response can mean a real call/message already exists. */
