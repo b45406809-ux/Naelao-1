@@ -2,7 +2,11 @@
 
 ## Current task
 
-The master implementation spec MS-01 to MS-26 is complete. Every D8–D10 flag is off; turning any on needs owner authorization. Remaining queue items are blocked on owner decisions or live access (see the spec's "Not in this spec" table and the queue). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+Master implementation spec, **MS-27**: P0 schema for offerings, commercial agreements and resource
+columns, from the owner-approved [Managed/Providers/AgentPort spec v2](new%20plan/V-spec.md)
+(all OD-1..OD-8 recommendations accepted 2026-11-26). MS-01 to MS-26 are done and every D8–D10 flag
+stays off. Follow [the master spec](docs/operations/master-implementation-spec.md).
+Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 

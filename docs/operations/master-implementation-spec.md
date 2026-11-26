@@ -581,6 +581,38 @@ safe defaults. The owner can override any of them; until then, implement exactly
 - **Done:** focused tests, full agents suite, typecheck.
 - **Result:** this commit. With `GOAL_CREDIT_CEILING_ENABLED` on, a budget hold is a waiting outcome: the goal-planner returns `awaiting_budget_approval` (not an error) and `handleScriptRun` ends the run with the existing `awaiting_approval` run/task status plus a structured `pending_budget_approval` and a user message that the goal awaits budget approval (no publication, no completion log or memory); the hold is stored in `goal_budget_resumes`. A successful raise claims that row with one synchronous conditional write (a second raise, or a raise while nothing is held, starts nothing) and re-enters the same goal journal in the background through `handleScriptRun` (`goalResume`, same parent run id, objective and tasks), so completed tasks are not re-dispatched and the pending task is admitted and dispatched once. New `goal-budget-resume-do.test.ts` 3/3 (hold, resume, settlement once, double raise, flag off); full Agents suite 2100 pass / 3 known failures; typecheck clean. Local/mock only.
 
+### - [ ] MS-27 — P0 schema: offerings, commercial agreements, resource columns
+
+- **Queue:** item 21 (V-spec P0). **Model:** Haiku. **Spec:** `new plan/V-spec.md` §6.1–6.3, MD-2, MD-3, MR-RES-1/4.
+- **Start here:** `infra/migrations/` (latest number; follow the file style of 0179–0222 managed-service migrations), how tests load D1 migrations (search tests for `infra/migrations` / the sqlite shim), `managed_service_accounts` definition and later ALTERs.
+- **Do:** one new migration with the §6.1 ALTERs, the §6.2 offerings + offering audit tables, the §6.3 agreements + agreement audit tables, and a `managed_resources` view exposing V-spec field names over `managed_service_accounts`. Backfill `access_mode` / `provisioning_strategy` from `connection_mode` exactly per MR-RES-1. The unique index on `(provider, provider_resource_ref)` must not fail on existing duplicates: first check whether any code path can create duplicates; if it can, create the index only on non-legacy rows (`WHERE provider_resource_ref IS NOT NULL AND offering_id IS NOT NULL`) and say so. No code reads the new columns yet.
+- **Tests:** migration applies on a fresh DB and on a DB with legacy `managed_service_accounts` rows; backfill mapping for all three connection modes; view returns expected fields; duplicate provider ref rejected for new rows.
+- **Done:** focused tests and typecheck of the package that hosts the migration tests.
+
+### - [ ] MS-28 — P0 offerings and agreements: admin routes, audit, fail-closed admission helper
+
+- **Queue:** item 21. **Model:** Sonnet. **Spec:** V-spec MD-3, MR-CAT-3 (managed provisioning fails closed unless capability version verified + offering `available` (or `testing` for operator-allowlisted tenants) + agreement `approved`, unexpired, permitting the strategy and region), §6.2–6.3. **Needs:** MS-27.
+- **Start here:** the existing operator routes for capability/entitlement verify/disable with audit (`workers/billing/src/index.ts` entitlements verify/disable; agents `communications/managed-service-capabilities.ts`).
+- **Do:** internal HMAC/admin-only routes to create/update offerings and agreements (every write audited with actor + reason; agreement approval sets approved_by/at; evidence stored only as sha256). Add `resolveOfferingAdmission({tenantId, provider, serviceId, operation, region, strategy, now})` in one shared place that both billing and agents can call (pick the package that already holds shared managed-service types, or the billing worker internal route), returning `{ok:true, offering, agreement}` or `{ok:false, error_code}` with codes `offering_unavailable` / `provider_not_approved` / `capability_unsupported`. Behind `MANAGED_OFFERINGS_ENABLED` (default "false" in every vars block of each worker that reads it); nothing calls admission on existing paths yet except tests.
+- **Tests:** each fail-closed case (no offering, draft/disabled offering, unverified/expired capability, missing/unapproved/expired/revoked agreement, strategy or region not permitted); approved path; audit row per write; non-admin refused.
+- **Done:** focused tests, full suites of touched workers (known failures only), typechecks.
+
+### - [ ] MS-29 — P0 remove provider branches from the Billing reserve path
+
+- **Queue:** item 21. **Model:** Sonnet. **Spec:** V-spec MD-6, MR-COM-1, MR-COM-3, §6.2 `quote_policy`. **Needs:** MS-28.
+- **Start here:** `workers/billing/src/index.ts` `/internal/managed-services/credits/reserve` (~l.1186; AgentMail provision/renew and Workers AI quote checks), `managed-service-credit-reservations.test.ts`.
+- **Do:** behind `MANAGED_OFFERINGS_ENABLED`, replace provider-specific quote checks with the offering's `quote_policy` resolved via MS-28 admission (`always` → quote required; `required_for_recurring` → quote required for provision/renew operations; `none` → not required). Seed offerings + first-party/standard agreements for the existing AgentMail and Workers AI managed paths in the test fixtures (and as a documented, non-applied operator seed script — never auto-applied to remote DBs) so their behavior is identical with the flag on. Flag off = byte-for-byte current behavior.
+- **Tests:** every existing billing managed-service test passes with the flag off AND with it on (parametrize); with flag on, a new provider needs no billing code change (test a fictional provider through offering data only); a test asserting the reserve path has no provider string literals when the flag is on (e.g. grep-based or by structure).
+- **Done:** full billing suite and agents agentmail tests, typechecks.
+
+### - [ ] MS-30 — P0 AgentPort standalone tenants get an `orgs` row (OD-7)
+
+- **Queue:** item 21. **Model:** Sonnet. **Spec:** V-spec MD-1, OD-7.
+- **Start here:** `workers/agentport` organization/developer creation (migration 0160 `agentport_organizations`/`agentport_developers`), `managed_service_owner_links` (0181), migration 0002 `orgs`.
+- **Do:** find how an AgentPort organization relates to a Naelao `orgs` row today. Behind `AGENTPORT_ORG_LINK_ENABLED` (default "false"), creating a standalone AgentPort organization also creates (or links) exactly one `orgs` row (plan_tier `free`) in the same D1 batch, idempotently, and stores the link (add a nullable `org_id` column with a unique index via a new migration if no link exists). Never merge or re-link an existing linked pair. Record what existing AgentPort orgs need for a backfill, but do not backfill.
+- **Tests:** create → one linked orgs row; replay → no duplicate; existing link untouched; flag off unchanged; cross-tenant isolation (an AgentPort org cannot link to another tenant's orgs row).
+- **Done:** focused tests, full agentport suite, typecheck.
+
 ---
 
 ## Not in this spec (still needs you or live access)

@@ -1,6 +1,6 @@
 # Naelao Managed, Providers and AgentPort — Implementation Specification
 
-Version 2.0 (draft for owner review) · 2026-11-26 · Source: [`V.md`](V.md) v1.0, reconciled against
+Version 2.0 · owner-approved 2026-11-26 (all §18 recommendations accepted) · 2026-11-26 · Source: [`V.md`](V.md) v1.0, reconciled against
 `origin/Mcbt5s-Backup-2` at `47b67cbf`.
 
 ---
@@ -648,9 +648,11 @@ evidence. A live rollout always needs separate owner authorization.
 
 ---
 
-## 18. Open decisions (owner)
+## 18. Owner decisions
 
-| ID | Decision | Blocks | Recommendation |
+On 2026-11-26 the owner accepted every recommendation below. Each is now binding until the owner changes it. Live rollout of anything still needs separate authorization.
+
+| ID | Decision | Blocks | Approved decision |
 |---|---|---|---|
 | OD-1 | Prepaid managed balance (stored value) vs plan allowance only | P5 | Stay on allowance + caps until an accountant confirms how credits are treated (liability, refundability, expiry) |
 | OD-2 | Naelao Email managed domain name(s) and sending reputation setup (SPF/DKIM/DMARC owner) | P1 live | Use a dedicated subdomain, separate from product mail |
