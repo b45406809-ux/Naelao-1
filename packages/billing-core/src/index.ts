@@ -243,3 +243,4 @@ export * from "./model-benchmarks.js";
 export * from "./effort.js";
 export * from "./plans.js";
 export * from "./marketplace-policy.js";
+export * from "./managed-offering-admission.js";

@@ -66,4 +66,25 @@ describe("Telnyx managed-service account registry", () => {
       credit_payer_type: "organization", credit_payer_id: "tenant-a",
     });
   });
+  it("MS-28: triggers recreated by 0292 classify access_mode and provisioning_strategy (MR-RES-1) on insert and update", () => {
+    const db = database();
+    db.db.exec(migration("0291_managed_offerings_agreements_resources.sql"));
+    db.db.exec(migration("0292_managed_offering_testing_allowlist_and_telnyx_classification.sql"));
+    db.db.prepare("INSERT INTO spaces(id) VALUES('space-a')").run();
+    db.db.prepare(`INSERT INTO assistant_communication_identities(id,tenant_id,space_id,scope_key,owner_user_id)
+      VALUES('identity-a','tenant-a','space-a','project-a','user-a')`).run();
+    db.db.prepare(`INSERT INTO assistant_communication_identities(id,tenant_id,space_id,scope_key,owner_user_id)
+      VALUES('identity-b','tenant-a','space-a','project-b','user-a')`).run();
+    const insert = (id: string, payer: string, identity: string, phone: string) => db.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,
+      provider_account_sid,provider_number_sid,phone_number,country_code,policy_json,status) VALUES(?,?,'assistant',?,'telnyx','acct',?,?,'US','{}','active')`)
+      .run(id, identity, payer, `sid-${id}`, phone);
+    insert("b-managed", "managed", "identity-a", "+14155550110");
+    insert("b-byo", "byo", "identity-b", "+14155550111");
+    const row = (id: string) => db.db.prepare("SELECT connection_mode,access_mode,provisioning_strategy,lifecycle_state FROM managed_service_accounts WHERE id=?").get(`telnyx-${id}`);
+    expect(row("b-managed")).toEqual({ connection_mode: "naelao_managed", access_mode: "managed", provisioning_strategy: "managed_master", lifecycle_state: "active" });
+    expect(row("b-byo")).toEqual({ connection_mode: "user_connected", access_mode: "byok", provisioning_strategy: "customer_connection", lifecycle_state: "active" });
+    // The update trigger keeps existing behaviour (lifecycle sync) and reclassifies when the payer changes.
+    db.db.prepare("UPDATE assistant_phone_bindings SET status='detached',payer='managed' WHERE id='b-byo'").run();
+    expect(row("b-byo")).toEqual({ connection_mode: "naelao_managed", access_mode: "managed", provisioning_strategy: "managed_master", lifecycle_state: "retired" });
+  });
 });

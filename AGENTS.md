@@ -2,9 +2,9 @@
 
 ## Current task
 
-Master implementation spec, **MS-28**: P0 offerings and agreements: admin routes, audit, fail-closed
-admission helper, from the owner-approved [Managed/Providers/AgentPort spec v2](new%20plan/V-spec.md)
-(all OD-1..OD-8 recommendations accepted 2026-11-26). MS-01 to MS-27 are done and every D8–D10 flag
+Master implementation spec, **MS-29**: P0 remove provider branches from the Billing reserve path,
+from the owner-approved [Managed/Providers/AgentPort spec v2](new%20plan/V-spec.md)
+(all OD-1..OD-8 recommendations accepted 2026-11-26). MS-01 to MS-28 are done and every D8–D10 flag
 stays off. Follow [the master spec](docs/operations/master-implementation-spec.md).
 Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 

@@ -241,6 +241,7 @@ CREATE TABLE managed_service_offerings (
   data_handling_json TEXT NOT NULL,          -- operator, subprocessors, regions, retention (V.md §78)
   preference_rank INTEGER NOT NULL DEFAULT 100, -- lower = preferred within resource_type (see §1 row 8, MR-OS-2)
   status TEXT NOT NULL,                      -- draft | testing | available | restricted | deprecated | disabled
+  testing_tenant_ids_json TEXT NOT NULL DEFAULT '[]', -- MS-28 (migration 0292): tenants admitted while status = testing
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE managed_service_offering_audit (id TEXT PRIMARY KEY, offering_id TEXT NOT NULL, actor_id TEXT NOT NULL,

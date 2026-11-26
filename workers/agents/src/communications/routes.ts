@@ -12,6 +12,7 @@ import {
   safeFilename,
 } from "../channels/cloudflare-email.js";
 import { connectUserAgentMail, callAgentMailTool, createManagedAgentMailQuote, getAssistantAgentMailStatus, getAgentPortSyncIdentity, getAgentPortThreadAssistantRoutes, provisionManagedAgentMail, readAgentMailUsage, receiveAgentMailWebhook, receiveAgentPortNotification, stopManagedAgentMailRenewal, revokeAgentPortOwnerLink, setAgentPortEventAssistant, setAgentPortThreadAssistant, syncAgentPortAgentMail } from "./agentmail.js";
+import { ManagedOfferingAdminError, approveCommercialAgreement, revokeCommercialAgreement, upsertCommercialAgreement, upsertManagedServiceOffering } from "./managed-offering-admin.js";
 import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
 import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget } from "./managed-service-cost-budgets.js";
@@ -1302,6 +1303,38 @@ export function registerCommunicationRoutes(
     try{return c.json(await disableManagedServiceCapability(c.env.PLATFORM_DB,{provider:c.req.param("provider"),serviceId:c.req.param("serviceId"),version:body.version,actorId,reason:body.reason}));}
     catch(error){const result=capabilityAdminError(error);return c.json({error_code:result.code},result.status);}
   });
+  // MS-28: offering and agreement admin. Same operator-key auth and audit style as the capability routes
+  // above, in the same place. Flag off returns the not-found shape before any auth check, so the
+  // routes cannot be probed. Writes are audited (actor + reason) in the same D1 batch.
+  const offeringAdmin=async(c:Context<{Bindings:AgentsEnv}>,maxBytes:number,run:(body:Record<string,unknown>,actorId:string)=>Promise<unknown>)=>{
+    if(c.env.MANAGED_OFFERINGS_ENABLED!=="true")return c.json({error_code:"not_found"},404);
+    if(!c.env.MANAGED_SERVICES_OPERATOR_SECRET)return c.json({error_code:"managed_service_operator_key_unavailable"},503);
+    if(!constantTimeSecretEqual(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
+    const actorId=c.req.header("x-managed-services-operator-id")??"";
+    const body=await readBoundedRequestText(c.req.raw,maxBytes).then(text=>JSON.parse(text) as unknown).catch(()=>null);
+    if(!body||typeof body!=="object"||Array.isArray(body))return c.json({error_code:"bad_request"},400);
+    try{return c.json(await run(body as Record<string,unknown>,actorId));}
+    catch(error){if(error instanceof ManagedOfferingAdminError)return c.json({error_code:error.code},error.status);
+      return c.json({error_code:"managed_offering_request_failed"},400);}
+  };
+  app.post("/internal/managed-services/offerings/:offeringId",c=>offeringAdmin(c,64*1024,(b,actorId)=>upsertManagedServiceOffering(c.env.PLATFORM_DB,{
+    offeringId:c.req.param("offeringId"),provider:b.provider as string,serviceId:b.service_id as string,capabilityVersion:b.capability_version as number,
+    resourceType:b.resource_type as string,category:b.category as string,displayName:b.display_name as string,accessModes:b.access_modes,strategies:b.strategies,
+    regions:b.regions,configurationSchema:b.configuration_schema,chargeComponents:b.charge_components,quotePolicy:b.quote_policy as string,dataHandling:b.data_handling,
+    ...(b.preference_rank!==undefined?{preferenceRank:b.preference_rank as number}:{}),status:b.status as string,testingTenantIds:b.testing_tenant_ids,
+    actorId,reason:b.reason as string})));
+  app.post("/internal/managed-services/agreements/:agreementId",c=>offeringAdmin(c,64*1024,(b,actorId)=>upsertCommercialAgreement(c.env.PLATFORM_DB,{
+    agreementId:c.req.param("agreementId"),provider:b.provider as string,agreementType:b.agreement_type as string,permittedOfferingIds:b.permitted_offering_ids,
+    permitsManagedProvisioning:b.permits_managed_provisioning as boolean,permitsMasterAccountDistribution:b.permits_master_account_distribution as boolean,
+    permitsSubaccountDistribution:b.permits_subaccount_distribution as boolean,permitsSharedResources:b.permits_shared_resources as boolean,
+    permittedRegions:b.permitted_regions,...(b.minimum_commitment_credits!==undefined?{minimumCommitmentCredits:b.minimum_commitment_credits as number|null}:{}),
+    effectiveFrom:b.effective_from as number,...(b.expires_at!==undefined?{expiresAt:b.expires_at as number|null}:{}),
+    ...(b.verification_status!==undefined?{verificationStatus:b.verification_status as string}:{}),
+    ...(b.evidence_sha256!==undefined?{evidenceSha256:b.evidence_sha256 as string|null}:{}),actorId,reason:b.reason as string})));
+  app.post("/internal/managed-services/agreements/:agreementId/approve",c=>offeringAdmin(c,16*1024,(b,actorId)=>approveCommercialAgreement(c.env.PLATFORM_DB,{
+    agreementId:c.req.param("agreementId"),actorId,reason:b.reason as string,...(b.evidence_sha256!==undefined?{evidenceSha256:b.evidence_sha256 as string}:{})})));
+  app.post("/internal/managed-services/agreements/:agreementId/revoke",c=>offeringAdmin(c,16*1024,(b,actorId)=>revokeCommercialAgreement(c.env.PLATFORM_DB,{
+    agreementId:c.req.param("agreementId"),actorId,reason:b.reason as string})));
   app.post("/internal/agentmail/webhook/:connectionId",async c=>receiveAgentMailWebhook(c.env,c.req.param("connectionId"),c.req.raw));
   app.post("/internal/agentport/event/:connectionId",async c=>receiveAgentPortNotification(c.env,c.req.param("connectionId"),c.req.raw));
   app.on(["GET", "POST"], "/spaces/:spaceId/assistant-communications", (c) =>

@@ -391,6 +391,8 @@ export interface AgentsEnv extends Cloudflare.Env {
   GOAL_CREDIT_CEILING_ENABLED?: string;
   /** MS-25 / D10: apply Space/Project/user worker preferences at goal start; off = today's behavior. */
   WORKER_PREFERENCES_ENABLED?: string;
+  /** MS-28 / V-spec MD-3: offering and agreement admin routes; off = not-found shape. */
+  MANAGED_OFFERINGS_ENABLED?: string;
   /** Full assistant-response caching stays off until exact caller and source freshness gates pass. */
   KNOWLEDGE_RESPONSE_CACHE_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
