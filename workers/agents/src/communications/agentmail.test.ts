@@ -7,7 +7,7 @@ import { connectUserAgentMail,callAgentMailTool,createManagedAgentMailQuote,prov
 import { ensureIdentity,ensureAgentPortAssistantIdentity,sealCommunication } from "./core.js";
 import { registerCommunicationRoutes } from "./routes.js";
 import { eraseCommunicationIdentities } from "./erasure.js";
-import { fixture,scope } from "../../../../tests/fixtures/assistant-communications.js";
+import { fixture,scope,enableManagedOfferingsFixture } from "../../../../tests/fixtures/assistant-communications.js";
 
 function enableSubscriptions(f:ReturnType<typeof fixture>){
   (f.env as unknown as {MANAGED_SUBSCRIPTIONS_ENABLED:string}).MANAGED_SUBSCRIPTIONS_ENABLED="true";
@@ -868,6 +868,21 @@ describe("AgentMail provider account boundary",()=>{
     expect(await f.db.prepare("SELECT action,actor_user_id FROM managed_service_payer_mandate_audit WHERE action='revoked'").first<Record<string,string>>())
       .toMatchObject({action:"revoked",actor_user_id:"user"});
   });
+  it("MS-41: provisioning verifies an offering-bound quote and refuses a changed configuration before billing or the provider",async()=>{
+    const f=fixture();const identity=await ensureIdentity(f.env,scope);
+    if((f.env as unknown as {MANAGED_OFFERINGS_ENABLED?:string}).MANAGED_OFFERINGS_ENABLED!=="true")enableManagedOfferingsFixture(f.db,f.env);
+    const billing=vi.fn(async()=>Response.json({reserved:true,settled:true}));
+    await verifyTestAgentMailCapability(f);
+    const env=f.env as unknown as {AGENTMAIL_API_KEY:string;AGENTMAIL_DEFAULT_DOMAIN:string;AGENTMAIL_REGION:string;BILLING_WORKER:{fetch:typeof billing}};
+    env.AGENTMAIL_API_KEY="managed-provider-key";env.AGENTMAIL_DEFAULT_DOMAIN="mail.example.test";env.AGENTMAIL_REGION="us";env.BILLING_WORKER={fetch:billing};
+    const providerFetch=vi.fn(async()=>Response.json({error:"not_found"},{status:404}));vi.stubGlobal("fetch",providerFetch);
+    const quoteId=await quoteAgentMailProvision(f,identity);
+    await f.db.prepare("UPDATE managed_service_operation_quotes SET configuration_sha256=? WHERE quote_id=?").bind("0".repeat(64),quoteId).run();
+    await expect(provisionManagedAgentMail(f.env,scope,identity,undefined,quoteId)).rejects.toThrow("managed_service_quote_binding_mismatch");
+    expect(billing).not.toHaveBeenCalled();expect(providerFetch).not.toHaveBeenCalled();
+    expect(await f.db.prepare("SELECT status FROM managed_service_operation_quotes WHERE quote_id=?").bind(quoteId).first()).toMatchObject({status:"quoted"});
+  });
+
   it("exposes owner quote and separate confirmation actions for managed AgentMail",async()=>{
     const f=fixture();await ensureIdentity(f.env,scope);await verifyTestAgentMailCapability(f);
     (f.env as unknown as {AGENTMAIL_DEFAULT_DOMAIN:string;AGENTMAIL_REGION:string}).AGENTMAIL_DEFAULT_DOMAIN="mail.example.test";

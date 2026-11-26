@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { mintInternalToken } from "@naelao/http";
 import type { AgentsEnv } from "../index.js";
 import { registerCommunicationRoutes } from "./routes.js";
-import { fixture, scope } from "../../../../tests/fixtures/assistant-communications.js";
+import { fixture, scope, enableManagedOfferingsFixture } from "../../../../tests/fixtures/assistant-communications.js";
 import { createManagedModelQuote, runManagedModelOperation, purgeExpiredManagedModelResults } from "./managed-models.js";
 
 const MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8";
@@ -89,6 +89,21 @@ describe("managed Workers AI operations", () => {
     expect(h.db.db.prepare("PRAGMA table_info(managed_service_operation_quotes)").all().map((row:any)=>row.name)).not.toContain("prompt");
     await expect(runManagedModelOperation(h.env, scope, { ...request,prompt:"different body",quoteId:priced.quoteId }))
       .rejects.toThrow("managed_model_idempotency_conflict");
+  });
+
+  it("MS-41: verifies an offering-bound quote before billing and refuses a changed configuration (flag on only)", async () => {
+    const h = harness();
+    if ((h.env as unknown as { MANAGED_OFFERINGS_ENABLED?: string }).MANAGED_OFFERINGS_ENABLED !== "true") enableManagedOfferingsFixture(h.db, h.env);
+    const tampered = await createQuote(h);
+    h.db.db.prepare("UPDATE managed_service_operation_quotes SET configuration_sha256=? WHERE quote_id=?").run("0".repeat(64), tampered.quoteId);
+    await expect(runManagedModelOperation(h.env, scope, { modelId:MODEL,prompt:"hello",idempotencyKey:"request-0041",quoteId:tampered.quoteId }))
+      .rejects.toThrow("managed_model_quote_binding_mismatch");
+    expect(h.billingFetch).not.toHaveBeenCalled();
+    expect(h.aiRun).not.toHaveBeenCalled();
+    expect(h.db.db.prepare("SELECT status FROM managed_service_operation_quotes WHERE quote_id=?").get(tampered.quoteId)).toEqual({ status:"quoted" });
+    const good = await createQuote(h);
+    await expect(runManagedModelOperation(h.env, scope, { modelId:MODEL,prompt:"hello",idempotencyKey:"request-0042",quoteId:good.quoteId }))
+      .resolves.toMatchObject({ status:"complete" });
   });
 
   it("keeps uncertain provider results held and never retries inference", async () => {

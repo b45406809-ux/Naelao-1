@@ -7,7 +7,12 @@ import {
   reserveManagedServiceCredits,
   settleManagedServiceCredits,
 } from "./managed-service-billing.js";
-import { createOfferingQuote, managedOfferingsEnabled, type QuoteComponent } from "./managed-quotes.js";
+import { createOfferingQuote, managedOfferingsEnabled, verifyOfferingQuote, type QuoteComponent, type QuoteVerifyErrorCode } from "./managed-quotes.js";
+
+const MODEL_QUOTE_VERIFY_ERRORS: Record<QuoteVerifyErrorCode, string> = {
+  quote_not_found: "managed_model_quote_not_found", quote_binding_mismatch: "managed_model_quote_binding_mismatch",
+  quote_expired: "managed_model_quote_expired", quote_price_changed: "managed_model_quote_terms_changed", quote_already_used: "managed_model_quote_already_used",
+};
 import { ensureOrganizationPayerMandate, revokeOrganizationPayerMandate } from "./managed-service-ownership.js";
 
 const PROVIDER = "cloudflare";
@@ -285,12 +290,12 @@ export async function runManagedModelOperation(
   if (!/^msq_[A-Fa-f0-9]{32}$/.test(input.quoteId)) throw new Error("managed_model_quote_invalid");
   const quote = await env.PLATFORM_DB.prepare(`SELECT quote_id,tenant_id,space_id,project_id,requester_user_id,plan_tier,
       provider,service_id,operation_name,model_id,region,capability_version,price_version,credits,max_output_tokens,status,
-      operation_id,expires_at FROM managed_service_operation_quotes WHERE quote_id=? AND tenant_id=? AND space_id=?
+      operation_id,expires_at,${managedOfferingsEnabled(env) ? "offering_id" : "NULL AS offering_id"} FROM managed_service_operation_quotes WHERE quote_id=? AND tenant_id=? AND space_id=?
         AND project_id IS ? AND requester_user_id=?`)
     .bind(input.quoteId, scope.tenantId, scope.spaceId, scope.projectId ?? null, scope.userId)
     .first<{ quote_id:string;tenant_id:string;space_id:string;project_id:string|null;requester_user_id:string;plan_tier:string;
       provider:string;service_id:string;operation_name:string;model_id:string;region:string;capability_version:number;
-      price_version:string;credits:number;max_output_tokens:number;status:string;operation_id:string|null;expires_at:string }>();
+      price_version:string;credits:number;max_output_tokens:number;status:string;operation_id:string|null;expires_at:string;offering_id:string|null }>();
   if (!quote) throw new Error("managed_model_quote_not_found");
   if (quote.provider !== PROVIDER || quote.service_id !== SERVICE
     || quote.operation_name !== OPERATION || quote.model_id !== input.modelId || quote.region !== REGION
@@ -352,6 +357,12 @@ export async function runManagedModelOperation(
     entitlement=active.entitlement;
     if(quote.status!=="quoted")throw new Error("managed_model_quote_already_used");
     if(Date.parse(quote.expires_at)<=now.getTime())throw new Error("managed_model_quote_expired");
+    if(managedOfferingsEnabled(env)&&quote.offering_id){
+      // MS-41 (MR-COM-8): an offering-bound quote must still match tenant, offering, region, request configuration and price.
+      const verified=await verifyOfferingQuote(env,input.quoteId,{tenantId:scope.tenantId,offeringId:quote.offering_id,region:REGION,
+        configuration:{model_id:input.modelId,max_output_tokens:entitlement.max_output_tokens},priceVersion:entitlement.price_version,now});
+      if(!verified.ok)throw new Error(MODEL_QUOTE_VERIFY_ERRORS[verified.error_code]);
+    }
     requestHash=await sha256(JSON.stringify({tenant:scope.tenantId,space:scope.spaceId,project:scope.projectId??null,
       user:scope.userId,model:input.modelId,prompt:input.prompt,maxOutputTokens:entitlement.max_output_tokens}));
   }

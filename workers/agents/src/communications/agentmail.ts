@@ -7,7 +7,7 @@ import { markManagedServiceCreditsUncertain,releaseManagedServiceCredits,reserve
 import { requireManagedServiceCapability } from "./managed-service-capabilities.js";
 import { ensureManagedServiceOwnerLink, ensureOrganizationPayerMandate, revokeOrganizationPayerMandate } from "./managed-service-ownership.js";
 import { loadAgentConfig } from "../script-engine/agent-config.js";
-import { createOfferingQuote,managedOfferingsEnabled } from "./managed-quotes.js";
+import { createOfferingQuote,managedOfferingsEnabled,verifyOfferingQuote } from "./managed-quotes.js";
 import { enrollManagedSubscription,managedSubscriptionsEnabled,resolveOfferingGraceDays,sweepManagedSubscriptions,type SubscriptionTypeHandler } from "./managed-subscriptions.js";
 
 type AgentMailAccount={id:string;tenant_id:string;space_id:string;project_id:string|null;assistant_identity_id:string;agentport_agent_id:string;agentport_account_id:string|null;agentport_principal_id?:string|null;owner_link_id?:string|null;owner_user_id:string;mode:"naelao_managed"|"user_connected";pod_id:string|null;inbox_id:string;email_address:string;credential_ciphertext:string|null;credential_iv:string|null;provider_region?:"us"|"eu"|null;status:string;activated_at:string|null};
@@ -663,11 +663,11 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
   if(display.length<1||display.length>120||/[\u0000-\u001f\u007f]/.test(display))throw new Error("agentmail_display_name_invalid");
   const quote=await env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,project_id,requester_user_id,plan_tier,provider,service_id,operation_name,
       region,capability_version,price_version,credits,request_sha256,renewal_credits,renewal_price_version,renewal_capability_version,
-      renewal_max_credits_per_operation,status,operation_id,expires_at
+      renewal_max_credits_per_operation,status,operation_id,expires_at,${managedOfferingsEnabled(env)?"offering_id":"NULL AS offering_id"}
     FROM managed_service_operation_quotes WHERE quote_id=?`).bind(quoteId)
     .first<{tenant_id:string;space_id:string;project_id:string|null;requester_user_id:string;plan_tier:string;provider:string;service_id:string;operation_name:string;
       region:string;capability_version:number;price_version:string;credits:number;request_sha256:string|null;renewal_credits:number|null;renewal_price_version:string|null;
-      renewal_capability_version:number|null;renewal_max_credits_per_operation:number|null;status:string;operation_id:string|null;expires_at:string}>();
+      renewal_capability_version:number|null;renewal_max_credits_per_operation:number|null;status:string;operation_id:string|null;expires_at:string;offering_id:string|null}>();
   const acceptedOperationQuote=quote?.status==="consumed"&&quote.operation_id===opId;
   const capability=await requireManagedServiceCapability(env.PLATFORM_DB,{provider:"agentmail",serviceId:"agentmail",operation:"provision",
     connectionMode:"naelao_managed",...(acceptedOperationQuote?{version:quote.capability_version}:{}),region});
@@ -700,6 +700,12 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
   if(priorOperation&&priorOperation.quote_id!==quoteId)throw new Error("managed_service_operation_conflict");
   if(quote.status==="consumed"&&quote.operation_id!==opId)throw new Error("managed_service_quote_already_used");
   if(quote.status==="quoted"&&Date.parse(quote.expires_at)<=now)throw new Error("managed_service_quote_expired");
+  if(quote.status==="quoted"&&managedOfferingsEnabled(env)&&quote.offering_id){
+    // MS-41 (MR-COM-8): an offering-bound quote must still match tenant, offering, region, display/domain and price before anything is consumed.
+    const verified=await verifyOfferingQuote(env,quoteId,{tenantId:scope.tenantId,offeringId:quote.offering_id,region,
+      configuration:{domain:env.AGENTMAIL_DEFAULT_DOMAIN??"",display},priceVersion:price.priceVersion,now:new Date(now)});
+    if(!verified.ok)throw new Error(`managed_service_${verified.error_code}`);
+  }
   const mandateScope:CommunicationScope={...scope,role:"product_end_user"};
   const mandateId=await ensureOrganizationPayerMandate(env,mandateScope,{mandateKey:`agentmail:${agentId}`,provider:"agentmail",serviceId:"agentmail",
     maxCreditsPerOperation:Math.max(price.maxCredits,renewalPrice?.maxCredits??price.maxCredits),
