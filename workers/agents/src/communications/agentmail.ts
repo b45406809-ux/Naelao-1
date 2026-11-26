@@ -8,6 +8,7 @@ import { requireManagedServiceCapability } from "./managed-service-capabilities.
 import { ensureManagedServiceOwnerLink, ensureOrganizationPayerMandate, revokeOrganizationPayerMandate } from "./managed-service-ownership.js";
 import { agentPortCaller,executionPipelineEnabled,runManagedExecution } from "./execution-pipeline.js";
 import { loadAgentConfig } from "../script-engine/agent-config.js";
+import { agentMailProviderEventAdapter,claimProviderEvent,deadLetterProviderEvent,providerEventModuleEnabled,readAgentMailEvent,releaseProviderEvent } from "./provider-events/index.js";
 import { createOfferingQuote,managedOfferingsEnabled,verifyOfferingQuote } from "./managed-quotes.js";
 import { enrollManagedSubscription,managedSubscriptionsEnabled,resolveOfferingGraceDays,sweepManagedSubscriptions,type SubscriptionTypeHandler } from "./managed-subscriptions.js";
 
@@ -1468,17 +1469,6 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
   }));
   return {checked:due.results.length,billed,held,review:expired.meta.changes};
 }
-function constantTimeEqual(a:Uint8Array,b:Uint8Array){if(a.length!==b.length)return false;let diff=0;for(let i=0;i<a.length;i++)diff|=a[i]!^b[i]!;return diff===0;}
-function decodeBase64(value:string){const binary=atob(value);return Uint8Array.from(binary,char=>char.charCodeAt(0));}
-async function verifySvix(secret:string,headers:Headers,raw:string){
-  const idHeader=headers.get("svix-id")??"",timestamp=headers.get("svix-timestamp")??"",signature=headers.get("svix-signature")??"";
-  if(!/^msg_[A-Za-z0-9_-]{1,200}$/.test(idHeader)||!/^\d{1,12}$/.test(timestamp)||Math.abs(Date.now()/1000-Number(timestamp))>300)return false;
-  const encoded=secret.startsWith("whsec_")?secret.slice(6):"";if(!encoded)return false;
-  let key:Uint8Array;try{key=decodeBase64(encoded);}catch{return false;}
-  const hmacKey=await crypto.subtle.importKey("raw",key,{name:"HMAC",hash:"SHA-256"},false,["sign"]);
-  const signed=`${idHeader}.${timestamp}.${raw}`;const expected=new Uint8Array(await crypto.subtle.sign("HMAC",hmacKey,new TextEncoder().encode(signed)));
-  return signature.split(" ").some(part=>{const match=/^v1,([A-Za-z0-9+/=]+)$/.exec(part);if(!match)return false;try{return constantTimeEqual(expected,decodeBase64(match[1]!));}catch{return false;}});
-}
 async function verifyAgentPortNotification(secret:string,headers:Headers,raw:string){
   const timestamp=headers.get("x-agentport-timestamp")??"",signature=headers.get("x-agentport-signature")??"";
   return (await verifyAgentPortEventWebhook({secret,timestamp,signature,raw:new TextEncoder().encode(raw)})).valid;
@@ -1490,20 +1480,32 @@ export async function receiveAgentMailWebhook(env:AgentsEnv,connectionId:string,
   const raw=await readBoundedRequestText(request,2*1024*1024).catch(()=>null);if(raw===null)return Response.json({error_code:"webhook_payload_invalid"},{status:413});
   const identity={id:account.assistant_identity_id,tenant_id:account.tenant_id} as CommunicationIdentity;
   const secret=String((await openCommunication(env,identity,account.id,{ciphertext:account.agentmail_webhook_secret_ciphertext,iv:account.agentmail_webhook_secret_iv,algorithm:"aes-256-gcm"})).secret??"");
-  if(!await verifySvix(secret,request.headers,raw))return Response.json({error_code:"webhook_signature_invalid"},{status:401});
+  // MS-46: the svix verifier lives in the provider-event module; flag off and on run the same verification.
+  if(!await agentMailProviderEventAdapter.verifyWebhook({rawBody:raw,headers:request.headers,secret}))return Response.json({error_code:"webhook_signature_invalid"},{status:401});
   let event:Record<string,unknown>;try{event=JSON.parse(raw) as Record<string,unknown>;}catch{return Response.json({error_code:"webhook_json_invalid"},{status:400});}
   if(event.event_type!=="message.received")return new Response(null,{status:204});
-  const message=event.message as Record<string,unknown>|undefined;const thread=event.thread as Record<string,unknown>|undefined;
-  const eventId=typeof event.event_id==="string"?event.event_id:"";const messageId=typeof message?.message_id==="string"?message.message_id:"";const threadId=typeof message?.thread_id==="string"?message.thread_id:(typeof thread?.thread_id==="string"?thread.thread_id:"");
-  if(!eventId||!messageId||!threadId||message?.inbox_id!==account.inbox_id)return Response.json({error_code:"webhook_reference_invalid"},{status:400});
+  const {eventId,messageId,threadId,inboxId}=readAgentMailEvent(event);
+  const moduleOn=providerEventModuleEnabled(env);
+  if(!eventId||!messageId||!threadId||inboxId!==account.inbox_id){
+    // MR-EVT-3: a verified event for a resource this account does not own is dead-lettered (references and a body hash only); the response is unchanged.
+    if(moduleOn)await deadLetterProviderEvent(env.PLATFORM_DB,{provider:"agentmail",eventId:eventId||"unknown",eventType:"message.received",resourceRef:typeof inboxId==="string"?inboxId:null,reason:inboxId===account.inbox_id?"event_reference_invalid":"unknown_resource",rawBody:raw});
+    return Response.json({error_code:"webhook_reference_invalid"},{status:400});
+  }
   const at=new Date().toISOString();
   await env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_agentmail_event_receipts(account_id,event_id,event_type,message_ref,thread_ref,status,created_at,updated_at) VALUES(?,?,'message.received',?,?,'pending',?,?)").bind(account.id,eventId,messageId,threadId,at,at).run();
   const receipt=await env.PLATFORM_DB.prepare("SELECT status,message_ref,thread_ref FROM assistant_agentmail_event_receipts WHERE account_id=? AND event_id=?").bind(account.id,eventId).first<{status:string;message_ref:string|null;thread_ref:string|null}>();
   if(!receipt||receipt.message_ref!==messageId||receipt.thread_ref!==threadId)return Response.json({error_code:"event_idempotency_conflict"},{status:409});
   if(receipt.status==="queued")return new Response(null,{status:204});
   const serviceId=`agentmail:${account.tenant_id}`;
-  const posted=await agentPort(env,account.tenant_id,"/events","POST",{serviceId,accountId:account.agentport_account_id,providerEventId:eventId,eventType:"message.received",threadRef:threadId,dataRef:messageId});
-  if(posted.response.status!==202&&posted.response.status!==200) return Response.json({error_code:"agentport_event_ingest_failed"},{status:503});
+  // MR-EVT-2: record the event in processed_webhook_events before the side effect. The receipt above stays the retry-aware gate; a failed hand-off releases the record.
+  if(moduleOn)await claimProviderEvent(env.PLATFORM_DB,"agentmail",eventId,"message.received").catch(()=>false);
+  let posted:Awaited<ReturnType<typeof agentPort>>;
+  try{posted=await agentPort(env,account.tenant_id,"/events","POST",{serviceId,accountId:account.agentport_account_id,providerEventId:eventId,eventType:"message.received",threadRef:threadId,dataRef:messageId});}
+  catch(error){if(moduleOn)await releaseProviderEvent(env.PLATFORM_DB,"agentmail",eventId,"message.received").catch(()=>undefined);throw error;}
+  if(posted.response.status!==202&&posted.response.status!==200){
+    if(moduleOn)await releaseProviderEvent(env.PLATFORM_DB,"agentmail",eventId,"message.received").catch(()=>undefined);
+    return Response.json({error_code:"agentport_event_ingest_failed"},{status:503});
+  }
   await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_event_receipts SET status='queued',updated_at=? WHERE account_id=? AND event_id=?").bind(new Date().toISOString(),account.id,eventId).run();
   return new Response(null,{status:204});
 }

@@ -150,6 +150,7 @@ import { handleChannelSessionQueue, type ChannelSessionQueueMessage, type Provid
 import { stableChannelSessionId as createStableChannelSessionId } from "./channels/channel-session-id.js";
 import { providerEventRuntimeAgentId } from "./channels/agentport-event-subscription.js";
 import { dispatchAgentPortProviderEvent } from "./channels/agentport-provider-event-dispatch.js";
+import { agentGrantIsActive, deadLetterProviderEvent, metaProviderEventAdapter, providerEventModuleEnabled } from "./communications/provider-events/index.js";
 import { readSidecarRuntimeExecutionProfile, saveSidecarRuntimeExecutionProfile } from "./workspace/sidecar-runtime-execution-profile.js";
 import { readBoundedRequestText, readBoundedResponseText } from "./shared/bounded-response-text.js";
 import { handleSandboxWorkspaceBridge, reconcilePendingWorkspacePublications, sweepExpiredWorkspaceBlobs } from "./sandboxes/workspace-bridge.js";
@@ -484,6 +485,7 @@ export interface AgentsEnv extends Cloudflare.Env {
   AGENTMAIL_SEND_BILLING_ENABLED?: string;
   /** MS-45: run managed sends through the shared execution pipeline (approval bound to the payload hash, outcome receipts). Default off. */
   MANAGED_EXECUTION_PIPELINE_ENABLED?: string;
+  PROVIDER_EVENT_MODULE_ENABLED?: string;
   WORKER_BRANCH_RETENTION_ENABLED?: string;
   /** MS-21: delete finished run logs older than 90 days. Default off. */
   RUN_LOG_RETENTION_ENABLED?: string;
@@ -3289,6 +3291,8 @@ async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSes
   if (providerEvent) {
     const event = message as ProviderEventReferenceQueueMessage;
     await dispatchAgentPortProviderEvent(event, {
+      // MR-EVT-5 (PROVIDER_EVENT_MODULE_ENABLED): the agent's AgentPort grant on the account is re-checked at delivery time; a revoked or expired grant stops the wake.
+      ...(providerEventModuleEnabled(env) ? { grantActive: (queued: ProviderEventReferenceQueueMessage) => agentGrantIsActive(env.PLATFORM_DB, tenantId, queued.accountId, queued.agentId) } : {}),
       currentSubscription: async (queued) => {
         let response: Response;
         try {
@@ -8630,7 +8634,15 @@ app.post("/channels/whatsapp/extensions", async c => {
       JOIN orgs o ON o.id=s.tenant_id AND o.status='active'
       WHERE c.provider='whatsapp' AND c.account_id=? AND c.status='active' AND s.status='active' LIMIT 2`)
       .bind(item.phoneNumberId).all<{ project_id: string; installation_id: string; connection_id: string; credential_name: string; handler_sha256: string | null; tenant_id: string; space_id: string }>();
-    if ((candidates.results ?? []).length !== 1) continue;
+    if ((candidates.results ?? []).length !== 1) {
+      // MR-EVT-3 (PROVIDER_EVENT_MODULE_ENABLED): a verified Meta event for an unknown or ambiguous phone number is dead-lettered; the message is still skipped.
+      if (providerEventModuleEnabled(c.env)) {
+        const meta = await metaProviderEventAdapter.normalizeWebhook(JSON.stringify(item.payload));
+        await deadLetterProviderEvent(c.env.PLATFORM_DB, { provider: "meta", eventId: meta?.eventId ?? "unknown", eventType: meta?.eventType ?? "message.received",
+          resourceRef: String(item.phoneNumberId), reason: (candidates.results ?? []).length ? "ambiguous_resource" : "unknown_resource", rawBody: rawBody });
+      }
+      continue;
+    }
     const connection = candidates.results![0]!;
     if (!connection.handler_sha256) continue;
     const installation = await fetchInstalledConnectionContext(c.env, connection.tenant_id, connection.space_id, connection.project_id, connection.installation_id);
