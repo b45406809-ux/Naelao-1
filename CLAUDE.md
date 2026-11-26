@@ -2,8 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-49** (provider webhook routes through the event module), then **MS-50**
-(AgentMail inventory listing). V-spec P0–P4 are complete locally; P5 is parked by OD-1. Follow
+Master implementation spec, **MS-50** ("AgentMail inventory listing for reconciliation"). MS-49 is done locally.
+V-spec P0–P4 are complete locally; P5 is parked by OD-1. Follow
 [the master spec](docs/operations/master-implementation-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
