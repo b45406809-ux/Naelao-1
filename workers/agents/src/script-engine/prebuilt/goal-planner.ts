@@ -243,6 +243,13 @@ export const goalPlanner: PrebuiltScript = {
       if (!persist || !spawn) throw new Error("goal orchestration is unavailable");
       if (!ctx.env.orchestration?.executeGoalDag) throw new Error("durable goal orchestration is unavailable");
       const dispatch = await ctx.env.orchestration.executeGoalDag(objective, tasks);
+      // MS-26: a budget hold is a WAITING outcome, not a failure and not completion. Ready tasks stay
+      // pending in the journal; the host resumes the same journal after the ceiling is raised.
+      if (dispatch.budgetHold && tasks.some(task => dispatch.tasks[task.id]?.status !== "completed")) {
+        return { objective, tasks, dispatch, status: "awaiting_budget_approval", completed: false,
+          message: "The goal is awaiting budget approval: the per-goal credit ceiling would be exceeded. Unfinished tasks have NOT run. Tell the user it is waiting for an owner or admin to raise the ceiling; never report it as done.",
+          context_isolation: "no_parent_conversation", max_output_tokens_per_worker: planBudget };
+      }
       if (tasks.some(task => dispatch.tasks[task.id]?.status !== "completed")) throw new Error(`goal_dag_incomplete:${JSON.stringify(dispatch)}`);
       return { objective, tasks, dispatch, context_isolation: "no_parent_conversation", max_output_tokens_per_worker: planBudget };
     },

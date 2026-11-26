@@ -2,10 +2,7 @@
 
 ## Current task
 
-Master implementation spec, **MS-26**: Resume a budget-held goal after the ceiling is raised.
-MS-01 to MS-25 are done; MS-26 completes the owner-approved decision D8 (prices and caps) follow-up
-found during MS-18 review. Follow [the spec](docs/operations/master-implementation-spec.md).
-Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+The master implementation spec MS-01 to MS-26 is complete. Every D8–D10 flag is off; turning any on needs owner authorization. Remaining queue items are blocked on owner decisions or live access (see the spec's "Not in this spec" table and the queue). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 

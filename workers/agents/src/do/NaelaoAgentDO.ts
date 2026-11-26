@@ -8,7 +8,7 @@ import { childFanout, issueDelegationContract, verifyDelegationContract, type De
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
 import { fetchStoredWorkerPreferences, resolveGoalPreferencesSnapshot, unavailableGoalPreferences, usableGoalPreferences, type GoalPreferencesSnapshot } from "../goal-worker-preferences.js";
 import { applyWorkerModelTierPolicy } from "../script-engine/worker-model-tier-policy.js";
-import { admitGoalTaskDispatch, ensureGoalCreditSchema, estimateGoalTaskCredits, raiseGoalCreditCeiling, settleGoalCreditReservation } from "../goal-credit-ceiling.js";
+import { admitGoalTaskDispatch, claimGoalBudgetResume, ensureGoalCreditSchema, estimateGoalTaskCredits, finishGoalBudgetResume, raiseGoalCreditCeiling, readGoalCreditState, recordGoalBudgetHold, settleGoalCreditReservation, type GoalBudgetResumeRecord } from "../goal-credit-ceiling.js";
 import { executeGoalDag, MAX_GOAL_ROUTING_ADJUSTMENTS, type GoalDagJournal, type GoalRoutingAdjustment } from "../script-engine/goal-dag.js";
 import { persistGoalExpansionAdmission } from "../script-engine/goal-expansion-admission.js";
 import { createPlannerExcerptBudget } from "../script-engine/planner-excerpt-budget.js";
@@ -417,6 +417,8 @@ interface FinishedRunState {
   error_code?: string;
   pending_approval?: unknown;
   pending_question?: unknown;
+  /** MS-26: a goal held in `awaiting_budget_approval` (status stays the existing `awaiting_approval`). */
+  pending_budget_approval?: unknown;
   deferred_approvals?: unknown;
 }
 /** The same clock for a channel reply, where the loop is draining a queue of waiting customers
@@ -1281,6 +1283,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   /** Layer 1: wake-local working context. Never shared across structural thread keys. */
   private readonly activeTaskBranches = new Map<string, Promise<string>>();
   private readonly activeGoalDags = new Map<string, Promise<GoalDagJournal>>();
+  /** MS-26: goals whose last executeGoalDag ended in a budget hold, keyed by the goal's parent run
+   *  id. Read once by handleScriptRun to report a waiting (not completed) outcome. */
+  private readonly budgetHeldGoals = new Map<string, { journalKey: string; taskId: string; reason: string;
+    completed: number; total: number; ceiling: number; settled: number; held: number }>();
+  /** MS-26: in-flight resumes of budget-held goals (one per parent run id). */
+  private readonly activeBudgetResumes = new Map<string, Promise<void>>();
   private readonly workingContexts = new Map<string, ConversationContext>();
   private async handleWorkflowEffect(request: Request): Promise<Response> {
     const body = await request.json<{ identity: DurableWorkflowIdentity; key: string; operation: string; params: Record<string, unknown>; idempotencyKey: string; airGappedOnly?: boolean }>();
@@ -2304,7 +2312,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (!body || typeof body.parent_run_id !== "string" || typeof body.credit_ceiling !== "number") return Response.json({ error_code: "invalid_request" }, { status: 400 });
         const result = raiseGoalCreditCeiling(this.ctx.storage.sql, { parentRunId: body.parent_run_id, ceiling: body.credit_ceiling });
         if (!result.ok) return Response.json({ error_code: result.reason === "invalid_ceiling" ? "invalid_request" : result.reason }, { status: result.reason === "invalid_ceiling" ? 400 : result.reason === "not_found" ? 404 : 409 });
-        return Response.json({ ok: true, goals_raised: result.raised });
+        // MS-26: a raise only updates the ceiling unless a goal of this run is held; then the SAME
+        // journal is re-entered in the background (one claim per goal, so a second raise is inert).
+        const resume = this.startBudgetResume(body.parent_run_id);
+        if (resume) this.ctx.waitUntil(resume);
+        return Response.json({ ok: true, goals_raised: result.raised, resume: resume ? "started" : "not_needed" });
       }
       if (method === "POST" && (url.pathname === "/git/reset-hard" || url.pathname === "/rollback-to-turn")) {
         if (!this.env.ARTIFACT_WORKER) return Response.json({ error: "artifact repository unavailable" }, { status: 503 });
@@ -4819,6 +4831,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     if (hooks.persistGoalTasks && hooks.spawnSubAgent && this.env.SPACES_WORKER) {
       hooks.executeGoalDag = async (objective, tasks) => {
+        // Exactly what the journal key hashes, kept so a budget-held goal resumes the SAME journal.
+        const entryTasks = structuredClone(tasks);
         const bytes = new TextEncoder().encode(JSON.stringify([parentRunId, objective, tasks]));
         const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(b => b.toString(16).padStart(2, "0")).join("");
         const key = `goal-dag:${hash}`;
@@ -5456,6 +5470,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           });
           // Ensure a final projection exists even when the durable DAG restored without transitions.
           await publishCoordinationSummary(journal);
+          if (goalCreditCeilingEnabled && journal.budgetHold) {
+            // MS-26: durable resume record plus the in-memory marker that turns this run's outcome
+            // into "awaiting budget approval" instead of completion.
+            const credit = readGoalCreditState(this.ctx.storage.sql, key);
+            recordGoalBudgetHold(this.ctx.storage.sql, { parentRunId, journalKey: key, objective, tasks: entryTasks,
+              context: { spaceId, tenantId, agentId, ...(parentThreadId ? { sessionId: parentThreadId } : {}), ...(projectId ? { projectId } : {}),
+                ...(userId ? { userId } : {}), ...(runtimeEnv?.callerRole ? { callerRole: runtimeEnv.callerRole } : {}),
+                ...(currentModel ? { model: currentModel } : {}) } });
+            this.budgetHeldGoals.set(parentRunId, { journalKey: key, taskId: journal.budgetHold.taskId, reason: journal.budgetHold.reason,
+              completed: Object.values(journal.tasks).filter(task => task.status === "completed").length, total: Object.keys(journal.tasks).length,
+              ceiling: credit?.ceiling ?? 0, settled: credit?.settled ?? 0, held: credit?.held ?? 0 });
+          }
           return journal;
         })();
         this.activeGoalDags.set(key, run);
@@ -8112,6 +8138,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ledgerKey?: string;
       resumeSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
       deliberationRound?: number;
+      /** MS-26: re-enter an existing goal journal (budget raise). Server-side only, never from the body. */
+      goalResume?: { parentRunId: string; objective: string; tasks: GoalTask[] };
     },
   ): Promise<Response> {
     const body = await request.json<{
@@ -8205,6 +8233,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(terminal.final_answer !== undefined ? { final_answer: terminal.final_answer } : {}),
         ...(terminal.error ? { error: terminal.error } : {}),
         ...(terminal.pending_approval !== undefined ? { pending_approval: terminal.pending_approval } : {}),
+        ...(terminal.pending_budget_approval !== undefined ? { pending_budget_approval: terminal.pending_budget_approval } : {}),
         ...(terminal.pending_question !== undefined
           ? terminal.status === "awaiting_planner_input"
             ? { pending_worker_question: terminal.pending_question }
@@ -8647,7 +8676,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // scripts) — read lazily at call time, so ordering relative to runScriptLoop is safe.
     const consultLog: Array<{ thread_id: string; agent_id: string; title: string }> = [];
     if(typeof body.context?.["steering_parent_do_id"]==="string")engineEnv.steeringParentDoId=body.context["steering_parent_do_id"];
-    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog, body.model, body.effort, engineEnv);
+    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", continuation?.goalResume?.parentRunId ?? runId, sessionId, projectId, tools, userId, consultLog, body.model, body.effort, engineEnv);
     if (delegation && this.env.TASK_BLACKBOARD_ENABLED === "true" && this.env.NAELAO_AGENT_DO && /^[a-f0-9]{64}:/.test(delegation.workerId)) {
       const parent = this.env.NAELAO_AGENT_DO.get(this.env.NAELAO_AGENT_DO.idFromString(delegation.parentDoId));
       engineEnv.orchestration.taskBlackboard = async (action, input) => {
@@ -8920,7 +8949,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           memoryContext = undefined;
         }
       }
-      const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
+      const goalResume = continuation?.goalResume;
+      const result: LoopResult = goalResume ? await this.runBudgetResumedGoal(engineEnv, goalResume) : await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
         goal: body.goal + attachmentContext,
         startupObserve: config.scripts.startup_observe,
         ...(conversation ? { conversation } : {}),
@@ -9108,6 +9138,46 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return Response.json(result);
       }
 
+      const settleRun = (): Promise<void> => this.settleRunBilling({
+        spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, runId,
+        tokensUsed: result.result?.tokens_used ?? 0,
+        inputTokens: result.result?.input_tokens ?? 0,
+        outputTokens: result.result?.output_tokens ?? 0,
+        model: body.model,
+        modelPricing,
+        notes: result.notes,
+        projectSpendReserved,
+        llmQuotaReserved,
+        tier: result.result?.tier,
+        durationMs: result.result?.duration_ms,
+        sessionId, sessionCreditCeiling: effectiveSessionCreditCeiling,
+        ...(typeof scheduledServiceContext?.service_identity_id === "string" && typeof scheduledServiceContext.authorization_revision === "string"
+          ? { serviceIdentityId: scheduledServiceContext.service_identity_id,
+            serviceAuthorizationRevision: scheduledServiceContext.authorization_revision } : {}),
+      });
+
+      // MS-26: a goal held for budget approval is a WAITING outcome. Nothing is published or reported as
+      // done: the run reports the existing `awaiting_approval` status with the structured detail
+      // `pending_budget_approval`, and the raise route later re-enters the same goal journal.
+      const budgetHeld = this.budgetHeldGoals.get(goalResume?.parentRunId ?? runId);
+      if (budgetHeld) {
+        this.budgetHeldGoals.delete(goalResume?.parentRunId ?? runId);
+        const message = `This goal is awaiting budget approval: ${budgetHeld.completed} of ${budgetHeld.total} tasks are done, and dispatching "${budgetHeld.taskId}" would exceed the per-goal credit ceiling of ${budgetHeld.ceiling} credits (${budgetHeld.settled} settled, ${budgetHeld.held} held). An owner or admin can raise the ceiling, and the remaining tasks will then run automatically.`;
+        const pendingBudgetApproval = { state: "awaiting_budget_approval" as const, task_id: budgetHeld.taskId, reason: budgetHeld.reason,
+          credit_ceiling: budgetHeld.ceiling, credits_settled: budgetHeld.settled, credits_held: budgetHeld.held,
+          tasks_completed: budgetHeld.completed, tasks_total: budgetHeld.total, message };
+        this.persistRunTrace(runId, tenantId, result.trace);
+        await settleRun();
+        await this.writeAgentAnswerToSession(sessionId, spaceId, tenantId, message, agentId, { run_id: runId, pending_budget_approval: pendingBudgetApproval }, runId);
+        void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
+          projectId: projectId ?? null, threadId: sessionId,
+          summary: `Goal awaiting budget approval: ceiling ${budgetHeld.ceiling} credits would be exceeded by '${budgetHeld.taskId}'`,
+        });
+        containerLifecycleTerminal = "blocked";
+        this.finishLiveRun(runId, { status: "awaiting_approval", final_answer: message, pending_budget_approval: pendingBudgetApproval });
+        return Response.json({ ...result, status: "awaiting_budget_approval", pending_budget_approval: pendingBudgetApproval, result: undefined });
+      }
+
       let workspacePublication: TaskPublication | undefined;
       if (result.result?.ok) {
         try { workspacePublication = await engineEnv.orchestration?.finalizeWorkspace?.(); }
@@ -9138,26 +9208,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         });
       }
 
-      // Go-live audit A-1/A-2: shared with handleRun via settleRunBilling — see that method's
-      // doc for why both runtimes must settle billing identically rather than each carrying
-      // their own copy (the divergence that let handleRun run completely unmetered).
-      await this.settleRunBilling({
-        spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, runId,
-        tokensUsed: result.result?.tokens_used ?? 0,
-        inputTokens: result.result?.input_tokens ?? 0,
-        outputTokens: result.result?.output_tokens ?? 0,
-        model: body.model,
-        modelPricing,
-        notes: result.notes,
-        projectSpendReserved,
-        llmQuotaReserved,
-        tier: result.result?.tier,
-        durationMs: result.result?.duration_ms,
-        sessionId, sessionCreditCeiling: effectiveSessionCreditCeiling,
-        ...(typeof scheduledServiceContext?.service_identity_id === "string" && typeof scheduledServiceContext.authorization_revision === "string"
-          ? { serviceIdentityId: scheduledServiceContext.service_identity_id,
-            serviceAuthorizationRevision: scheduledServiceContext.authorization_revision } : {}),
-      });
+      await settleRun();
 
       // Persist the answer into the thread. The client already writes the USER message before
       // dispatching, but nothing wrote the assistant's — so a reload showed a conversation of
@@ -10663,6 +10714,63 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * Idempotent: the checkpoint is claimed with a conditional UPDATE, so a duplicate resume
    * (a retried webhook, a double click on Approve) finds nothing to claim and does nothing.
    */
+  /**
+   * MS-26: re-enter a budget-held goal after its ceiling was raised. The claim is one atomic SQL
+   * UPDATE (held -> resuming), so a second raise while a resume runs finds nothing to claim and
+   * starts nothing. The resume re-enters the same goal journal (same parent run id, objective and
+   * tasks), so tasks that already dispatched or completed are never re-planned or re-dispatched.
+   */
+  private startBudgetResume(parentRunId: string): Promise<void> | null {
+    if (this.activeBudgetResumes.has(parentRunId)) return null;
+    const claimed = claimGoalBudgetResume(this.ctx.storage.sql, parentRunId, `${parentRunId}:budget-resume:${crypto.randomUUID()}`);
+    if (!claimed) return null;
+    const promise = this.resumeBudgetHeldGoal(claimed).finally(() => { this.activeBudgetResumes.delete(parentRunId); });
+    this.activeBudgetResumes.set(parentRunId, promise);
+    return promise;
+  }
+
+  /** MS-26: the body of a budget-resume run. It drives the existing goal journal directly (no
+   *  planner reasoning, so nothing can re-plan) and shapes the outcome like a loop result. */
+  private async runBudgetResumedGoal(engineEnv: ScriptEngineEnv, goal: { objective: string; tasks: GoalTask[] }): Promise<LoopResult> {
+    const startedAt = Date.now();
+    const failure = (error: string): LoopResult => ({ level: "L1", notes: [`goal resume: ${error}`], trace: [],
+      result: { ok: false, error, tier: 1, duration_ms: Date.now() - startedAt, tokens_used: 0 } });
+    const execute = engineEnv.orchestration?.executeGoalDag;
+    if (!execute) return failure("durable goal orchestration is unavailable");
+    try {
+      const journal = await execute(goal.objective, goal.tasks);
+      const done = goal.tasks.filter(task => journal.tasks[task.id]?.status === "completed").length;
+      if (journal.budgetHold) return { level: "L1", notes: ["goal resume: still awaiting budget approval"], trace: [],
+        result: { ok: true, output: "awaiting_budget_approval", tier: 1, duration_ms: Date.now() - startedAt, tokens_used: 0 } };
+      if (done !== goal.tasks.length) return failure(`goal_dag_incomplete:${goal.tasks.map(task => `${task.id}=${journal.tasks[task.id]?.status ?? "missing"}`).join(",")}`);
+      return { level: "L1", notes: ["goal resume: all tasks completed"], trace: [],
+        result: { ok: true, output: `The goal resumed after the credit ceiling was raised and all ${done} tasks are now complete.`,
+          tier: 1, duration_ms: Date.now() - startedAt, tokens_used: 0 } };
+    } catch (error) { return failure(error instanceof Error ? error.message : String(error)); }
+  }
+
+  private async resumeBudgetHeldGoal(record: GoalBudgetResumeRecord): Promise<void> {
+    const ctx = record.context;
+    const str = (key: string): string | undefined => typeof ctx[key] === "string" ? ctx[key] as string : undefined;
+    try {
+      const response = await this.handleScriptRun(new Request("http://agent-do/script/run", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": str("tenantId") ?? "",
+          ...(str("callerRole") ? { "x-naelao-role": str("callerRole")! } : {}) },
+        body: JSON.stringify({ goal: record.objective, spaceId: str("spaceId") ?? "", agentId: str("agentId") ?? "naelao-agent",
+          tenantId: str("tenantId") ?? "", ...(str("sessionId") ? { sessionId: str("sessionId") } : {}),
+          ...(str("projectId") ? { projectId: str("projectId") } : {}), ...(str("userId") ? { userId: str("userId") } : {}),
+          ...(str("model") ? { model: str("model") } : {}), runId: record.resumedRunId }),
+      }), { goalResume: { parentRunId: record.parentRunId, objective: record.objective, tasks: record.tasks as GoalTask[] } });
+      await response.arrayBuffer().catch(() => undefined);
+      // Held again: the hook already re-recorded `held`; otherwise the resume is over.
+      finishGoalBudgetResume(this.ctx.storage.sql, record.parentRunId, "resumed");
+    } catch {
+      // Leave the goal claimable by the next raise; the journal outbox keeps re-entry idempotent.
+      finishGoalBudgetResume(this.ctx.storage.sql, record.parentRunId, "held");
+    }
+  }
+
   private async handleResumeRun(request: Request): Promise<Response> {
     const { approvalId } = await request.json<{ approvalId: string }>();
     if (!approvalId) return Response.json({ error: "approvalId is required" }, { status: 400 });

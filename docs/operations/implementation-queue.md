@@ -833,7 +833,7 @@ reconciled in that ledger. Existing partial implementations remain recorded ther
   those policies and their exact Billing reservation contract are approved; keep model/runtime
   cost selection and automatic thrash control disabled meanwhile. MS-18 local slice landed (flag
   `GOAL_CREDIT_CEILING_ENABLED`, off): a per-goal 200-credit ceiling gates task dispatch and an
-  owner/admin raise route resumes it; live Billing reservation acceptance remains.
+  owner/admin raise route resumes it. MS-26 landed locally (same flag): a budget-held goal reports the existing `awaiting_approval` run status with `pending_budget_approval` (never completion) and a raise re-enters the same goal journal once; live Billing reservation acceptance remains.
 - [ ] **Blocked · APW05 — Provider USD acceptance.** Internal credits and per-inference price
   snapshots are not invoice-reconciled provider charges. Resume with staging/provider access,
   representative controlled task runs, approved thresholds and reconciled invoices; reuse the APW02

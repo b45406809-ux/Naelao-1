@@ -193,6 +193,8 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
   error?: string;
   pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
   pending_question?: { question_id: string; question: string; options?: string[]; questions?: Array<{ question: string; options?: string[] }>; expires_at?: number };
+  /** MS-26: set when a goal is held in `awaiting_budget_approval`. */
+  pending_budget_approval?: { state: "awaiting_budget_approval"; message?: string; [key: string]: unknown };
   /** Actions the run parked and carried on around — it has a real answer AND outstanding work. */
   deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
   created_artifacts?: Array<{ artifact_id: string; filename: string; content_type?: string }>;
@@ -207,6 +209,7 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
     error?: string;
   pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
   pending_question?: { question_id: string; question: string; options?: string[]; questions?: Array<{ question: string; options?: string[] }>; expires_at?: number };
+    pending_budget_approval?: { state: "awaiting_budget_approval"; message?: string; [key: string]: unknown };
     deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
   } | null;
 
@@ -250,6 +253,22 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
     ...(citations.length ? { citations } : {}),
     ...(hostActions.length ? { host_actions: hostActions } : {}),
   };
+
+  // MS-26: a goal held for budget approval is waiting, not completed: report the existing waiting
+  // status (`awaiting_approval`) with the structured `pending_budget_approval` detail.
+  if (r?.pending_budget_approval) {
+    const answer = typeof r.pending_budget_approval.message === "string" ? r.pending_budget_approval.message
+      : "This goal is awaiting budget approval. An owner or admin can raise the goal credit ceiling and the remaining tasks will then run.";
+    return {
+      runId,
+      status: "awaiting_approval",
+      finalAnswer: answer,
+      final_answer: answer,
+      reactSteps: [],
+      pending_budget_approval: r.pending_budget_approval,
+      ...evidence,
+    };
+  }
 
   if (r?.pending_question) {
     const question = r.pending_question.question;

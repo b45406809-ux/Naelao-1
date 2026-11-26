@@ -33,6 +33,12 @@ export function ensureGoalCreditSchema(sql: SqlLike): void {
     status TEXT NOT NULL CHECK (status IN ('held','settled')), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   )`);
   sql.exec("CREATE INDEX IF NOT EXISTS idx_goal_credit_reservations_journal ON goal_credit_reservations(journal_key,status)");
+  // MS-26: one durable resume record per budget-held goal (keyed by the goal's parent run).
+  sql.exec(`CREATE TABLE IF NOT EXISTS goal_budget_resumes (
+    parent_run_id TEXT PRIMARY KEY, journal_key TEXT NOT NULL, objective TEXT NOT NULL, tasks_json TEXT NOT NULL,
+    context_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('held','resuming','resumed')),
+    resumed_run_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`);
   for (const ddl of [
     "ALTER TABLE goal_dag_journals ADD COLUMN parent_run_id TEXT",
     "ALTER TABLE goal_dag_journals ADD COLUMN credit_ceiling INTEGER",
@@ -130,4 +136,47 @@ export function raiseGoalCreditCeiling(sql: SqlLike, input: { parentRunId: strin
     sql.exec("UPDATE goal_dag_journals SET credit_ceiling=?,budget_state=NULL,budget_reason=NULL,updated_at=? WHERE journal_key=?", input.ceiling, now, row.journal_key);
   }
   return { ok: true, raised: targets.length };
+}
+
+export interface GoalBudgetResumeRecord {
+  parentRunId: string; journalKey: string; objective: string; tasks: unknown[]; context: Record<string, unknown>; resumedRunId: string;
+}
+
+/** Record (or re-record after a repeat hold) that a goal waits for a ceiling raise. Always `held`. */
+export function recordGoalBudgetHold(sql: SqlLike, input: {
+  parentRunId: string; journalKey: string; objective: string; tasks: unknown[]; context: Record<string, unknown>; now?: number;
+}): void {
+  const now = input.now ?? Date.now();
+  sql.exec(`INSERT INTO goal_budget_resumes(parent_run_id,journal_key,objective,tasks_json,context_json,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,'held',?,?)
+    ON CONFLICT(parent_run_id) DO UPDATE SET journal_key=excluded.journal_key,objective=excluded.objective,tasks_json=excluded.tasks_json,
+      context_json=excluded.context_json,status='held',updated_at=excluded.updated_at`,
+  input.parentRunId, input.journalKey, input.objective, JSON.stringify(input.tasks), JSON.stringify(input.context), now, now);
+}
+
+export const GOAL_BUDGET_RESUME_STALE_MS = 15 * 60 * 1000;
+
+/**
+ * Claim the resume of a held goal. Returns null when the goal is not held, or another resume already
+ * owns it. The read and the conditional write below run synchronously with no await between them, so
+ * inside a Durable Object they are atomic: of two concurrent raises exactly one claims. A `resuming`
+ * claim older than GOAL_BUDGET_RESUME_STALE_MS (an evicted DO) may be reclaimed; the journal outbox
+ * keeps the re-entry idempotent.
+ */
+export function claimGoalBudgetResume(sql: SqlLike, parentRunId: string, newRunId: string, now = Date.now()): GoalBudgetResumeRecord | null {
+  const row = sql.exec<{ parent_run_id: string; journal_key: string; objective: string; tasks_json: string; context_json: string; status: string }>(
+    `SELECT parent_run_id,journal_key,objective,tasks_json,context_json,status FROM goal_budget_resumes
+     WHERE parent_run_id=? AND (status='held' OR (status='resuming' AND updated_at<?))`,
+    parentRunId, now - GOAL_BUDGET_RESUME_STALE_MS).toArray()[0];
+  if (!row) return null;
+  sql.exec("UPDATE goal_budget_resumes SET status='resuming',resumed_run_id=?,updated_at=? WHERE parent_run_id=? AND status=?", newRunId, now, parentRunId, row.status);
+  try {
+    return { parentRunId: row.parent_run_id, journalKey: row.journal_key, objective: row.objective, tasks: JSON.parse(row.tasks_json) as unknown[],
+      context: JSON.parse(row.context_json) as Record<string, unknown>, resumedRunId: newRunId };
+  } catch { return null; }
+}
+
+/** Mark the resume finished. No-op when the goal was held again meanwhile (status already `held`). */
+export function finishGoalBudgetResume(sql: SqlLike, parentRunId: string, outcome: "resumed" | "held", now = Date.now()): void {
+  sql.exec("UPDATE goal_budget_resumes SET status=?,updated_at=? WHERE parent_run_id=? AND status='resuming'", outcome, now, parentRunId);
 }
